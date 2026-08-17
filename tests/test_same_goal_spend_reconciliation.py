@@ -102,6 +102,49 @@ def _fixture(root: Path, *, instance_id: int = 47593142, amount: float = 0.025) 
     }
 
 
+def _content_fixture(
+    root: Path,
+    *,
+    instance_id: int = 47940042,
+    amount: float = 0.366,
+) -> dict[str, Path]:
+    fixture = _fixture(root, instance_id=instance_id, amount=amount)
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    authority_digest = result.pop("authorization_consumption")["authorization_digest"]
+    result["schema_version"] = "adp_content_agents_vast_run.v1"
+    result.pop("receipt_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+    allocation_binding = {
+        "program_id": "arm-decision-proof-v1",
+        "probe_kind": "adp-usd-content-agents",
+        "orchestrator_source_commit": "6bcc65db104f5022ae2ad40ae606d242b846f990",
+        "paid_attempt_authority_digest": authority_digest,
+        "bundle_sha256": result["bundle_sha256"],
+    }
+    fixture["admission"] = _write(
+        fixture["result"].with_name("admission.json"),
+        {
+            "schema_version": "paid_lane_admission.v1",
+            "status": "admitted",
+            "resource_class": "vast_provider_adapter",
+            "blockers": [],
+            "provider_mutations_performed": 0,
+            "program_id": "arm-decision-proof-v1",
+            "probe_kind": "adp-usd-content-agents",
+            "authority": "explicit_content_agents_paid_attempt_authority_bound",
+            "paid_attempt_authority_required_for_execute": True,
+            "allocation_binding": allocation_binding,
+            "allocation_binding_digest": canonical_digest(allocation_binding),
+            "control_plane_identity": {
+                "orchestrator_source_commit": allocation_binding[
+                    "orchestrator_source_commit"
+                ],
+            },
+        },
+    )
+    return fixture
+
+
 def _materialize(root: Path, lane: str, fixture: dict[str, Path]) -> tuple[Path, dict[str, object]]:
     output = root / "same-goal-spend.json"
     value = materialize_same_goal_spend_reconciliation(
@@ -186,6 +229,124 @@ def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -
         expected_total_cost_usd=0.025,
     )
     assert reopened["receipt_digest"] == record["receipt_digest"]
+
+
+def test_content_agents_binds_authority_from_exact_sibling_admission(
+    tmp_path: Path,
+) -> None:
+    fixture = _content_fixture(tmp_path / "content")
+
+    output, value = _materialize(
+        tmp_path / "content", "content_agents", fixture
+    )
+
+    entry = value["entries"][0]
+    admission = next(
+        source
+        for source in entry["source_receipts"]
+        if source["role"] == "admission"
+    )
+    assert Path(admission["record"]["path"]) == fixture["admission"].resolve()
+    assert admission["allocation_binding_digest"] == canonical_digest(
+        json.loads(fixture["admission"].read_text(encoding="utf-8"))[
+            "allocation_binding"
+        ]
+    )
+    assert entry["authority_digest"] == "sha256:" + "a" * 64
+    assert entry["orchestrator_source_commit"] == (
+        "6bcc65db104f5022ae2ad40ae606d242b846f990"
+    )
+    binding_sources = {
+        binding["kind"]: binding["source_role"] for binding in entry["bindings"]
+    }
+    assert binding_sources["authority_digest"] == "admission"
+    assert binding_sources["bundle_sha256"] == "terminal_result"
+    assert bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="content_agents",
+    )["actual_total_usd"] == 0.366
+
+
+def test_content_agents_ten_entry_reconciliation_accepts_latest_official_charge(
+    tmp_path: Path,
+) -> None:
+    fixtures = [
+        _content_fixture(
+            tmp_path / f"attempt-{index}",
+            instance_id=(47940042 if index == 9 else 47000000 + index),
+            amount=(0.366 if index == 9 else 0.01),
+        )
+        for index in range(10)
+    ]
+    for index, fixture in enumerate(fixtures):
+        result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+        result["launch_id"] = f"content-attempt-{index}"
+        fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+
+    value = materialize_same_goal_spend_reconciliation(
+        lane="content_agents",
+        terminal_result_paths=[fixture["result"] for fixture in fixtures],
+        teardown_manifest_paths=[fixture["teardown"] for fixture in fixtures],
+        provider_zero_paths=[fixture["zero"] for fixture in fixtures],
+        official_billing_response_paths=[fixture["billing"] for fixture in fixtures],
+        provider_billing_source_receipt_paths=[
+            fixture["billing_source"] for fixture in fixtures
+        ],
+        output_path=tmp_path / "content-ten-entry.json",
+    )
+
+    assert value["entry_count"] == 10
+    assert value["entries"][-1]["provider_instance_id"] == 47940042
+    assert value["entries"][-1]["cost_usd"] == 0.366
+    assert value["total_cost_usd"] == pytest.approx(0.456)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing", "content_agents_allocator_admission_missing"),
+        ("tampered_binding", "content_agents_allocator_admission_invalid"),
+        ("blocked_status", "content_agents_allocator_admission_invalid"),
+        ("bundle_mismatch", "content_agents_allocator_admission_invalid"),
+        ("wrong_result_path", "content_agents_allocator_admission_path_invalid"),
+    ],
+)
+def test_content_agents_refuses_unbound_allocator_admission(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    fixture = _content_fixture(tmp_path / mutation)
+    if mutation == "missing":
+        fixture["admission"].unlink()
+    elif mutation == "tampered_binding":
+        admission = json.loads(fixture["admission"].read_text(encoding="utf-8"))
+        admission["allocation_binding"]["paid_attempt_authority_digest"] = (
+            "sha256:" + "c" * 64
+        )
+        fixture["admission"].write_text(json.dumps(admission), encoding="utf-8")
+    elif mutation == "blocked_status":
+        admission = json.loads(fixture["admission"].read_text(encoding="utf-8"))
+        admission["status"] = "blocked"
+        admission["blockers"] = ["fixture_blocker"]
+        fixture["admission"].write_text(json.dumps(admission), encoding="utf-8")
+    elif mutation == "bundle_mismatch":
+        admission = json.loads(fixture["admission"].read_text(encoding="utf-8"))
+        admission["allocation_binding"]["bundle_sha256"] = "sha256:" + "c" * 64
+        admission["allocation_binding_digest"] = canonical_digest(
+            admission["allocation_binding"]
+        )
+        fixture["admission"].write_text(json.dumps(admission), encoding="utf-8")
+    elif mutation == "wrong_result_path":
+        wrong = _write(
+            fixture["result"].parent.parent / "terminal.json",
+            json.loads(fixture["result"].read_text(encoding="utf-8")),
+        )
+        fixture["result"] = wrong
+
+    with pytest.raises(ValueError, match=message):
+        _materialize(tmp_path / mutation, "content_agents", fixture)
 
 
 def test_semantic_teacher_prior_spend_accepts_json_float_serialization_tail(
