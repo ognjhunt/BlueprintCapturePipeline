@@ -27,6 +27,8 @@ MANIPULATION_PREFLIGHT_SCHEMA = "paired_target_native_manipulation_preflight.v1"
 PAIRED_PREFLIGHT_SCHEMA = "paired_target_native_preflight.v1"
 NATIVE_IMPORT_SCHEMA = "paired_target_native_import_runtime_result.v1"
 REGISTERED_ASSET_SCHEMA = "registered_replacement_asset.v1"
+SOURCE_COLLIDER_BATCH_REMOVAL_SCHEMA = "source_collider_batch_removal.v1"
+SOURCE_COLLIDER_REMOVAL_SCHEMA = "source_collider_subtree_removal.v1"
 
 
 class PairedTargetNativeConstructionBindingsError(ValueError):
@@ -110,6 +112,158 @@ def _file_record(
     }
 
 
+def _read_source_collider_batch_removal(
+    path_value: str | Path,
+    *,
+    expected_source_scene: Mapping[str, Any],
+    expected_target_count: int,
+) -> tuple[Path, dict[str, Any], Path, dict[str, Any]]:
+    """Reopen the exact shared removed scene and every independent receipt."""
+
+    raw_batch_path = Path(path_value).expanduser()
+    batch_path = raw_batch_path.resolve()
+    try:
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PairedTargetNativeConstructionBindingsError(
+            ["paired_target_construction_source_collider_batch_invalid"]
+        ) from exc
+    errors: list[str] = []
+    if (
+        raw_batch_path.is_symlink()
+        or not isinstance(batch, dict)
+        or batch.get("schema_version") != SOURCE_COLLIDER_BATCH_REMOVAL_SCHEMA
+        or batch.get("status")
+        != "independent_and_shared_source_colliders_removed"
+        or batch.get("receipt_digest")
+        != canonical_digest(batch, digest_field="receipt_digest")
+    ):
+        errors.append("paired_target_construction_source_collider_batch_invalid")
+        batch = batch if isinstance(batch, dict) else {}
+
+    source = batch.get("source_scene_usd")
+    expected_source_path = Path(
+        str(expected_source_scene.get("path") or "")
+    ).expanduser().resolve()
+    raw_source_path = Path(str((source or {}).get("path") or "")).expanduser()
+    source_path = raw_source_path.resolve()
+    if (
+        not isinstance(source, Mapping)
+        or source_path != expected_source_path
+        or source.get("size_bytes") != expected_source_scene.get("size_bytes")
+        or source.get("sha256") != expected_source_scene.get("sha256")
+        or raw_source_path.is_symlink()
+        or not source_path.is_file()
+        or source_path.stat().st_size != source.get("size_bytes")
+        or _sha256(source_path) != source.get("sha256")
+    ):
+        errors.append("paired_target_construction_source_collision_mismatch")
+
+    shared = batch.get("shared_removed_scene_usd")
+    relative = str((shared or {}).get("relative_path") or "")
+    pure = PurePosixPath(relative)
+    removed_candidate = batch_path.parent / relative
+    removed_path = removed_candidate.resolve()
+    if (
+        not isinstance(shared, Mapping)
+        or pure.is_absolute()
+        or pure.as_posix() in {"", ".", ".."}
+        or ".." in pure.parts
+        or batch_path.parent not in removed_path.parents
+        or removed_candidate.is_symlink()
+        or not removed_path.is_file()
+        or removed_path.stat().st_size != shared.get("size_bytes")
+        or _sha256(removed_path) != shared.get("sha256")
+    ):
+        errors.append("paired_target_construction_shared_scene_invalid")
+    elif shared.get("sha256") == (source or {}).get("sha256"):
+        errors.append("paired_target_construction_shared_scene_not_removed")
+
+    rows = batch.get("target_removals")
+    if (
+        not isinstance(rows, list)
+        or batch.get("target_count") != expected_target_count
+        or len(rows) != expected_target_count
+        or batch.get("source_bytes_unchanged") is not True
+        or batch.get("unrelated_prim_inventory_unchanged") is not True
+        or batch.get("remaining_target_collision_prim_count") != 0
+        or batch.get("replacement_inserted") is not False
+        or batch.get("independent_receipts_share_exact_source_digest") is not True
+        or batch.get("independent_removed_scenes_are_distinct") is not True
+    ):
+        errors.append("paired_target_construction_source_collider_batch_unqualified")
+        rows = rows if isinstance(rows, list) else []
+
+    removal_ids: list[str] = []
+    target_paths: list[str] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            errors.append(
+                f"paired_target_construction_source_collider_removal_invalid:{index}"
+            )
+            continue
+        removal_id = str(row.get("removal_id") or "")
+        target_path = str(row.get("target_prim_path") or "")
+        removal_ids.append(removal_id)
+        target_paths.append(target_path)
+        record = row.get("receipt")
+        child_relative = str((record or {}).get("relative_path") or "")
+        child_pure = PurePosixPath(child_relative)
+        child_candidate = batch_path.parent / child_relative
+        child_path = child_candidate.resolve()
+        try:
+            child = json.loads(child_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            child = {}
+        if (
+            not removal_id
+            or not target_path.startswith("/")
+            or row.get("source_scene_sha256") != (source or {}).get("sha256")
+            or not isinstance(row.get("removed_prim_count"), int)
+            or isinstance(row.get("removed_prim_count"), bool)
+            or int(row.get("removed_prim_count") or 0) <= 0
+            or not isinstance(record, Mapping)
+            or child_pure.is_absolute()
+            or child_pure.as_posix() in {"", ".", ".."}
+            or ".." in child_pure.parts
+            or batch_path.parent not in child_path.parents
+            or child_candidate.is_symlink()
+            or not child_path.is_file()
+            or child_path.stat().st_size != (record or {}).get("size_bytes")
+            or _sha256(child_path) != (record or {}).get("sha256")
+            or not isinstance(child, Mapping)
+            or child.get("schema_version") != SOURCE_COLLIDER_REMOVAL_SCHEMA
+            or child.get("status") != "exact_source_collider_subtree_removed"
+            or child.get("receipt_digest")
+            != canonical_digest(child, digest_field="receipt_digest")
+            or child.get("receipt_digest") != row.get("receipt_digest")
+            or child.get("removal_id") != removal_id
+            or child.get("sage_collision_usd_sha256") != (source or {}).get("sha256")
+            or child.get("removed_prim_path") != target_path
+            or child.get("removed_prim_count") != row.get("removed_prim_count")
+            or child.get("source_bytes_unchanged") is not True
+            or child.get("unrelated_prim_inventory_unchanged") is not True
+            or child.get("remaining_target_collision_prim_count") != 0
+            or child.get("replacement_inserted") is not False
+        ):
+            errors.append(
+                f"paired_target_construction_source_collider_removal_invalid:{index}"
+            )
+    if (
+        len(removal_ids) != len(set(removal_ids))
+        or len(target_paths) != len(set(target_paths))
+    ):
+        errors.append("paired_target_construction_source_collider_removals_not_unique")
+    if errors:
+        raise PairedTargetNativeConstructionBindingsError(errors)
+    collision_record = {
+        "path": str(removed_path),
+        "size_bytes": removed_path.stat().st_size,
+        "sha256": _sha256(removed_path),
+    }
+    return batch_path, batch, removed_path, collision_record
+
+
 def validate_paired_target_native_construction_bindings(
     value: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -136,6 +290,40 @@ def validate_paired_target_native_construction_bindings(
         rows = []
     if payload.get("replacement_object_count") != len(rows):
         errors.append("paired_target_construction_replacement_count_invalid")
+    source_collision = payload.get("source_collision_scene")
+    collision = payload.get("collision_scene")
+    batch_record = payload.get("source_collider_batch_removal")
+    for role, record in (
+        ("source_collision", source_collision),
+        ("collision", collision),
+    ):
+        if (
+            not isinstance(record, Mapping)
+            or not str(record.get("path") or "")
+            or not isinstance(record.get("size_bytes"), int)
+            or isinstance(record.get("size_bytes"), bool)
+            or int(record.get("size_bytes") or 0) <= 0
+            or not _digest(record.get("sha256"))
+        ):
+            errors.append(f"paired_target_construction_{role}_record_invalid")
+    if (
+        not isinstance(batch_record, Mapping)
+        or not str(batch_record.get("path") or "")
+        or not isinstance(batch_record.get("size_bytes"), int)
+        or isinstance(batch_record.get("size_bytes"), bool)
+        or int(batch_record.get("size_bytes") or 0) <= 0
+        or not _digest(batch_record.get("sha256"))
+        or batch_record.get("schema_version")
+        != SOURCE_COLLIDER_BATCH_REMOVAL_SCHEMA
+        or not _digest(batch_record.get("canonical_digest"))
+    ):
+        errors.append("paired_target_construction_source_collider_binding_invalid")
+    if (
+        isinstance(source_collision, Mapping)
+        and isinstance(collision, Mapping)
+        and source_collision.get("sha256") == collision.get("sha256")
+    ):
+        errors.append("paired_target_construction_shared_scene_not_removed")
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(rows):
         if not isinstance(raw, Mapping):
@@ -226,8 +414,51 @@ def validate_paired_target_native_construction_bindings(
     return payload
 
 
+def validate_materialized_paired_target_native_construction_bindings(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reopen path-backed collider evidence before packet materialization."""
+
+    payload = validate_paired_target_native_construction_bindings(value)
+    errors: list[str] = []
+    try:
+        _, preflight = _read_bound_record(
+            payload.get("paired_target_preflight"),
+            role="paired_preflight",
+            expected_schema=PAIRED_PREFLIGHT_SCHEMA,
+            digest_field="receipt_digest",
+        )
+        if payload.get("source_collision_scene") != preflight.get(
+            "collision_scene"
+        ):
+            errors.append("paired_target_construction_source_collision_mismatch")
+        batch_record = payload.get("source_collider_batch_removal") or {}
+        batch_path, batch, _removed_path, collision_record = (
+            _read_source_collider_batch_removal(
+                str(batch_record.get("path") or ""),
+                expected_source_scene=preflight.get("collision_scene") or {},
+                expected_target_count=len(payload["bindings"]),
+            )
+        )
+        if (
+            batch_record.get("size_bytes") != batch_path.stat().st_size
+            or batch_record.get("sha256") != _sha256(batch_path)
+            or batch_record.get("canonical_digest") != batch.get("receipt_digest")
+            or payload.get("collision_scene") != collision_record
+        ):
+            errors.append("paired_target_construction_source_collider_binding_invalid")
+    except PairedTargetNativeConstructionBindingsError as exc:
+        errors.extend(exc.errors)
+    if errors:
+        raise PairedTargetNativeConstructionBindingsError(errors)
+    return payload
+
+
 def materialize_paired_target_native_construction_bindings(
-    *, manipulation_preflight_path: str | Path, output_path: str | Path
+    *,
+    manipulation_preflight_path: str | Path,
+    source_collider_batch_removal_path: str | Path,
+    output_path: str | Path,
 ) -> dict[str, Any]:
     """Join paired inputs after import and before or after Arena compilation."""
 
@@ -335,6 +566,13 @@ def materialize_paired_target_native_construction_bindings(
         raise PairedTargetNativeConstructionBindingsError(
             ["paired_target_construction_task_set_mismatch"]
         )
+    batch_path, batch, _removed_path, collision_scene = (
+        _read_source_collider_batch_removal(
+            source_collider_batch_removal_path,
+            expected_source_scene=preflight.get("collision_scene") or {},
+            expected_target_count=len(manipulation_tasks),
+        )
+    )
     bindings: list[dict[str, Any]] = []
     for index, task in enumerate(manipulation.get("tasks") or []):
         task_id = str(task.get("task_id") or "")
@@ -455,7 +693,13 @@ def materialize_paired_target_native_construction_bindings(
         "scene_id": manipulation["scene_id"],
         "task_freeze_set_digest": manipulation["task_freeze_set_digest"],
         "replacement_object_count": len(bindings),
-        "collision_scene": preflight["collision_scene"],
+        "source_collision_scene": preflight["collision_scene"],
+        "collision_scene": collision_scene,
+        "source_collider_batch_removal": _file_record(
+            batch_path,
+            schema_version=SOURCE_COLLIDER_BATCH_REMOVAL_SCHEMA,
+            canonical_digest_value=batch["receipt_digest"],
+        ),
         "paired_target_preflight": manipulation["paired_target_preflight"],
         "native_import_result": manipulation["native_import_result"],
         "manipulation_preflight": _file_record(
@@ -478,7 +722,9 @@ def materialize_paired_target_native_construction_bindings(
     payload["construction_digest"] = canonical_digest(
         payload, digest_field="construction_digest"
     )
-    payload = validate_paired_target_native_construction_bindings(payload)
+    payload = validate_materialized_paired_target_native_construction_bindings(
+        payload
+    )
     destination = Path(output_path).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
         raise PairedTargetNativeConstructionBindingsError(
@@ -493,5 +739,6 @@ __all__ = [
     "PairedTargetNativeConstructionBindingsError",
     "SCHEMA_VERSION",
     "materialize_paired_target_native_construction_bindings",
+    "validate_materialized_paired_target_native_construction_bindings",
     "validate_paired_target_native_construction_bindings",
 ]

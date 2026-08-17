@@ -63,6 +63,8 @@ MAX_TTL_SECONDS = 14_400
 #: The packet directory holds this; it is distinct from the provider-bundle
 #: receipt consumed by the shared live-profile skeleton.
 PACKET_RECEIPT_NAME = "native_task_arena_packet_receipt.v1.json"
+PACKET_REQUEST_NAME = "native_task_arena_packet_request.v1.json"
+SCENE_PLAN_NAME = "native_task_arena_scene_plan.v1.json"
 
 
 @dataclass(frozen=True)
@@ -105,7 +107,42 @@ BUNDLE_LOADERS = {
 }
 
 
-def _lane_blockers(link: ArenaLink):
+def _identifier(value: str, *, field: str) -> str:
+    text = str(value or "").strip()
+    if (
+        not text
+        or not text.replace("_", "a").replace("-", "a").isalnum()
+        or text in {".", ".."}
+    ):
+        raise TaskEvaluationLaunchError(
+            f"native_task_arena_expected_{field}_invalid"
+        )
+    return text
+
+
+def _read_mapping(path: Path, *, error: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(error) from exc
+    if not isinstance(value, Mapping):
+        raise ValueError(error)
+    return dict(value)
+
+
+def _bound_runtime_input_digests(bundle: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        Path(str(row.get("relative_path") or "")).name: str(
+            row.get("sha256") or ""
+        )
+        for row in bundle.get("bound_runtime_inputs") or []
+        if isinstance(row, Mapping)
+    }
+
+
+def _lane_blockers(
+    link: ArenaLink, *, expected_scene_id: str, expected_task_id: str
+):
     def blockers(context: LaneLiveProfileContext) -> list[str]:
         found: list[str] = []
         if not 0 < context.max_hourly_rate_usd <= context.max_spend_usd:
@@ -127,21 +164,62 @@ def _lane_blockers(link: ArenaLink):
                 # been handed a provider.
                 found.append(f"native_task_arena_{name}_missing")
         packet_receipt = context.extra_paths["packet_dir"] / PACKET_RECEIPT_NAME
+        packet_request = context.extra_paths["packet_dir"] / PACKET_REQUEST_NAME
+        scene_plan_path = context.extra_paths["packet_dir"] / SCENE_PLAN_NAME
         if not packet_receipt.is_file():
             found.append("native_task_arena_packet_receipt_missing")
         prepared_bundle: Mapping[str, Any] | None = None
+        packet: Mapping[str, Any] = {}
+        request: Mapping[str, Any] = {}
+        scene_plan: Mapping[str, Any] = {}
         try:
-            packet = json.loads(packet_receipt.read_text(encoding="utf-8"))
-            runtime_source = json.loads(
-                context.extra_paths["runtime_source_packet"].read_text(encoding="utf-8")
+            packet = _read_mapping(
+                packet_receipt,
+                error="native_task_arena_packet_receipt_invalid",
             )
+            request = _read_mapping(
+                packet_request,
+                error="native_task_arena_packet_request_invalid",
+            )
+            scene_plan = _read_mapping(
+                scene_plan_path,
+                error="native_task_arena_scene_plan_invalid",
+            )
+            runtime_source = _read_mapping(
+                context.extra_paths["runtime_source_packet"],
+                error="native_task_arena_runtime_source_packet_invalid",
+            )
+            observed_scenes = {
+                str(packet.get("scene_id") or ""),
+                str(request.get("scene_id") or ""),
+                str(scene_plan.get("scene_id") or ""),
+            }
+            observed_tasks = {
+                str(packet.get("task_id") or ""),
+                str(request.get("task_id") or ""),
+                str(scene_plan.get("task_id") or ""),
+            }
+            if observed_scenes != {expected_scene_id}:
+                found.append("native_task_arena_scene_identity_mismatch")
+            if observed_tasks != {expected_task_id}:
+                found.append("native_task_arena_task_identity_mismatch")
             if (
-                not isinstance(packet, Mapping)
-                or packet.get("schema_version") != "native_task_arena_packet_receipt.v1"
+                packet.get("schema_version")
+                != "native_task_arena_packet_receipt.v1"
                 or packet.get("status") != "construction_packet_completed"
                 or packet.get("receipt_digest")
                 != canonical_digest(packet, digest_field="receipt_digest")
-                or not isinstance(runtime_source, Mapping)
+                or request.get("schema_version")
+                != "native_task_arena_packet_request.v1"
+                or request.get("request_digest")
+                != canonical_digest(request, digest_field="request_digest")
+                or scene_plan.get("schema_version")
+                != "native_task_arena_scene_plan.v1"
+                or scene_plan.get("plan_digest")
+                != canonical_digest(scene_plan, digest_field="plan_digest")
+                or packet.get("request_digest") != request.get("request_digest")
+                or packet.get("arena_scene_plan_digest")
+                != scene_plan.get("plan_digest")
                 or runtime_source.get("receipt_digest")
                 != canonical_digest(runtime_source, digest_field="receipt_digest")
             ):
@@ -155,8 +233,113 @@ def _lane_blockers(link: ArenaLink):
                     runtime_source["receipt_digest"]
                 ),
             )
+            if (
+                prepared_bundle.get("scene_id") != expected_scene_id
+                or prepared_bundle.get("task_id") != expected_task_id
+                or prepared_bundle.get("request_digest")
+                != request.get("request_digest")
+                or prepared_bundle.get("arena_scene_plan_digest")
+                != scene_plan.get("plan_digest")
+            ):
+                found.append("native_task_arena_bundle_identity_mismatch")
         except (KeyError, OSError, ValueError, json.JSONDecodeError):
             found.append("native_task_arena_provider_bundle_invalid")
+
+        bound_inputs = _bound_runtime_input_digests(prepared_bundle or {})
+        construction: Mapping[str, Any] = {}
+        if "construction_result" in link.predecessors:
+            try:
+                construction_path = context.extra_paths["construction_result"]
+                construction = _read_mapping(
+                    construction_path,
+                    error="native_task_arena_construction_result_invalid",
+                )
+                if (
+                    construction.get("schema_version")
+                    != "native_task_arena_construction_result.v1"
+                    or construction.get("status") != "completed"
+                    or construction.get("construction_gate_qualified") is not True
+                    or construction.get("scene_plan_digest")
+                    != scene_plan.get("plan_digest")
+                    or construction.get("result_digest")
+                    != canonical_digest(
+                        construction, digest_field="result_digest"
+                    )
+                    or bound_inputs.get(
+                        "native_task_arena_construction_result.v1.json"
+                    )
+                    != file_digest(construction_path)
+                ):
+                    raise ValueError(
+                        "native_task_arena_construction_result_invalid"
+                    )
+            except (OSError, ValueError, json.JSONDecodeError):
+                found.append("native_task_arena_construction_result_invalid")
+
+        controls: Mapping[str, Any] = {}
+        if "control_result" in link.predecessors:
+            try:
+                control_path = context.extra_paths["control_result"]
+                controls = _read_mapping(
+                    control_path,
+                    error="native_task_arena_control_result_invalid",
+                )
+                if (
+                    controls.get("schema_version")
+                    != "native_task_arena_control_result.v1"
+                    or controls.get("status") != "completed"
+                    or controls.get("controls_qualified") is not True
+                    or controls.get("scene_plan_digest")
+                    != scene_plan.get("plan_digest")
+                    or controls.get("construction_result_digest")
+                    != construction.get("result_digest")
+                    or controls.get("result_digest")
+                    != canonical_digest(controls, digest_field="result_digest")
+                    or bound_inputs.get(
+                        "native_task_arena_control_result.v1.json"
+                    )
+                    != file_digest(control_path)
+                ):
+                    raise ValueError("native_task_arena_control_result_invalid")
+            except (OSError, ValueError, json.JSONDecodeError):
+                found.append("native_task_arena_control_result_invalid")
+
+        if "policy_execution_spec" in link.predecessors:
+            try:
+                spec_path = context.extra_paths["policy_execution_spec"]
+                policy_spec = _read_mapping(
+                    spec_path,
+                    error="native_task_arena_policy_execution_spec_invalid",
+                )
+                pair = controls.get("control_pair") or {}
+                if (
+                    policy_spec.get("schema_version")
+                    != "native_task_arena_policy_execution_spec.v1"
+                    or policy_spec.get("execution_spec_digest")
+                    != canonical_digest(
+                        policy_spec, digest_field="execution_spec_digest"
+                    )
+                    or policy_spec.get("task_id") != expected_task_id
+                    or policy_spec.get("cell_id")
+                    != (scene_plan.get("scenario") or {}).get("cell_id")
+                    or policy_spec.get("scene_plan_digest")
+                    != scene_plan.get("plan_digest")
+                    or policy_spec.get("construction_result_digest")
+                    != construction.get("result_digest")
+                    or policy_spec.get("control_result_digest")
+                    != controls.get("result_digest")
+                    or policy_spec.get("control_pair_digest")
+                    != pair.get("pair_digest")
+                    or bound_inputs.get(
+                        "native_task_arena_policy_execution_spec.v1.json"
+                    )
+                    != file_digest(spec_path)
+                ):
+                    raise ValueError(
+                        "native_task_arena_policy_execution_spec_invalid"
+                    )
+            except (OSError, ValueError, json.JSONDecodeError):
+                found.append("native_task_arena_policy_execution_spec_invalid")
         authority_path = context.extra_paths.get("attempt_authority")
         if authority_path is not None and authority_path.is_file():
             try:
@@ -208,6 +391,8 @@ def _lane_argv(link: ArenaLink):
 def _immutable_inputs(link: ArenaLink):
     def inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
         packet_receipt = context.extra_paths["packet_dir"] / PACKET_RECEIPT_NAME
+        packet_request = context.extra_paths["packet_dir"] / PACKET_REQUEST_NAME
+        scene_plan = context.extra_paths["packet_dir"] / SCENE_PLAN_NAME
         rows = [
             {
                 "name": "source_bundle_manifest",
@@ -218,6 +403,16 @@ def _immutable_inputs(link: ArenaLink):
                 "name": "evaluation_run_spec",
                 "path": str(packet_receipt),
                 "digest": file_digest(packet_receipt),
+            },
+            {
+                "name": "native_task_arena_packet_request",
+                "path": str(packet_request),
+                "digest": file_digest(packet_request),
+            },
+            {
+                "name": "native_task_arena_scene_plan",
+                "path": str(scene_plan),
+                "digest": file_digest(scene_plan),
             },
             {
                 "name": "native_task_arena_runtime_source_packet",
@@ -243,20 +438,27 @@ def _immutable_inputs(link: ArenaLink):
 
 
 def _spec(
-    link: ArenaLink | str, *, with_avoidlist: bool = False
+    link: ArenaLink | str,
+    *,
+    expected_scene_id: str = "contract_probe_scene",
+    expected_task_id: str = "contract_probe_task",
+    with_avoidlist: bool = False,
 ) -> LaneLiveProfileSpec:
     if isinstance(link, str):
         # Shared builder-contract probes call candidate factories with a
         # placeholder string. Real launches pass the exact ArenaLink below.
         link = LINKS.get(link, LINKS["construction"])
     return LaneLiveProfileSpec(
-        profile_id_prefix=link.profile_id_prefix,
+        profile_id_prefix=(
+            f"{link.profile_id_prefix}-{expected_scene_id}-{expected_task_id}"
+        ),
         profile_builder="build_native_task_arena_live_profile.py",
         probe_kind=link.probe_kind,
         min_ttl_seconds=MIN_TTL_SECONDS,
         max_ttl_seconds=MAX_TTL_SECONDS,
         source_bundle_id=lambda context: (
-            f"{link.profile_id_prefix}-{context.source_commit[:12]}"
+            f"{link.profile_id_prefix}-{expected_scene_id}-{expected_task_id}-"
+            f"{context.source_commit[:12]}"
         ),
         # The dispatcher admits three source kinds and this is not free text.
         # The packet is built over the public scene substrate rather than a new
@@ -265,7 +467,11 @@ def _spec(
         source_kind="interiorgs_sage",
         lane_argv=_lane_argv(link),
         immutable_inputs=_immutable_inputs(link),
-        lane_blockers=_lane_blockers(link),
+        lane_blockers=_lane_blockers(
+            link,
+            expected_scene_id=expected_scene_id,
+            expected_task_id=expected_task_id,
+        ),
         # The skeleton requires every declared path, so the optional
         # avoidlist is only declared on the calls that actually supply one.
         extra_path_names=(
@@ -287,6 +493,8 @@ def build_native_task_arena_live_profile(
     runtime_source_packet_path: str | Path,
     source_commit: str,
     raw_manifest_uri: str,
+    expected_scene_id: str,
+    expected_task_id: str,
     construction_result_path: str | Path | None = None,
     control_result_path: str | Path | None = None,
     policy_execution_spec_path: str | Path | None = None,
@@ -299,6 +507,8 @@ def build_native_task_arena_live_profile(
     """Derive a live profile from the packet receipt the link will run."""
 
     entry = LINKS[link]
+    scene_id = _identifier(expected_scene_id, field="scene_id")
+    task_id = _identifier(expected_task_id, field="task_id")
     packet = Path(packet_dir).expanduser().resolve()
     supplied: dict[str, Any] = {
         "packet_dir": packet,
@@ -330,7 +540,12 @@ def build_native_task_arena_live_profile(
         )
     }
     return build_lane_live_profile(
-        _spec(entry, with_avoidlist=machine_avoidlist_path is not None),
+        _spec(
+            entry,
+            expected_scene_id=scene_id,
+            expected_task_id=task_id,
+            with_avoidlist=machine_avoidlist_path is not None,
+        ),
         bundle_receipt_path=bundle_receipt_path,
         source_commit=source_commit,
         raw_manifest_uri=raw_manifest_uri,
@@ -352,6 +567,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         target.add_argument("--attempt-authority", required=True)
         target.add_argument("--runtime-source-packet", required=True)
         target.add_argument("--source-commit", required=True)
+        target.add_argument("--scene-id", required=True)
+        target.add_argument("--task-id", required=True)
         target.add_argument(
             "--raw-manifest-uri",
             required=True,
@@ -383,6 +600,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_source_packet_path=args.runtime_source_packet,
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,
+            expected_scene_id=args.scene_id,
+            expected_task_id=args.task_id,
             construction_result_path=getattr(args, "construction_result", None),
             control_result_path=getattr(args, "control_result", None),
             policy_execution_spec_path=getattr(args, "policy_execution_spec", None),

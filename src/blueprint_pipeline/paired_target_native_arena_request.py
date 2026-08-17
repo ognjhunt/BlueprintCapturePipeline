@@ -27,7 +27,7 @@ from .dual_task_rehearsal_contract import (
 from .dual_task_scenario_suite import validate_dual_task_scenario_suite
 from .native_task_runtime_contract import DROID_FRANKA_RESET_JOINT_NAMES
 from .paired_target_native_construction_bindings import (
-    validate_paired_target_native_construction_bindings,
+    validate_materialized_paired_target_native_construction_bindings,
 )
 
 
@@ -414,7 +414,7 @@ def materialize_paired_target_native_arena_requests(
         construction_bindings_path,
         "paired_target_arena_request_construction_invalid",
     )
-    construction = validate_paired_target_native_construction_bindings(
+    construction = validate_materialized_paired_target_native_construction_bindings(
         raw_construction
     )
     bindings = {row["task_id"]: row for row in construction["bindings"]}

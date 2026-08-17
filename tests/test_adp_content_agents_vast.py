@@ -235,12 +235,25 @@ def _paired_target_content_agents_evidence(
     task_digest = "sha256:" + "1" * 64
     registered_digest = "sha256:" + "2" * 64
     probe_digest = "sha256:" + "3" * 64
+    source_collision = root / "source-collision.usda"
+    source_collision.write_text('#usda 1.0\ndef Xform "Source" {}\n')
+    removed_collision = root / "removed-collision.usda"
+    removed_collision.write_text('#usda 1.0\ndef Xform "Retained" {}\n')
+    collider_batch = root / "source-collider-batch.json"
+    collider_batch.write_text("{}\n")
     payload = {
         "schema_version": "paired_target_native_construction_bindings.v1",
         "status": "paired_targets_admitted_for_native_construction",
         "scene_id": "840920",
         "task_freeze_set_digest": "sha256:" + "4" * 64,
         "replacement_object_count": 1,
+        "source_collision_scene": _record(source_collision),
+        "collision_scene": _record(removed_collision),
+        "source_collider_batch_removal": {
+            **_record(collider_batch),
+            "schema_version": "source_collider_batch_removal.v1",
+            "canonical_digest": "sha256:" + "5" * 64,
+        },
         "bindings": [
             {
                 "task_id": "task_a_washer_door_open",
