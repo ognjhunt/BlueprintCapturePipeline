@@ -16,6 +16,7 @@ from blueprint_pipeline.dual_task_joint_agent_admission import (
     build_dual_task_joint_agent_admission,
     main,
     validate_dual_task_joint_agent_admission,
+    validate_dual_task_joint_agent_source_binding,
 )
 from blueprint_pipeline.joint_agent_topology_execution_authority import (
     JointAgentTopologyAuthorityError,
@@ -683,3 +684,198 @@ def test_no_spend_composition_writes_ready_packet_and_joint_only_authority(
         "joint_agent_topology_execution_authority.v1"
     )
     assert "aura_adapter_receipt_digest" not in authority
+
+
+REPLACEMENT_SHA = _digest("d")
+
+
+def _authored_replacement(
+    *,
+    task: str = "a",
+    links: int = 6,
+    lineage: dict | None = None,
+    freeze_digest: str | None = None,
+) -> dict:
+    """Our authored replacement: one prim per link, sealed to the same freeze."""
+
+    source = _source_receipt(task=task)
+    payload = {
+        "schema_version": "simready_graph_asset_receipt.v1",
+        "status": "materialized",
+        "task_freeze_digest": (
+            freeze_digest
+            if freeze_digest is not None
+            else _task_freeze(task=task)["task_freeze_digest"]
+        ),
+        "link_paths": {
+            name: f"/Asset/links/{name}"
+            for name in ["body", "door", "latch", "drum", "selector", "drawer"][:links]
+        },
+        "output_usd": {
+            "path": "replacement.usda",
+            "sha256": REPLACEMENT_SHA,
+            "size_bytes": 23_880,
+        },
+        "source_asset_receipt": (
+            lineage
+            if lineage is not None
+            else {
+                "receipt_digest": source["receipt_digest"],
+                "source_asset_sha256": source["output_asset"]["sha256"],
+            }
+        ),
+        "receipt_digest": "",
+    }
+    return _seal(payload, "receipt_digest")
+
+
+def test_authored_replacement_supplies_the_bytes_the_agent_reads() -> None:
+    """The 2026-08-17 failure: the agent got a mesh whose parts were not prims.
+
+    Handing it the authored six-link asset is what makes parents resolvable, so
+    the admission must record the replacement's bytes and link count -- while
+    the source receipt keeps every other role it had.
+    """
+
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id=SCENE_ID,
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=_source_receipt(task="a"),
+        authored_replacement_receipt=_authored_replacement(),
+    )
+    source = admission["source"]
+    assert source["authored_replacement_input"] is True
+    assert source["source_asset_sha256"] == REPLACEMENT_SHA
+    assert source["source_asset_size_bytes"] == 23_880
+    assert source["connected_component_count"] == 6
+    # The mesh is still named, so nothing pretends the replacement came from
+    # nowhere -- and the 71-component mesh count is not silently overwritten.
+    assert source["source_mesh_asset_sha256"] == TASK_A_SOURCE_SHA
+    assert source["source_mesh_connected_component_count"] == 71
+    # Extent and freeze binding still come from the source receipt.
+    assert admission["source_receipt"] == _source_receipt(task="a")
+
+
+def test_authored_replacement_output_is_never_an_independent_witness() -> None:
+    """Corroborating topology we authored is not inferring it."""
+
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id=SCENE_ID,
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=_source_receipt(task="a"),
+        authored_replacement_receipt=_authored_replacement(),
+    )
+    assert admission["source"]["independent_topology_inference"] is False
+    assert admission["claim_boundary"]["independent_topology_inference"] is False
+    assert _build(task="a")["claim_boundary"]["independent_topology_inference"] is True
+
+
+def test_replacement_without_source_lineage_is_refused() -> None:
+    """A replacement that cannot show it is the same object is not admitted."""
+
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            authored_replacement_receipt=_authored_replacement(
+                lineage={
+                    "receipt_digest": _digest("f"),
+                    "source_asset_sha256": _digest("f"),
+                }
+            ),
+        )
+    assert "joint_agent_authored_replacement_lineage_invalid" in excinfo.value.errors
+
+
+def test_replacement_sealed_to_another_freeze_is_refused() -> None:
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            authored_replacement_receipt=_authored_replacement(
+                freeze_digest=_digest("e")
+            ),
+        )
+    assert "joint_agent_authored_replacement_freeze_mismatch" in excinfo.value.errors
+
+
+def test_single_link_replacement_is_refused() -> None:
+    """One link is a rigid body: no parent to resolve, so no articulation."""
+
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            authored_replacement_receipt=_authored_replacement(links=1),
+        )
+    assert (
+        "joint_agent_authored_replacement_link_count_invalid" in excinfo.value.errors
+    )
+
+
+def test_replacement_admission_still_rebuilds_byte_for_byte() -> None:
+    """An admission whose input cannot be reproduced is not evidence."""
+
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id=SCENE_ID,
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=_source_receipt(task="a"),
+        authored_replacement_receipt=_authored_replacement(),
+    )
+    assert (
+        validate_dual_task_joint_agent_source_binding(
+            admission, _source_receipt(task="a")
+        )
+        == admission
+    )
+
+
+def test_cli_binds_the_replacement_bytes_not_the_mesh_bytes(tmp_path: Path) -> None:
+    """--source-asset must follow whichever asset the agent will be handed."""
+
+    freeze = tmp_path / "freeze.json"
+    freeze.write_text(json.dumps(_task_freeze(task="a")), encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps(_source_receipt(task="a")), encoding="utf-8")
+
+    asset = tmp_path / "replacement.usda"
+    asset.write_bytes(b"authored")
+    replacement = _authored_replacement()
+    replacement["output_usd"]["sha256"] = (
+        "sha256:" + hashlib.sha256(b"authored").hexdigest()
+    )
+    replacement["output_usd"]["size_bytes"] = asset.stat().st_size
+    replacement = _seal(
+        {**replacement, "receipt_digest": ""},
+        "receipt_digest",
+    )
+    replacement_file = tmp_path / "replacement.json"
+    replacement_file.write_text(json.dumps(replacement), encoding="utf-8")
+
+    output = tmp_path / "admission.json"
+    argv = [
+        "--publisher-scene-id",
+        SCENE_ID,
+        "--task-freeze",
+        str(freeze),
+        "--source-receipt",
+        str(receipt),
+        "--source-asset",
+        str(asset),
+        "--authored-replacement-receipt",
+        str(replacement_file),
+        "--output",
+        str(output),
+    ]
+    assert main(argv) == 0
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["source"]["authored_replacement_input"] is True
+
+    # The mesh's own bytes must now be refused: they are not what will be read.
+    mesh = tmp_path / "mesh.usda"
+    mesh.write_bytes(b"mesh")
+    argv[argv.index(str(asset))] = str(mesh)
+    assert main(argv) != 0
