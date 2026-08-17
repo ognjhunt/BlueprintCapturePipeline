@@ -632,6 +632,7 @@ def test_canonical_allocator_issues_arena_grant_only_for_execute(
 
     assert allocator.main(_allocator_args(tmp_path, approval, execute=execute)) == 0
     assert observed["execute"] is execute
+    assert observed["require_independent_watchdog"] is True
     assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
         execute
     )

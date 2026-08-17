@@ -46,6 +46,7 @@ from blueprint_pipeline.native_task_arena_policy_bundle import (
     materialize_native_task_policy_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_vast import (
+    run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
     run_native_task_arena_vast,
 )
@@ -1262,6 +1263,69 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
         (tmp_path / "concurrent").resolve()
         / "native_task_arena_paid_launch.lock"
     )
+
+
+@pytest.mark.parametrize(
+    ("runner", "execution_mode", "expected_output", "expected_prefix", "candidate"),
+    (
+        (
+            run_native_task_arena_vast,
+            "construction_canary",
+            "native_task_arena_construction_result.v1.json",
+            "blueprint-native-task-arena-",
+            None,
+        ),
+        (
+            run_native_task_arena_controls_vast,
+            "controls",
+            "native_task_arena_control_result.v1.json",
+            "blueprint-native-task-controls-",
+            None,
+        ),
+        (
+            run_native_task_arena_policy_vast,
+            "policy",
+            "native_task_arena_policy_result.v1.json",
+            "blueprint-native-task-policy-",
+            "pi05_droid",
+        ),
+    ),
+)
+def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
+    runner,
+    execution_mode,
+    expected_output,
+    expected_prefix,
+    candidate,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed: dict = {}
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": execution_mode,
+        "policy_candidate_id": candidate,
+        "candidate_policy_queried": False,
+        "expected_output_filename": expected_output,
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    runner(
+        job_dir=tmp_path / execution_mode,
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+
+    assert observed["require_independent_watchdog"] is True
+    assert observed["instance_label_prefix"] == expected_prefix
 
 
 def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(

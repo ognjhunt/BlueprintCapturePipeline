@@ -5472,6 +5472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    require_independent_watchdog=True,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

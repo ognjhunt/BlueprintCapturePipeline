@@ -54,6 +54,12 @@ CANARY_NAME_PREFIXES = (
     # set while it still reported provider zero.
     "blueprint-adp-gaussian-excision-",
     "blueprint-adp-retained-render-",
+    # Native Task Arena is one ordered production family with three separately
+    # labelled paid stages. Each stage arms before create and hands the exact
+    # started Vast instance id to this watchdog.
+    "blueprint-native-task-arena-",
+    "blueprint-native-task-controls-",
+    "blueprint-native-task-policy-",
     "blueprint-native-warehouse-camera-",
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",
