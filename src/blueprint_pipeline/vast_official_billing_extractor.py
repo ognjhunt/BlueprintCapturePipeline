@@ -41,6 +41,11 @@ _ITEM_NAMES = {
     "bwd": "bandwidth_download",
     "bwu": "bandwidth_upload",
 }
+_SUPPORTED_TERMINAL_RESULT_SCHEMAS = frozenset(
+    {"public_scene_artifixer3d_vast_run.v1"}
+)
+_SUPPORTED_ADAPTER_SCHEMAS = frozenset({"vast_provider_adapter_result.v1"})
+_SUPPORTED_TEARDOWN_SCHEMAS = frozenset({"vast_teardown_manifest.v1"})
 
 
 class VastOfficialBillingExtractionError(ValueError):
@@ -134,40 +139,51 @@ def _valid_digest(value: Any) -> bool:
 
 
 def _expected_instances(
-    values: Sequence[tuple[int, str]],
-) -> list[tuple[int, str]]:
+    values: Sequence[tuple[int, str, str | Path]],
+) -> list[tuple[int, str, Path]]:
     if (
         not isinstance(values, Sequence)
         or isinstance(values, (str, bytes))
         or not 1 <= len(values) <= MAX_EXPECTED_INSTANCES
     ):
         raise VastOfficialBillingExtractionError("vast_official_expected_instances_invalid")
-    normalized: list[tuple[int, str]] = []
+    normalized: list[tuple[int, str, Path]] = []
     for value in values:
-        if not isinstance(value, tuple) or len(value) != 2:
+        if not isinstance(value, tuple) or len(value) != 3:
             raise VastOfficialBillingExtractionError(
                 "vast_official_expected_instances_invalid"
             )
-        instance_id, launch_label = value
+        instance_id, launch_label, terminal_result_path = value
         if (
             isinstance(instance_id, bool)
             or not isinstance(instance_id, int)
             or instance_id <= 0
             or not isinstance(launch_label, str)
             or _LAUNCH_LABEL.fullmatch(launch_label) is None
+            or not isinstance(terminal_result_path, (str, Path))
         ):
             raise VastOfficialBillingExtractionError(
                 "vast_official_expected_instances_invalid"
             )
-        normalized.append((instance_id, launch_label))
+        terminal_path = Path(terminal_result_path).expanduser()
+        normalized.append((instance_id, launch_label, terminal_path))
     if (
-        len({instance_id for instance_id, _label in normalized}) != len(normalized)
-        or len({_label for _instance_id, _label in normalized}) != len(normalized)
+        len({instance_id for instance_id, _label, _path in normalized})
+        != len(normalized)
+        or len({_label for _instance_id, _label, _path in normalized})
+        != len(normalized)
+        or len(
+            {
+                Path(os.path.abspath(path))
+                for _instance_id, _label, path in normalized
+            }
+        )
+        != len(normalized)
     ):
         raise VastOfficialBillingExtractionError(
             "vast_official_expected_instances_duplicate"
         )
-    return sorted(normalized)
+    return sorted(normalized, key=lambda item: item[0])
 
 
 def _validate_source_receipt(
@@ -272,6 +288,268 @@ def _line_items(row: Mapping[str, Any]) -> tuple[dict[str, float], float]:
     return amounts, bandwidth
 
 
+def _bound_json_record(
+    record: Any, *, run_root: Path, code: str
+) -> tuple[Path, dict[str, Any], bytes]:
+    if (
+        not isinstance(record, Mapping)
+        or not isinstance(record.get("path"), str)
+        or isinstance(record.get("size_bytes"), bool)
+        or not isinstance(record.get("size_bytes"), int)
+        or record["size_bytes"] <= 0
+        or not _valid_digest(record.get("sha256"))
+    ):
+        raise VastOfficialBillingExtractionError(code)
+    path, value, payload = _json_file(record["path"], code=code)
+    if (
+        run_root not in path.parents
+        or record["size_bytes"] != len(payload)
+        or record["sha256"] != _sha256_bytes(payload)
+    ):
+        raise VastOfficialBillingExtractionError(code)
+    return path, value, payload
+
+
+def _identity_json(
+    run_root: Path, name: str, *, schema_version: str, digest_field: str
+) -> tuple[Path, dict[str, Any], bytes]:
+    path, value, payload = _json_file(
+        run_root / name, code="vast_official_launch_identity_invalid"
+    )
+    if (
+        path.parent != run_root
+        or value.get("schema_version") != schema_version
+        or value.get(digest_field)
+        != canonical_digest(value, digest_field=digest_field)
+    ):
+        raise VastOfficialBillingExtractionError(
+            "vast_official_launch_identity_invalid"
+        )
+    return path, value, payload
+
+
+def _record_with_identity(
+    path: Path, payload: bytes, value: Mapping[str, Any], *, digest_field: str | None
+) -> dict[str, Any]:
+    record = _record(path, payload)
+    record["schema_version"] = value.get("schema_version")
+    if value.get("status") is not None:
+        record["status"] = value.get("status")
+    if digest_field is not None:
+        record[digest_field] = value.get(digest_field)
+    return record
+
+
+def _terminal_evidence(
+    *, instance_id: int, terminal_result_path: str | Path
+) -> dict[str, Any]:
+    result_path, result, result_bytes = _json_file(
+        terminal_result_path, code="vast_official_terminal_result_invalid"
+    )
+    if result_path.name != "result.json" or result_path.parent.name != "allocator":
+        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
+    run_root = result_path.parent.parent
+    result_status = result.get("status")
+    closeout = result.get("provider_closeout")
+    watchdog = result.get("independent_watchdog")
+    if (
+        result.get("schema_version") not in _SUPPORTED_TERMINAL_RESULT_SCHEMAS
+        or result_status not in {"completed", "blocked"}
+        or result.get("retry_cap") != 0
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("raw_secret_values_recorded") is not False
+        or not isinstance(closeout, Mapping)
+        or closeout.get("provider_zero_confirmed") is not True
+        or closeout.get("all_staged_objects_absent") is not True
+        or not isinstance(watchdog, Mapping)
+        or watchdog.get("schema_version") != "vast_independent_watchdog_handoff.v1"
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("instance_ids") != [instance_id]
+        or watchdog.get("provider_absence_confirmed") is not True
+        or watchdog.get("provider_mutations_performed") != 0
+        or watchdog.get("raw_secret_values_recorded") is not False
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
+
+    adapter_path, adapter, adapter_bytes = _bound_json_record(
+        closeout.get("adapter_result"),
+        run_root=run_root,
+        code="vast_official_adapter_result_invalid",
+    )
+    teardown_path, teardown, teardown_bytes = _bound_json_record(
+        closeout.get("teardown_manifest"),
+        run_root=run_root,
+        code="vast_official_teardown_invalid",
+    )
+    if (
+        result.get("adapter_result_path") != str(adapter_path)
+        or result.get("teardown_manifest_path") != str(teardown_path)
+        or adapter.get("schema_version") not in _SUPPORTED_ADAPTER_SCHEMAS
+        or adapter.get("status") != result_status
+        or adapter.get("vast_instance_ids") != [instance_id]
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or adapter.get("final_validation_status") != "passed"
+        or adapter.get("retained_owned") is not False
+        or adapter.get("raw_api_key_stored") is not False
+        or adapter.get("secret_values_in_artifact") is not False
+        or teardown.get("schema_version") not in _SUPPORTED_TEARDOWN_SCHEMAS
+        or teardown.get("status") != "completed"
+        or teardown.get("vast_instance_ids") != [instance_id]
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or teardown.get("runner_gpu_teardown_completed") is not True
+        or teardown.get("retention_authorized") is not False
+        or teardown.get("raw_secret_values_recorded") is not False
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_terminal_closure_invalid")
+
+    profile_path, profile, profile_bytes = _identity_json(
+        run_root,
+        "launch_profile.json",
+        schema_version="task_evaluation_launch_profile.v1",
+        digest_field="profile_digest",
+    )
+    request_path, request, request_bytes = _identity_json(
+        run_root,
+        "launch_request.json",
+        schema_version="task_evaluation_launch_request.v1",
+        digest_field="request_digest",
+    )
+    binding_path, binding, binding_bytes = _identity_json(
+        run_root,
+        "launch_binding.json",
+        schema_version="task_evaluation_launch_binding.v1",
+        digest_field="binding_digest",
+    )
+    started_path, started, started_bytes = _identity_json(
+        run_root,
+        "launch_started.json",
+        schema_version="task_evaluation_launch_started.v1",
+        digest_field="started_digest",
+    )
+    receipt_path, receipt, receipt_bytes = _identity_json(
+        run_root,
+        "launch_receipt.json",
+        schema_version="task_evaluation_launch_receipt.v1",
+        digest_field="receipt_digest",
+    )
+    zero_path, zero, zero_bytes = _identity_json(
+        run_root,
+        "post_teardown_provider_zero_receipt.json",
+        schema_version="task_evaluation_post_teardown_provider_zero.v1",
+        digest_field="provider_zero_receipt_digest",
+    )
+    launch_id = request.get("launch_id")
+    run_id = request.get("run_id")
+    request_digest = request.get("request_digest")
+    profile_id = request.get("launch_profile_id")
+    profile_digest = request.get("launch_profile_digest")
+    terminal = receipt.get("terminal_evidence")
+    terminal_result = terminal.get("result") if isinstance(terminal, Mapping) else None
+    terminal_artifacts = (
+        terminal.get("artifacts") if isinstance(terminal, Mapping) else None
+    )
+    terminal_teardown = (
+        terminal_artifacts.get("teardown_manifest_path")
+        if isinstance(terminal_artifacts, Mapping)
+        else None
+    )
+    if (
+        not isinstance(launch_id, str)
+        or not launch_id
+        or run_id != launch_id
+        or run_root.name != launch_id
+        or not _valid_digest(request_digest)
+        or not isinstance(profile_id, str)
+        or not profile_id
+        or not _valid_digest(profile_digest)
+        or profile.get("profile_id") != profile_id
+        or profile.get("profile_digest") != profile_digest
+        or binding.get("launch_id") != launch_id
+        or binding.get("run_id") != run_id
+        or binding.get("request_digest") != request_digest
+        or binding.get("profile_digest") != profile_digest
+        or started.get("launch_id") != launch_id
+        or started.get("run_id") != run_id
+        or started.get("request_digest") != request_digest
+        or started.get("binding_digest") != binding.get("binding_digest")
+        or started.get("automatic_retry_authorized") is not False
+        or receipt.get("status") != result_status
+        or receipt.get("launch_id") != launch_id
+        or receipt.get("run_id") != run_id
+        or receipt.get("request_digest") != request_digest
+        or receipt.get("launch_profile_digest") != profile_digest
+        or receipt.get("binding_digest") != binding.get("binding_digest")
+        or receipt.get("execute_requested") is not True
+        or receipt.get("raw_secret_values_recorded") is not False
+        or not isinstance(terminal_result, Mapping)
+        or terminal_result.get("path") != str(result_path)
+        or terminal_result.get("digest") != _sha256_bytes(result_bytes)
+        or terminal_result.get("exists") is not True
+        or not isinstance(terminal_teardown, Mapping)
+        or terminal_teardown.get("path") != str(teardown_path)
+        or terminal_teardown.get("digest") != _sha256_bytes(teardown_bytes)
+        or terminal_teardown.get("exists") is not True
+        or zero.get("status") != "provider_zero_confirmed"
+        or zero.get("launch_id") != launch_id
+        or zero.get("run_id") != run_id
+        or zero.get("request_digest") != request_digest
+        or zero.get("launch_profile_digest") != profile_digest
+        or zero.get("receipt_digest") != receipt.get("receipt_digest")
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("automatic_retry_performed") is not False
+        or zero.get("provider_mutation_performed") is not False
+        or zero.get("blockers") != []
+        or zero.get("required_providers") != ["vast"]
+    ):
+        raise VastOfficialBillingExtractionError(
+            "vast_official_launch_identity_invalid"
+        )
+
+    return {
+        "terminal_status": result_status,
+        "provider_absence_confirmed": True,
+        "provider_zero_verified": True,
+        "continuing_spend_from_this_run": False,
+        "retry_cap": 0,
+        "launch_id": launch_id,
+        "run_id": run_id,
+        "request_digest": request_digest,
+        "profile_id": profile_id,
+        "profile_digest": profile_digest,
+        "terminal_result": _record_with_identity(
+            result_path, result_bytes, result, digest_field=None
+        ),
+        "provider_adapter_result": _record_with_identity(
+            adapter_path, adapter_bytes, adapter, digest_field=None
+        ),
+        "teardown_manifest": _record_with_identity(
+            teardown_path, teardown_bytes, teardown, digest_field=None
+        ),
+        "post_teardown_provider_zero": _record_with_identity(
+            zero_path,
+            zero_bytes,
+            zero,
+            digest_field="provider_zero_receipt_digest",
+        ),
+        "launch_request": _record_with_identity(
+            request_path, request_bytes, request, digest_field="request_digest"
+        ),
+        "launch_profile": _record_with_identity(
+            profile_path, profile_bytes, profile, digest_field="profile_digest"
+        ),
+        "launch_binding": _record_with_identity(
+            binding_path, binding_bytes, binding, digest_field="binding_digest"
+        ),
+        "launch_started": _record_with_identity(
+            started_path, started_bytes, started, digest_field="started_digest"
+        ),
+        "launch_receipt": _record_with_identity(
+            receipt_path, receipt_bytes, receipt, digest_field="receipt_digest"
+        ),
+    }
+
+
 def _entry(
     *,
     instance_id: int,
@@ -284,6 +562,7 @@ def _entry(
     response_bytes: bytes,
     result_index: int,
     row: Mapping[str, Any],
+    terminal_evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     metadata = row.get("metadata")
     if (
@@ -320,6 +599,7 @@ def _entry(
         "line_item_total_usd": float(item_total),
         "provider_billing_source_receipt": source_receipt_record,
         "official_billing_response": response_record,
+        "terminal_execution_evidence": dict(terminal_evidence),
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
         "entry_digest": "",
@@ -350,6 +630,23 @@ def _validate_entry(entry: Any) -> None:
         or entry.get("raw_secret_values_recorded") is not False
         or entry.get("entry_digest")
         != canonical_digest(entry, digest_field="entry_digest")
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_prior_entry_invalid")
+    terminal_evidence = entry.get("terminal_execution_evidence")
+    terminal_result_record = (
+        terminal_evidence.get("terminal_result")
+        if isinstance(terminal_evidence, Mapping)
+        else None
+    )
+    if (
+        not isinstance(terminal_evidence, Mapping)
+        or not isinstance(terminal_result_record, Mapping)
+        or not isinstance(terminal_result_record.get("path"), str)
+        or _terminal_evidence(
+            instance_id=expected_id,
+            terminal_result_path=terminal_result_record["path"],
+        )
+        != dict(terminal_evidence)
     ):
         raise VastOfficialBillingExtractionError("vast_official_prior_entry_invalid")
     amount = _money(
@@ -602,7 +899,7 @@ def validate_vast_official_same_goal_reconciliation(
 def materialize_vast_official_same_goal_reconciliation(
     *,
     provider_billing_source_receipt_path: str | Path,
-    expected_instances: Sequence[tuple[int, str]],
+    expected_instances: Sequence[tuple[int, str, str | Path]],
     output_path: str | Path,
     prior_reconciliation_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -616,10 +913,14 @@ def materialize_vast_official_same_goal_reconciliation(
         source_receipt_path=source_path, source_receipt=source_receipt
     )
     candidates: dict[int, list[tuple[int, Path, bytes, int, Mapping[str, Any]]]] = {
-        instance_id: [] for instance_id, _label in expected
+        instance_id: [] for instance_id, _label, _terminal_path in expected
     }
-    expected_by_id = dict(expected)
-    expected_by_label = {label: instance_id for instance_id, label in expected}
+    expected_by_id = {
+        instance_id: label for instance_id, label, _terminal_path in expected
+    }
+    expected_by_label = {
+        label: instance_id for instance_id, label, _terminal_path in expected
+    }
     for source_index, response_path, response_bytes, response in responses:
         for result_index, row in enumerate(response["results"]):
             if not isinstance(row, Mapping):
@@ -640,13 +941,17 @@ def materialize_vast_official_same_goal_reconciliation(
                     (source_index, response_path, response_bytes, result_index, row)
                 )
     entries: list[dict[str, Any]] = []
-    for instance_id, launch_label in expected:
+    for instance_id, launch_label, terminal_result_path in expected:
         matches = candidates[instance_id]
         if not matches:
             raise VastOfficialBillingExtractionError("vast_official_charge_unposted")
         if len(matches) != 1:
             raise VastOfficialBillingExtractionError("vast_official_charge_duplicate")
         source_index, response_path, response_bytes, result_index, row = matches[0]
+        terminal = _terminal_evidence(
+            instance_id=instance_id,
+            terminal_result_path=terminal_result_path,
+        )
         entries.append(
             _entry(
                 instance_id=instance_id,
@@ -659,6 +964,7 @@ def materialize_vast_official_same_goal_reconciliation(
                 response_bytes=response_bytes,
                 result_index=result_index,
                 row=row,
+                terminal_evidence=terminal,
             )
         )
 
@@ -730,11 +1036,13 @@ def materialize_vast_official_same_goal_reconciliation(
     return value
 
 
-def _parse_expected(value: str) -> tuple[int, str]:
-    instance, separator, label = value.partition("=")
-    if not separator or not instance.isdigit():
-        raise argparse.ArgumentTypeError("expected INSTANCE_ID=EXACT_LAUNCH_LABEL")
-    return int(instance), label
+def _parse_expected(value: str) -> tuple[int, str, str]:
+    components = value.split("=", 2)
+    if len(components) != 3 or not components[0].isdigit() or not components[2]:
+        raise argparse.ArgumentTypeError(
+            "expected INSTANCE_ID=EXACT_LAUNCH_LABEL=RUN_RESULT_PATH"
+        )
+    return int(components[0]), components[1], components[2]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -745,7 +1053,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         type=_parse_expected,
         required=True,
-        metavar="INSTANCE_ID=EXACT_LAUNCH_LABEL",
+        metavar="INSTANCE_ID=EXACT_LAUNCH_LABEL=RUN_RESULT_PATH",
     )
     parser.add_argument("--prior-reconciliation")
     parser.add_argument("--output", required=True)

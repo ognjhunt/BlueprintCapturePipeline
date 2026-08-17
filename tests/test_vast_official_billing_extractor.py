@@ -105,6 +105,216 @@ def _charge(
     }
 
 
+def _bound(path: Path) -> dict:
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _terminal_fixture(
+    tmp_path: Path, *, instance_id: int, status: str
+) -> Path:
+    run_id = f"adp-artifixer3d-fixture-{instance_id}"
+    profile_id = f"adp-artifixer3d-live-fixture-{instance_id}"
+    run_root = tmp_path / "task-evaluation-launch-runs" / run_id
+    allocator = run_root / "allocator"
+    provider_run = allocator / "artifixer3d-job" / "vast_provider_run"
+
+    profile = {
+        "schema_version": "task_evaluation_launch_profile.v1",
+        "profile_id": profile_id,
+        "execution_admission": {"live_enabled": True, "blockers": []},
+        "reconciliation": {"required_providers": ["vast"]},
+        "profile_digest": "",
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_path = _write(run_root / "launch_profile.json", profile)
+    request = {
+        "schema_version": "task_evaluation_launch_request.v1",
+        "launch_id": run_id,
+        "run_id": run_id,
+        "launch_profile_id": profile_id,
+        "launch_profile_digest": profile["profile_digest"],
+        "idempotency_key": run_id,
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request_path = _write(run_root / "launch_request.json", request)
+    binding = {
+        "schema_version": "task_evaluation_launch_binding.v1",
+        "launch_id": run_id,
+        "run_id": run_id,
+        "request_digest": request["request_digest"],
+        "profile_digest": profile["profile_digest"],
+        "execute_requested": True,
+        "binding_digest": "",
+    }
+    binding["binding_digest"] = canonical_digest(
+        binding, digest_field="binding_digest"
+    )
+    binding_path = _write(run_root / "launch_binding.json", binding)
+    started = {
+        "schema_version": "task_evaluation_launch_started.v1",
+        "launch_id": run_id,
+        "run_id": run_id,
+        "request_digest": request["request_digest"],
+        "binding_digest": binding["binding_digest"],
+        "automatic_retry_authorized": False,
+        "started_digest": "",
+    }
+    started["started_digest"] = canonical_digest(
+        started, digest_field="started_digest"
+    )
+    started_path = _write(run_root / "launch_started.json", started)
+
+    adapter = {
+        "schema_version": "vast_provider_adapter_result.v1",
+        "status": status,
+        "vast_instance_ids": [instance_id],
+        "continuing_spend_from_this_run": False,
+        "final_validation_status": "passed",
+        "retained_owned": False,
+        "raw_api_key_stored": False,
+        "secret_values_in_artifact": False,
+        "blockers": [] if status == "completed" else ["runtime_result_missing"],
+    }
+    adapter_path = _write(provider_run / "vast_provider_adapter_result.json", adapter)
+    teardown = {
+        "schema_version": "vast_teardown_manifest.v1",
+        "status": "completed",
+        "vast_instance_ids": [instance_id],
+        "continuing_spend_from_this_run": False,
+        "runner_gpu_teardown_completed": True,
+        "retention_authorized": False,
+        "raw_secret_values_recorded": False,
+        "zero_continuing_spend_scope": "all Vast instances created were destroyed",
+    }
+    teardown_path = _write(provider_run / "vast_teardown_manifest.json", teardown)
+    result = {
+        "schema_version": "public_scene_artifixer3d_vast_run.v1",
+        "status": status,
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "raw_secret_values_recorded": False,
+        "adapter_result_path": str(adapter_path),
+        "teardown_manifest_path": str(teardown_path),
+        "provider_closeout": {
+            "adapter_result": _bound(adapter_path),
+            "teardown_manifest": _bound(teardown_path),
+            "provider_zero_confirmed": True,
+            "all_staged_objects_absent": True,
+        },
+        "independent_watchdog": {
+            "schema_version": "vast_independent_watchdog_handoff.v1",
+            "status": "provider_terminal",
+            "instance_ids": [instance_id],
+            "provider_absence_confirmed": True,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        },
+        "blockers": [] if status == "completed" else ["runtime_result_missing"],
+    }
+    result_path = _write(allocator / "result.json", result)
+    terminal_status = "passed" if status == "completed" else "blocked"
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": status,
+        "launch_id": run_id,
+        "run_id": run_id,
+        "request_digest": request["request_digest"],
+        "launch_profile_digest": profile["profile_digest"],
+        "binding_digest": binding["binding_digest"],
+        "execute_requested": True,
+        "raw_secret_values_recorded": False,
+        "terminal_evidence": {
+            "status": terminal_status,
+            "result": {
+                "path": str(result_path),
+                "digest": _sha256(result_path),
+                "exists": True,
+            },
+            "artifacts": {
+                "teardown_manifest_path": {
+                    "path": str(teardown_path),
+                    "digest": _sha256(teardown_path),
+                    "exists": True,
+                }
+            },
+            "blockers": [] if status == "completed" else ["terminal_blocked"],
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = _write(run_root / "launch_receipt.json", receipt)
+    zero = {
+        "schema_version": "task_evaluation_post_teardown_provider_zero.v1",
+        "status": "provider_zero_confirmed",
+        "launch_id": run_id,
+        "run_id": run_id,
+        "request_digest": request["request_digest"],
+        "launch_profile_digest": profile["profile_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "provider_zero_verified": True,
+        "continuing_spend_from_this_run": False,
+        "automatic_retry_performed": False,
+        "provider_mutation_performed": False,
+        "required_providers": ["vast"],
+        "blockers": [],
+        "provider_zero_receipt_digest": "",
+    }
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    zero_path = _write(run_root / "post_teardown_provider_zero_receipt.json", zero)
+    assert all(
+        path.is_file()
+        for path in (
+            profile_path,
+            request_path,
+            binding_path,
+            started_path,
+            receipt_path,
+            zero_path,
+        )
+    )
+    return result_path
+
+
+def _refresh_terminal_bindings(result_path: Path) -> None:
+    run_root = result_path.parent.parent
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    adapter_path = Path(result["adapter_result_path"])
+    teardown_path = Path(result["teardown_manifest_path"])
+    result["provider_closeout"]["adapter_result"] = _bound(adapter_path)
+    result["provider_closeout"]["teardown_manifest"] = _bound(teardown_path)
+    _write(result_path, result)
+    receipt_path = run_root / "launch_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["terminal_evidence"]["result"]["digest"] = _sha256(result_path)
+    receipt["terminal_evidence"]["artifacts"]["teardown_manifest_path"][
+        "digest"
+    ] = _sha256(teardown_path)
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write(receipt_path, receipt)
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = json.loads(zero_path.read_text(encoding="utf-8"))
+    zero["receipt_digest"] = receipt["receipt_digest"]
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(zero_path, zero)
+
+
 def _fixture(tmp_path: Path) -> dict[str, object]:
     audit = tmp_path / "billing-audit" / "20260817T055421.193507Z"
     responses = [
@@ -179,11 +389,18 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         receipt, digest_field="receipt_digest"
     )
     receipt_path = _write(audit / "provider_billing_source_receipt.json", receipt)
+    terminals = {
+        INSTANCE_A: _terminal_fixture(tmp_path, instance_id=INSTANCE_A, status="blocked"),
+        INSTANCE_B: _terminal_fixture(
+            tmp_path, instance_id=INSTANCE_B, status="completed"
+        ),
+    }
     return {
         "audit": audit,
         "responses": responses,
         "receipt": receipt_path,
         "receipt_value": receipt,
+        "terminals": terminals,
     }
 
 
@@ -205,16 +422,29 @@ def _materialize(
     fixture: dict[str, object],
     output: Path,
     *,
-    expected: list[tuple[int, str]] | None = None,
+    expected: list[tuple[int, str, Path]] | None = None,
     prior: Path | None = None,
 ) -> dict:
     return materialize_vast_official_same_goal_reconciliation(
         provider_billing_source_receipt_path=fixture["receipt"],
         expected_instances=expected
-        or [(INSTANCE_A, LABEL_A), (INSTANCE_B, LABEL_B)],
+        or [
+            _spec(fixture, INSTANCE_A, LABEL_A),
+            _spec(fixture, INSTANCE_B, LABEL_B),
+        ],
         output_path=output,
         prior_reconciliation_path=prior,
     )
+
+
+def _spec(
+    fixture: dict[str, object], instance_id: int, label: str
+) -> tuple[int, str, Path]:
+    terminals = fixture["terminals"]
+    assert isinstance(terminals, dict)
+    terminal = terminals[instance_id]
+    assert isinstance(terminal, Path)
+    return instance_id, label, terminal
 
 
 def test_extracts_production_shaped_posted_instance_charges_exactly(
@@ -258,6 +488,28 @@ def test_extracts_production_shaped_posted_instance_charges_exactly(
     assert first["entry_digest"] == canonical_digest(
         first, digest_field="entry_digest"
     )
+    first_terminal = first["terminal_execution_evidence"]
+    second_terminal = second["terminal_execution_evidence"]
+    assert first_terminal["terminal_status"] == "blocked"
+    assert second_terminal["terminal_status"] == "completed"
+    for terminal, instance_id in (
+        (first_terminal, INSTANCE_A),
+        (second_terminal, INSTANCE_B),
+    ):
+        assert terminal["retry_cap"] == 0
+        assert terminal["continuing_spend_from_this_run"] is False
+        assert terminal["provider_absence_confirmed"] is True
+        assert terminal["provider_zero_verified"] is True
+        assert terminal["launch_id"] == terminal["run_id"]
+        assert terminal["request_digest"].startswith("sha256:")
+        assert terminal["profile_id"].startswith("adp-artifixer3d-live-")
+        assert terminal["profile_digest"].startswith("sha256:")
+        assert terminal["provider_adapter_result"]["status"] in {
+            "blocked",
+            "completed",
+        }
+        assert terminal["teardown_manifest"]["status"] == "completed"
+        assert str(instance_id) in terminal["terminal_result"]["path"]
     assert validate_vast_official_same_goal_reconciliation(output) == value
     assert stat.S_IMODE(output.stat().st_mode) == 0o440
     serialized = output.read_text(encoding="utf-8")
@@ -271,13 +523,13 @@ def test_prior_reconciliation_extends_without_repricing_prior_entry(
     fixture = _fixture(tmp_path)
     prior_path = tmp_path / "prior.json"
     prior = _materialize(
-        fixture, prior_path, expected=[(INSTANCE_A, LABEL_A)]
+        fixture, prior_path, expected=[_spec(fixture, INSTANCE_A, LABEL_A)]
     )
     output = tmp_path / "extended.json"
     value = _materialize(
         fixture,
         output,
-        expected=[(INSTANCE_B, LABEL_B)],
+        expected=[_spec(fixture, INSTANCE_B, LABEL_B)],
         prior=prior_path,
     )
 
@@ -296,7 +548,9 @@ def test_rejects_tampered_or_overlapping_prior_reconciliation(
 ) -> None:
     fixture = _fixture(tmp_path)
     prior_path = tmp_path / "prior.json"
-    _materialize(fixture, prior_path, expected=[(INSTANCE_A, LABEL_A)])
+    _materialize(
+        fixture, prior_path, expected=[_spec(fixture, INSTANCE_A, LABEL_A)]
+    )
     prior_path.chmod(0o600)
     tampered = json.loads(prior_path.read_text(encoding="utf-8"))
     tampered["official_total_usd"] = 0.0
@@ -305,19 +559,21 @@ def test_rejects_tampered_or_overlapping_prior_reconciliation(
         _materialize(
             fixture,
             tmp_path / "tampered-output.json",
-            expected=[(INSTANCE_B, LABEL_B)],
+            expected=[_spec(fixture, INSTANCE_B, LABEL_B)],
             prior=prior_path,
         )
 
     prior_path.unlink()
-    _materialize(fixture, prior_path, expected=[(INSTANCE_A, LABEL_A)])
+    _materialize(
+        fixture, prior_path, expected=[_spec(fixture, INSTANCE_A, LABEL_A)]
+    )
     with pytest.raises(
         VastOfficialBillingExtractionError, match="vast_official_prior_overlap"
     ):
         _materialize(
             fixture,
             tmp_path / "overlap-output.json",
-            expected=[(INSTANCE_A, LABEL_A)],
+            expected=[_spec(fixture, INSTANCE_A, LABEL_A)],
             prior=prior_path,
         )
 
@@ -372,8 +628,82 @@ def test_rejects_ambiguous_or_invalid_official_rows(
         _materialize(
             fixture,
             tmp_path / "output.json",
-            expected=[(INSTANCE_A, LABEL_A)],
+            expected=[_spec(fixture, INSTANCE_A, LABEL_A)],
         )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unsupported_terminal_schema",
+        "retry_cap",
+        "continuing_spend",
+        "adapter_instance",
+        "teardown_incomplete",
+        "provider_zero_false",
+        "launch_identity",
+        "wrong_result_path",
+        "terminal_symlink",
+    ],
+)
+def test_rejects_unbound_or_incomplete_terminal_execution_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    result_path = _spec(fixture, INSTANCE_A, LABEL_A)[2]
+    expected = [_spec(fixture, INSTANCE_A, LABEL_A)]
+    run_root = result_path.parent.parent
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if mutation == "unsupported_terminal_schema":
+        result["schema_version"] = "unknown_vast_run.v1"
+        _write(result_path, result)
+        _refresh_terminal_bindings(result_path)
+    elif mutation == "retry_cap":
+        result["retry_cap"] = 1
+        _write(result_path, result)
+        _refresh_terminal_bindings(result_path)
+    elif mutation == "continuing_spend":
+        result["continuing_spend_from_this_run"] = True
+        _write(result_path, result)
+        _refresh_terminal_bindings(result_path)
+    elif mutation == "adapter_instance":
+        adapter_path = Path(result["adapter_result_path"])
+        adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
+        adapter["vast_instance_ids"] = [INSTANCE_B]
+        _write(adapter_path, adapter)
+        _refresh_terminal_bindings(result_path)
+    elif mutation == "teardown_incomplete":
+        teardown_path = Path(result["teardown_manifest_path"])
+        teardown = json.loads(teardown_path.read_text(encoding="utf-8"))
+        teardown["runner_gpu_teardown_completed"] = False
+        _write(teardown_path, teardown)
+        _refresh_terminal_bindings(result_path)
+    elif mutation == "provider_zero_false":
+        zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+        zero = json.loads(zero_path.read_text(encoding="utf-8"))
+        zero["provider_zero_verified"] = False
+        zero["provider_zero_receipt_digest"] = canonical_digest(
+            zero, digest_field="provider_zero_receipt_digest"
+        )
+        _write(zero_path, zero)
+    elif mutation == "launch_identity":
+        request_path = run_root / "launch_request.json"
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request["run_id"] = "different-run"
+        request["request_digest"] = canonical_digest(
+            request, digest_field="request_digest"
+        )
+        _write(request_path, request)
+    elif mutation == "wrong_result_path":
+        expected = [
+            (INSTANCE_A, LABEL_A, _spec(fixture, INSTANCE_B, LABEL_B)[2])
+        ]
+    elif mutation == "terminal_symlink":
+        real_result = result_path.with_suffix(".real.json")
+        result_path.rename(real_result)
+        result_path.symlink_to(real_result)
+    with pytest.raises(VastOfficialBillingExtractionError):
+        _materialize(fixture, tmp_path / "output.json", expected=expected)
 
 
 @pytest.mark.parametrize("mutation", ["digest", "size", "path", "receipt_digest"])
@@ -413,7 +743,7 @@ def test_rejects_symlinked_source_receipt_and_response(tmp_path: Path) -> None:
     with pytest.raises(VastOfficialBillingExtractionError):
         materialize_vast_official_same_goal_reconciliation(
             provider_billing_source_receipt_path=receipt_link,
-            expected_instances=[(INSTANCE_A, LABEL_A)],
+            expected_instances=[_spec(fixture, INSTANCE_A, LABEL_A)],
             output_path=tmp_path / "receipt-output.json",
         )
 
@@ -427,7 +757,7 @@ def test_rejects_symlinked_source_receipt_and_response(tmp_path: Path) -> None:
         _materialize(
             fixture,
             tmp_path / "response-output.json",
-            expected=[(INSTANCE_A, LABEL_A)],
+            expected=[_spec(fixture, INSTANCE_A, LABEL_A)],
         )
 
 
@@ -441,7 +771,13 @@ def test_rejects_unposted_duplicate_expectation_and_existing_output(
         _materialize(
             fixture,
             tmp_path / "missing.json",
-            expected=[(99_999_999, "blueprint-missing-instance")],
+            expected=[
+                (
+                    99_999_999,
+                    "blueprint-missing-instance",
+                    _spec(fixture, INSTANCE_A, LABEL_A)[2],
+                )
+            ],
         )
     with pytest.raises(
         VastOfficialBillingExtractionError,
@@ -450,7 +786,10 @@ def test_rejects_unposted_duplicate_expectation_and_existing_output(
         _materialize(
             fixture,
             tmp_path / "duplicate.json",
-            expected=[(INSTANCE_A, LABEL_A), (INSTANCE_A, LABEL_B)],
+            expected=[
+                _spec(fixture, INSTANCE_A, LABEL_A),
+                (INSTANCE_A, LABEL_B, _spec(fixture, INSTANCE_B, LABEL_B)[2]),
+            ],
         )
     output = tmp_path / "exists.json"
     output.write_text("user-owned", encoding="utf-8")
@@ -460,7 +799,7 @@ def test_rejects_unposted_duplicate_expectation_and_existing_output(
         _materialize(
             fixture,
             output,
-            expected=[(INSTANCE_A, LABEL_A)],
+            expected=[_spec(fixture, INSTANCE_A, LABEL_A)],
         )
     assert output.read_text(encoding="utf-8") == "user-owned"
 
@@ -476,9 +815,9 @@ def test_cli_materializes_without_provider_mutation(
                 "--provider-billing-source-receipt",
                 str(fixture["receipt"]),
                 "--expected-instance",
-                f"{INSTANCE_A}={LABEL_A}",
+                f"{INSTANCE_A}={LABEL_A}={_spec(fixture, INSTANCE_A, LABEL_A)[2]}",
                 "--expected-instance",
-                f"{INSTANCE_B}={LABEL_B}",
+                f"{INSTANCE_B}={LABEL_B}={_spec(fixture, INSTANCE_B, LABEL_B)[2]}",
                 "--output",
                 str(output),
             ]
