@@ -900,7 +900,7 @@
             {
               "artifact_id": "REL-05-AC-01-EV-02",
               "path": "uv.lock",
-              "sha256": "sha256:8016248d6717d15377e463bb4ccdd4d324c04f6bf7b6f8d46906f30f1595717b",
+              "sha256": "sha256:766a6114c3a751b569f571626f99b743833c11c7cd91526ebe2490b7fe2b8dcb",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5989,7 +5989,7 @@
             {
               "artifact_id": "REL-06-AC-01-EV-01",
               "path": "uv.lock",
-              "sha256": "sha256:8016248d6717d15377e463bb4ccdd4d324c04f6bf7b6f8d46906f30f1595717b",
+              "sha256": "sha256:766a6114c3a751b569f571626f99b743833c11c7cd91526ebe2490b7fe2b8dcb",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13214,7 +13214,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-02",
               "path": "uv.lock",
-              "sha256": "sha256:8016248d6717d15377e463bb4ccdd4d324c04f6bf7b6f8d46906f30f1595717b",
+              "sha256": "sha256:766a6114c3a751b569f571626f99b743833c11c7cd91526ebe2490b7fe2b8dcb",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:352d9730b57cfaa8f108dcee8489b86486363b1a31486f5c95a100c06d9e52f8",
+              "sha256": "sha256:8e329eac9a252953ada60018b367a07f515ff5a9de2ce8bbc07ce58ac1e082c0",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
