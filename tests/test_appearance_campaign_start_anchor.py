@@ -1,10 +1,8 @@
 """The campaign's spend anchor, when it has no paid predecessor.
 
-ArtiFixer3D anchored its campaign spend on a completed AuraFusion360 paid
-attempt. There was never one -- every Aura artifact is `dry_run_ready`, the
-launch queue holds no Aura attempt, no Aura authority was consumed, and the
-spend ledger totals zero -- so retiring that lane made the anchor unreachable
-rather than merely unused, and ArtiFixer3D could not be authorized at all.
+The retired compatibility path expected a completed paid predecessor that the
+active campaign does not have. The replacement measures the exact live ledgers
+rather than inheriting a historical backend dependency.
 
 The replacement must not be "skip the anchor". Its job is to carry the
 campaign's running spend into the `prior_spend + hard_cap_usd > aggregate_cap`
@@ -167,3 +165,15 @@ def test_measuring_a_missing_ledger_refuses_rather_than_reporting_zero(tmp_path:
 
 def test_the_schema_version_is_the_one_the_validator_expects() -> None:
     assert CAMPAIGN_START_SCHEMA_VERSION == "appearance_campaign_spend_start.v1"
+
+
+def test_live_campaign_start_help_contains_no_retired_backend(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        sealer.main(["--help"])
+
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "Aura" not in help_text
+    assert "Measure" in help_text

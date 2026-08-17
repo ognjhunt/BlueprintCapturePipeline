@@ -3,14 +3,10 @@
 
 Every link of the appearance campaign is authorized against a shared $12 cap
 via `prior_spend + hard_cap_usd > aggregate_cap`, so something has to say what
-the campaign has already spent. That anchor used to be a completed
-AuraFusion360 paid attempt: an authority carrying six bound dependency records
-plus a terminal result with `status: completed`.
-
-There was never such a run. Every Aura artifact is `dry_run_ready`, the launch
-queue holds no Aura attempt, no Aura authority was consumed, and the spend
-ledger totals zero. Retiring the lane made that anchor *unreachable* rather
-than merely unused, and ArtiFixer3D could not be authorized at all.
+the campaign has already spent. A retired compatibility design expected a
+completed paid predecessor carrying both authority and terminal evidence, but
+no qualifying predecessor exists for the active campaign. ArtiFixer3D instead
+starts from the exact control-plane ledgers it can reopen and measure.
 
 This produces the replacement, and the distinction that matters is that it
 **measures** rather than asserts. It reads the consumed-authority directory and
