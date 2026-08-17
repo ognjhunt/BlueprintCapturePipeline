@@ -8,11 +8,12 @@ are composited over the separately retained Aura frames after provider return.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import shutil
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
@@ -750,11 +751,57 @@ def materialize_native_probe(
     return manifest
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Materialize a native probe root from a command line.
+
+    ``public_scene_simready_isaac_bundle`` requires this module's output --
+    ``adp009b_simready_native_probe_manifest.json`` and ``isaac_probe_spec.json``
+    -- and the allocator refuses a bundle built at any commit but the deployed
+    one. Without an entry point the probe root could only be produced by calling
+    a Python function, which makes the bundle unbuildable after the next deploy.
+    That is the defect #512 fixed in four lanes, one link further up the chain.
+    """
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument(
+        "--evidence-root",
+        required=True,
+        help="Directory holding the cameras, composition, asset, and collision bytes.",
+    )
+    parser.add_argument(
+        "--replacement-receipt",
+        required=True,
+        help="Replacement receipt JSON binding the scene, composition, and placement.",
+    )
+    parser.add_argument("--destination", required=True, help="Probe root to write.")
+    args = parser.parse_args(argv)
+
+    receipt_path = Path(args.replacement_receipt).expanduser().resolve()
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        raise ValueError("simready_native_replacement_receipt_missing")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if not isinstance(receipt, dict):
+        raise ValueError("simready_native_replacement_receipt_invalid")
+
+    manifest = materialize_native_probe(
+        evidence_root=args.evidence_root,
+        destination=args.destination,
+        replacement_receipt=receipt,
+    )
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    return 0
+
+
 __all__ = [
     "EXPECTED_CAMERA_IDS",
     "OVRTX_QUALITY_STEPS",
     "OVRTX_VERSION",
     "OVSTAGE_VERSION",
+    "main",
     "materialize_native_probe",
     "opencv_camera_to_usd_row_matrix",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

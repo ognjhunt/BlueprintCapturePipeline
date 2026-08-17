@@ -346,3 +346,63 @@ def test_no_recorded_exemption_outlives_its_parameter() -> None:
     }
 
     assert not set(CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED) - live
+
+
+#: Modules that produce a file a bundle module *requires*, and so are one link
+#: further up the same chain #512 fixed. A bundle with a `main()` is still
+#: unbuildable if the thing it demands as input can only be produced by calling
+#: a Python function -- which is how the scene-840920 SimReady probe root was
+#: discovered to be unreachable while its bundle module looked healthy.
+#:
+#: Discovered by shape: read each bundle module's REQUIRED_* tuples, then find
+#: which module writes those exact filenames.
+def _required_input_filenames() -> set[str]:
+    names: set[str] = set()
+    for path in _bundle_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name) or not target.id.startswith("REQUIRED_"):
+                continue
+            for element in ast.walk(node.value):
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    if element.value.endswith(".json"):
+                        names.add(Path(element.value).name)
+    return names
+
+
+def _modules_writing(names: set[str]) -> dict[str, Path]:
+    writers: dict[str, Path] = {}
+    for path in sorted(SOURCE_ROOT.glob("*.py")):
+        if path.name.endswith("_bundle.py"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        for name in names:
+            if name in source and "write_json" in source:
+                writers.setdefault(name, path)
+    return writers
+
+
+def test_required_bundle_inputs_are_discovered() -> None:
+    """A discovery that matched nothing would make the check below vacuous."""
+
+    assert _required_input_filenames()
+
+
+def test_a_module_producing_a_required_bundle_input_has_a_command_line() -> None:
+    """The bundle's own CLI is not enough if its input has none."""
+
+    writers = _modules_writing(_required_input_filenames())
+    assert writers, "no producer modules discovered -- the shape scan is broken"
+    missing = sorted(
+        f"{path.name} produces {name}"
+        for name, path in writers.items()
+        if not _has_entrypoint(path.read_text(encoding="utf-8"))
+    )
+    assert not missing, (
+        "These modules produce a file a bundle module requires, but cannot be "
+        "run from a command line, so the bundle cannot be rebuilt at the "
+        "deployed commit: " + "; ".join(missing)
+    )
