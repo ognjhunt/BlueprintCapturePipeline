@@ -238,6 +238,96 @@ def test_paid_dispatch_refuses_when_no_allocator_is_wired(
     assert ledger["paid_stages_completed"] == []
 
 
+def _mutate_candidate_manifest(capture_root, mutate) -> str:
+    """Rewrite the candidate manifest and re-seal hashes.json around it.
+
+    Re-sealing matters: otherwise the hash guard rejects the capture first and
+    the test never reaches the contract it means to exercise.
+    """
+    raw = capture_root / "raw"
+    path = raw / "downstream_candidate_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    artifacts = {}
+    for item in sorted(raw.rglob("*")):
+        if item.is_file() and item.name != "hashes.json":
+            artifacts[str(item.relative_to(raw)).replace("\\", "/")] = hashlib.sha256(
+                item.read_bytes()
+            ).hexdigest()
+    (raw / "hashes.json").write_text(
+        json.dumps({"artifacts": artifacts}), encoding="utf-8"
+    )
+    return str(manifest.get("manifest_digest") or "")
+
+
+def _enqueue_and_dispatch(tmp_path, capture_root, manifest_digest):
+    _policy(tmp_path / "policies", [0, 2, 5, 7], manifest_digest)
+    receipt = enqueue_capture_reconstruction(
+        capture_root=capture_root,
+        payload=_payload(),
+        policy_root=tmp_path / "policies",
+        queue_root=tmp_path / "queue",
+        source_commit_sha="a" * 40,
+        requested_at="2026-08-17T00:00:00Z",
+    )
+    return dispatch_launch_request(
+        queue_path=receipt["queue_path"],
+        state_root=tmp_path / "checkpoints",
+        derived_root=tmp_path / "derived",
+        capture_store_root=capture_root / "raw",
+        execute=False,
+    )
+
+
+def test_pose_drift_in_the_candidate_manifest_abstains(tmp_path, monkeypatch) -> None:
+    """Hostile: a pose matrix that is no longer a pose."""
+    capture_root, times, _ = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+
+    def break_pose(manifest):
+        manifest["candidates"][0]["T_world_camera"] = [[1.0, 0.0], [0.0, 1.0]]
+
+    digest = _mutate_candidate_manifest(capture_root, break_pose)
+    result = _enqueue_and_dispatch(tmp_path, capture_root, digest)
+    assert result["status"] == "abstained"
+    assert result["blockers"]
+    assert result["provider_mutation_performed"] is False
+
+
+def test_intrinsics_drift_in_the_candidate_manifest_abstains(tmp_path, monkeypatch) -> None:
+    """Hostile: intrinsics that cannot describe a camera."""
+    capture_root, times, _ = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+
+    def break_intrinsics(manifest):
+        intrinsics = manifest["candidates"][0]["camera_intrinsics"]
+        # A negative focal length is not a camera.
+        intrinsics["fx"] = -50
+        intrinsics["fy"] = -50
+        intrinsics["matrix_column_major"] = [-50, 0, 0, 0, -50, 0, 32, 24, 1]
+
+    digest = _mutate_candidate_manifest(capture_root, break_intrinsics)
+    result = _enqueue_and_dispatch(tmp_path, capture_root, digest)
+    assert result["status"] == "abstained"
+    assert result["provider_mutation_performed"] is False
+
+
+def test_a_stale_app_build_schema_abstains(tmp_path, monkeypatch) -> None:
+    """Hostile: a bundle from an older app whose contract is not V3.2."""
+    capture_root, times, _ = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+
+    def stale_schema(manifest):
+        manifest["schema_version"] = "downstream_candidate_manifest.v0"
+
+    digest = _mutate_candidate_manifest(capture_root, stale_schema)
+    result = _enqueue_and_dispatch(tmp_path, capture_root, digest)
+    assert result["status"] == "abstained"
+    assert result["provider_mutation_performed"] is False
+
+
 def _allocator(calls: list, **result):
     def allocate(**kwargs):
         calls.append(kwargs)
