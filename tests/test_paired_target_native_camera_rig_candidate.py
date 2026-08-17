@@ -10,6 +10,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_runtime_contract import DROID_FRANKA_RESET_JOINT_NAMES
 from blueprint_pipeline.paired_target_native_camera_rig_candidate import (
     PairedTargetNativeCameraRigError,
+    main,
     materialize_paired_target_native_camera_rig_candidate,
 )
 
@@ -151,3 +152,30 @@ def test_rig_rejects_base_mismatch_or_tampered_profile(tmp_path: Path) -> None:
             droid_native_profile_request_path=profile,
             output_path=tmp_path / "tampered.json",
         )
+
+
+def test_module_cli_materializes_exact_file_backed_rig(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    affordance = _affordance(tmp_path / "affordance.json")
+    placement = _placement(tmp_path / "placement.json")
+    profile = _profile(tmp_path / "profile.json")
+    output = tmp_path / "result.json"
+
+    assert main(
+        [
+            "--interaction-affordance-candidate",
+            str(affordance),
+            "--franka-placement-packet",
+            str(placement),
+            "--droid-native-profile-request",
+            str(profile),
+            "--output",
+            str(output),
+        ]
+    ) == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert summary["receipt_digest"] == result["receipt_digest"]
+    assert summary["native_camera_readback_qualified"] is False

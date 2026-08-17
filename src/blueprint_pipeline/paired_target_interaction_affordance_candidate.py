@@ -9,6 +9,7 @@ task motion remain explicit downstream gates.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -445,9 +446,70 @@ def materialize_paired_target_interaction_affordance_candidate(
     return json.loads(json.dumps(result))
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Materialize one host-resident affordance candidate from exact inputs."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task-freeze", required=True, type=Path)
+    parser.add_argument("--registered-asset-receipt", required=True, type=Path)
+    parser.add_argument(
+        "--robot-base-position-world-m",
+        required=True,
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+    )
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--parallel-jaw-stroke-m",
+        default=DEFAULT_PARALLEL_JAW_STROKE_M,
+        type=float,
+    )
+    args = parser.parse_args(argv)
+    try:
+        result = materialize_paired_target_interaction_affordance_candidate(
+            task_freeze_path=args.task_freeze,
+            registered_asset_receipt_path=args.registered_asset_receipt,
+            robot_base_position_world_m=args.robot_base_position_world_m,
+            output_path=args.output,
+            parallel_jaw_stroke_m=args.parallel_jaw_stroke_m,
+        )
+    except (OSError, PairedTargetInteractionAffordanceError) as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "native_contact_executed": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": result["status"],
+                "receipt_digest": result["receipt_digest"],
+                "output": str(args.output.expanduser().resolve()),
+                "native_contact_executed": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 __all__ = [
     "DEFAULT_PARALLEL_JAW_STROKE_M",
     "PairedTargetInteractionAffordanceError",
     "SCHEMA_VERSION",
+    "main",
     "materialize_paired_target_interaction_affordance_candidate",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through module CLI
+    raise SystemExit(main())

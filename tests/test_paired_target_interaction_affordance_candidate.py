@@ -9,6 +9,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paired_target_interaction_affordance_candidate import (
     PairedTargetInteractionAffordanceError,
+    main,
     materialize_paired_target_interaction_affordance_candidate,
 )
 
@@ -253,3 +254,32 @@ def test_registered_usd_tamper_fails_closed(tmp_path: Path) -> None:
             robot_base_position_world_m=[0.0, -1.0, 0.0],
             output_path=tmp_path / "result.json",
         )
+
+
+def test_module_cli_materializes_exact_file_backed_candidate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    freeze = _freeze(tmp_path / "freeze.json", task_kind="rigid_object_manipulation")
+    usd = _usd(tmp_path / "asset.usda", articulated=False)
+    registered = _registered(tmp_path / "registered.json", freeze, usd, task_id="task_b")
+    output = tmp_path / "result.json"
+
+    assert main(
+        [
+            "--task-freeze",
+            str(freeze),
+            "--registered-asset-receipt",
+            str(registered),
+            "--robot-base-position-world-m",
+            "0.0",
+            "-1.0",
+            "0.0",
+            "--output",
+            str(output),
+        ]
+    ) == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert summary["receipt_digest"] == result["receipt_digest"]
+    assert summary["native_contact_executed"] is False

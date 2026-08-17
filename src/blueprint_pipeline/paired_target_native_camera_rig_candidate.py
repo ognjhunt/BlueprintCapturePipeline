@@ -8,6 +8,7 @@ result is a requested native rig, never a calibration or observability claim.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -311,8 +312,63 @@ def materialize_paired_target_native_camera_rig_candidate(
     return json.loads(json.dumps(result))
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Materialize one host-resident native DROID camera/reset request."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--interaction-affordance-candidate", required=True, type=Path)
+    parser.add_argument("--franka-placement-packet", required=True, type=Path)
+    parser.add_argument("--droid-native-profile-request", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--external-height-m", default=1.35, type=float)
+    parser.add_argument("--overview-lateral-distance-m", default=0.9, type=float)
+    parser.add_argument("--overview-height-m", default=1.45, type=float)
+    args = parser.parse_args(argv)
+    try:
+        result = materialize_paired_target_native_camera_rig_candidate(
+            interaction_affordance_candidate_path=args.interaction_affordance_candidate,
+            franka_placement_packet_path=args.franka_placement_packet,
+            droid_native_profile_request_path=args.droid_native_profile_request,
+            output_path=args.output,
+            external_height_m=args.external_height_m,
+            overview_lateral_distance_m=args.overview_lateral_distance_m,
+            overview_height_m=args.overview_height_m,
+        )
+    except (OSError, PairedTargetNativeCameraRigError) as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "native_camera_readback_qualified": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": result["status"],
+                "receipt_digest": result["receipt_digest"],
+                "output": str(args.output.expanduser().resolve()),
+                "native_camera_readback_qualified": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 __all__ = [
     "PairedTargetNativeCameraRigError",
     "SCHEMA_VERSION",
+    "main",
     "materialize_paired_target_native_camera_rig_candidate",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through module CLI
+    raise SystemExit(main())
