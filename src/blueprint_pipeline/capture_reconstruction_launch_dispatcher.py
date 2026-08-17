@@ -769,6 +769,104 @@ def dispatch_launch_request(
     )
 
 
+def complete_capture_reconstruction(
+    *,
+    state_root: str | Path,
+    capture_id: str,
+    capture_digest: str,
+    campaign_path: str | Path,
+    completed_at: str,
+    status_writer: Any,
+    status_reader: Any = None,
+    downstream_dispatch: Any = None,
+) -> dict[str, Any]:
+    """Publish a finished campaign, tell the WebApp, and hand off downstream.
+
+    This is the tail of the chain after the paid arm returns.  It is separated
+    from dispatch so it can run on a resumed process: each step checkpoints
+    before the next, and re-running after a crash re-reports the identical
+    status rather than restating a published capture.
+
+    ``downstream_dispatch`` is injected because the analysis path
+    (``post_capture_evidence_spine``) needs qualified dynamics geometry that
+    reconstruction alone does not establish; a caller that has none passes
+    nothing and the capture still reaches terminal, marked as not dispatched.
+    """
+
+    from .capture_reconstruction_checkpoints import read_checkpoints, record_checkpoint
+    from .capture_reconstruction_status_sync import (
+        status_from_campaign,
+        sync_terminal_status,
+    )
+
+    ledger = read_checkpoints(state_root=state_root, capture_digest=capture_digest)
+    status = status_from_campaign(
+        capture_id=capture_id,
+        capture_digest=capture_digest,
+        campaign_path=campaign_path,
+        completed_at=completed_at,
+    )
+
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="export",
+        evidence={
+            "artifact_digests": [row["digest"] for row in status["artifacts"]],
+            "campaign_digest": status["campaign_digest"],
+        },
+    )
+
+    sync = sync_terminal_status(
+        status=status, writer=status_writer, reader=status_reader
+    )
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="publish",
+        evidence={
+            "status_digest": status["status_digest"],
+            "state": status["state"],
+        },
+    )
+
+    dispatched = False
+    downstream_evidence: dict[str, Any] = {"dispatched": False}
+    if downstream_dispatch is not None and status["state"] == "published":
+        result = downstream_dispatch(status=status)
+        dispatched = True
+        downstream_evidence = {
+            "dispatched": True,
+            "result": json.loads(canonical_json(_mapping(result))),
+        }
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="downstream_dispatched",
+        evidence=downstream_evidence,
+    )
+
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="terminal",
+        evidence={"state": status["state"], "status_digest": status["status_digest"]},
+    )
+
+    return {
+        "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+        "status": "terminal",
+        "capture_id": capture_id,
+        "capture_digest": capture_digest,
+        "terminal_state": status["state"],
+        "status_digest": status["status_digest"],
+        "status_written": sync["written"],
+        "downstream_dispatched": dispatched,
+        "stages_before": ledger["recorded_stages"],
+        "provider_mutation_performed": False,
+    }
+
+
 def process_launch_queue(
     *,
     queue_root: str | Path,
@@ -853,7 +951,9 @@ __all__ = [
     "QUEUE_RUN_SCHEMA_VERSION",
     "SELECTION_PROFILE_SCHEMA_VERSION",
     "build_launch_request",
+    "complete_capture_reconstruction",
     "compute_capture_digest",
+    "dispatch_launch_request",
     "enqueue_capture_reconstruction",
     "mint_frame_selection_profile",
     "resolve_capture_identity",
