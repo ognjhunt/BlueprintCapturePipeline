@@ -90,6 +90,10 @@ SOURCE_VERSION = "0.5.2"
 CONTENT_LLM_MODEL = OPENAI_TEXT_MODEL
 CONTENT_LLM_REASONING_EFFORT = OPENAI_REASONING_EFFORT
 CONTENT_IMAGE_MODEL = OPENAI_IMAGE_MODEL
+# NVIDIA 0.5.2 expands every Material/Physics dataset prim into multiple OVRTX
+# requests.  Keep those advisory stages bounded while Texture Agent continues
+# to cover the complete mesh set.
+MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS = 16
 DEFAULT_IMAGE = (
     "docker.io/nvidia/cuda@"
     "sha256:cff3a0d82d2c2b47bab252d67fa9b34a20ef4c50781d98501b5c7367ea9afd10"
@@ -1621,6 +1625,116 @@ def _derive_joint_agent_plan(
     }
 
 
+def _bounded_content_agent_render_selection(
+    *, usd_path: Path, mesh_prim_paths: Sequence[str]
+) -> dict[str, Any]:
+    """Select bounded Material/Physics evidence without changing the input USD.
+
+    NVIDIA 0.5.2's ``batch_size`` controls request grouping; it does not cap
+    traversal.  A detailed asset can therefore expand into hundreds of OVRTX
+    renders even when every mesh shares one advisory material.  Preserve the
+    complete Texture Agent scope, but select a deterministic representative set
+    for the two per-prim advisory datasets: first the largest mesh for each
+    rigid body and bound material, then the largest remaining world bounds.
+    """
+
+    paths = sorted({str(path) for path in mesh_prim_paths})
+    if not paths or any(not path.startswith("/") for path in paths):
+        raise ValueError("adp_content_agents_render_selection_mesh_scope_invalid")
+    stage = Usd.Stage.Open(str(usd_path))
+    if stage is None or not stage.GetDefaultPrim().IsValid():
+        raise ValueError("adp_content_agents_render_selection_usd_invalid")
+    default_path = str(stage.GetDefaultPrim().GetPath())
+    cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_],
+        useExtentsHint=False,
+    )
+    rows: list[dict[str, Any]] = []
+    for path in paths:
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid() or not prim.IsA(UsdGeom.Mesh):
+            raise ValueError("adp_content_agents_render_selection_mesh_scope_invalid")
+        owner = prim
+        while owner.IsValid() and not owner.HasAPI(UsdPhysics.RigidBodyAPI):
+            owner = owner.GetParent()
+        owner_path = str(owner.GetPath()) if owner.IsValid() else default_path
+        material, _relationship = UsdShade.MaterialBindingAPI(
+            prim
+        ).ComputeBoundMaterial()
+        material_path = (
+            str(material.GetPath()) if material and material.GetPrim().IsValid() else ""
+        )
+        aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        if aligned.IsEmpty():
+            volume = 0.0
+        else:
+            size = aligned.GetSize()
+            volume = math.prod(max(0.0, float(size[index])) for index in range(3))
+        rows.append(
+            {
+                "path": path,
+                "rigid_body_owner": owner_path,
+                "material_path": material_path,
+                "world_bbox_volume": volume,
+            }
+        )
+
+    def _representative(group: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        return sorted(group, key=lambda row: (-row["world_bbox_volume"], row["path"]))[
+            0
+        ]
+
+    selected: set[str] = set()
+    rigid_body_owners = sorted({str(row["rigid_body_owner"]) for row in rows})
+    material_paths = sorted(
+        {str(row["material_path"]) for row in rows if row["material_path"]}
+    )
+    for owner_path in rigid_body_owners:
+        selected.add(
+            _representative(
+                [row for row in rows if row["rigid_body_owner"] == owner_path]
+            )["path"]
+        )
+    for material_path in material_paths:
+        selected.add(
+            _representative(
+                [row for row in rows if row["material_path"] == material_path]
+            )["path"]
+        )
+    if len(selected) > MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS:
+        raise ValueError(
+            "adp_content_agents_render_selection_required_coverage_exceeds_cap"
+        )
+    for row in sorted(rows, key=lambda item: (-item["world_bbox_volume"], item["path"])):
+        if len(selected) >= min(len(rows), MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS):
+            break
+        selected.add(str(row["path"]))
+    selected_paths = sorted(selected)
+    receipt = {
+        "strategy": (
+            "all_meshes"
+            if len(paths) <= MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS
+            else "rigid_body_and_material_representatives_then_largest_world_bounds"
+        ),
+        "source_mesh_count": len(paths),
+        "selected_mesh_count": len(selected_paths),
+        "omitted_mesh_count": len(paths) - len(selected_paths),
+        "max_rendered_prims": MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS,
+        "selected_mesh_prim_paths": selected_paths,
+        "covered_rigid_body_owners": rigid_body_owners,
+        "covered_material_paths": material_paths,
+        "representative_coverage_complete": True,
+        "texture_scope_remains_complete": True,
+        "input_usd_mutated_by_selection": False,
+        "selection_digest": "",
+    }
+    receipt["selection_digest"] = canonical_digest(
+        receipt, digest_field="selection_digest"
+    )
+    return receipt
+
+
 def _validate_remote_configs(
     *, source: Path, config_sources: Mapping[str, Path]
 ) -> None:
@@ -1654,6 +1768,23 @@ def _validate_remote_configs(
         .get("rendering_modes", {})
     )
     physics_dataset = dict(physics_steps.get("build_dataset_usd") or {})
+    material_dataset = dict(material_steps.get("build_dataset_usd") or {})
+    material_dataset_paths = list(
+        (material_dataset.get("prim_filters") or {}).get("paths") or []
+    )
+    physics_dataset_paths = list(
+        (physics_dataset.get("prim_filters") or {}).get("paths") or []
+    )
+    texture_targets = texture_config.get("uv_target_prim_paths")
+    bounded_dataset_scope_invalid = bool(
+        (material_dataset_paths or physics_dataset_paths)
+        and (
+            not material_dataset_paths
+            or material_dataset_paths != physics_dataset_paths
+            or len(material_dataset_paths) > MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS
+            or not set(material_dataset_paths).issubset(set(texture_targets or []))
+        )
+    )
     physics_rendering_modes = set(
         (physics_dataset.get("renderer") or {}).get("rendering_modes", {})
     )
@@ -1661,7 +1792,6 @@ def _validate_remote_configs(
     # contract guards known paid-runtime failure modes. It therefore requires
     # the texture UV scope, declared targets, and the single material spec to
     # name the same non-empty absolute prims rather than one scene's paths.
-    texture_targets = texture_config.get("uv_target_prim_paths")
     if len(texture_material_specs) != 1:
         raise ValueError("adp_content_agents_remote_config_contract_invalid")
     texture_targets_consistent = (
@@ -1701,6 +1831,7 @@ def _validate_remote_configs(
         or material_rendering_modes != {"composition", "prim_only"}
         or physics_rendering_modes != {"composition", "prim_only"}
         or (physics_dataset.get("prim_filters") or {}).get("skip_invisible") is not True
+        or bounded_dataset_scope_invalid
     ):
         raise ValueError("adp_content_agents_remote_config_contract_invalid")
 
@@ -1711,12 +1842,14 @@ def _materialize_remote_configs(
     destination: Path,
     variant: str,
     agent_mesh_prim_paths: Sequence[str] | None = None,
+    agent_render_prim_paths: Sequence[str] | None = None,
     agent_default_material_path: str | None = None,
     reference_image_relpaths: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """Copy v1 configs or deterministically derive the approved v2 challenger."""
 
     mesh_paths = sorted(str(path) for path in (agent_mesh_prim_paths or ()))
+    render_paths = sorted(str(path) for path in (agent_render_prim_paths or mesh_paths))
     material_path = str(agent_default_material_path or "")
     reference_relpaths = list(reference_image_relpaths or ["../input/reference.png"])
     config_hashes: dict[str, str] = {}
@@ -1749,7 +1882,7 @@ def _materialize_remote_configs(
             )
             if name == "material_agent.yaml":
                 dataset = payload["steps"]["build_dataset_usd"]
-                dataset["prim_filters"]["paths"] = mesh_paths
+                dataset["prim_filters"]["paths"] = render_paths
                 material_subject = (
                     "Classify visible materials on an agent-authored CAD candidate"
                     if agent_cad
@@ -1805,7 +1938,7 @@ def _materialize_remote_configs(
             elif name == "physics_agent.yaml":
                 payload["steps"]["build_dataset_usd"]["prim_filters"][
                     "paths"
-                ] = mesh_paths
+                ] = render_paths
                 payload["steps"]["apply_physics"]["collision_approx"] = "none"
                 payload["steps"]["apply_physics"][
                     "mass_scale_policy"
@@ -2053,13 +2186,28 @@ def build_content_agents_vast_bundle(
     reference_runtime_relpaths = [
         f"../input/{name}" for name in reference_runtime_names
     ]
+    mesh_prim_paths = list(
+        variant.get("mesh_prim_paths")
+        or input_normalization.get("mesh_prim_paths")
+        or []
+    )
+    dataset_render_selection = (
+        _bounded_content_agent_render_selection(
+            usd_path=runtime / "input" / runtime_usd_name,
+            mesh_prim_paths=mesh_prim_paths,
+        )
+        if variant["variant"] in {"agent_cad_v1", "paired_target_registered_v1"}
+        else None
+    )
     config_hashes = _materialize_remote_configs(
         config_sources=config_sources,
         destination=runtime / "configs",
         variant=str(variant["variant"]),
-        agent_mesh_prim_paths=(
-            variant.get("mesh_prim_paths")
-            or input_normalization.get("mesh_prim_paths")
+        agent_mesh_prim_paths=mesh_prim_paths,
+        agent_render_prim_paths=(
+            dataset_render_selection["selected_mesh_prim_paths"]
+            if dataset_render_selection is not None
+            else None
         ),
         agent_default_material_path=(
             variant.get("default_material_path")
@@ -2109,6 +2257,7 @@ def build_content_agents_vast_bundle(
         "model_parameter_compatibility": compatibility_plan,
         "input_usd_sha256": input_normalization["normalized_input_usd_sha256"],
         "input_usd_normalization": input_normalization,
+        "agent_dataset_render_selection": dataset_render_selection,
         "input_variant": variant["variant"],
         "input_variant_bindings": {
             key: value
