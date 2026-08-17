@@ -112,6 +112,10 @@ def validate_site_task_reconstruction_policy(value: Mapping[str, Any]) -> list[s
     for field in ("policy_id", "site_id", "task_id", "authority_id"):
         if not _is_identifier(policy.get(field)):
             blockers.append(f"site_task_reconstruction_policy_{field}_invalid")
+    # A capture-scoped policy governs exactly one capture. It still carries a
+    # site and task for provenance, but its scope key is the capture id.
+    if "capture_id" in policy and not _is_identifier(policy.get("capture_id")):
+        blockers.append("site_task_reconstruction_policy_capture_id_invalid")
     if policy.get("selector") not in ALLOWED_CAPTURE_SELECTORS:
         blockers.append("site_task_reconstruction_policy_selector_invalid")
     if not isinstance(policy.get("parameters"), Mapping) or not policy.get("parameters"):
@@ -144,17 +148,31 @@ def validate_site_task_reconstruction_policy(value: Mapping[str, Any]) -> list[s
 
 
 def resolve_site_task_policy(
-    *, policy_root: str | Path, site_id: str, task_id: str
+    *,
+    policy_root: str | Path,
+    site_id: str,
+    task_id: str,
+    capture_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return the single registered policy for this exact site/task, or abstain.
+    """Return the single registered policy governing this capture, or abstain.
 
-    There is deliberately no default and no nearest match: an unregistered
-    site/task pair abstains so a capture can never acquire selection authority
-    it was never granted.
+    Two ways to be governed, in priority order:
+
+    * A policy naming this exact ``capture_id``.  Some captures have no site or
+      task at all — a one-off walk of your own space is the obvious case — and
+      those would otherwise be permanently unreconstructable.  An operator can
+      register authority for one landed capture by name.
+    * A policy for this exact ``site_id``/``task_id`` pair, for captures that
+      arrive against a real job.
+
+    There is deliberately no default and no nearest match: an ungoverned
+    capture abstains, so it can never acquire selection authority it was never
+    granted, and a capture-scoped policy governs exactly one capture.
     """
 
     root = Path(policy_root).expanduser().resolve()
-    matches: list[dict[str, Any]] = []
+    capture_matches: list[dict[str, Any]] = []
+    site_task_matches: list[dict[str, Any]] = []
     if root.is_dir():
         for path in sorted(root.glob("*.json")):
             try:
@@ -163,18 +181,29 @@ def resolve_site_task_policy(
                 continue
             if not isinstance(candidate, Mapping):
                 continue
+            scoped = str(candidate.get("capture_id") or "")
+            if scoped:
+                if capture_id and scoped == capture_id:
+                    capture_matches.append(dict(candidate))
+                # A capture-scoped policy never satisfies another capture, even
+                # one sharing its site and task.
+                continue
             if (
                 str(candidate.get("site_id") or "") == site_id
                 and str(candidate.get("task_id") or "") == task_id
             ):
-                matches.append(dict(candidate))
+                site_task_matches.append(dict(candidate))
+
+    matches = capture_matches or site_task_matches
+    scope = "capture" if capture_matches else "site_task"
     if not matches:
         raise CaptureReconstructionLaunchError(
-            f"{MISSING_POLICY}:site={site_id};task={task_id}"
+            f"{MISSING_POLICY}:site={site_id};task={task_id};capture={capture_id or ''}"
         )
     if len(matches) > 1:
         raise CaptureReconstructionLaunchError(
-            f"site_task_reconstruction_policy_ambiguous:site={site_id};task={task_id}"
+            f"site_task_reconstruction_policy_ambiguous:scope={scope};"
+            f"site={site_id};task={task_id};capture={capture_id or ''}"
         )
     policy = matches[0]
     blockers = validate_site_task_reconstruction_policy(policy)
@@ -549,16 +578,12 @@ def resolve_capture_identity(
         _read(raw / "manifest.json"),
         _read(root / "pipeline_handoff.json"),
     ]
+    # Site and task may legitimately be absent: a one-off walk of your own
+    # space has neither. Report what the capture actually carries and let
+    # policy resolution be the gate, rather than refusing here and making such
+    # captures permanently unreconstructable. Nothing is inferred either way.
     site_id = _first_identity(sources, ("site_id", "siteId", "site_slug", "siteSlug"))
-    if not site_id:
-        raise CaptureReconstructionLaunchError(
-            "capture_reconstruction_site_id_binding_absent"
-        )
     task_id = _first_identity(sources, ("task_id", "taskId"))
-    if not task_id:
-        raise CaptureReconstructionLaunchError(
-            "capture_reconstruction_task_id_binding_absent"
-        )
 
     candidate_manifest = _read(raw / "downstream_candidate_manifest.json")
     candidate_manifest_digest = str(candidate_manifest.get("manifest_digest") or "")
@@ -599,6 +624,7 @@ def enqueue_capture_reconstruction(
         policy_root=policy_root,
         site_id=identity["site_id"],
         task_id=identity["task_id"],
+        capture_id=identity["capture_id"],
     )
     request = build_launch_request(
         policy=policy,
@@ -924,12 +950,106 @@ def process_launch_queue(
     }
 
 
+def build_capture_scoped_policy(
+    *,
+    capture_id: str,
+    site_id: str,
+    task_id: str,
+    selector: str,
+    parameters: Mapping[str, Any],
+    rights_profile: str,
+    rights_evidence_digest: str,
+    arms: Sequence[str],
+    max_spend_usd: float,
+    hard_ttl_seconds: int,
+    authority_id: str,
+) -> dict[str, Any]:
+    """Compose authority for exactly one already-landed capture.
+
+    Every value is supplied by the operator. Nothing is defaulted, because the
+    whole point of the policy is to be the place a human took responsibility
+    for spending money on a specific capture.
+    """
+
+    policy: dict[str, Any] = {
+        "schema_version": POLICY_SCHEMA_VERSION,
+        "policy_id": f"capture-{capture_id}",
+        "capture_id": str(capture_id),
+        "site_id": str(site_id),
+        "task_id": str(task_id),
+        "selector": str(selector),
+        "parameters": json.loads(canonical_json(dict(parameters))),
+        "rights_authority": {
+            "rights_profile": str(rights_profile),
+            "rights_evidence_digest": str(rights_evidence_digest),
+        },
+        "arms": sorted(str(arm) for arm in arms),
+        "max_spend_usd": float(max_spend_usd),
+        "hard_ttl_seconds": int(hard_ttl_seconds),
+        "authority_id": str(authority_id),
+    }
+    policy["policy_digest"] = canonical_digest(policy, digest_field="policy_digest")
+    blockers = validate_site_task_reconstruction_policy(policy)
+    if blockers:
+        raise CaptureReconstructionLaunchError(",".join(blockers))
+    return policy
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--queue-root", required=True)
-    parser.add_argument("--state-root", required=True)
-    parser.add_argument("--execute", action="store_true")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    drain = commands.add_parser("drain", help="preview or dispatch queued launches")
+    drain.add_argument("--queue-root", required=True)
+    drain.add_argument("--state-root", required=True)
+    drain.add_argument("--execute", action="store_true")
+
+    bind = commands.add_parser(
+        "bind-capture",
+        help="register reconstruction authority for one already-landed capture",
+    )
+    bind.add_argument("--policy-root", required=True)
+    bind.add_argument("--capture-id", required=True)
+    bind.add_argument("--site-id", required=True)
+    bind.add_argument("--task-id", required=True)
+    bind.add_argument("--selector", required=True, choices=sorted(ALLOWED_CAPTURE_SELECTORS))
+    bind.add_argument("--parameters-json", required=True)
+    bind.add_argument("--rights-profile", required=True)
+    bind.add_argument("--rights-evidence-digest", required=True)
+    bind.add_argument("--arm", action="append", required=True, choices=sorted(ADMITTED_ARMS))
+    bind.add_argument("--max-spend-usd", type=float, required=True)
+    bind.add_argument("--hard-ttl-seconds", type=int, required=True)
+    bind.add_argument("--authority-id", required=True)
+
     arguments = parser.parse_args(argv)
+
+    if arguments.command == "bind-capture":
+        policy = build_capture_scoped_policy(
+            capture_id=arguments.capture_id,
+            site_id=arguments.site_id,
+            task_id=arguments.task_id,
+            selector=arguments.selector,
+            parameters=json.loads(arguments.parameters_json),
+            rights_profile=arguments.rights_profile,
+            rights_evidence_digest=arguments.rights_evidence_digest,
+            arms=arguments.arm,
+            max_spend_usd=arguments.max_spend_usd,
+            hard_ttl_seconds=arguments.hard_ttl_seconds,
+            authority_id=arguments.authority_id,
+        )
+        root = Path(arguments.policy_root).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"capture-{arguments.capture_id}.json"
+        _write_immutable(path, policy)
+        json.dump(
+            {"policy_path": str(path), "policy_digest": policy["policy_digest"]},
+            sys.stdout,
+            indent=2,
+            sort_keys=True,
+        )
+        sys.stdout.write("\n")
+        return 0
+
     result = process_launch_queue(
         queue_root=arguments.queue_root,
         state_root=arguments.state_root,
@@ -950,6 +1070,7 @@ __all__ = [
     "POLICY_SCHEMA_VERSION",
     "QUEUE_RUN_SCHEMA_VERSION",
     "SELECTION_PROFILE_SCHEMA_VERSION",
+    "build_capture_scoped_policy",
     "build_launch_request",
     "complete_capture_reconstruction",
     "compute_capture_digest",
