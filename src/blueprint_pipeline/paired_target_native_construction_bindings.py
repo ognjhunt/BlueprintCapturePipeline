@@ -229,7 +229,7 @@ def validate_paired_target_native_construction_bindings(
 def materialize_paired_target_native_construction_bindings(
     *, manipulation_preflight_path: str | Path, output_path: str | Path
 ) -> dict[str, Any]:
-    """Join the paired preflight, registered assets, and native import result."""
+    """Join paired inputs after import and before or after Arena compilation."""
 
     source = Path(manipulation_preflight_path).expanduser().resolve()
     try:
@@ -245,10 +245,59 @@ def materialize_paired_target_native_construction_bindings(
         or manipulation.get("receipt_digest")
         != canonical_digest(manipulation, digest_field="receipt_digest")
         or manipulation.get("native_import_qualified") is not True
+        or manipulation.get("native_construction_bindings_ready") is not True
+        or manipulation.get("blockers") != []
         or manipulation.get("native_reachability_executed") is not False
         or manipulation.get("controls_executed") is not False
         or manipulation.get("learned_policies_executed") is not False
     ):
+        raise PairedTargetNativeConstructionBindingsError(
+            ["paired_target_construction_manipulation_preflight_invalid"]
+        )
+    manipulation_tasks = manipulation.get("tasks")
+    if (
+        not isinstance(manipulation_tasks, list)
+        or not 1 <= len(manipulation_tasks) <= MAX_REPLACEMENT_OBJECTS
+        or any(not isinstance(row, Mapping) for row in manipulation_tasks)
+    ):
+        raise PairedTargetNativeConstructionBindingsError(
+            ["paired_target_construction_manipulation_preflight_invalid"]
+        )
+    phase = manipulation.get("preflight_phase")
+    if phase == "pre_arena":
+        expected_pending = sorted(
+            f"{row.get('task_id')}:native_task_arena_packet_request_missing"
+            for row in manipulation_tasks
+        )
+        if (
+            manipulation.get("status") != "ready_for_native_construction_bindings"
+            or manipulation.get("pending_requirements") != expected_pending
+            or any(
+                row.get("native_construction_binding_ready") is not True
+                or row.get("native_task_arena_request") is not None
+                or row.get("pending_requirements")
+                != ["native_task_arena_packet_request_missing"]
+                for row in manipulation_tasks
+            )
+        ):
+            raise PairedTargetNativeConstructionBindingsError(
+                ["paired_target_construction_manipulation_preflight_invalid"]
+            )
+    elif phase == "arena_packet":
+        if (
+            manipulation.get("status")
+            != "ready_for_native_arena_packet_materialization"
+            or manipulation.get("pending_requirements") != []
+            or any(
+                row.get("native_construction_binding_ready") is not True
+                or not isinstance(row.get("native_task_arena_request"), Mapping)
+                for row in manipulation_tasks
+            )
+        ):
+            raise PairedTargetNativeConstructionBindingsError(
+                ["paired_target_construction_manipulation_preflight_invalid"]
+            )
+    else:
         raise PairedTargetNativeConstructionBindingsError(
             ["paired_target_construction_manipulation_preflight_invalid"]
         )

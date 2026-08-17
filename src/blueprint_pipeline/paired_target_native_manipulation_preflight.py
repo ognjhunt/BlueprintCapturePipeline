@@ -2,15 +2,16 @@
 
 The paired-target appearance lane intentionally stops after calibrated review
 camera materialization and native replacement import.  A robot construction
-canary needs more: the frozen task, the registered Franka placement, and one
-complete :mod:`native_task_arena_packet` request containing the policy camera
-rig, robot reset, interaction affordance, task-state bindings, and all
-co-present replacement assets.
+canary needs more: the frozen task, the registered Franka placement, and the
+policy camera and interaction inputs.  The explicit ``pre_arena`` phase seals
+those inputs for construction bindings before Arena requests exist; the
+``arena_packet`` phase then validates each compiled request containing the
+camera rig, robot reset, task-state bindings, and all co-present replacements.
 
 This module is the task-neutral 1--5 object join between those seams.  It never
 fills missing manipulation data from object names or scene constants.  A
-missing Arena request is retained as a typed blocker while all available
-file-backed evidence remains digest-bound.
+In the pre-arena phase, a missing Arena request is a typed pending requirement,
+not a blocker.  It becomes a blocker only in the final arena-packet phase.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ NATIVE_IMPORT_RESULT_SCHEMA = "paired_target_native_import_runtime_result.v1"
 SCENARIO_SCHEMA = "third_scene_task_scenario_suite.v1"
 REGISTERED_ASSET_SCHEMA = "registered_replacement_asset.v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
+PREFLIGHT_PHASES = ("pre_arena", "arena_packet")
 
 
 class PairedTargetNativeManipulationPreflightError(ValueError):
@@ -302,9 +304,14 @@ def materialize_paired_target_native_manipulation_preflight(
     native_import_result_path: str | Path,
     task_records: Sequence[Mapping[str, Any]],
     output_path: str | Path,
+    phase: str = "arena_packet",
 ) -> dict[str, Any]:
     """Bind available manipulation inputs and expose exact remaining blockers."""
 
+    if phase not in PREFLIGHT_PHASES:
+        raise PairedTargetNativeManipulationPreflightError(
+            "paired_target_manipulation_phase_invalid"
+        )
     if not 1 <= len(task_records) <= MAX_REPLACEMENT_OBJECTS:
         raise PairedTargetNativeManipulationPreflightError(
             "paired_target_manipulation_task_count_invalid"
@@ -504,6 +511,7 @@ def materialize_paired_target_native_manipulation_preflight(
 
     tasks: list[dict[str, Any]] = []
     blockers: list[str] = []
+    pending_requirements: list[str] = []
     for raw, row in opened:
         affordance_path_value = raw.get("interaction_affordance_candidate_path")
         camera_rig_path_value = raw.get("native_camera_rig_candidate_path")
@@ -550,7 +558,19 @@ def materialize_paired_target_native_manipulation_preflight(
                 placement_digest=row["franka_placement_packet"]["packet_digest"],
                 robot_base_pose_world=row["robot_base_pose_world"],
             )
-        if arena_path_value in (None, ""):
+        construction_ready = (
+            affordance_record is not None and camera_rig_record is not None
+        )
+        arena_pending = phase == "pre_arena"
+        if arena_pending:
+            if arena_path_value not in (None, ""):
+                raise PairedTargetNativeManipulationPreflightError(
+                    f"paired_target_manipulation_pre_arena_request_unexpected:{row['task_id']}"
+                )
+            pending_requirements.append(
+                f"{row['task_id']}:native_task_arena_packet_request_missing"
+            )
+        elif arena_path_value in (None, ""):
             task_blockers.append("native_task_arena_packet_request_missing")
         else:
             arena_path, arena = _read(
@@ -571,11 +591,7 @@ def materialize_paired_target_native_manipulation_preflight(
                 )
                 or {},
             )
-        qualified = (
-            arena_record is not None
-            and affordance_record is not None
-            and camera_rig_record is not None
-        )
+        qualified = arena_record is not None and construction_ready
         task_row = {
             **{key: value for key, value in row.items() if key != "registered_asset"},
             "review_camera_count": len(row["review_camera_ids"]),
@@ -583,11 +599,17 @@ def materialize_paired_target_native_manipulation_preflight(
             "interaction_affordance_candidate": affordance_record,
             "native_camera_rig_candidate": camera_rig_record,
             "native_task_arena_request": arena_record,
-            "policy_camera_and_interaction_contract_bound": qualified,
+            "policy_camera_and_interaction_contract_bound": (
+                construction_ready if arena_pending else qualified
+            ),
+            "native_construction_binding_ready": construction_ready,
             "native_arena_packet_materialization_ready": qualified,
             "native_reachability_execution_authorized": False,
             "native_reachability_executed": False,
             "blockers": task_blockers,
+            "pending_requirements": (
+                ["native_task_arena_packet_request_missing"] if arena_pending else []
+            ),
         }
         tasks.append(task_row)
         blockers.extend(f"{row['task_id']}:{value}" for value in task_blockers)
@@ -595,10 +617,15 @@ def materialize_paired_target_native_manipulation_preflight(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": (
-            "ready_for_native_arena_packet_materialization"
-            if not blockers
-            else "blocked_pending_native_manipulation_inputs"
+            "ready_for_native_construction_bindings"
+            if phase == "pre_arena" and not blockers
+            else (
+                "ready_for_native_arena_packet_materialization"
+                if not blockers
+                else "blocked_pending_native_manipulation_inputs"
+            )
         ),
+        "preflight_phase": phase,
         "program_id": "arm-decision-proof-v1",
         "scene_id": scene_id,
         "paired_target_preflight": _record(
@@ -614,6 +641,8 @@ def materialize_paired_target_native_manipulation_preflight(
         "candidate_ids": list(FROZEN_CANDIDATES),
         "required_controls": ["zero_action_negative", "scripted_positive"],
         "native_import_qualified": True,
+        "native_construction_bindings_ready": not blockers
+        and all(row["native_construction_binding_ready"] for row in tasks),
         "calibrated_review_camera_requests_bound": all(
             row["calibrated_review_camera_set_bound"] for row in tasks
         ),
@@ -621,6 +650,7 @@ def materialize_paired_target_native_manipulation_preflight(
         "controls_executed": False,
         "learned_policies_executed": False,
         "blockers": sorted(blockers),
+        "pending_requirements": sorted(pending_requirements),
         "generated_output_is_capture_or_physical_evidence": False,
         "claim_boundary": (
             "file_backed_native_manipulation_admission_only;native_import_is_not_"
@@ -654,6 +684,7 @@ def main() -> int:
         native_import_result_path=request["native_import_result_path"],
         task_records=request["tasks"],
         output_path=args.output,
+        phase=str(request.get("phase") or "arena_packet"),
     )
     print(
         json.dumps(

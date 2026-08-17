@@ -90,6 +90,11 @@ def _fixture(root: Path, *, count: int) -> Path:
                 "task_id": task_id,
                 "asset_id": asset_id,
                 "task_freeze": task_record,
+                "native_construction_binding_ready": True,
+                "native_task_arena_request": None,
+                "pending_requirements": [
+                    "native_task_arena_packet_request_missing"
+                ],
             }
         )
         import_rows.append(
@@ -137,6 +142,8 @@ def _fixture(root: Path, *, count: int) -> Path:
         root / "manipulation.json",
         {
             "schema_version": "paired_target_native_manipulation_preflight.v1",
+            "status": "ready_for_native_construction_bindings",
+            "preflight_phase": "pre_arena",
             "scene_id": "scene_fixture",
             "replacement_object_count": count,
             "task_freeze_set_digest": "sha256:" + "b" * 64,
@@ -144,9 +151,15 @@ def _fixture(root: Path, *, count: int) -> Path:
             "native_import_result": import_record,
             "tasks": manipulation_tasks,
             "native_import_qualified": True,
+            "native_construction_bindings_ready": True,
             "native_reachability_executed": False,
             "controls_executed": False,
             "learned_policies_executed": False,
+            "blockers": [],
+            "pending_requirements": sorted(
+                f"task_{index}:native_task_arena_packet_request_missing"
+                for index in range(count)
+            ),
             "receipt_digest": "",
         },
         digest_field="receipt_digest",
