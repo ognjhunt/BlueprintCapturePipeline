@@ -178,6 +178,70 @@ def _attempt_id(result_path: Path, result: Mapping[str, Any]) -> str:
     raise ValueError("same_goal_spend_attempt_id_unavailable")
 
 
+def _content_agents_admission_binding(
+    *,
+    result_path: Path,
+    result: Mapping[str, Any],
+    bundle_sha256: Any,
+) -> tuple[Path, dict[str, Any], str, str]:
+    """Reopen the allocator-owned authority binding omitted from its result.
+
+    Content Agents consumes the authority before allocating and records that
+    causality in ``allocator/admission.json``.  Its terminal ``result.json``
+    intentionally contains only the scientific/runtime result.  The sibling
+    path is derived rather than operator supplied so a ledger cannot substitute
+    an unrelated admission merely to recover an authority digest.
+    """
+
+    if (
+        result_path.name != "result.json"
+        or result_path.parent.name != "allocator"
+        or result.get("schema_version") != "adp_content_agents_vast_run.v1"
+    ):
+        raise ValueError("content_agents_allocator_admission_path_invalid")
+    admission_candidate = result_path.with_name("admission.json")
+    if not admission_candidate.is_file() or admission_candidate.is_symlink():
+        raise ValueError("content_agents_allocator_admission_missing")
+    admission_path, admission = _read(
+        admission_candidate,
+        code="content_agents_allocator_admission_invalid",
+    )
+    allocation = admission.get("allocation_binding")
+    control_identity = admission.get("control_plane_identity")
+    if not isinstance(allocation, Mapping) or not isinstance(
+        control_identity, Mapping
+    ):
+        raise ValueError("content_agents_allocator_admission_invalid")
+    authority_digest = allocation.get("paid_attempt_authority_digest")
+    admission_bundle = allocation.get("bundle_sha256")
+    source_commit = allocation.get("orchestrator_source_commit")
+    allocation_binding_digest = admission.get("allocation_binding_digest")
+    if (
+        admission.get("schema_version") != "paid_lane_admission.v1"
+        or admission.get("status") != "admitted"
+        or admission.get("resource_class") != "vast_provider_adapter"
+        or admission.get("blockers") != []
+        or admission.get("provider_mutations_performed") != 0
+        or admission.get("program_id") != "arm-decision-proof-v1"
+        or admission.get("probe_kind") != "adp-usd-content-agents"
+        or admission.get("authority")
+        != "explicit_content_agents_paid_attempt_authority_bound"
+        or admission.get("paid_attempt_authority_required_for_execute") is not True
+        or allocation.get("program_id") != "arm-decision-proof-v1"
+        or allocation.get("probe_kind") != "adp-usd-content-agents"
+        or allocation_binding_digest != canonical_digest(allocation)
+        or not _digest(authority_digest)
+        or not _digest(admission_bundle)
+        or admission_bundle != bundle_sha256
+        or not isinstance(source_commit, str)
+        or len(source_commit) != 40
+        or any(character not in "0123456789abcdef" for character in source_commit)
+        or control_identity.get("orchestrator_source_commit") != source_commit
+    ):
+        raise ValueError("content_agents_allocator_admission_invalid")
+    return admission_path, admission, str(authority_digest), source_commit
+
+
 def _entry(
     *,
     lane: str,
@@ -206,12 +270,29 @@ def _entry(
     continuing_path, continuing = _json_path(
         result, ("continuing_spend_from_this_run",), ("continuing_spend",)
     )
-    authority_path, authority_digest = _json_path(
-        result,
-        ("authorization_consumption", "authorization_digest"),
-        ("authority_digest",),
-    )
     bundle_path, bundle_sha256 = _json_path(result, ("bundle_sha256",))
+    admission_source: tuple[Path, dict[str, Any]] | None = None
+    authority_source_role = "terminal_result"
+    source_commit: str | None = None
+    try:
+        authority_path, authority_digest = _json_path(
+            result,
+            ("authorization_consumption", "authorization_digest"),
+            ("authority_digest",),
+        )
+    except ValueError as exc:
+        if str(exc) != "same_goal_spend_required_binding_missing" or lane != "content_agents":
+            raise
+        admission_path, admission, authority_digest, source_commit = (
+            _content_agents_admission_binding(
+                result_path=result_path,
+                result=result,
+                bundle_sha256=bundle_sha256,
+            )
+        )
+        admission_source = (admission_path, admission)
+        authority_path = ["allocation_binding", "paid_attempt_authority_digest"]
+        authority_source_role = "admission"
     zero_binding_path, zero_confirmed = _json_path(
         zero,
         ("provider_zero_verified",),
@@ -286,6 +367,13 @@ def _entry(
         _source("official_billing_response", billing_path, billing),
         _source("provider_billing_source_receipt", billing_source_path, billing_source),
     ]
+    if admission_source is not None:
+        admission_path, admission = admission_source
+        admission_record = _source("admission", admission_path, admission)
+        admission_record["allocation_binding_digest"] = admission[
+            "allocation_binding_digest"
+        ]
+        sources.append(admission_record)
     entry: dict[str, Any] = {
         "schema_version": SAME_GOAL_ENTRY_SCHEMA,
         "goal_id": "arm-decision-proof-v1",
@@ -320,7 +408,7 @@ def _entry(
             },
             {
                 "kind": "authority_digest",
-                "source_role": "terminal_result",
+                "source_role": authority_source_role,
                 "json_path": authority_path,
                 "expected_value": authority_digest,
             },
@@ -338,6 +426,8 @@ def _entry(
             },
         ],
     }
+    if source_commit is not None:
+        entry["orchestrator_source_commit"] = source_commit
     entry["entry_digest"] = canonical_digest(entry, digest_field="entry_digest")
     return entry
 
