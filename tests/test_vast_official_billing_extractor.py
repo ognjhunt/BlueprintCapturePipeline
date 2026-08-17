@@ -33,6 +33,14 @@ PAIRED_LABEL = "blueprint-adp-paired-native-import-1786959124"
 PAIRED_RUN_ID = (
     "adp-paired-native-840920-846bce86-r3-api-20260817T093112Z-902a4451"
 )
+CONTENT_AGENTS_INSTANCE = 47_940_042
+CONTENT_AGENTS_LABEL = (
+    "blueprint-adp-content-agents-20260817t113743803190000-1786966665"
+)
+CONTENT_AGENTS_RUN_ID = (
+    "adp-content-agents-840920-task-a-6bcc65db-r3-api-"
+    "20260817T113646Z-bfedb8c1"
+)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CLI_SCRIPT = REPOSITORY_ROOT / "scripts/materialize_vast_official_same_goal_reconciliation.py"
 
@@ -56,6 +64,8 @@ def _charge(
     total: float,
     gpu: float,
     disk: float,
+    bandwidth_download: float = 0.0,
+    bandwidth_upload: float = 0.0,
 ) -> dict:
     return {
         "source": f"instance-{instance_id}",
@@ -91,7 +101,7 @@ def _charge(
                 "type": "bwd",
                 "source": None,
                 "description": "0.0 GB Downloaded",
-                "amount": 0.0,
+                "amount": bandwidth_download,
                 "metadata": {},
                 "items": [],
             },
@@ -101,7 +111,7 @@ def _charge(
                 "type": "bwu",
                 "source": None,
                 "description": "0.0 GB Uploaded",
-                "amount": 0.0,
+                "amount": bandwidth_upload,
                 "metadata": {},
                 "items": [],
             },
@@ -119,10 +129,18 @@ def _bound(path: Path) -> dict:
 
 
 def _terminal_fixture(
-    tmp_path: Path, *, instance_id: int, status: str, paired_native: bool = False
+    tmp_path: Path,
+    *,
+    instance_id: int,
+    status: str,
+    paired_native: bool = False,
+    run_id_override: str | None = None,
+    profile_id_override: str | None = None,
 ) -> Path:
-    run_id = PAIRED_RUN_ID if paired_native else f"adp-artifixer3d-fixture-{instance_id}"
-    profile_id = (
+    run_id = run_id_override or (
+        PAIRED_RUN_ID if paired_native else f"adp-artifixer3d-fixture-{instance_id}"
+    )
+    profile_id = profile_id_override or (
         "adp-paired-target-native-import-live-846bce86-r3"
         if paired_native
         else f"adp-artifixer3d-live-fixture-{instance_id}"
@@ -530,6 +548,324 @@ def _paired_native_fixture(tmp_path: Path) -> dict[str, object]:
     return fixture
 
 
+def _content_agents_terminal_fixture(tmp_path: Path) -> Path:
+    seed_result_path = _terminal_fixture(
+        tmp_path,
+        instance_id=CONTENT_AGENTS_INSTANCE,
+        status="completed",
+        run_id_override=CONTENT_AGENTS_RUN_ID,
+        profile_id_override=(
+            "adp-content-agents-live-scene840920-task-a-paired-registered-"
+            "6bcc65db-r2"
+        ),
+    )
+    run_root = seed_result_path.parents[2]
+    allocator = run_root / "allocator"
+    job = allocator / "content-agents-job"
+    provider_run = job / "vast_provider_run"
+
+    seed_result = json.loads(seed_result_path.read_text(encoding="utf-8"))
+    seed_adapter_path = Path(seed_result["adapter_result_path"])
+    adapter = json.loads(seed_adapter_path.read_text(encoding="utf-8"))
+    adapter["provider_bundle_kind"] = "adp_content_agents"
+    adapter_path = _write(provider_run / "vast_provider_adapter_result.json", adapter)
+    seed_teardown_path = Path(seed_result["teardown_manifest_path"])
+    teardown = json.loads(seed_teardown_path.read_text(encoding="utf-8"))
+    teardown_path = _write(provider_run / "vast_teardown_manifest.json", teardown)
+
+    execution_result_path = _write(
+        job / "immutable_execution" / "adp_content_agents_vast_result.json",
+        {
+            "schema_version": "adp_content_agents_vast_result.v1",
+            "status": "completed",
+            "retry_cap": 0,
+            "material_agent_executed": True,
+            "texture_agent_executed": True,
+            "physics_agent_executed": True,
+            "validation_agent_executed": True,
+            "blockers": [],
+            "raw_secret_values_recorded": False,
+        },
+    )
+    prefix = "blueprint-adp-content-agents-20260817t113743803190000-"
+    lane_zero = {
+        "status": "observed",
+        "provider": "vast",
+        "name_prefix": prefix,
+        "api_confirmed": True,
+        "live_resource_count": 0,
+        "resources": [],
+    }
+    global_zero = {**lane_zero, "name_prefix": ""}
+    inspect = {
+        "status": "absent",
+        "provider": "vast",
+        "instance_id": str(CONTENT_AGENTS_INSTANCE),
+        "http": 200,
+        "api_confirmed": True,
+        "provider_absence_confirmed": True,
+    }
+    watchdog = {
+        "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+        "status": "provider_terminal",
+        "provider": "vast",
+        "pod_name_prefix": prefix,
+        "provider_absence_confirmed": True,
+        "owner_teardown_cancel_requested": True,
+        "owner_teardown_cancel_request_valid": True,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+        "recorded_vast_instance_teardown": {
+            "status": "absent",
+            "instance_id": str(CONTENT_AGENTS_INSTANCE),
+            "provider_absence_confirmed": True,
+            "provider_mutations_performed": 0,
+            "inspect_attempts": [
+                {**inspect, "attempt": 1},
+                {**inspect, "attempt": 2},
+            ],
+        },
+        "initial_inventory": lane_zero,
+        "final_inventory": lane_zero,
+        "initial_global_inventory": global_zero,
+        "final_global_inventory": global_zero,
+    }
+    _write(
+        job
+        / "independent_vast_watchdog"
+        / "groot_oscar_runpod_canary_watchdog.json",
+        watchdog,
+    )
+    _write(
+        job / "object_store_staging" / "wam_provider_object_store_cleanup.json",
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "status": "completed",
+            "all_objects_absent": True,
+            "signed_url_files_removed": True,
+            "raw_secret_values_recorded": False,
+            "blockers": [],
+        },
+    )
+    watchdog_handoff = {
+        "schema_version": "vast_independent_watchdog_handoff.v1",
+        "status": "provider_terminal",
+        "watchdog_armed_before_allocation": True,
+        "instance_ids": [CONTENT_AGENTS_INSTANCE],
+        "provider_absence_confirmed": True,
+        "watchdog_process_exit_code": 0,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
+    _write(job / "vast_independent_watchdog_handoff.json", watchdog_handoff)
+
+    bundle_digest = "sha256:" + "4" * 64
+    empty_log_path = job / "immutable_execution" / "empty-provider-log.txt"
+    empty_log_path.write_bytes(b"")
+    file_rows = [
+        {
+            "relative_path": "immutable_execution/adp_content_agents_vast_result.json",
+            "roles": ["provider_runtime_evidence"],
+            "size_bytes": execution_result_path.stat().st_size,
+            "sha256": _sha256(execution_result_path),
+        },
+        {
+            "relative_path": "vast_provider_run/vast_provider_adapter_result.json",
+            "roles": ["allocator_adapter_result", "provider_run_diagnostics"],
+            "size_bytes": adapter_path.stat().st_size,
+            "sha256": _sha256(adapter_path),
+        },
+        {
+            "relative_path": "vast_provider_run/vast_teardown_manifest.json",
+            "roles": ["provider_run_diagnostics", "teardown_manifest"],
+            "size_bytes": teardown_path.stat().st_size,
+            "sha256": _sha256(teardown_path),
+        },
+        {
+            "relative_path": "immutable_execution/empty-provider-log.txt",
+            "roles": ["provider_runtime_evidence"],
+            "size_bytes": 0,
+            "sha256": _sha256(empty_log_path),
+        },
+    ]
+    artifact_manifest = {
+        "schema_version": "task_evaluation_artifact_manifest.v1",
+        "status": "completed",
+        "binding": {
+            "allocator_lane": "adp_content_agents",
+            "retry_cap": 0,
+            "bundle_sha256": bundle_digest,
+            "provider": "vast",
+        },
+        "required_roles": [
+            "allocator_adapter_result",
+            "provider_runtime_evidence",
+            "teardown_manifest",
+        ],
+        "observed_roles": [
+            "allocator_adapter_result",
+            "provider_run_diagnostics",
+            "provider_runtime_evidence",
+            "teardown_manifest",
+        ],
+        "file_count": len(file_rows),
+        "total_size_bytes": sum(row["size_bytes"] for row in file_rows),
+        "files": file_rows,
+        "blockers": [],
+        "raw_secret_values_recorded": False,
+        "manifest_digest": "",
+    }
+    artifact_manifest["manifest_digest"] = canonical_digest(
+        artifact_manifest, digest_field="manifest_digest"
+    )
+    artifact_manifest_path = _write(job / "artifact_manifest.json", artifact_manifest)
+
+    result = {
+        "schema_version": "adp_content_agents_vast_run.v1",
+        "status": "completed",
+        "bundle_sha256": bundle_digest,
+        "execution_result_path": str(execution_result_path),
+        "adapter_result_path": str(adapter_path),
+        "teardown_manifest_path": str(teardown_path),
+        "artifact_manifest_path": str(artifact_manifest_path),
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "independent_watchdog": watchdog_handoff,
+        "blockers": [],
+        "raw_secret_values_recorded": False,
+    }
+    result_path = _write(job / "adp_content_agents_vast_result.json", result)
+    allocator_result_path = _write(allocator / "result.json", result)
+
+    receipt_path = run_root / "launch_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["terminal_evidence"]["result"] = {
+        "path": str(allocator_result_path),
+        "digest": _sha256(allocator_result_path),
+        "exists": True,
+    }
+    receipt["terminal_evidence"]["artifacts"] = {
+        "artifact_manifest_path": {
+            "path": str(artifact_manifest_path),
+            "digest": _sha256(artifact_manifest_path),
+            "exists": True,
+        },
+        "teardown_manifest_path": {
+            "path": str(teardown_path),
+            "digest": _sha256(teardown_path),
+            "exists": True,
+        },
+    }
+    receipt["terminal_evidence"]["blockers"] = []
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write(receipt_path, receipt)
+
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = json.loads(zero_path.read_text(encoding="utf-8"))
+    zero["receipt_digest"] = receipt["receipt_digest"]
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(zero_path, zero)
+
+    sync = {
+        "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+        "status": "succeeded",
+        "attempt_number": 1,
+        "launch_id": CONTENT_AGENTS_RUN_ID,
+        "run_id": CONTENT_AGENTS_RUN_ID,
+        "request_digest": json.loads(
+            (run_root / "launch_request.json").read_text(encoding="utf-8")
+        )["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "provider_mutation_performed": False,
+        "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": "completed",
+            "already_exists": False,
+            "launch_id": CONTENT_AGENTS_RUN_ID,
+            "run_id": CONTENT_AGENTS_RUN_ID,
+            "request_digest": json.loads(
+                (run_root / "launch_request.json").read_text(encoding="utf-8")
+            )["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        },
+        "sync_result_digest": "",
+    }
+    sync["sync_result_digest"] = canonical_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    _write(run_root / "webapp_sync_succeeded.json", sync)
+    return result_path
+
+
+def _content_agents_fixture(tmp_path: Path) -> dict[str, object]:
+    fixture = _fixture(tmp_path)
+    response = fixture["responses"][0]
+    assert isinstance(response, Path)
+    payload = json.loads(response.read_text(encoding="utf-8"))
+    payload["results"].append(
+        _charge(
+            instance_id=CONTENT_AGENTS_INSTANCE,
+            label=CONTENT_AGENTS_LABEL,
+            total=0.329,
+            gpu=0.285,
+            disk=0.005,
+            bandwidth_download=0.036,
+            bandwidth_upload=0.003,
+        )
+    )
+    _write(response, payload)
+    _refresh_response_binding(fixture, 0)
+    terminals = fixture["terminals"]
+    assert isinstance(terminals, dict)
+    terminals[CONTENT_AGENTS_INSTANCE] = _content_agents_terminal_fixture(tmp_path)
+    return fixture
+
+
+def _refresh_content_agents_launch_bindings(result_path: Path) -> None:
+    run_root = result_path.parents[2]
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    allocator_result_path = _write(run_root / "allocator" / "result.json", result)
+    receipt_path = run_root / "launch_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["terminal_evidence"]["result"]["digest"] = _sha256(
+        allocator_result_path
+    )
+    for field, result_field in (
+        ("teardown_manifest_path", "teardown_manifest_path"),
+        ("artifact_manifest_path", "artifact_manifest_path"),
+    ):
+        path = Path(result[result_field])
+        receipt["terminal_evidence"]["artifacts"][field] = {
+            "path": str(path),
+            "digest": _sha256(path),
+            "exists": True,
+        }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write(receipt_path, receipt)
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = json.loads(zero_path.read_text(encoding="utf-8"))
+    zero["receipt_digest"] = receipt["receipt_digest"]
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(zero_path, zero)
+    sync_path = run_root / "webapp_sync_succeeded.json"
+    sync = json.loads(sync_path.read_text(encoding="utf-8"))
+    sync["receipt_digest"] = receipt["receipt_digest"]
+    sync["response"]["receipt_digest"] = receipt["receipt_digest"]
+    sync["sync_result_digest"] = canonical_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    _write(sync_path, sync)
+
+
 def _refresh_response_binding(fixture: dict[str, object], index: int) -> None:
     path = fixture["responses"][index]
     assert isinstance(path, Path)
@@ -680,6 +1016,111 @@ def test_accepts_exact_paired_native_terminal_layout_and_official_charge(
         "provider_zero_confirmed"
     )
     assert validate_vast_official_same_goal_reconciliation(output) == value
+
+
+def test_accepts_exact_content_agents_terminal_layout_and_official_charge(
+    tmp_path: Path,
+) -> None:
+    fixture = _content_agents_fixture(tmp_path)
+    output = tmp_path / "content-agents-official.json"
+    terminal_path = _spec(
+        fixture, CONTENT_AGENTS_INSTANCE, CONTENT_AGENTS_LABEL
+    )[2]
+
+    value = _materialize(
+        fixture,
+        output,
+        expected=[
+            (CONTENT_AGENTS_INSTANCE, CONTENT_AGENTS_LABEL, terminal_path)
+        ],
+    )
+
+    assert value["provider_instance_ids"] == [CONTENT_AGENTS_INSTANCE]
+    assert value["launch_labels"] == [CONTENT_AGENTS_LABEL]
+    assert value["official_total_usd"] == pytest.approx(0.329)
+    terminal = value["entries"][0]["terminal_execution_evidence"]
+    assert terminal["launch_id"] == CONTENT_AGENTS_RUN_ID
+    assert terminal["run_id"] == CONTENT_AGENTS_RUN_ID
+    assert terminal["terminal_result"]["schema_version"] == (
+        "adp_content_agents_vast_run.v1"
+    )
+    assert terminal["provider_adapter_result"]["status"] == "completed"
+    assert terminal["teardown_manifest"]["status"] == "completed"
+    assert terminal["independent_watchdog"]["status"] == "provider_terminal"
+    assert terminal["object_store_cleanup"]["status"] == "completed"
+    assert terminal["artifact_manifest"]["status"] == "completed"
+    assert terminal["provider_runtime_result"]["status"] == "completed"
+    assert terminal["webapp_terminal_binding"]["status"] == "succeeded"
+    assert terminal["post_teardown_provider_zero"]["status"] == (
+        "provider_zero_confirmed"
+    )
+    assert validate_vast_official_same_goal_reconciliation(output) == value
+
+
+@pytest.mark.parametrize(
+    ("mutation", "blocker"),
+    [
+        ("result_path", "vast_official_artifact_manifest_invalid"),
+        ("result_schema", "vast_official_terminal_result_invalid"),
+        ("watchdog_tamper", "vast_official_content_agents_terminal_closure_invalid"),
+        ("artifact_tamper", "vast_official_artifact_manifest_invalid"),
+        ("webapp_tamper", "vast_official_webapp_terminal_binding_invalid"),
+    ],
+)
+def test_rejects_hostile_content_agents_path_schema_and_tamper(
+    tmp_path: Path, mutation: str, blocker: str
+) -> None:
+    fixture = _content_agents_fixture(tmp_path)
+    terminal_path = _spec(
+        fixture, CONTENT_AGENTS_INSTANCE, CONTENT_AGENTS_LABEL
+    )[2]
+    run_root = terminal_path.parents[2]
+    result = json.loads(terminal_path.read_text(encoding="utf-8"))
+    if mutation == "result_path":
+        hostile = terminal_path.parent / "hostile-artifact-manifest.json"
+        hostile.write_bytes(Path(result["artifact_manifest_path"]).read_bytes())
+        result["artifact_manifest_path"] = str(hostile)
+        _write(terminal_path, result)
+        _refresh_content_agents_launch_bindings(terminal_path)
+    elif mutation == "result_schema":
+        result["schema_version"] = "adp_content_agents_vast_run.v2"
+        _write(terminal_path, result)
+        _refresh_content_agents_launch_bindings(terminal_path)
+    elif mutation == "watchdog_tamper":
+        watchdog_path = (
+            terminal_path.parent
+            / "independent_vast_watchdog"
+            / "groot_oscar_runpod_canary_watchdog.json"
+        )
+        watchdog = json.loads(watchdog_path.read_text(encoding="utf-8"))
+        watchdog["provider_absence_confirmed"] = False
+        _write(watchdog_path, watchdog)
+    elif mutation == "artifact_tamper":
+        artifact_path = Path(result["artifact_manifest_path"])
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact["binding"]["bundle_sha256"] = "sha256:" + "f" * 64
+        artifact["manifest_digest"] = canonical_digest(
+            artifact, digest_field="manifest_digest"
+        )
+        _write(artifact_path, artifact)
+        _refresh_content_agents_launch_bindings(terminal_path)
+    else:
+        sync_path = run_root / "webapp_sync_succeeded.json"
+        sync = json.loads(sync_path.read_text(encoding="utf-8"))
+        sync["response"]["run_id"] = "hostile-run-id"
+        sync["sync_result_digest"] = canonical_digest(
+            sync, digest_field="sync_result_digest"
+        )
+        _write(sync_path, sync)
+
+    with pytest.raises(VastOfficialBillingExtractionError, match=blocker):
+        _materialize(
+            fixture,
+            tmp_path / "hostile-content-output.json",
+            expected=[
+                (CONTENT_AGENTS_INSTANCE, CONTENT_AGENTS_LABEL, terminal_path)
+            ],
+        )
 
 
 @pytest.mark.parametrize("mutation", ["path", "schema", "launch_digest"])
@@ -1077,6 +1518,44 @@ def test_cli_accepts_production_paired_native_result_path(
     assert summary["entry_count"] == 1
     assert summary["official_total_usd"] == pytest.approx(0.086)
     assert summary["provider_mutation_performed"] is False
+
+
+def test_script_accepts_production_content_agents_result_path(
+    tmp_path: Path,
+) -> None:
+    fixture = _content_agents_fixture(tmp_path)
+    output = tmp_path / "content-agents-cli.json"
+    terminal_path = _spec(
+        fixture, CONTENT_AGENTS_INSTANCE, CONTENT_AGENTS_LABEL
+    )[2]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(CLI_SCRIPT),
+            "--provider-billing-source-receipt",
+            str(fixture["receipt"]),
+            "--expected-instance",
+            f"{CONTENT_AGENTS_INSTANCE}={CONTENT_AGENTS_LABEL}={terminal_path}",
+            "--output",
+            str(output),
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(REPOSITORY_ROOT / "src")},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    summary = json.loads(completed.stdout)
+    assert summary["status"] == "materialized"
+    assert summary["entry_count"] == 1
+    assert summary["official_total_usd"] == pytest.approx(0.329)
+    assert summary["provider_mutation_performed"] is False
+    assert validate_vast_official_same_goal_reconciliation(output)[
+        "receipt_digest"
+    ].startswith("sha256:")
 
 
 def test_script_entrypoint_is_reachable_without_provider_access() -> None:
