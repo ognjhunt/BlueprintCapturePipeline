@@ -36,6 +36,7 @@ def _metadata() -> tuple[
 ]:
     run: dict[str, object] = {
         "id": RUN_ID,
+        "run_attempt": 1,
         "head_sha": SHA,
         "status": "completed",
         "conclusion": "success",
@@ -58,6 +59,7 @@ def _metadata() -> tuple[
         "jobs": [
             {
                 "name": "Full pytest lane on CPU runner",
+                "run_attempt": 1,
                 "status": "completed",
                 "conclusion": "success",
                 "steps": [
@@ -69,12 +71,18 @@ def _metadata() -> tuple[
                         "name": "Build fail-closed CPU full-lane evidence",
                         "conclusion": "success",
                     },
-                    {"name": "Upload full lane report", "conclusion": "success"},
+                    {
+                        "name": "Upload full lane report",
+                        "conclusion": "success",
+                        "started_at": "2026-08-17T12:41:11Z",
+                        "completed_at": "2026-08-17T12:41:12Z",
+                    },
                 ],
             },
             *[
                 {
                     "name": f"Full pytest shard {index} of 4",
+                    "run_attempt": 1,
                     "status": "completed",
                     "conclusion": "success",
                     "steps": [
@@ -109,6 +117,108 @@ def _metadata() -> tuple[
         ]
     }
     return run, workflow, jobs, artifacts
+
+
+def test_rerun_selects_only_artifact_from_latest_successful_aggregate_attempt() -> None:
+    run, workflow, jobs, artifacts = _metadata()
+    run["run_attempt"] = 2
+    for job in jobs["jobs"]:  # type: ignore[union-attr]
+        job["run_attempt"] = 2
+    artifacts["artifacts"] = [
+        {
+            "id": 98,
+            "name": f"full-test-lane-{RUN_ID}",
+            "expired": False,
+            "size_in_bytes": 1024,
+            "created_at": "2026-08-17T12:29:28Z",
+        },
+        {
+            "id": 99,
+            "name": f"full-test-lane-{RUN_ID}",
+            "expired": False,
+            "size_in_bytes": 2048,
+            "created_at": "2026-08-17T12:41:12Z",
+        },
+    ]
+
+    artifact = validate_run_metadata(
+        run=run,
+        workflow=workflow,
+        jobs=jobs,
+        artifacts=artifacts,
+        expected_repository=REPOSITORY,
+        expected_sha=SHA,
+        expected_run_id=RUN_ID,
+    )
+
+    assert artifact["id"] == 99
+    assert len(artifacts["artifacts"]) == 2  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("candidate_mutations", "error"),
+    [
+        (
+            (
+                {"created_at": "2026-08-17T12:41:12Z"},
+                {"created_at": "2026-08-17T12:41:12Z"},
+            ),
+            "canonical_full_lane_artifact_attempt_ambiguous",
+        ),
+        (
+            (
+                {"created_at": "2026-08-17T12:40:00Z"},
+                {"created_at": "2026-08-17T12:42:00Z"},
+            ),
+            "canonical_full_lane_artifact_attempt_unresolved",
+        ),
+        (
+            ({"expired": True},),
+            "canonical_full_lane_artifact_expired",
+        ),
+        (
+            ({"size_in_bytes": 0},),
+            "canonical_full_lane_artifact_empty",
+        ),
+    ],
+)
+def test_rerun_rejects_ambiguous_unresolved_expired_or_empty_latest_artifact(
+    candidate_mutations: tuple[dict[str, object], ...], error: str
+) -> None:
+    run, workflow, jobs, artifacts = _metadata()
+    run["run_attempt"] = 2
+    for job in jobs["jobs"]:  # type: ignore[union-attr]
+        job["run_attempt"] = 2
+    candidates: list[dict[str, object]] = [
+        {
+            "id": 98,
+            "name": f"full-test-lane-{RUN_ID}",
+            "expired": False,
+            "size_in_bytes": 1024,
+            "created_at": "2026-08-17T12:29:28Z",
+        },
+        {
+            "id": 99,
+            "name": f"full-test-lane-{RUN_ID}",
+            "expired": False,
+            "size_in_bytes": 2048,
+            "created_at": "2026-08-17T12:41:12Z",
+        },
+    ]
+    for index, mutation in enumerate(candidate_mutations):
+        candidates[-(index + 1)].update(mutation)
+    artifacts["artifacts"] = candidates
+
+    with pytest.raises(ProvenanceError, match=error):
+        validate_run_metadata(
+            run=run,
+            workflow=workflow,
+            jobs=jobs,
+            artifacts=artifacts,
+            expected_repository=REPOSITORY,
+            expected_sha=SHA,
+            expected_run_id=RUN_ID,
+        )
 
 
 def test_canonical_run_url_and_remote_parsing_reject_lookalikes() -> None:
