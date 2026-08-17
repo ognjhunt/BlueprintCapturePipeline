@@ -172,22 +172,60 @@ def _record(path: Path, *, canonical: str | None = None) -> dict[str, object]:
 
 def _paired_target_content_agents_evidence(
     tmp_path: Path,
+    *,
+    many_mesh_notebook: bool = False,
 ) -> tuple[Path, list[Path], Path, Path]:
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
     root = tmp_path / "paired-target"
     root.mkdir()
     usd = root / "registered.usda"
-    usd.write_text(
-        "#usda 1.0\n"
-        "(defaultPrim = \"Asset\")\n"
-        "def Xform \"Asset\" {\n"
-        " def Mesh \"body\" {\n"
-        "  point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]\n"
-        "  int[] faceVertexCounts = [3]\n"
-        "  int[] faceVertexIndices = [0,1,2]\n"
-        " }\n"
-        "}\n",
-        encoding="utf-8",
-    )
+    if many_mesh_notebook:
+        stage = Usd.Stage.CreateNew(str(usd))
+        asset = UsdGeom.Xform.Define(stage, "/Asset")
+        stage.SetDefaultPrim(asset.GetPrim())
+        UsdPhysics.ArticulationRootAPI.Apply(asset.GetPrim())
+        base = UsdGeom.Xform.Define(stage, "/Asset/links/base")
+        display = UsdGeom.Xform.Define(stage, "/Asset/links/display")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(display.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Asset/joints/display_hinge")
+        joint.CreateBody0Rel().SetTargets([base.GetPath()])
+        joint.CreateBody1Rel().SetTargets([display.GetPath()])
+        mesh_specs = [
+            (f"/Asset/links/base/visuals/base_component_{index:03d}", 20.0 - index / 10)
+            for index in range(128)
+        ] + [
+            (f"/Asset/links/display/visuals/display_component_{index:03d}", 18.0 - index)
+            for index in range(7)
+        ]
+        for prim_path, size in mesh_specs:
+            mesh = UsdGeom.Mesh.Define(stage, prim_path)
+            mesh.CreatePointsAttr(
+                [
+                    Gf.Vec3f(0, 0, 0),
+                    Gf.Vec3f(size, 0, 0),
+                    Gf.Vec3f(0, size, 0),
+                    Gf.Vec3f(0, 0, size),
+                ]
+            )
+            mesh.CreateFaceVertexCountsAttr([3, 3, 3, 3])
+            mesh.CreateFaceVertexIndicesAttr([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+            mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        stage.GetRootLayer().Save()
+    else:
+        usd.write_text(
+            "#usda 1.0\n"
+            "(defaultPrim = \"Asset\")\n"
+            "def Xform \"Asset\" {\n"
+            " def Mesh \"body\" {\n"
+            "  point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]\n"
+            "  int[] faceVertexCounts = [3]\n"
+            "  int[] faceVertexIndices = [0,1,2]\n"
+            " }\n"
+            "}\n",
+            encoding="utf-8",
+        )
     task_freeze = root / "task-freeze.json"
     task_freeze.write_text("{}\n", encoding="utf-8")
     registered = root / "registered.json"
@@ -895,6 +933,10 @@ def test_paired_target_registered_bundle_binds_exact_native_predecessor_and_righ
     assert receipt["agent_output_is_simready_authority"] is False
     assert receipt["deterministic_usd_construction_remains_primary"] is True
     assert receipt["canonical_simready_construction_unresolved"] is False
+    assert receipt["agent_dataset_render_selection"]["strategy"] == "all_meshes"
+    assert receipt["agent_dataset_render_selection"]["source_mesh_count"] == 1
+    assert receipt["agent_dataset_render_selection"]["selected_mesh_count"] == 1
+    assert receipt["agent_dataset_render_selection"]["omitted_mesh_count"] == 0
     assert receipt["joint_agent_plan"]["reason"] == (
         "paired_target_registered_candidate_has_no_articulation_task"
     )
@@ -908,6 +950,90 @@ def test_paired_target_registered_bundle_binds_exact_native_predecessor_and_righ
             "sha256": _sha(references[1]),
         },
     ]
+
+
+def test_paired_target_many_meshes_bound_per_prim_agents_but_not_texture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production 135-mesh failure shape stays bounded and representative."""
+
+    source = _fake_source(tmp_path, monkeypatch)
+    bindings, references, rights, _registered_usd = (
+        _paired_target_content_agents_evidence(
+            tmp_path,
+            many_mesh_notebook=True,
+        )
+    )
+
+    receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "paired-target-many-mesh-bundle",
+        input_variant="paired_target_registered_v1",
+        reference_image_paths=references,
+        paired_target_construction_bindings_path=bindings,
+        paired_target_task_id="task_a_washer_door_open",
+        reference_rights_authority_path=rights,
+        generated_at="fixed",
+    )
+
+    selection = receipt["agent_dataset_render_selection"]
+    assert selection["strategy"] == (
+        "rigid_body_and_material_representatives_then_largest_world_bounds"
+    )
+    assert selection["source_mesh_count"] == 135
+    assert selection["selected_mesh_count"] == (
+        content_agents.MAX_CONTENT_AGENT_DATASET_RENDER_PRIMS
+    )
+    assert selection["omitted_mesh_count"] == 119
+    assert selection["covered_rigid_body_owners"] == [
+        "/Asset/links/base",
+        "/Asset/links/display",
+    ]
+    assert selection["covered_material_paths"] == [
+        "/Asset/Looks/content_agents_advisory"
+    ]
+    assert selection["representative_coverage_complete"] is True
+    assert selection["texture_scope_remains_complete"] is True
+    assert selection["input_usd_mutated_by_selection"] is False
+    assert selection["selection_digest"] == canonical_digest(
+        selection, digest_field="selection_digest"
+    )
+    assert "/Asset/links/base/visuals/base_component_000" in selection[
+        "selected_mesh_prim_paths"
+    ]
+    assert "/Asset/links/display/visuals/display_component_000" in selection[
+        "selected_mesh_prim_paths"
+    ]
+
+    configs = Path(receipt["bundle_path"]).with_name("provider_runtime") / "configs"
+    material = yaml.safe_load(
+        (configs / "material_agent.yaml").read_text(encoding="utf-8")
+    )
+    physics = yaml.safe_load(
+        (configs / "physics_agent.yaml").read_text(encoding="utf-8")
+    )
+    texture = yaml.safe_load(
+        (configs / "texture_agent.yaml").read_text(encoding="utf-8")
+    )
+    material_paths = material["steps"]["build_dataset_usd"]["prim_filters"][
+        "paths"
+    ]
+    physics_paths = physics["steps"]["build_dataset_usd"]["prim_filters"][
+        "paths"
+    ]
+    assert material_paths == selection["selected_mesh_prim_paths"]
+    assert physics_paths == material_paths
+    assert len(texture["target_prims"]) == 135
+    assert set(material_paths) < set(texture["target_prims"])
+    assert content_agents._bounded_content_agent_render_selection(
+        usd_path=configs.parent / "input/source_asset.usda",
+        mesh_prim_paths=list(reversed(texture["target_prims"])),
+    ) == selection
+    assert receipt["joint_agent_plan"]["reason"] == (
+        "preexisting_articulation_preserved_by_enrichment_pass"
+    )
 
 
 def test_paired_target_registered_bundle_rejects_tampered_registered_usd_before_output(
