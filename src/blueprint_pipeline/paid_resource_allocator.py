@@ -107,6 +107,7 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
 from .policy_ranking_successor_retained_session import refresh_retained_session
 from .reconstruction_gpu_admission import (
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+    WINDOWS_TRAINER_ADAPTER_IDS,
     collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
     select_reconstruction_execution_adapter_id,
@@ -1323,6 +1324,26 @@ def _run_reconstruction_gpu_canary(
             provider=get_render_provider(args.provider),
             paid_resource_admission_grant=grant,
         )
+    elif operation in {"pose_canary", "trainer_canary"} and str(
+        admission.get("execution_adapter_id") or ""
+    ) in WINDOWS_TRAINER_ADAPTER_IDS:
+        # The Windows trainer host exists as a provider lane, but its executor
+        # is not qualified yet. Block explicitly rather than falling through to
+        # the Vast operation below, which is a Linux container: that would
+        # allocate a paid instance and then fail on a binary it cannot run.
+        result = {
+            "schema_version": "reconstruction_gpu_canary_adapter_result.v1",
+            "status": "blocked",
+            "blockers": [
+                "windows_trainer_executor_not_qualified:"
+                + str(admission.get("execution_adapter_id"))
+            ],
+            "provider_mutations_performed": 0,
+            "cost_usd": 0.0,
+            "scientific_qualification_inferred": False,
+            "proof_effect": "none",
+            "claim_ceiling": "no_execution_evidence",
+        }
     elif operation in {"pose_canary", "trainer_canary"}:
         result = run_reconstruction_vast_operation(
             bound_request=_load(args.bound_request_out),

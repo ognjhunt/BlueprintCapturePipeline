@@ -40,9 +40,16 @@ MAX_TTL_SECONDS = 14_400
 MAX_RETRY_CAP = 2
 GENERIC_VAST_OPERATION_ADAPTER_ID = "reconstruction_vast_operation_v1"
 CANONICAL_SPLATFACTO_VAST_ADAPTER_ID = "canonical_splatfacto_vast_v1"
+#: Postshot has no Linux build, so its arm cannot run on any Vast adapter.
+CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID = "canonical_postshot_aws_windows_v1"
+#: Adapters whose trainer is a Windows executable.  Naming these explicitly is
+#: what stops a Windows request from silently falling back to a Linux container
+#: and burning a paid allocation on a binary that cannot run there.
+WINDOWS_TRAINER_ADAPTER_IDS = frozenset({CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID})
 EXECUTION_ADAPTER_IDS = {
     GENERIC_VAST_OPERATION_ADAPTER_ID,
     CANONICAL_SPLATFACTO_VAST_ADAPTER_ID,
+    CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID,
 }
 CAPTURE_PROFILES = {
     "iphone_arkit_lidar",
@@ -274,8 +281,14 @@ def select_reconstruction_execution_adapter_id(
         source = _read(request_path)
     except (OSError, TypeError, ValueError):
         return GENERIC_VAST_OPERATION_ADAPTER_ID
-    if source.get("requested_execution_adapter_id") == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID:
+    requested = source.get("requested_execution_adapter_id")
+    if requested == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID:
         return CANONICAL_SPLATFACTO_VAST_ADAPTER_ID
+    if requested in WINDOWS_TRAINER_ADAPTER_IDS:
+        # Return it rather than falling back to Vast. Every generic adapter is
+        # a Linux container, so a silent fallback would allocate a paid GPU and
+        # then try to execute a Windows-only binary on it.
+        return str(requested)
     return GENERIC_VAST_OPERATION_ADAPTER_ID
 
 
