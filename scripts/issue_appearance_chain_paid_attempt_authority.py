@@ -4,7 +4,7 @@
 The appearance path is a chained, spend-accumulating campaign rather than a set
 of independent lanes:
 
-    prior Aura terminal  -->  ArtiFixer3D  -->  paired-target native import
+    measured campaign start  -->  ArtiFixer3D  -->  paired-target native import
 
 Each link's authority validates its predecessor's terminal evidence and carries
 the campaign's running spend forward against a shared cap, so an authority
@@ -99,11 +99,10 @@ ARTIFIXER_ONLY: dict[str, Param] = {
     # is refused, because two numbers cannot both be the campaign's prior spend.
     "prior_aura_authority_path": Param(
         "--prior-aura-authority",
-        "Legacy anchor, with --prior-terminal-result. Only for a chain that "
-        "actually has a completed Aura paid attempt.",
+        argparse.SUPPRESS,
     ),
     "prior_terminal_result_path": Param(
-        "--prior-terminal-result", "The Aura terminal result that anchor closed on."
+        "--prior-terminal-result", argparse.SUPPRESS
     ),
     "campaign_start_receipt_path": Param(
         "--campaign-start-receipt",
@@ -171,7 +170,7 @@ class Link:
 
 LINKS: dict[str, Link] = {
     "artifixer3d": Link(
-        "Head of the chain; anchors on a prior Aura terminal.",
+        "Head of the chain; anchors on a measured campaign-start receipt.",
         materialize_artifixer3d_paid_attempt_authority,
         {**SHARED, **ARTIFIXER_ONLY},
     ),

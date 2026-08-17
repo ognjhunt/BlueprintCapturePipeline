@@ -179,8 +179,7 @@ def test_the_authorization_date_defaults_to_today_not_to_empty() -> None:
         [
             "artifixer3d",
             "--bundle-receipt", "b.json",
-            "--prior-aura-authority", "a.json",
-            "--prior-terminal-result", "t.json",
+            "--campaign-start-receipt", "start.json",
             "--authorized-by", "operator",
             "--authority-reference", "goal",
             "--blueprint-commit", "e" * 40,
@@ -214,8 +213,7 @@ def test_a_missing_anchor_is_refused_without_touching_a_provider(
         [
             "artifixer3d",
             "--bundle-receipt", str(tmp_path / "absent.json"),
-            "--prior-aura-authority", str(tmp_path / "absent.json"),
-            "--prior-terminal-result", str(tmp_path / "absent.json"),
+            "--campaign-start-receipt", str(tmp_path / "absent.json"),
             "--authorized-by", "operator",
             "--authority-reference", "goal",
             "--blueprint-commit", "e" * 40,
