@@ -48,9 +48,15 @@ class _Provider:
             raise RuntimeError("describe failed")
         return {"billable_instance_count": self.after_count}
 
-    def launch(self, job_dir, request, *, cold=False) -> dict:
+    def launch(self, job_dir, request, *, cold=False,
+               paid_resource_admission_grant=None) -> dict:
         self.launched += 1
-        return {"instance_id": self.launch_instance_id}
+        # Mirror the real provider: no grant means no allocation.
+        if paid_resource_admission_grant is None:
+            return {"status": "blocked",
+                    "blockers": ["legacy_gpu_render_provider_launch_disabled"],
+                    "allocation_created": False}
+        return {"instance_id": self.launch_instance_id, "allocation_created": True}
 
     def inspect(self, instance_id: str) -> dict:
         return {"state": self.states.pop(0) if self.states else "running"}
@@ -65,6 +71,7 @@ class _Provider:
 ADMISSION = {"admission_digest": "sha256:" + "a" * 64, "retry_cap": 0}
 REQUEST = {"bound_request_digest": "sha256:" + "b" * 64}
 PREFLIGHT = {"verified": True}
+GRANT = object()  # opaque: the executor forwards it, it does not inspect it
 
 
 def _fetch_ok(_url: str, destination: Path):
@@ -84,6 +91,7 @@ def _run(tmp_path: Path, provider: _Provider, **overrides) -> dict:
         output_bundle_get_url="https://example.invalid/out.zip",
         provider=provider,
         allocator_admission=ADMISSION,
+        paid_resource_admission_grant=GRANT,
         name_prefix="blueprint-postshot",
         hard_ttl_seconds=5400,
         output_fetcher=_fetch_ok,
@@ -251,3 +259,18 @@ def test_a_tampered_output_bundle_fails_the_run(tmp_path: Path) -> None:
     assert result["status"] == "failed"
     assert result["output_retrieved_before_teardown"] is False
     assert provider.terminated == ["i-0abc"]
+
+
+def test_launch_without_a_paid_grant_is_blocked_not_silently_run(
+    tmp_path: Path,
+) -> None:
+    """The provider fails closed without a grant; the executor must forward it.
+
+    Omitting it is not a safety hole but it is a functional one: every launch
+    would come back blocked and the lane could never run.
+    """
+    provider = _Provider()
+    with pytest.raises(ReconstructionAwsWindowsError) as excinfo:
+        _run(tmp_path, provider, paid_resource_admission_grant=None)
+    assert "launch_blocked" in str(excinfo.value)
+    assert provider.terminated == []  # nothing was allocated, nothing to tear down

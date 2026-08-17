@@ -78,6 +78,7 @@ def run_reconstruction_aws_windows_operation(
     output_bundle_get_url: str,
     provider: Any,
     allocator_admission: Mapping[str, Any],
+    paid_resource_admission_grant: Any,
     name_prefix: str,
     hard_ttl_seconds: int,
     output_fetcher: Callable[[str, Path], Any],
@@ -130,7 +131,26 @@ def run_reconstruction_aws_windows_operation(
     teardown: dict[str, Any] = {"attempted": False, "confirmed": False}
 
     try:
-        launch = provider.launch(root, dict(bound_request), cold=True)
+        # The grant must reach the provider: its launch fails closed without
+        # one, so omitting it would make every launch return "blocked" rather
+        # than run.  Passing it also keeps the paid-lane admission check on the
+        # provider side, where the other lanes enforce it.
+        launch = provider.launch(
+            root,
+            dict(bound_request),
+            cold=True,
+            paid_resource_admission_grant=paid_resource_admission_grant,
+        )
+        if str(launch.get("status") or "") == "blocked" or launch.get(
+            "allocation_created"
+        ) is False:
+            write_json(root / "launch.json", dict(launch))
+            blockers.extend(
+                str(b) for b in (launch.get("blockers") or []) if str(b)
+            )
+            raise ReconstructionAwsWindowsError(
+                "aws_windows_launch_blocked:" + ",".join(blockers[-4:])
+            )
         provider_mutations = 1
         instance_id = str(launch.get("instance_id") or launch.get("id") or "") or None
         write_json(root / "launch.json", dict(launch))
