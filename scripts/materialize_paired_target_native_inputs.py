@@ -45,9 +45,27 @@ from blueprint_pipeline.simready_graph_asset import author_simready_graph_asset
 from blueprint_pipeline.simready_graph_asset_static_qualification import (
     qualify_simready_graph_asset_static,
 )
+from blueprint_pipeline.source_collider_subtree_removal import (
+    materialize_source_collider_batch_removal,
+)
 
 
 STEPS: dict[str, Step] = {
+    "source-collider-batch-removal": Step(
+        "Remove every selected source collider into one shared Arena scene.",
+        materialize_source_collider_batch_removal,
+        {
+            "source_usd_path": Param("--source-usd", required=True),
+            "targets": Param(
+                "--targets",
+                "JSON file containing 1-5 removal-id and target-prim records.",
+                required=True,
+                json_file=True,
+            ),
+            "output_root": Param("--output-root", required=True),
+            "expected_source_sha256": Param("--expected-source-sha256"),
+        },
+    ),
     "simready-graph-asset": Step(
         "Author one task-neutral SimReady graph asset from sealed inputs.",
         author_simready_graph_asset,
