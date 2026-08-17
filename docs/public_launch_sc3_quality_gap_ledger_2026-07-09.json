@@ -4560,7 +4560,7 @@
             {
               "artifact_id": "RUN-02-AC-01-EV-01",
               "path": "src/blueprint_pipeline/pubsub_handoff_listener.py",
-              "sha256": "sha256:3cc9c11946a43403b4524d7a6fa402dcb3500b861d9767929619fcc8d7760205",
+              "sha256": "sha256:f225915135ffc59e7a7a2994db5eb1412b05ac320c72c34b0f0144ce590b2bb6",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4715,7 +4715,7 @@
             {
               "artifact_id": "RUN-03-AC-01-EV-01",
               "path": "src/blueprint_pipeline/pubsub_handoff_listener.py",
-              "sha256": "sha256:3cc9c11946a43403b4524d7a6fa402dcb3500b861d9767929619fcc8d7760205",
+              "sha256": "sha256:f225915135ffc59e7a7a2994db5eb1412b05ac320c72c34b0f0144ce590b2bb6",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
