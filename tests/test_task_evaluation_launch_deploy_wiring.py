@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+import tomllib
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -50,6 +51,26 @@ def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
         assert requirement in base_dependencies
     for requirement in ("packaging==", "usd-core==", "boto3==", "botocore=="):
         assert requirement in frozen_base
+
+
+def test_control_plane_bootstrap_installs_and_probes_the_step_extractor() -> None:
+    """Fresh-scene STEP extraction must work in the deployed service venv."""
+
+    project = tomllib.loads(_text("pyproject.toml"))["project"]
+    runtime = project["optional-dependencies"]["runtime"]
+    lock = tomllib.loads(_text("uv.lock"))
+    locked = {
+        (package["name"], package["version"])
+        for package in lock["package"]
+        if "version" in package
+    }
+    bootstrap = _text("scripts/bootstrap_control_plane_host.sh")
+
+    assert "build123d==0.11.1" in runtime
+    assert ("build123d", "0.11.1") in locked
+    assert 'pip" install -q -e "${REPO_ROOT}[runtime]"' in bootstrap
+    assert "from build123d import import_step" in bootstrap
+    assert "if not callable(import_step):" in bootstrap
 
 
 def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
