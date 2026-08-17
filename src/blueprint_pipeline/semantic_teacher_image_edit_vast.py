@@ -56,7 +56,11 @@ from .semantic_teacher_image_edit_paid_lane import (
     materialize_semantic_teacher_image_edit_result,
     materialize_semantic_teacher_provider_zero_receipt,
 )
-from .semantic_teacher_image_edit_worker import RUNTIME_RESULT_SCHEMA_VERSION
+from .semantic_teacher_image_edit_worker import (
+    LEGACY_DEFAULT_PARALLEL_REQUESTS,
+    MAX_PARALLEL_REQUESTS,
+    RUNTIME_RESULT_SCHEMA_VERSION,
+)
 from .task_evaluation_artifact_manifest import (
     ADAPTER_RESULT_NAME,
     PROVIDER_EVIDENCE_DIRNAME,
@@ -680,10 +684,16 @@ def _validate_bundle_runtime_bindings(
         total_cameras += len(camera_ids)
         order.append({"task_id": task_id, "camera_ids": camera_ids})
     order_digest = canonical_digest({"tasks": order})
+    max_parallel_requests = request_value.get(
+        "max_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
+    )
     expected_backend = str(receipt.get("backend_entry_digest") or "")
     expected_model = str(authority.get("model_snapshot") or "")
     if (
         request_value.get("source_commit_sha") != checkout_source_commit
+        or isinstance(max_parallel_requests, bool)
+        or not isinstance(max_parallel_requests, int)
+        or not 1 <= max_parallel_requests <= MAX_PARALLEL_REQUESTS
         or request_value.get("request_digest")
         != canonical_digest(request_value, digest_field="request_digest")
         or request_value.get("request_digest")
@@ -705,6 +715,14 @@ def _validate_bundle_runtime_bindings(
         or manifest_value.get("task_count") != receipt.get("task_count")
         or manifest_value.get("camera_count") != receipt.get("camera_count")
         or manifest_value.get("automatic_retry_count") != 0
+        or manifest_value.get(
+            "maximum_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
+        )
+        != max_parallel_requests
+        or receipt.get(
+            "maximum_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
+        )
+        != max_parallel_requests
         or authority.get("runtime_image_identity") != runtime_image_identity
     ):
         raise SemanticTeacherImageEditVastError(
@@ -715,6 +733,7 @@ def _validate_bundle_runtime_bindings(
         "backend_entry_digest": expected_backend,
         "adapter_id": execution["adapter_id"],
         "model_snapshot": expected_model,
+        "maximum_parallel_requests": max_parallel_requests,
         "task_camera_order": order,
         "task_camera_order_digest": order_digest,
     }
@@ -761,11 +780,26 @@ def _worker_execution_script() -> str:
     """Run the worker once while keeping bootstrap logs out of its output root."""
 
     return r'''set +e
+stdout_pipe="$log_root/runtime_stdout.pipe"
+stderr_pipe="$log_root/runtime_stderr.pipe"
+mkfifo "$stdout_pipe" "$stderr_pipe"
+tee "$log_root/runtime_stdout.log" <"$stdout_pipe" &
+stdout_tee_pid=$!
+tee "$log_root/runtime_stderr.log" <"$stderr_pipe" >&2 &
+stderr_tee_pid=$!
 BLUEPRINT_IMAGE_EDITOR_TOKEN="$(<"$secret_file")" \
 BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR="$output_root" \
 bash "$bundle_root/provider_runtime/run_semantic_teacher_image_edit.sh" \
-  >"$log_root/runtime_stdout.log" 2>"$log_root/runtime_stderr.log"
+  >"$stdout_pipe" 2>"$stderr_pipe"
 worker_status=$?
+wait "$stdout_tee_pid"
+stdout_tee_status=$?
+wait "$stderr_tee_pid"
+stderr_tee_status=$?
+rm -f "$stdout_pipe" "$stderr_pipe"
+if [[ "$worker_status" == 0 && ("$stdout_tee_status" != 0 || "$stderr_tee_status" != 0) ]]; then
+  worker_status=74
+fi
 set -e
 cleanup_secret
 mkdir -p "$output_root"
@@ -970,6 +1004,10 @@ def _extract_and_validate_output(
         runtime_status == "completed_unreviewed_semantic_teacher_candidates"
     )
     runtime_failed = runtime_status == "failed_with_retained_partial_inventory"
+    runtime_parallel_requests = runtime.get(
+        "maximum_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
+    )
+    runtime_failed_request_count = runtime.get("failed_request_count")
     if (
         runtime.get("schema_version") != RUNTIME_RESULT_SCHEMA_VERSION
         or runtime.get("result_digest")
@@ -985,12 +1023,19 @@ def _extract_and_validate_output(
         != expected_binding.get("backend_entry_digest")
         or runtime.get("adapter_id") != expected_binding.get("adapter_id")
         or runtime.get("model_snapshot") != expected_binding.get("model_snapshot")
+        or isinstance(runtime_parallel_requests, bool)
+        or not isinstance(runtime_parallel_requests, int)
+        or not 1 <= runtime_parallel_requests <= MAX_PARALLEL_REQUESTS
+        or runtime_parallel_requests
+        != expected_binding.get("maximum_parallel_requests")
         or (
             runtime_completed
             and (
                 runtime.get("request_count") != expected_camera_count
                 or runtime.get("attempted_request_count") != expected_camera_count
                 or runtime.get("successful_request_count") != expected_camera_count
+                or isinstance(runtime_failed_request_count, bool)
+                or runtime_failed_request_count not in {None, 0}
             )
         )
         or (
@@ -1024,6 +1069,7 @@ def _extract_and_validate_output(
     referenced_records: list[dict[str, Any]] = []
     observed_order: list[dict[str, Any]] = []
     failed_frames: list[Mapping[str, Any]] = []
+    not_attempted_frames: list[Mapping[str, Any]] = []
     for task in runtime.get("tasks") or []:
         observed_camera_ids: list[str] = []
         frames = task.get("frames") if isinstance(task, Mapping) else None
@@ -1045,15 +1091,32 @@ def _extract_and_validate_output(
             observed_camera_ids.append(str(frame.get("camera_id") or ""))
             record = frame.get("semantic_teacher_frame")
             if record is None:
-                if runtime_completed or frame.get("terminal_state") not in {
-                    "failed_after_request_attempt",
-                    "not_attempted_after_terminal_failure",
-                }:
+                terminal_state = frame.get("terminal_state")
+                if (
+                    runtime_completed
+                    or terminal_state
+                    not in {
+                        "failed_after_request_attempt",
+                        "not_attempted_after_terminal_failure",
+                    }
+                    or frame.get("provider_usage") is not None
+                    or frame.get("computed_editor_cost_usd") is not None
+                    or frame.get("billing_qualified") is not False
+                    or (
+                        terminal_state == "not_attempted_after_terminal_failure"
+                        and (
+                            frame.get("failure_code") is not None
+                            or frame.get("provider_failure") is not None
+                        )
+                    )
+                ):
                     raise SemanticTeacherImageEditVastError(
                         "semantic_teacher_runtime_frame_inventory_invalid"
                     )
-                if frame.get("terminal_state") == "failed_after_request_attempt":
+                if terminal_state == "failed_after_request_attempt":
                     failed_frames.append(frame)
+                else:
+                    not_attempted_frames.append(frame)
                 continue
             if not isinstance(record, Mapping):
                 raise SemanticTeacherImageEditVastError(
@@ -1096,11 +1159,30 @@ def _extract_and_validate_output(
         or (
             runtime_failed
             and (
-                len(referenced) != runtime.get("successful_request_count")
-                or len(failed_frames) != 1
+                len(referenced) + len(failed_frames) + len(not_attempted_frames)
+                != expected_camera_count
+                or len(referenced) != runtime.get("successful_request_count")
+                or not failed_frames
+                or runtime.get("successful_request_count") + len(failed_frames)
+                != runtime.get("attempted_request_count")
+                or len(not_attempted_frames)
+                != expected_camera_count - runtime.get("attempted_request_count")
+                or isinstance(runtime_failed_request_count, bool)
+                or (
+                    runtime_failed_request_count is not None
+                    and not isinstance(runtime_failed_request_count, int)
+                )
+                or (
+                    runtime_failed_request_count
+                    if runtime_failed_request_count is not None
+                    else len(failed_frames)
+                )
+                != len(failed_frames)
                 or runtime.get("partial_png_inventory") != referenced_records
-                or failed_frames[0].get("failure_code")
-                not in (runtime.get("blockers") or [])
+                or any(
+                    frame.get("failure_code") not in (runtime.get("blockers") or [])
+                    for frame in failed_frames
+                )
             )
         )
     ):
@@ -1108,21 +1190,25 @@ def _extract_and_validate_output(
             "semantic_teacher_runtime_frame_inventory_invalid"
         )
     if runtime_failed:
-        provider_failure = failed_frames[0].get("provider_failure")
-        if provider_failure is not None and (
-            not isinstance(provider_failure, Mapping)
-            or provider_failure.get("schema_version")
-            != "semantic_teacher_provider_failure.v1"
-            or provider_failure.get("failure_digest")
-            != canonical_digest(provider_failure, digest_field="failure_digest")
-            or provider_failure.get("raw_provider_body_recorded") is not False
-            or provider_failure.get("raw_provider_headers_recorded") is not False
-            or provider_failure.get("raw_secret_values_recorded") is not False
+        for frame in failed_frames:
+            provider_failure = frame.get("provider_failure")
+            if provider_failure is not None and (
+                not isinstance(provider_failure, Mapping)
+                or provider_failure.get("schema_version")
+                != "semantic_teacher_provider_failure.v1"
+                or provider_failure.get("failure_digest")
+                != canonical_digest(provider_failure, digest_field="failure_digest")
+                or provider_failure.get("raw_provider_body_recorded") is not False
+                or provider_failure.get("raw_provider_headers_recorded") is not False
+                or provider_failure.get("raw_secret_values_recorded") is not False
+            ):
+                raise SemanticTeacherImageEditVastError(
+                    "semantic_teacher_runtime_provider_failure_invalid"
+                )
+        if (
+            runtime.get("terminal_provider_failure")
+            != failed_frames[0].get("provider_failure")
         ):
-            raise SemanticTeacherImageEditVastError(
-                "semantic_teacher_runtime_provider_failure_invalid"
-            )
-        if runtime.get("terminal_provider_failure") != provider_failure:
             raise SemanticTeacherImageEditVastError(
                 "semantic_teacher_runtime_provider_failure_invalid"
             )

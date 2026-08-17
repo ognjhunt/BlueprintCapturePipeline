@@ -33,6 +33,8 @@ from .image_editor_backend_registry import (
 )
 from .provider_bundle_rehearsal import rehearse_provider_bundle_entrypoint
 from .semantic_teacher_image_edit_worker import (
+    MAX_PARALLEL_REQUESTS,
+    PRODUCTION_MAX_PARALLEL_REQUESTS,
     RUNTIME_REQUEST_SCHEMA_VERSION,
     USAGE_TOKEN_FIELDS,
 )
@@ -227,6 +229,7 @@ def build_semantic_teacher_image_edit_provider_bundle(
     repository_root: str | Path,
     expected_source_commit: str,
     output_root: str | Path,
+    max_parallel_requests: int = PRODUCTION_MAX_PARALLEL_REQUESTS,
 ) -> dict[str, Any]:
     """Build and zero-cost rehearse the exact hosted-editor archive."""
 
@@ -234,7 +237,10 @@ def build_semantic_teacher_image_edit_provider_bundle(
     packet = _read(packet_file, code="semantic_teacher_bundle_packet_unreadable")
     tasks = packet.get("tasks")
     if (
-        packet.get("schema_version") != PACKET_SCHEMA_VERSION
+        isinstance(max_parallel_requests, bool)
+        or not isinstance(max_parallel_requests, int)
+        or not 1 <= max_parallel_requests <= MAX_PARALLEL_REQUESTS
+        or packet.get("schema_version") != PACKET_SCHEMA_VERSION
         or packet.get("status")
         != "semantic_teacher_image_edit_packet_prepared_no_upload_no_execution"
         or packet.get("packet_digest")
@@ -472,6 +478,7 @@ def build_semantic_teacher_image_edit_provider_bundle(
         "prompt_policy": backend.get("prompt_policy"),
         "prompt": backend.get("prompt"),
         "tasks": runtime_tasks,
+        "max_parallel_requests": max_parallel_requests,
         "retry_count": 0,
         "request_digest": "",
     }
@@ -511,6 +518,7 @@ def build_semantic_teacher_image_edit_provider_bundle(
         "task_count": len(runtime_tasks),
         "camera_count": total_cameras,
         "automatic_retry_count": 0,
+        "maximum_parallel_requests": max_parallel_requests,
         "entrypoint": ENTRYPOINT,
         "worker": _record(runtime / Path(WORKER).name, root=stage),
         "environment": {
@@ -587,6 +595,7 @@ exec python "$runtime_dir/semantic_teacher_image_edit_worker.py" \
         "adapter_id": execution["adapter_id"],
         "task_count": len(runtime_tasks),
         "camera_count": total_cameras,
+        "maximum_parallel_requests": max_parallel_requests,
         "rehearsal": rehearsal,
         "provider_mutations_performed": 0,
         "secret_values_stored": False,
@@ -605,12 +614,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repository-root", required=True)
     parser.add_argument("--expected-source-commit", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument(
+        "--max-parallel-requests",
+        type=int,
+        choices=range(1, MAX_PARALLEL_REQUESTS + 1),
+        default=PRODUCTION_MAX_PARALLEL_REQUESTS,
+    )
     args = parser.parse_args(argv)
     receipt = build_semantic_teacher_image_edit_provider_bundle(
         packet_path=args.packet,
         repository_root=args.repository_root,
         expected_source_commit=args.expected_source_commit,
         output_root=args.output_root,
+        max_parallel_requests=args.max_parallel_requests,
     )
     print(canonical_json(receipt))
     return 0
