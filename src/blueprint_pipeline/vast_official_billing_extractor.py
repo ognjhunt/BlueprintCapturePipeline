@@ -346,9 +346,23 @@ def _terminal_evidence(
     result_path, result, result_bytes = _json_file(
         terminal_result_path, code="vast_official_terminal_result_invalid"
     )
-    if result_path.name != "result.json" or result_path.parent.name != "allocator":
+    if (
+        result_path.name != "public_scene_artifixer3d_vast_result.json"
+        or result_path.parent.name != "artifixer3d-job"
+        or result_path.parent.parent.name != "allocator"
+    ):
         raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
-    run_root = result_path.parent.parent
+    run_root = result_path.parents[2]
+    allocator_result_path, allocator_result, allocator_result_bytes = _json_file(
+        run_root / "allocator" / "result.json",
+        code="vast_official_terminal_result_invalid",
+    )
+    if (
+        allocator_result_path.parent != run_root / "allocator"
+        or allocator_result != result
+        or allocator_result_bytes != result_bytes
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
     result_status = result.get("status")
     closeout = result.get("provider_closeout")
     watchdog = result.get("independent_watchdog")
@@ -482,8 +496,8 @@ def _terminal_evidence(
         or receipt.get("execute_requested") is not True
         or receipt.get("raw_secret_values_recorded") is not False
         or not isinstance(terminal_result, Mapping)
-        or terminal_result.get("path") != str(result_path)
-        or terminal_result.get("digest") != _sha256_bytes(result_bytes)
+        or terminal_result.get("path") != str(allocator_result_path)
+        or terminal_result.get("digest") != _sha256_bytes(allocator_result_bytes)
         or terminal_result.get("exists") is not True
         or not isinstance(terminal_teardown, Mapping)
         or terminal_teardown.get("path") != str(teardown_path)

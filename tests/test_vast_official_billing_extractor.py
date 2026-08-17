@@ -220,7 +220,13 @@ def _terminal_fixture(
         },
         "blockers": [] if status == "completed" else ["runtime_result_missing"],
     }
-    result_path = _write(allocator / "result.json", result)
+    result_path = _write(
+        allocator
+        / "artifixer3d-job"
+        / "public_scene_artifixer3d_vast_result.json",
+        result,
+    )
+    allocator_result_path = _write(allocator / "result.json", result)
     terminal_status = "passed" if status == "completed" else "blocked"
     receipt = {
         "schema_version": "task_evaluation_launch_receipt.v1",
@@ -235,8 +241,8 @@ def _terminal_fixture(
         "terminal_evidence": {
             "status": terminal_status,
             "result": {
-                "path": str(result_path),
-                "digest": _sha256(result_path),
+                "path": str(allocator_result_path),
+                "digest": _sha256(allocator_result_path),
                 "exists": True,
             },
             "artifacts": {
@@ -289,16 +295,19 @@ def _terminal_fixture(
 
 
 def _refresh_terminal_bindings(result_path: Path) -> None:
-    run_root = result_path.parent.parent
+    run_root = result_path.parents[2]
     result = json.loads(result_path.read_text(encoding="utf-8"))
     adapter_path = Path(result["adapter_result_path"])
     teardown_path = Path(result["teardown_manifest_path"])
     result["provider_closeout"]["adapter_result"] = _bound(adapter_path)
     result["provider_closeout"]["teardown_manifest"] = _bound(teardown_path)
     _write(result_path, result)
+    allocator_result_path = _write(run_root / "allocator" / "result.json", result)
     receipt_path = run_root / "launch_receipt.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    receipt["terminal_evidence"]["result"]["digest"] = _sha256(result_path)
+    receipt["terminal_evidence"]["result"]["digest"] = _sha256(
+        allocator_result_path
+    )
     receipt["terminal_evidence"]["artifacts"]["teardown_manifest_path"][
         "digest"
     ] = _sha256(teardown_path)
@@ -510,6 +519,10 @@ def test_extracts_production_shaped_posted_instance_charges_exactly(
         }
         assert terminal["teardown_manifest"]["status"] == "completed"
         assert str(instance_id) in terminal["terminal_result"]["path"]
+        terminal_path = Path(terminal["terminal_result"]["path"])
+        assert terminal_path.name == "public_scene_artifixer3d_vast_result.json"
+        assert terminal_path.parent.name == "artifixer3d-job"
+        assert terminal_path.parent.parent.name == "allocator"
     assert validate_vast_official_same_goal_reconciliation(output) == value
     assert stat.S_IMODE(output.stat().st_mode) == 0o440
     serialized = output.read_text(encoding="utf-8")
@@ -644,6 +657,7 @@ def test_rejects_ambiguous_or_invalid_official_rows(
         "launch_identity",
         "wrong_result_path",
         "terminal_symlink",
+        "alternate_depth",
     ],
 )
 def test_rejects_unbound_or_incomplete_terminal_execution_evidence(
@@ -652,7 +666,7 @@ def test_rejects_unbound_or_incomplete_terminal_execution_evidence(
     fixture = _fixture(tmp_path)
     result_path = _spec(fixture, INSTANCE_A, LABEL_A)[2]
     expected = [_spec(fixture, INSTANCE_A, LABEL_A)]
-    run_root = result_path.parent.parent
+    run_root = result_path.parents[2]
     result = json.loads(result_path.read_text(encoding="utf-8"))
     if mutation == "unsupported_terminal_schema":
         result["schema_version"] = "unknown_vast_run.v1"
@@ -702,6 +716,10 @@ def test_rejects_unbound_or_incomplete_terminal_execution_evidence(
         real_result = result_path.with_suffix(".real.json")
         result_path.rename(real_result)
         result_path.symlink_to(real_result)
+    elif mutation == "alternate_depth":
+        alternate = run_root / "allocator" / result_path.name
+        alternate.write_bytes(result_path.read_bytes())
+        expected = [(INSTANCE_A, LABEL_A, alternate)]
     with pytest.raises(VastOfficialBillingExtractionError):
         _materialize(fixture, tmp_path / "output.json", expected=expected)
 
