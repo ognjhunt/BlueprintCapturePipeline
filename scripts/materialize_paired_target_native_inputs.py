@@ -35,6 +35,9 @@ from blueprint_pipeline.paired_target_native_camera_rig_candidate import (
 from blueprint_pipeline.paired_target_native_construction_bindings import (
     materialize_paired_target_native_construction_bindings,
 )
+from blueprint_pipeline.paired_target_native_manipulation_preflight import (
+    materialize_paired_target_native_manipulation_preflight,
+)
 from blueprint_pipeline.registered_replacement_asset import (
     materialize_registered_replacement_asset,
 )
@@ -181,6 +184,26 @@ STEPS: dict[str, Step] = {
                 "--manipulation-preflight", required=True
             ),
             "output_path": Param("--output", required=True),
+        },
+    ),
+    "manipulation-preflight": Step(
+        "Bind pre-arena or complete native manipulation inputs.",
+        materialize_paired_target_native_manipulation_preflight,
+        {
+            "paired_target_preflight_path": Param(
+                "--paired-target-preflight", required=True
+            ),
+            "native_import_result_path": Param(
+                "--native-import-result", required=True
+            ),
+            "task_records": Param(
+                "--task-records",
+                "JSON file containing the task record array.",
+                required=True,
+                json_file=True,
+            ),
+            "output_path": Param("--output", required=True),
+            "phase": Param("--phase", type=str, default="arena_packet"),
         },
     ),
     "arena-requests": Step(
