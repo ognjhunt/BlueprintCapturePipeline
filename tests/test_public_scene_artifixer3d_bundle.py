@@ -71,6 +71,16 @@ def _repository(tmp_path: Path) -> Path:
         "public_scene_artifixer3d_runner.py",
     ):
         (root / "scripts" / name).write_bytes((source_repo / "scripts" / name).read_bytes())
+    (root / "src" / "blueprint_pipeline").mkdir(parents=True)
+    for name in ("__init__.py", "image_editor_backend_registry.py"):
+        (root / "src" / "blueprint_pipeline" / name).write_bytes(
+            (source_repo / "src" / "blueprint_pipeline" / name).read_bytes()
+        )
+    registry = Path(
+        "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
+    )
+    (root / registry).parent.mkdir(parents=True)
+    (root / registry).write_bytes((source_repo / registry).read_bytes())
     _git(["git", "init", "-q"], root)
     _git(["git", "config", "user.name", "Fixture"], root)
     _git(["git", "config", "user.email", "fixture@example.test"], root)
@@ -312,6 +322,9 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         )
     assert "provider_runtime/run_public_scene_artifixer3d.sh" in names
     assert "provider_runtime/public_scene_artifixer3d_runner.py" in names
+    assert "provider_runtime/blueprint_pipeline/__init__.py" in names
+    assert "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py" in names
+    assert "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json" in names
     assert not any(name.endswith("artifixer-1.3b.pt") for name in names)
     assert request["source_object_restoration_permitted"] is False
     assert request["outside_exact_support_changed_pixels_permitted"] == 0
@@ -331,6 +344,62 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert '/ "cutlass"\n    / "include"' in entrypoint
     assert '"ninja", "nvcc", "slangc"' in entrypoint
     assert '"single_cuda_device_unavailable"' in entrypoint
+
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(bundle) as archive:
+        archive.extractall(extracted)
+    imported = subprocess.run(
+        [sys.executable, str(extracted / "provider_runtime" / "public_scene_artifixer3d_runner.py"), "--help"],
+        cwd=extracted,
+        env={"PATH": str(Path(sys.executable).parent)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_isolated_bundle_import_fails_when_runtime_registry_module_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    candidate = _candidate(tmp_path)
+    receipt = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=candidate,
+        use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
+        artifixer_source_directory=source,
+        output_root=tmp_path / "bundle",
+        repository_root=_repository(tmp_path),
+    )
+    mutated = tmp_path / "mutated.zip"
+    missing = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
+    with zipfile.ZipFile(receipt["bundle"]["path"]) as source_archive:
+        with zipfile.ZipFile(mutated, "w") as target_archive:
+            for info in source_archive.infolist():
+                if info.filename != missing:
+                    target_archive.writestr(info, source_archive.read(info.filename))
+    extracted = tmp_path / "mutated-extracted"
+    with zipfile.ZipFile(mutated) as archive:
+        archive.extractall(extracted)
+    imported = subprocess.run(
+        [
+            sys.executable,
+            str(extracted / "provider_runtime" / "public_scene_artifixer3d_runner.py"),
+            "--help",
+        ],
+        cwd=extracted,
+        env={"PATH": str(Path(sys.executable).parent)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert imported.returncode != 0
+    assert "image_editor_backend_registry" in imported.stderr
 
 
 def test_seals_pinned_vibe_semantic_editor_only_bundle(
