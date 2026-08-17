@@ -58,15 +58,17 @@ def test_the_terminal_result_names_both_manifest_fields(module, tmp_path: Path) 
 
 
 @LANES
-def test_an_attempt_that_retained_nothing_names_the_fields_as_none(
+def test_an_attempt_that_never_allocated_seals_explicit_absence(
     module, tmp_path: Path
 ) -> None:
-    """`None` and "absent" are different claims.
+    """A pre-provider refusal retains an explicit unallocated teardown.
 
-    A run that never reached a provider retained no manifest, and saying so is
-    not the same as omitting the field -- the launch contract cannot tell an
-    attempt that produced nothing from one whose evidence went missing if the
-    key is simply not there.
+    The direct-provider terminal adapter now materializes the same conventional
+    artifact and teardown receipts used by the shared Vast path.  This is
+    stronger than naming both fields as ``None``: the launch can distinguish a
+    proven pre-allocation refusal from evidence that went missing, and the
+    receipt explicitly says that there were no provider IDs or continuing
+    spend.
     """
 
     adapter_output = tmp_path / "allocator" / "result.json"
@@ -76,8 +78,23 @@ def test_an_attempt_that_retained_nothing_names_the_fields_as_none(
         {"status": "blocked", "provider_mutations_performed": 0}, adapter_output
     )
 
-    assert sealed["artifact_manifest_path"] is None
-    assert sealed["teardown_manifest_path"] is None
+    artifact_manifest = Path(sealed["artifact_manifest_path"])
+    teardown_manifest = Path(sealed["teardown_manifest_path"])
+    assert artifact_manifest.is_file()
+    assert teardown_manifest.is_file()
+
+    artifact = json.loads(artifact_manifest.read_text(encoding="utf-8"))
+    teardown = json.loads(teardown_manifest.read_text(encoding="utf-8"))
+    assert artifact["status"] == "completed"
+    assert artifact["blockers"] == []
+    assert set(artifact["required_roles"]) == {
+        "allocator_adapter_result",
+        "teardown_manifest",
+    }
+    assert teardown["status"] == "not_required_provider_adapter_never_invoked"
+    assert teardown["vast_instance_ids"] == []
+    assert teardown["teardown_actions_performed"] == []
+    assert teardown["continuing_spend_from_this_run"] is False
 
 
 @LANES
