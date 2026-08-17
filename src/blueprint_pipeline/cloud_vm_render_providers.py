@@ -137,6 +137,86 @@ PY
 """
 
 
+#: Trainers that exist only as Windows executables.  Postshot ships
+#: ``postshot-cli.exe`` and has no Linux build and no service API, so its arm
+#: cannot run through the Linux/Docker bootstrap every other lane uses.
+WINDOWS_WORKER_PLATFORM = "windows"
+
+
+def _windows_worker_bootstrap(spec: RenderLaunchSpec) -> str:
+    """Build the PowerShell EC2 UserData for a pre-baked Windows GPU host.
+
+    Three properties matter more than convenience here:
+
+    * **No credential ever enters UserData.**  EC2 UserData is readable from
+      the instance itself over IMDS and from the account via
+      ``DescribeInstanceAttribute``, so the trainer licence is fetched at run
+      time from a single signed URL and the remote object is deleted on
+      acknowledgement.  Only the fetch URL crosses this boundary.
+    * **The host image is already complete.**  Startup verifies the baked
+      worker marker instead of installing a driver or trainer, keeping a
+      multi-GB download out of the paid window.
+    * **The instance ends itself.**  A local deadline plus
+      ``InstanceInitiatedShutdownBehavior=terminate`` bounds spend even if the
+      controller dies.  This is a backstop, never a replacement for the
+      independent watchdog and provider-zero proof.
+    """
+
+    # Refuse rather than filter.  Silently dropping a credential would surface
+    # later as an opaque "licence missing" failure on a paid instance; refusing
+    # here fails closed while the mistake is still free to fix.
+    smuggled = sorted(
+        key
+        for key in spec.env
+        if any(
+            fragment in str(key).lower()
+            for fragment in ("password", "secret", "token", "private_key", "credential")
+        )
+    )
+    if smuggled:
+        raise ValueError(
+            "windows_worker_bootstrap_refuses_credential_in_user_data:"
+            + ",".join(smuggled)
+        )
+
+    env_b64 = base64.b64encode(
+        "\n".join(f"{key}={value}" for key, value in spec.env.items()).encode()
+    ).decode()
+    argv_b64 = base64.b64encode(json.dumps(list(spec.bootstrap_argv)).encode()).decode()
+    marker = json.dumps(spec.image)
+    deadline_seconds = int(spec.env.get("BLUEPRINT_WORKER_HARD_TTL_SECONDS") or 0)
+    return f"""<powershell>
+$ErrorActionPreference = "Stop"
+New-Item -ItemType Directory -Force -Path C:\\work\\out | Out-Null
+
+# Bound the paid window locally even if the controller never returns.
+$deadline = {deadline_seconds}
+if ($deadline -gt 0) {{
+  $action = New-ScheduledTaskAction -Execute "shutdown.exe" -Argument "/s /t 0 /f"
+  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds($deadline)
+  Register-ScheduledTask -TaskName "blueprint-hard-deadline" -Action $action `
+    -Trigger $trigger -User "SYSTEM" -RunLevel Highest -Force | Out-Null
+}}
+
+# The baked host image must already carry the exact worker identity.
+$markerPath = "C:\\blueprint\\worker-image-ref"
+if (-not (Test-Path $markerPath)) {{ throw "blueprint_worker_image_marker_missing" }}
+$marker = (Get-Content $markerPath -Raw).Trim()
+if ($marker -ne {marker}) {{ throw "blueprint_worker_image_marker_mismatch" }}
+
+[IO.File]::WriteAllBytes("C:\\work\\blueprint_worker.env",
+  [Convert]::FromBase64String("{env_b64}"))
+[IO.File]::WriteAllBytes("C:\\work\\blueprint_argv.json",
+  [Convert]::FromBase64String("{argv_b64}"))
+
+$env:BLUEPRINT_WORKER_ENV_FILE = "C:\\work\\blueprint_worker.env"
+$env:BLUEPRINT_WORKER_ARGV_FILE = "C:\\work\\blueprint_argv.json"
+& "C:\\blueprint\\venv\\Scripts\\python.exe" -m blueprint_pipeline.windows_worker_entrypoint
+</powershell>
+<persist>false</persist>
+"""
+
+
 class GCPRenderProvider(GpuRenderProvider):
     """Compute Engine GPU VM adapter using Application Default Credentials."""
 
@@ -578,6 +658,7 @@ class AWSRenderProvider(GpuRenderProvider):
             "configured_hourly_rate_usd": _positive_float(_env("BLUEPRINT_AWS_HOURLY_RATE_USD")),
             "registry_auth": _env("BLUEPRINT_AWS_REGISTRY_AUTH") or "public",
             "registry_host": _env("BLUEPRINT_AWS_REGISTRY_HOST"),
+            "worker_platform": (_env("BLUEPRINT_AWS_WORKER_PLATFORM") or "linux").lower(),
         }
 
     def _session(self) -> Any:
@@ -617,9 +698,17 @@ class AWSRenderProvider(GpuRenderProvider):
         blockers = _required_config(config, ("account_id", "region", "instance_type", "ami_id", "subnet_id", "iam_instance_profile_arn"), "aws")
         if not config["security_group_ids"]:
             blockers.append("aws_security_group_ids_missing")
-        if config["registry_auth"] not in {"public", "aws_ecr"}:
+        windows_worker = config["worker_platform"] == WINDOWS_WORKER_PLATFORM
+        if config["worker_platform"] not in {"linux", WINDOWS_WORKER_PLATFORM}:
+            blockers.append("aws_worker_platform_invalid")
+        if windows_worker:
+            # There is no container runtime on the Windows trainer host, so a
+            # registry mode would be a claim this lane cannot honour.
+            if config["registry_auth"] != "public":
+                blockers.append("aws_windows_worker_registry_auth_unsupported")
+        elif config["registry_auth"] not in {"public", "aws_ecr"}:
             blockers.append("aws_registry_auth_invalid")
-        if config["registry_auth"] == "aws_ecr" and not config["registry_host"]:
+        elif config["registry_auth"] == "aws_ecr" and not config["registry_host"]:
             blockers.append("aws_registry_host_missing")
         if config["configured_hourly_rate_usd"] is None:
             blockers.append("aws_hourly_rate_unconfigured")
@@ -636,7 +725,13 @@ class AWSRenderProvider(GpuRenderProvider):
             "SubnetId": config["subnet_id"],
             "SecurityGroupIds": config["security_group_ids"],
             "IamInstanceProfile": {"Arn": config["iam_instance_profile_arn"]},
-            "UserData": _worker_cloud_init(spec, provider="aws", registry_auth=config["registry_auth"], registry_host=config["registry_host"], aws_region=config["region"]),
+            "UserData": (
+                _windows_worker_bootstrap(spec)
+                if windows_worker
+                else _worker_cloud_init(spec, provider="aws", registry_auth=config["registry_auth"], registry_host=config["registry_host"], aws_region=config["region"])
+            ),
+            # Windows AMIs expose the root volume as /dev/sda1 too, but the
+            # device name must match the AMI's own block device mapping.
             "BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": max(spec.container_disk_gb, int(config["boot_disk_gb"])), "VolumeType": "gp3", "DeleteOnTermination": True, "Encrypted": True}}],
             "TagSpecifications": [{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": name}, {"Key": "blueprint-managed", "Value": "true"}, {"Key": "blueprint-name-prefix", "Value": name[:128]}]}],
             "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled", "HttpPutResponseHopLimit": 1},
@@ -650,7 +745,7 @@ class AWSRenderProvider(GpuRenderProvider):
         }
         if config["key_name"]:
             body["KeyName"] = config["key_name"]
-        return {"provider": self.name, "account_id": config["account_id"], "region": config["region"], "instance_name": name, "run_instances": body, "configured_hourly_rate_usd": config["configured_hourly_rate_usd"], "max_hourly_rate_usd": config["max_hourly_rate_usd"], "registry_auth": config["registry_auth"], "configuration_blockers": blockers}
+        return {"provider": self.name, "account_id": config["account_id"], "region": config["region"], "instance_name": name, "run_instances": body, "configured_hourly_rate_usd": config["configured_hourly_rate_usd"], "max_hourly_rate_usd": config["max_hourly_rate_usd"], "registry_auth": config["registry_auth"], "worker_platform": config["worker_platform"], "configuration_blockers": blockers}
 
     def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
         req = _mapping(request)
