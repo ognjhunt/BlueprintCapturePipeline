@@ -81,6 +81,10 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             or predecessor.get("scene_id") != scene_id
             or predecessor.get("candidate_usd_sha256")
             != receipt.get("candidate_usd_sha256")
+            or predecessor.get("task_id") != receipt.get("task_id")
+            or predecessor.get("asset_id") != receipt.get("asset_id")
+            or native_manifest.get("validation_mode")
+            != receipt.get("validation_mode")
             or predecessor.get("binding_digest")
             != receipt.get("predecessor_binding_digest")
             or receipt.get("paired_native_predecessor") != predecessor
@@ -130,6 +134,12 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             blockers.append("attempt_authority_probe_spec_mismatch")
         if authority.get("scene_id") != scene_id:
             blockers.append("attempt_authority_scene_mismatch")
+        if authority.get("task_id") != receipt.get("task_id"):
+            blockers.append("attempt_authority_task_mismatch")
+        if authority.get("asset_id") != receipt.get("asset_id"):
+            blockers.append("attempt_authority_asset_mismatch")
+        if authority.get("validation_mode") != receipt.get("validation_mode"):
+            blockers.append("attempt_authority_validation_mode_mismatch")
         if authority.get("candidate_usd_sha256") != receipt.get(
             "candidate_usd_sha256"
         ):
@@ -225,6 +235,8 @@ SPEC = LaneLiveProfileSpec(
     max_ttl_seconds=MAX_TTL_SECONDS,
     source_bundle_id=lambda context: (
         f"simready-isaac-{context.extra_values['scene_id']}-"
+        f"{context.receipt['task_id']}-"
+        f"{context.receipt['candidate_usd_sha256'].removeprefix('sha256:')[:12]}-"
         f"{context.source_commit[:12]}"
     ),
     source_kind="interiorgs_sage",

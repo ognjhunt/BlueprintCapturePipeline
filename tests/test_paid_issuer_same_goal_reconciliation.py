@@ -116,6 +116,80 @@ def test_simready_issuer_refuses_nonzero_prior_without_shared_proof(
         )
 
 
+def test_simready_issuer_carries_the_complete_five_attempt_campaign_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scene 840920 starts after five retained SimReady allocations ($0.247)."""
+
+    issuer = _load("issue_simready_isaac_paid_attempt_authority")
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    bundle = {
+        "bundle_sha256": "sha256:" + "a" * 64,
+        "probe_spec_sha256": "sha256:" + "b" * 64,
+        "scene_id": "840920",
+        "task_id": "task_a_washer_door_open",
+        "asset_id": "840920_simready_washer_candidate",
+        "validation_mode": "commanded_articulation",
+        "candidate_usd_sha256": "sha256:" + "c" * 64,
+        "native_probe_manifest_sha256": "sha256:" + "d" * 64,
+        "native_probe_manifest_digest": "sha256:" + "e" * 64,
+        "predecessor_binding_digest": "sha256:" + "f" * 64,
+    }
+    monkeypatch.setattr(
+        issuer,
+        "resolve_host_resident_bundle_receipt",
+        lambda _path: {"blockers": [], "receipt": bundle},
+    )
+    monkeypatch.setattr(
+        issuer, "validate_simready_isaac_paid_attempt_authority", lambda *_a, **_k: {}
+    )
+    prior = [
+        {
+            "result": {
+                "path": f"/retained/simready/{index}/result.json",
+                "size_bytes": 1,
+                "sha256": "sha256:" + str(index) * 64,
+            }
+        }
+        for index in range(1, 6)
+    ]
+    reconciliation = {
+        "path": "/retained/simready/reconciliation.json",
+        "size_bytes": 1,
+        "sha256": "sha256:" + "6" * 64,
+        "receipt_digest": "sha256:" + "7" * 64,
+        "entry_count": 5,
+        "total_cost_usd": 0.247,
+        "lane": "simready_isaac",
+    }
+    monkeypatch.setattr(
+        issuer,
+        "bind_lane_prior_spend",
+        lambda **_kwargs: {
+            "prior_terminal_attempts": prior,
+            "reconciliation": reconciliation,
+            "actual_total_usd": 0.247,
+        },
+    )
+
+    authority = issuer.issue_simready_isaac_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        authorized_by="local_fixture_audit",
+        authority_reference="post_merge_no_spend_executability_audit",
+        max_hourly_rate_usd=1.2,
+        hard_cap_usd=2.0,
+        hard_ttl_seconds=6000,
+        prior_result_paths=tuple(tmp_path / f"prior-{index}.json" for index in range(5)),
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+    )
+
+    assert len(authority["prior_terminal_attempts"]) == 5
+    assert authority["prior_actual_provider_spend_usd"] == 0.247
+    assert authority["prior_spend_reconciliation"]["entry_count"] == 5
+    assert authority["task_id"] == "task_a_washer_door_open"
+
+
 def test_gaussian_issuer_cannot_omit_or_tamper_shared_reconciliation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

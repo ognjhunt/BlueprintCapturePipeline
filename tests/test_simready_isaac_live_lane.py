@@ -85,6 +85,7 @@ def lane(tmp_path: Path) -> dict:
         "schema_version": "adp009b_simready_native_probe.v1",
         "status": "ready",
         "scene_id": "840920",
+        "validation_mode": "commanded_articulation",
         "candidate_usd": {
             "relative_path": candidate.name,
             "size_bytes": candidate.stat().st_size,
@@ -109,6 +110,9 @@ def lane(tmp_path: Path) -> dict:
                 "blockers": [],
                 "probe_spec_sha256": "sha256:" + "c" * 64,
                 "scene_id": "840920",
+                "task_id": "task-a",
+                "asset_id": "asset-a",
+                "validation_mode": "commanded_articulation",
                 "candidate_usd_sha256": native_manifest["candidate_usd"]["sha256"],
                 "native_probe_manifest_sha256": "sha256:"
                 + hashlib.sha256(native_manifest_path.read_bytes()).hexdigest(),
@@ -164,6 +168,9 @@ def test_the_issuer_derives_every_bound_value_from_the_receipt(lane) -> None:
     assert authority["bundle_sha256"] == receipt["bundle_sha256"]
     assert authority["probe_spec_sha256"] == receipt["probe_spec_sha256"]
     assert authority["scene_id"] == "840920"
+    assert authority["task_id"] == "task-a"
+    assert authority["asset_id"] == "asset-a"
+    assert authority["validation_mode"] == "commanded_articulation"
     assert authority["candidate_usd_sha256"] == receipt["candidate_usd_sha256"]
     assert authority["native_probe_manifest_sha256"] == receipt[
         "native_probe_manifest_sha256"
@@ -287,6 +294,15 @@ def test_the_profile_binds_the_bundle_where_it_actually_resolved(lane) -> None:
         "simready_paired_native_runtime_result",
         "simready_paired_native_candidate_probe",
     }.issubset(inputs)
+
+
+def test_source_bundle_identity_names_the_task_and_candidate(lane) -> None:
+    profile = _build(lane)
+    candidate_prefix = hashlib.sha256(lane["candidate"].read_bytes()).hexdigest()[:12]
+
+    assert profile["source_bundle"]["bundle_id"] == (
+        f"simready-isaac-840920-task-a-{candidate_prefix}-{COMMIT[:12]}"
+    )
 
 
 @pytest.mark.parametrize(
