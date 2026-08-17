@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.adp_joint_agent_vast import (
     DEFAULT_IMAGE as JOINT_AGENT_IMAGE,
@@ -37,6 +37,11 @@ from blueprint_pipeline.adp_joint_agent_vast import (
 from blueprint_pipeline.adp_joint_agent_vast import PROBE_KIND
 from blueprint_pipeline.joint_agent_topology_execution_authority import (
     SCHEMA_VERSION as JOINT_TOPOLOGY_AUTHORITY_SCHEMA_VERSION,
+)
+from blueprint_pipeline.paid_attempt_authority import (
+    JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
+    bind_lane_prior_spend,
+    validate_bound_lane_prior_spend,
 )
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
@@ -49,6 +54,34 @@ from blueprint_pipeline.task_evaluation_live_profile import (
 # The allocator refuses a TTL outside this band for this probe.
 MIN_TTL_SECONDS = 5_400
 MAX_TTL_SECONDS = 14_400
+
+
+def _prior_spend_lineage(context: LaneLiveProfileContext) -> Mapping[str, Any]:
+    """Return the exact prior-spend chain already reopened by this builder."""
+
+    value = context.extra_values.get("same_goal_spend_lineage")
+    if not isinstance(value, Mapping):
+        raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid")
+    return value
+
+
+def _lineage_blockers(context: LaneLiveProfileContext) -> list[str]:
+    lineage = _prior_spend_lineage(context)
+    ordinal = lineage.get("attempt_ordinal")
+    if (
+        lineage.get("schema_version") != JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA
+        or isinstance(ordinal, bool)
+        or not isinstance(ordinal, int)
+        or ordinal < 1
+    ):
+        return ["joint_agent_prior_spend_lineage_invalid"]
+    try:
+        observed = validate_bound_lane_prior_spend(lineage, lane="joint_agent")
+    except ValueError:
+        return ["joint_agent_prior_spend_lineage_invalid"]
+    if len(observed["prior_terminal_attempts"]) != ordinal - 1:
+        return ["joint_agent_prior_spend_lineage_ordinal_mismatch"]
+    return []
 
 
 def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
@@ -115,6 +148,7 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             or context.hard_ttl_seconds > ttl_cap
         ):
             blockers.append("dual_task_topology_authority_ttl_exceeded")
+    blockers.extend(_lineage_blockers(context))
     return blockers
 
 
@@ -129,7 +163,7 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
 
 
 def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
-    return [
+    inputs = [
         {
             "name": "source_bundle_manifest",
             "path": str(context.receipt_path),
@@ -147,6 +181,60 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "digest": context.bundle_sha256,
         },
     ]
+    lineage = _prior_spend_lineage(context)
+    reconciliation = lineage.get("prior_spend_reconciliation")
+    if reconciliation is None:
+        return inputs
+    if not isinstance(reconciliation, Mapping):
+        raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid")
+    try:
+        reconciliation_path = Path(
+            str(reconciliation.get("path") or "")
+        ).expanduser().resolve()
+        reconciliation_document = json.loads(
+            reconciliation_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid") from exc
+    if not isinstance(reconciliation_document, Mapping):
+        raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid")
+    records: list[tuple[str, Mapping[str, Any]]] = [
+        ("joint_agent_prior_spend_reconciliation", reconciliation)
+    ]
+    for index, entry in enumerate(reconciliation_document.get("entries") or []):
+        if not isinstance(entry, Mapping):
+            raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid")
+        for source in entry.get("source_receipts") or []:
+            if not isinstance(source, Mapping) or not isinstance(
+                source.get("record"), Mapping
+            ):
+                raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid")
+            records.append(
+                (
+                    f"joint_agent_prior_spend_{index}_{source.get('role') or 'source'}",
+                    source["record"],
+                )
+            )
+    observed_paths = {str(item["path"]) for item in inputs}
+    for name, record in records:
+        path = Path(str(record.get("path") or "")).expanduser().resolve()
+        if not path.is_file() or path.is_symlink():
+            raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_invalid")
+        if str(path) in observed_paths:
+            continue
+        inputs.append(
+            {
+                "name": name,
+                "path": str(path),
+                "digest": str(record.get("sha256") or ""),
+            }
+        )
+        observed_paths.add(str(path))
+    return inputs
+
+
+def _profile_fields(context: LaneLiveProfileContext) -> Mapping[str, Any]:
+    return {"same_goal_spend_lineage": dict(_prior_spend_lineage(context))}
 
 
 SPEC = LaneLiveProfileSpec(
@@ -160,6 +248,7 @@ SPEC = LaneLiveProfileSpec(
     lane_argv=_lane_argv,
     immutable_inputs=_immutable_inputs,
     lane_blockers=_lane_blockers,
+    profile_fields=_profile_fields,
     extra_path_names=(),
     one_use_standing_authority_required=True,
 )
@@ -170,12 +259,41 @@ def build_joint_agent_live_profile(
     bundle_receipt_path: str | Path,
     source_commit: str,
     raw_manifest_uri: str,
+    attempt_ordinal: int,
+    prior_result_paths: Sequence[str | Path] = (),
+    prior_spend_reconciliation_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 3.0,
     hard_ttl_seconds: int = 7_200,
 ) -> dict[str, Any]:
     """Derive a live profile from the bundle receipt it will run."""
+
+    if (
+        isinstance(attempt_ordinal, bool)
+        or not isinstance(attempt_ordinal, int)
+        or attempt_ordinal < 1
+    ):
+        raise TaskEvaluationLaunchError("joint_agent_attempt_ordinal_invalid")
+    try:
+        prior_spend = bind_lane_prior_spend(
+            prior_result_paths=prior_result_paths,
+            reconciliation_path=prior_spend_reconciliation_path,
+            lane="joint_agent",
+        )
+    except ValueError as exc:
+        raise TaskEvaluationLaunchError(
+            f"joint_agent_prior_spend_lineage_invalid:{exc}"
+        ) from exc
+    if len(prior_spend["prior_terminal_attempts"]) != attempt_ordinal - 1:
+        raise TaskEvaluationLaunchError("joint_agent_prior_spend_lineage_ordinal_mismatch")
+    lineage: dict[str, Any] = {
+        "schema_version": JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
+        "attempt_ordinal": attempt_ordinal,
+        "prior_terminal_attempts": prior_spend["prior_terminal_attempts"],
+        "prior_spend_reconciliation": prior_spend["reconciliation"],
+        "prior_actual_provider_spend_usd": prior_spend["actual_total_usd"],
+    }
 
     return build_lane_live_profile(
         SPEC,
@@ -186,6 +304,7 @@ def build_joint_agent_live_profile(
         hard_ttl_seconds=hard_ttl_seconds,
         revision=revision,
         max_spend_usd=max_spend_usd,
+        extra_values={"same_goal_spend_lineage": lineage},
     )
 
 
@@ -198,6 +317,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Local digest-bound content-addressed publication receipt for this run spec.",
     )
+    parser.add_argument(
+        "--attempt-ordinal",
+        required=True,
+        type=int,
+        help=(
+            "1 for a first attempt; every later attempt must carry all earlier "
+            "terminal results and one official same-goal reconciliation."
+        ),
+    )
+    parser.add_argument("--prior-result", action="append", default=[])
+    parser.add_argument("--prior-spend-reconciliation")
     parser.add_argument(
         "--revision",
         help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
@@ -213,6 +343,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             bundle_receipt_path=args.bundle_receipt,
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,
+            attempt_ordinal=args.attempt_ordinal,
+            prior_result_paths=args.prior_result,
+            prior_spend_reconciliation_path=args.prior_spend_reconciliation,
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,

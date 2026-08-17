@@ -31,6 +31,7 @@ SUPPORTED_LANES = frozenset(
     {
         "content_agents",
         "gaussian_excision",
+        "joint_agent",
         "native_task_arena",
         "retained_scene_render",
         "semantic_teacher_image_edit_gpu_canary",
@@ -242,6 +243,75 @@ def _content_agents_admission_binding(
     return admission_path, admission, str(authority_digest), source_commit
 
 
+def _joint_agent_admission_binding(
+    *,
+    result_path: Path,
+    result: Mapping[str, Any],
+    bundle_sha256: Any,
+) -> tuple[Path, dict[str, Any], str, str]:
+    """Recover the exact Joint Agent launch admission from its terminal root.
+
+    Joint Agent predates lane-specific paid-attempt authorities.  Its standing
+    website authorization is consumed by the dispatcher, while the allocator
+    records the exact bounded admission in the sibling ``admission.json``.
+    The terminal result deliberately contains the runtime outcome only, so a
+    retry used to have no way to bind its posted charge to that admission.
+
+    The allocation-binding digest is the self-digesting, allocator-owned
+    identity for this legacy attempt.  Derive the sibling path rather than
+    accepting an operator-provided admission: otherwise a reconciliation could
+    attach an unrelated successful admission merely to make a failed GPU cost
+    look accounted for.
+    """
+
+    if (
+        result_path.name != "result.json"
+        or result_path.parent.name != "allocator"
+        or result.get("schema_version") != "adp_joint_agent_vast_run.v1"
+    ):
+        raise ValueError("joint_agent_allocator_admission_path_invalid")
+    admission_candidate = result_path.with_name("admission.json")
+    if not admission_candidate.is_file() or admission_candidate.is_symlink():
+        raise ValueError("joint_agent_allocator_admission_missing")
+    admission_path, admission = _read(
+        admission_candidate,
+        code="joint_agent_allocator_admission_invalid",
+    )
+    allocation = admission.get("allocation_binding")
+    control_identity = admission.get("control_plane_identity")
+    if not isinstance(allocation, Mapping) or not isinstance(
+        control_identity, Mapping
+    ):
+        raise ValueError("joint_agent_allocator_admission_invalid")
+    admission_bundle = allocation.get("bundle_sha256")
+    source_commit = allocation.get("orchestrator_source_commit")
+    allocation_binding_digest = admission.get("allocation_binding_digest")
+    if (
+        admission.get("schema_version") != "paid_lane_admission.v1"
+        or admission.get("status") != "admitted"
+        or admission.get("resource_class") != "vast_provider_adapter"
+        or admission.get("blockers") != []
+        or admission.get("provider_mutations_performed") != 0
+        or admission.get("program_id") != "arm-decision-proof-v1"
+        or admission.get("probe_kind") != "adp-usd-joint-agent"
+        or admission.get("authority")
+        != "user_authorized_bounded_joint_agent_gpu_compute"
+        or allocation.get("program_id") != "arm-decision-proof-v1"
+        or allocation.get("probe_kind") != "adp-usd-joint-agent"
+        or allocation_binding_digest != canonical_digest(allocation)
+        or not _digest(allocation_binding_digest)
+        or not _digest(admission_bundle)
+        or admission_bundle != bundle_sha256
+        or not isinstance(source_commit, str)
+        or len(source_commit) != 40
+        or any(character not in "0123456789abcdef" for character in source_commit)
+        or control_identity.get("orchestrator_source_commit") != source_commit
+        or allocation.get("expected_source_commit") != source_commit
+    ):
+        raise ValueError("joint_agent_allocator_admission_invalid")
+    return admission_path, admission, str(allocation_binding_digest), source_commit
+
+
 def _entry(
     *,
     lane: str,
@@ -281,17 +351,32 @@ def _entry(
             ("authority_digest",),
         )
     except ValueError as exc:
-        if str(exc) != "same_goal_spend_required_binding_missing" or lane != "content_agents":
+        if str(exc) != "same_goal_spend_required_binding_missing":
             raise
-        admission_path, admission, authority_digest, source_commit = (
-            _content_agents_admission_binding(
-                result_path=result_path,
-                result=result,
-                bundle_sha256=bundle_sha256,
+        if lane == "content_agents":
+            admission_path, admission, authority_digest, source_commit = (
+                _content_agents_admission_binding(
+                    result_path=result_path,
+                    result=result,
+                    bundle_sha256=bundle_sha256,
+                )
             )
-        )
+        elif lane == "joint_agent":
+            admission_path, admission, authority_digest, source_commit = (
+                _joint_agent_admission_binding(
+                    result_path=result_path,
+                    result=result,
+                    bundle_sha256=bundle_sha256,
+                )
+            )
+        else:
+            raise
         admission_source = (admission_path, admission)
-        authority_path = ["allocation_binding", "paid_attempt_authority_digest"]
+        authority_path = (
+            ["allocation_binding", "paid_attempt_authority_digest"]
+            if lane == "content_agents"
+            else ["allocation_binding_digest"]
+        )
         authority_source_role = "admission"
     zero_binding_path, zero_confirmed = _json_path(
         zero,
