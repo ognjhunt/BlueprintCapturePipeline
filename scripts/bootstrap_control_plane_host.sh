@@ -109,6 +109,20 @@ if detail["failed"]:
     print(detail["remediation"], file=sys.stderr)
     raise SystemExit(1)
 print(f"  all {len(detail['checked'])} control-plane entrypoints import")
+
+# The STEP extractor imports build123d lazily only after it has verified the
+# mesh packet. Importing allocator entrypoints cannot prove this dependency,
+# which is why a production host passed bootstrap and then failed at the first
+# fresh-scene extraction. Probe the exact callable the materializer uses.
+try:
+    from build123d import import_step
+except Exception as exc:
+    print(f"  UNIMPORTABLE build123d.import_step: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+if not callable(import_step):
+    print("  UNUSABLE build123d.import_step: not callable", file=sys.stderr)
+    raise SystemExit(1)
+print("  build123d.import_step available")
 PY
 
 echo "host bootstrap complete"
