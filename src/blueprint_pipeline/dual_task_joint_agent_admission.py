@@ -118,6 +118,74 @@ def _validated_source_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     return receipt
 
 
+AUTHORED_REPLACEMENT_SCHEMA = "simready_graph_asset_receipt.v1"
+
+#: The fewest links an authored replacement may carry and still be an
+#: articulation.  One link is a rigid body: there is no parent to resolve, which
+#: is the exact failure feeding a whole-object mesh produced.
+MINIMUM_AUTHORED_REPLACEMENT_LINK_COUNT = 2
+
+
+def _validated_authored_replacement(
+    value: Mapping[str, Any], *, source_receipt: Mapping[str, Any], freeze_digest: str
+) -> dict[str, Any]:
+    """Validate an authored replacement offered in place of the source mesh.
+
+    The source-mesh receipt stays the extent and freeze authority -- its
+    per-component AABBs are what the target selector projects, and nothing here
+    synthesizes a substitute for them.  What this admits is a different set of
+    *bytes* for the paid agent to read: our authored six-link asset, whose links
+    are distinct prims, rather than a mesh whose parts the agent must first
+    guess at.  On 2026-08-17 the agent was handed the mesh and could not resolve
+    a single parent, because the parts it was asked about did not exist as prims.
+
+    Admitting those bytes is only safe if they are provably the same object.
+    The replacement receipt declares the source receipt it was authored from, so
+    the lineage is checked both ways -- receipt digest and source asset hash --
+    and the replacement must be sealed to the same task freeze.  A replacement
+    that cannot show that lineage is refused, not downgraded.
+    """
+
+    receipt = _clone(value, code="joint_agent_authored_replacement_invalid")
+    errors: list[str] = []
+    if receipt.get("schema_version") != AUTHORED_REPLACEMENT_SCHEMA:
+        errors.append("joint_agent_authored_replacement_schema_invalid")
+    if receipt.get("status") != "materialized":
+        errors.append("joint_agent_authored_replacement_status_invalid")
+    if receipt.get("receipt_digest") != canonical_digest(
+        receipt, digest_field="receipt_digest"
+    ):
+        errors.append("joint_agent_authored_replacement_digest_invalid")
+    if receipt.get("task_freeze_digest") != freeze_digest:
+        errors.append("joint_agent_authored_replacement_freeze_mismatch")
+    output = receipt.get("output_usd")
+    if (
+        not isinstance(output, Mapping)
+        or not _digest(output.get("sha256"))
+        or isinstance(output.get("size_bytes"), bool)
+        or not isinstance(output.get("size_bytes"), int)
+        or output.get("size_bytes", 0) <= 0
+    ):
+        errors.append("joint_agent_authored_replacement_asset_record_invalid")
+    link_paths = receipt.get("link_paths")
+    if (
+        not isinstance(link_paths, Mapping)
+        or len(link_paths) < MINIMUM_AUTHORED_REPLACEMENT_LINK_COUNT
+    ):
+        errors.append("joint_agent_authored_replacement_link_count_invalid")
+    lineage = receipt.get("source_asset_receipt")
+    source_output = source_receipt.get("output_asset") or {}
+    if (
+        not isinstance(lineage, Mapping)
+        or lineage.get("receipt_digest") != source_receipt.get("receipt_digest")
+        or lineage.get("source_asset_sha256") != source_output.get("sha256")
+    ):
+        errors.append("joint_agent_authored_replacement_lineage_invalid")
+    if errors:
+        raise DualTaskJointAgentAdmissionError(errors)
+    return receipt
+
+
 def _source_component_extent(
     receipt: Mapping[str, Any], axis: Sequence[float]
 ) -> tuple[float, float]:
@@ -178,7 +246,11 @@ def _normalized_axis(value: Any) -> list[float]:
 
 
 def _source_binding(
-    *, publisher_scene_id: str, freeze: Mapping[str, Any], receipt: Mapping[str, Any]
+    *,
+    publisher_scene_id: str,
+    freeze: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    authored_replacement: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = freeze.get("source_object") or {}
     target = receipt.get("target") or {}
@@ -198,11 +270,37 @@ def _source_binding(
         raise DualTaskJointAgentAdmissionError(
             ["joint_agent_dual_task_source_binding_invalid"]
         )
+    # The bytes the paid agent actually reads.  They are the source mesh unless
+    # an authored replacement was admitted above, in which case the source
+    # receipt keeps every other role it had -- extent, freeze binding, collision
+    # identity -- and only the asset identity moves.
+    agent_asset = output
+    agent_component_count = receipt["connected_component_count"]
+    replacement_binding: dict[str, Any] = {"authored_replacement_input": False}
+    if authored_replacement is not None:
+        agent_asset = authored_replacement["output_usd"]
+        agent_component_count = len(authored_replacement["link_paths"])
+        replacement_binding = {
+            "authored_replacement_input": True,
+            "authored_replacement_receipt_digest": authored_replacement[
+                "receipt_digest"
+            ],
+            "authored_replacement_link_count": agent_component_count,
+            "source_mesh_asset_sha256": output["sha256"],
+            "source_mesh_connected_component_count": receipt[
+                "connected_component_count"
+            ],
+            # The agent is corroborating topology we authored, not inferring it
+            # from an unlabelled mesh.  Nothing downstream may read its output
+            # as an independent witness.
+            "independent_topology_inference": False,
+        }
     return {
+        **replacement_binding,
         "source_receipt_digest": receipt["receipt_digest"],
-        "source_asset_sha256": output["sha256"],
-        "source_asset_size_bytes": output["size_bytes"],
-        "connected_component_count": receipt["connected_component_count"],
+        "source_asset_sha256": agent_asset["sha256"],
+        "source_asset_size_bytes": agent_asset["size_bytes"],
+        "connected_component_count": agent_component_count,
         "source_collision_identity_receipt_digest": receipt[
             "source_collision_identity_receipt_digest"
         ],
@@ -218,6 +316,7 @@ def build_dual_task_joint_agent_admission(
     publisher_scene_id: str,
     task_freeze: Mapping[str, Any],
     source_receipt: Mapping[str, Any],
+    authored_replacement_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a paid-ready Task A adapter or typed Task B inapplicability."""
 
@@ -231,8 +330,18 @@ def build_dual_task_joint_agent_admission(
     except DualTaskRehearsalContractError as exc:
         raise DualTaskJointAgentAdmissionError(exc.errors) from exc
     receipt = _validated_source_receipt(source_receipt)
+    authored_replacement = None
+    if authored_replacement_receipt is not None:
+        authored_replacement = _validated_authored_replacement(
+            authored_replacement_receipt,
+            source_receipt=receipt,
+            freeze_digest=freeze["task_freeze_digest"],
+        )
     source = _source_binding(
-        publisher_scene_id=scene_id, freeze=freeze, receipt=receipt
+        publisher_scene_id=scene_id,
+        freeze=freeze,
+        receipt=receipt,
+        authored_replacement=authored_replacement,
     )
 
     task_summary = {
@@ -371,6 +480,13 @@ def build_dual_task_joint_agent_admission(
         "status": READY_STATUS,
         "task_freeze": freeze,
         "source_receipt": receipt,
+        # Retained so the binding validator can rebuild this admission byte for
+        # byte.  An admission whose input cannot be reproduced is not evidence.
+        **(
+            {"authored_replacement_receipt": authored_replacement}
+            if authored_replacement is not None
+            else {}
+        ),
         "task": {
             **task_summary,
             "articulation_graph_digest": articulation_graph_digest,
@@ -387,6 +503,7 @@ def build_dual_task_joint_agent_admission(
             "non_task_joint_behavior_exercised": False,
             "connected_components_are_not_rigid_links": True,
             "target_selector_is_candidate_only": True,
+            "independent_topology_inference": authored_replacement is None,
             "joint_topology_qualified": False,
             "simready_qualified": False,
             "physical_equivalence_proven": False,
@@ -437,6 +554,7 @@ def validate_dual_task_joint_agent_source_binding(
         publisher_scene_id=str((value.get("task") or {}).get("publisher_scene_id") or ""),
         task_freeze=value.get("task_freeze") or {},
         source_receipt=source_receipt,
+        authored_replacement_receipt=value.get("authored_replacement_receipt"),
     )
     if rebuilt != value:
         raise DualTaskJointAgentAdmissionError(
@@ -451,6 +569,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--task-freeze", required=True)
     parser.add_argument("--source-receipt", required=True)
     parser.add_argument("--source-asset", required=True)
+    parser.add_argument(
+        "--authored-replacement-receipt",
+        help=(
+            "Receipt for an authored replacement asset offered in place of the "
+            "source mesh. When given, --source-asset must be the replacement's "
+            "bytes; the source receipt still supplies extent and freeze binding."
+        ),
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -463,7 +589,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise DualTaskJointAgentAdmissionError(
                 ["joint_agent_dual_task_input_invalid"]
             )
-        output_record = receipt.get("output_asset") or {}
+        replacement = None
+        if args.authored_replacement_receipt:
+            replacement_path = (
+                Path(args.authored_replacement_receipt).expanduser().resolve()
+            )
+            replacement = json.loads(replacement_path.read_text(encoding="utf-8"))
+            if not isinstance(replacement, Mapping):
+                raise DualTaskJointAgentAdmissionError(
+                    ["joint_agent_authored_replacement_invalid"]
+                )
+        # --source-asset is always checked against whichever asset the agent
+        # will actually be handed, so the bytes can never diverge from the
+        # admission that vetted them.
+        output_record = (
+            (replacement.get("output_usd") or {})
+            if replacement is not None
+            else (receipt.get("output_asset") or {})
+        )
         if (
             source_asset.is_symlink()
             or not source_asset.is_file()
@@ -477,6 +620,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             publisher_scene_id=args.publisher_scene_id,
             task_freeze=freeze,
             source_receipt=receipt,
+            authored_replacement_receipt=replacement,
         )
         output = Path(args.output).expanduser().resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
