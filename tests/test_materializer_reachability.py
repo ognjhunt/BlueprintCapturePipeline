@@ -34,7 +34,9 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: 78 before the ArtiFixer3D input chain got an entry point, 74 after, and
 #: 73 once the segment-mask-repair preflight -- the chain's root -- got one,
 #: 72 after the ArtiFixer use attestation, and 69 after the selected
-#: replacement/native chain stopped requiring a Python session. The chain
+#: replacement/native chain stopped requiring a Python session, and 68 after
+#: the shared source-collider removal needed by that chain became reachable.
+#: The chain
 #: adds one new policy-spec materializer while making four existing producers
 #: reachable, so that final change lowers the net count by three.
 #: It may fall and never rise.
@@ -50,7 +52,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: Naming all 73 individually would be a list nobody maintains; the population
 #: is rediscovered every run and only its size is pinned, so a new unreachable
 #: materializer fails here even though no name was ever written down.
-UNREACHABLE_MATERIALIZER_BUDGET = 69
+UNREACHABLE_MATERIALIZER_BUDGET = 68
 
 
 def _module_sources() -> dict[Path, str]:
@@ -182,6 +184,7 @@ def test_every_input_step_can_supply_its_materializer(step: str) -> None:
 @pytest.mark.parametrize(
     "step",
     [
+        "source-collider-batch-removal",
         "simready-graph-asset",
         "simready-static-qualification",
         "visual-binding",
