@@ -74,6 +74,11 @@ from .provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
+from .native_task_arena_execution_contract import (
+    EXECUTION_MODE_CONTRACTS as NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS,
+    NATIVE_TASK_ARENA_POLICY_CANDIDATES,
+    required_archive_entries as native_task_arena_required_archive_entries,
+)
 from .wam_async_runner_common import download_url_to_file
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_attempt_preservation import (
@@ -2120,9 +2125,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/native_task_packet/native_task_arena_scene_plan.v1.json",
         "provider_runtime/native_task_packet/native_task_arena_packet_receipt.v1.json",
         "provider_runtime/blueprint_pipeline/__init__.py",
-        "provider_runtime/blueprint_pipeline/articulated_control_planner.py",
         "provider_runtime/blueprint_pipeline/decision_evidence_contracts.py",
-        "provider_runtime/blueprint_pipeline/native_articulated_construction_plan.py",
         "provider_runtime/blueprint_pipeline/native_articulated_motion_geometry.py",
         "provider_runtime/blueprint_pipeline/native_articulated_task_state.py",
         "provider_runtime/blueprint_pipeline/native_franka_pose_servo.py",
@@ -2439,6 +2442,83 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    if provider_bundle_kind == "native_task_arena":
+                        try:
+                            native_manifest = json.loads(
+                                archive.read(
+                                    "provider_runtime/adp_arena_provider_manifest.json"
+                                ).decode("utf-8")
+                            )
+                            if not isinstance(native_manifest, Mapping):
+                                raise TypeError(
+                                    "native_task_arena_provider_manifest_not_mapping"
+                                )
+                            execution_mode = str(
+                                native_manifest.get("execution_mode") or ""
+                            )
+                            mode_contract = (
+                                NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS.get(
+                                    execution_mode
+                                )
+                            )
+                            if mode_contract is None:
+                                raise ValueError(
+                                    "native_task_arena_execution_mode_invalid"
+                                )
+                            required_entries.update(
+                                native_task_arena_required_archive_entries(
+                                    execution_mode
+                                )
+                            )
+                            declared_modules = {
+                                Path(str(row.get("relative_path") or "")).name
+                                for row in native_manifest.get("runtime_modules") or []
+                                if isinstance(row, Mapping)
+                            }
+                            expected_modules = set(mode_contract.runtime_module_names)
+                            observed_modules = {
+                                Path(entry).name
+                                for entry in zip_entries
+                                if entry.startswith(
+                                    "provider_runtime/blueprint_pipeline/"
+                                )
+                                and entry.endswith(".py")
+                                and not entry.endswith("/__init__.py")
+                            }
+                            if (
+                                native_manifest.get("schema_version")
+                                != "native_task_arena_provider_bundle.v1"
+                                or native_manifest.get("expected_output_filename")
+                                != mode_contract.expected_output_filename
+                                or mode_contract.expected_output_filename
+                                not in entrypoint_text
+                                or declared_modules != expected_modules
+                                or observed_modules != expected_modules
+                                or native_manifest.get("candidate_policy_queried")
+                                is not False
+                            ):
+                                raise ValueError(
+                                    "native_task_arena_mode_contract_invalid"
+                                )
+                            candidate_id = native_manifest.get("policy_candidate_id")
+                            if mode_contract.policy_candidate_required:
+                                if candidate_id not in NATIVE_TASK_ARENA_POLICY_CANDIDATES:
+                                    raise ValueError(
+                                        "native_task_arena_policy_candidate_invalid"
+                                    )
+                            elif candidate_id is not None:
+                                raise ValueError(
+                                    "native_task_arena_nonpolicy_candidate_invalid"
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append(
+                                "native_task_arena_provider_manifest_invalid"
+                            )
                     if provider_bundle_kind == "adp009d_ovrtx":
                         manifest_member = "provider_runtime/adp009d_ovrtx_provider_manifest.json"
                         try:

@@ -140,9 +140,10 @@ exact request, input bundle, bundle receipt, single-use authority, deployed
 commit, host-resident secret-file path, hard cap/TTL, and zero retry. The
 profile deliberately does not publish a capacity snapshot: after the
 independent watchdog is armed, the allocator collects a fresh Vast capacity
-and provider-zero preflight at execution time, writes it beneath the launch
-root, and fails closed before authority consumption or provider mutation when
-that live check does not pass. Every terminal execute result also seals the
+and provider-zero preflight for both the no-spend rehearsal and live execution,
+writes it beneath that launch root, and fails closed before authority
+consumption or provider mutation when the live check does not pass. Every
+terminal execute result also seals the
 shared Task Evaluation artifact manifest and teardown record required by the
 website reconciler. A successful terminal result must additionally name the
 normalized `semantic_source_track_import_result.v1` artifact. That compact,

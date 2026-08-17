@@ -242,10 +242,125 @@ def _result_reached_a_provider(result: Mapping[str, Any]) -> bool:
 
     if result.get("estimated_cost_usd") is not None:
         return True
+    for field in ("instance_id", "pod_id"):
+        if str(result.get(field) or "").strip():
+            return True
+    runpod_response = result.get("runpod_response")
+    if isinstance(runpod_response, Mapping) and str(
+        runpod_response.get("id") or ""
+    ).strip():
+        return True
     for key, value in result.items():
         if key.endswith("instance_ids") and value:
             return True
     return False
+
+
+def _direct_provider_instance_ids(result: Mapping[str, Any]) -> list[int | str]:
+    values: list[Any] = [result.get("instance_id"), result.get("pod_id")]
+    runpod_response = result.get("runpod_response")
+    if isinstance(runpod_response, Mapping):
+        values.append(runpod_response.get("id"))
+    normalized: list[int | str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        identity: int | str = int(text) if text.isdigit() else text
+        if identity not in normalized:
+            normalized.append(identity)
+    return normalized
+
+
+def _direct_provider_cleanup(result: Mapping[str, Any]) -> Mapping[str, Any]:
+    monitor = result.get("monitor")
+    if isinstance(monitor, Mapping):
+        teardown = monitor.get("teardown")
+        if isinstance(teardown, Mapping):
+            return teardown
+    immediate = result.get("immediate_cleanup")
+    if isinstance(immediate, Mapping):
+        return immediate
+    return {}
+
+
+def seal_direct_provider_lane_terminal_artifacts(
+    result: Mapping[str, Any],
+    *,
+    attempt_root: str | Path,
+    lane: str,
+    extra_artifact_roots: Mapping[str, str | Path] | None = None,
+) -> dict[str, Any]:
+    """Seal lanes that use a direct provider client instead of the Vast adapter.
+
+    The shared manifest convention normally consumes the provider adapter's
+    ``vast_provider_run`` directory. A small number of older canary transports
+    create the provider directly and retain the same facts in their terminal
+    result. Normalize only explicitly recorded retry/spend/teardown facts into
+    the shared layout before calling the canonical sealer.
+    """
+
+    terminal = dict(result)
+    terminal.setdefault("retry_cap", 0)
+    if "continuing_spend_from_this_run" not in terminal and isinstance(
+        terminal.get("continuing_spend"), bool
+    ):
+        terminal["continuing_spend_from_this_run"] = terminal["continuing_spend"]
+    terminal.setdefault("artifact_manifest_path", None)
+    terminal.setdefault("teardown_manifest_path", None)
+
+    # Both direct canaries write a submitted intermediate result before their
+    # monitor owns teardown. Sealing that transient state would make the
+    # immutable artifact manifest conflict with the later terminal result.
+    if terminal.get("status") not in {"completed", "blocked", "failed"}:
+        return terminal
+
+    root = Path(attempt_root).expanduser().resolve()
+    provider_run = root / PROVIDER_RUN_DIRNAME
+    provider_run.mkdir(parents=True, exist_ok=True)
+    write_json(provider_run / ADAPTER_RESULT_NAME, terminal)
+
+    teardown_path = provider_run / TEARDOWN_MANIFEST_NAME
+    cleanup = _direct_provider_cleanup(terminal)
+    instance_ids = _direct_provider_instance_ids(terminal)
+    completed_at = str(cleanup.get("completed_at") or "").strip()
+    zero_spend = terminal.get("continuing_spend_from_this_run") is False
+    if (
+        cleanup.get("provider_absence_confirmed") is True
+        and zero_spend
+        and completed_at
+    ):
+        write_json(
+            teardown_path,
+            {
+                "schema_version": "vast_teardown_manifest.v1",
+                "generated_at": completed_at,
+                "status": "completed",
+                "vast_instance_ids": instance_ids,
+                "teardown_actions_performed": [
+                    dict(item)
+                    for item in cleanup.get("terminations") or []
+                    if isinstance(item, Mapping)
+                ],
+                "continuing_spend_from_this_run": False,
+                "zero_continuing_spend_scope": (
+                    "The direct provider canary retained exact provider absence "
+                    "and zero-continuing-spend evidence in its terminal cleanup."
+                ),
+            },
+        )
+    elif not instance_ids:
+        seal_unallocated_provider_teardown(
+            provider_run,
+            reason="direct_provider_terminal_recorded_no_instance",
+        )
+
+    return seal_lane_terminal_artifacts(
+        terminal,
+        attempt_root=root,
+        lane=lane,
+        extra_artifact_roots=extra_artifact_roots,
+    )
 
 
 def _blocked(result: Mapping[str, Any], blocker: str) -> dict[str, Any]:
@@ -384,4 +499,5 @@ __all__ = [
     "TaskEvaluationArtifactManifestError",
     "build_task_evaluation_artifact_manifest",
     "seal_lane_terminal_artifacts",
+    "seal_direct_provider_lane_terminal_artifacts",
 ]

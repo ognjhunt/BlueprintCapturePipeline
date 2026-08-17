@@ -22,6 +22,10 @@ from .nurec_openusd_packaging import validate_safe_usdz_archive
 from .replacement_asset_frame_registration import (
     validate_replacement_asset_frame_registration,
 )
+from .public_scene_artifixer3d_native_exports import (
+    ArtiFixerNativeExportError,
+    validate_artifixer3d_native_appearance_export,
+)
 
 
 SCHEMA_VERSION = "paired_target_native_preflight.v1"
@@ -160,6 +164,15 @@ def materialize_paired_target_native_preflight(
             raw.get("appearance_export_receipt_path", ""),
             "native_preflight_appearance_receipt_invalid",
         )
+        if "host_path_rebased_from_provider_runtime_output" in appearance:
+            try:
+                appearance = validate_artifixer3d_native_appearance_export(
+                    appearance_path
+                )
+            except ArtiFixerNativeExportError as exc:
+                raise PairedTargetNativePreflightError(
+                    "native_preflight_appearance_receipt_invalid"
+                ) from exc
         if (
             appearance.get("schema_version") != APPEARANCE_SCHEMA
             or not _digest_valid(appearance, "export_digest")

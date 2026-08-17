@@ -10,7 +10,7 @@ import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
 from .paid_lane_guard import (
@@ -48,6 +48,11 @@ OUTPUT_PUT_ENV = "BLUEPRINT_RECONSTRUCTION_SMOKE_OUTPUT_PUT_URL"
 REQUEST_DIGEST_ENV = "BLUEPRINT_RECONSTRUCTION_SMOKE_REQUEST_DIGEST"
 IMAGE_DIGEST_ENV = "BLUEPRINT_CONTAINER_IMAGE_DIGEST"
 MAX_RESULT_BYTES = 2 * 1024 * 1024
+PROVIDER_LIVENESS_POLL_SECONDS = 30.0
+PROVIDER_TERMINAL_CONFIRMATIONS_REQUIRED = 2
+_PROVIDER_TERMINAL_STATUSES = frozenset(
+    {"deleted", "destroyed", "exited", "stopped", "stopped_before_start", "terminated"}
+)
 
 
 class ReconstructionVastSmokeError(ValueError):
@@ -67,12 +72,50 @@ def _default_result_fetcher(url: str) -> Mapping[str, Any]:
         if exc.code == 404:
             raise FileNotFoundError("reconstruction_smoke_output_http:404") from exc
         raise
+    if response.status == 404:
+        raise FileNotFoundError("reconstruction_smoke_output_http:404")
     if response.status != 200:
-        raise FileNotFoundError(f"reconstruction_smoke_output_http:{response.status}")
-    value = json.loads(response.body)
+        raise ReconstructionVastSmokeError(
+            f"reconstruction_smoke_output_http:{response.status}"
+        )
+    try:
+        value = json.loads(response.body)
+    except json.JSONDecodeError as exc:
+        raise ReconstructionVastSmokeError(
+            "reconstruction_smoke_output_json_invalid"
+        ) from exc
     if not isinstance(value, Mapping):
         raise ReconstructionVastSmokeError("reconstruction_smoke_output_not_object")
     return dict(value)
+
+
+def _provider_instance_terminal_state(
+    provider: GpuRenderProvider, instance_id: str
+) -> str | None:
+    """Return a terminal state only when the provider positively proves one.
+
+    Transport errors and incomplete provider responses are not evidence that a
+    paid worker died.  Vast's exact-instance inspection is authoritative; two
+    matching-class observations are still required by the caller so an output
+    uploaded during shutdown gets another read before collection stops.
+    """
+
+    try:
+        inspection = dict(provider.inspect(instance_id))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if inspection.get("api_confirmed") is not True or inspection.get("blockers"):
+        return None
+    if (
+        inspection.get("status") == "absent"
+        and inspection.get("provider_absence_confirmed") is True
+    ):
+        return "absent"
+    for key in ("actual_status", "desiredStatus"):
+        state = str(inspection.get(key) or "").strip().lower()
+        if state in _PROVIDER_TERMINAL_STATUSES:
+            return state
+    return None
 
 
 def _load_recorded_object(path: Path) -> dict[str, Any]:
@@ -315,6 +358,10 @@ def run_reconstruction_vast_worker_smoke(
     validated_result: dict[str, Any] | None = None
     execution_blockers: list[str] = []
     provider_mutations = 0
+    fetch_attempts = 0
+    last_output_fetch_failure = ""
+    provider_terminal_before_output = False
+    provider_terminal_state: str | None = None
     try:
         spec = RenderLaunchSpec(
             name=name,
@@ -373,18 +420,46 @@ def run_reconstruction_vast_worker_smoke(
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
             bind_pending_teardown_instance(pending_path, instance_id)
-            fetch_attempts = 0
+            provider_terminal_confirmations = 0
+            liveness_checked_at = started_at
             while float(clock()) - started_at <= hard_ttl:
                 fetch_attempts += 1
                 try:
                     raw_result = dict(result_fetcher(output_get_url))
                     break
-                except (FileNotFoundError, TimeoutError):
-                    if float(clock()) - started_at >= hard_ttl:
+                except (OSError, ReconstructionVastSmokeError) as exc:
+                    # Reading the immutable result again cannot allocate a
+                    # second instance.  Preserve a bounded, secret-redacted
+                    # cause so a non-404 transport failure does not erase the
+                    # only explanation for a paid attempt.
+                    last_output_fetch_failure = redacted_failure_detail(exc)
+                    now = float(clock())
+                    if now - started_at >= hard_ttl:
                         break
+                    if now - liveness_checked_at >= PROVIDER_LIVENESS_POLL_SECONDS:
+                        liveness_checked_at = now
+                        observed_terminal = _provider_instance_terminal_state(
+                            provider, instance_id
+                        )
+                        if observed_terminal is None:
+                            provider_terminal_confirmations = 0
+                            provider_terminal_state = None
+                        else:
+                            provider_terminal_confirmations += 1
+                            provider_terminal_state = observed_terminal
+                        if (
+                            provider_terminal_confirmations
+                            >= PROVIDER_TERMINAL_CONFIRMATIONS_REQUIRED
+                        ):
+                            provider_terminal_before_output = True
+                            break
                     sleeper(min(5.0, max(0.0, hard_ttl - (float(clock()) - started_at))))
             if raw_result is None:
-                execution_blockers.append("reconstruction_smoke_output_timeout")
+                execution_blockers.append(
+                    "reconstruction_provider_instance_terminal_before_output"
+                    if provider_terminal_before_output
+                    else "reconstruction_smoke_output_timeout"
+                )
             else:
                 write_json(root / "provider_runtime_result.json", raw_result)
                 try:
@@ -505,6 +580,10 @@ def run_reconstruction_vast_worker_smoke(
         "provider_mutation_outcome_ambiguous": bool(
             launch_result.get("allocation_outcome_ambiguous") is True
         ),
+        "output_fetch_attempts": fetch_attempts,
+        "last_output_fetch_failure": last_output_fetch_failure or None,
+        "provider_terminal_before_output": provider_terminal_before_output,
+        "provider_terminal_state": provider_terminal_state,
         "blockers": sorted(set(execution_blockers)),
         "teardown_receipt_digest": teardown_receipt["teardown_receipt_digest"],
         "provider_zero_digest": provider_zero_receipt["provider_zero_digest"],

@@ -49,6 +49,9 @@ from .public_scene_artifixer3d_bundle import (
     SCHEMA_VERSION as BUNDLE_SCHEMA_VERSION,
     USE_ATTESTATION_SCHEMA_VERSION,
 )
+from .public_scene_artifixer3d_native_exports import (
+    materialize_artifixer3d_native_appearance_exports,
+)
 from .task_evaluation_artifact_manifest import (
     seal_lane_terminal_artifacts,
     seal_unallocated_provider_teardown,
@@ -1838,6 +1841,12 @@ def recover_artifixer3d_local_closeout(
             raise ValueError("artifixer3d_recovery_raw_result_conflict")
     else:
         write_json(raw_path, raw)
+    native_exports: list[dict[str, Any]] = []
+    if "native_appearance_export" in (bundle.get("phases") or []):
+        native_exports = materialize_artifixer3d_native_appearance_exports(
+            raw_result_path=raw_path,
+            output_root=job / "native_appearance_exports",
+        )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -1849,6 +1858,7 @@ def recover_artifixer3d_local_closeout(
             execution_root / "public_scene_artifixer3d_runtime_result.json"
         ),
         "raw_result_path": str(raw_path),
+        "native_appearance_export_receipts": native_exports,
         "adapter_result_path": str(adapter_path),
         "teardown_manifest_path": str(teardown_path),
         "final_validation_path": str(final_path),
@@ -2169,6 +2179,7 @@ def run_artifixer3d_vast(
     if not common_runtime_valid or not (dual_target_runtime_valid or legacy_runtime_valid):
         blockers.append("artifixer3d_runtime_not_completed")
     raw_path: Path | None = None
+    native_exports: list[dict[str, Any]] = []
     if not blockers:
         try:
             raw = _materialize_raw_result(
@@ -2183,6 +2194,18 @@ def run_artifixer3d_vast(
             blockers.append(
                 f"artifixer3d_raw_result_materialization_failed:{redacted_failure_detail(exc)}"
             )
+    if not blockers and raw_path is not None and "native_appearance_export" in (
+        bundle.get("phases") or []
+    ):
+        try:
+            native_exports = materialize_artifixer3d_native_appearance_exports(
+                raw_result_path=raw_path,
+                output_root=job / "native_appearance_exports",
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            blockers.append(
+                f"artifixer3d_native_export_handoff_failed:{redacted_failure_detail(exc)}"
+            )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -2194,6 +2217,7 @@ def run_artifixer3d_vast(
             execution_root / "public_scene_artifixer3d_runtime_result.json"
         ),
         "raw_result_path": str(raw_path) if raw_path else None,
+        "native_appearance_export_receipts": native_exports,
         "adapter_result_path": str(adapter_path),
         "teardown_manifest_path": str(teardown_path),
         "final_validation_path": str(final_path),
@@ -2233,6 +2257,7 @@ __all__ = [
     "inspect_artifixer3d_container_image",
     "materialize_artifixer3d_paid_attempt_authority",
     "materialize_artifixer3d_postblocked_provider_zero",
+    "materialize_artifixer3d_native_appearance_exports",
     "recover_artifixer3d_local_closeout",
     "run_artifixer3d_vast",
     "validate_artifixer3d_bundle",

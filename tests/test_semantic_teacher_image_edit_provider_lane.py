@@ -405,6 +405,60 @@ def test_authority_admits_ten_dollar_hour_long_sixteen_frame_attempt(
     )
     assert authority["hard_total_spend_cap_usd"] == 10.0
     assert authority["hard_ttl_seconds"] == 3_600
+    validation_kwargs = {
+        "bundle_path": bundle,
+        "bundle_receipt": receipt,
+        "source_commit_sha": authority["source_commit_sha"],
+        "backend_entry_digest": receipt["backend_entry_digest"],
+        "task_count": 2,
+        "camera_count": 16,
+        "maximum_hourly_rate_usd": 0.4,
+        "hard_total_spend_cap_usd": 10.0,
+        "hard_ttl_seconds": 3_600,
+    }
+    validate_semantic_teacher_image_edit_paid_authority(
+        authority, **validation_kwargs
+    )
+
+    hostile_cases = (
+        {
+            "hard_total_spend_cap_usd": 10.01,
+        },
+        {
+            "hard_ttl_seconds": 3_601,
+            "maximum_compute_cost_usd": 0.4 * 3_601 / 3_600,
+            "vast_spend_upper_bound_usd": 0.4 * 3_601 / 3_600,
+        },
+        {
+            "maximum_hourly_rate_usd": 10.01,
+            "maximum_compute_cost_usd": 10.01,
+            "vast_spend_upper_bound_usd": 10.01,
+        },
+    )
+    for changes in hostile_cases:
+        forged = {**authority, **changes}
+        forged["authorization_digest"] = canonical_digest(
+            forged, digest_field="authorization_digest"
+        )
+        forged_validation_kwargs = {
+            **validation_kwargs,
+            **{
+                key: value
+                for key, value in changes.items()
+                if key
+                in {
+                    "maximum_hourly_rate_usd",
+                    "hard_total_spend_cap_usd",
+                    "hard_ttl_seconds",
+                }
+            },
+        }
+        with pytest.raises(
+            ValueError, match="semantic_teacher_paid_authority_invalid"
+        ):
+            validate_semantic_teacher_image_edit_paid_authority(
+                forged, **forged_validation_kwargs
+            )
 
     with pytest.raises(
         ValueError, match="semantic_teacher_paid_authority_configuration_invalid"

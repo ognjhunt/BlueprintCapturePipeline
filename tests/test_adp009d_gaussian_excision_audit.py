@@ -1343,7 +1343,11 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
 
     def fake_arm(**kwargs):
         events.append("watchdog")
-        return {"status": "armed"}, SimpleNamespace(started_instance_id_path=started_path)
+        return {"status": "armed"}, SimpleNamespace(
+            started_instance_id_path=started_path,
+            # A real handle carries the prefix it armed on.
+            pod_name_prefix=kwargs["pod_name_prefix"],
+        )
 
     def fake_adapter(**kwargs):
         events.append("adapter")

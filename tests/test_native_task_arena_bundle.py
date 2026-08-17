@@ -10,6 +10,11 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import (
+    native_task_arena_construction_bundle as construction_bundle_module,
+)
+from blueprint_pipeline import native_task_arena_controls_bundle as controls_bundle_module
+from blueprint_pipeline import native_task_arena_policy_bundle as policy_bundle_module
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
@@ -31,6 +36,10 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
     build_native_task_arena_controls_bundle,
     load_verified_native_task_arena_controls_bundle,
 )
+from blueprint_pipeline.native_task_arena_execution_contract import (
+    EXECUTION_MODE_CONTRACTS,
+    NATIVE_TASK_ARENA_POLICY_CANDIDATES,
+)
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
     load_verified_native_task_arena_policy_bundle,
@@ -46,6 +55,9 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     materialize_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.droid_policy_bridge import OPENPI_SOURCE_REVISION
+from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+    GrootN17DroidPolicySpec,
+)
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
@@ -58,6 +70,18 @@ from blueprint_pipeline.vast_provider_adapter import (
 
 def _sha(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
+    assert set(EXECUTION_MODE_CONTRACTS) == {
+        "construction_canary",
+        "controls",
+        "policy",
+    }
+    assert NATIVE_TASK_ARENA_POLICY_CANDIDATES == {
+        "groot_n17_droid",
+        "pi05_droid",
+    }
 
 
 def _packet(root: Path, *, scene_id: str) -> Path:
@@ -495,6 +519,42 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
     return spec
 
 
+def _groot_policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
+    spec = _policy_spec(scene, construction, controls)
+    groot = GrootN17DroidPolicySpec()
+    identity = groot.identity()
+    spec.update(
+        {
+            "candidate_id": "groot_n17_droid",
+            "policy_endpoint": {
+                "host": "127.0.0.1",
+                "port": 5555,
+                "credential_env": "BLUEPRINT_GROOT_API_TOKEN",
+            },
+            "policy_spec": {
+                "model_id": groot.model_id,
+                "embodiment_tag": groot.embodiment_tag,
+                "groot_source_revision": groot.groot_source_revision,
+                "checkpoint_revision": groot.checkpoint_revision,
+                "open_loop_horizon": groot.open_loop_horizon,
+            },
+            "policy_identity_receipt": {
+                "status": "verified",
+                "model_id": identity["model_id"],
+                "embodiment_tag": identity["embodiment_tag"],
+                "groot_source_revision": identity["groot_source_revision"],
+                "checkpoint_revision": identity["checkpoint_revision"],
+                "checkpoint_files_sha256": "4" * 64,
+                "environment_lock_sha256": "5" * 64,
+            },
+        }
+    )
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+    return spec
+
+
 def test_policy_bundle_requires_exact_qualified_construction_and_controls(
     tmp_path: Path,
 ) -> None:
@@ -877,6 +937,241 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
     )
     assert dry_run["status"] == "dry_run_ready"
     assert dry_run["provider_mutations_performed"] == 0
+
+
+def _native_bundle_preflight(tmp_path: Path, receipt: dict, *, name: str) -> dict:
+    return _blueprint_bundle_preflight(
+        job_dir=tmp_path / f"{name}-preflight",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="native_task_arena",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted",
+    )
+
+
+def _assert_bundle_has_isolated_import_closure(
+    tmp_path: Path, receipt: dict, *, name: str
+) -> set[str]:
+    extracted = tmp_path / f"{name}-extracted"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        archive.extractall(extracted)
+    package = extracted / "provider_runtime/blueprint_pipeline"
+    modules = sorted(
+        path.stem for path in package.glob("*.py") if path.name != "__init__.py"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import importlib,sys;"
+                f"sys.path.insert(0,{str(package.parent)!r});"
+                f"[importlib.import_module('blueprint_pipeline.'+name) for name in {modules!r}]"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return names
+
+
+def test_real_controls_bundle_passes_preflight_and_imports_cleanly(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    receipt = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "controls-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="7" * 40,
+        generated_at="fixed",
+    )
+
+    preflight = _native_bundle_preflight(tmp_path, receipt, name="controls")
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
+    _assert_bundle_has_isolated_import_closure(tmp_path, receipt, name="controls")
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_real_policy_bundles_pass_preflight_and_import_cleanly(
+    tmp_path: Path, candidate_id: str
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    spec = (
+        _policy_spec(scene, construction, controls)
+        if candidate_id == "pi05_droid"
+        else _groot_policy_spec(scene, construction, controls)
+    )
+    receipt = build_native_task_arena_policy_bundle(
+        job_dir=tmp_path / f"policy-{candidate_id}",
+        packet_dir=packet,
+        construction_result_path=construction,
+        control_result_path=controls,
+        policy_execution_spec=spec,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="6" * 40,
+        generated_at="fixed",
+    )
+
+    preflight = _native_bundle_preflight(
+        tmp_path, receipt, name=f"policy-{candidate_id}"
+    )
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
+    names = _assert_bundle_has_isolated_import_closure(
+        tmp_path, receipt, name=f"policy-{candidate_id}"
+    )
+    assert "provider_runtime/blueprint_pipeline/policy_ranking_thesis.py" not in names
+
+
+@pytest.mark.parametrize(
+    "execution_mode,missing_module",
+    [
+        ("construction_canary", "articulated_control_planner.py"),
+        ("controls", "adp009d_contact_envelope.py"),
+        ("policy", "adp009d_droid_action_execution.py"),
+    ],
+)
+def test_preflight_rejects_one_missing_runtime_module_per_execution_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    execution_mode: str,
+    missing_module: str,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    runtime_source_packet = _runtime_source_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    if execution_mode == "construction_canary":
+        monkeypatch.setattr(
+            construction_bundle_module,
+            "CONSTRUCTION_RUNTIME_MODULE_NAMES",
+            tuple(
+                name
+                for name in construction_bundle_module.CONSTRUCTION_RUNTIME_MODULE_NAMES
+                if name != missing_module
+            ),
+        )
+        receipt = build_native_task_arena_construction_bundle(
+            job_dir=tmp_path / execution_mode,
+            packet_dir=packet,
+            runtime_source_packet_receipt=runtime_source_packet,
+            implementation_commit="5" * 40,
+            generated_at="fixed",
+        )
+    elif execution_mode == "controls":
+        monkeypatch.setattr(
+            controls_bundle_module,
+            "CONTROLS_RUNTIME_MODULE_NAMES",
+            tuple(
+                name
+                for name in controls_bundle_module.CONTROLS_RUNTIME_MODULE_NAMES
+                if name != missing_module
+            ),
+        )
+        receipt = build_native_task_arena_controls_bundle(
+            job_dir=tmp_path / execution_mode,
+            packet_dir=packet,
+            construction_result_path=construction,
+            runtime_source_packet_receipt=runtime_source_packet,
+            implementation_commit="5" * 40,
+            generated_at="fixed",
+        )
+    else:
+        monkeypatch.setattr(
+            policy_bundle_module,
+            "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
+            tuple(
+                name
+                for name in policy_bundle_module.POLICY_EXTRA_RUNTIME_MODULE_NAMES
+                if name != missing_module
+            ),
+        )
+        receipt = build_native_task_arena_policy_bundle(
+            job_dir=tmp_path / execution_mode,
+            packet_dir=packet,
+            construction_result_path=construction,
+            control_result_path=controls,
+            policy_execution_spec=_policy_spec(scene, construction, controls),
+            runtime_source_packet_receipt=runtime_source_packet,
+            implementation_commit="5" * 40,
+            generated_at="fixed",
+        )
+
+    preflight = _native_bundle_preflight(
+        tmp_path, receipt, name=f"missing-{execution_mode}"
+    )
+    expected_member = f"provider_runtime/blueprint_pipeline/{missing_module}"
+    assert preflight["status"] == "blocked"
+    assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
+    assert expected_member in preflight["missing_zip_entries"]
+
+
+def test_preflight_rejects_unknown_native_result_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    monkeypatch.setattr(
+        controls_bundle_module,
+        "RESULT_FILENAME",
+        "native_task_arena_garbage_result.v1.json",
+    )
+    receipt = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "wrong-result",
+        packet_dir=packet,
+        construction_result_path=construction,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="4" * 40,
+        generated_at="fixed",
+    )
+
+    preflight = _native_bundle_preflight(tmp_path, receipt, name="wrong-result")
+    assert preflight["status"] == "blocked"
+    assert "native_task_arena_provider_manifest_invalid" in preflight["blockers"]
+    assert (
+        "provider_entrypoint_missing_runtime_result_crash_fallback"
+        in preflight["blockers"]
+    )
+
+
+def test_preflight_rejects_cross_mode_runtime_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    monkeypatch.setattr(
+        controls_bundle_module,
+        "CONTROLS_RUNTIME_MODULE_NAMES",
+        (
+            *controls_bundle_module.CONTROLS_RUNTIME_MODULE_NAMES,
+            "native_task_arena_scene_plan.py",
+        ),
+    )
+    receipt = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "extra-module",
+        packet_dir=packet,
+        construction_result_path=construction,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="3" * 40,
+        generated_at="fixed",
+    )
+
+    preflight = _native_bundle_preflight(tmp_path, receipt, name="extra-module")
+    assert preflight["status"] == "blocked"
+    assert "native_task_arena_provider_manifest_invalid" in preflight["blockers"]
 
 
 @pytest.mark.parametrize(

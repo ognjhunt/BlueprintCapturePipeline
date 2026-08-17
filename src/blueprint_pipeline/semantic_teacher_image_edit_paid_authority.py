@@ -554,7 +554,14 @@ def validate_semantic_teacher_image_edit_paid_authority(
         value.get("vast_spend_upper_bound_usd"),
     )
     if (
-        not _finite(before)
+        not _finite(maximum_hourly_rate_usd, positive=True)
+        or not _finite(hard_total_spend_cap_usd, positive=True)
+        or maximum_hourly_rate_usd > hard_total_spend_cap_usd
+        or hard_total_spend_cap_usd > MAX_ATTEMPT_SPEND_USD
+        or not isinstance(hard_ttl_seconds, int)
+        or isinstance(hard_ttl_seconds, bool)
+        or not 1 <= hard_ttl_seconds <= MAX_TTL_SECONDS
+        or not _finite(before)
         or not _finite(aggregate_cap, positive=True)
         or before + hard_total_spend_cap_usd > aggregate_cap
         or any(not _finite(item) for item in ceilings)

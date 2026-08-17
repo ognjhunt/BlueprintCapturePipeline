@@ -22,7 +22,10 @@ from .paid_attempt_authority import (
     validate_bound_lane_prior_spend,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
-from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE
+from .public_scene_simready_isaac_bundle import (
+    DEFAULT_IMAGE,
+    RIGID_PROBE_NAMES,
+)
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
@@ -127,7 +130,6 @@ def _extract_result(source: Path, destination: Path) -> dict[str, Any]:
     }
 
 
-RIGID_PROBE_NAMES = frozenset({"drop", "slide", "tip", "gripper"})
 
 
 def _runtime_result_digest_valid(execution: Mapping[str, Any]) -> bool:

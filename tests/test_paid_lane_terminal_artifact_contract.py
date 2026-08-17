@@ -134,7 +134,13 @@ def test_a_paid_lane_seals_its_terminal_artifacts(module: str) -> None:
     assert path.is_file(), f"paid lane module missing: {module}"
     calls = _calls(path)
 
-    sealed = "seal_lane_terminal_artifacts" in calls
+    sealed = bool(
+        {
+            "seal_lane_terminal_artifacts",
+            "seal_direct_provider_lane_terminal_artifacts",
+        }
+        & calls
+    )
     built = "build_task_evaluation_artifact_manifest" in calls
     delegated = any(entrypoint in calls for entrypoint in DELEGATING_ENTRYPOINTS)
 

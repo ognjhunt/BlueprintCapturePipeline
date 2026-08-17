@@ -11,6 +11,7 @@ from typing import Any
 from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_execution_contract import CONTROLS_RUNTIME_MODULE_NAMES
 from .native_task_control_plan import materialize_native_task_control_plan
 
 
@@ -18,35 +19,6 @@ PROBE_KIND = "native-task-arena-controls"
 PROVIDER_BUNDLE_KIND = "native_task_arena"
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
-
-CONTROLS_RUNTIME_MODULE_NAMES = (
-    "adp009d_control_episode.py",
-    "adp009d_droid_observation.py",
-    "adp009d_isaac_episode_adapter.py",
-    "adp009d_task_scoring.py",
-    "adp_task_scoring.py",
-    "articulation_graph_contract.py",
-    "decision_evidence_contracts.py",
-    "episode_visual_evidence.py",
-    "groot_n17_droid_policy_runtime.py",
-    "native_articulated_motion_geometry.py",
-    "native_articulated_task_state.py",
-    "native_franka_action_math.py",
-    "native_franka_pose_servo.py",
-    "native_pose_transforms.py",
-    "native_task_arena_construction_worker.py",
-    "native_task_arena_import_scope.py",
-    "native_task_arena_preconstruction.py",
-    "native_task_arena_device_readback.py",
-    "native_task_arena_readback.py",
-    "native_task_arena_runtime.py",
-    "native_task_isaaclab_launch.py",
-    "native_task_camera_observability.py",
-    "native_task_episode_environment.py",
-    "native_task_runtime_source_packet.py",
-    "native_task_runtime_source_provision.py",
-)
-
 
 def controls_runtime_sources() -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent

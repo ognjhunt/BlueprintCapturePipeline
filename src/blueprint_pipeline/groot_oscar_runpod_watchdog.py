@@ -42,6 +42,18 @@ CANARY_NAME_PREFIXES = (
     # Reusable 1--5 replacement-object native Isaac import canary. Its exact
     # per-run suffix and instance handoff are still bound by the watchdog.
     "blueprint-adp-paired-native-import-",
+    # The USD joint agent is a bounded, independently watched Vast canary and
+    # labels its instances with this prefix. It previously armed on the GR00T
+    # name family, which its own instances never carry, so the watchdog's
+    # name-scoped arm swept an empty set while still reporting provider zero.
+    "blueprint-adp-joint-agent-",
+    # Each of these lanes labels its instances with its own prefix. Before they
+    # were listed here, arming refused anything outside this tuple, so each
+    # worked around it by arming on a GR00T-family prefix its own instances
+    # never carry -- leaving the watchdog's name-scoped sweep matching an empty
+    # set while it still reported provider zero.
+    "blueprint-adp-gaussian-excision-",
+    "blueprint-adp-retained-render-",
     "blueprint-native-warehouse-camera-",
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",

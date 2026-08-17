@@ -75,7 +75,9 @@ from .production_gpu_campaign_budget import (
 )
 from .safe_outbound_http import presigned_transfer_policy
 from .safe_outbound_http import request as safe_http_request
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    seal_direct_provider_lane_terminal_artifacts,
+)
 
 
 SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_admission.v1"
@@ -124,13 +126,16 @@ def _seal_terminal(result: Mapping[str, Any], adapter_output: str | Path) -> dic
     attempt into a passing one.
     """
 
-    terminal = dict(result)
-    terminal.setdefault("artifact_manifest_path", None)
-    terminal.setdefault("teardown_manifest_path", None)
-    return seal_lane_terminal_artifacts(
-        terminal,
-        attempt_root=Path(adapter_output).expanduser().resolve().parent,
+    root = Path(adapter_output).expanduser().resolve().parent
+    return seal_direct_provider_lane_terminal_artifacts(
+        result,
+        attempt_root=root,
         lane=PAID_LANE,
+        extra_artifact_roots={
+            "provider_runtime_output": root / OUTPUT_ARCHIVE_NAME,
+            "provider_runtime_validation": root / OUTPUT_VALIDATION_NAME,
+            "provider_runtime_monitor": root / MONITOR_NAME,
+        },
     )
 
 

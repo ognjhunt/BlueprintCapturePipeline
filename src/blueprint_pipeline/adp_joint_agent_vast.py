@@ -92,6 +92,9 @@ SCENE_OPTIMIZER_CORE_SHA256 = (
     "sha256:9d98d22eed1eb31da3183bfd4155f3b8eca48576e6eb5947d126e781f0edc671"
 )
 RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
+#: The Vast instance label this lane creates. The independent watchdog arms
+#: on the same value, so its name-scoped sweep can see what this lane rents.
+JOINT_AGENT_INSTANCE_LABEL_PREFIX = "blueprint-adp-joint-agent-"
 # Preregistered band for the task-member extent ratio (candidate projected
 # extent divided by the target interval length, per projection constraint).
 # The task member spans its own preregistered interval, so ratios far above
@@ -1106,7 +1109,7 @@ def run_joint_agent_vast(
         job_dir=job,
         max_live_minutes=remaining_minutes,
         generated_at=utc_now_iso(),
-        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
+        pod_name_prefix=JOINT_AGENT_INSTANCE_LABEL_PREFIX,
         allowed_active_instance_ids=allowed_active_instance_ids,
     )
     if watchdog_handle is None:
@@ -1163,7 +1166,10 @@ def run_joint_agent_vast(
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 vast_launch_lock_file=job.parent / "joint_agent_paid_launch.lock",
-                instance_label_prefix="blueprint-adp-joint-agent-",
+                # Bound to the armed prefix rather than restated, so the
+                # watchdog can never watch a name family this lane does not
+                # create.
+                instance_label_prefix=watchdog_handle.pod_name_prefix,
                 started_instance_id_path=watchdog_handle.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,

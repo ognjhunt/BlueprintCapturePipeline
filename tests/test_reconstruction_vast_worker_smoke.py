@@ -4,6 +4,7 @@ import json
 import os
 import time
 import urllib.error
+from itertools import count
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from blueprint_pipeline.reconstruction_vast_worker_smoke import (
     run_reconstruction_vast_worker_smoke,
     validate_worker_smoke_result,
 )
+from blueprint_pipeline import reconstruction_vast_worker_smoke as vast_smoke
 from blueprint_pipeline.reconstruction_worker_image_healthcheck import SCHEMA_VERSION
 from blueprint_pipeline.task_evaluation_artifact_manifest import (
     PROVIDER_RUN_DIRNAME,
@@ -159,12 +161,21 @@ def _runtime_result(*, passed=True):
 class _Provider:
     name = "vast"
 
-    def __init__(self, *, launch_status="launched", terminate_status="stopped", zero_after=True):
+    def __init__(
+        self,
+        *,
+        launch_status="launched",
+        terminate_status="stopped",
+        zero_after=True,
+        inspect_status="running",
+    ):
         self.launch_status = launch_status
         self.terminate_status = terminate_status
         self.zero_after = zero_after
         self.launched = False
         self.requests = []
+        self.inspect_status = inspect_status
+        self.inspect_calls = 0
 
     def billable_inventory(self, *, name_prefix):
         count = 0 if not self.launched or self.zero_after else 1
@@ -197,6 +208,25 @@ class _Provider:
         if self.terminate_status == "stopped":
             self.launched = False
         return {"status": self.terminate_status, "instance_id": instance_id}
+
+    def inspect(self, instance_id):
+        self.inspect_calls += 1
+        if self.inspect_status == "absent":
+            return {
+                "status": "absent",
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+                "blockers": [],
+            }
+        return {
+            "status": "observed",
+            "instance_id": instance_id,
+            "actual_status": self.inspect_status,
+            "api_confirmed": True,
+            "provider_absence_confirmed": False,
+            "blockers": [],
+        }
 
 
 def _completed_smoke(tmp_path: Path, **overrides):
@@ -424,6 +454,105 @@ def test_one_instance_smoke_retrieves_output_and_proves_teardown_zero(tmp_path: 
         json.loads((tmp_path / "provider_zero_verification.json").read_text())
     )
     validator.validate(replay)
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        urllib.error.HTTPError(
+            "https://objects.example/download?signature=fixture-secret",
+            503,
+            "Service Unavailable",
+            {},
+            None,
+        ),
+        urllib.error.URLError(ConnectionResetError(104, "connection reset")),
+        ReconstructionVastSmokeError("reconstruction_smoke_output_http:503"),
+    ],
+    ids=["http-503", "connection-reset", "typed-http-503"],
+)
+def test_transient_non_404_output_failure_reuses_one_instance_and_seals_result(
+    tmp_path: Path, transport_error: BaseException
+) -> None:
+    provider = _Provider()
+    fetch_calls = 0
+    times = count(1000.0)
+
+    def transient(_url: str):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        if fetch_calls == 1:
+            raise transport_error
+        return _runtime_result()
+
+    result = run_reconstruction_vast_worker_smoke(
+        bound_request=_bound_request(),
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        output_put_url="https://objects.example/upload",
+        output_get_url="https://objects.example/download?signature=fixture-secret",
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=transient,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+    assert result["status"] == "completed", result["blockers"]
+    assert result["output_fetch_attempts"] == 2
+    assert result["provider_mutations_performed"] == 2
+    assert provider.requests and len(provider.requests) == 1
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert "fixture-secret" not in json.dumps(result)
+
+
+def test_provider_terminal_before_output_ends_wait_and_retains_non_404_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-worker exit must not burn the full TTL or erase its 503 evidence."""
+
+    monkeypatch.setattr(vast_smoke, "PROVIDER_LIVENESS_POLL_SECONDS", 0.0)
+    provider = _Provider(inspect_status="exited")
+    times = count(1000.0)
+
+    def unavailable(_url: str):
+        raise urllib.error.HTTPError(
+            "https://objects.example/download?signature=fixture-secret",
+            503,
+            "Service Unavailable",
+            {},
+            None,
+        )
+
+    result = run_reconstruction_vast_worker_smoke(
+        bound_request=_bound_request(),
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        output_put_url="https://objects.example/upload",
+        output_get_url="https://objects.example/download?signature=fixture-secret",
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=unavailable,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == [
+        "reconstruction_provider_instance_terminal_before_output"
+    ]
+    assert result["provider_terminal_before_output"] is True
+    assert result["provider_terminal_state"] == "exited"
+    assert result["output_fetch_attempts"] == 2
+    assert result["duration_seconds"] < _bound_request()["hard_ttl_seconds"]
+    assert provider.inspect_calls == vast_smoke.PROVIDER_TERMINAL_CONFIRMATIONS_REQUIRED
+    assert result["last_output_fetch_failure"].startswith("HTTPError:")
+    assert "fixture-secret" not in json.dumps(result)
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert Path(result["teardown_manifest_path"]).is_file()
+    assert (tmp_path / "provider_zero_verification.json").is_file()
 
 
 def test_replay_rejects_tampered_execution_receipt(tmp_path: Path):
