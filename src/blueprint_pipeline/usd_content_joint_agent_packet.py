@@ -112,6 +112,33 @@ def inspect_joint_agent_checkout(
     }
 
 
+#: Receipt schemas this packet accepts as the asset the Joint Agent reads.
+#:
+#: ``articulated_source_asset.v1`` is the captured source mesh: one prim holding
+#: every connected component. On 2026-08-17 run
+#: `adp-joint-agent-840920-task-a-fff2beb2-r1` the agent made 71 predictions
+#: against it -- exactly its `connected_component_count` -- clustered them to 3
+#: candidates, and returned `parent_unresolved` on all three, because a prim
+#: with no children offers no hierarchy from which a parent can be inferred. No
+#: model resolves a parent that the input does not contain.
+#:
+#: ``simready_graph_asset_receipt.v1`` is our authored replacement, whose links
+#: are distinct prims. It supplies the hierarchy the source mesh lacks.
+#:
+#: CLAIM BOUNDARY: these two inputs do not prove the same thing. Reading the
+#: source mesh, the Joint Agent infers topology independently. Reading our
+#: authored replacement, it can only corroborate topology we already authored --
+#: it becomes a cross-check, not an independent witness. The lane already caps
+#: its output at `joint_agent_output_is_optional_topology_candidate`, and
+#: NVIDIA's own Research Preview notes say the same, so neither reading is a
+#: qualification. But a receipt built from the replacement must never be
+#: described as independent inference.
+ACCEPTED_SOURCE_RECEIPT_SCHEMAS = (
+    "articulated_source_asset.v1",
+    "simready_graph_asset_receipt.v1",
+)
+
+
 def _load_source_receipt(path: Path, asset_path: Path) -> dict[str, Any]:
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
@@ -119,6 +146,8 @@ def _load_source_receipt(path: Path, asset_path: Path) -> dict[str, Any]:
         raise JointAgentPacketError(["articulated_source_receipt_invalid"]) from exc
     if not isinstance(receipt, Mapping):
         raise JointAgentPacketError(["articulated_source_receipt_invalid"])
+    if receipt.get("schema_version") == "simready_graph_asset_receipt.v1":
+        return _load_authored_replacement_receipt(receipt, asset_path)
     errors: list[str] = []
     if receipt.get("schema_version") != "articulated_source_asset.v1":
         errors.append("articulated_source_receipt_schema_invalid")
@@ -139,6 +168,41 @@ def _load_source_receipt(path: Path, asset_path: Path) -> dict[str, Any]:
     if errors:
         raise JointAgentPacketError(errors)
     return dict(receipt)
+
+
+def _load_authored_replacement_receipt(
+    receipt: Mapping[str, Any], asset_path: Path
+) -> dict[str, Any]:
+    """Accept our authored replacement, whose links are distinct prims.
+
+    The component count the packet reports is the authored link count, because
+    that -- not the source mesh's connected-component count -- is what bounds
+    the topology the agent can be asked about.
+    """
+
+    errors: list[str] = []
+    expected_receipt_digest = canonical_digest(receipt, digest_field="receipt_digest")
+    if receipt.get("receipt_digest") != expected_receipt_digest:
+        errors.append("articulated_source_receipt_digest_invalid")
+    output = receipt.get("output_usd")
+    if not isinstance(output, Mapping):
+        errors.append("articulated_source_output_identity_missing")
+    else:
+        if output.get("sha256") != _sha256(asset_path):
+            errors.append("articulated_source_asset_digest_mismatch")
+    link_paths = receipt.get("link_paths")
+    if not isinstance(link_paths, Mapping) or len(link_paths) < 2:
+        # One link is a rigid body, not an articulation: there is no parent to
+        # resolve, which is the exact failure this path exists to avoid.
+        errors.append("authored_replacement_link_count_invalid")
+    if errors:
+        raise JointAgentPacketError(errors)
+    resolved = dict(receipt)
+    resolved["connected_component_count"] = len(link_paths)
+    resolved["authored_replacement_input"] = True
+    resolved["independent_topology_inference"] = False
+    resolved["output_asset"] = dict(output)
+    return resolved
 
 
 def build_joint_agent_packet(
