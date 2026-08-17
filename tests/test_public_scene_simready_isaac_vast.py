@@ -26,6 +26,8 @@ def _bundle(tmp_path: Path, *, commit: str = "a" * 40) -> dict:
     predecessor = {
         "schema_version": "paired_native_simready_predecessor_binding.v1",
         "scene_id": "840920",
+        "task_id": "task-a",
+        "asset_id": "asset-a",
         "candidate_usd_sha256": "sha256:" + "d" * 64,
         "binding_digest": "",
     }
@@ -40,6 +42,9 @@ def _bundle(tmp_path: Path, *, commit: str = "a" * 40) -> dict:
         "blockers": [],
         "probe_spec_sha256": "sha256:" + "b" * 64,
         "scene_id": "840920",
+        "task_id": "task-a",
+        "asset_id": "asset-a",
+        "validation_mode": "commanded_articulation",
         "candidate_usd_sha256": "sha256:" + "d" * 64,
         "native_probe_manifest_sha256": "sha256:" + "e" * 64,
         "native_probe_manifest_digest": "sha256:" + "f" * 64,
@@ -72,6 +77,9 @@ def _paid_attempt_authority(
         "bundle_receipt_sha256": bundle_receipt_sha256,
         "probe_spec_sha256": prepared_bundle["probe_spec_sha256"],
         "scene_id": prepared_bundle["scene_id"],
+        "task_id": prepared_bundle["task_id"],
+        "asset_id": prepared_bundle["asset_id"],
+        "validation_mode": prepared_bundle["validation_mode"],
         "candidate_usd_sha256": prepared_bundle["candidate_usd_sha256"],
         "native_probe_manifest_sha256": prepared_bundle[
             "native_probe_manifest_sha256"
@@ -224,6 +232,10 @@ def test_dry_run_never_stages_or_mutates(tmp_path: Path, monkeypatch: pytest.Mon
 
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
+    assert result["scene_id"] == "840920"
+    assert result["task_id"] == "task-a"
+    assert result["asset_id"] == "asset-a"
+    assert result["validation_mode"] == "commanded_articulation"
 
 
 def test_live_run_requires_all_four_native_probes_and_provider_zero(
@@ -566,6 +578,9 @@ def test_simready_authority_binds_external_instance_allowlist(tmp_path: Path) ->
     ("field", "error"),
     [
         ("scene_id", "scene_id_mismatch"),
+        ("task_id", "task_id_mismatch"),
+        ("asset_id", "asset_id_mismatch"),
+        ("validation_mode", "validation_mode_mismatch"),
         ("candidate_usd_sha256", "candidate_usd_sha256_mismatch"),
         (
             "native_probe_manifest_sha256",
@@ -586,7 +601,11 @@ def test_simready_authority_rejects_scene_or_candidate_identity_drift(
 ) -> None:
     prepared_bundle = _bundle(tmp_path)
     authority = _paid_attempt_authority(prepared_bundle)
-    authority[field] = "different-scene" if field == "scene_id" else "sha256:" + "0" * 64
+    authority[field] = (
+        "different-identity"
+        if field in {"scene_id", "task_id", "asset_id", "validation_mode"}
+        else "sha256:" + "0" * 64
+    )
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
     )

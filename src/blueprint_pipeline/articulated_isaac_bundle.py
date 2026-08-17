@@ -276,6 +276,9 @@ def build_articulated_isaac_bundle(
         receipt.update(
             {
                 "scene_id": scene_id,
+                "task_id": predecessor.get("task_id"),
+                "asset_id": predecessor.get("asset_id"),
+                "validation_mode": spec.get("validation_mode"),
                 "native_probe_manifest_sha256": _sha256(spec_path),
                 "native_probe_manifest_digest": spec.get("receipt_digest"),
                 "predecessor_binding_digest": predecessor.get("binding_digest"),

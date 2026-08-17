@@ -316,6 +316,21 @@ def validate_simready_isaac_paid_attempt_authority(
         errors.append("probe_spec_sha256_mismatch")
     if value.get("scene_id") != prepared_bundle.get("scene_id"):
         errors.append("scene_id_mismatch")
+    if value.get("task_id") != prepared_bundle.get("task_id") or not str(
+        value.get("task_id") or ""
+    ).strip():
+        errors.append("task_id_mismatch")
+    if value.get("asset_id") != prepared_bundle.get("asset_id") or not str(
+        value.get("asset_id") or ""
+    ).strip():
+        errors.append("asset_id_mismatch")
+    if value.get("validation_mode") != prepared_bundle.get(
+        "validation_mode"
+    ) or value.get("validation_mode") not in {
+        "commanded_articulation",
+        "locked_hinge_rigid_validation",
+    }:
+        errors.append("validation_mode_mismatch")
     if value.get("candidate_usd_sha256") != prepared_bundle.get(
         "candidate_usd_sha256"
     ):
@@ -430,6 +445,10 @@ def consume_simready_isaac_paid_attempt_authority_once(
             "authorization_digest": authorization_digest,
             "bundle_sha256": authority.get("bundle_sha256"),
             "probe_spec_sha256": authority.get("probe_spec_sha256"),
+            "scene_id": authority.get("scene_id"),
+            "task_id": authority.get("task_id"),
+            "asset_id": authority.get("asset_id"),
+            "validation_mode": authority.get("validation_mode"),
             "blueprint_commit": blueprint_commit,
             "consumed_at": utc_now_iso(),
             "maximum_provider_allocations": 1,
@@ -497,6 +516,14 @@ def run_simready_isaac_vast(
         or _sha256(bundle_path) != bundle.get("bundle_sha256")
     ):
         raise ValueError("simready_isaac_prepared_bundle_binding_invalid")
+    identity = {
+        "scene_id": bundle.get("scene_id"),
+        "task_id": bundle.get("task_id"),
+        "asset_id": bundle.get("asset_id"),
+        "validation_mode": bundle.get("validation_mode"),
+        "candidate_usd_sha256": bundle.get("candidate_usd_sha256"),
+        "predecessor_binding_digest": bundle.get("predecessor_binding_digest"),
+    }
     generated = utc_now_iso()
     if not execute:
         result = {
@@ -504,6 +531,7 @@ def run_simready_isaac_vast(
             "generated_at": generated,
             "status": "dry_run_ready",
             "bundle_sha256": bundle["bundle_sha256"],
+            **identity,
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "blockers": [],
@@ -536,6 +564,7 @@ def run_simready_isaac_vast(
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": generated,
             "status": "blocked",
+            **identity,
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "paid_attempt_authority_digest": validated_attempt_authority.get(
@@ -562,6 +591,7 @@ def run_simready_isaac_vast(
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": generated,
             "status": "blocked",
+            **identity,
             "attempt_number": number,
             "provider_mutations_performed": 0,
             "paid_attempt_authority_digest": validated_attempt_authority.get(
@@ -585,6 +615,7 @@ def run_simready_isaac_vast(
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": generated,
             "status": "blocked",
+            **identity,
             "attempt_number": number,
             "provider_mutations_performed": 0,
             "paid_attempt_authority_digest": validated_attempt_authority.get(
@@ -619,6 +650,7 @@ def run_simready_isaac_vast(
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": generated,
             "status": "blocked",
+            **identity,
             "attempt_number": number,
             "attempt_root": str(attempt_root),
             "provider_mutations_performed": 0,
@@ -783,6 +815,7 @@ def run_simready_isaac_vast(
         "attempt_number": number,
         "attempt_root": str(attempt_root),
         "bundle_sha256": bundle["bundle_sha256"],
+        **identity,
         "probe_spec_sha256": bundle.get("probe_spec_sha256"),
         "paid_attempt_authority_digest": validated_attempt_authority.get(
             "authorization_digest"

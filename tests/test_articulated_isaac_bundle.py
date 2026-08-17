@@ -156,6 +156,9 @@ def test_scene_bound_bundle_exposes_profile_and_authority_bindings(tmp_path: Pat
     receipt = _build(tmp_path, probe_root=root)
 
     assert receipt["scene_id"] == "840920"
+    assert receipt["task_id"] == "task_a_washer_door_open"
+    assert receipt["asset_id"] == "840920_simready_washer_candidate"
+    assert receipt["validation_mode"] == "commanded_articulation"
     assert receipt["native_probe_manifest_sha256"] == _digest_of(
         root / "articulated_native_probe_spec.json"
     )

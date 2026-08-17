@@ -102,6 +102,9 @@ def issue_simready_isaac_paid_attempt_authority(
         "bundle_receipt_sha256": _sha256(receipt_file),
         "probe_spec_sha256": bundle.get("probe_spec_sha256"),
         "scene_id": bundle.get("scene_id"),
+        "task_id": bundle.get("task_id"),
+        "asset_id": bundle.get("asset_id"),
+        "validation_mode": bundle.get("validation_mode"),
         "candidate_usd_sha256": bundle.get("candidate_usd_sha256"),
         "native_probe_manifest_sha256": bundle.get(
             "native_probe_manifest_sha256"
