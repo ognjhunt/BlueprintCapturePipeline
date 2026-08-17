@@ -678,6 +678,14 @@ def validate_content_agents_paid_attempt_authority(
         validate_bound_lane_prior_spend(value, lane="content_agents")
     except ValueError:
         errors.append("prior_spend_reconciliation_invalid")
+    try:
+        from .content_agents_preallocation_closeout import (
+            validate_bound_prior_content_agents_preallocation_attempts,
+        )
+
+        validate_bound_prior_content_agents_preallocation_attempts(value)
+    except ValueError:
+        errors.append("prior_preallocation_attempts_invalid")
     if errors:
         raise ValueError(
             "adp_content_agents_paid_attempt_authority_invalid:"
@@ -722,6 +730,14 @@ def consume_content_agents_paid_attempt_authority_once(
             "blueprint_commit": blueprint_commit,
             "consumed_at": utc_now_iso(),
             "maximum_provider_allocations": 1,
+            "prior_preallocation_attempt_authority_digests": [
+                row.get("attempt_authority_digest")
+                for row in authority.get("prior_preallocation_attempts") or []
+                if isinstance(row, Mapping)
+            ],
+            "preallocation_attempt_ordinal": authority.get(
+                "preallocation_attempt_ordinal"
+            ),
         }
         raw = (
             json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
