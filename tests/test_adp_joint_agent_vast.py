@@ -299,6 +299,7 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "joint_agent_source_asset_digest": source_digest,
         "joint_agent_source_receipt_digest": source_receipt_digest,
         "publisher_scene_id": "840796",
+        "target_instance_id": "123",
         "freeze_digest": freeze["freeze_digest"],
     }
     authority["authorization_digest"] = canonical_digest(
@@ -444,6 +445,61 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         provider_output_put_url="https://example.com/output.zip?signature=redacted",
     )
     assert preflight["status"] == "passed"
+
+    dual_scope_amendment = json.loads(json.dumps(scope_amendment))
+    dual_scope_amendment["joint_scope"]["non_task_joint_mode"] = (
+        "exclude_non_task_candidates_without_behavior_claim"
+    )
+    dual_scope_amendment["amendment_digest"] = canonical_digest(
+        dual_scope_amendment, digest_field="amendment_digest"
+    )
+    dual_task_admission = {
+        "schema_version": "dual_task_joint_agent_admission.v1",
+        "status": "ready_for_optional_joint_agent_topology_candidate",
+        "paid_joint_agent_execution_permitted": True,
+        "source": {"target_instance_id": "123"},
+        "normalized_freeze": freeze,
+        "scope_amendment": dual_scope_amendment,
+        "admission_digest": "",
+    }
+    dual_task_admission["admission_digest"] = canonical_digest(
+        dual_task_admission, digest_field="admission_digest"
+    )
+    dual_task_admission_path = tmp_path / "dual_task_admission.json"
+    dual_task_admission_path.write_text(
+        json.dumps(dual_task_admission), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.validate_dual_task_joint_agent_admission",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.validate_dual_task_joint_agent_source_binding",
+        lambda admission, receipt: admission,
+    )
+
+    dual_receipt = build_joint_agent_vast_bundle(
+        repo_root=repo,
+        joint_agent_root=checkout,
+        packet_path=packet_path,
+        execution_authority_path=authority_path,
+        freeze_path=None,
+        scope_amendment_path=None,
+        dual_task_admission_path=dual_task_admission_path,
+        nim_preflight_path=nim_preflight_path,
+        scene_optimizer_core_zip_path=optimizer_zip,
+        job_dir=tmp_path / "dual-bundle",
+        generated_at="2026-08-17T00:00:00+00:00",
+    )
+
+    assert dual_receipt["status"] == "ready"
+    assert dual_receipt["dual_task_admission_digest"] == dual_task_admission[
+        "admission_digest"
+    ]
+    assert (
+        tmp_path
+        / "dual-bundle/provider_runtime/dual_task_joint_agent_admission.json"
+    ).is_file()
 
 
 def test_joint_agent_provider_uses_gpu_graphics_and_distinct_runtime(tmp_path: Path) -> None:

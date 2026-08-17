@@ -9,6 +9,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.joint_agent_articulation_review import (
     JointAgentArticulationReviewError,
     NON_TASK_JOINT_MODE_EXEMPT,
+    NON_TASK_JOINT_MODE_NO_EXERCISE,
     NON_TASK_JOINT_MODE_STRICT,
     collect_candidate_bounds,
     resolve_joint_agent_output,
@@ -194,7 +195,13 @@ def _fridge_fixture() -> tuple[dict, dict]:
     return _document(candidates), bounds
 
 
-def test_review_admits_one_task_joint_inside_bounded_multi_joint_assembly() -> None:
+@pytest.mark.parametrize(
+    "non_task_mode",
+    [NON_TASK_JOINT_MODE_EXEMPT, NON_TASK_JOINT_MODE_NO_EXERCISE],
+)
+def test_review_admits_one_task_joint_inside_bounded_multi_joint_assembly(
+    non_task_mode: str,
+) -> None:
     candidates = [
         _candidate("upper_door", axis=[0.0, 0.0, -1.0]),
         _candidate("lower_door", axis=[0.0, 0.0, 1.0]),
@@ -213,10 +220,12 @@ def test_review_admits_one_task_joint_inside_bounded_multi_joint_assembly() -> N
         _component(3, ([-0.2, -0.2, 0.2], [0.2, 0.2, 0.4])),
     ]
 
+    contract = _contract()
+    contract["non_task_joint_mode"] = non_task_mode
     receipt = review_joint_agent_articulation(
         candidates_document=document,
         candidate_bounds=bounds,
-        review_contract=_contract(),
+        review_contract=contract,
         source_components=components,
     )
 
@@ -225,9 +234,10 @@ def test_review_admits_one_task_joint_inside_bounded_multi_joint_assembly() -> N
     assert receipt["target_candidate_id"] == "upper_door"
     assert receipt["non_task_candidate_ids"] == ["drawer", "lower_door"]
     assert receipt["articulation_root_count"] == 1
-    assert receipt["non_task_joint_mode"] == NON_TASK_JOINT_MODE_EXEMPT
+    assert receipt["non_task_joint_mode"] == non_task_mode
     assert receipt["non_task_joint_motion_tolerance"] == 0.001
     assert receipt["commanded_task_joint_count"] == 1
+    assert receipt["claim_boundary"]["non_task_joint_behavior_exercised"] is False
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
