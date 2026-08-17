@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from inspect import signature
 from pathlib import Path
@@ -8,6 +9,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.freeze_amendment_carry_forward import (
+    evaluate_freeze_amendment_carry_forward,
+)
 from blueprint_pipeline.simready_cad_agent_contract import (
     MATRIX_SCHEMA_VERSION,
     INSPECTION_SCHEMA_VERSION,
@@ -701,3 +705,88 @@ def test_matrix_requires_both_agent_versions_for_every_object(tmp_path: Path):
     with pytest.raises(SimReadyCadAgentContractError) as excinfo:
         validate_cad_agent_matrix(matrix)
     assert "cad_agent_matrix_candidates_invalid" in excinfo.value.codes
+
+
+def test_amended_freeze_is_refused_without_a_carry_forward_proof(tmp_path: Path) -> None:
+    """The 2026-08-17 refusal: one leaf moved and the whole receipt died.
+
+    Correcting the washer door's hinge axis changed the freeze file, so the
+    sealed request's whole-file hash stopped matching. That refusal is correct
+    on its own terms -- the bytes really did change -- and it must stay the
+    default, because an unexplained divergence is not a carry-forward.
+    """
+
+    freeze = tmp_path / "freeze.json"
+    freeze.write_text(FREEZE_A.read_text(encoding="utf-8"), encoding="utf-8")
+    request = _request(tmp_path, freeze_path=freeze)
+    assert validate_cad_agent_request(request) == request
+
+    amended = json.loads(freeze.read_text(encoding="utf-8"))
+    amended["freeze_amendments"] = [{"amended_at": "2026-08-17"}]
+    amended["task_freeze_digest"] = ""
+    amended["task_freeze_digest"] = canonical_digest(
+        amended, digest_field="task_freeze_digest"
+    )
+    freeze.write_text(json.dumps(amended, indent=2, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        validate_cad_agent_request(request)
+    assert "cad_agent_request_task_freeze_invalid" in excinfo.value.codes
+
+
+def test_carry_forward_proof_admits_an_amendment_the_cad_agent_never_read(
+    tmp_path: Path,
+) -> None:
+    """An edit to a field the CAD agent never reads must not cost a paid re-run."""
+
+    freeze = tmp_path / "freeze.json"
+    original = json.loads(FREEZE_A.read_text(encoding="utf-8"))
+    freeze.write_text(json.dumps(original, indent=2, sort_keys=True), encoding="utf-8")
+    superseded_file_sha = "sha256:" + hashlib.sha256(freeze.read_bytes()).hexdigest()
+    request = _request(tmp_path, freeze_path=freeze)
+
+    # The real amendment: flip the washer door's hinge axis so it opens away
+    # from its own cabinet. The CAD agent never reads a joint axis.
+    amended = json.loads(json.dumps(original))
+    joints = (amended.get("articulation_graph") or {}).get("joints") or []
+    assert joints, "fixture must carry a joint for this amendment to be realistic"
+    joints[0]["axis"] = [-value for value in joints[0]["axis"]]
+    amended["freeze_amendments"] = [{"amended_at": "2026-08-17"}]
+    amended["task_freeze_digest"] = ""
+    amended["task_freeze_digest"] = canonical_digest(
+        amended, digest_field="task_freeze_digest"
+    )
+    freeze.write_text(json.dumps(amended, indent=2, sort_keys=True), encoding="utf-8")
+    amended_file_sha = "sha256:" + hashlib.sha256(freeze.read_bytes()).hexdigest()
+
+    # A proof rules on one schema. The request and the reference manifest each
+    # pin the freeze, so each needs its own -- no single token covers both.
+    proofs = [
+        evaluate_freeze_amendment_carry_forward(
+            superseded_freeze=json.loads(json.dumps(original)),
+            amended_freeze=amended,
+            sealed_schema=schema,
+            superseded_file_sha256=superseded_file_sha,
+            amended_file_sha256=amended_file_sha,
+        )
+        for schema in (
+            "simready_cad_agent_request.v1",
+            "simready_cad_agent_reference_manifest.v1",
+        )
+    ]
+    assert all(proof["status"] == "carries_forward" for proof in proofs)
+    assert validate_cad_agent_request(request, freeze_carry_forward=proofs) == request
+
+    # The request's proof alone does not rescue the manifest.
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        validate_cad_agent_request(request, freeze_carry_forward=proofs[0])
+    assert "cad_agent_reference_manifest_task_freeze_invalid" in excinfo.value.codes
+
+    # A proof for a different amendment rescues nothing.
+    stale = dict(proofs[0])
+    stale["superseded_freeze_file_sha256"] = "sha256:" + "e" * 64
+    stale["carry_forward_digest"] = canonical_digest(
+        stale, digest_field="carry_forward_digest"
+    )
+    with pytest.raises(SimReadyCadAgentContractError):
+        validate_cad_agent_request(request, freeze_carry_forward=stale)
