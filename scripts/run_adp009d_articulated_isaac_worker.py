@@ -98,6 +98,144 @@ def _simulation_app() -> Any:
     return SimulationApp({"headless": True, "renderer": "RayTracedLighting"})
 
 
+def _authored_articulation_joints(
+    stage: Any, articulation_root_path: str, usd_physics: Any
+) -> dict[str, Any]:
+    """Return only joints in the candidate's authored articulation subtree.
+
+    The frozen runtime overlay may add one world FixedJoint to anchor a dynamic
+    physics representation.  That anchor is intentionally outside the asset
+    root; counting it as candidate topology would either hide a topology drift
+    or make the temporary physics representation look like authored geometry.
+    """
+
+    prefix = articulation_root_path.rstrip("/") + "/"
+    return {
+        str(prim.GetPath()): prim
+        for prim in stage.Traverse()
+        if str(prim.GetPath()).startswith(prefix) and prim.IsA(usd_physics.Joint)
+    }
+
+
+def _physx_homogeneous_articulation_readback(
+    stage: Any,
+    representation: Mapping[str, Any],
+    usd_physics: Any,
+) -> dict[str, Any]:
+    """Verify the frozen dynamic-base/world-anchor runtime representation.
+
+    PhysX tensor articulations cannot contain kinematic bodies.  The candidate
+    bytes remain immutable and retain their truthful kinematic fixed-base
+    authoring; the stage opened by this worker must instead show a digest-bound
+    dynamic override plus a world FixedJoint.  This deliberately rejects a
+    missing override or an arbitrary second anchor before creating an Isaac
+    tensor view, which would otherwise collapse to an unhelpful ``NoneType``
+    backend exception.
+    """
+
+    expected_schema = "adp009d_physx_articulation_representation.v1"
+    body_paths = representation.get("articulation_body_prim_paths")
+    authored_kinematic = representation.get(
+        "authored_kinematic_articulation_body_prim_paths"
+    )
+    overrides = representation.get("runtime_dynamic_override_body_prim_paths")
+    mode = str(representation.get("mode") or "")
+    fixed_base = representation.get("fixed_base_body_prim_path")
+    anchor_path = representation.get("fixed_base_anchor_prim_path")
+    schema_valid = (
+        representation.get("schema_version") == expected_schema
+        and representation.get("candidate_bytes_modified") is False
+        and representation.get("candidate_structural_topology_preserved") is True
+        and representation.get("physx_homogeneous_articulation_required") is True
+        and isinstance(body_paths, list)
+        and isinstance(authored_kinematic, list)
+        and isinstance(overrides, list)
+        and all(isinstance(path, str) and path.startswith("/") for path in body_paths)
+        and all(
+            isinstance(path, str) and path.startswith("/")
+            for path in authored_kinematic
+        )
+        and all(isinstance(path, str) and path.startswith("/") for path in overrides)
+        and len(set(body_paths)) == len(body_paths)
+        and len(set(authored_kinematic)) == len(authored_kinematic)
+        and len(set(overrides)) == len(overrides)
+        and set(authored_kinematic).issubset(body_paths)
+        and overrides == authored_kinematic
+    )
+    observed_kinematic: dict[str, bool | None] = {}
+    authored_values: dict[str, bool] = {}
+    override_authored: dict[str, bool] = {}
+    for body_path in body_paths if isinstance(body_paths, list) else []:
+        prim = stage.GetPrimAtPath(body_path)
+        if not prim.IsValid() or not prim.HasAPI(usd_physics.RigidBodyAPI):
+            observed_kinematic[body_path] = None
+            continue
+        attribute = usd_physics.RigidBodyAPI(prim).GetKinematicEnabledAttr()
+        observed_kinematic[body_path] = bool(attribute.Get())
+        authored_values[body_path] = bool(attribute.HasAuthoredValue())
+        if body_path in (overrides if isinstance(overrides, list) else []):
+            override_authored[body_path] = bool(attribute.HasAuthoredValue())
+
+    all_dynamic = (
+        bool(body_paths)
+        and all(observed_kinematic.get(path) is False for path in body_paths)
+    )
+    anchor_observed: dict[str, Any] | None = None
+    if authored_kinematic:
+        anchor = stage.GetPrimAtPath(str(anchor_path or ""))
+        is_fixed_joint = bool(anchor.IsValid() and anchor.IsA(usd_physics.FixedJoint))
+        body0 = []
+        body1: list[str] = []
+        if is_fixed_joint:
+            fixed_joint = usd_physics.FixedJoint(anchor)
+            body0 = [str(path) for path in fixed_joint.GetBody0Rel().GetTargets()]
+            body1 = [str(path) for path in fixed_joint.GetBody1Rel().GetTargets()]
+        anchor_observed = {
+            "path": str(anchor_path or ""),
+            "is_fixed_joint": is_fixed_joint,
+            "body0": body0,
+            "body1": body1,
+        }
+        anchor_valid = (
+            mode == "dynamic_articulation_with_world_fixed_base_anchor"
+            and isinstance(fixed_base, str)
+            and fixed_base in authored_kinematic
+            and str(anchor_path) == "/BlueprintProbeRuntime/fixed_base_anchor"
+            and body0 == []
+            and body1 == [fixed_base]
+        )
+    else:
+        anchor_valid = (
+            mode == "candidate_authored_dynamic_articulation"
+            and fixed_base is None
+            and anchor_path is None
+            and overrides == []
+        )
+
+    passed = (
+        schema_valid
+        and all_dynamic
+        and anchor_valid
+        and all(
+            override_authored.get(path) is True
+            for path in overrides if isinstance(overrides, list)
+        )
+    )
+    return {
+        "expected_authored_kinematic_body_prim_paths": authored_kinematic,
+        "expected_runtime_dynamic_override_body_prim_paths": overrides,
+        "observed_runtime_kinematic_enabled": observed_kinematic,
+        "observed_runtime_kinematic_attribute_authored": authored_values,
+        "world_fixed_base_anchor": anchor_observed,
+        "passed": passed,
+        "claim_boundary": {
+            "candidate_bytes_modified": False,
+            "runtime_overlay_is_not_authored_asset_topology": True,
+            "kinematic_articulation_is_not_accepted_as_physx_valid": True,
+        },
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--spec", required=True)
@@ -174,9 +312,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             for p in stage.Traverse()
             if p.HasAPI(UsdPhysics.ArticulationRootAPI)
         )
-        joints = {
-            str(p.GetPath()): p for p in stage.Traverse() if p.IsA(UsdPhysics.Joint)
-        }
+        joints = (
+            _authored_articulation_joints(stage, roots[0], UsdPhysics)
+            if len(roots) == 1
+            else {}
+        )
         result["readbacks"]["articulation_root_identity"] = {
             "observed": roots,
             "expected": [expected.get("articulation_root_prim_path")],
@@ -197,6 +337,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "expected": expected.get("joint_types"),
             "passed": observed_types == (expected.get("joint_types") or {}),
         }
+        representation = spec.get("runtime_representation")
+        if not isinstance(representation, Mapping):
+            raise RuntimeError("articulated_isaac_runtime_representation_missing")
+        result["readbacks"]["physx_homogeneous_articulation_representation"] = (
+            _physx_homogeneous_articulation_readback(
+                stage, representation, UsdPhysics
+            )
+        )
+        if (
+            result["readbacks"]["physx_homogeneous_articulation_representation"]
+            .get("passed")
+            is not True
+        ):
+            raise RuntimeError("articulated_isaac_runtime_representation_invalid")
 
         task_path = str(expected.get("task_joint_prim_path") or "")
         locked_paths = [str(p) for p in (expected.get("locked_joint_prim_paths") or [])]
@@ -314,10 +468,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             name: float(initial[position]) for name, position in index.items()
         }
         for angle in sweep:
-            target = np.asarray(view.get_joint_positions())
             if task_dof in index:
-                target[0][index[task_dof]] = math.radians(angle)
-            view.set_joint_position_targets(target)
+                # Only the task door receives a command.  The other four
+                # joints remain governed by their authored limits/drives, so
+                # their readback is evidence of a lock rather than an echo of
+                # a command we sent them every tick.
+                view.set_joint_position_targets(
+                    np.asarray([math.radians(angle)], dtype=np.float32),
+                    joint_indices=np.asarray([index[task_dof]], dtype=np.int64),
+                )
             for _ in range(int(settle.get("samples") or 40)):
                 world.step(render=False)
             current = np.asarray(view.get_joint_positions())[0]
@@ -349,6 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["readbacks"]["commanded_sweep_reaches_maximum"] = {
                 "observed_degrees": reached,
                 "maximum_commanded_degrees": maximum,
+                "commanded_dof_names": [task_dof],
                 "passed": bool(reached) and reached[-1] >= maximum - 2.0,
             }
         result["readbacks"]["locked_joint_motion_within_tolerance"] = {

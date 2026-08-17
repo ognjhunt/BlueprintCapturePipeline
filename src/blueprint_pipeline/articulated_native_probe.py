@@ -28,11 +28,15 @@ from .decision_evidence_contracts import canonical_digest
 
 
 ARTICULATED_NATIVE_PROBE_SCHEMA_VERSION = "articulated_native_probe_spec.v1"
+PHYSX_ARTICULATION_REPRESENTATION_SCHEMA_VERSION = (
+    "adp009d_physx_articulation_representation.v1"
+)
 COMMANDED_ARTICULATION_MODE = "commanded_articulation"
 LOCKED_HINGE_RIGID_MODE = "locked_hinge_rigid_validation"
 COMMANDED_REQUIRED_READBACKS = (
     "articulation_root_identity",
     "joint_count_and_types",
+    "physx_homogeneous_articulation_representation",
     "task_joint_identity",
     "locked_joint_identity",
     "joint_axis_and_limits",
@@ -46,6 +50,7 @@ COMMANDED_REQUIRED_READBACKS = (
 LOCKED_REQUIRED_READBACKS = (
     "articulation_root_identity",
     "joint_count_and_types",
+    "physx_homogeneous_articulation_representation",
     "locked_joint_identity",
     "locked_joint_axes_and_limits",
     "no_joint_command_issued",
@@ -95,6 +100,7 @@ def _articulation_stage(
     candidate_relative_path: str,
     default_prim_name: str,
     probe_drive: Mapping[str, Any] | None,
+    runtime_representation: Mapping[str, Any],
 ) -> str:
     """Overlay a physics scene, and probe-time actuation the asset must not own.
 
@@ -129,6 +135,75 @@ def _articulation_stage(
             f"{float(probe_drive['max_force'])}\n"
         )
         actuation = "\n" + opening + body + closing
+
+    # PhysX refuses an articulation containing a kinematic link.  The source
+    # candidate legitimately authors its cabinet link kinematic: that is the
+    # correct asset-level way to describe an appliance fixed in a scene.  The
+    # native probe instead needs a *runtime-only* homogeneous articulation, so
+    # it makes that one link dynamic and grounds it with a world FixedJoint.
+    #
+    # This is deliberately an overlay, not a rewrite of the candidate.  The
+    # original bytes, structural joint graph, axes, limits, and lock drives
+    # remain exact inputs.  The frozen spec names every altered runtime field
+    # and the worker readbacks its composed state before it asks PhysX for an
+    # articulation tensor view.
+    override_paths = [
+        str(path)
+        for path in runtime_representation.get(
+            "runtime_dynamic_override_body_prim_paths", []
+        )
+    ]
+    kinematic_overrides = ""
+    for body_path in override_paths:
+        prefix = f"/{default_prim_name}/"
+        if not body_path.startswith(prefix):
+            raise ArticulatedNativeProbeError(
+                ["articulated_native_probe_runtime_body_path_invalid"]
+            )
+        segments = body_path.removeprefix(prefix).split("/")
+        if not all(segment and '"' not in segment for segment in segments):
+            raise ArticulatedNativeProbeError(
+                ["articulated_native_probe_runtime_body_path_invalid"]
+            )
+        opening = "".join(
+            f'{"    " * (index + 1)}over "{segment}"\n'
+            f'{"    " * (index + 1)}{{\n'
+            for index, segment in enumerate(segments)
+        )
+        closing = "".join(
+            f'{"    " * (index + 1)}}}\n'
+            for index in reversed(range(len(segments)))
+        )
+        depth = "    " * (len(segments) + 1)
+        kinematic_overrides += (
+            "\n" + opening + f"{depth}bool physics:kinematicEnabled = 0\n" + closing
+        )
+
+    anchor_path = str(runtime_representation.get("fixed_base_anchor_prim_path") or "")
+    fixed_base = str(runtime_representation.get("fixed_base_body_prim_path") or "")
+    anchor = ""
+    if anchor_path or fixed_base:
+        if not anchor_path or not fixed_base:
+            raise ArticulatedNativeProbeError(
+                ["articulated_native_probe_runtime_anchor_invalid"]
+            )
+        expected_anchor = "/BlueprintProbeRuntime/fixed_base_anchor"
+        if anchor_path != expected_anchor or not fixed_base.startswith(
+            f"/{default_prim_name}/"
+        ):
+            raise ArticulatedNativeProbeError(
+                ["articulated_native_probe_runtime_anchor_invalid"]
+            )
+        anchor = f'''
+
+def Scope "BlueprintProbeRuntime"
+{{
+    def PhysicsFixedJoint "fixed_base_anchor"
+    {{
+        rel physics:body1 = <{fixed_base}>
+    }}
+}}
+'''
     return f"""#usda 1.0
 (
     subLayers = [@{candidate_relative_path}@]
@@ -144,8 +219,83 @@ over "{default_prim_name}"
         vector3f physics:gravityDirection = (0, 0, -1)
         float physics:gravityMagnitude = 9.81
     }}
-{actuation}}}
-"""
+{actuation}{kinematic_overrides}}}
+{anchor}"""
+
+
+def _runtime_physx_representation(
+    *,
+    stage: Any,
+    joints: Mapping[str, Any],
+    articulation_root_path: str,
+    usd_physics: Any,
+    errors: list[str],
+) -> dict[str, Any]:
+    """Freeze the minimal runtime adaptation PhysX needs for an articulation.
+
+    A kinematic link is valid authored USD, but PhysX tensor articulations
+    reject it.  A single kinematic articulated link has an unambiguous meaning
+    here: it is the fixed base.  Convert it to dynamic only in the probe
+    overlay and ground it with a world fixed joint.  More than one such link is
+    ambiguous and therefore fails closed rather than silently changing which
+    part of an asset is anchored.
+    """
+
+    body_paths: set[str] = set()
+    for joint_path, joint in sorted(joints.items()):
+        for relationship_name in ("physics:body0", "physics:body1"):
+            relationship = joint.GetRelationship(relationship_name)
+            targets = relationship.GetTargets() if relationship else []
+            if len(targets) != 1:
+                errors.append(
+                    "articulated_native_probe_joint_body_relation_invalid:"
+                    f"{joint_path}:{relationship_name}"
+                )
+                continue
+            body_path = str(targets[0])
+            if not body_path.startswith(articulation_root_path + "/"):
+                errors.append(
+                    "articulated_native_probe_joint_body_outside_articulation_root:"
+                    f"{joint_path}:{relationship_name}"
+                )
+                continue
+            body = stage.GetPrimAtPath(body_path)
+            if not body.IsValid() or not body.HasAPI(usd_physics.RigidBodyAPI):
+                errors.append(
+                    f"articulated_native_probe_joint_body_not_rigid:{body_path}"
+                )
+                continue
+            body_paths.add(body_path)
+
+    kinematic_paths: list[str] = []
+    for body_path in sorted(body_paths):
+        rigid = usd_physics.RigidBodyAPI(stage.GetPrimAtPath(body_path))
+        enabled = rigid.GetKinematicEnabledAttr().Get()
+        if bool(enabled):
+            kinematic_paths.append(body_path)
+    if len(kinematic_paths) > 1:
+        errors.append("articulated_native_probe_nonhomogeneous_kinematic_articulation")
+
+    fixed_base = kinematic_paths[0] if len(kinematic_paths) == 1 else None
+    runtime_overrides = [fixed_base] if fixed_base else []
+    return {
+        "schema_version": PHYSX_ARTICULATION_REPRESENTATION_SCHEMA_VERSION,
+        "mode": (
+            "dynamic_articulation_with_world_fixed_base_anchor"
+            if fixed_base
+            else "candidate_authored_dynamic_articulation"
+        ),
+        "candidate_bytes_modified": False,
+        "candidate_structural_topology_preserved": True,
+        "physx_homogeneous_articulation_required": True,
+        "articulation_body_prim_paths": sorted(body_paths),
+        "authored_kinematic_articulation_body_prim_paths": kinematic_paths,
+        "runtime_dynamic_override_body_prim_paths": runtime_overrides,
+        "fixed_base_body_prim_path": fixed_base,
+        "fixed_base_anchor_prim_path": (
+            "/BlueprintProbeRuntime/fixed_base_anchor" if fixed_base else None
+        ),
+    }
 
 
 def materialize_articulated_native_probe(
@@ -216,6 +366,13 @@ def materialize_articulated_native_probe(
         errors.append(
             f"articulated_native_probe_articulation_root_count_invalid:{len(roots)}"
         )
+    runtime_representation = _runtime_physx_representation(
+        stage=stage,
+        joints=joints,
+        articulation_root_path=roots[0] if len(roots) == 1 else "",
+        usd_physics=UsdPhysics,
+        errors=errors,
+    )
     mode = str(validation_mode or "").strip()
     if mode not in {COMMANDED_ARTICULATION_MODE, LOCKED_HINGE_RIGID_MODE}:
         errors.append("articulated_native_probe_validation_mode_invalid")
@@ -337,7 +494,10 @@ def materialize_articulated_native_probe(
     )
     articulation_path.write_text(
         _articulation_stage(
-            candidate.name, stage.GetDefaultPrim().GetName(), probe_drive
+            candidate.name,
+            stage.GetDefaultPrim().GetName(),
+            probe_drive,
+            runtime_representation,
         ),
         encoding="utf-8",
     )
@@ -394,7 +554,10 @@ def materialize_articulated_native_probe(
             "articulation_stage": {
                 "path": str(articulation_path),
                 "sha256": _sha256(articulation_path),
-                "purpose": "reference_the_exact_candidate_and_add_only_a_physics_scene",
+                "purpose": (
+                    "reference_exact_candidate_add_physics_scene_and_"
+                    "digest_bound_physx_homogeneous_runtime_representation"
+                ),
             },
             "candidate_copy": {
                 "path": str(candidate_copy),
@@ -437,6 +600,7 @@ def materialize_articulated_native_probe(
             "fixed_step_seconds": step,
         },
         "probe_drive": probe_drive,
+        "runtime_representation": runtime_representation,
         "required_readbacks": list(
             LOCKED_REQUIRED_READBACKS
             if mode == LOCKED_HINGE_RIGID_MODE
@@ -449,6 +613,8 @@ def materialize_articulated_native_probe(
             "spec_is_not_a_result": True,
             "task_joint_commanded": mode == COMMANDED_ARTICULATION_MODE,
             "locked_hinge_only": mode == LOCKED_HINGE_RIGID_MODE,
+            "runtime_representation_is_not_candidate_asset_mutation": True,
+            "physx_kinematic_articulation_is_not_accepted_as_valid": True,
         },
         "receipt_digest": "",
     }
