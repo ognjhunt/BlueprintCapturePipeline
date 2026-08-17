@@ -150,7 +150,7 @@ def test_teardown_still_runs_when_the_output_is_missing(tmp_path: Path) -> None:
 
 def test_teardown_still_runs_when_the_worker_dies(tmp_path: Path) -> None:
     provider = _Provider(states=["terminated"])
-    result = _run(tmp_path, provider)
+    _run(tmp_path, provider)
     assert provider.terminated == ["i-0abc"]
 
 
