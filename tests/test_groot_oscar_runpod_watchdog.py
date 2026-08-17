@@ -127,7 +127,11 @@ def test_watchdog_arms_measurement_chrono_dem_canary_prefix(tmp_path, monkeypatc
 
 @pytest.mark.parametrize(
     "prefix",
-    ("blueprint-adp-arena-", "blueprint-adp009d-"),
+    (
+        "blueprint-adp-arena-",
+        "blueprint-adp-content-agents-",
+        "blueprint-adp009d-",
+    ),
 )
 def test_watchdog_arms_adp_canary_prefixes(tmp_path, monkeypatch, prefix) -> None:
     monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
