@@ -66,6 +66,10 @@ from .simready_cad_agent_contract import (
     SimReadyCadAgentContractError,
     validate_cad_agent_output,
 )
+from .vast_independent_watchdog_control import (
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
@@ -110,6 +114,7 @@ ARTICULATED_V1_MANIFEST_RELATIVE_PATH = (
     "second_scene_840796_deterministic_simready_candidate.v1.json"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/content-agents"
+CONTENT_AGENTS_INSTANCE_LABEL_PREFIX = "blueprint-adp-content-agents-"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
@@ -2378,6 +2383,24 @@ def run_content_agents_vast(
         }
     provider_run = job / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
+    watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+        job_dir=job,
+        max_live_minutes=remaining_minutes,
+        generated_at=utc_now_iso(),
+        allowed_active_instance_ids=allowed_active_instance_ids,
+        pod_name_prefix=CONTENT_AGENTS_INSTANCE_LABEL_PREFIX,
+    )
+    if watchdog_handle is None:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_handoff,
+            "blockers": ["adp_content_agents_independent_watchdog_not_armed"],
+        }
     adapter: dict[str, Any] = {}
     try:
         with _authority_environment():
@@ -2415,7 +2438,11 @@ def run_content_agents_vast(
                 preferred_gpu_keywords=("RTX 4090", "RTX A6000", "L40S", "A100"),
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
-                instance_label_prefix="blueprint-adp-content-agents-",
+                # The watchdog returns the unique prefix it armed. Deriving the
+                # created label from that handle prevents a second literal from
+                # silently moving the instance outside the watched name family.
+                instance_label_prefix=watchdog_handle.pod_name_prefix,
+                started_instance_id_path=watchdog_handle.started_instance_id_path,
                 machine_avoidlist_path=machine_avoidlist_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
@@ -2438,7 +2465,30 @@ def run_content_agents_vast(
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract(output_zip, job / "immutable_execution")
     execution = dict(extracted.get("execution") or {})
-    teardown = _read_json(provider_run / "vast_teardown_manifest.json")
+    teardown_path = provider_run / "vast_teardown_manifest.json"
+    try:
+        teardown = _read_json(teardown_path)
+    except (OSError, json.JSONDecodeError):
+        teardown = {}
+    instance_ids = [
+        int(value)
+        for value in (
+            teardown.get("vast_instance_ids")
+            or adapter.get("vast_instance_ids")
+            or []
+        )
+        if isinstance(value, int) and value > 0
+    ]
+    watchdog_close = close_independent_vast_watchdog(
+        job_dir=job,
+        handle=watchdog_handle,
+        instance_ids=instance_ids,
+        provider_teardown_completed=teardown.get("continuing_spend_from_this_run")
+        is False,
+        provider_allocation_impossible=(
+            not instance_ids and adapter.get("provider_create_attempted") is not True
+        ),
+    )
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or ["content_agents_full_execution_not_completed"])
@@ -2446,6 +2496,11 @@ def run_content_agents_vast(
         blockers.append("content_agents_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append("content_agents_object_store_provider_zero_not_proven")
+    if watchdog_close.get("status") not in {
+        "provider_terminal",
+        "cancelled_no_allocation",
+    }:
+        blockers.append("adp_content_agents_independent_watchdog_not_closed")
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -2453,13 +2508,14 @@ def run_content_agents_vast(
         "bundle_sha256": bundle["bundle_sha256"],
         "execution_result_path": extracted.get("result_path"),
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
-        "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
+        "teardown_manifest_path": str(teardown_path),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": 0,
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        "independent_watchdog": watchdog_close,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
