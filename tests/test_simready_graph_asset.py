@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -15,6 +19,22 @@ from blueprint_pipeline.simready_graph_asset import (
 from blueprint_pipeline.simready_graph_asset_static_qualification import (
     qualify_simready_graph_asset_static,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+NATIVE_INPUTS_CLI = REPO_ROOT / "scripts/materialize_paired_target_native_inputs.py"
+
+
+def _run_native_inputs_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(REPO_ROOT / "src")
+    return subprocess.run(
+        [sys.executable, str(NATIVE_INPUTS_CLI), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
 
 
 def _source_receipt(tmp_path: Path) -> Path:
@@ -222,6 +242,161 @@ def test_static_readback_qualifies_authored_structure_but_retains_claim_blockers
     }
     assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
     assert (tmp_path / "static_qualification.json").is_file()
+
+
+def test_native_inputs_cli_authors_and_statically_qualifies_exact_graph_bytes(
+    tmp_path: Path,
+) -> None:
+    """The production CLI joins spec, freeze, source bytes, USD and receipts."""
+
+    source_receipt = _source_receipt(tmp_path)
+    source_asset = tmp_path / "source.usda"
+    source_before = source_asset.read_bytes()
+    spec = _spec(source_receipt)
+    task_freeze = _task_freeze(tmp_path, spec)
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
+    authored_usd = tmp_path / "authored.usda"
+    authored_receipt = tmp_path / "authored.receipt.json"
+
+    authored_process = _run_native_inputs_cli(
+        "simready-graph-asset",
+        "--spec",
+        str(spec_path),
+        "--task-freeze",
+        str(task_freeze),
+        "--source-asset-receipt",
+        str(source_receipt),
+        "--output-usd",
+        str(authored_usd),
+        "--output-receipt",
+        str(authored_receipt),
+    )
+
+    assert authored_process.returncode == 0, authored_process.stderr + authored_process.stdout
+    authored_summary = json.loads(authored_process.stdout)
+    assert authored_summary["step"] == "simready-graph-asset"
+    assert authored_summary["provider_mutation_performed"] is False
+    authored = json.loads(authored_receipt.read_text())
+    assert authored["status"] == "simready_candidate_authored"
+    assert authored["receipt_digest"] == canonical_digest(
+        authored, digest_field="receipt_digest"
+    )
+    assert authored["output_usd"] == {
+        "path": str(authored_usd.resolve()),
+        "size_bytes": authored_usd.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(authored_usd.read_bytes()).hexdigest(),
+        "default_prim": "/Asset",
+        "meters_per_unit": 1.0,
+        "up_axis": "Z",
+    }
+    assert source_asset.read_bytes() == source_before
+
+    qualification_path = tmp_path / "static-qualification.json"
+    qualification_process = _run_native_inputs_cli(
+        "simready-static-qualification",
+        "--spec",
+        str(spec_path),
+        "--authoring-receipt",
+        str(authored_receipt),
+        "--output",
+        str(qualification_path),
+    )
+
+    assert qualification_process.returncode == 0, (
+        qualification_process.stderr + qualification_process.stdout
+    )
+    qualification_summary = json.loads(qualification_process.stdout)
+    assert qualification_summary["step"] == "simready-static-qualification"
+    assert qualification_summary["provider_mutation_performed"] is False
+    qualification = json.loads(qualification_path.read_text())
+    assert qualification["status"] == "authored_structure_statically_qualified"
+    assert qualification["receipt_digest"] == canonical_digest(
+        qualification, digest_field="receipt_digest"
+    )
+    assert qualification["replacement_usd"] == {
+        "path": str(authored_usd.resolve()),
+        "size_bytes": authored_usd.stat().st_size,
+        "sha256": authored["output_usd"]["sha256"],
+    }
+    assert qualification["registered_replacement_asset"] is None
+    assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
+
+
+def test_native_inputs_cli_refuses_drifted_source_and_invalid_registered_bytes(
+    tmp_path: Path,
+) -> None:
+    """Hostile bytes produce typed no-provider refusals and no output artifact."""
+
+    source_receipt = _source_receipt(tmp_path)
+    spec = _spec(source_receipt)
+    task_freeze = _task_freeze(tmp_path, spec)
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec))
+    (tmp_path / "source.usda").write_text("changed", encoding="utf-8")
+    authored_usd = tmp_path / "must-not-exist.usda"
+    authored_receipt = tmp_path / "must-not-exist.receipt.json"
+
+    refused = _run_native_inputs_cli(
+        "simready-graph-asset",
+        "--spec",
+        str(spec_path),
+        "--task-freeze",
+        str(task_freeze),
+        "--source-asset-receipt",
+        str(source_receipt),
+        "--output-usd",
+        str(authored_usd),
+        "--output-receipt",
+        str(authored_receipt),
+    )
+
+    assert refused.returncode == 2
+    refusal = json.loads(refused.stdout)
+    assert refusal["provider_mutation_performed"] is False
+    assert "graph_asset_source_asset_bytes_changed" in refusal["blockers"][0]
+    assert not authored_usd.exists()
+    assert not authored_receipt.exists()
+
+    # Restore the exact source and create a valid authoring result, then prove
+    # registered mode validates the receipt rather than treating a path as an
+    # assertion from the caller.
+    (tmp_path / "source.usda").write_text("#usda 1.0\n", encoding="utf-8")
+    assert _run_native_inputs_cli(
+        "simready-graph-asset",
+        "--spec",
+        str(spec_path),
+        "--task-freeze",
+        str(task_freeze),
+        "--source-asset-receipt",
+        str(source_receipt),
+        "--output-usd",
+        str(authored_usd),
+        "--output-receipt",
+        str(authored_receipt),
+    ).returncode == 0
+    invalid_registered = tmp_path / "invalid-registered.json"
+    invalid_registered.write_text("{}\n", encoding="utf-8")
+    static_output = tmp_path / "must-not-exist-static.json"
+    refused_registered = _run_native_inputs_cli(
+        "simready-static-qualification",
+        "--spec",
+        str(spec_path),
+        "--authoring-receipt",
+        str(authored_receipt),
+        "--registered-asset-receipt",
+        str(invalid_registered),
+        "--output",
+        str(static_output),
+    )
+
+    assert refused_registered.returncode == 2
+    registered_refusal = json.loads(refused_registered.stdout)
+    assert registered_refusal["provider_mutation_performed"] is False
+    assert "graph_asset_static_registered_replacement_invalid" in registered_refusal[
+        "blockers"
+    ][0]
+    assert not static_output.exists()
 
 
 def test_static_readback_qualifies_exact_registered_visual_and_graph_bytes(

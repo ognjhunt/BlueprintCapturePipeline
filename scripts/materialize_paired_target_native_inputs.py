@@ -38,9 +38,40 @@ from blueprint_pipeline.paired_target_native_construction_bindings import (
 from blueprint_pipeline.registered_replacement_asset import (
     materialize_registered_replacement_asset,
 )
+from blueprint_pipeline.simready_graph_asset import author_simready_graph_asset
+from blueprint_pipeline.simready_graph_asset_static_qualification import (
+    qualify_simready_graph_asset_static,
+)
 
 
 STEPS: dict[str, Step] = {
+    "simready-graph-asset": Step(
+        "Author one task-neutral SimReady graph asset from sealed inputs.",
+        author_simready_graph_asset,
+        {
+            "spec": Param("--spec", required=True, json_file=True),
+            "task_freeze_receipt_path": Param("--task-freeze", required=True),
+            "source_asset_receipt_path": Param(
+                "--source-asset-receipt", required=True
+            ),
+            "destination": Param("--output-usd", required=True),
+            "receipt_path": Param("--output-receipt", required=True),
+        },
+    ),
+    "simready-static-qualification": Step(
+        "Reopen and statically qualify authored or registered SimReady bytes.",
+        qualify_simready_graph_asset_static,
+        {
+            "spec": Param("--spec", required=True, json_file=True),
+            "authoring_receipt_path": Param(
+                "--authoring-receipt", required=True
+            ),
+            "registered_replacement_asset_receipt_path": Param(
+                "--registered-asset-receipt"
+            ),
+            "output_path": Param("--output", required=True),
+        },
+    ),
     "visual-binding": Step(
         "Seal the selected CAD visual meshes onto the graph asset links.",
         seal_agent_cad_visual_binding,
