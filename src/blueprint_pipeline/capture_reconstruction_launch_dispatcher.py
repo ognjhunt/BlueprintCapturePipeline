@@ -651,6 +651,7 @@ def dispatch_launch_request(
     derived_root: str | Path,
     capture_store_root: str | Path,
     execute: bool = False,
+    allocator: Any = None,
 ) -> dict[str, Any]:
     """Carry one queued capture as far as its authority allows.
 
@@ -789,10 +790,69 @@ def dispatch_launch_request(
     assert_paid_stage_not_repeated(
         state_root=state_root, capture_digest=capture_digest, stage="worker_allocated"
     )
-    raise CaptureReconstructionLaunchError(
-        "capture_reconstruction_paid_dispatch_requires_allocator_admission:"
-        "run " + CANONICAL_ALLOCATOR_ENTRYPOINT
+    if allocator is None:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_paid_dispatch_requires_allocator:"
+            "run " + CANONICAL_ALLOCATOR_ENTRYPOINT
+        )
+
+    # The registered policy is the standing authority: a human set its ceiling,
+    # TTL and authority id once, and the dispatcher spends against that without
+    # asking again. The ceiling still travels with every allocation, so it is
+    # enforced per run rather than assumed.
+    allocation = _mapping(
+        allocator(
+            capture_digest=capture_digest,
+            arms=list(request["arms"]),
+            max_spend_usd=float(request["max_spend_usd"]),
+            hard_ttl_seconds=int(request["hard_ttl_seconds"]),
+            authority_id=str(request["authority_id"]),
+            dataset_root=str(derived),
+            retry_cap=0,
+        )
     )
+    # Record before judging. An allocator that mutated a provider and then
+    # failed has still spent money, and the ledger has to say so or a resumed
+    # dispatch would allocate a second instance.
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="worker_allocated",
+        evidence={
+            "admission_digest": allocation.get("admission_digest"),
+            "status": allocation.get("status"),
+            "provider_mutations_performed": allocation.get(
+                "provider_mutations_performed", 0
+            ),
+            "arms": request["arms"],
+        },
+    )
+    if str(allocation.get("status")) != "execute_ready":
+        return {
+            "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+            "status": "allocation_blocked",
+            "capture_digest": capture_digest,
+            "stage": "worker_allocated",
+            "blockers": sorted(
+                {str(b) for b in (allocation.get("blockers") or []) if str(b)}
+            )
+            or ["capture_reconstruction_allocation_not_execute_ready"],
+            "provider_mutation_performed": bool(
+                allocation.get("provider_mutations_performed")
+            ),
+        }
+
+    return {
+        "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+        "status": "worker_allocated",
+        "capture_digest": capture_digest,
+        "admission_digest": allocation.get("admission_digest"),
+        "arms": request["arms"],
+        "derived_root": str(derived),
+        "provider_mutation_performed": bool(
+            allocation.get("provider_mutations_performed")
+        ),
+    }
 
 
 def complete_capture_reconstruction(

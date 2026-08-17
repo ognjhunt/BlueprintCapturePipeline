@@ -209,7 +209,7 @@ def test_dispatch_resumes_without_redoing_prepared_work(
     assert ledger["recorded_stages"].count("intake_validated") == 1
 
 
-def test_paid_dispatch_refuses_without_an_allocator_admission(
+def test_paid_dispatch_refuses_when_no_allocator_is_wired(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     capture_root, times, manifest_digest = _stage_as_uploaded_capture(tmp_path)
@@ -231,11 +231,122 @@ def test_paid_dispatch_refuses_without_an_allocator_admission(
             capture_store_root=capture_root / "raw",
             execute=True,
         )
-    assert "requires_allocator_admission" in str(excinfo.value)
+    assert "requires_allocator" in str(excinfo.value)
     ledger = read_checkpoints(
         state_root=tmp_path / "checkpoints", capture_digest=receipt["capture_digest"]
     )
     assert ledger["paid_stages_completed"] == []
+
+
+def _allocator(calls: list, **result):
+    def allocate(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "execute_ready",
+            "admission_digest": _sha("admission"),
+            "provider_mutations_performed": 1,
+            **result,
+        }
+
+    return allocate
+
+
+def test_execute_allocates_against_the_policy_ceiling_without_asking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production shape: the registered policy is the standing authority."""
+    capture_root, times, manifest_digest = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+    _policy(tmp_path / "policies", [0, 2, 5, 7], manifest_digest)
+    receipt = enqueue_capture_reconstruction(
+        capture_root=capture_root,
+        payload=_payload(),
+        policy_root=tmp_path / "policies",
+        queue_root=tmp_path / "queue",
+        source_commit_sha="a" * 40,
+        requested_at="2026-08-17T00:00:00Z",
+    )
+    calls: list = []
+    result = dispatch_launch_request(
+        queue_path=receipt["queue_path"],
+        state_root=tmp_path / "checkpoints",
+        derived_root=tmp_path / "derived",
+        capture_store_root=capture_root / "raw",
+        execute=True,
+        allocator=_allocator(calls),
+    )
+
+    assert result["status"] == "worker_allocated"
+    assert result["provider_mutation_performed"] is True
+    assert len(calls) == 1
+    # The ceiling travels with the allocation; it is enforced per run.
+    assert calls[0]["max_spend_usd"] == 10.0
+    assert calls[0]["retry_cap"] == 0
+    assert calls[0]["hard_ttl_seconds"] == 5400
+
+
+def test_a_resumed_dispatch_cannot_allocate_a_second_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root, times, manifest_digest = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+    _policy(tmp_path / "policies", [0, 2, 5, 7], manifest_digest)
+    receipt = enqueue_capture_reconstruction(
+        capture_root=capture_root,
+        payload=_payload(),
+        policy_root=tmp_path / "policies",
+        queue_root=tmp_path / "queue",
+        source_commit_sha="a" * 40,
+        requested_at="2026-08-17T00:00:00Z",
+    )
+    calls: list = []
+    common = dict(
+        queue_path=receipt["queue_path"],
+        state_root=tmp_path / "checkpoints",
+        derived_root=tmp_path / "derived",
+        capture_store_root=capture_root / "raw",
+        execute=True,
+        allocator=_allocator(calls),
+    )
+    dispatch_launch_request(**common)
+    with pytest.raises(Exception) as excinfo:
+        dispatch_launch_request(**common)
+    assert "paid_stage_already_completed" in str(excinfo.value)
+    assert len(calls) == 1
+
+
+def test_a_failed_allocation_is_still_recorded_as_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An allocator that mutated a provider and then failed still cost money."""
+    capture_root, times, manifest_digest = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+    _policy(tmp_path / "policies", [0, 2, 5, 7], manifest_digest)
+    receipt = enqueue_capture_reconstruction(
+        capture_root=capture_root,
+        payload=_payload(),
+        policy_root=tmp_path / "policies",
+        queue_root=tmp_path / "queue",
+        source_commit_sha="a" * 40,
+        requested_at="2026-08-17T00:00:00Z",
+    )
+    calls: list = []
+    result = dispatch_launch_request(
+        queue_path=receipt["queue_path"],
+        state_root=tmp_path / "checkpoints",
+        derived_root=tmp_path / "derived",
+        capture_store_root=capture_root / "raw",
+        execute=True,
+        allocator=_allocator(
+            calls, status="blocked", blockers=["gpu_capacity_unavailable"]
+        ),
+    )
+    assert result["status"] == "allocation_blocked"
+    assert result["blockers"] == ["gpu_capacity_unavailable"]
+    ledger = read_checkpoints(
+        state_root=tmp_path / "checkpoints", capture_digest=receipt["capture_digest"]
+    )
+    assert "worker_allocated" in ledger["recorded_stages"]
 
 
 def test_a_capture_whose_frames_were_removed_abstains(
