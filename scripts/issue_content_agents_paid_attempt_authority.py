@@ -40,6 +40,10 @@ from blueprint_pipeline.host_resident_launch_inputs import (
     HostResidentInputError,
     resolve_host_resident_bundle_receipt,
 )
+from blueprint_pipeline.content_agents_preallocation_closeout import (
+    bind_prior_content_agents_preallocation_attempts,
+    claim_content_agents_preallocation_successor,
+)
 from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
 
 
@@ -68,6 +72,7 @@ def issue_content_agents_paid_attempt_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     prior_result_paths: Sequence[str | Path] = (),
+    prior_preallocation_provider_zero_paths: Sequence[str | Path] = (),
     prior_spend_reconciliation_path: str | Path | None = None,
     authorized_on: str | None = None,
 ) -> dict[str, Any]:
@@ -109,6 +114,9 @@ def issue_content_agents_paid_attempt_authority(
         reconciliation_path=prior_spend_reconciliation_path,
         lane="content_agents",
     )
+    prior_preallocations = bind_prior_content_agents_preallocation_attempts(
+        prior_preallocation_provider_zero_paths
+    )
 
     authority: dict[str, Any] = {
         "schema_version": PAID_ATTEMPT_AUTHORITY_SCHEMA,
@@ -144,6 +152,12 @@ def issue_content_agents_paid_attempt_authority(
         "prior_terminal_attempts": prior_spend["prior_terminal_attempts"],
         "prior_spend_reconciliation": prior_spend["reconciliation"],
         "prior_actual_provider_spend_usd": prior_spend["actual_total_usd"],
+        # A consumed authority that failed before provider allocation has no
+        # terminal billing result for the shared spend ledger. Carry its exact
+        # zero-cost closeout separately so the single-use attempt cannot be
+        # erased or confused with completed Content Agents science.
+        "prior_preallocation_attempts": prior_preallocations,
+        "preallocation_attempt_ordinal": len(prior_preallocations) + 1,
     }
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
@@ -160,6 +174,13 @@ def issue_content_agents_paid_attempt_authority(
         hard_ttl_seconds=hard_ttl_seconds,
         allowed_active_instance_ids=(),
     )
+    if prior_preallocations:
+        claim_content_agents_preallocation_successor(
+            predecessor_authority_digest=prior_preallocations[-1][
+                "attempt_authority_digest"
+            ],
+            successor_authority_digest=authority["authorization_digest"],
+        )
     return authority
 
 
@@ -180,6 +201,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hard-ttl-seconds", type=int, required=True)
     parser.add_argument("--authorized-on")
     parser.add_argument("--prior-result", action="append", default=[])
+    parser.add_argument(
+        "--prior-preallocation-provider-zero",
+        action="append",
+        default=[],
+        help=(
+            "Repeat in complete lineage order for consumed Content Agents "
+            "attempts that provably stopped before provider allocation."
+        ),
+    )
     parser.add_argument("--prior-spend-reconciliation")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
@@ -194,6 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             hard_cap_usd=args.hard_cap_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
             prior_result_paths=args.prior_result,
+            prior_preallocation_provider_zero_paths=(
+                args.prior_preallocation_provider_zero
+            ),
             prior_spend_reconciliation_path=args.prior_spend_reconciliation,
             authorized_on=args.authorized_on,
         )
