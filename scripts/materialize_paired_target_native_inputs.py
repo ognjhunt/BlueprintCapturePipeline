@@ -201,6 +201,9 @@ STEPS: dict[str, Step] = {
             "manipulation_preflight_path": Param(
                 "--manipulation-preflight", required=True
             ),
+            "source_collider_batch_removal_path": Param(
+                "--source-collider-batch-removal", required=True
+            ),
             "output_path": Param("--output", required=True),
         },
     ),
