@@ -125,3 +125,15 @@ Do not report a lane as "working in production" from builder reachability, a
 CPU test, simulator startup, or provider allocation alone. That claim requires
 the exact deployed commit plus a terminal launch record satisfying the six
 production-proof conditions above.
+
+The scene-level strict ledger is produced with
+`scripts/supervise_scene_strict_family_ledger.py`. It derives the governed
+denominator from this live inventory, groups the three ordered Native Task
+Arena probes and the ArtiFixer3D -> paired-native-import probes into their two
+families, and adds the non-probe production OpenAI visual-review family. It
+counts a family only after reopening the exact launch/profile/admission,
+terminal result, artifact manifest and its bytes, teardown, official billing,
+post-teardown provider-zero, WebApp binding, and one-use authority evidence.
+Its output is an append-only, self-digested checkpoint chain with the honest
+numerator and the next unproven checkpoint; the command has no allocation,
+publication, or authority-issuance interface.
