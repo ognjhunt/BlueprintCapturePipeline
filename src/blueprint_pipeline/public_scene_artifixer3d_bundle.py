@@ -40,6 +40,13 @@ RUNTIME_REQUEST_SCHEMA_VERSION = "public_scene_artifixer3d_runtime_request.v1"
 RUNTIME_RESULT_SCHEMA_VERSION = "public_scene_artifixer3d_runtime_result.v1"
 ENTRYPOINT = "provider_runtime/run_public_scene_artifixer3d.sh"
 RUNNER = "provider_runtime/public_scene_artifixer3d_runner.py"
+RUNTIME_PACKAGE_INIT = "provider_runtime/blueprint_pipeline/__init__.py"
+RUNTIME_EDITOR_REGISTRY = (
+    "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
+)
+RUNTIME_EDITOR_REGISTRY_MANIFEST = (
+    "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
+)
 MANIFEST = "provider_runtime/artifixer3d_bundle_manifest.json"
 RUNTIME_REQUEST = "provider_runtime/artifixer3d_runtime_request.json"
 INPUT_RECEIPT = "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json"
@@ -768,6 +775,11 @@ def build_artifixer3d_bundle(
         or repo.is_symlink()
         or not (repo / "scripts" / "run_public_scene_artifixer3d.sh").is_file()
         or not (repo / "scripts" / "public_scene_artifixer3d_runner.py").is_file()
+        or not (repo / "src" / "blueprint_pipeline" / "__init__.py").is_file()
+        or not (
+            repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py"
+        ).is_file()
+        or not (repo / RUNTIME_EDITOR_REGISTRY_MANIFEST).is_file()
         or not isinstance(artifixer3d_steps, int)
         or isinstance(artifixer3d_steps, bool)
         or not 1 <= artifixer3d_steps <= 30_000
@@ -845,6 +857,19 @@ def build_artifixer3d_bundle(
     source_files = _copy_source_release(source, source_root)
     shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, runtime / Path(ENTRYPOINT).name)
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
+    runtime_package = runtime / "blueprint_pipeline"
+    runtime_package.mkdir()
+    shutil.copyfile(
+        repo / "src" / "blueprint_pipeline" / "__init__.py",
+        runtime_package / "__init__.py",
+    )
+    shutil.copyfile(
+        repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py",
+        runtime_package / "image_editor_backend_registry.py",
+    )
+    registry_manifest = stage / RUNTIME_EDITOR_REGISTRY_MANIFEST
+    registry_manifest.parent.mkdir(parents=True)
+    shutil.copyfile(repo / RUNTIME_EDITOR_REGISTRY_MANIFEST, registry_manifest)
     shutil.copyfile(attestation_path, runtime / "artifixer3d_use_attestation.json")
 
     checkpoint_reuse: dict[str, Any] | None = None
