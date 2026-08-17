@@ -42,10 +42,15 @@ _ITEM_NAMES = {
     "bwu": "bandwidth_upload",
 }
 _SUPPORTED_TERMINAL_RESULT_SCHEMAS = frozenset(
-    {"public_scene_artifixer3d_vast_run.v1"}
+    {
+        "paired_target_native_import_vast_run.v1",
+        "public_scene_artifixer3d_vast_run.v1",
+    }
 )
 _SUPPORTED_ADAPTER_SCHEMAS = frozenset({"vast_provider_adapter_result.v1"})
 _SUPPORTED_TEARDOWN_SCHEMAS = frozenset({"vast_teardown_manifest.v1"})
+_PAIRED_NATIVE_RESULT_NAME = "paired_target_native_import_vast_result.v1.json"
+_PAIRED_NATIVE_JOB_DIR = "paired-target-native-import-job"
 
 
 class VastOfficialBillingExtractionError(ValueError):
@@ -340,66 +345,74 @@ def _record_with_identity(
     return record
 
 
-def _terminal_evidence(
-    *, instance_id: int, terminal_result_path: str | Path
-) -> dict[str, Any]:
-    result_path, result, result_bytes = _json_file(
-        terminal_result_path, code="vast_official_terminal_result_invalid"
-    )
-    if (
-        result_path.name != "public_scene_artifixer3d_vast_result.json"
-        or result_path.parent.name != "artifixer3d-job"
-        or result_path.parent.parent.name != "allocator"
-    ):
-        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
-    run_root = result_path.parents[2]
-    allocator_result_path, allocator_result, allocator_result_bytes = _json_file(
-        run_root / "allocator" / "result.json",
-        code="vast_official_terminal_result_invalid",
-    )
-    if (
-        allocator_result_path.parent != run_root / "allocator"
-        or allocator_result != result
-        or allocator_result_bytes != result_bytes
-    ):
-        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
-    result_status = result.get("status")
-    closeout = result.get("provider_closeout")
-    watchdog = result.get("independent_watchdog")
-    if (
-        result.get("schema_version") not in _SUPPORTED_TERMINAL_RESULT_SCHEMAS
-        or result_status not in {"completed", "blocked"}
-        or result.get("retry_cap") != 0
-        or result.get("continuing_spend_from_this_run") is not False
-        or result.get("raw_secret_values_recorded") is not False
-        or not isinstance(closeout, Mapping)
-        or closeout.get("provider_zero_confirmed") is not True
-        or closeout.get("all_staged_objects_absent") is not True
-        or not isinstance(watchdog, Mapping)
-        or watchdog.get("schema_version") != "vast_independent_watchdog_handoff.v1"
-        or watchdog.get("status") != "provider_terminal"
-        or watchdog.get("instance_ids") != [instance_id]
-        or watchdog.get("provider_absence_confirmed") is not True
-        or watchdog.get("provider_mutations_performed") != 0
-        or watchdog.get("raw_secret_values_recorded") is not False
-    ):
-        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
+def _paired_native_terminal_records(
+    *,
+    instance_id: int,
+    result_path: Path,
+    result: Mapping[str, Any],
+    run_root: Path,
+    result_status: str,
+) -> dict[str, dict[str, Any]]:
+    """Reopen the paired-native lane's direct terminal artifact pointers."""
 
-    adapter_path, adapter, adapter_bytes = _bound_json_record(
-        closeout.get("adapter_result"),
-        run_root=run_root,
-        code="vast_official_adapter_result_invalid",
+    expected_job = run_root / "allocator" / _PAIRED_NATIVE_JOB_DIR
+    if result_path.parent != expected_job:
+        raise VastOfficialBillingExtractionError(
+            "vast_official_terminal_result_invalid"
+        )
+
+    expected_paths = {
+        "provider_adapter_result": (
+            "adapter_result_path",
+            expected_job / "vast_provider_run" / "vast_provider_adapter_result.json",
+            "vast_official_adapter_result_invalid",
+        ),
+        "teardown_manifest": (
+            "teardown_manifest_path",
+            expected_job / "vast_provider_run" / "vast_teardown_manifest.json",
+            "vast_official_teardown_invalid",
+        ),
+        "independent_watchdog": (
+            "watchdog_receipt_path",
+            expected_job
+            / "independent_vast_watchdog"
+            / "groot_oscar_runpod_canary_watchdog.json",
+            "vast_official_watchdog_invalid",
+        ),
+        "object_store_cleanup": (
+            "object_store_cleanup_path",
+            expected_job
+            / "object_store_staging"
+            / "wam_provider_object_store_cleanup.json",
+            "vast_official_object_store_cleanup_invalid",
+        ),
+    }
+    loaded: dict[str, tuple[Path, dict[str, Any], bytes]] = {}
+    for role, (field, expected_path, code) in expected_paths.items():
+        if result.get(field) != str(expected_path):
+            raise VastOfficialBillingExtractionError(code)
+        path, value, payload = _json_file(expected_path, code=code)
+        if path != expected_path:
+            raise VastOfficialBillingExtractionError(code)
+        loaded[role] = (path, value, payload)
+
+    _adapter_path, adapter, _adapter_bytes = loaded["provider_adapter_result"]
+    _teardown_path, teardown, _teardown_bytes = loaded["teardown_manifest"]
+    _watchdog_path, watchdog, _watchdog_bytes = loaded["independent_watchdog"]
+    _cleanup_path, cleanup, _cleanup_bytes = loaded["object_store_cleanup"]
+    recorded_teardown = watchdog.get("recorded_vast_instance_teardown")
+    inspect_attempts = (
+        recorded_teardown.get("inspect_attempts")
+        if isinstance(recorded_teardown, Mapping)
+        else None
     )
-    teardown_path, teardown, teardown_bytes = _bound_json_record(
-        closeout.get("teardown_manifest"),
-        run_root=run_root,
-        code="vast_official_teardown_invalid",
-    )
+    embedded_watchdog = result.get("independent_watchdog")
     if (
-        result.get("adapter_result_path") != str(adapter_path)
-        or result.get("teardown_manifest_path") != str(teardown_path)
+        result.get("all_staged_objects_absent") is not True
         or adapter.get("schema_version") not in _SUPPORTED_ADAPTER_SCHEMAS
         or adapter.get("status") != result_status
+        or adapter.get("provider_bundle_kind") != "paired_target_native_import"
+        or adapter.get("provider_create_attempted") is not True
         or adapter.get("vast_instance_ids") != [instance_id]
         or adapter.get("continuing_spend_from_this_run") is not False
         or adapter.get("final_validation_status") != "passed"
@@ -413,8 +426,166 @@ def _terminal_evidence(
         or teardown.get("runner_gpu_teardown_completed") is not True
         or teardown.get("retention_authorized") is not False
         or teardown.get("raw_secret_values_recorded") is not False
+        or cleanup.get("schema_version")
+        != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or cleanup.get("blockers") != []
+        or watchdog.get("schema_version")
+        != "groot_oscar_runpod_canary_watchdog.v1"
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("provider") != "vast"
+        or not isinstance(watchdog.get("pod_name_prefix"), str)
+        or not watchdog["pod_name_prefix"].startswith(
+            "blueprint-adp-paired-native-import-"
+        )
+        or watchdog.get("provider_absence_confirmed") is not True
+        or watchdog.get("owner_teardown_cancel_requested") is not True
+        or watchdog.get("owner_teardown_cancel_request_valid") is not True
+        or watchdog.get("provider_mutations_performed") != 0
+        or watchdog.get("raw_secret_values_recorded") is not False
+        or not isinstance(embedded_watchdog, Mapping)
+        or embedded_watchdog.get("schema_version")
+        != "vast_independent_watchdog_handoff.v1"
+        or embedded_watchdog.get("status") != "provider_terminal"
+        or embedded_watchdog.get("instance_ids") != [instance_id]
+        or embedded_watchdog.get("provider_absence_confirmed") is not True
+        or embedded_watchdog.get("provider_mutations_performed") != 0
+        or embedded_watchdog.get("raw_secret_values_recorded") is not False
+        or not isinstance(recorded_teardown, Mapping)
+        or recorded_teardown.get("status") != "absent"
+        or str(recorded_teardown.get("instance_id") or "") != str(instance_id)
+        or recorded_teardown.get("provider_absence_confirmed") is not True
+        or recorded_teardown.get("provider_mutations_performed") != 0
+        or not isinstance(inspect_attempts, list)
+        or len(inspect_attempts) < 2
+        or not all(
+            isinstance(row, Mapping)
+            and row.get("status") == "absent"
+            and row.get("provider") == "vast"
+            and str(row.get("instance_id") or "") == str(instance_id)
+            and row.get("api_confirmed") is True
+            and row.get("provider_absence_confirmed") is True
+            for row in inspect_attempts
+        )
     ):
-        raise VastOfficialBillingExtractionError("vast_official_terminal_closure_invalid")
+        raise VastOfficialBillingExtractionError(
+            "vast_official_paired_native_terminal_closure_invalid"
+        )
+
+    return {
+        role: _record_with_identity(path, payload, value, digest_field=None)
+        for role, (path, value, payload) in loaded.items()
+    }
+
+
+def _terminal_evidence(
+    *, instance_id: int, terminal_result_path: str | Path
+) -> dict[str, Any]:
+    result_path, result, result_bytes = _json_file(
+        terminal_result_path, code="vast_official_terminal_result_invalid"
+    )
+    artifixer_layout = (
+        result_path.name == "public_scene_artifixer3d_vast_result.json"
+        and result_path.parent.name == "artifixer3d-job"
+        and result_path.parent.parent.name == "allocator"
+        and result.get("schema_version") == "public_scene_artifixer3d_vast_run.v1"
+    )
+    paired_native_layout = (
+        result_path.name == _PAIRED_NATIVE_RESULT_NAME
+        and result_path.parent.name == _PAIRED_NATIVE_JOB_DIR
+        and result_path.parent.parent.name == "allocator"
+        and result.get("schema_version") == "paired_target_native_import_vast_run.v1"
+    )
+    if not artifixer_layout and not paired_native_layout:
+        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
+    run_root = result_path.parents[2]
+    allocator_result_path, allocator_result, allocator_result_bytes = _json_file(
+        run_root / "allocator" / "result.json",
+        code="vast_official_terminal_result_invalid",
+    )
+    if (
+        allocator_result_path.parent != run_root / "allocator"
+        or allocator_result != result
+        or allocator_result_bytes != result_bytes
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
+    result_status = result.get("status")
+    watchdog = result.get("independent_watchdog")
+    if (
+        result.get("schema_version") not in _SUPPORTED_TERMINAL_RESULT_SCHEMAS
+        or result_status not in {"completed", "blocked"}
+        or result.get("retry_cap") != 0
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("raw_secret_values_recorded") is not False
+        or not isinstance(watchdog, Mapping)
+        or watchdog.get("schema_version") != "vast_independent_watchdog_handoff.v1"
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("instance_ids") != [instance_id]
+        or watchdog.get("provider_absence_confirmed") is not True
+        or watchdog.get("provider_mutations_performed") != 0
+        or watchdog.get("raw_secret_values_recorded") is not False
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
+
+    paired_records: dict[str, dict[str, Any]] = {}
+    if paired_native_layout:
+        paired_records = _paired_native_terminal_records(
+            instance_id=instance_id,
+            result_path=result_path,
+            result=result,
+            run_root=run_root,
+            result_status=result_status,
+        )
+        adapter_path = Path(paired_records["provider_adapter_result"]["path"])
+        teardown_path = Path(paired_records["teardown_manifest"]["path"])
+        adapter_bytes = adapter_path.read_bytes()
+        teardown_bytes = teardown_path.read_bytes()
+        adapter = json.loads(adapter_bytes)
+        teardown = json.loads(teardown_bytes)
+    else:
+        closeout = result.get("provider_closeout")
+        if (
+            not isinstance(closeout, Mapping)
+            or closeout.get("provider_zero_confirmed") is not True
+            or closeout.get("all_staged_objects_absent") is not True
+        ):
+            raise VastOfficialBillingExtractionError(
+                "vast_official_terminal_closure_invalid"
+            )
+        adapter_path, adapter, adapter_bytes = _bound_json_record(
+            closeout.get("adapter_result"),
+            run_root=run_root,
+            code="vast_official_adapter_result_invalid",
+        )
+        teardown_path, teardown, teardown_bytes = _bound_json_record(
+            closeout.get("teardown_manifest"),
+            run_root=run_root,
+            code="vast_official_teardown_invalid",
+        )
+        if (
+            result.get("adapter_result_path") != str(adapter_path)
+            or result.get("teardown_manifest_path") != str(teardown_path)
+            or adapter.get("schema_version") not in _SUPPORTED_ADAPTER_SCHEMAS
+            or adapter.get("status") != result_status
+            or adapter.get("vast_instance_ids") != [instance_id]
+            or adapter.get("continuing_spend_from_this_run") is not False
+            or adapter.get("final_validation_status") != "passed"
+            or adapter.get("retained_owned") is not False
+            or adapter.get("raw_api_key_stored") is not False
+            or adapter.get("secret_values_in_artifact") is not False
+            or teardown.get("schema_version") not in _SUPPORTED_TEARDOWN_SCHEMAS
+            or teardown.get("status") != "completed"
+            or teardown.get("vast_instance_ids") != [instance_id]
+            or teardown.get("continuing_spend_from_this_run") is not False
+            or teardown.get("runner_gpu_teardown_completed") is not True
+            or teardown.get("retention_authorized") is not False
+            or teardown.get("raw_secret_values_recorded") is not False
+        ):
+            raise VastOfficialBillingExtractionError(
+                "vast_official_terminal_closure_invalid"
+            )
 
     profile_path, profile, profile_bytes = _identity_json(
         run_root,
@@ -520,7 +691,7 @@ def _terminal_evidence(
             "vast_official_launch_identity_invalid"
         )
 
-    return {
+    terminal_evidence = {
         "terminal_status": result_status,
         "provider_absence_confirmed": True,
         "provider_zero_verified": True,
@@ -562,6 +733,14 @@ def _terminal_evidence(
             receipt_path, receipt_bytes, receipt, digest_field="receipt_digest"
         ),
     }
+    terminal_evidence.update(
+        {
+            role: record
+            for role, record in paired_records.items()
+            if role in {"independent_watchdog", "object_store_cleanup"}
+        }
+    )
+    return terminal_evidence
 
 
 def _entry(
