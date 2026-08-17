@@ -21,6 +21,10 @@ from typing import Any
 from zipfile import BadZipFile, ZipFile
 
 from .decision_evidence_contracts import canonical_digest
+from .freeze_amendment_carry_forward import (
+    FreezeAmendmentCarryForwardError,
+    validate_freeze_amendment_carry_forward,
+)
 from .dual_task_rehearsal_contract import (
     MAX_REPLACEMENT_OBJECTS,
     DualTaskRehearsalContractError,
@@ -146,6 +150,79 @@ def _file_record_valid(value: Any, *, verify_files: bool) -> bool:
     )
 
 
+def _select_carry_forward(
+    carry_forward: Any, sealed_schema: str
+) -> Mapping[str, Any] | None:
+    """Pick the proof that rules on this schema, if one was offered.
+
+    A proof rules on one schema, so a caller holding several passes them all and
+    each check takes its own.  A proof for a different schema simply does not
+    apply, which leaves the ordinary refusal in place.
+    """
+
+    if carry_forward is None:
+        return None
+    candidates = (
+        [carry_forward]
+        if isinstance(carry_forward, Mapping)
+        else list(carry_forward)
+        if isinstance(carry_forward, (list, tuple))
+        else []
+    )
+    for candidate in candidates:
+        if (
+            isinstance(candidate, Mapping)
+            and candidate.get("sealed_schema") == sealed_schema
+        ):
+            return candidate
+    return None
+
+
+def _freeze_record_valid(
+    record: Any,
+    *,
+    verify_files: bool,
+    carry_forward: Mapping[str, Any] | None,
+    sealed_schema: str,
+) -> bool:
+    """Accept a task-freeze file record, or a proof that it survived an amendment.
+
+    The record pins the freeze by whole-file sha256.  That is right for
+    detecting *any* edit and wrong for deciding what an edit costs: on
+    2026-08-17 a one-leaf joint-axis correction -- a field the CAD agent never
+    reads -- invalidated every sealed CAD receipt and would have forced paying
+    to re-author identical geometry.
+
+    So a mismatch is no longer automatically fatal.  It is fatal unless a
+    carry-forward proof shows the amendment changed nothing this schema
+    consumes, and that proof is bound to this exact pair of freeze digests: the
+    one the record pinned and the one on disk now.  Without a proof, or with a
+    proof for another amendment, the record is refused exactly as before.
+    """
+
+    if _file_record_valid(record, verify_files=verify_files):
+        return True
+    proof = _select_carry_forward(carry_forward, sealed_schema)
+    if proof is None or not verify_files or not isinstance(record, Mapping):
+        return False
+    path_text = str(record.get("path") or "")
+    if not path_text:
+        return False
+    path = Path(path_text).expanduser().resolve()
+    if not path.is_file() or path.is_symlink():
+        return False
+    try:
+        validate_freeze_amendment_carry_forward(
+            proof,
+            sealed_schema=sealed_schema,
+            superseded_file_sha256=str(record.get("sha256") or ""),
+            amended_file_sha256=_sha256(path),
+        )
+    except (OSError, FreezeAmendmentCarryForwardError):
+        return False
+    return True
+
+
 def _file_record_identity(value: Any) -> tuple[int, str] | None:
     if not isinstance(value, Mapping):
         return None
@@ -170,6 +247,35 @@ def _file_record_lists_equivalent(left: Any, right: Any) -> bool:
     )
 
 
+def _read_freeze_record(
+    record: Mapping[str, Any],
+    code: str,
+    *,
+    carry_forward: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Read the freeze the record names, honouring an accepted carry-forward.
+
+    The amended file on disk is what gets read, not the superseded bytes: the
+    proof says the amendment is irrelevant to this schema, not that the old
+    document should be resurrected.
+    """
+
+    if not _freeze_record_valid(
+        record,
+        verify_files=True,
+        carry_forward=carry_forward,
+        sealed_schema=REQUEST_SCHEMA_VERSION,
+    ):
+        raise SimReadyCadAgentContractError([code])
+    try:
+        value = json.loads(Path(str(record["path"])).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SimReadyCadAgentContractError([code]) from exc
+    if not isinstance(value, Mapping):
+        raise SimReadyCadAgentContractError([code])
+    return dict(value)
+
+
 def _read_json_record(record: Mapping[str, Any], code: str) -> dict[str, Any]:
     if not _file_record_valid(record, verify_files=True):
         raise SimReadyCadAgentContractError([code])
@@ -192,7 +298,10 @@ def _reference_object_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
 
 
 def validate_cad_agent_reference_manifest(
-    value: Mapping[str, Any], *, verify_files: bool = True
+    value: Mapping[str, Any],
+    *,
+    verify_files: bool = True,
+    freeze_carry_forward: Any = None,
 ) -> dict[str, Any]:
     manifest = _clone(value)
     errors: list[str] = []
@@ -225,7 +334,12 @@ def validate_cad_agent_reference_manifest(
             or not asset_id
         ):
             errors.append("cad_agent_reference_manifest_object_invalid")
-        if not _file_record_valid(row.get("task_freeze"), verify_files=verify_files):
+        if not _freeze_record_valid(
+            row.get("task_freeze"),
+            verify_files=verify_files,
+            carry_forward=freeze_carry_forward,
+            sealed_schema=REFERENCE_MANIFEST_SCHEMA_VERSION,
+        ):
             errors.append("cad_agent_reference_manifest_task_freeze_invalid")
         references = row.get("reference_images")
         if (
@@ -299,9 +413,12 @@ def _select_reference_manifest_object(
     replacement_slot: int,
     task_id: str,
     asset_id: str,
+    freeze_carry_forward: Any = None,
 ) -> dict[str, Any]:
     try:
-        admitted = validate_cad_agent_reference_manifest(manifest)
+        admitted = validate_cad_agent_reference_manifest(
+            manifest, freeze_carry_forward=freeze_carry_forward
+        )
     except SimReadyCadAgentContractError:
         raise
     if admitted.get("scene_id") != scene_id:
@@ -569,7 +686,10 @@ def _vector3(value: Any) -> list[float] | None:
 
 
 def validate_cad_agent_request(
-    value: Mapping[str, Any], *, verify_files: bool = True
+    value: Mapping[str, Any],
+    *,
+    verify_files: bool = True,
+    freeze_carry_forward: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     request = _clone(value)
     errors: list[str] = []
@@ -624,7 +744,12 @@ def validate_cad_agent_request(
             or inputs.get("primitive_graph_used_as_cad_candidate") is not False
         ):
             errors.append("cad_agent_request_graph_geometry_forbidden")
-        if not _file_record_valid(inputs.get("task_freeze"), verify_files=verify_files):
+        if not _freeze_record_valid(
+            inputs.get("task_freeze"),
+            verify_files=verify_files,
+            carry_forward=freeze_carry_forward,
+            sealed_schema=REQUEST_SCHEMA_VERSION,
+        ):
             errors.append("cad_agent_request_task_freeze_invalid")
         if not _file_record_valid(inputs.get("cad_brief"), verify_files=verify_files):
             errors.append("cad_agent_request_brief_invalid")
@@ -658,6 +783,7 @@ def validate_cad_agent_request(
                     ),
                     task_id=str(request.get("task_id") or ""),
                     asset_id=str(request.get("asset_id") or ""),
+                    freeze_carry_forward=freeze_carry_forward,
                 )
             except SimReadyCadAgentContractError as exc:
                 errors.extend(exc.codes)
@@ -680,8 +806,10 @@ def validate_cad_agent_request(
         if tolerance is None or tolerance <= 0.0 or tolerance > 1.0:
             errors.append("cad_agent_request_envelope_tolerance_invalid")
         if not errors and verify_files:
-            freeze = _read_json_record(
-                inputs["task_freeze"], "cad_agent_request_task_freeze_invalid"
+            freeze = _read_freeze_record(
+                inputs["task_freeze"],
+                "cad_agent_request_task_freeze_invalid",
+                carry_forward=freeze_carry_forward,
             )
             try:
                 validated_freeze = validate_task_freeze(freeze)
