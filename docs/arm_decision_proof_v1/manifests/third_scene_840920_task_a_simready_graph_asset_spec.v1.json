@@ -831,8 +831,8 @@
   "schema_version": "simready_graph_asset_spec.v1",
   "source_asset_receipt_digest": "sha256:218a5dedb95cb11bfa790beaac10cc0c3d35f5f28dfaaa06271661a69b71bb48",
   "source_object_instance_id": "165",
-  "spec_digest": "sha256:3f196f43f90e3fc518eed2f91a346b8c8a2aa9cb2011187db4483ce941ba69ab",
-  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+  "spec_digest": "sha256:6aa6fef20e287f238cfd789b8f0fd5ff4409714960dfec0c27590c668f2ebc62",
+  "task_freeze_digest": "sha256:fa3f422fb595badb3bedd11c56e4732a088bfff112b80b1f65d0c53d1927baa3",
   "task_id": "task_a_washer_door_open",
   "task_kind": "articulated_interaction",
   "world_pose": {
