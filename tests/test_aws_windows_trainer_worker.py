@@ -211,6 +211,37 @@ def test_rate_above_the_authorized_ceiling_blocks(
     assert "aws_hourly_rate_exceeds_cap" in request["configuration_blockers"]
 
 
+def test_windows_lane_needs_no_instance_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The trainer talks only to signed URLs, so a role is privilege it never uses."""
+    _aws_env(monkeypatch)
+    monkeypatch.delenv("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN", raising=False)
+    request = AWSRenderProvider().build_request(_spec(), tmp_path)
+    assert request["configuration_blockers"] == []
+    assert "IamInstanceProfile" not in request["run_instances"]
+
+
+def test_linux_lane_still_requires_an_instance_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _aws_env(monkeypatch, BLUEPRINT_AWS_WORKER_PLATFORM="linux")
+    monkeypatch.delenv("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN", raising=False)
+    request = AWSRenderProvider().build_request(_spec(), tmp_path)
+    assert "aws_iam_instance_profile_arn_missing" in request["configuration_blockers"]
+
+
+def test_an_explicitly_configured_profile_is_still_attached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Relaxing the requirement must not silently drop an operator's choice."""
+    _aws_env(monkeypatch)
+    request = AWSRenderProvider().build_request(_spec(), tmp_path)
+    assert request["run_instances"]["IamInstanceProfile"]["Arn"].endswith(
+        "instance-profile/blueprint-worker"
+    )
+
+
 def test_host_image_marker_is_verified_before_training(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

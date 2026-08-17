@@ -636,6 +636,22 @@ class GCPRenderProvider(GpuRenderProvider):
         return {"status": "terminate_failed", "http": status}
 
 
+def _aws_required_config_keys(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Required AWS settings, minus privilege the workload cannot use.
+
+    A Linux worker pulls from a registry and may read AWS resources, so it needs
+    an instance profile.  The Windows trainer talks only to signed URLs and
+    makes no AWS API call, so attaching a role would hand a paid instance
+    standing credentials it never exercises.  Least privilege says omit it, and
+    an operator who wants one can still set the ARN.
+    """
+
+    base = ("account_id", "region", "instance_type", "ami_id", "subnet_id")
+    if str(config.get("worker_platform") or "") == WINDOWS_WORKER_PLATFORM:
+        return base
+    return (*base, "iam_instance_profile_arn")
+
+
 class AWSRenderProvider(GpuRenderProvider):
     """EC2 GPU VM adapter using the standard boto3 credential chain."""
 
@@ -680,7 +696,7 @@ class AWSRenderProvider(GpuRenderProvider):
 
     def available(self) -> dict:
         config = self._config()
-        missing = _required_config(config, ("account_id", "region", "instance_type", "ami_id", "subnet_id", "iam_instance_profile_arn"), "aws")
+        missing = _required_config(config, _aws_required_config_keys(config), "aws")
         if not config["security_group_ids"]:
             missing.append("aws_security_group_ids_missing")
         credential_error = None
@@ -695,7 +711,7 @@ class AWSRenderProvider(GpuRenderProvider):
 
     def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
         config = self._config()
-        blockers = _required_config(config, ("account_id", "region", "instance_type", "ami_id", "subnet_id", "iam_instance_profile_arn"), "aws")
+        blockers = _required_config(config, _aws_required_config_keys(config), "aws")
         if not config["security_group_ids"]:
             blockers.append("aws_security_group_ids_missing")
         windows_worker = config["worker_platform"] == WINDOWS_WORKER_PLATFORM
@@ -724,7 +740,6 @@ class AWSRenderProvider(GpuRenderProvider):
             "MaxCount": 1,
             "SubnetId": config["subnet_id"],
             "SecurityGroupIds": config["security_group_ids"],
-            "IamInstanceProfile": {"Arn": config["iam_instance_profile_arn"]},
             "UserData": (
                 _windows_worker_bootstrap(spec)
                 if windows_worker
@@ -743,6 +758,8 @@ class AWSRenderProvider(GpuRenderProvider):
                 )
             ),
         }
+        if config["iam_instance_profile_arn"]:
+            body["IamInstanceProfile"] = {"Arn": config["iam_instance_profile_arn"]}
         if config["key_name"]:
             body["KeyName"] = config["key_name"]
         return {"provider": self.name, "account_id": config["account_id"], "region": config["region"], "instance_name": name, "run_instances": body, "configured_hourly_rate_usd": config["configured_hourly_rate_usd"], "max_hourly_rate_usd": config["max_hourly_rate_usd"], "registry_auth": config["registry_auth"], "worker_platform": config["worker_platform"], "configuration_blockers": blockers}
