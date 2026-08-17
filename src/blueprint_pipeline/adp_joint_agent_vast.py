@@ -27,6 +27,12 @@ from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
 from .decision_evidence_contracts import canonical_digest
+from .dual_task_joint_agent_admission import (
+    NON_TASK_MODE as DUAL_TASK_NON_TASK_MODE,
+    READY_STATUS as DUAL_TASK_READY_STATUS,
+    validate_dual_task_joint_agent_admission,
+    validate_dual_task_joint_agent_source_binding,
+)
 from .hosted_model_inference_preflight import (
     BACKENDS as HOSTED_MODEL_BACKENDS,
     LEGACY_SCHEMA_VERSION as HOSTED_MODEL_PREFLIGHT_LEGACY_SCHEMA_VERSION,
@@ -403,12 +409,13 @@ def build_joint_agent_vast_bundle(
     joint_agent_root: str | Path,
     packet_path: str | Path,
     execution_authority_path: str | Path,
-    freeze_path: str | Path,
-    scope_amendment_path: str | Path,
+    freeze_path: str | Path | None,
+    scope_amendment_path: str | Path | None,
     nim_preflight_path: str | Path,
     model_preflight_path: str | Path | None = None,
     scene_optimizer_core_zip_path: str | Path,
     job_dir: str | Path,
+    dual_task_admission_path: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Bind exact released source, derived USD, authority, config, and runtime."""
@@ -434,16 +441,37 @@ def build_joint_agent_vast_bundle(
             error="adp_joint_agent_execution_authority_invalid",
         )
     )
-    freeze = _canonical_receipt(
-        Path(freeze_path).expanduser().resolve(),
-        digest_field="freeze_digest",
-        error="adp_joint_agent_freeze_invalid",
-    )
-    scope_amendment = _canonical_receipt(
-        Path(scope_amendment_path).expanduser().resolve(),
-        digest_field="amendment_digest",
-        error="adp_joint_agent_scope_amendment_invalid",
-    )
+    dual_task_admission: dict[str, Any] | None = None
+    if dual_task_admission_path is not None:
+        if freeze_path is not None or scope_amendment_path is not None:
+            raise ValueError("adp_joint_agent_freeze_mode_ambiguous")
+        dual_task_admission = validate_dual_task_joint_agent_admission(
+            _canonical_receipt(
+                Path(dual_task_admission_path).expanduser().resolve(),
+                digest_field="admission_digest",
+                error="adp_joint_agent_dual_task_admission_invalid",
+            )
+        )
+        if (
+            dual_task_admission.get("status") != DUAL_TASK_READY_STATUS
+            or dual_task_admission.get("paid_joint_agent_execution_permitted") is not True
+        ):
+            raise ValueError("adp_joint_agent_dual_task_not_paid_applicable")
+        freeze = dict(dual_task_admission.get("normalized_freeze") or {})
+        scope_amendment = dict(dual_task_admission.get("scope_amendment") or {})
+    else:
+        if freeze_path is None or scope_amendment_path is None:
+            raise ValueError("adp_joint_agent_legacy_freeze_inputs_missing")
+        freeze = _canonical_receipt(
+            Path(freeze_path).expanduser().resolve(),
+            digest_field="freeze_digest",
+            error="adp_joint_agent_freeze_invalid",
+        )
+        scope_amendment = _canonical_receipt(
+            Path(scope_amendment_path).expanduser().resolve(),
+            digest_field="amendment_digest",
+            error="adp_joint_agent_scope_amendment_invalid",
+        )
     preflight_path = model_preflight_path or nim_preflight_path
     model_preflight = _canonical_receipt(
         Path(preflight_path).expanduser().resolve(),
@@ -532,6 +560,14 @@ def build_joint_agent_vast_bundle(
         "source_receipt_digest"
     ) or not isinstance(source_receipt.get("connected_components"), list):
         raise ValueError("adp_joint_agent_source_receipt_invalid")
+    if dual_task_admission is not None:
+        validate_dual_task_joint_agent_source_binding(
+            dual_task_admission, source_receipt
+        )
+        if authority.get("target_instance_id") != (
+            dual_task_admission.get("source") or {}
+        ).get("target_instance_id"):
+            raise ValueError("adp_joint_agent_dual_task_authority_target_mismatch")
     # All caller-controlled identities are validated before the first output
     # byte is created. A failed preflight therefore never leaves a partial
     # bundle that needs a manual cleanup workaround.
@@ -552,6 +588,11 @@ def build_joint_agent_vast_bundle(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
     review = _review_contract(freeze, scope_amendment)
+    expected_non_task_mode = (
+        DUAL_TASK_NON_TASK_MODE
+        if dual_task_admission is not None
+        else "locked_at_frozen_reset_with_native_readback"
+    )
     if (
         scope_amendment.get("task_family")
         != "one_commanded_joint_in_bounded_multi_joint_articulated_assembly"
@@ -560,8 +601,7 @@ def build_joint_agent_vast_bundle(
         or review["maximum_assembly_joint_count"] < 1
         or review["commanded_task_joint_count"] != 1
         or review["required_articulation_root_count"] != 1
-        or review["non_task_joint_mode"]
-        != "locked_at_frozen_reset_with_native_readback"
+        or review["non_task_joint_mode"] != expected_non_task_mode
         or review["non_task_joint_motion_tolerance"]
         != (freeze.get("task_spec") or {}).get("non_task_joint_motion_tolerance_rad")
     ):
@@ -571,6 +611,8 @@ def build_joint_agent_vast_bundle(
     write_json(runtime / "execution_authority.json", authority)
     write_json(runtime / "joint_agent_packet.json", packet)
     write_json(runtime / "model_endpoint_preflight.json", model_preflight)
+    if dual_task_admission is not None:
+        write_json(runtime / "dual_task_joint_agent_admission.json", dual_task_admission)
 
     subprocess.run(
         ["git", "archive", "--format=zip", f"--output={runtime / 'content_agents_source.zip'}", "HEAD"],
@@ -664,6 +706,11 @@ def build_joint_agent_vast_bundle(
         ),
         "freeze_digest": freeze["freeze_digest"],
         "scope_amendment_digest": scope_amendment["amendment_digest"],
+        "dual_task_admission_digest": (
+            dual_task_admission["admission_digest"]
+            if dual_task_admission is not None
+            else None
+        ),
         "model_preflight_receipt_digest": model_preflight["receipt_digest"],
         "nim_preflight_receipt_digest": (
             model_preflight["receipt_digest"]
@@ -1270,8 +1317,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--joint-agent-root", required=True)
     parser.add_argument("--packet", required=True)
     parser.add_argument("--execution-authority", required=True)
-    parser.add_argument("--freeze", required=True)
-    parser.add_argument("--scope-amendment", required=True)
+    parser.add_argument("--freeze")
+    parser.add_argument("--scope-amendment")
+    parser.add_argument("--dual-task-admission")
     parser.add_argument("--nim-preflight")
     parser.add_argument("--model-preflight")
     parser.add_argument("--scene-optimizer-core", required=True)
@@ -1279,6 +1327,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if bool(args.nim_preflight) == bool(args.model_preflight):
         parser.error("provide exactly one of --nim-preflight or --model-preflight")
+    if bool(args.dual_task_admission) == bool(args.freeze or args.scope_amendment):
+        parser.error(
+            "provide either --dual-task-admission or both --freeze and --scope-amendment"
+        )
+    if not args.dual_task_admission and not (args.freeze and args.scope_amendment):
+        parser.error(
+            "provide either --dual-task-admission or both --freeze and --scope-amendment"
+        )
     preflight = args.model_preflight or args.nim_preflight
     receipt = build_joint_agent_vast_bundle(
         repo_root=args.repo_root,
@@ -1287,6 +1343,7 @@ def main(argv: list[str] | None = None) -> int:
         execution_authority_path=args.execution_authority,
         freeze_path=args.freeze,
         scope_amendment_path=args.scope_amendment,
+        dual_task_admission_path=args.dual_task_admission,
         nim_preflight_path=preflight,
         model_preflight_path=args.model_preflight,
         scene_optimizer_core_zip_path=args.scene_optimizer_core,

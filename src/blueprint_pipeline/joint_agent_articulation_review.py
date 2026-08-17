@@ -48,14 +48,21 @@ UNMEASURED_BOUNDS_STATUS = "unmeasured"
 FIXED_BODY_LINK_ID = "fixed_body"
 
 # ``non_task_joint_mode`` values the gate understands.  The exempt mode admits
-# bounded non-task candidates that still carry unresolved reason codes because
-# the downstream run locks every non-task joint at its frozen reset and reads
-# the lock back natively; the strict mode requires every candidate to be fully
-# rigger-resolved.  Anything else fails closed.
+# bounded non-task candidates that still carry unresolved reason codes. The
+# legacy exempt mode delegates their behavior to a later native lock/readback;
+# the no-exercise mode makes no behavior claim at all. The strict mode requires
+# every candidate to be fully rigger-resolved. Anything else fails closed.
 NON_TASK_JOINT_MODE_EXEMPT = "locked_at_frozen_reset_with_native_readback"
+NON_TASK_JOINT_MODE_NO_EXERCISE = (
+    "exclude_non_task_candidates_without_behavior_claim"
+)
 NON_TASK_JOINT_MODE_STRICT = "require_fully_resolved"
 NON_TASK_JOINT_MODES = frozenset(
-    {NON_TASK_JOINT_MODE_EXEMPT, NON_TASK_JOINT_MODE_STRICT}
+    {
+        NON_TASK_JOINT_MODE_EXEMPT,
+        NON_TASK_JOINT_MODE_NO_EXERCISE,
+        NON_TASK_JOINT_MODE_STRICT,
+    }
 )
 
 
@@ -458,7 +465,10 @@ def review_joint_agent_articulation(
     if non_task_mode not in NON_TASK_JOINT_MODES:
         errors.append("joint_review_non_task_joint_mode_invalid")
         non_task_mode = NON_TASK_JOINT_MODE_STRICT
-    non_task_exempt = non_task_mode == NON_TASK_JOINT_MODE_EXEMPT
+    non_task_exempt = non_task_mode in {
+        NON_TASK_JOINT_MODE_EXEMPT,
+        NON_TASK_JOINT_MODE_NO_EXERCISE,
+    }
     non_task_tolerance = contract.get("non_task_joint_motion_tolerance")
     if (
         isinstance(non_task_tolerance, bool)
@@ -963,6 +973,7 @@ def review_joint_agent_articulation(
             "deterministic_review_is_not_model_accuracy_proof": True,
             "topology_publication_is_not_simready_qualification": True,
             "link_membership_resolved_from_geometry_only": True,
+            "non_task_joint_behavior_exercised": False,
             "physical_equivalence_proven": False,
         },
         "receipt_digest": "",
@@ -1116,6 +1127,7 @@ __all__ = [
     "JointAgentArticulationReviewError",
     "NON_TASK_JOINT_MODES",
     "NON_TASK_JOINT_MODE_EXEMPT",
+    "NON_TASK_JOINT_MODE_NO_EXERCISE",
     "NON_TASK_JOINT_MODE_STRICT",
     "SCHEMA_VERSION",
     "collect_candidate_bounds",
