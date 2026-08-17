@@ -1250,6 +1250,17 @@ def test_cold_pull_heartbeat_extension_never_exceeds_startup_window() -> None:
         )
         == 600
     )
+    assert (
+        vpa.cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=60,
+            provider_bundle_kind="paired_target_native_import",
+            allow_cold_image_pull=True,
+            min_cold_image_pull_live_minutes=30,
+            startup_timeout_seconds=3600,
+            max_live_minutes=100,
+        )
+        == 1800
+    )
 
 
 def test_request_logs_breaks_on_no_progress_timeout(
@@ -3006,6 +3017,20 @@ def test_vast_adapter_excludes_avoidlisted_machine_ids() -> None:
     assert selected is not None
     assert selected["ask_contract_id"] == 2
     assert selected["machine_id"] == 202
+
+
+def test_vast_adapter_binds_explicit_machine_exclusions_before_selection(
+    tmp_path: Path,
+) -> None:
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="dry-run",
+        excluded_machine_ids=[140718],
+    )
+    assert result["status"] == "dry_run_ready"
+    assert result["excluded_machine_ids"] == [140718]
+    plan = _read_json(tmp_path / "vast_provider_plan.json")
+    assert plan["excluded_machine_ids"] == [140718]
 
 
 def test_vast_adapter_restricts_to_allowed_machine_ids() -> None:
@@ -5422,7 +5447,18 @@ def test_adp_simpler_uses_bounded_cold_pull_container_window() -> None:
     assert vpa._container_missing_max_seconds("isaac") == 720
     assert vpa._container_missing_max_seconds("adp_simready_isaac") == 720
     assert vpa._container_missing_max_seconds("adp_simpler") == 720
+    assert vpa._container_missing_max_seconds("paired_target_native_import") == 1800
     assert vpa._container_missing_max_seconds("unitree_unifolm") == 60
+
+
+def test_paired_target_preoutput_container_missing_uses_admitted_cold_pull_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS", raising=False)
+    assert vpa._container_missing_max_seconds("paired_target_native_import") == 1800
+    assert 526.6513859109837 < vpa._container_missing_max_seconds(
+        "paired_target_native_import"
+    )
 
 
 def test_exact_simready_isaac_bundle_does_not_require_policy_video() -> None:

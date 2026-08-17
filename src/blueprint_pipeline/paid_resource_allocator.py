@@ -1663,6 +1663,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
     gpu.add_argument("--adp-machine-avoidlist")
     gpu.add_argument(
+        "--adp-excluded-vast-machine-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Immutable repeatable Vast machine exclusion bound before allocation.",
+    )
+    gpu.add_argument(
         "--adp-allowed-active-vast-instance-id",
         action="append",
         type=int,
@@ -4051,6 +4058,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("paired_target_native_import_ttl_invalid")
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("paired_target_native_import_allowlist_invalid")
+            if (
+                any(value <= 0 for value in args.adp_excluded_vast_machine_id)
+            ):
+                blockers.append("paired_target_native_import_machine_exclusions_invalid")
             prepared_bundle: dict[str, Any] | None = None
             if args.paired_target_native_import_bundle_receipt:
                 try:
@@ -4082,6 +4093,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         hard_cap_usd=args.adp_max_spend_usd,
                         hard_ttl_seconds=args.adp_hard_ttl_seconds,
                         allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                        excluded_machine_ids=args.adp_excluded_vast_machine_id,
                     )
                 except ValueError:
                     blockers.append("paired_target_native_import_authority_invalid")
@@ -4117,6 +4129,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     set(args.adp_allowed_active_vast_instance_id)
                 ),
                 "machine_avoidlist_sha256": avoidlist_sha256,
+                "excluded_vast_machine_ids": sorted(
+                    set(args.adp_excluded_vast_machine_id)
+                ),
                 "retry_cap": 0,
                 "paid_attempt_authority_digest": authority.get("authorization_digest")
                 if authority
@@ -4182,6 +4197,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                    excluded_machine_ids=args.adp_excluded_vast_machine_id,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
@@ -4209,6 +4225,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("paired_target_native_import_ttl_invalid")
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("paired_target_native_import_allowlist_invalid")
+            if (
+                any(value <= 0 for value in args.adp_excluded_vast_machine_id)
+            ):
+                blockers.append("paired_target_native_import_machine_exclusions_invalid")
             prepared_bundle: dict[str, Any] | None = None
             if args.paired_target_native_import_bundle_receipt:
                 try:
@@ -4240,6 +4260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         hard_cap_usd=args.adp_max_spend_usd,
                         hard_ttl_seconds=args.adp_hard_ttl_seconds,
                         allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                        excluded_machine_ids=args.adp_excluded_vast_machine_id,
                     )
                 except ValueError:
                     blockers.append("paired_target_native_import_authority_invalid")
@@ -4275,6 +4296,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     set(args.adp_allowed_active_vast_instance_id)
                 ),
                 "machine_avoidlist_sha256": avoidlist_sha256,
+                "excluded_vast_machine_ids": sorted(
+                    set(args.adp_excluded_vast_machine_id)
+                ),
                 "retry_cap": 0,
                 "paid_attempt_authority_digest": authority.get("authorization_digest")
                 if authority
@@ -4340,6 +4364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                    excluded_machine_ids=args.adp_excluded_vast_machine_id,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

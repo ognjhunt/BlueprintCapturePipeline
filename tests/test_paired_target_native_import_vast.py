@@ -130,10 +130,13 @@ def _authority(bundle: dict) -> dict:
         "aggregate_goal_spend_before_attempt_usd": 10.0,
         "aggregate_goal_spend_cap_usd": 12.0,
         "prior_terminal_artifixer": {},
+        "prior_paired_attempts": [],
+        "paired_attempt_ordinal": 1,
         "active_instance_allowlist": {
             "external_provider_owned": [],
             "same_goal_concurrent": [],
         },
+        "excluded_vast_machine_ids": [],
         "native_simulator_import_probe_only": True,
         "candidate_policy_queried": False,
         "raw_nonredistributable_bytes_uploaded": False,
@@ -324,6 +327,7 @@ def test_supplemental_content_agents_spend_rejects_cross_record_cost_tamper(
 def test_paid_authority_adds_content_agents_same_goal_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "spend"))
     paths = _content_agents_closeout(tmp_path)
     supplemental_path = tmp_path / "supplemental.json"
     vast.materialize_paired_target_native_import_supplemental_spend_reconciliation(
@@ -549,6 +553,11 @@ def test_live_run_requires_qualified_runtime_watchdog_cleanup_and_zero(
 ) -> None:
     _, bundle = _bundle(tmp_path)
     authority = _authority(bundle)
+    authority["excluded_vast_machine_ids"] = [140718]
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    seen_adapter = {}
     monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "authority-root"))
     monkeypatch.setattr(
         vast,
@@ -571,6 +580,7 @@ def test_live_run_requires_qualified_runtime_watchdog_cleanup_and_zero(
         started_instance_id_path = tmp_path / "started.txt"
 
     def fake_adapter(**kwargs):
+        seen_adapter.update(kwargs)
         output = Path(kwargs["provider_runtime_output_zip"])
         output.parent.mkdir(parents=True)
         runtime = {
@@ -626,12 +636,14 @@ def test_live_run_requires_qualified_runtime_watchdog_cleanup_and_zero(
         paid_resource_admission_grant=object(),  # type: ignore[arg-type]
         paid_attempt_authority=authority,
         execute=True,
+        excluded_machine_ids=[140718],
     )
     assert result["status"] == "completed"
     assert result["estimated_cost_usd"] == 0.08
     assert result["continuing_spend_from_this_run"] is False
     assert result["all_staged_objects_absent"] is True
     assert result["candidate_policy_queried"] is False
+    assert seen_adapter["excluded_machine_ids"] == [140718]
 
 
 def test_allocator_binds_new_mode_without_execute(
@@ -694,10 +706,14 @@ def test_allocator_binds_new_mode_without_execute(
         "1.0",
         "--adp-hard-ttl-seconds",
         "3600",
+        "--adp-excluded-vast-machine-id",
+        "140718",
     ]
     assert allocator.main(args) == 0
     assert observed["execute"] is False
     assert observed["paid_attempt_authority"] == authority
+    assert observed["excluded_machine_ids"] == [140718]
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["status"] == "admitted"
     assert admission["allocation_binding"]["replacement_count"] == 1
+    assert admission["allocation_binding"]["excluded_vast_machine_ids"] == [140718]

@@ -910,6 +910,80 @@ def validate_vast_official_same_goal_reconciliation(
     return value
 
 
+def extract_vast_official_instance_charge(
+    *,
+    provider_billing_source_receipt_path: str | Path,
+    instance_id: int,
+    launch_label: str,
+) -> dict[str, Any]:
+    """Extract one exact posted instance row without making a provider request."""
+
+    if (
+        isinstance(instance_id, bool)
+        or not isinstance(instance_id, int)
+        or instance_id <= 0
+        or not isinstance(launch_label, str)
+        or _LAUNCH_LABEL.fullmatch(launch_label) is None
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    source_path, source_receipt, source_bytes = _validate_source_receipt(
+        provider_billing_source_receipt_path
+    )
+    matches: list[tuple[int, Path, bytes, int, Mapping[str, Any]]] = []
+    for source_index, response_path, response_bytes, response in _load_vast_responses(
+        source_receipt_path=source_path, source_receipt=source_receipt
+    ):
+        for result_index, row in enumerate(response["results"]):
+            if not isinstance(row, Mapping):
+                raise VastOfficialBillingExtractionError("vast_official_charge_row_invalid")
+            metadata = row.get("metadata")
+            if row.get("source") == f"instance-{instance_id}" or (
+                isinstance(metadata, Mapping) and metadata.get("label") == launch_label
+            ):
+                matches.append(
+                    (source_index, response_path, response_bytes, result_index, row)
+                )
+    if not matches:
+        raise VastOfficialBillingExtractionError("vast_official_charge_unposted")
+    if len(matches) != 1:
+        raise VastOfficialBillingExtractionError("vast_official_charge_duplicate")
+    source_index, response_path, response_bytes, result_index, row = matches[0]
+    metadata = row.get("metadata")
+    if (
+        row.get("source") != f"instance-{instance_id}"
+        or row.get("type") != "instance"
+        or not isinstance(metadata, Mapping)
+        or metadata.get("label") != launch_label
+    ):
+        raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
+    items, bandwidth = _line_items(row)
+    item_total = sum((Decimal(str(value)) for value in items.values()), Decimal("0"))
+    if item_total != Decimal(str(amount)):
+        raise VastOfficialBillingExtractionError("vast_official_charge_total_contradiction")
+    source_record = _record(source_path, source_bytes)
+    source_record["receipt_digest"] = source_receipt["receipt_digest"]
+    response_record = _record(response_path, response_bytes)
+    response_record["source_index"] = source_index
+    response_record["result_index"] = result_index
+    value: dict[str, Any] = {
+        "schema_version": "blueprint.vast_official_instance_charge_binding.v1",
+        "provider": "vast",
+        "provider_instance_id": instance_id,
+        "launch_label": launch_label,
+        "official_charge_usd": amount,
+        "official_line_items_usd": items,
+        "bandwidth_total_usd": bandwidth,
+        "provider_billing_source_receipt": source_record,
+        "official_billing_response": response_record,
+        "provider_mutation_performed": False,
+        "raw_secret_values_recorded": False,
+        "charge_digest": "",
+    }
+    value["charge_digest"] = canonical_digest(value, digest_field="charge_digest")
+    return value
+
+
 def materialize_vast_official_same_goal_reconciliation(
     *,
     provider_billing_source_receipt_path: str | Path,
@@ -1112,6 +1186,7 @@ __all__ = [
     "ENTRY_SCHEMA_VERSION",
     "RECONCILIATION_SCHEMA_VERSION",
     "VastOfficialBillingExtractionError",
+    "extract_vast_official_instance_charge",
     "main",
     "materialize_vast_official_same_goal_reconciliation",
     "validate_vast_official_same_goal_reconciliation",
