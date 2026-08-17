@@ -457,6 +457,10 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "schema_version": "dual_task_joint_agent_admission.v1",
         "status": "ready_for_optional_joint_agent_topology_candidate",
         "paid_joint_agent_execution_permitted": True,
+        "task": {
+            "task_id": "task_a_washer_door_open",
+            "task_freeze_digest": "sha256:" + "7" * 64,
+        },
         "source": {"target_instance_id": "123"},
         "normalized_freeze": freeze,
         "scope_amendment": dual_scope_amendment,
@@ -477,12 +481,30 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "blueprint_pipeline.adp_joint_agent_vast.validate_dual_task_joint_agent_source_binding",
         lambda admission, receipt: admission,
     )
+    dual_authority = {
+        **authority,
+        "schema_version": "joint_agent_topology_execution_authority.v1",
+        "task_id": dual_task_admission["task"]["task_id"],
+        "task_freeze_digest": dual_task_admission["task"]["task_freeze_digest"],
+        "dual_task_admission_digest": dual_task_admission["admission_digest"],
+        "model_backend": "nvidia_nim",
+        "authorization_digest": "",
+    }
+    dual_authority["authorization_digest"] = canonical_digest(
+        dual_authority, digest_field="authorization_digest"
+    )
+    dual_authority_path = tmp_path / "dual_authority.json"
+    dual_authority_path.write_text(json.dumps(dual_authority), encoding="utf-8")
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_joint_agent_vast.validate_joint_agent_topology_execution_authority",
+        lambda value: value,
+    )
 
     dual_receipt = build_joint_agent_vast_bundle(
         repo_root=repo,
         joint_agent_root=checkout,
         packet_path=packet_path,
-        execution_authority_path=authority_path,
+        execution_authority_path=dual_authority_path,
         freeze_path=None,
         scope_amendment_path=None,
         dual_task_admission_path=dual_task_admission_path,
@@ -496,6 +518,9 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     assert dual_receipt["dual_task_admission_digest"] == dual_task_admission[
         "admission_digest"
     ]
+    assert dual_receipt["execution_authority_schema_version"] == (
+        "joint_agent_topology_execution_authority.v1"
+    )
     assert (
         tmp_path
         / "dual-bundle/provider_runtime/dual_task_joint_agent_admission.json"

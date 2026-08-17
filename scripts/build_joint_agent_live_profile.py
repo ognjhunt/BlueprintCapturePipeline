@@ -35,6 +35,9 @@ from blueprint_pipeline.adp_joint_agent_vast import (
 )
 
 from blueprint_pipeline.adp_joint_agent_vast import PROBE_KIND
+from blueprint_pipeline.joint_agent_topology_execution_authority import (
+    SCHEMA_VERSION as JOINT_TOPOLOGY_AUTHORITY_SCHEMA_VERSION,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -88,6 +91,30 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append("bundle_container_image_mismatch")
     if receipt.get("source_tree") != JOINT_AGENT_SOURCE_TREE:
         blockers.append("bundle_source_tree_mismatch")
+    if receipt.get("dual_task_admission_digest"):
+        limits = receipt.get("execution_authority_limits")
+        limits = limits if isinstance(limits, dict) else {}
+        if (
+            receipt.get("execution_authority_schema_version")
+            != JOINT_TOPOLOGY_AUTHORITY_SCHEMA_VERSION
+        ):
+            blockers.append("dual_task_topology_authority_schema_invalid")
+        if limits.get("model_backend") != "openai":
+            blockers.append("dual_task_topology_authority_model_backend_invalid")
+        spend_cap = limits.get("hard_total_spend_cap_usd")
+        if (
+            isinstance(spend_cap, bool)
+            or not isinstance(spend_cap, (int, float))
+            or context.max_spend_usd > float(spend_cap)
+        ):
+            blockers.append("dual_task_topology_authority_spend_exceeded")
+        ttl_cap = limits.get("maximum_single_resource_ttl_seconds")
+        if (
+            isinstance(ttl_cap, bool)
+            or not isinstance(ttl_cap, int)
+            or context.hard_ttl_seconds > ttl_cap
+        ):
+            blockers.append("dual_task_topology_authority_ttl_exceeded")
     return blockers
 
 

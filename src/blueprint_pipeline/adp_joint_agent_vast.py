@@ -41,6 +41,10 @@ from .hosted_model_inference_preflight import (
     REASONING_EFFORTS as HOSTED_MODEL_REASONING_EFFORTS,
     SCHEMA_VERSION as HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION,
 )
+from .joint_agent_topology_execution_authority import (
+    SCHEMA_VERSION as JOINT_TOPOLOGY_AUTHORITY_SCHEMA_VERSION,
+    validate_joint_agent_topology_execution_authority,
+)
 from .nvidia_nim_model_preflight import (
     DEFAULT_ENDPOINT as NIM_DEFAULT_ENDPOINT,
     DEFAULT_MODEL as NIM_DEFAULT_MODEL,
@@ -434,12 +438,16 @@ def build_joint_agent_vast_bundle(
         digest_field="packet_digest",
         error="adp_joint_agent_packet_invalid",
     )
-    authority = validate_public_scene_execution_authority(
-        _canonical_receipt(
-            Path(execution_authority_path).expanduser().resolve(),
-            digest_field="authorization_digest",
-            error="adp_joint_agent_execution_authority_invalid",
-        )
+    authority_input = _canonical_receipt(
+        Path(execution_authority_path).expanduser().resolve(),
+        digest_field="authorization_digest",
+        error="adp_joint_agent_execution_authority_invalid",
+    )
+    authority = (
+        validate_joint_agent_topology_execution_authority(authority_input)
+        if authority_input.get("schema_version")
+        == JOINT_TOPOLOGY_AUTHORITY_SCHEMA_VERSION
+        else validate_public_scene_execution_authority(authority_input)
     )
     dual_task_admission: dict[str, Any] | None = None
     if dual_task_admission_path is not None:
@@ -506,6 +514,11 @@ def build_joint_agent_vast_bundle(
             NIM_DEFAULT_MODEL,
             {},
         )
+    if (
+        authority.get("schema_version") == JOINT_TOPOLOGY_AUTHORITY_SCHEMA_VERSION
+        and authority.get("model_backend") != model_backend
+    ):
+        raise ValueError("adp_joint_agent_authority_model_backend_mismatch")
     destination = Path(job_dir).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("adp_joint_agent_bundle_job_dir_not_empty")
@@ -564,9 +577,17 @@ def build_joint_agent_vast_bundle(
         validate_dual_task_joint_agent_source_binding(
             dual_task_admission, source_receipt
         )
-        if authority.get("target_instance_id") != (
-            dual_task_admission.get("source") or {}
-        ).get("target_instance_id"):
+        admission_task = dual_task_admission.get("task") or {}
+        admission_source = dual_task_admission.get("source") or {}
+        if (
+            authority.get("target_instance_id")
+            != admission_source.get("target_instance_id")
+            or authority.get("task_id") != admission_task.get("task_id")
+            or authority.get("task_freeze_digest")
+            != admission_task.get("task_freeze_digest")
+            or authority.get("dual_task_admission_digest")
+            != dual_task_admission.get("admission_digest")
+        ):
             raise ValueError("adp_joint_agent_dual_task_authority_target_mismatch")
     # All caller-controlled identities are validated before the first output
     # byte is created. A failed preflight therefore never leaves a partial
@@ -700,6 +721,16 @@ def build_joint_agent_vast_bundle(
         "source_receipt_digest": source_receipt["receipt_digest"],
         "packet_digest": packet["packet_digest"],
         "execution_authority_digest": authority["authorization_digest"],
+        "execution_authority_schema_version": authority.get("schema_version"),
+        "execution_authority_limits": {
+            "hard_total_spend_cap_usd": authority.get(
+                "hard_total_spend_cap_usd"
+            ),
+            "maximum_single_resource_ttl_seconds": authority.get(
+                "maximum_single_resource_ttl_seconds"
+            ),
+            "model_backend": authority.get("model_backend"),
+        },
         "one_instance_at_a_time": authority.get("one_instance_at_a_time", True),
         "maximum_concurrent_paid_instances": authority.get(
             "maximum_concurrent_paid_instances", 1
