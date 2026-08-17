@@ -120,6 +120,11 @@ def _validated_source_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
 
 AUTHORED_REPLACEMENT_SCHEMA = "simready_graph_asset_receipt.v1"
 
+#: The one terminal status a graph asset receipt carries. It is not
+#: ``materialized`` -- that belongs to ``articulated_source_asset.v1`` -- and
+#: four other modules already gate on this exact string.
+AUTHORED_REPLACEMENT_STATUS = "simready_candidate_authored"
+
 #: The fewest links an authored replacement may carry and still be an
 #: articulation.  One link is a rigid body: there is no parent to resolve, which
 #: is the exact failure feeding a whole-object mesh produced.
@@ -150,7 +155,7 @@ def _validated_authored_replacement(
     errors: list[str] = []
     if receipt.get("schema_version") != AUTHORED_REPLACEMENT_SCHEMA:
         errors.append("joint_agent_authored_replacement_schema_invalid")
-    if receipt.get("status") != "materialized":
+    if receipt.get("status") != AUTHORED_REPLACEMENT_STATUS:
         errors.append("joint_agent_authored_replacement_status_invalid")
     if receipt.get("receipt_digest") != canonical_digest(
         receipt, digest_field="receipt_digest"
