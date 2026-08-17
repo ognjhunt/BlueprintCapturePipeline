@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 from .task_evaluation_launch_progress import build_launch_progress
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .task_evaluation_launch_dispatcher import (
+    CANONICAL_ALLOCATOR_ENTRYPOINT,
     TaskEvaluationLaunchError,
     canonical_digest,
 )
@@ -80,6 +81,95 @@ def _is_sha256_digest(value: Any) -> bool:
 
 def _file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _required_provider_scope(
+    profile: Mapping[str, Any],
+    *,
+    expected_profile_digest: Any,
+) -> tuple[list[str], str]:
+    """Return explicit scope, or one exact digest-bound legacy CLI scope."""
+
+    reconciliation = profile.get("reconciliation")
+    if "reconciliation" in profile and not isinstance(reconciliation, Mapping):
+        return [], "missing_or_ambiguous"
+    if isinstance(reconciliation, Mapping) and "required_providers" in reconciliation:
+        providers = reconciliation.get("required_providers")
+        if (
+            isinstance(providers, Sequence)
+            and not isinstance(providers, (str, bytes))
+            and providers
+            and all(
+                isinstance(provider, str)
+                and provider.strip() == provider
+                and provider
+                for provider in providers
+            )
+            and len(set(providers)) == len(providers)
+        ):
+            return list(providers), "profile_reconciliation"
+        return [], "missing_or_ambiguous"
+
+    allocator = profile.get("allocator")
+    allocator = allocator if isinstance(allocator, Mapping) else {}
+    argv = allocator.get("argv")
+    if (
+        allocator.get("entrypoint") != CANONICAL_ALLOCATOR_ENTRYPOINT
+        or allocator.get("subcommand") != "gpu-canary"
+        or not isinstance(argv, Sequence)
+        or isinstance(argv, (str, bytes))
+        or not all(isinstance(argument, str) for argument in argv)
+    ):
+        return [], "missing_or_ambiguous"
+    indexes = [index for index, argument in enumerate(argv) if argument == "--provider"]
+    if len(indexes) != 1 or indexes[0] + 1 >= len(argv):
+        return [], "missing_or_ambiguous"
+    provider = argv[indexes[0] + 1]
+    profile_digest = profile.get("profile_digest")
+    if (
+        not provider
+        or provider != provider.strip()
+        or provider.startswith("-")
+        or not _is_sha256_digest(profile_digest)
+        or profile_digest != canonical_digest(profile, digest_field="profile_digest")
+        or profile_digest != expected_profile_digest
+    ):
+        return [], "missing_or_ambiguous"
+    return [provider], "canonical_allocator_argument"
+
+
+def _processing_profile(
+    *,
+    run_root: Path,
+    request: Mapping[str, Any],
+    published_profile_dir: Path | None,
+) -> tuple[dict[str, Any], str, Path | None]:
+    """Reopen an exact published profile when an old run lacks its snapshot."""
+
+    snapshot = run_root / "launch_profile.json"
+    if snapshot.is_file():
+        return _read(snapshot), "run_snapshot", snapshot
+    if published_profile_dir is None:
+        return {}, "missing", None
+    profile_id = str(request.get("launch_profile_id") or "")
+    candidate = published_profile_dir / f"{profile_id}.json"
+    if (
+        not profile_id
+        or candidate.parent.resolve() != published_profile_dir
+        or candidate.is_symlink()
+        or not candidate.is_file()
+    ):
+        return {}, "missing", None
+    profile = _read(candidate)
+    profile_digest = profile.get("profile_digest")
+    if (
+        profile.get("profile_id") != profile_id
+        or not _is_sha256_digest(profile_digest)
+        or profile_digest != canonical_digest(profile, digest_field="profile_digest")
+        or profile_digest != request.get("launch_profile_digest")
+    ):
+        raise TaskEvaluationLaunchError("published_launch_profile_binding_invalid")
+    return profile, "published_profile", candidate
 
 
 def _guard_provider_zero(
@@ -401,9 +491,10 @@ def _reconcile_terminal_provider_zero(
         blockers.append("terminal_launch_profile_binding_invalid")
     reconciliation = profile.get("reconciliation")
     reconciliation = reconciliation if isinstance(reconciliation, Mapping) else {}
-    required_providers = [
-        str(item) for item in reconciliation.get("required_providers") or []
-    ]
+    required_providers, provider_scope_source = _required_provider_scope(
+        profile,
+        expected_profile_digest=receipt.get("launch_profile_digest"),
+    )
     max_guard_age = reconciliation.get("max_guard_age_seconds")
     max_guard_age_seconds = (
         int(max_guard_age)
@@ -440,6 +531,7 @@ def _reconcile_terminal_provider_zero(
             "status": "provider_zero_pending",
             "provider_zero_confirmed": False,
             "required_providers": required_providers,
+            "provider_scope_source": provider_scope_source,
             "provider_mutation_performed": False,
             "allocator_invoked": False,
             "automatic_retry_performed": False,
@@ -461,6 +553,7 @@ def _reconcile_terminal_provider_zero(
         "receipt_digest": receipt.get("receipt_digest"),
         "launch_profile_digest": profile.get("profile_digest"),
         "required_providers": required_providers,
+        "provider_scope_source": provider_scope_source,
         "teardown_manifest": teardown,
         "independent_guard_snapshot": {
             "path": str(snapshot_path),
@@ -653,6 +746,7 @@ def reconcile_launches(
     queue_root: str | Path,
     state_root: str | Path,
     guard_report_path: str | Path,
+    profile_dir: str | Path | None = None,
     now: datetime | None = None,
     fallback_stale_seconds: int = 14_400,
     publish_progress: bool = True,
@@ -663,6 +757,9 @@ def reconcile_launches(
     queue = Path(queue_root).expanduser().resolve()
     state = Path(state_root).expanduser().resolve()
     guard_path = Path(guard_report_path).expanduser().resolve()
+    published_profiles = (
+        Path(profile_dir).expanduser().resolve() if profile_dir is not None else None
+    )
     guard: dict[str, Any] = {}
     guard_bytes: bytes | None = None
     guard_error: str | None = None
@@ -694,8 +791,11 @@ def reconcile_launches(
 
             started_path = run_root / "launch_started.json"
             started = _read(started_path) if started_path.is_file() else {}
-            profile_path = run_root / "launch_profile.json"
-            profile = _read(profile_path) if profile_path.is_file() else {}
+            profile, profile_record_source, profile_record_path = _processing_profile(
+                run_root=run_root,
+                request=request,
+                published_profile_dir=published_profiles,
+            )
             started_at = _timestamp(started.get("started_at"))
             ttl = started.get("hard_ttl_seconds")
             ttl_seconds = (
@@ -742,9 +842,10 @@ def reconcile_launches(
 
             reconciliation = profile.get("reconciliation")
             reconciliation = reconciliation if isinstance(reconciliation, Mapping) else {}
-            required_providers = [
-                str(item) for item in reconciliation.get("required_providers") or []
-            ]
+            required_providers, provider_scope_source = _required_provider_scope(
+                profile,
+                expected_profile_digest=request.get("launch_profile_digest"),
+            )
             max_guard_age = reconciliation.get("max_guard_age_seconds")
             max_guard_age_seconds = (
                 int(max_guard_age)
@@ -769,6 +870,12 @@ def reconcile_launches(
                 "lease_age_seconds": round(max(0.0, lease_age), 3),
                 "hard_ttl_seconds": ttl_seconds,
                 "required_providers": required_providers,
+                "launch_profile_digest": profile.get("profile_digest"),
+                "provider_scope_source": provider_scope_source,
+                "profile_record_source": profile_record_source,
+                "profile_record_path": (
+                    str(profile_record_path) if profile_record_path is not None else None
+                ),
                 "guard_report_path": str(guard_path),
                 "guard_report_sha256": (
                     "sha256:" + hashlib.sha256(guard_bytes).hexdigest()
@@ -796,6 +903,9 @@ def reconcile_launches(
                 "launch_id": launch_id,
                 "status": recovery["status"],
                 "provider_zero_confirmed": provider_zero,
+                "provider_scope_source": provider_scope_source,
+                "profile_record_source": profile_record_source,
+                "provider_mutation_performed": False,
                 "blockers": blockers,
             })
         except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
@@ -985,6 +1095,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--queue-root", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--guard-report", required=True)
+    parser.add_argument("--profile-dir")
     parser.add_argument("--report-out", required=True)
     parser.add_argument("--fallback-stale-seconds", type=int, default=14_400)
     args = parser.parse_args(argv)
@@ -992,6 +1103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         queue_root=args.queue_root,
         state_root=args.state_root,
         guard_report_path=args.guard_report,
+        profile_dir=args.profile_dir,
         fallback_stale_seconds=max(1, args.fallback_stale_seconds),
     )
     output = Path(args.report_out).expanduser().resolve()
