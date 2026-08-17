@@ -563,6 +563,23 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
     }
 
 
+def test_production_consumption_root_uses_writable_control_plane_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blueprint_pipeline.public_scene_artifixer3d_vast as subject
+
+    monkeypatch.delenv(subject.AUTHORIZATION_CONSUMPTION_ROOT_ENV, raising=False)
+    monkeypatch.setenv(
+        subject.LAUNCH_STATE_ROOT_ENV,
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs",
+    )
+
+    assert subject._default_authorization_consumption_root() == Path(
+        "/var/lib/blueprint/pipeline-control-plane/"
+        "artifixer3d-paid-authority-consumptions"
+    ).resolve()
+
+
 def test_paid_authority_adds_terminal_supplemental_gpu_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
