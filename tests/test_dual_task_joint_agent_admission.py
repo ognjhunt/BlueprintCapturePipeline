@@ -17,6 +17,12 @@ from blueprint_pipeline.dual_task_joint_agent_admission import (
     main,
     validate_dual_task_joint_agent_admission,
 )
+from blueprint_pipeline.joint_agent_topology_execution_authority import (
+    JointAgentTopologyAuthorityError,
+    build_joint_agent_topology_execution_authority,
+    materialize_joint_agent_topology_launch_inputs,
+    validate_joint_agent_topology_execution_authority,
+)
 
 
 SCENE_ID = "840920"
@@ -334,6 +340,35 @@ def _build(*, task: str = "a") -> dict:
     )
 
 
+def _rights_authority(*, collision_sha256: str = COLLISION_SHA) -> dict:
+    return {
+        "schema_version": "public_scene_rights_authority.v1",
+        "program_id": "arm-decision-proof-v1",
+        "scene_id": "840920",
+        "authority_reference": "scene840920-user-rights-authorization-2026-08-15",
+        "reviewer_status": "approved_for_declared_use",
+        "declared_use_scope": "noncommercial_internal_research",
+        "agent_accepted_terms": False,
+        "raw_dataset_redistribution_allowed": False,
+        "commercial_use_allowed": False,
+        "authorized_source_sha256": [collision_sha256, _digest("f")],
+    }
+
+
+def _topology_authority(*, admission: dict | None = None) -> dict:
+    return build_joint_agent_topology_execution_authority(
+        dual_task_admission=admission or _build(),
+        rights_authority=_rights_authority(),
+        rights_authority_file_sha256=_digest("9"),
+        rights_authority_size_bytes=1234,
+        authorized_by="nijelhunt_1",
+        authority_reference="scene840920-goal-joint-topology",
+        authorized_on="2026-08-17",
+        hard_total_spend_cap_usd=3.0,
+        maximum_single_resource_ttl_seconds=7_200,
+    )
+
+
 def test_scene840920_washer_exact_five_joint_freeze_is_admitted() -> None:
     admission = _build()
 
@@ -494,3 +529,157 @@ def test_no_spend_cli_binds_exact_source_asset_bytes(tmp_path: Path) -> None:
     assert written["source"]["source_asset_sha256"] == receipt["output_asset"][
         "sha256"
     ]
+
+
+def test_topology_authority_is_joint_only_without_legacy_aura_scope() -> None:
+    authority = _topology_authority()
+
+    assert authority["provider_scope"] == ["object_store", "openai", "vast"]
+    assert authority["purpose_scope"] == [
+        "articulation_topology_inference",
+        "construction_preview_rendering",
+    ]
+    assert "aura_adapter_receipt_digest" not in authority
+    assert "derived_aura_adapter_upload_authorized" not in authority
+    assert "released_code_inpainting" not in authority["purpose_scope"]
+    assert "two_candidate_policy_evaluation" not in authority["purpose_scope"]
+    assert authority["dual_task_admission_digest"] == _build()["admission_digest"]
+    assert authority["maximum_automatic_retries"] == 0
+    assert authority["claim_boundary"]["simready_qualified"] is False
+    assert validate_joint_agent_topology_execution_authority(authority) == authority
+
+
+def test_topology_authority_rejects_rights_that_do_not_cover_sage_bytes() -> None:
+    with pytest.raises(
+        JointAgentTopologyAuthorityError,
+        match="joint_agent_rights_authority_invalid",
+    ):
+        build_joint_agent_topology_execution_authority(
+            dual_task_admission=_build(),
+            rights_authority=_rights_authority(collision_sha256=_digest("0")),
+            rights_authority_file_sha256=_digest("9"),
+            rights_authority_size_bytes=1234,
+            authorized_by="nijelhunt_1",
+            authority_reference="scene840920-goal-joint-topology",
+            authorized_on="2026-08-17",
+            hard_total_spend_cap_usd=3.0,
+            maximum_single_resource_ttl_seconds=7_200,
+        )
+
+
+def test_locked_notebook_cannot_receive_paid_topology_authority() -> None:
+    with pytest.raises(
+        JointAgentTopologyAuthorityError,
+        match="joint_agent_dual_task_admission_not_paid_applicable",
+    ):
+        _topology_authority(admission=_build(task="b"))
+
+
+def test_topology_authority_revalidates_embedded_rights_scope() -> None:
+    authority = _topology_authority()
+    authority["prior_rights_authority"]["document"][
+        "authorized_source_sha256"
+    ] = [_digest("0")]
+    _seal(authority, "authorization_digest")
+
+    with pytest.raises(
+        JointAgentTopologyAuthorityError,
+        match="joint_agent_topology_authority_rights_invalid",
+    ):
+        validate_joint_agent_topology_execution_authority(authority)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("maximum_automatic_retries", 1, "maximum_automatic_retries_invalid"),
+        ("commercial_use_authorized", True, "commercial_use_authorized_invalid"),
+        (
+            "purpose_scope",
+            ["articulation_topology_inference", "two_candidate_policy_evaluation"],
+            "purpose_scope_invalid",
+        ),
+        ("hard_total_spend_cap_usd", 26.0, "spend_cap_invalid"),
+        ("aura_adapter_receipt_digest", _digest("3"), "legacy_scope_present"),
+    ],
+)
+def test_topology_authority_rejects_scope_or_budget_expansion(
+    field: str, value: object, error: str
+) -> None:
+    authority = _topology_authority()
+    authority[field] = value
+    _seal(authority, "authorization_digest")
+
+    with pytest.raises(JointAgentTopologyAuthorityError, match=error):
+        validate_joint_agent_topology_execution_authority(authority)
+
+
+def test_no_spend_composition_writes_ready_packet_and_joint_only_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_asset = tmp_path / "articulated_source_mesh.usda"
+    source_asset.write_bytes(b"#usda 1.0\ndef Xform \"Asset\" {}\n")
+    source_receipt = _source_receipt(task="a")
+    source_receipt["output_asset"].update(
+        {
+            "sha256": "sha256:" + hashlib.sha256(source_asset.read_bytes()).hexdigest(),
+            "size_bytes": source_asset.stat().st_size,
+        }
+    )
+    _seal(source_receipt, "receipt_digest")
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id="840920",
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=source_receipt,
+    )
+    admission_path = tmp_path / "admission.json"
+    source_receipt_path = tmp_path / "source_receipt.json"
+    rights_path = tmp_path / "rights.json"
+    checkout = tmp_path / "usd-content-agents"
+    checkout.mkdir()
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    source_receipt_path.write_text(json.dumps(source_receipt), encoding="utf-8")
+    rights_path.write_text(json.dumps(_rights_authority()), encoding="utf-8")
+    released = {
+        "repository": "https://github.com/NVIDIA-Omniverse/usd-content-agents",
+        "tag": "v0.5.2",
+        "version": "0.5.2",
+        "commit": "36dbf3f274f8e256637230a05a085853f65cc175",
+        "license": "Apache-2.0",
+        "files": {},
+    }
+    monkeypatch.setattr(
+        "blueprint_pipeline.joint_agent_topology_execution_authority.inspect_joint_agent_checkout",
+        lambda path: released,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.usd_content_joint_agent_packet.inspect_joint_agent_checkout",
+        lambda path, expected_identity=None: released,
+    )
+
+    composition = materialize_joint_agent_topology_launch_inputs(
+        dual_task_admission_path=admission_path,
+        source_asset_path=source_asset,
+        source_receipt_path=source_receipt_path,
+        rights_authority_path=rights_path,
+        joint_agent_checkout=checkout,
+        output_dir=tmp_path / "composition",
+        authorized_by="nijelhunt_1",
+        authority_reference="scene840920-goal-joint-topology",
+        authorized_on="2026-08-17",
+        hard_total_spend_cap_usd=3.0,
+        maximum_single_resource_ttl_seconds=7_200,
+    )
+
+    packet = json.loads(Path(composition["packet"]["path"]).read_text())
+    authority = json.loads(
+        Path(composition["execution_authority"]["path"]).read_text()
+    )
+    assert composition["status"] == "ready_for_bundle_construction_no_remote_execution"
+    assert composition["provider_mutation_performed"] is False
+    assert packet["status"] == "ready_for_dry_run_only"
+    assert packet["execution_admission"]["blockers"] == []
+    assert authority["schema_version"] == (
+        "joint_agent_topology_execution_authority.v1"
+    )
+    assert "aura_adapter_receipt_digest" not in authority

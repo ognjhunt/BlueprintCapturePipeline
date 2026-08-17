@@ -118,6 +118,39 @@ def test_the_controls_are_the_shared_ones(lane) -> None:
     ]
 
 
+def _install_dual_task_authority_limits(
+    lane: dict, *, spend_cap: float = 3.0, ttl_cap: int = 7_200
+) -> None:
+    receipt = json.loads(lane["receipt"].read_text(encoding="utf-8"))
+    receipt.update(
+        {
+            "dual_task_admission_digest": "sha256:" + "d" * 64,
+            "execution_authority_schema_version": (
+                "joint_agent_topology_execution_authority.v1"
+            ),
+            "execution_authority_limits": {
+                "hard_total_spend_cap_usd": spend_cap,
+                "maximum_single_resource_ttl_seconds": ttl_cap,
+                "model_backend": "openai",
+            },
+        }
+    )
+    lane["receipt"].write_text(json.dumps(receipt), encoding="utf-8")
+
+
+def test_dual_task_profile_cannot_exceed_topology_authority_limits(lane) -> None:
+    _install_dual_task_authority_limits(lane)
+    assert _build(lane)["allocator"]["max_spend_usd"] == 3.0
+
+    _install_dual_task_authority_limits(lane, spend_cap=2.99)
+    with pytest.raises(TaskEvaluationLaunchError, match="authority_spend_exceeded"):
+        _build(lane)
+
+    _install_dual_task_authority_limits(lane, ttl_cap=7_199)
+    with pytest.raises(TaskEvaluationLaunchError, match="authority_ttl_exceeded"):
+        _build(lane)
+
+
 @pytest.mark.parametrize(
     "field,value,expected",
     [
