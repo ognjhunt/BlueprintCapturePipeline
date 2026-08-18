@@ -311,12 +311,21 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     # that declares the executable schema but carries no objects, articulation,
     # or cameras is a packet the runtime refuses -- so a fixture shaped that way
     # would assert that unlaunchable packets get profiles.
-    from tests.test_native_task_arena_runtime import _sealed_scene_plan
+    from tests.test_native_task_arena_runtime import (
+        KINEMATIC_ARTICULATION_USDA,
+        _sealed_scene_plan,
+    )
 
     assets = packet / "assets"
     assets.mkdir(exist_ok=True)
     staged = []
-    for name, payload in (("collision.usd", b"collision"), ("task.usda", b"task")):
+    # The articulation is real USD: the profile builder asks the adapter
+    # whether it would accept this packet, and an asset it cannot open is a
+    # refusal. Placeholder bytes would assert that unopenable assets launch.
+    for name, payload in (
+        ("collision.usd", b"collision"),
+        ("task.usda", KINEMATIC_ARTICULATION_USDA.encode("utf-8")),
+    ):
         path = assets / name
         path.write_bytes(payload)
         staged.append(path)
@@ -329,6 +338,14 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         row["usd_path"] = f"assets/{path.name}"
         row["size_bytes"] = path.stat().st_size
         row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    for row in scene_plan["objects"]:
+        if row.get("object_type") == "ARTICULATION":
+            # the asset authors a kinematic base, so the plan must say so
+            row["articulation_adaptation"] = {
+                "fixed_base_body_prim_path": "/Asset/links/body",
+                "adaptation": "dynamic_articulation_with_world_fixed_base",
+                "candidate_bytes_modified": False,
+            }
     scene_plan["plan_digest"] = canonical_digest(
         scene_plan, digest_field="plan_digest"
     )
