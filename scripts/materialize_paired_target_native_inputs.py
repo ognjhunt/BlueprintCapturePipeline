@@ -225,6 +225,7 @@ STEPS: dict[str, Step] = {
                 required=True,
                 json_file=True,
             ),
+            "freeze_carry_forward": Param("--freeze-carry-forward", json_file=True),
             "output_path": Param("--output", required=True),
             "phase": Param("--phase", type=str, default="arena_packet"),
         },
@@ -235,6 +236,9 @@ STEPS: dict[str, Step] = {
         {
             "construction_bindings_path": Param(
                 "--construction-bindings", required=True
+            ),
+            "freeze_carry_forward": Param(
+                "--freeze-carry-forward", json_file=True
             ),
             "task_inputs": Param(
                 "--task-inputs",
