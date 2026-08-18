@@ -18,6 +18,32 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+
+#: Every logical contact sensor the scene plan is allowed to emit.
+#:
+#: This is the consumer half of a two-sided vocabulary: the scene plan writes
+#: these ids and this runtime admits them.  When the halves drift the scene
+#: still builds, the packet still digests, and the divergence is only found by
+#: a GPU that has already been rented -- which is how
+#: ``robot_task_forbidden_collision`` was found, on the second paid Arena
+#: attempt.  ``tests/test_native_task_arena_runtime.py`` reads the producer's
+#: literals and fails if this set does not cover them.
+LOGICAL_CONTACT_SENSOR_IDS = frozenset(
+    {
+        # the fingertips closing on the task object: the contact that counts
+        "task_robot_contact",
+        # the task object resting against, or striking, the static scene
+        "task_scene_contact",
+        "task_scene_collision",
+        # the task object against the surface it is supported by
+        "task_support_contact",
+        # any robot link touching the static scene
+        "robot_scene_contact",
+        # non-fingertip robot links -- knuckles, outer fingers, wrist --
+        # striking the task object body. A forbidden contact, not a grasp.
+        "robot_task_forbidden_collision",
+    }
+)
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
 SCENE_PLAN_SCHEMA = "native_task_arena_scene_plan.v1"
 
@@ -497,14 +523,7 @@ def build_native_task_arena_environment(
         prim_path = str(sensor.get("prim_path") or "")
         filter_paths = list(sensor.get("filter_prim_paths_expr") or [])
         if (
-            logical_sensor_id
-            not in {
-                "task_robot_contact",
-                "task_scene_contact",
-                "task_support_contact",
-                "task_scene_collision",
-                "robot_scene_contact",
-            }
+            logical_sensor_id not in LOGICAL_CONTACT_SENSOR_IDS
             or not sensor_instance_id
             or sensor_instance_id in seen_sensor_instances
             or invalid_exact_contact_path(prim_path)

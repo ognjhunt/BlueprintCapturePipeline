@@ -645,3 +645,57 @@ def test_portable_packet_assets_require_root_and_are_reverified(
         NativeTaskArenaRuntimeError, match="asset_identity_mismatch:task_object"
     ):
         build_native_task_arena_environment(plan, bundle_root=root)
+
+
+def test_the_runtime_admits_every_sensor_the_scene_plan_can_emit() -> None:
+    """Both halves of the contact-sensor vocabulary must agree.
+
+    The scene plan writes ``logical_sensor_id`` and the runtime admits it.
+    Nothing local couples them: the plan validates, the packet digests, the
+    bundle builds, the terminal-contract rehearsal passes, and the allocator
+    admits the launch. The divergence surfaces only inside Isaac, on a GPU
+    that has already been rented.
+
+    That is how ``robot_task_forbidden_collision`` was found -- the signal for
+    non-fingertip robot links striking the task object -- on the second paid
+    Arena attempt, at sensor index 2 of 31.
+    """
+
+    import ast
+    from pathlib import Path
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        LOGICAL_CONTACT_SENSOR_IDS,
+    )
+
+    plan_source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "blueprint_pipeline"
+        / "native_task_arena_scene_plan.py"
+    ).read_text(encoding="utf-8")
+
+    emitted: set[str] = set()
+    for node in ast.walk(ast.parse(plan_source)):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == "logical_sensor_id"
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+            ):
+                emitted.add(value.value)
+
+    # the scan itself must not silently find nothing
+    assert len(emitted) >= 6, emitted
+
+    unadmitted = sorted(emitted - LOGICAL_CONTACT_SENSOR_IDS)
+    assert unadmitted == [], (
+        "the scene plan emits contact sensors the runtime refuses, which is "
+        f"only discoverable on a rented GPU: {unadmitted}"
+    )
+
+    # and the runtime must not carry an id no producer can emit
+    assert sorted(LOGICAL_CONTACT_SENSOR_IDS - emitted) == []
