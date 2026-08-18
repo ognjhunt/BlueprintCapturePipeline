@@ -55,6 +55,17 @@ from .spend_authority_consumption_root import consumption_root
 #: buying more samples of the same failure.
 SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV = "BLUEPRINT_VAST_SIMREADY_ISAAC_ALLOWED_MACHINE_ID"
 
+#: Launch through a Vast template instead of a direct image+login create.
+#:
+#: Four attempts on four machines -- including a hand-picked verified host --
+#: ended with the instance reported `running` while its container never
+#: existed. The direct create path (explicit image_uuid plus registry login)
+#: is the one variable every failure shared; template launches are the
+#: provider's mainline flow. The hash names a template pinned to the exact
+#: image digest this lane already requires, so nothing about the workload
+#: identity changes -- only which provider code path materializes it.
+SIMREADY_ISAAC_TEMPLATE_HASH_ENV = "BLUEPRINT_VAST_SIMREADY_ISAAC_TEMPLATE_HASH"
+
 
 def _machine_ids_from_env(name: str) -> tuple[int, ...]:
     import os
@@ -732,6 +743,12 @@ def run_simready_isaac_vast(
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 allowed_machine_ids=_machine_ids_from_env(
                     SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV
+                ),
+                vast_template_hash_id=(
+                    os.getenv(SIMREADY_ISAAC_TEMPLATE_HASH_ENV) or None
+                ),
+                use_vast_template_image=bool(
+                    str(os.getenv(SIMREADY_ISAAC_TEMPLATE_HASH_ENV) or "").strip()
                 ),
                 machine_avoidlist_path=resolved_avoidlist,
                 # The exact collision-free label the independent process

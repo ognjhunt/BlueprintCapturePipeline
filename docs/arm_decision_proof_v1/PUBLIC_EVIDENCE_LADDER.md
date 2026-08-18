@@ -292,6 +292,37 @@ unchanged author path or an in-place publisher-Ply edit.
 These are bounded ablations, not silent fallbacks and not substitutes for the
 selected AuraFusion360 path or the retained Inpaint360GS/InFusion abstentions.
 
+### 5b. Measured articulation authority (amended 2026-08-18)
+
+Authority over physical claims is split by kind, and the split is absolute:
+
+- **Measurement authors physics.** Links, joint axes, pivots, travel limits,
+  and collision assignment are derived from the digest-bound source scan by
+  deterministic partition: separating planes, hinge columns, and part
+  clusters are measured values carried with measurement receipts, and the
+  derivation replays byte-identically from the same frozen inputs. A joint's
+  axis sign is never an input: it is computed from the requirement that
+  commanded travel increases clearance from the parent link, so an
+  inverted-hinge authoring error is not representable. This restores and
+  generalizes the deterministic source-partition arm that produced the
+  840796 articulated twin, and supersedes the 2026-08-10 exclusion of
+  deterministic CAD for **articulation**; hand-typed articulation specs are
+  no longer an admitted authoring path.
+
+- **Agents author appearance.** Agent-authored CAD (Earth-to-Jake,
+  Pan-Chera) remains the visual-geometry source, composed onto the measured
+  links through the existing visual-binding contract, whose claim boundary
+  already forbids agent geometry from carrying any physical authority.
+  Agents may also *propose* partition parameters for the measured path, but
+  a proposal becomes input only after the instruments confirm it against the
+  frozen scan bytes and the derivation gates pass.
+
+Why: on 2026-08-17/18 a hand-typed hinge axis (`+Z` where the measured
+geometry demands `-Z`) was prospectively sealed without simulation, cost two
+paid runs that read a jammed 6.01 degrees, and required a freeze amendment
+to correct. The deterministic derivation, replayed over the same frozen
+bytes, reproduces the corrected axis from the clearance rule alone.
+
 ### 6. NVIDIA USD Content Agents: candidate SimReady authoring backend
 
 [NVIDIA USD Content Agents](https://github.com/NVIDIA-Omniverse/usd-content-agents)
@@ -301,10 +332,7 @@ validation. It is **not** an image-to-CAD or splat-to-CAD generator. Its physics
 predictions and VLM judges are proposals, not measured property authority.
 
 Use it behind a provider-neutral `simready_authoring_backend` contract after
-agent-authored CAD or mesh geometry already exists. Deterministic format
-conversion and independent measurement are allowed; deterministic CAD,
-collision primitives, and task-scoring graphs are not geometry-authoring
-backends. Bind the
+visual geometry already exists. Bind the
 exact Content Agents, converter, SimReady profile, model/backend, renderer,
 solver, prompt/config, source/output, and environment digests. Require
 `Prop-Robotics-Isaac@1.0.0` explicitly and run dynamic Isaac checks separately;

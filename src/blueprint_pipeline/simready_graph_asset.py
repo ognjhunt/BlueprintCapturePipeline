@@ -18,6 +18,9 @@ from typing import Any
 
 from .articulation_graph_contract import validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .measured_articulation_derivation import (
+    SCHEMA_VERSION as MEASURED_DERIVATION_SCHEMA,
+)
 
 
 SPEC_SCHEMA = "simready_graph_asset_spec.v1"
@@ -385,14 +388,85 @@ def _gf_quat(xyzw: Sequence[float]):
     return Gf.Quatf(float(xyzw[3]), Gf.Vec3f(*[float(value) for value in xyzw[:3]]))
 
 
+def _require_measured_target_axis(
+    spec: Mapping[str, Any], measured_derivation: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Refuse any target joint the scan does not corroborate.
+
+    Evidence ladder 5b makes measurement the author of physical claims, and a
+    doctrine nothing enforces is a preference.  Scene 840920's door was sealed
+    with a hand-typed ``+Z`` where the geometry demands ``-Z``; two paid runs
+    read the jammed 6.01 degrees.  A spec may still *carry* an axis -- it is
+    the document the freeze seals -- but authoring now requires a derivation
+    receipt computed from the digest-bound scan, and the two must agree.  A
+    typed axis that measurement contradicts cannot become an asset.
+
+    Only the target joint is gated: it is the joint the task commands and the
+    one whose sign the derivation computes from clearance.
+    """
+
+    joints = ((spec.get("articulation_graph") or {}).get("joints")) or []
+    targets = [
+        j for j in joints if isinstance(j, Mapping) and j.get("role") == "target"
+    ]
+    if not targets:
+        # A graph with no commanded joint asserts no physical claim to check.
+        return {"measured_target_axis_required": False}
+    if measured_derivation is None:
+        raise SimReadyGraphAssetError(["graph_asset_measured_derivation_required"])
+    if not isinstance(measured_derivation, Mapping):
+        raise SimReadyGraphAssetError(["graph_asset_measured_derivation_invalid"])
+
+    errors: list[str] = []
+    if measured_derivation.get("schema_version") != MEASURED_DERIVATION_SCHEMA:
+        errors.append("graph_asset_measured_derivation_schema_invalid")
+    if measured_derivation.get("status") != "derived_from_measurement":
+        errors.append("graph_asset_measured_derivation_status_invalid")
+    if measured_derivation.get("derivation_digest") != canonical_digest(
+        measured_derivation, digest_field="derivation_digest"
+    ):
+        errors.append("graph_asset_measured_derivation_digest_invalid")
+    if errors:
+        raise SimReadyGraphAssetError(errors)
+
+    derived = ((measured_derivation.get("target_joint") or {}).get("axis")) or []
+    derived_axis = [float(v) for v in derived] if len(derived) == 3 else None
+    if derived_axis is None:
+        raise SimReadyGraphAssetError(["graph_asset_measured_derivation_axis_invalid"])
+    for joint in targets:
+        axis = joint.get("axis") or []
+        if len(axis) != 3:
+            raise SimReadyGraphAssetError(["graph_asset_target_axis_invalid"])
+        typed = [float(v) for v in axis]
+        if any(abs(a - b) > 1e-6 for a, b in zip(typed, derived_axis)):
+            raise SimReadyGraphAssetError(
+                ["graph_asset_target_axis_contradicts_measurement"]
+            )
+    return {
+        "measured_target_axis_required": True,
+        "measured_derivation_digest": str(
+            measured_derivation.get("derivation_digest") or ""
+        ),
+        "measured_target_axis": derived_axis,
+        "facing_proposed_by": str(
+            (measured_derivation.get("front_plate") or {}).get(
+                "facing_proposed_by"
+            )
+            or ""
+        ),
+    }
+
+
 def author_simready_graph_asset(
     *,
     spec: Mapping[str, Any],
     task_freeze_receipt_path: str | Path,
     source_asset_receipt_path: str | Path,
     destination: str | Path,
+    measured_derivation: Mapping[str, Any] | None = None,
     receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    measured_axis_binding = _require_measured_target_axis(spec, measured_derivation)
     try:
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
     except ImportError as exc:
@@ -601,6 +675,7 @@ def author_simready_graph_asset(
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA,
         "status": "simready_candidate_authored",
+        "measured_axis_binding": measured_axis_binding,
         "asset_id": admitted["asset_id"],
         "task_id": admitted["task_id"],
         "task_freeze_digest": admitted["task_freeze_digest"],
