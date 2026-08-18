@@ -44,6 +44,11 @@ _ITEM_NAMES = {
 _SUPPORTED_TERMINAL_RESULT_SCHEMAS = frozenset(
     {
         "adp_content_agents_vast_run.v1",
+        # One schema covers all three native Arena links (construction,
+        # controls, policy); without it the Arena lane cannot reconcile its own
+        # posted charges, and a lane that cannot reconcile can never authorize
+        # a second attempt.
+        "native_task_arena_vast_run.v1",
         "paired_target_native_import_vast_run.v1",
         "public_scene_artifixer3d_vast_run.v1",
     }
