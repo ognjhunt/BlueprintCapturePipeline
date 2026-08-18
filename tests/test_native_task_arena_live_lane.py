@@ -313,6 +313,7 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     # would assert that unlaunchable packets get profiles.
     from tests.test_native_task_arena_runtime import (
         KINEMATIC_ARTICULATION_USDA,
+        STATIC_COLLISION_USDA,
         _sealed_scene_plan,
     )
 
@@ -327,7 +328,9 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     )
 
     collision = assets / "collision.usd"
-    collision.write_bytes(b"collision")
+    # real static collision USD: the pre-spend gate opens it and refuses a
+    # convex hull PhysX could not GPU-cook
+    collision.write_text(STATIC_COLLISION_USDA, encoding="utf-8")
     staged.append(collision)
     sealed = packet / "sealed_task.usda"
     sealed.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")

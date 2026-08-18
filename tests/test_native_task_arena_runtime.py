@@ -353,6 +353,19 @@ def _install_fake_native_runtime(monkeypatch) -> None:
         monkeypatch.setitem(sys.modules, name, module)
 
 
+STATIC_COLLISION_USDA = (
+        '#usda 1.0\n(\n    defaultPrim = "Root"\n)\n'
+        'def Xform "Root" {\n'
+        '    def Mesh "floor" (prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]) {\n'
+        '        point3f[] points = [(0,0,0), (1,0,0), (1,1,0), (0,1,0)]\n'
+        '        int[] faceVertexCounts = [4]\n'
+        '        int[] faceVertexIndices = [0,1,2,3]\n'
+        '        uniform token physics:approximation = "none"\n'
+        '    }\n'
+        '}\n'
+)
+
+
 def _sealed_scene_plan() -> dict:
     cameras = [_camera(role) for role in ("external", "wrist", "overview")]
     plan = {
@@ -613,7 +626,8 @@ def test_portable_packet_assets_require_root_and_are_reverified(
     assets.mkdir(parents=True)
     collision = assets / "collision.usd"
     task = assets / "task.usda"
-    collision.write_bytes(b"collision")
+    # a real (tiny) static collision scene: the gate now opens it
+    collision.write_text(STATIC_COLLISION_USDA, encoding="utf-8")
     # A real articulation, authored the way the sealed washer is: the base link
     # is kinematic, which PhysX refuses inside an articulation.
     task.write_bytes(b"task")
@@ -742,7 +756,7 @@ def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
     assets.mkdir(parents=True)
     collision = assets / "collision.usd"
     task = assets / "task.usda"
-    collision.write_bytes(b"collision")
+    collision.write_text(STATIC_COLLISION_USDA, encoding="utf-8")
     from blueprint_pipeline.native_task_arena_runtime import (
         author_grounded_articulation,
     )
@@ -911,13 +925,15 @@ def test_two_kinematic_links_are_ambiguous_and_fail_closed(tmp_path: Path) -> No
         articulation_kinematic_adaptation,
     )
 
-    pxr = pytest.importorskip("pxr")
+    pytest.importorskip("pxr")
+    from pxr import Sdf, Usd, UsdPhysics
+
     sealed = tmp_path / "two_kinematic.usda"
     sealed.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
-    stage = pxr.Usd.Stage.Open(str(sealed))
+    stage = Usd.Stage.Open(str(sealed))
     door = stage.GetPrimAtPath("/Asset/links/door")
     door.CreateAttribute(
-        "physics:kinematicEnabled", pxr.Sdf.ValueTypeNames.Bool
+        "physics:kinematicEnabled", Sdf.ValueTypeNames.Bool
     ).Set(True)
 
     with pytest.raises(
@@ -926,7 +942,7 @@ def test_two_kinematic_links_are_ambiguous_and_fail_closed(tmp_path: Path) -> No
         articulation_kinematic_adaptation(
             stage,
             articulation_root_path="/Asset",
-            usd_physics=pxr.UsdPhysics,
+            usd_physics=UsdPhysics,
         )
 
 
@@ -941,7 +957,9 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
     consumes the composition. This test does what the runtime does.
     """
 
-    pxr = pytest.importorskip("pxr")
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdPhysics
+
     from blueprint_pipeline.native_task_arena_runtime import (
         ARENA_ANCHOR_JOINT,
         author_grounded_articulation,
@@ -953,7 +971,7 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
     adaptation = author_grounded_articulation(sealed, derived)
     assert adaptation is not None
 
-    scene = pxr.Usd.Stage.CreateInMemory()
+    scene = Usd.Stage.CreateInMemory()
     spawned = scene.DefinePrim("/World/envs/env_0/task_object")
     spawned.GetReferences().AddReference(str(derived))
 
@@ -961,7 +979,7 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
         f"/World/envs/env_0/task_object/{ARENA_ANCHOR_JOINT}"
     )
     assert anchor.IsValid(), "the anchor did not compose under the spawned prim"
-    targets = pxr.UsdPhysics.FixedJoint(anchor).GetBody1Rel().GetTargets()
+    targets = UsdPhysics.FixedJoint(anchor).GetBody1Rel().GetTargets()
     # the rel target must remap into the spawned namespace, not point at the
     # source asset's absolute path
     assert [str(t) for t in targets] == [
@@ -970,7 +988,7 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
     # and the base link arrives dynamic
     body = scene.GetPrimAtPath("/World/envs/env_0/task_object/links/body")
     assert (
-        pxr.UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is False
+        UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is False
     )
 
 
@@ -990,3 +1008,92 @@ def test_the_physics_backend_is_stated_not_inherited(monkeypatch) -> None:
     build_native_task_arena_environment(plan)
 
     assert _ArenaBuilder.last.args.presets == "physx"
+
+
+OBLONG_COLLISION_USDA = (
+    '#usda 1.0\n(\n    defaultPrim = "Root"\n)\n'
+    'def Xform "Root" {\n'
+    '    def Mesh "wall" (prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]) {\n'
+    # 1800 x 250 x 11, the real scene's aspect ratio 163.6
+    '        point3f[] points = [(0,0,0), (1800,0,0), (1800,250,0), (0,250,0),'
+    ' (0,0,11), (1800,0,11), (1800,250,11), (0,250,11)]\n'
+    '        int[] faceVertexCounts = [4]\n'
+    '        int[] faceVertexIndices = [0,1,2,3]\n'
+    '        uniform token physics:approximation = "convexDecomposition"\n'
+    '    }\n'
+    '}\n'
+)
+
+
+def test_a_convex_hull_physx_cannot_gpu_cook_is_refused(tmp_path: Path) -> None:
+    """One thin convex collider silently demotes the whole simulation to CPU.
+
+    PhysX cannot build a GPU-compatible convex hull for an oblong shape and
+    falls back to CPU collision. The articulation tensor views then live on
+    the CPU while Isaac Lab runs on cuda:0, and the failure surfaces much
+    later as a device mismatch in whatever touches a tensor view first --
+    which is how attempts r6, r7 and r8 each spent ~$0.065 on the same wall.
+
+    The task-object qualification could never have caught it: it audits the
+    task object, and this mesh is static scene geometry.
+    """
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        verify_gpu_compatible_scene_collision,
+    )
+
+    scene = tmp_path / "scene_collision.usda"
+    scene.write_text(OBLONG_COLLISION_USDA, encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="scene_collision_not_gpu_cookable"
+    ) as excinfo:
+        verify_gpu_compatible_scene_collision(scene)
+
+    # the operator gets the prim and its ratio, not a device error an hour later
+    assert "/Root/wall" in str(excinfo.value)
+
+
+def test_static_scene_convex_is_converted_to_triangle_mesh(tmp_path: Path) -> None:
+    """Static geometry does not need convex decomposition; triangle mesh cooks anywhere."""
+
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdPhysics
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_gpu_compatible_scene_collision,
+        verify_gpu_compatible_scene_collision,
+    )
+
+    sealed = tmp_path / "sealed_scene.usda"
+    sealed.write_text(OBLONG_COLLISION_USDA, encoding="utf-8")
+    derived = tmp_path / "runtime_scene.usda"
+
+    adaptation = author_gpu_compatible_scene_collision(sealed, derived)
+
+    assert adaptation is not None
+    assert adaptation["converted_prim_paths"] == ["/Root/wall"]
+    assert adaptation["candidate_bytes_modified"] is False
+    # the derived scene now passes the gate, and the sealed bytes are untouched
+    verify_gpu_compatible_scene_collision(derived)
+    assert sealed.read_text(encoding="utf-8") == OBLONG_COLLISION_USDA
+    stage = Usd.Stage.Open(str(derived))
+    wall = stage.GetPrimAtPath("/Root/wall")
+    assert (
+        UsdPhysics.MeshCollisionAPI(wall).GetApproximationAttr().Get() == "none"
+    )
+
+
+def test_a_scene_within_tolerance_is_left_alone(tmp_path: Path) -> None:
+    """Nothing is rewritten when nothing needs rewriting."""
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_gpu_compatible_scene_collision,
+    )
+
+    scene = tmp_path / "fine_scene.usda"
+    scene.write_text(STATIC_COLLISION_USDA, encoding="utf-8")
+    derived = tmp_path / "derived.usda"
+
+    assert author_gpu_compatible_scene_collision(scene, derived) is None
+    assert not derived.exists()
