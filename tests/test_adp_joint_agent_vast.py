@@ -528,6 +528,143 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         / "dual-bundle/provider_runtime/dual_task_joint_agent_admission.json"
     ).is_file()
 
+    # --- authored replacement ------------------------------------------------
+    # The paid agent reads our six-link washer, so the packet points at the
+    # replacement's receipt while the authority still names the source mesh it
+    # took its freeze and extent binding from. The replacement carries no
+    # connected components -- its parts are already separate -- so the bounds
+    # the review anchors on arrive as their own document.
+    replacement_receipt = {
+        "schema_version": "simready_graph_asset_receipt.v1",
+        "status": "simready_candidate_authored",
+        "spec_digest": "sha256:" + "c" * 64,
+        "link_paths": {"body": "/Asset/links/body", "door": "/Asset/links/door"},
+        "receipt_digest": "",
+    }
+    replacement_receipt["receipt_digest"] = canonical_digest(
+        replacement_receipt, digest_field="receipt_digest"
+    )
+    replacement_receipt_path = tmp_path / "replacement_receipt.json"
+    replacement_receipt_path.write_text(
+        json.dumps(replacement_receipt), encoding="utf-8"
+    )
+
+    components = {
+        "schema_version": "authored_link_source_components.v1",
+        "status": "authored_link_bounds_synthesized",
+        "spec_digest": replacement_receipt["spec_digest"],
+        "source_receipt_digest": replacement_receipt["receipt_digest"],
+        "connected_components": [
+            {
+                "component_index": 0,
+                "link_id": "body",
+                "aabb_min_asset_m": [-0.3, -0.24, 0.0],
+                "aabb_max_asset_m": [0.3, 0.3, 0.848],
+            },
+            {
+                "component_index": 1,
+                "link_id": "door",
+                "aabb_min_asset_m": [-0.245, -0.547, 0.405],
+                "aabb_max_asset_m": [0.245, -0.057, 0.455],
+            },
+        ],
+        "components_digest": "",
+    }
+    components["components_digest"] = canonical_digest(
+        components, digest_field="components_digest"
+    )
+    components_path = tmp_path / "authored_link_components.json"
+    components_path.write_text(json.dumps(components), encoding="utf-8")
+
+    replacement_packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    replacement_packet["source_asset"]["source_receipt_path"] = str(
+        replacement_receipt_path
+    )
+    replacement_packet["source_asset"]["source_receipt_digest"] = replacement_receipt[
+        "receipt_digest"
+    ]
+    replacement_packet["packet_digest"] = ""
+    replacement_packet["packet_digest"] = canonical_digest(
+        replacement_packet, digest_field="packet_digest"
+    )
+    replacement_packet_path = tmp_path / "replacement_packet.json"
+    replacement_packet_path.write_text(
+        json.dumps(replacement_packet), encoding="utf-8"
+    )
+
+    replacement_admission = {
+        **dual_task_admission,
+        "authored_replacement_receipt": replacement_receipt,
+        "source_receipt": source_receipt,
+        "admission_digest": "",
+    }
+    replacement_admission["admission_digest"] = canonical_digest(
+        replacement_admission, digest_field="admission_digest"
+    )
+    replacement_admission_path = tmp_path / "replacement_admission.json"
+    replacement_admission_path.write_text(
+        json.dumps(replacement_admission), encoding="utf-8"
+    )
+    replacement_authority = {
+        **dual_authority,
+        "dual_task_admission_digest": replacement_admission["admission_digest"],
+        "authorization_digest": "",
+    }
+    replacement_authority["authorization_digest"] = canonical_digest(
+        replacement_authority, digest_field="authorization_digest"
+    )
+    replacement_authority_path = tmp_path / "replacement_authority.json"
+    replacement_authority_path.write_text(
+        json.dumps(replacement_authority), encoding="utf-8"
+    )
+
+    def _replacement_bundle(job: str, components_arg):
+        return build_joint_agent_vast_bundle(
+            repo_root=repo,
+            joint_agent_root=checkout,
+            packet_path=replacement_packet_path,
+            execution_authority_path=replacement_authority_path,
+            freeze_path=None,
+            scope_amendment_path=None,
+            dual_task_admission_path=replacement_admission_path,
+            authored_link_components_path=components_arg,
+            nim_preflight_path=nim_preflight_path,
+            scene_optimizer_core_zip_path=optimizer_zip,
+            job_dir=tmp_path / job,
+            generated_at="2026-08-17T00:00:00+00:00",
+        )
+
+    replacement_bundle = _replacement_bundle("replacement-bundle", components_path)
+    assert replacement_bundle["status"] == "ready"
+
+    # The runtime receives one file with `connected_components` in it, and for a
+    # replacement that file is the authored-link bounds, not the mesh receipt.
+    shipped = json.loads(
+        (
+            tmp_path
+            / "replacement-bundle/provider_runtime/input/articulated_source_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert shipped["schema_version"] == "authored_link_source_components.v1"
+    assert [row["link_id"] for row in shipped["connected_components"]] == [
+        "body",
+        "door",
+    ]
+
+    # A replacement admission cannot be bundled without those bounds.
+    with pytest.raises(ValueError, match="authored_link_components_missing"):
+        _replacement_bundle("replacement-missing", None)
+
+    # Bounds belonging to some other asset are refused, not shipped.
+    foreign = {**components, "source_receipt_digest": "sha256:" + "d" * 64}
+    foreign["components_digest"] = canonical_digest(
+        foreign, digest_field="components_digest"
+    )
+    foreign_path = tmp_path / "foreign_components.json"
+    foreign_path.write_text(json.dumps(foreign), encoding="utf-8")
+    with pytest.raises(ValueError, match="authored_link_components_invalid"):
+        _replacement_bundle("replacement-foreign", foreign_path)
+
 
 def test_joint_agent_provider_uses_gpu_graphics_and_distinct_runtime(tmp_path: Path) -> None:
     assert _resolve_launch_mode(
