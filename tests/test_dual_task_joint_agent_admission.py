@@ -912,3 +912,117 @@ def test_cli_binds_the_replacement_bytes_not_the_mesh_bytes(tmp_path: Path) -> N
     mesh.write_bytes(b"mesh")
     argv[argv.index(str(asset))] = str(mesh)
     assert main(argv) != 0
+
+
+def test_composition_builds_the_packet_from_the_replacement_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The packet describes the bytes the paid agent reads, not the mesh.
+
+    The source-mesh receipt still supplies the freeze and extent binding, but it
+    does not describe the replacement's bytes and refuses them outright
+    (`articulated_source_asset_digest_mismatch`). Scene 840920 hit exactly that
+    on 2026-08-17 once the admission itself had started passing.
+    """
+
+    mesh_asset = tmp_path / "articulated_source_mesh.usda"
+    mesh_asset.write_bytes(b"#usda 1.0\ndef Xform \"Asset\" {}\n")
+    source_receipt = _source_receipt(task="a")
+    source_receipt["output_asset"].update(
+        {
+            "sha256": "sha256:" + hashlib.sha256(mesh_asset.read_bytes()).hexdigest(),
+            "size_bytes": mesh_asset.stat().st_size,
+        }
+    )
+    _seal(source_receipt, "receipt_digest")
+
+    replacement_asset = tmp_path / "replacement.usda"
+    replacement_asset.write_bytes(b"#usda 1.0\ndef Xform \"Asset\" { def \"links\" {} }\n")
+    replacement = _authored_replacement()
+    replacement["source_asset_receipt"] = {
+        "receipt_digest": source_receipt["receipt_digest"],
+        "source_asset_sha256": source_receipt["output_asset"]["sha256"],
+    }
+    replacement["output_usd"].update(
+        {
+            "sha256": "sha256:"
+            + hashlib.sha256(replacement_asset.read_bytes()).hexdigest(),
+            "size_bytes": replacement_asset.stat().st_size,
+        }
+    )
+    replacement = _seal({**replacement, "receipt_digest": ""}, "receipt_digest")
+
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id="840920",
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=source_receipt,
+        authored_replacement_receipt=replacement,
+    )
+    admission_path = tmp_path / "admission.json"
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    source_receipt_path = tmp_path / "source_receipt.json"
+    source_receipt_path.write_text(json.dumps(source_receipt), encoding="utf-8")
+    replacement_path = tmp_path / "replacement_receipt.json"
+    replacement_path.write_text(json.dumps(replacement), encoding="utf-8")
+    rights_path = tmp_path / "rights.json"
+    rights_path.write_text(json.dumps(_rights_authority()), encoding="utf-8")
+    checkout = tmp_path / "usd-content-agents"
+    checkout.mkdir()
+
+    released = {
+        "repository": "https://github.com/NVIDIA-Omniverse/usd-content-agents",
+        "tag": "v0.5.2",
+        "version": "0.5.2",
+        "commit": "36dbf3f274f8e256637230a05a085853f65cc175",
+        "license": "Apache-2.0",
+        "files": {},
+    }
+    monkeypatch.setattr(
+        "blueprint_pipeline.joint_agent_topology_execution_authority.inspect_joint_agent_checkout",
+        lambda path: released,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.usd_content_joint_agent_packet.inspect_joint_agent_checkout",
+        lambda path, expected_identity=None: released,
+    )
+
+    def _compose(output_dir: Path, replacement_receipt: Path | None):
+        return materialize_joint_agent_topology_launch_inputs(
+            dual_task_admission_path=admission_path,
+            source_asset_path=replacement_asset,
+            source_receipt_path=source_receipt_path,
+            authored_replacement_receipt_path=replacement_receipt,
+            rights_authority_path=rights_path,
+            joint_agent_checkout=checkout,
+            output_dir=output_dir,
+            authorized_by="nijelhunt_1",
+            authority_reference="scene840920-goal-joint-topology",
+            authorized_on="2026-08-17",
+            hard_total_spend_cap_usd=3.0,
+            maximum_single_resource_ttl_seconds=7_200,
+        )
+
+    composition = _compose(tmp_path / "composition", replacement_path)
+    assert composition["status"] == "ready_for_bundle_construction_no_remote_execution"
+    assert composition["provider_mutation_performed"] is False
+    packet = json.loads(Path(composition["packet"]["path"]).read_text())
+    assert packet["source_asset"]["source_receipt_digest"] == replacement["receipt_digest"]
+    assert packet["source_asset"]["connected_component_count"] == 6
+
+    # An admission carrying a replacement cannot be composed without it.
+    with pytest.raises(JointAgentTopologyAuthorityError) as excinfo:
+        _compose(tmp_path / "composition_missing", None)
+    assert (
+        "joint_agent_topology_authored_replacement_receipt_missing"
+        in excinfo.value.errors
+    )
+
+    # A different receipt than the admission retained is refused.
+    other = tmp_path / "other_receipt.json"
+    other.write_text(json.dumps(_authored_replacement(links=5)), encoding="utf-8")
+    with pytest.raises(JointAgentTopologyAuthorityError) as excinfo:
+        _compose(tmp_path / "composition_wrong", other)
+    assert (
+        "joint_agent_topology_authored_replacement_receipt_mismatch"
+        in excinfo.value.errors
+    )
