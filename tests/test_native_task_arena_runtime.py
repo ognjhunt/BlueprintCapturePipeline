@@ -972,3 +972,21 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
     assert (
         pxr.UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is False
     )
+
+
+def test_the_physics_backend_is_stated_not_inherited(monkeypatch) -> None:
+    """The build must name PhysX rather than inherit whatever the snapshot defaults to.
+
+    Doctrine: PhysX is the website default; Newton is experimental comparison
+    evidence. The pinned Isaac Lab snapshot resolves an unset preset to its
+    Newton backend, whose articulation pipeline raised the cuda/cpu joint_vel
+    mismatch that consumed attempts r6 and r7 ($0.13) -- while every PhysX
+    knob our configure callback sets was silently ignored.
+    """
+
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+
+    build_native_task_arena_environment(plan)
+
+    assert _ArenaBuilder.last.args.presets == "physx"

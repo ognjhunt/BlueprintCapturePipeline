@@ -939,7 +939,14 @@ def build_native_task_arena_environment(
             mimic=False,
             device=device,
             disable_fabric=False,
-            presets=None,
+            # The physics backend is doctrine, not a default to inherit: PhysX
+            # is the website default and Newton is experimental comparison
+            # evidence (ADP_009D_PHYSICS_BACKEND_COMPARISON). This snapshot of
+            # Isaac Lab resolves the unset preset to Newton, whose articulation
+            # pipeline raised the cuda/cpu joint_vel mismatch that consumed
+            # attempts r6 and r7 -- and every PhysX knob the configure callback
+            # sets was silently ignored while it did. Say the backend out loud.
+            presets="physx",
         ),
     )
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
