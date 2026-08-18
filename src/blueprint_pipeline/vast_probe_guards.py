@@ -171,7 +171,18 @@ def cold_pull_aware_heartbeat_no_progress_seconds(
     """Keep the heartbeat window consistent with an admitted WAM cold pull."""
 
     resolved = max(0, int(configured_seconds))
-    if provider_bundle_kind not in {"wam", "paired_target_native_import"} or not allow_cold_image_pull:
+    # Every kind here ships a multi-gigabyte image. The list started as
+    # {"wam"}, grew "paired_target_native_import" when that lane died
+    # mid-pull, and on 2026-08-18 "adp_simready_isaac" repeated the same
+    # failure twice on consecutive cold machines: the admission gate allowed
+    # the cold pull, the live window was sized for it, and this window --
+    # which never heard about the isaac lane -- expired first, every time,
+    # deterministically, while looking like a provider flake.
+    if (
+        provider_bundle_kind
+        not in {"wam", "paired_target_native_import", "adp_simready_isaac"}
+        or not allow_cold_image_pull
+    ):
         return resolved
     admitted_cold_pull_seconds = min(
         max(0, int(min_cold_image_pull_live_minutes)) * 60,

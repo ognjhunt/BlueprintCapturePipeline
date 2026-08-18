@@ -44,6 +44,43 @@ from .wam_provider_object_store import (
 
 from .spend_authority_consumption_root import consumption_root
 
+#: Operator machine pinning for this lane, mirroring the unitree pattern.
+#:
+#: On 2026-08-18 three consecutive attempts died with the instance reported
+#: `running` by the provider while its container never existed and nothing
+#: ever phoned home -- an opaque host-side failure the receipts cannot
+#: distinguish further. The one machine that ran this exact image and
+#: workload to completion that night was provably fine. When the offer pool
+#: is serving broken hosts, the operator can pin to proven ones instead of
+#: buying more samples of the same failure.
+SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV = "BLUEPRINT_VAST_SIMREADY_ISAAC_ALLOWED_MACHINE_ID"
+
+#: Launch through a Vast template instead of a direct image+login create.
+#:
+#: Four attempts on four machines -- including a hand-picked verified host --
+#: ended with the instance reported `running` while its container never
+#: existed. The direct create path (explicit image_uuid plus registry login)
+#: is the one variable every failure shared; template launches are the
+#: provider's mainline flow. The hash names a template pinned to the exact
+#: image digest this lane already requires, so nothing about the workload
+#: identity changes -- only which provider code path materializes it.
+SIMREADY_ISAAC_TEMPLATE_HASH_ENV = "BLUEPRINT_VAST_SIMREADY_ISAAC_TEMPLATE_HASH"
+
+
+def _machine_ids_from_env(name: str) -> tuple[int, ...]:
+    import os
+
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return ()
+    out: list[int] = []
+    for piece in raw.replace(";", ",").split(","):
+        piece = piece.strip()
+        if piece.isdecimal() and int(piece) > 0:
+            out.append(int(piece))
+    return tuple(sorted(set(out)))
+
+
 PROBE_KIND = "adp009b-exact-simready-isaac"
 RESULT_SCHEMA_VERSION = "adp009b_simready_isaac_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_simready_isaac_paid_attempt_authority.v1"
@@ -704,6 +741,15 @@ def run_simready_isaac_vast(
                 preferred_gpu_keywords=("L40S", "RTX 4090", "RTX A6000", "RTX A5000"),
                 prefer_isaac_rt=True,
                 allowed_active_instance_ids=allowed_active_instance_ids,
+                allowed_machine_ids=_machine_ids_from_env(
+                    SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV
+                ),
+                vast_template_hash_id=(
+                    os.getenv(SIMREADY_ISAAC_TEMPLATE_HASH_ENV) or None
+                ),
+                use_vast_template_image=bool(
+                    str(os.getenv(SIMREADY_ISAAC_TEMPLATE_HASH_ENV) or "").strip()
+                ),
                 machine_avoidlist_path=resolved_avoidlist,
                 # The exact collision-free label the independent process
                 # watches, not merely the same broad lane family.

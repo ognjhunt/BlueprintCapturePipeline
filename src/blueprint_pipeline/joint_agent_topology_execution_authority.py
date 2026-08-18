@@ -400,8 +400,34 @@ def materialize_joint_agent_topology_launch_inputs(
     # above, but it does not describe these bytes and would refuse them.
     packet_receipt_file = source_receipt_file
     expected_packet_receipt_digest = authority["joint_agent_source_receipt_digest"]
+    composed = admission.get("composed_asset_receipt")
     replacement = admission.get("authored_replacement_receipt")
-    if replacement is not None:
+
+    if composed is not None:
+        # Composed bytes: the packet describes what the agent reads, and the
+        # graph receipt it was composed onto still supplies link identity.
+        if authored_replacement_receipt_path is None:
+            raise JointAgentTopologyAuthorityError(
+                ["joint_agent_topology_authored_replacement_receipt_missing"]
+            )
+        replacement_file = (
+            Path(authored_replacement_receipt_path).expanduser().resolve()
+        )
+        try:
+            loaded_replacement = json.loads(
+                replacement_file.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise JointAgentTopologyAuthorityError(
+                ["joint_agent_topology_authored_replacement_receipt_invalid"]
+            ) from exc
+        if replacement_file.is_symlink() or loaded_replacement != replacement:
+            raise JointAgentTopologyAuthorityError(
+                ["joint_agent_topology_authored_replacement_receipt_mismatch"]
+            )
+        packet_receipt_file = replacement_file
+        expected_packet_receipt_digest = str(replacement.get("receipt_digest") or "")
+    elif replacement is not None:
         if authored_replacement_receipt_path is None:
             raise JointAgentTopologyAuthorityError(
                 ["joint_agent_topology_authored_replacement_receipt_missing"]
@@ -426,6 +452,7 @@ def materialize_joint_agent_topology_launch_inputs(
     packet = build_joint_agent_packet(
         source_asset_path=source_asset,
         source_receipt_path=packet_receipt_file,
+        composed_asset_receipt=composed,
         joint_agent_checkout=checkout,
         output_dir=destination / "packet",
         external_disclosure_authorized=True,

@@ -1213,6 +1213,29 @@ def test_request_logs_records_api_url_error_without_raising(
     assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
+def test_simready_isaac_cold_pull_extends_heartbeat_like_the_other_isaac_kinds() -> None:
+    """2026-08-18: two consecutive machines died at vast_heartbeat_container_missing.
+
+    The cold pull was admitted, the live window was sized for it, and the
+    heartbeat window -- extended for wam and paired_target_native_import but
+    never for adp_simready_isaac -- expired mid-pull on every cold machine,
+    deterministically, at $0.12-$0.16 a lesson. A kind that ships the same
+    multi-gigabyte image gets the same admitted window.
+    """
+
+    assert (
+        vpa.cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=600,
+            provider_bundle_kind="adp_simready_isaac",
+            allow_cold_image_pull=True,
+            min_cold_image_pull_live_minutes=18,
+            startup_timeout_seconds=3600,
+            max_live_minutes=180,
+        )
+        == 1080
+    )
+
+
 def test_wam_cold_pull_extends_heartbeat_no_progress_to_admitted_minimum() -> None:
     assert (
         vpa.cold_pull_aware_heartbeat_no_progress_seconds(
