@@ -928,3 +928,47 @@ def test_two_kinematic_links_are_ambiguous_and_fail_closed(tmp_path: Path) -> No
             articulation_root_path="/Asset",
             usd_physics=pxr.UsdPhysics,
         )
+
+
+def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
+    """The grounding must arrive in the scene, not merely exist in the file.
+
+    Isaac Lab spawns an asset by referencing its USD, and reference
+    composition carries only the default prim's subtree. r6 authored the
+    anchor in a sibling scope: the file verified clean, the packet digested,
+    the pre-spend gate accepted -- and the spawned articulation arrived with
+    no anchor at all, because everything checked the file while the runtime
+    consumes the composition. This test does what the runtime does.
+    """
+
+    pxr = pytest.importorskip("pxr")
+    from blueprint_pipeline.native_task_arena_runtime import (
+        ARENA_ANCHOR_JOINT,
+        author_grounded_articulation,
+    )
+
+    sealed = tmp_path / "sealed.usda"
+    sealed.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
+    derived = tmp_path / "derived.usda"
+    adaptation = author_grounded_articulation(sealed, derived)
+    assert adaptation is not None
+
+    scene = pxr.Usd.Stage.CreateInMemory()
+    spawned = scene.DefinePrim("/World/envs/env_0/task_object")
+    spawned.GetReferences().AddReference(str(derived))
+
+    anchor = scene.GetPrimAtPath(
+        f"/World/envs/env_0/task_object/{ARENA_ANCHOR_JOINT}"
+    )
+    assert anchor.IsValid(), "the anchor did not compose under the spawned prim"
+    targets = pxr.UsdPhysics.FixedJoint(anchor).GetBody1Rel().GetTargets()
+    # the rel target must remap into the spawned namespace, not point at the
+    # source asset's absolute path
+    assert [str(t) for t in targets] == [
+        "/World/envs/env_0/task_object/links/body"
+    ]
+    # and the base link arrives dynamic
+    body = scene.GetPrimAtPath("/World/envs/env_0/task_object/links/body")
+    assert (
+        pxr.UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is False
+    )

@@ -381,7 +381,13 @@ def articulation_kinematic_adaptation(
     }
 
 
-ARENA_ANCHOR_SCOPE = "BlueprintArenaRuntime"
+#: Authored INSIDE the articulation root: Isaac Lab spawns an asset by
+#: referencing its file, and USD reference composition carries only the
+#: default prim's subtree -- a sibling scope is silently dropped, so the
+#: spawned articulation arrives without its anchor. Attempt r6 paid $0.065 to
+#: discover that; the composition test now pins it with pxr alone. A world
+#: fixed joint inside the root is also the canonical PhysX fixed-base
+#: articulation pattern.
 ARENA_ANCHOR_JOINT = "fixed_base_anchor"
 
 
@@ -425,9 +431,8 @@ def author_grounded_articulation(
 
     base = stage.GetPrimAtPath(fixed_base)
     UsdPhysics.RigidBodyAPI(base).GetKinematicEnabledAttr().Set(False)
-    scope = stage.DefinePrim(f"/{ARENA_ANCHOR_SCOPE}", "Scope")
     joint = UsdPhysics.FixedJoint.Define(
-        stage, scope.GetPath().AppendChild(ARENA_ANCHOR_JOINT)
+        stage, root.GetPath().AppendChild(ARENA_ANCHOR_JOINT)
     )
     joint.GetBody1Rel().SetTargets([Sdf.Path(fixed_base)])
 
@@ -443,7 +448,9 @@ def author_grounded_articulation(
     return {
         **adaptation,
         "adaptation": "usd_authored_world_fixed_base",
-        "anchor_joint_prim_path": f"/{ARENA_ANCHOR_SCOPE}/{ARENA_ANCHOR_JOINT}",
+        "anchor_joint_prim_path": (
+            root.GetPath().AppendChild(ARENA_ANCHOR_JOINT).pathString
+        ),
         "derived_from_sha256": _sha256(source),
     }
 
@@ -478,7 +485,7 @@ def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
                 + ",".join(adaptation["authored_kinematic_body_prim_paths"])
             ]
         )
-    anchor = stage.GetPrimAtPath(f"/{ARENA_ANCHOR_SCOPE}/{ARENA_ANCHOR_JOINT}")
+    anchor = stage.GetPrimAtPath(root.GetPath().AppendChild(ARENA_ANCHOR_JOINT))
     fixed_base = None
     if anchor and anchor.IsValid():
         targets = UsdPhysics.FixedJoint(anchor).GetBody1Rel().GetTargets()
