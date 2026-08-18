@@ -134,8 +134,8 @@ jobs:
         timeout-minutes: 6
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libegl1 libgl1 libglfw3 libosmesa6 mesa-utils
+          sudo apt-get update -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3
+          sudo apt-get install -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -y ffmpeg libegl1 libgl1 libglfw3 libosmesa6 mesa-utils
 
       - name: Run sim-only local gate
         working-directory: BlueprintCapturePipeline

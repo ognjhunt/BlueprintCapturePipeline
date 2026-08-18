@@ -92,8 +92,8 @@ jobs:
           # carry third-party Microsoft/Azure apt sources, and transient signing
           # or mirror errors there should not block this CPU validation lane.
           sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete || true
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y ffmpeg
+          sudo apt-get update -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3
+          sudo apt-get install -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 -y ffmpeg
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
