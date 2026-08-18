@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -452,6 +453,143 @@ def consume_native_task_arena_authority_once(authority: Mapping[str, Any]) -> di
         "consumption_record_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
         "record_location_disclosed": False,
     }
+
+
+#: A recovered zero may only be sealed against a global-zero guard this fresh.
+#: Older evidence proves the account was empty at some past moment, not now.
+MAX_RECOVERY_GUARD_AGE_SECONDS = 900
+
+
+def _global_guard_proves_zero(report: Mapping[str, Any]) -> bool:
+    """Does this guard report prove the whole account is at provider zero?"""
+
+    rows = report.get("inventory_results")
+    required = {
+        row.get("provider"): row
+        for row in rows or []
+        if isinstance(row, Mapping) and row.get("required") is True
+    }
+    return (
+        report.get("schema_version") == "gpu_spend_guard.v1"
+        and report.get("status") == "passed"
+        and report.get("provider_zero_verified") is True
+        and report.get("live_instance_count") == 0
+        and report.get("total_burn_per_hour_usd") == 0
+        and set(required) == {"runpod", "vast", "digitalocean"}
+        and all(
+            row.get("status") == "succeeded" and row.get("row_count") == 0
+            for row in required.values()
+        )
+    )
+
+
+def materialize_native_task_arena_recovered_provider_zero(
+    *,
+    authority_path: str | Path,
+    result_path: str | Path,
+    global_zero_guard_path: str | Path,
+    output_path: str | Path,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Seal provider zero when the attempt's own account-wide sweep failed.
+
+    The watchdog runs two inventories: one scoped to this attempt's instance
+    label and one across the whole account. On 2026-08-18 an attempt tore its
+    instance down, confirmed absence for its own prefix over a 200 response,
+    and then could not complete the account-wide sweep -- so the lane could not
+    seal its own zero, and an unsealed attempt blocks every authority chained
+    after it. The money was spent; refusing to account for it does not make the
+    ledger more honest, it makes it wrong.
+
+    Everything the ordinary seal requires still holds here. Only the source of
+    the account-wide evidence changes: a fresh ``gpu_spend_guard.v1`` report
+    proving zero live resources across all three required providers, taken now
+    rather than at teardown, and rejected if it is stale. The lane-scoped
+    inventory must still be API-confirmed and empty -- a recovery is not a way
+    to seal an attempt whose own instance was never observed gone.
+    """
+
+    authority_file = Path(authority_path).expanduser().resolve()
+    result_file = Path(result_path).expanduser().resolve()
+    guard_file = Path(global_zero_guard_path).expanduser().resolve()
+    authority = _read(authority_file, "native_task_arena_authority_unreadable")
+    result = _read(result_file, "native_task_arena_result_unreadable")
+    guard = _read(guard_file, "native_task_arena_recovery_guard_unreadable")
+    watchdog_path = Path(str(result.get("watchdog_receipt_path") or "")).resolve()
+    cleanup_path = Path(str(result.get("object_store_cleanup_path") or "")).resolve()
+    adapter_path = Path(str(result.get("adapter_result_path") or "")).resolve()
+    teardown_path = Path(str(result.get("teardown_manifest_path") or "")).resolve()
+    watchdog = _read(watchdog_path, "native_task_arena_watchdog_unreadable")
+    cleanup = _read(cleanup_path, "native_task_arena_cleanup_unreadable")
+    adapter = _read(adapter_path, "native_task_arena_adapter_unreadable")
+    teardown = _read(teardown_path, "native_task_arena_teardown_unreadable")
+    lane_inventory = watchdog.get("final_inventory")
+
+    generated_at = str(guard.get("generated_at") or "")
+    try:
+        guard_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("native_task_arena_recovery_guard_invalid") from None
+    if guard_at.tzinfo is None:
+        guard_at = guard_at.replace(tzinfo=timezone.utc)
+    moment = now or datetime.now(timezone.utc)
+    age_seconds = (moment - guard_at).total_seconds()
+
+    if (
+        authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
+        or authority.get("authorization_digest")
+        != canonical_digest(authority, digest_field="authorization_digest")
+        or result.get("schema_version") != "native_task_arena_vast_run.v1"
+        or result.get("status") not in {"completed", "blocked"}
+        or result.get("authorization_consumption", {}).get("authorization_digest")
+        != authority.get("authorization_digest")
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("all_staged_objects_absent") is not True
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or teardown.get("status") != "completed"
+        # the attempt's own instance must still have been observed gone
+        or not isinstance(lane_inventory, Mapping)
+        or lane_inventory.get("api_confirmed") is not True
+        or lane_inventory.get("live_resource_count") != 0
+        or adapter.get("continuing_spend_from_this_run") is not False
+        # and the account must be empty right now
+        or not _global_guard_proves_zero(guard)
+        or age_seconds < 0
+        or age_seconds > MAX_RECOVERY_GUARD_AGE_SECONDS
+    ):
+        raise ValueError("native_task_arena_recovered_provider_zero_invalid")
+
+    receipt: dict[str, Any] = {
+        "schema_version": PROVIDER_ZERO_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed_recovered_provider_zero",
+        "attempt_authority": _record(authority_file),
+        "attempt_authority_digest": authority["authorization_digest"],
+        "terminal_result": _record(result_file),
+        "provider_adapter": _record(adapter_path),
+        "teardown": _record(teardown_path),
+        "watchdog": _record(watchdog_path),
+        "object_store_cleanup": _record(cleanup_path),
+        "estimated_cost_usd": result.get("estimated_cost_usd"),
+        "provider_zero_confirmed": True,
+        # what the attempt itself observed, and what replaced the sweep it could not finish
+        "inventory": dict(lane_inventory),
+        "recovered_global_zero_guard": _record(guard_file),
+        "recovered_global_zero_guard_generated_at": generated_at,
+        "recovery_reason": "attempt_global_inventory_sweep_failed",
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise ValueError("native_task_arena_provider_zero_output_exists")
+    ensure_dir(output.parent)
+    write_json(output, receipt)
+    return receipt
 
 
 def materialize_native_task_arena_provider_zero(
