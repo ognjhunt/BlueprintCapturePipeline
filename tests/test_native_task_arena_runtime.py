@@ -704,17 +704,7 @@ def test_the_runtime_admits_every_sensor_the_scene_plan_can_emit() -> None:
     assert sorted(LOGICAL_CONTACT_SENSOR_IDS - emitted) == []
 
 
-def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
-    """A sealed plan whose assets really exist, as the packet stages them."""
-
-    root = tmp_path / "packet"
-    assets = root / "assets"
-    assets.mkdir(parents=True)
-    collision = assets / "collision.usd"
-    task = assets / "task.usda"
-    collision.write_bytes(b"collision")
-    task.write_text(
-        """#usda 1.0
+KINEMATIC_ARTICULATION_USDA = """#usda 1.0
 (
     defaultPrim = "Asset"
 )
@@ -741,9 +731,19 @@ def Xform "Asset" (
         rel physics:body1 = </Asset/links/door>
     }
 }
-""",
-        encoding="utf-8",
-    )
+"""
+
+
+def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
+    """A sealed plan whose assets really exist, as the packet stages them."""
+
+    root = tmp_path / "packet"
+    assets = root / "assets"
+    assets.mkdir(parents=True)
+    collision = assets / "collision.usd"
+    task = assets / "task.usda"
+    collision.write_bytes(b"collision")
+    task.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
     plan = _sealed_scene_plan()
     plan["asset_directory"] = "assets"
     for row, path in zip(plan["objects"], (collision, task), strict=True):
