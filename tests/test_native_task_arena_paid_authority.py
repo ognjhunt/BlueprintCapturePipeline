@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -315,3 +316,208 @@ def test_the_arena_transport_binds_its_closure_artifacts_by_digest() -> None:
         "provider_zero_confirmed",
         "all_staged_objects_absent",
     } <= closeout_keys, closeout_keys
+
+
+def _failed_sweep_attempt(tmp_path: Path) -> tuple[Path, Path]:
+    """An attempt that tore down cleanly but could not finish its account sweep."""
+
+    authority = {
+        "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "authority.json"
+    write_json(authority_path, authority)
+    cleanup = tmp_path / "cleanup.json"
+    adapter = tmp_path / "adapter.json"
+    teardown = tmp_path / "teardown.json"
+    watchdog = tmp_path / "watchdog.json"
+    write_json(cleanup, {"all_objects_absent": True, "signed_url_files_removed": True})
+    write_json(adapter, {"continuing_spend_from_this_run": False})
+    write_json(
+        teardown, {"status": "completed", "continuing_spend_from_this_run": False}
+    )
+    write_json(
+        watchdog,
+        {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+            # this attempt's own instance was observed gone over a real response
+            "final_inventory": {"api_confirmed": True, "live_resource_count": 0},
+            # the account-wide sweep did not complete
+            "final_global_inventory": {
+                "api_confirmed": False,
+                "live_resource_count": None,
+                "blockers": ["vast_billable_inventory_failed"],
+            },
+        },
+    )
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "status": "blocked",
+        "authorization_consumption": {
+            "authorization_digest": authority["authorization_digest"]
+        },
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "watchdog_receipt_path": str(watchdog),
+        "object_store_cleanup_path": str(cleanup),
+        "adapter_result_path": str(adapter),
+        "teardown_manifest_path": str(teardown),
+        "estimated_cost_usd": 0.184878,
+    }
+    result_path = tmp_path / "result.json"
+    write_json(result_path, result)
+    return authority_path, result_path
+
+
+def _guard(tmp_path: Path, *, generated_at: str, name: str = "guard.json") -> Path:
+    path = tmp_path / name
+    write_json(
+        path,
+        {
+            "schema_version": "gpu_spend_guard.v1",
+            "status": "passed",
+            "provider_zero_verified": True,
+            "live_instance_count": 0,
+            "total_burn_per_hour_usd": 0,
+            "generated_at": generated_at,
+            "inventory_results": [
+                {
+                    "provider": provider,
+                    "required": True,
+                    "status": "succeeded",
+                    "row_count": 0,
+                }
+                for provider in ("vast", "runpod", "digitalocean")
+            ],
+        },
+    )
+    return path
+
+
+def test_a_failed_account_sweep_is_recoverable_from_a_fresh_global_zero(
+    tmp_path: Path,
+) -> None:
+    """An attempt that spent money must be accountable even if its sweep failed.
+
+    On 2026-08-18 an Arena attempt destroyed its instance, confirmed absence
+    for its own label over a 200 response, and then could not complete the
+    account-wide inventory. It could not seal its own zero, and an unsealed
+    attempt blocks every authority chained after it -- so the ledger would have
+    had to either stall or omit $0.18 that was really spent.
+    """
+
+    now = datetime(2026, 8, 18, 19, 30, tzinfo=timezone.utc)
+    authority_path, result_path = _failed_sweep_attempt(tmp_path)
+    guard = _guard(tmp_path, generated_at="2026-08-18T19:25:00+00:00")
+
+    receipt = paid.materialize_native_task_arena_recovered_provider_zero(
+        authority_path=authority_path,
+        result_path=result_path,
+        global_zero_guard_path=guard,
+        output_path=tmp_path / "recovered.json",
+        now=now,
+    )
+
+    assert receipt["status"] == "completed_recovered_provider_zero"
+    assert receipt["provider_zero_confirmed"] is True
+    assert receipt["recovery_reason"] == "attempt_global_inventory_sweep_failed"
+    # the spend is carried, not dropped
+    assert receipt["estimated_cost_usd"] == 0.184878
+    # and the receipt says which fresh evidence replaced the failed sweep
+    assert receipt["recovered_global_zero_guard"]["path"] == str(guard)
+
+
+def test_recovery_refuses_stale_or_non_zero_evidence(tmp_path: Path) -> None:
+    """Recovery is not a way around proving the account is empty now."""
+
+    now = datetime(2026, 8, 18, 19, 30, tzinfo=timezone.utc)
+    authority_path, result_path = _failed_sweep_attempt(tmp_path)
+
+    # older than the freshness bound: proves the past, not the present
+    stale = _guard(
+        tmp_path, generated_at="2026-08-18T19:00:00+00:00", name="stale.json"
+    )
+    with pytest.raises(ValueError, match="recovered_provider_zero_invalid"):
+        paid.materialize_native_task_arena_recovered_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            global_zero_guard_path=stale,
+            output_path=tmp_path / "a.json",
+            now=now,
+        )
+
+    # a guard that did not itself pass
+    failing = _guard(
+        tmp_path, generated_at="2026-08-18T19:29:00+00:00", name="failing.json"
+    )
+    value = json.loads(failing.read_text())
+    value["inventory_results"][0]["row_count"] = 1
+    write_json(failing, value)
+    with pytest.raises(ValueError, match="recovered_provider_zero_invalid"):
+        paid.materialize_native_task_arena_recovered_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            global_zero_guard_path=failing,
+            output_path=tmp_path / "b.json",
+            now=now,
+        )
+
+    # a guard missing a required provider is not account-wide
+    partial = _guard(
+        tmp_path, generated_at="2026-08-18T19:29:00+00:00", name="partial.json"
+    )
+    value = json.loads(partial.read_text())
+    value["inventory_results"] = value["inventory_results"][:2]
+    write_json(partial, value)
+    with pytest.raises(ValueError, match="recovered_provider_zero_invalid"):
+        paid.materialize_native_task_arena_recovered_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            global_zero_guard_path=partial,
+            output_path=tmp_path / "c.json",
+            now=now,
+        )
+
+
+def test_recovery_still_requires_the_attempt_instance_to_be_observed_gone(
+    tmp_path: Path,
+) -> None:
+    """A fresh account-wide zero does not excuse never seeing this instance go."""
+
+    now = datetime(2026, 8, 18, 19, 30, tzinfo=timezone.utc)
+    authority_path, result_path = _failed_sweep_attempt(tmp_path)
+    guard = _guard(tmp_path, generated_at="2026-08-18T19:29:00+00:00")
+
+    result = json.loads(result_path.read_text())
+    watchdog_path = Path(result["watchdog_receipt_path"])
+    watchdog = json.loads(watchdog_path.read_text())
+    watchdog["final_inventory"]["api_confirmed"] = False
+    write_json(watchdog_path, watchdog)
+
+    with pytest.raises(ValueError, match="recovered_provider_zero_invalid"):
+        paid.materialize_native_task_arena_recovered_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            global_zero_guard_path=guard,
+            output_path=tmp_path / "d.json",
+            now=now,
+        )
+
+
+def test_a_recovered_predecessor_zero_is_still_chainable() -> None:
+    """A recovered zero proves the same absence, so it cannot be a dead end.
+
+    The chain validator admitted only ``completed``. Sealing a recovered zero
+    would then have produced a receipt no later authority could consume, which
+    is the same stall it exists to prevent -- and the import lane, which has
+    had a recovered seal all along, was already exposed to it.
+    """
+
+    assert paid.ACCEPTED_PREDECESSOR_ZERO_STATUSES == {
+        "completed",
+        "completed_recovered_provider_zero",
+    }
