@@ -78,6 +78,14 @@ CONSUMED_FREEZE_FIELDS: Mapping[str, tuple[str, ...]] = {
         "task_id",
         "removal_plan.replacement_asset_id",
     ),
+    # The visual binding joins CAD-side evidence to the graph asset. From the
+    # freeze itself it consumes only task/asset identity -- link identity comes
+    # from the graph receipt and geometry from the CAD output, so a joint-axis
+    # amendment is invisible to it.
+    "simready_agent_cad_visual_binding.v2": (
+        "task_id",
+        "removal_plan.replacement_asset_id",
+    ),
 }
 
 #: Bookkeeping the amendment itself writes.  Counting these as changes would
@@ -275,6 +283,49 @@ def validate_freeze_amendment_carry_forward(
     return proof
 
 
+def validate_freeze_amendment_carry_forward_content(
+    value: Mapping[str, Any],
+    *,
+    sealed_schema: str,
+    superseded_digest: str,
+    amended_digest: str,
+) -> dict[str, Any]:
+    """Accept a proof pinned by freeze *content* digests rather than file bytes.
+
+    CAD receipts pin the freeze by file sha256, so their acceptance validates
+    against file hashes. The visual-composition join compares the freeze's own
+    ``task_freeze_digest`` across documents, so its acceptance must pin the same
+    two content digests the join actually observes. Same proof either way --
+    it records both identities -- but each acceptance checks the pair it uses,
+    so a proof for one amendment can never speak for another.
+    """
+
+    if not isinstance(value, Mapping):
+        raise FreezeAmendmentCarryForwardError(["freeze_carry_forward_invalid"])
+    proof = json.loads(json.dumps(value))
+    errors: list[str] = []
+    if proof.get("schema_version") != SCHEMA_VERSION:
+        errors.append("freeze_carry_forward_schema_invalid")
+    if proof.get("carry_forward_digest") != canonical_digest(
+        proof, digest_field="carry_forward_digest"
+    ):
+        errors.append("freeze_carry_forward_digest_invalid")
+    if proof.get("status") != CARRIES_FORWARD:
+        errors.append("freeze_carry_forward_status_invalid")
+    if proof.get("sealed_schema") != sealed_schema:
+        errors.append("freeze_carry_forward_schema_mismatch")
+    if (
+        not superseded_digest
+        or proof.get("superseded_task_freeze_digest") != superseded_digest
+    ):
+        errors.append("freeze_carry_forward_superseded_mismatch")
+    if not amended_digest or proof.get("amended_task_freeze_digest") != amended_digest:
+        errors.append("freeze_carry_forward_amended_mismatch")
+    if errors:
+        raise FreezeAmendmentCarryForwardError(errors)
+    return proof
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--superseded-freeze", required=True)
@@ -353,6 +404,7 @@ __all__ = [
     "evaluate_freeze_amendment_carry_forward",
     "main",
     "validate_freeze_amendment_carry_forward",
+    "validate_freeze_amendment_carry_forward_content",
 ]
 
 
