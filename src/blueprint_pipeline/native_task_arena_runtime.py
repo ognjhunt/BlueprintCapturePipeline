@@ -500,6 +500,102 @@ def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
     }
 
 
+#: PhysX refuses to build GPU-compatible convex hulls for very thin shapes
+#: ("oblong"), and ONE such mesh silently demotes the whole simulation to the
+#: CPU pipeline -- surfacing later as a cuda/cpu device mismatch in whatever
+#: touches a tensor view first. Attempts r6-r8 each paid ~$0.065 for the same
+#: wall slab (1800 x 250 x 11, aspect ratio 163.6) cooked as convex.
+GPU_CONVEX_MAX_ASPECT_RATIO = 100.0
+
+
+def _collision_mesh_rows(stage: Any, usd_physics: Any, usd_geom: Any):
+    from pxr import UsdPhysics as _p  # noqa: F401  (import proves availability)
+
+    for prim in stage.Traverse():
+        if not prim.HasAPI(usd_physics.CollisionAPI):
+            continue
+        mesh = usd_geom.Mesh(prim)
+        if not mesh:
+            continue
+        approximation = usd_physics.MeshCollisionAPI(prim).GetApproximationAttr()
+        yield prim, mesh, approximation
+
+
+def _bbox_aspect_ratio(mesh: Any) -> float:
+    points = mesh.GetPointsAttr().Get()
+    if not points:
+        return 1.0
+    lo = [min(pt[i] for pt in points) for i in range(3)]
+    hi = [max(pt[i] for pt in points) for i in range(3)]
+    extents = sorted(hi[i] - lo[i] for i in range(3))
+    smallest = max(extents[0], 1e-9)
+    return float(extents[-1] / smallest)
+
+
+def author_gpu_compatible_scene_collision(
+    source_usd: str | Path, destination: str | Path
+) -> dict[str, Any] | None:
+    """Re-approximate static convex collision that PhysX cannot GPU-cook.
+
+    Static scene geometry does not need convex decomposition at all: a
+    triangle-mesh collider (approximation ``none``) is the standard static
+    representation and is GPU-compatible regardless of shape. Convert every
+    convex-approximated collision mesh whose bounding-box aspect ratio exceeds
+    the GPU cook tolerance, in a derived copy; sealed bytes untouched,
+    provenance recorded. Returns ``None`` when nothing needs converting.
+    """
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    source = Path(source_usd).expanduser().resolve()
+    stage = Usd.Stage.Open(str(source))
+    converted: list[str] = []
+    for prim, mesh, approximation in _collision_mesh_rows(stage, UsdPhysics, UsdGeom):
+        value = approximation.Get() if approximation else None
+        if str(value or "") not in {"convexDecomposition", "convexHull"}:
+            continue
+        if _bbox_aspect_ratio(mesh) <= GPU_CONVEX_MAX_ASPECT_RATIO:
+            continue
+        UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Set("none")
+        converted.append(prim.GetPath().pathString)
+    if not converted:
+        return None
+    output = Path(destination).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage.GetRootLayer().Export(str(output))
+    verify_gpu_compatible_scene_collision(output)
+    return {
+        "adaptation": "static_convex_over_aspect_ratio_to_triangle_mesh",
+        "converted_prim_paths": sorted(converted),
+        "maximum_convex_hull_aspect_ratio": GPU_CONVEX_MAX_ASPECT_RATIO,
+        "candidate_bytes_modified": False,
+        "derived_from_sha256": _sha256(source),
+    }
+
+
+def verify_gpu_compatible_scene_collision(staged_usd: str | Path) -> None:
+    """Refuse a staged scene containing a convex collider PhysX cannot GPU-cook."""
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.Open(str(Path(staged_usd).expanduser().resolve()))
+    offenders = []
+    for prim, mesh, approximation in _collision_mesh_rows(stage, UsdPhysics, UsdGeom):
+        value = approximation.Get() if approximation else None
+        if str(value or "") not in {"convexDecomposition", "convexHull"}:
+            continue
+        ratio = _bbox_aspect_ratio(mesh)
+        if ratio > GPU_CONVEX_MAX_ASPECT_RATIO:
+            offenders.append(f"{prim.GetPath()}:{ratio:.1f}")
+    if offenders:
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_scene_collision_not_gpu_cookable:"
+                + ",".join(sorted(offenders)[:4])
+            ]
+        )
+
+
 def validate_contact_sensor_plan(
     plan: Mapping[str, Any],
 ) -> dict[str, list[str]]:
@@ -585,6 +681,21 @@ def _validate_articulation_adaptability(
         return
     root = Path(bundle_root).expanduser().resolve()
     for row in plan.get("objects") or []:
+        if str(row.get("semantic_role") or "") == "scene_collision":
+            staged = root.joinpath(
+                *PurePosixPath(str(row.get("usd_path") or "")).parts
+            )
+            if staged.is_file():
+                # one uncookable convex hull demotes PhysX to CPU and kills
+                # the run later with an unrelated-looking device error
+                try:
+                    verify_gpu_compatible_scene_collision(staged)
+                except NativeTaskArenaRuntimeError:
+                    raise
+                except Exception as exc:  # pxr raises Tf.ErrorException
+                    raise NativeTaskArenaRuntimeError(
+                        ["native_task_arena_scene_collision_unreadable"]
+                    ) from exc
         if str(row.get("object_type") or "") != "ARTICULATION":
             continue
         usd = root.joinpath(*PurePosixPath(str(row.get("usd_path") or "")).parts)

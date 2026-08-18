@@ -579,6 +579,26 @@ def materialize_paired_target_native_arena_requests(
         author_grounded_articulation,
     )
 
+    # One thin convex-approximated wall silently demotes PhysX to the CPU
+    # pipeline; static geometry belongs in triangle-mesh collision anyway.
+    # Derive a GPU-cookable copy of the scene (sealed bytes untouched).
+    from .native_task_arena_runtime import author_gpu_compatible_scene_collision
+
+    collision_adaptation: dict[str, Any] | None = None
+    staged_collision_path = collision_path
+    try:
+        collision_adaptation = author_gpu_compatible_scene_collision(
+            collision_path, destination / "runtime_scene_collision.usda"
+        )
+    except NativeTaskArenaRuntimeError as exc:
+        raise PairedTargetNativeArenaRequestError(";".join(exc.errors)) from exc
+    except Exception as exc:  # pxr raises Tf.ErrorException on bad usda
+        raise PairedTargetNativeArenaRequestError(
+            "paired_target_arena_request_collision_unreadable"
+        ) from exc
+    if collision_adaptation is not None:
+        staged_collision_path = destination / "runtime_scene_collision.usda"
+
     grounded: dict[str, dict[str, Any]] = {}
     for task_id in sorted(opened):
         registered_row = opened[task_id]
@@ -648,7 +668,14 @@ def materialize_paired_target_native_arena_requests(
                 {
                     "semantic_role": "scene_collision",
                     "filename": "scene_collision.usda",
-                    "source": _relative_source(collision_path, evidence_root=evidence),
+                    "source": _relative_source(
+                        staged_collision_path, evidence_root=evidence
+                    ),
+                    **(
+                        {"collision_adaptation": dict(collision_adaptation)}
+                        if collision_adaptation
+                        else {}
+                    ),
                     "pose_world": {
                         "position_world_m": [0.0, 0.0, 0.0],
                         "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
