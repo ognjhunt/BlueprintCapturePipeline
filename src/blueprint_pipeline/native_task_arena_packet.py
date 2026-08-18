@@ -328,6 +328,18 @@ def materialize_native_task_arena_packet(
                     "filename": filename,
                     "sha256": source_digest,
                     "pose_world": raw.get("pose_world"),
+                    # the grounded articulated asset's declared derivation --
+                    # the runtime contract joins the GPU collision
+                    # qualification through it
+                    **(
+                        {
+                            "articulation_adaptation": dict(
+                                raw["articulation_adaptation"]
+                            )
+                        }
+                        if isinstance(raw.get("articulation_adaptation"), Mapping)
+                        else {}
+                    ),
                 }
             )
 
