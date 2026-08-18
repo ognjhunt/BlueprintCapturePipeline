@@ -743,7 +743,16 @@ def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
     collision = assets / "collision.usd"
     task = assets / "task.usda"
     collision.write_bytes(b"collision")
-    task.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_grounded_articulation,
+    )
+
+    sealed = tmp_path / "sealed_task.usda"
+    sealed.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
+    # stage what production stages: the grounded derived asset, authored by
+    # the same released function, never the raw sealed bytes
+    adaptation = author_grounded_articulation(sealed, task)
+    assert adaptation is not None
     plan = _sealed_scene_plan()
     plan["asset_directory"] = "assets"
     for row, path in zip(plan["objects"], (collision, task), strict=True):
@@ -752,11 +761,7 @@ def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
         row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     for row in plan["objects"]:
         if row.get("object_type") == "ARTICULATION":
-            row["articulation_adaptation"] = {
-                "fixed_base_body_prim_path": "/Asset/links/body",
-                "adaptation": "dynamic_articulation_with_world_fixed_base",
-                "candidate_bytes_modified": False,
-            }
+            row["articulation_adaptation"] = adaptation
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return root, plan
 
@@ -844,15 +849,15 @@ def test_a_forbidden_contact_channel_is_optional_not_unknown(tmp_path: Path) -> 
         )
 
 
-def test_a_kinematic_base_not_declared_by_the_plan_is_refused(tmp_path: Path) -> None:
+def test_unadapted_kinematic_bytes_are_refused_before_spend(tmp_path: Path) -> None:
     """The r3 failure, reproduced on the host with no provider.
 
     The sealed washer authors its 55 kg body kinematic -- the ordinary way to
     say an appliance does not move. PhysX rejects any articulation containing a
-    kinematic link, so the articulation is never created and every later lookup
-    reports that the pattern matched no rigid bodies. Attempt r3 spent $0.185
-    learning that. The plan must say which link is the fixed base, and a plan
-    that stays silent about it is refused here.
+    kinematic link (attempt r3, $0.185), and Isaac Lab's fix_root_link is
+    unimplemented for a root Xform (attempt r5, $0.055). So the staged bytes
+    themselves must already carry the probe-proven grounding; raw sealed bytes
+    reaching a packet is a refusal.
     """
 
     from blueprint_pipeline.native_task_arena_runtime import (
@@ -860,12 +865,41 @@ def test_a_kinematic_base_not_declared_by_the_plan_is_refused(tmp_path: Path) ->
     )
 
     root, plan = _staged_packet(tmp_path)
+    # overwrite the staged asset with the raw sealed bytes
+    (root / "assets" / "task.usda").write_text(
+        KINEMATIC_ARTICULATION_USDA, encoding="utf-8"
+    )
     for row in plan["objects"]:
-        row.pop("articulation_adaptation", None)
+        if row.get("object_type") == "ARTICULATION":
+            path = root / "assets" / "task.usda"
+            row["size_bytes"] = path.stat().st_size
+            row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
 
     with pytest.raises(
-        NativeTaskArenaRuntimeError, match="articulation_adaptation_not_declared"
+        NativeTaskArenaRuntimeError, match="kinematic_link_unadapted"
+    ):
+        validate_native_task_arena_runtime_plan(plan, bundle_root=root)
+
+
+def test_grounding_declared_but_not_authored_is_refused(tmp_path: Path) -> None:
+    """The plan's declaration and the staged bytes must be one statement."""
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        validate_native_task_arena_runtime_plan,
+    )
+
+    root, plan = _staged_packet(tmp_path)
+    for row in plan["objects"]:
+        if row.get("object_type") == "ARTICULATION":
+            row["articulation_adaptation"] = dict(
+                row["articulation_adaptation"],
+                fixed_base_body_prim_path="/Asset/links/door",
+            )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="adaptation_not_declared"
     ):
         validate_native_task_arena_runtime_plan(plan, bundle_root=root)
 
@@ -878,8 +912,9 @@ def test_two_kinematic_links_are_ambiguous_and_fail_closed(tmp_path: Path) -> No
     )
 
     pxr = pytest.importorskip("pxr")
-    root, _ = _staged_packet(tmp_path)
-    stage = pxr.Usd.Stage.Open(str(root / "assets" / "task.usda"))
+    sealed = tmp_path / "two_kinematic.usda"
+    sealed.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
+    stage = pxr.Usd.Stage.Open(str(sealed))
     door = stage.GetPrimAtPath("/Asset/links/door")
     door.CreateAttribute(
         "physics:kinematicEnabled", pxr.Sdf.ValueTypeNames.Bool

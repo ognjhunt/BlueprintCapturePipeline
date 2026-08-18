@@ -322,13 +322,19 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     # The articulation is real USD: the profile builder asks the adapter
     # whether it would accept this packet, and an asset it cannot open is a
     # refusal. Placeholder bytes would assert that unopenable assets launch.
-    for name, payload in (
-        ("collision.usd", b"collision"),
-        ("task.usda", KINEMATIC_ARTICULATION_USDA.encode("utf-8")),
-    ):
-        path = assets / name
-        path.write_bytes(payload)
-        staged.append(path)
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_grounded_articulation,
+    )
+
+    collision = assets / "collision.usd"
+    collision.write_bytes(b"collision")
+    staged.append(collision)
+    sealed = packet / "sealed_task.usda"
+    sealed.write_text(KINEMATIC_ARTICULATION_USDA, encoding="utf-8")
+    task = assets / "task.usda"
+    lane_adaptation = author_grounded_articulation(sealed, task)
+    assert lane_adaptation is not None
+    staged.append(task)
     scene_plan = _sealed_scene_plan()
     scene_plan["scene_id"] = SCENE_ID
     scene_plan["task_id"] = TASK_ID
@@ -340,12 +346,8 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     for row in scene_plan["objects"]:
         if row.get("object_type") == "ARTICULATION":
-            # the asset authors a kinematic base, so the plan must say so
-            row["articulation_adaptation"] = {
-                "fixed_base_body_prim_path": "/Asset/links/body",
-                "adaptation": "dynamic_articulation_with_world_fixed_base",
-                "candidate_bytes_modified": False,
-            }
+            # the staged bytes carry the grounding; the plan declares the same
+            row["articulation_adaptation"] = lane_adaptation
     scene_plan["plan_digest"] = canonical_digest(
         scene_plan, digest_field="plan_digest"
     )

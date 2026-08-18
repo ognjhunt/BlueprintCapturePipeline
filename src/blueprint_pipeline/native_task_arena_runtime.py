@@ -381,6 +381,118 @@ def articulation_kinematic_adaptation(
     }
 
 
+ARENA_ANCHOR_SCOPE = "BlueprintArenaRuntime"
+ARENA_ANCHOR_JOINT = "fixed_base_anchor"
+
+
+def author_grounded_articulation(
+    source_usd: str | Path, destination: str | Path
+) -> dict[str, Any] | None:
+    """Author the probe's proven fixed-base mechanism into a derived asset.
+
+    Isaac Lab's ``fix_root_link`` raises NotImplementedError for an
+    articulation whose root prim is not itself a rigid body -- exactly the
+    topology every sealed asset here uses (`ArticulationRootAPI` on the root
+    Xform, links beneath). The articulated native probe never used that API:
+    it authors ``kinematicEnabled = 0`` on the base link plus a world
+    ``PhysicsFixedJoint`` whose ``body1`` is that link, and that stage measured
+    this washer's door on a GPU. This writes the same adaptation into a
+    derived copy of the sealed asset, on the host, where the result is
+    verifiable with pxr before any spend.
+
+    Returns the adaptation record, or ``None`` when the asset has no kinematic
+    articulated link (nothing to adapt; no derived file is written). The
+    sealed source bytes are never modified.
+    """
+
+    from pxr import Sdf, Usd, UsdPhysics
+
+    source = Path(source_usd).expanduser().resolve()
+    stage = Usd.Stage.Open(str(source))
+    root = stage.GetDefaultPrim()
+    if not root:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_articulation_default_prim_missing"]
+        )
+    adaptation = articulation_kinematic_adaptation(
+        stage,
+        articulation_root_path=root.GetPath().pathString,
+        usd_physics=UsdPhysics,
+    )
+    fixed_base = adaptation["fixed_base_body_prim_path"]
+    if not fixed_base:
+        return None
+
+    base = stage.GetPrimAtPath(fixed_base)
+    UsdPhysics.RigidBodyAPI(base).GetKinematicEnabledAttr().Set(False)
+    scope = stage.DefinePrim(f"/{ARENA_ANCHOR_SCOPE}", "Scope")
+    joint = UsdPhysics.FixedJoint.Define(
+        stage, scope.GetPath().AppendChild(ARENA_ANCHOR_JOINT)
+    )
+    joint.GetBody1Rel().SetTargets([Sdf.Path(fixed_base)])
+
+    output = Path(destination).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage.GetRootLayer().Export(str(output))
+
+    verified = verify_grounded_articulation(output)
+    if verified["fixed_base_body_prim_path"] != fixed_base:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_grounding_roundtrip_mismatch"]
+        )
+    return {
+        **adaptation,
+        "adaptation": "usd_authored_world_fixed_base",
+        "anchor_joint_prim_path": f"/{ARENA_ANCHOR_SCOPE}/{ARENA_ANCHOR_JOINT}",
+        "derived_from_sha256": _sha256(source),
+    }
+
+
+def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
+    """Prove a staged articulated asset is one PhysX can actually create.
+
+    Two properties, both host-checkable with pxr and both learned from paid
+    attempts: no articulated link may be kinematic (PhysX refuses the whole
+    articulation), and when the asset was grounded, the anchor joint must
+    really target the base link.
+    """
+
+    from pxr import Usd, UsdPhysics
+
+    path = Path(staged_usd).expanduser().resolve()
+    stage = Usd.Stage.Open(str(path))
+    root = stage.GetDefaultPrim()
+    if not root:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_articulation_default_prim_missing"]
+        )
+    adaptation = articulation_kinematic_adaptation(
+        stage,
+        articulation_root_path=root.GetPath().pathString,
+        usd_physics=UsdPhysics,
+    )
+    if adaptation["authored_kinematic_body_prim_paths"]:
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_articulation_kinematic_link_unadapted:"
+                + ",".join(adaptation["authored_kinematic_body_prim_paths"])
+            ]
+        )
+    anchor = stage.GetPrimAtPath(f"/{ARENA_ANCHOR_SCOPE}/{ARENA_ANCHOR_JOINT}")
+    fixed_base = None
+    if anchor and anchor.IsValid():
+        targets = UsdPhysics.FixedJoint(anchor).GetBody1Rel().GetTargets()
+        if len(targets) != 1 or not stage.GetPrimAtPath(targets[0]).IsValid():
+            raise NativeTaskArenaRuntimeError(
+                ["native_task_arena_anchor_joint_invalid"]
+            )
+        fixed_base = str(targets[0])
+    return {
+        "fixed_base_body_prim_path": fixed_base,
+        "grounded": fixed_base is not None,
+    }
+
+
 def validate_contact_sensor_plan(
     plan: Mapping[str, Any],
 ) -> dict[str, list[str]]:
@@ -461,7 +573,7 @@ def _validate_articulation_adaptability(
     """
 
     try:
-        from pxr import Usd, UsdPhysics
+        from pxr import Usd
     except ImportError:
         return
     root = Path(bundle_root).expanduser().resolve()
@@ -485,20 +597,19 @@ def _validate_articulation_adaptability(
         default_prim = stage.GetDefaultPrim()
         if not default_prim:
             continue
-        required = articulation_kinematic_adaptation(
-            stage,
-            articulation_root_path=default_prim.GetPath().pathString,
-            usd_physics=UsdPhysics,
-        )
+        del stage, default_prim
+        # the staged bytes themselves must be an articulation PhysX can
+        # create: no kinematic links, and a valid anchor when grounded
+        verified = verify_grounded_articulation(usd)
         declared = row.get("articulation_adaptation")
         declared_base = (
             declared.get("fixed_base_body_prim_path")
             if isinstance(declared, Mapping)
             else None
         )
-        if required["fixed_base_body_prim_path"] != declared_base:
-            # An asset needing a fixed base whose plan does not say so spawns
-            # as an articulation PhysX refuses to create.
+        if verified["fixed_base_body_prim_path"] != declared_base:
+            # grounding authored into the bytes and grounding declared by the
+            # plan must be the same statement
             raise NativeTaskArenaRuntimeError(
                 [
                     "native_task_arena_articulation_adaptation_not_declared:"
@@ -693,20 +804,14 @@ def build_native_task_arena_environment(
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
         adaptation = row.get("articulation_adaptation")
         if row["object_type"] == "ARTICULATION" and isinstance(adaptation, Mapping):
-            # PhysX rejects an articulation containing a kinematic link, so a
-            # sealed asset that says "this appliance does not move" the
-            # authored way cannot be spawned as an articulation at all. The
-            # plan records which link is the fixed base; spawn it dynamic and
-            # ground it with a world fixed joint. Same behaviour, and the
-            # asset's bytes are untouched.
+            # The staged asset already carries the probe-proven grounding --
+            # base link dynamic plus a world PhysicsFixedJoint authored in the
+            # USD itself -- so no Isaac Lab articulation-root override is
+            # needed here. (fix_root_link raises NotImplementedError for a
+            # root Xform that is not itself a rigid body, which every sealed
+            # asset here is; attempt r5 paid for that discovery.) Record the
+            # adaptation so the readback shows what was spawned.
             articulation_adaptations[runtime_name] = dict(adaptation)
-            if adaptation.get("fixed_base_body_prim_path"):
-                spawn_addon["rigid_props"] = sim_utils.RigidBodyPropertiesCfg(
-                    kinematic_enabled=False
-                )
-                spawn_addon["articulation_props"] = (
-                    sim_utils.ArticulationRootPropertiesCfg(fix_root_link=True)
-                )
         if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
         elif role == "replacement":
