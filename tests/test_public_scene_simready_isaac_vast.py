@@ -898,3 +898,19 @@ def test_operator_machine_pin_env_parses_and_reaches_the_adapter() -> None:
     assert "allowed_machine_ids=_machine_ids_from_env(" in source, (
         "the lane must pass the pin through to the provider adapter"
     )
+
+
+def test_template_hash_env_switches_the_lane_to_template_launch() -> None:
+    """Four direct-create attempts never materialized a container; the env
+    routes the lane through the provider's template flow with the same pinned
+    image. Empty env keeps the direct path, so nothing changes silently.
+    """
+
+    import inspect
+
+    import blueprint_pipeline.public_scene_simready_isaac_vast as lane
+
+    source = inspect.getsource(lane)
+    assert "SIMREADY_ISAAC_TEMPLATE_HASH_ENV" in source
+    assert "vast_template_hash_id=(" in source
+    assert "use_vast_template_image=bool(" in source
