@@ -335,6 +335,7 @@ def materialize_joint_agent_topology_launch_inputs(
     dual_task_admission_path: str | Path,
     source_asset_path: str | Path,
     source_receipt_path: str | Path,
+    authored_replacement_receipt_path: str | Path | None = None,
     rights_authority_path: str | Path,
     joint_agent_checkout: str | Path,
     output_dir: str | Path,
@@ -392,9 +393,39 @@ def materialize_joint_agent_topology_launch_inputs(
         hard_total_spend_cap_usd=hard_total_spend_cap_usd,
         maximum_single_resource_ttl_seconds=maximum_single_resource_ttl_seconds,
     )
+    # The packet is what the paid agent reads, so it must be built from the
+    # receipt describing the bytes it will be handed. When the admission
+    # accepted an authored replacement, that is the replacement's receipt --
+    # the source-mesh receipt still supplies the freeze and extent binding
+    # above, but it does not describe these bytes and would refuse them.
+    packet_receipt_file = source_receipt_file
+    expected_packet_receipt_digest = authority["joint_agent_source_receipt_digest"]
+    replacement = admission.get("authored_replacement_receipt")
+    if replacement is not None:
+        if authored_replacement_receipt_path is None:
+            raise JointAgentTopologyAuthorityError(
+                ["joint_agent_topology_authored_replacement_receipt_missing"]
+            )
+        replacement_file = (
+            Path(authored_replacement_receipt_path).expanduser().resolve()
+        )
+        try:
+            loaded_replacement = json.loads(
+                replacement_file.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise JointAgentTopologyAuthorityError(
+                ["joint_agent_topology_authored_replacement_receipt_invalid"]
+            ) from exc
+        if replacement_file.is_symlink() or loaded_replacement != replacement:
+            raise JointAgentTopologyAuthorityError(
+                ["joint_agent_topology_authored_replacement_receipt_mismatch"]
+            )
+        packet_receipt_file = replacement_file
+        expected_packet_receipt_digest = str(replacement.get("receipt_digest") or "")
     packet = build_joint_agent_packet(
         source_asset_path=source_asset,
-        source_receipt_path=source_receipt_file,
+        source_receipt_path=packet_receipt_file,
         joint_agent_checkout=checkout,
         output_dir=destination / "packet",
         external_disclosure_authorized=True,
@@ -406,7 +437,7 @@ def materialize_joint_agent_topology_launch_inputs(
         or (packet.get("source_asset") or {}).get("sha256")
         != authority["joint_agent_source_asset_digest"]
         or (packet.get("source_asset") or {}).get("source_receipt_digest")
-        != authority["joint_agent_source_receipt_digest"]
+        != expected_packet_receipt_digest
     ):
         raise JointAgentTopologyAuthorityError(
             ["joint_agent_topology_packet_authority_join_invalid"]
@@ -454,6 +485,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-receipt", required=True)
     parser.add_argument("--rights-authority", required=True)
     parser.add_argument("--joint-agent-checkout", required=True)
+    parser.add_argument(
+        "--authored-replacement-receipt",
+        help=(
+            "Required when the admission accepted an authored replacement: the "
+            "receipt describing the bytes the paid agent will read."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--authorized-by", required=True)
     parser.add_argument("--authority-reference", required=True)
@@ -466,6 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dual_task_admission_path=args.dual_task_admission,
             source_asset_path=args.source_asset,
             source_receipt_path=args.source_receipt,
+            authored_replacement_receipt_path=args.authored_replacement_receipt,
             rights_authority_path=args.rights_authority,
             joint_agent_checkout=args.joint_agent_checkout,
             output_dir=args.output_dir,
