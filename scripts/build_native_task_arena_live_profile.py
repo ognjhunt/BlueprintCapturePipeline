@@ -48,6 +48,10 @@ from blueprint_pipeline.native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_arena_runtime import (
+    NativeTaskArenaRuntimeError,
+    validate_native_task_arena_runtime_plan,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -358,6 +362,28 @@ def _lane_blockers(
         for value in context.extra_paths.get("allowed_active_instance_ids", ()) or ():
             if int(value) <= 0:
                 found.append("native_task_arena_allowed_active_instance_id_invalid")
+        # Ask the adapter itself whether it would accept this packet. Every
+        # refusal it raises before construction is a check on the plan, the
+        # staged bytes, or the camera rows -- none of which needs Isaac. Two
+        # paid attempts were spent discovering answers this call returns for
+        # free, so a profile is not built for a packet the runtime refuses:
+        # no profile, no authority consumed, no provider.
+        packet_dir = context.extra_paths.get("packet_dir")
+        if packet_dir is not None and (packet_dir / SCENE_PLAN_NAME).is_file():
+            try:
+                validate_native_task_arena_runtime_plan(
+                    json.loads(
+                        (packet_dir / SCENE_PLAN_NAME).read_text(encoding="utf-8")
+                    ),
+                    bundle_root=packet_dir,
+                )
+            except NativeTaskArenaRuntimeError as exc:
+                found.extend(
+                    f"native_task_arena_runtime_would_refuse:{code}"
+                    for code in exc.errors
+                )
+            except (OSError, ValueError) as exc:
+                found.append(f"native_task_arena_scene_plan_unreadable:{exc}")
         return found
 
     return blockers
