@@ -113,6 +113,7 @@ STEPS: dict[str, Step] = {
             "unmapped_graph_link_reasons": Param(
                 "--unmapped-graph-link-reasons", required=True, json_file=True
             ),
+            "freeze_carry_forward": Param("--freeze-carry-forward", json_file=True),
             "output_path": Param("--output", required=True),
         },
     ),
