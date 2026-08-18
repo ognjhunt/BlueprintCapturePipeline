@@ -97,6 +97,13 @@ jobs:
 
       - name: Install portable review-video toolchain
         shell: bash
+        # Bounded well below the job's own budget. The apt hardening below
+        # handles a mirror *failing*; it does nothing for a mirror that simply
+        # hangs, and on 2026-08-17 that consumed all ten minutes of this job
+        # and cancelled it before a single test ran -- the exact outcome the
+        # comment below says must not happen. A hang now fails this step fast,
+        # with the cause named, instead of destroying the test evidence.
+        timeout-minutes: 4
         run: |
           set -euo pipefail
           # GitHub-hosted runners also carry third-party Microsoft/Azure apt

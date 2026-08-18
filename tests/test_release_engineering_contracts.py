@@ -128,6 +128,33 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
     assert "uv run pytest -q" not in workflow
     assert "--cov-fail-under" not in workflow
 
+    # An unbounded setup step can consume the whole impacted-test budget and
+    # cancel the job before any test evidence exists, which reads as a code
+    # failure when it is an apt hang. Every step in that job stays bounded
+    # strictly below the job it runs in.
+    impact_job = re.search(
+        r"(?ms)^  impacted-tests:\n(.*?)(?=^  \S|\Z)", workflow
+    )
+    assert impact_job is not None
+    job_block = impact_job.group(1)
+    job_budget = int(re.search(r"timeout-minutes: (\d+)", job_block).group(1))
+    step_budgets = [
+        int(value)
+        for value in re.findall(r"^        timeout-minutes: (\d+)", job_block, re.M)
+    ]
+    assert step_budgets, "the apt-backed setup step must declare its own bound"
+    assert all(budget < job_budget for budget in step_budgets), (
+        f"step bounds {step_budgets} must stay under the job budget {job_budget}"
+    )
+    apt_step = re.search(
+        r"(?ms)- name: Install portable review-video toolchain\n(.*?)(?=^      - name:|\Z)",
+        job_block,
+    )
+    assert apt_step is not None
+    assert "timeout-minutes:" in apt_step.group(1), (
+        "the step that shells out to apt must be bounded"
+    )
+
     for job in (
         "lint",
         "foundation-prerequisites",
