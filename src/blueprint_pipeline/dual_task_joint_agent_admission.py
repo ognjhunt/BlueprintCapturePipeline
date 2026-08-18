@@ -120,6 +120,17 @@ def _validated_source_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
 
 AUTHORED_REPLACEMENT_SCHEMA = "simready_graph_asset_receipt.v1"
 
+#: The composed asset: the same articulation with agent-authored CAD visuals
+#: attached.  Scene 840920's Joint runs failed twice for opposite halves of one
+#: requirement -- a source mesh whose parts were not prims (nothing to name),
+#: then an authored replacement whose collision-only prims render as nothing
+#: (nothing to see).  NVIDIA's pipeline identifies and predicts from *rendered
+#: views*, so it needs an input that is articulated AND visible.  The composed
+#: asset is exactly that, and it preserves the graph's link and joint prims
+#: byte for byte, so link identity keeps coming from the graph receipt and only
+#: the bytes move.
+COMPOSED_ASSET_SCHEMA = "registered_replacement_asset.v1"
+
 #: The one terminal status a graph asset receipt carries. It is not
 #: ``materialized`` -- that belongs to ``articulated_source_asset.v1`` -- and
 #: four other modules already gate on this exact string.
@@ -129,6 +140,44 @@ AUTHORED_REPLACEMENT_STATUS = "simready_candidate_authored"
 #: articulation.  One link is a rigid body: there is no parent to resolve, which
 #: is the exact failure feeding a whole-object mesh produced.
 MINIMUM_AUTHORED_REPLACEMENT_LINK_COUNT = 2
+
+
+def _validated_composed_asset(
+    value: Mapping[str, Any], *, authored_replacement: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Accept composed bytes for the agent, chained to the authored graph.
+
+    The composed asset carries no link identity of its own; it inherits the
+    graph asset's prims.  So this admits its *bytes* only, and requires the
+    composition it came from to name the same graph receipt the admission
+    already retained -- otherwise these bytes describe some other object.
+    """
+
+    composed = _clone(value, code="joint_agent_composed_asset_invalid")
+    errors: list[str] = []
+    if composed.get("schema_version") != COMPOSED_ASSET_SCHEMA:
+        errors.append("joint_agent_composed_asset_schema_invalid")
+    if composed.get("receipt_digest") != canonical_digest(
+        composed, digest_field="receipt_digest"
+    ):
+        errors.append("joint_agent_composed_asset_digest_invalid")
+    if composed.get("geometry_generated_or_modified") is not False:
+        # Composition places authored visuals; it never invents geometry.
+        errors.append("joint_agent_composed_asset_geometry_claim_invalid")
+    output = composed.get("output_usd")
+    if (
+        not isinstance(output, Mapping)
+        or not _digest(output.get("sha256"))
+        or isinstance(output.get("size_bytes"), bool)
+        or not isinstance(output.get("size_bytes"), int)
+        or output.get("size_bytes", 0) <= 0
+    ):
+        errors.append("joint_agent_composed_asset_record_invalid")
+    if composed.get("asset_id") != authored_replacement.get("asset_id"):
+        errors.append("joint_agent_composed_asset_lineage_invalid")
+    if errors:
+        raise DualTaskJointAgentAdmissionError(errors)
+    return composed
 
 
 def _validated_authored_replacement(
@@ -256,6 +305,7 @@ def _source_binding(
     freeze: Mapping[str, Any],
     receipt: Mapping[str, Any],
     authored_replacement: Mapping[str, Any] | None = None,
+    composed_asset: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = freeze.get("source_object") or {}
     target = receipt.get("target") or {}
@@ -285,6 +335,10 @@ def _source_binding(
     if authored_replacement is not None:
         agent_asset = authored_replacement["output_usd"]
         agent_component_count = len(authored_replacement["link_paths"])
+        if composed_asset is not None:
+            # Same articulation, visuals attached: link identity above is
+            # unchanged, and only the bytes handed to the agent move.
+            agent_asset = composed_asset["output_usd"]
         replacement_binding = {
             "authored_replacement_input": True,
             "authored_replacement_receipt_digest": authored_replacement[
@@ -299,6 +353,17 @@ def _source_binding(
             # from an unlabelled mesh.  Nothing downstream may read its output
             # as an independent witness.
             "independent_topology_inference": False,
+            **(
+                {
+                    "composed_visual_input": True,
+                    "composed_asset_receipt_digest": composed_asset["receipt_digest"],
+                    "authored_replacement_asset_sha256": authored_replacement[
+                        "output_usd"
+                    ]["sha256"],
+                }
+                if composed_asset is not None
+                else {"composed_visual_input": False}
+            ),
         }
     return {
         **replacement_binding,
@@ -322,6 +387,7 @@ def build_dual_task_joint_agent_admission(
     task_freeze: Mapping[str, Any],
     source_receipt: Mapping[str, Any],
     authored_replacement_receipt: Mapping[str, Any] | None = None,
+    composed_asset_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a paid-ready Task A adapter or typed Task B inapplicability."""
 
@@ -342,11 +408,23 @@ def build_dual_task_joint_agent_admission(
             source_receipt=receipt,
             freeze_digest=freeze["task_freeze_digest"],
         )
+    composed_asset = None
+    if composed_asset_receipt is not None:
+        if authored_replacement is None:
+            # Composed bytes without the graph they were composed onto have no
+            # link identity to inherit.
+            raise DualTaskJointAgentAdmissionError(
+                ["joint_agent_composed_asset_requires_authored_replacement"]
+            )
+        composed_asset = _validated_composed_asset(
+            composed_asset_receipt, authored_replacement=authored_replacement
+        )
     source = _source_binding(
         publisher_scene_id=scene_id,
         freeze=freeze,
         receipt=receipt,
         authored_replacement=authored_replacement,
+        composed_asset=composed_asset,
     )
 
     task_summary = {
@@ -492,6 +570,11 @@ def build_dual_task_joint_agent_admission(
             if authored_replacement is not None
             else {}
         ),
+        **(
+            {"composed_asset_receipt": composed_asset}
+            if composed_asset is not None
+            else {}
+        ),
         "task": {
             **task_summary,
             "articulation_graph_digest": articulation_graph_digest,
@@ -539,6 +622,7 @@ def validate_dual_task_joint_agent_admission(
         # was built from. Rebuilding without it silently reconstructs a
         # different admission and reports the difference as tampering.
         authored_replacement_receipt=admission.get("authored_replacement_receipt"),
+        composed_asset_receipt=admission.get("composed_asset_receipt"),
     )
     if rebuilt != admission:
         raise DualTaskJointAgentAdmissionError(
@@ -564,6 +648,7 @@ def validate_dual_task_joint_agent_source_binding(
         task_freeze=value.get("task_freeze") or {},
         source_receipt=source_receipt,
         authored_replacement_receipt=value.get("authored_replacement_receipt"),
+        composed_asset_receipt=value.get("composed_asset_receipt"),
     )
     if rebuilt != value:
         raise DualTaskJointAgentAdmissionError(
@@ -578,6 +663,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--task-freeze", required=True)
     parser.add_argument("--source-receipt", required=True)
     parser.add_argument("--source-asset", required=True)
+    parser.add_argument(
+        "--composed-asset-receipt",
+        help=(
+            "Receipt for the composed asset -- the authored articulation with "
+            "agent CAD visuals attached. When given, the paid agent reads these "
+            "bytes; link identity still comes from the authored replacement."
+        ),
+    )
     parser.add_argument(
         "--authored-replacement-receipt",
         help=(
@@ -598,6 +691,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise DualTaskJointAgentAdmissionError(
                 ["joint_agent_dual_task_input_invalid"]
             )
+        composed = None
+        if args.composed_asset_receipt:
+            composed_path = Path(args.composed_asset_receipt).expanduser().resolve()
+            composed = json.loads(composed_path.read_text(encoding="utf-8"))
+            if not isinstance(composed, Mapping):
+                raise DualTaskJointAgentAdmissionError(
+                    ["joint_agent_composed_asset_invalid"]
+                )
         replacement = None
         if args.authored_replacement_receipt:
             replacement_path = (
@@ -612,7 +713,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # will actually be handed, so the bytes can never diverge from the
         # admission that vetted them.
         output_record = (
-            (replacement.get("output_usd") or {})
+            (composed.get("output_usd") or {})
+            if composed is not None
+            else (replacement.get("output_usd") or {})
             if replacement is not None
             else (receipt.get("output_asset") or {})
         )
@@ -630,6 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_freeze=freeze,
             source_receipt=receipt,
             authored_replacement_receipt=replacement,
+            composed_asset_receipt=composed,
         )
         output = Path(args.output).expanduser().resolve()
         output.parent.mkdir(parents=True, exist_ok=True)

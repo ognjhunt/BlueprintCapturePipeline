@@ -139,7 +139,11 @@ ACCEPTED_SOURCE_RECEIPT_SCHEMAS = (
 )
 
 
-def _load_source_receipt(path: Path, asset_path: Path) -> dict[str, Any]:
+def _load_source_receipt(
+    path: Path,
+    asset_path: Path,
+    composed_asset_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -147,7 +151,9 @@ def _load_source_receipt(path: Path, asset_path: Path) -> dict[str, Any]:
     if not isinstance(receipt, Mapping):
         raise JointAgentPacketError(["articulated_source_receipt_invalid"])
     if receipt.get("schema_version") == "simready_graph_asset_receipt.v1":
-        return _load_authored_replacement_receipt(receipt, asset_path)
+        return _load_authored_replacement_receipt(
+            receipt, asset_path, composed_asset_receipt
+        )
     errors: list[str] = []
     if receipt.get("schema_version") != "articulated_source_asset.v1":
         errors.append("articulated_source_receipt_schema_invalid")
@@ -171,7 +177,9 @@ def _load_source_receipt(path: Path, asset_path: Path) -> dict[str, Any]:
 
 
 def _load_authored_replacement_receipt(
-    receipt: Mapping[str, Any], asset_path: Path
+    receipt: Mapping[str, Any],
+    asset_path: Path,
+    composed_asset_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Accept our authored replacement, whose links are distinct prims.
 
@@ -185,10 +193,24 @@ def _load_authored_replacement_receipt(
     if receipt.get("receipt_digest") != expected_receipt_digest:
         errors.append("articulated_source_receipt_digest_invalid")
     output = receipt.get("output_usd")
+    # When composed bytes are admitted, the graph receipt still supplies link
+    # identity but no longer describes the asset on disk: the composition
+    # attached visuals to these same prims.  The composed receipt vouches for
+    # the bytes, and must name the same asset the graph does.
+    byte_authority = composed_asset_receipt if composed_asset_receipt else receipt
+    byte_record = (
+        byte_authority.get("output_usd") if isinstance(byte_authority, Mapping) else None
+    )
+    if composed_asset_receipt is not None and (
+        composed_asset_receipt.get("asset_id") != receipt.get("asset_id")
+    ):
+        errors.append("articulated_source_composed_lineage_invalid")
     if not isinstance(output, Mapping):
         errors.append("articulated_source_output_identity_missing")
     else:
-        if output.get("sha256") != _sha256(asset_path):
+        if not isinstance(byte_record, Mapping) or byte_record.get(
+            "sha256"
+        ) != _sha256(asset_path):
             errors.append("articulated_source_asset_digest_mismatch")
     link_paths = receipt.get("link_paths")
     if not isinstance(link_paths, Mapping) or len(link_paths) < 2:
@@ -201,7 +223,10 @@ def _load_authored_replacement_receipt(
     resolved["connected_component_count"] = len(link_paths)
     resolved["authored_replacement_input"] = True
     resolved["independent_topology_inference"] = False
-    resolved["output_asset"] = dict(output)
+    resolved["composed_visual_input"] = composed_asset_receipt is not None
+    resolved["output_asset"] = dict(
+        byte_record if isinstance(byte_record, Mapping) else output
+    )
     return resolved
 
 
@@ -213,6 +238,7 @@ def build_joint_agent_packet(
     output_dir: str | Path,
     external_disclosure_authorized: bool = False,
     paid_execution_authorized: bool = False,
+    composed_asset_receipt: Mapping[str, Any] | None = None,
     expected_identity: Mapping[str, Any] = JOINT_AGENT_IDENTITY,
 ) -> dict[str, Any]:
     """Materialize an exact config and admission receipt without remote execution."""
@@ -225,7 +251,7 @@ def build_joint_agent_packet(
     if destination.exists() and any(destination.iterdir()):
         raise JointAgentPacketError(["joint_agent_packet_output_not_empty"])
     destination.mkdir(parents=True, exist_ok=True)
-    receipt = _load_source_receipt(source_receipt, source)
+    receipt = _load_source_receipt(source_receipt, source, composed_asset_receipt)
     release = inspect_joint_agent_checkout(
         joint_agent_checkout, expected_identity=expected_identity
     )
@@ -328,6 +354,13 @@ def build_joint_agent_packet(
             "source_receipt_path": str(source_receipt),
             "source_receipt_digest": receipt["receipt_digest"],
             "connected_component_count": component_count,
+            # What the agent is actually looking at, recorded on the packet
+            # itself: composed input means visuals are present and the run is
+            # corroborating authored topology, never inferring it.
+            "composed_visual_input": bool(receipt.get("composed_visual_input")),
+            "independent_topology_inference": bool(
+                receipt.get("independent_topology_inference", True)
+            ),
         },
         "config": {
             "path": str(config_path),
