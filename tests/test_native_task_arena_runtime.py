@@ -614,6 +614,8 @@ def test_portable_packet_assets_require_root_and_are_reverified(
     collision = assets / "collision.usd"
     task = assets / "task.usda"
     collision.write_bytes(b"collision")
+    # A real articulation, authored the way the sealed washer is: the base link
+    # is kinematic, which PhysX refuses inside an articulation.
     task.write_bytes(b"task")
     plan = _sealed_scene_plan()
     plan["asset_directory"] = "assets"
@@ -711,13 +713,50 @@ def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
     collision = assets / "collision.usd"
     task = assets / "task.usda"
     collision.write_bytes(b"collision")
-    task.write_bytes(b"task")
+    task.write_text(
+        """#usda 1.0
+(
+    defaultPrim = "Asset"
+)
+
+def Xform "Asset" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "links"
+    {
+        def Cube "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+        {
+            bool physics:kinematicEnabled = 1
+        }
+
+        def Cube "door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+        {
+        }
+    }
+
+    def PhysicsRevoluteJoint "door_hinge"
+    {
+        rel physics:body0 = </Asset/links/body>
+        rel physics:body1 = </Asset/links/door>
+    }
+}
+""",
+        encoding="utf-8",
+    )
     plan = _sealed_scene_plan()
     plan["asset_directory"] = "assets"
     for row, path in zip(plan["objects"], (collision, task), strict=True):
         row["usd_path"] = f"assets/{path.name}"
         row["size_bytes"] = path.stat().st_size
         row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    for row in plan["objects"]:
+        if row.get("object_type") == "ARTICULATION":
+            row["articulation_adaptation"] = {
+                "fixed_base_body_prim_path": "/Asset/links/body",
+                "adaptation": "dynamic_articulation_with_world_fixed_base",
+                "candidate_bytes_modified": False,
+            }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return root, plan
 
@@ -802,4 +841,55 @@ def test_a_forbidden_contact_channel_is_optional_not_unknown(tmp_path: Path) -> 
     for task_kind in ("articulated_open_close", "rigid_pick_place"):
         assert "robot_task_forbidden_collision" not in required_contact_channels(
             task_kind
+        )
+
+
+def test_a_kinematic_base_not_declared_by_the_plan_is_refused(tmp_path: Path) -> None:
+    """The r3 failure, reproduced on the host with no provider.
+
+    The sealed washer authors its 55 kg body kinematic -- the ordinary way to
+    say an appliance does not move. PhysX rejects any articulation containing a
+    kinematic link, so the articulation is never created and every later lookup
+    reports that the pattern matched no rigid bodies. Attempt r3 spent $0.185
+    learning that. The plan must say which link is the fixed base, and a plan
+    that stays silent about it is refused here.
+    """
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        validate_native_task_arena_runtime_plan,
+    )
+
+    root, plan = _staged_packet(tmp_path)
+    for row in plan["objects"]:
+        row.pop("articulation_adaptation", None)
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="articulation_adaptation_not_declared"
+    ):
+        validate_native_task_arena_runtime_plan(plan, bundle_root=root)
+
+
+def test_two_kinematic_links_are_ambiguous_and_fail_closed(tmp_path: Path) -> None:
+    """Which part of the asset is anchored must never be guessed."""
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        articulation_kinematic_adaptation,
+    )
+
+    pxr = pytest.importorskip("pxr")
+    root, _ = _staged_packet(tmp_path)
+    stage = pxr.Usd.Stage.Open(str(root / "assets" / "task.usda"))
+    door = stage.GetPrimAtPath("/Asset/links/door")
+    door.CreateAttribute(
+        "physics:kinematicEnabled", pxr.Sdf.ValueTypeNames.Bool
+    ).Set(True)
+
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="nonhomogeneous_kinematic_articulation"
+    ):
+        articulation_kinematic_adaptation(
+            stage,
+            articulation_root_path="/Asset",
+            usd_physics=pxr.UsdPhysics,
         )

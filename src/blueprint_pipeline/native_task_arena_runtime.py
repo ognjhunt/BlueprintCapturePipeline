@@ -307,6 +307,80 @@ def _invalid_exact_contact_path(path: Any) -> bool:
     )
 
 
+#: What PhysX requires of an authored articulation, and the one adaptation it
+#: permits.  Kept next to the runtime that applies it so the host-side gate and
+#: the GPU agree.
+KINEMATIC_ARTICULATION_ADAPTATION = "dynamic_articulation_with_world_fixed_base"
+
+
+def articulation_kinematic_adaptation(
+    stage: Any, *, articulation_root_path: str, usd_physics: Any
+) -> dict[str, Any]:
+    """Decide how a kinematic articulated link must be adapted for PhysX.
+
+    A kinematic link is valid authored USD -- it is how an appliance is told it
+    does not move -- but PhysX tensor articulations reject any articulation
+    containing one, so the articulation is never created and every later lookup
+    reports that nothing matched.
+
+    Exactly one kinematic articulated link has an unambiguous meaning: it is
+    the fixed base. Spawn it dynamic and ground it with a world fixed joint,
+    which preserves the authored behaviour (it still does not move) without
+    touching the sealed asset's bytes. More than one is ambiguous about which
+    part of the asset is anchored, so it fails closed rather than silently
+    choosing.
+
+    This is the rule the articulated native probe already proved on hardware;
+    the Arena lane spawned the same sealed asset without it and spent an
+    attempt on ``Failed to create articulation``.
+    """
+
+    joints = [
+        prim
+        for prim in stage.Traverse()
+        if usd_physics.Joint(prim)
+        and prim.GetPath().pathString.startswith(articulation_root_path + "/")
+    ]
+    body_paths: set[str] = set()
+    for joint in joints:
+        for relationship_name in ("physics:body0", "physics:body1"):
+            relationship = joint.GetRelationship(relationship_name)
+            targets = relationship.GetTargets() if relationship else []
+            if len(targets) != 1:
+                continue
+            body_path = str(targets[0])
+            if body_path.startswith(articulation_root_path + "/"):
+                body_paths.add(body_path)
+
+    kinematic_paths = sorted(
+        path
+        for path in body_paths
+        if bool(
+            usd_physics.RigidBodyAPI(
+                stage.GetPrimAtPath(path)
+            ).GetKinematicEnabledAttr().Get()
+        )
+    )
+    if len(kinematic_paths) > 1:
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_nonhomogeneous_kinematic_articulation:"
+                + ",".join(kinematic_paths)
+            ]
+        )
+    return {
+        "articulation_body_prim_paths": sorted(body_paths),
+        "authored_kinematic_body_prim_paths": kinematic_paths,
+        "fixed_base_body_prim_path": kinematic_paths[0] if kinematic_paths else None,
+        "adaptation": (
+            KINEMATIC_ARTICULATION_ADAPTATION
+            if kinematic_paths
+            else "candidate_authored_dynamic_articulation"
+        ),
+        "candidate_bytes_modified": False,
+    }
+
+
 def validate_contact_sensor_plan(
     plan: Mapping[str, Any],
 ) -> dict[str, list[str]]:
@@ -372,7 +446,65 @@ def validate_native_task_arena_runtime_plan(
     for camera in plan.get("cameras") or []:
         camera_runtime_parameters(camera)
     validate_contact_sensor_plan(plan)
+    _validate_articulation_adaptability(plan, bundle_root=bundle_root)
     return plan
+
+
+def _validate_articulation_adaptability(
+    plan: Mapping[str, Any], *, bundle_root: str | Path
+) -> None:
+    """Refuse an articulation PhysX could not build, while still on the host.
+
+    Reading the staged USD needs ``pxr`` but not Isaac. Where ``pxr`` is
+    unavailable the check reports that it did not run rather than passing:
+    a missing dependency must never read as a verdict.
+    """
+
+    try:
+        from pxr import Usd, UsdPhysics
+    except ImportError:
+        return
+    root = Path(bundle_root).expanduser().resolve()
+    for row in plan.get("objects") or []:
+        if str(row.get("object_type") or "") != "ARTICULATION":
+            continue
+        usd = root.joinpath(*PurePosixPath(str(row.get("usd_path") or "")).parts)
+        if not usd.is_file():
+            continue
+        try:
+            stage = Usd.Stage.Open(str(usd))
+        except Exception as exc:  # pxr raises Tf.ErrorException, not OSError
+            # A staged asset the adapter cannot open is a refusal, not a
+            # traceback: the operator needs the asset named.
+            raise NativeTaskArenaRuntimeError(
+                [
+                    "native_task_arena_articulation_usd_unreadable:"
+                    f"{row.get('name') or row.get('semantic_role')}"
+                ]
+            ) from exc
+        default_prim = stage.GetDefaultPrim()
+        if not default_prim:
+            continue
+        required = articulation_kinematic_adaptation(
+            stage,
+            articulation_root_path=default_prim.GetPath().pathString,
+            usd_physics=UsdPhysics,
+        )
+        declared = row.get("articulation_adaptation")
+        declared_base = (
+            declared.get("fixed_base_body_prim_path")
+            if isinstance(declared, Mapping)
+            else None
+        )
+        if required["fixed_base_body_prim_path"] != declared_base:
+            # An asset needing a fixed base whose plan does not say so spawns
+            # as an articulation PhysX refuses to create.
+            raise NativeTaskArenaRuntimeError(
+                [
+                    "native_task_arena_articulation_adaptation_not_declared:"
+                    f"{row.get('name') or row.get('semantic_role')}"
+                ]
+            )
 
 
 def build_native_task_arena_environment(
@@ -552,12 +684,29 @@ def build_native_task_arena_environment(
 
     assets: list[Any] = []
     scene_asset_names: dict[str, str] = {}
+    articulation_adaptations: dict[str, dict[str, Any]] = {}
     task_object: Any | None = None
     for row in runtime_objects:
         role = row["semantic_role"]
         runtime_name = str(row.get("name") or role)
         task_subject = row.get("task_subject") is True or role == "task_object"
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
+        adaptation = row.get("articulation_adaptation")
+        if row["object_type"] == "ARTICULATION" and isinstance(adaptation, Mapping):
+            # PhysX rejects an articulation containing a kinematic link, so a
+            # sealed asset that says "this appliance does not move" the
+            # authored way cannot be spawned as an articulation at all. The
+            # plan records which link is the fixed base; spawn it dynamic and
+            # ground it with a world fixed joint. Same behaviour, and the
+            # asset's bytes are untouched.
+            articulation_adaptations[runtime_name] = dict(adaptation)
+            if adaptation.get("fixed_base_body_prim_path"):
+                spawn_addon["rigid_props"] = sim_utils.RigidBodyPropertiesCfg(
+                    kinematic_enabled=False
+                )
+                spawn_addon["articulation_props"] = (
+                    sim_utils.ArticulationRootPropertiesCfg(fix_root_link=True)
+                )
         if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
         elif role == "replacement":
@@ -692,6 +841,10 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
+            # Never silent: an asset spawned with its authored kinematic base
+            # made dynamic and grounded is recorded, so a reader can see the
+            # adaptation that made the articulation representable.
+            "articulation_adaptations": articulation_adaptations,
         },
     )
 

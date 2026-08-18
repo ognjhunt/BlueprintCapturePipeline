@@ -69,6 +69,37 @@ def _source_to_spawned_prim(
     return f"{ENV_ROOT}/{role}{suffix}"
 
 
+def _articulation_adaptation(asset_path: Path, *, role: str) -> dict[str, Any]:
+    """Freeze the one adaptation PhysX needs, derived from the asset itself."""
+
+    from .native_task_arena_runtime import (
+        NativeTaskArenaRuntimeError,
+        articulation_kinematic_adaptation,
+    )
+
+    try:
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.Open(str(asset_path))
+    except (ImportError, RuntimeError) as exc:
+        raise NativeTaskArenaScenePlanError(
+            [f"native_task_arena_articulation_unreadable:{role}"]
+        ) from exc
+    default_prim = stage.GetDefaultPrim() if stage is not None else None
+    if default_prim is None or not default_prim.IsValid():
+        raise NativeTaskArenaScenePlanError(
+            [f"native_task_arena_articulation_default_prim_missing:{role}"]
+        )
+    try:
+        return articulation_kinematic_adaptation(
+            stage,
+            articulation_root_path=default_prim.GetPath().pathString,
+            usd_physics=UsdPhysics,
+        )
+    except NativeTaskArenaRuntimeError as exc:
+        raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
+
+
 def _exact_scene_contact_body_paths(scene_collision_asset_path: Path) -> list[str]:
     """Resolve every static or rigid collision actor to one exact spawned path."""
 
@@ -188,6 +219,20 @@ def _stage_assets(
                 },
                 "activate_contact_sensors": row["object_type"]
                 in {"RIGID", "ARTICULATION"},
+                # PhysX refuses an articulation containing a kinematic link, so
+                # record which link is the authored fixed base. The runtime
+                # spawns exactly that one dynamic and grounds it with a world
+                # fixed joint; a plan that stays silent produces an
+                # articulation the provider cannot create.
+                **(
+                    {
+                        "articulation_adaptation": _articulation_adaptation(
+                            path, role=role
+                        )
+                    }
+                    if row["object_type"] == "ARTICULATION"
+                    else {}
+                ),
             }
         )
     if errors:
