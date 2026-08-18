@@ -6138,7 +6138,7 @@
             {
               "artifact_id": "REL-07-AC-01-EV-01",
               "path": ".github/workflows/ci.yml",
-              "sha256": "sha256:908b7ac52d364e0691a9b497571e153f3ef63d5bef0041eb42e3172dd08d4b32",
+              "sha256": "sha256:64c02873faddb951fc4bed5a38fbd10dd48acb58e431dd546b1707f78a98690b",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7462,7 +7462,7 @@
             {
               "artifact_id": "REL-15-AC-01-EV-01",
               "path": ".github/workflows/full-test-lane.yml",
-              "sha256": "sha256:780a0f36a8a46df2170600005929adc2b412eeed9e4b2d8fd6874f6eb8633cdc",
+              "sha256": "sha256:4f69c716a0eb854b3d6e174e4f65f23a2cfc579196cc6bdea229c4169173c85f",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13198,7 +13198,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-01",
               "path": ".github/workflows/sim-only-local-gate.yml",
-              "sha256": "sha256:20a0d452d03d713eedba0554db1c4b880f8d8378604f5d67b8b12a69e56c446a",
+              "sha256": "sha256:02a637813d6bc056e801b39aa0cf91281aef43efe41d1f58f41941f83157906c",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
