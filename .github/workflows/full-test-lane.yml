@@ -82,13 +82,33 @@ jobs:
           python-version: "3.12"
 
       - name: Install system media dependencies
+        shell: bash
+        timeout-minutes: 6
         run: |
-          # ffmpeg comes from Ubuntu's repositories. GitHub-hosted runners also
-          # carry third-party Microsoft/Azure apt sources, and transient signing
-          # or mirror errors there should not block this CPU validation lane.
-          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete || true
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y ffmpeg
+          set -euo pipefail
+          # The review-video tests need ffmpeg/ffprobe on PATH -- nothing more.
+          # These runners do not ship them, and Ubuntu's apt mirrors have now
+          # cost this repository three distinct outages in one night: a hung
+          # connection, a drip-feeding package fetch, and an index download
+          # that stalled for eleven minutes. No timeout or retry policy fixes
+          # a mirror that is slow rather than broken, so the mirror is no
+          # longer on this path at all.
+          #
+          # A pinned static build comes from GitHub's own release CDN -- the
+          # same infrastructure the checkout already depends on -- verified by
+          # sha256 before anything is installed.
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            echo "media toolchain already present: $(ffmpeg -version | head -n1)"
+            exit 0
+          fi
+          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-16-13-00/ffmpeg-N-126175-g0056dd32fd-linux64-gpl.tar.xz"
+          FFMPEG_SHA256="d6c3aeff33a323659ddc8c185fb8c5fc2f7fe7386053a40af5e326cae95cd0d4"
+          curl -fsSL --retry 3 --retry-connrefused -o /tmp/ffmpeg-static.tar.xz "${FFMPEG_URL}"
+          echo "${FFMPEG_SHA256}  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+          sudo install -m 0755 /tmp/ffmpeg-N-126175-g0056dd32fd-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-N-126175-g0056dd32fd-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
+          ffmpeg -version | head -n1
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

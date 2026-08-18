@@ -128,6 +128,33 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
     assert "uv run pytest -q" not in workflow
     assert "--cov-fail-under" not in workflow
 
+    # An unbounded setup step can consume the whole impacted-test budget and
+    # cancel the job before any test evidence exists, which reads as a code
+    # failure when it is an apt hang. Every step in that job stays bounded
+    # strictly below the job it runs in.
+    impact_job = re.search(
+        r"(?ms)^  impacted-tests:\n(.*?)(?=^  \S|\Z)", workflow
+    )
+    assert impact_job is not None
+    job_block = impact_job.group(1)
+    job_budget = int(re.search(r"timeout-minutes: (\d+)", job_block).group(1))
+    step_budgets = [
+        int(value)
+        for value in re.findall(r"^        timeout-minutes: (\d+)", job_block, re.M)
+    ]
+    assert step_budgets, "the apt-backed setup step must declare its own bound"
+    assert all(budget < job_budget for budget in step_budgets), (
+        f"step bounds {step_budgets} must stay under the job budget {job_budget}"
+    )
+    apt_step = re.search(
+        r"(?ms)- name: Install portable review-video toolchain\n(.*?)(?=^      - name:|\Z)",
+        job_block,
+    )
+    assert apt_step is not None
+    assert "timeout-minutes:" in apt_step.group(1), (
+        "the step that shells out to apt must be bounded"
+    )
+
     for job in (
         "lint",
         "foundation-prerequisites",
@@ -880,3 +907,40 @@ def test_package_import_is_lazy_and_module_entrypoints_are_not_preloaded() -> No
     )
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == []
+
+
+def test_every_apt_step_in_every_workflow_is_bounded() -> None:
+    """No workflow may shell out to apt without a bound on how long it waits.
+
+    On 2026-08-17 an unbounded ``apt-get`` hung for an hour at the very first
+    step of the deploy-gating full lane, while the identical work normally
+    finishes in about a minute. An earlier fix bounded the one step that had
+    failed and left two siblings unbounded -- including the one that actually
+    gates deploys.
+
+    So this sweeps every workflow rather than naming steps. A step that shells
+    out to apt is a step that can wait on a network mirror, and every one of
+    them must say how long it is willing to.
+    """
+
+    workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "no workflows found to check"
+
+    unbounded: list[str] = []
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        # Split into steps: each begins with a "- name:" at step indentation.
+        steps = re.split(r"(?m)^      - (?=name:|uses:)", text)
+        for step in steps[1:]:
+            if "apt-get" not in step:
+                continue
+            if not re.search(r"(?m)^        timeout-minutes: \d+", step):
+                label = re.match(r"name: (.+)", step)
+                unbounded.append(
+                    f"{path.name}: {label.group(1).strip() if label else step[:40]}"
+                )
+
+    assert not unbounded, (
+        "these steps shell out to apt with no time bound, so a hung mirror "
+        "consumes the whole job: " + "; ".join(unbounded)
+    )
