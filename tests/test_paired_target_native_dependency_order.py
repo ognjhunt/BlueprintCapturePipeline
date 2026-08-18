@@ -147,7 +147,10 @@ def _fixture(root: Path) -> dict:
         "receipt_digest",
     )
     appearance = evidence / "scene_appearance.usdz"
-    appearance.write_bytes(b"development-only appearance fixture")
+    # a usdz is a zip, and the chain now refuses a payload whose bytes are
+    # not the format its filename declares, so the fixture carries the
+    # real magic rather than free text that could never open
+    appearance.write_bytes(b"PK\x03\x04development-only appearance fixture")
 
     support = _write(
         evidence / "support.json",

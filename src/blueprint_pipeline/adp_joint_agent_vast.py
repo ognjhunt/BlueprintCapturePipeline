@@ -22,7 +22,13 @@ from .task_evaluation_artifact_manifest import (
     seal_unallocated_provider_teardown,
 )
 from .gpu_render_providers import _read_secret as _read_provider_secret
-from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
+from .common import (
+    ensure_dir,
+    redacted_failure_detail,
+    usd_payload_format_matches,
+    utc_now_iso,
+    write_json,
+)
 from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
@@ -644,6 +650,8 @@ def build_joint_agent_vast_bundle(
     runtime = destination / "provider_runtime"
     ensure_dir(runtime / "input")
     ensure_dir(runtime / "blueprint_src" / "blueprint_pipeline")
+    if not usd_payload_format_matches(source_asset, "articulated_source.usda"):
+        raise ValueError("adp_joint_agent_source_asset_format_invalid")
     shutil.copy2(source_asset, runtime / "input" / "articulated_source.usda")
     shutil.copy2(
         review_components_path, runtime / "input" / "articulated_source_receipt.json"

@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 from .adp009d_aura_renderer_conformance import FROZEN_THRESHOLDS
-from .common import ensure_dir, write_json
+from .common import ensure_dir, usd_payload_format_matches, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 
@@ -140,6 +140,8 @@ def build_ovrtx_live_camera_bundle(
     particlefield = Path(probe["particlefield_path"]).resolve()
     if _sha256(particlefield) != probe.get("particlefield_sha256"):
         raise ValueError("adp009d_ovrtx_particlefield_digest_mismatch")
+    if not usd_payload_format_matches(particlefield, "aura_gaussian_surflets.usdc"):
+        raise ValueError("adp009d_ovrtx_particlefield_format_invalid")
     shutil.copy2(particlefield, assets / "aura_gaussian_surflets.usdc")
     config_rows = []
     camera_ids: set[str] = set()

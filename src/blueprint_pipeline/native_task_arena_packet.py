@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from .common import write_json
+from .common import usd_payload_format_matches, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
@@ -277,6 +277,10 @@ def materialize_native_task_arena_packet(
             source_path, source_digest, source_size = _asset_source(
                 raw, evidence_root=evidence
             )
+            if not usd_payload_format_matches(source_path, filename):
+                raise NativeTaskArenaPacketError(
+                    [f"native_task_arena_packet_asset_format_invalid:{role}"]
+                )
             destination = assets_dir / filename
             if destination.exists():
                 raise NativeTaskArenaPacketError(

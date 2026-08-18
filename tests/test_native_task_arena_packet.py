@@ -203,12 +203,15 @@ def Xform "Root"
     files = {
         "scene_collision": (
             "scene_collision.usda",
-            collision_asset if articulated else b"collision",
+            collision_asset if articulated else b"#usda 1.0\n# collision\n",
         ),
-        "scene_appearance": ("scene_appearance.usdc", b"appearance"),
+        # Placeholder bytes are not accepted for a staged USD payload: the
+        # packet now refuses a file whose magic is not the format its filename
+        # declares, so these fixtures carry the real leading bytes.
+        "scene_appearance": ("scene_appearance.usdc", b"PXR-USDC\x00appearance"),
         "task_object": (
             "task_object.usda",
-            articulated_asset if articulated else b"rigid",
+            articulated_asset if articulated else b"#usda 1.0\n# rigid\n",
         ),
     }
     assets = []
@@ -394,7 +397,7 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     )
     rigid_path = evidence / "rigid_b" / "rigid_b.usda"
     rigid_path.parent.mkdir()
-    rigid_path.write_bytes(b"rigid-b")
+    rigid_path.write_bytes(b"#usda 1.0\n# rigid-b\n")
     articulated_request["assets"].append(
         {
             "semantic_role": "replacement",
@@ -623,6 +626,41 @@ def test_tampered_source_fails_and_removes_partial_packet(tmp_path: Path) -> Non
 
     assert excinfo.value.errors == (
         "native_task_arena_packet_asset_identity_mismatch:task_object",
+    )
+    assert not output.exists()
+
+
+def test_a_json_receipt_named_as_a_usd_asset_fails_before_packet_copy(
+    tmp_path: Path,
+) -> None:
+    """The packet refuses bytes that are not the format their name declares.
+
+    Digesting the copy proves only that the packet staged what it was handed.
+    A receipt supplied in place of the exported asset digests perfectly and
+    then fails inside ``UsdStage::Open`` on a rented GPU, which is exactly how
+    the 2026-08-18 arena construction attempt was spent.
+    """
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=True)
+    receipt = evidence / "scene_appearance" / "scene_appearance.usdc"
+    receipt.write_text('{"schema_version": "appearance_export.v1"}\n', encoding="utf-8")
+    for asset in request["assets"]:
+        if asset["semantic_role"] == "scene_appearance":
+            asset["source"]["size_bytes"] = receipt.stat().st_size
+            asset["source"]["sha256"] = f"sha256:{sha256_file(receipt)}"
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    output = tmp_path / "packet"
+
+    with pytest.raises(NativeTaskArenaPacketError) as excinfo:
+        materialize_native_task_arena_packet(
+            request=request, evidence_root=evidence, output_dir=output
+        )
+
+    # the identity checks all pass -- only the format check catches this
+    assert excinfo.value.errors == (
+        "native_task_arena_packet_asset_format_invalid:scene_appearance",
     )
     assert not output.exists()
 
