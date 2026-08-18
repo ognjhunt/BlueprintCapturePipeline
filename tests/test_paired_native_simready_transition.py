@@ -318,6 +318,10 @@ def test_materialized_articulated_probe_carries_the_predecessor_binding(
         locked_joint_motion_tolerance_rad=0.001,
         settle_samples=40,
         control_frequency_hz=15.0,
+        # commanded mode now refuses a probe with no drive authority
+        probe_drive_stiffness=900.0,
+        probe_drive_damping=90.0,
+        probe_drive_max_force=400.0,
     )
 
     assert receipt["scene_id"] == "840920"

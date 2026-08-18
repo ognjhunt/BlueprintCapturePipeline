@@ -412,6 +412,17 @@ def materialize_articulated_native_probe(
         or float(probe_drive_max_force) > 0.0
     ):
         errors.append("articulated_native_probe_locked_mode_drive_forbidden")
+    if mode == COMMANDED_ARTICULATION_MODE and (
+        float(probe_drive_stiffness) <= 0.0 or float(probe_drive_max_force) <= 0.0
+    ):
+        # A commanded sweep with no drive authority is a guaranteed-null paid
+        # run: the runtime falls back to whatever the asset authored, and the
+        # graph asset deliberately authors stiffness 0 so nothing pushes the
+        # joint. On 2026-08-18 that read back 0.0 degrees at every commanded
+        # angle and cost a GPU allocation to learn three flags were missing.
+        # A probe that cannot move its own task joint is refused here, on the
+        # host, before anything is rented.
+        errors.append("articulated_native_probe_commanded_mode_drive_required")
 
     limits_deg: list[float] = []
     axis_token = ""

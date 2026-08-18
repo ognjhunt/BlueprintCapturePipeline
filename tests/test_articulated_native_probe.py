@@ -148,9 +148,37 @@ def _production_shaped_probe(tmp_path: Path, **overrides):
         "locked_joint_motion_tolerance_rad": 0.001,
         "settle_samples": 40,
         "control_frequency_hz": 15.0,
+        # Commanded mode requires real drive authority: the graph asset
+        # deliberately authors stiffness 0, so a probe without its own drive
+        # cannot move the task joint and the paid run is null by construction.
+        "probe_drive_stiffness": 900.0,
+        "probe_drive_damping": 90.0,
+        "probe_drive_max_force": 400.0,
     }
     arguments.update(overrides)
     return materialize_articulated_native_probe(**arguments)
+
+
+def test_commanded_probe_without_drive_authority_is_refused(tmp_path: Path) -> None:
+    """The 2026-08-18 null run: 0.0 degrees observed at every commanded angle.
+
+    The runtime fell back to the asset's authored stiffness of zero, so
+    nothing pushed the joint, and a GPU was rented to measure a drive that
+    was never going to move. A commanded probe must carry its own drive
+    authority or be refused before anything is allocated.
+    """
+
+    with pytest.raises(ArticulatedNativeProbeError) as caught:
+        _probe(
+            tmp_path,
+            probe_drive_stiffness=0.0,
+            probe_drive_damping=0.0,
+            probe_drive_max_force=0.0,
+        )
+    assert (
+        "articulated_native_probe_commanded_mode_drive_required"
+        in str(caught.value)
+    )
 
 
 def _articulated_worker_module():
@@ -178,6 +206,9 @@ def _probe(tmp_path: Path, **overrides):
         "locked_joint_motion_tolerance_rad": 0.001,
         "settle_samples": 40,
         "control_frequency_hz": 15.0,
+        "probe_drive_stiffness": 900.0,
+        "probe_drive_damping": 90.0,
+        "probe_drive_max_force": 400.0,
     }
     arguments.update(overrides)
     return materialize_articulated_native_probe(**arguments)
@@ -429,8 +460,27 @@ def test_probe_time_actuation_lives_in_the_overlay_not_the_asset(
     assert "PhysicsDriveAPI" not in candidate
 
 
-def test_a_probe_without_actuation_writes_no_drive(tmp_path: Path) -> None:
-    receipt = _probe(tmp_path)
+def test_a_locked_mode_probe_writes_no_drive(tmp_path: Path) -> None:
+    """Locked-mode validation moves nothing, so it must author no drive.
+
+    The commanded-mode counterpart of this test is gone on purpose: a
+    commanded probe with no drive is now refused outright, because it rents
+    a GPU to measure a joint nothing will ever push.
+    """
+
+    receipt = _probe(
+        tmp_path,
+        validation_mode="locked_hinge_rigid_validation",
+        task_joint_prim_path="",
+        locked_joint_prim_paths=[
+            "/Asset/joints/upper_door_hinge",
+            "/Asset/joints/lower_door_hinge",
+        ],
+        commanded_sweep_degrees=[],
+        probe_drive_stiffness=0.0,
+        probe_drive_damping=0.0,
+        probe_drive_max_force=0.0,
+    )
 
     overlay = Path(receipt["stages"]["articulation_stage"]["path"]).read_text()
     assert "PhysicsDriveAPI" not in overlay
