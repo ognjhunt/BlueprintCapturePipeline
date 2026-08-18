@@ -212,9 +212,20 @@ def _run_local_full_frame_redaction(source: Path, destination: Path) -> Dict[str
     ensure_dir(destination.parent)
     width = max(24, int(os.getenv("PRIVACY_LOCAL_REDACTION_PIXEL_WIDTH") or "96"))
     blur = max(2, int(os.getenv("PRIVACY_LOCAL_REDACTION_BLUR") or "16"))
+    # boxblur refuses any radius >= half the plane it blurs, and newer ffmpeg
+    # enforces that on the chroma planes too: after the pixelating downscale a
+    # 96-wide yuv420 frame has a 48x32 chroma plane, where the old fixed
+    # radius of 16 is exactly illegal and the whole redaction exits nonzero.
+    # Evaluate the radius per plane instead -- the configured strength where
+    # it fits, the largest legal blur where the plane is too small. The
+    # expressions see the frame as w/h and the chroma plane as cw/ch, so each
+    # plane gets its own bound, valid on every frame size, old and new ffmpeg.
+    luma_radius = f"min({blur}\\,(min(w\\,h)/2)-1)"
+    chroma_radius = f"min({blur}\\,(min(cw\\,ch)/2)-1)"
     vf = (
         f"scale={width}:-2,"
-        f"boxblur={blur}:1,"
+        f"boxblur=luma_radius={luma_radius}:luma_power=1:"
+        f"chroma_radius={chroma_radius}:chroma_power=1,"
         "scale=trunc(iw*8/2)*2:trunc(ih*8/2)*2:flags=neighbor,"
         "format=yuv420p"
     )
