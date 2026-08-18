@@ -100,6 +100,24 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _closeout_record(path: Path) -> dict[str, Any] | None:
+    """Bind one closure artifact by path, size, and digest.
+
+    A bare path is not evidence: the official-billing extractor rebuilds this
+    lane's posted charges from the closure artifacts and refuses anything it
+    cannot pin, so a lane that reports only paths can never reconcile its own
+    spend -- and therefore can never authorize a second attempt.
+    """
+
+    if not path.is_file():
+        return None
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _file_sha256(path),
+    }
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -722,6 +740,21 @@ def run_arena_native_control_vast(
             staging_dir / "wam_provider_object_store_cleanup.json"
         ),
         "candidate_policy_query_expected": bool(candidate_policy_query_expected),
+        # Digest-bound closure, in the shape every reconcilable lane emits, so
+        # this attempt's official posted charges can be extracted and the next
+        # attempt's authority can chain off it.
+        "provider_closeout": {
+            "adapter_result": _closeout_record(
+                provider_run / "vast_provider_adapter_result.json"
+            ),
+            "teardown_manifest": _closeout_record(
+                provider_run / "vast_teardown_manifest.json"
+            ),
+            "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+            "provider_zero_confirmed": teardown.get("continuing_spend_from_this_run")
+            is False,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent") is True,
+        },
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
         "blockers": sorted(set(str(item) for item in blockers if str(item))),

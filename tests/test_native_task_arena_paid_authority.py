@@ -234,3 +234,84 @@ def test_provider_zero_requires_watchdog_api_inventory(tmp_path: Path) -> None:
             result_path=result_path,
             output_path=tmp_path / "invalid_zero.json",
         )
+
+
+def test_every_accepted_predecessor_can_reconcile_its_own_posted_charges() -> None:
+    """A chained authority is only issuable if the predecessor reconciles.
+
+    Issuing the next attempt's authority requires the predecessor's official
+    posted charges, which are rebuilt by the Vast official-billing extractor
+    from the predecessor's terminal result. If the extractor does not accept
+    that result's schema, the predecessor can complete, tear down, and confirm
+    provider zero -- and still make every later attempt unissuable.
+
+    That is exactly what happened on 2026-08-18: the Arena lane's own
+    ``native_task_arena_vast_run.v1`` was missing from the registry, so the
+    lane whose contract is "every later attempt follows the prior zero-closed
+    native Arena attempt" could not follow its own attempt.
+    """
+
+    from blueprint_pipeline.native_task_arena_paid_authority import (
+        PREDECESSOR_RESULT_SCHEMAS,
+    )
+    from blueprint_pipeline.vast_official_billing_extractor import (
+        _SUPPORTED_TERMINAL_RESULT_SCHEMAS,
+    )
+
+    unreconcilable = sorted(
+        set(PREDECESSOR_RESULT_SCHEMAS.values()) - _SUPPORTED_TERMINAL_RESULT_SCHEMAS
+    )
+    assert unreconcilable == [], (
+        "these predecessor result schemas cannot be reconciled, so any "
+        f"authority chained off them is unissuable: {unreconcilable}"
+    )
+
+    # the Arena lane must be able to follow its own attempt, not only the
+    # import probe that precedes the very first one
+    assert (
+        PREDECESSOR_RESULT_SCHEMAS["native_task_arena_paid_attempt_authority.v1"]
+        == "native_task_arena_vast_run.v1"
+    )
+
+
+def test_the_arena_transport_binds_its_closure_artifacts_by_digest() -> None:
+    """The extractor refuses closure it cannot pin, so paths are not enough.
+
+    The generic extractor layout reads ``provider_closeout`` and rejects a
+    record without path, size, and sha256. The Arena transport reported only
+    ``adapter_result_path`` and ``teardown_manifest_path``.
+    """
+
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "blueprint_pipeline"
+        / "adp_isaac_lab_arena_vast.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    closeout_keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == "provider_closeout"
+                and isinstance(value, ast.Dict)
+            ):
+                closeout_keys = {
+                    inner.value
+                    for inner in value.keys
+                    if isinstance(inner, ast.Constant)
+                }
+
+    assert {
+        "adapter_result",
+        "teardown_manifest",
+        "provider_zero_confirmed",
+        "all_staged_objects_absent",
+    } <= closeout_keys, closeout_keys

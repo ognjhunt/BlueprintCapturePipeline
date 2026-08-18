@@ -88,6 +88,20 @@ def _finite_cost(value: Any) -> float:
     return cost
 
 
+#: Authority schema of an accepted predecessor -> the terminal result schema
+#: that predecessor writes.  Every value here must also be readable by the
+#: official-billing extractor: a chained authority requires the predecessor's
+#: reconciled posted charges, so a predecessor whose result schema the
+#: extractor does not accept can close cleanly and still block every later
+#: attempt.  ``tests/test_native_task_arena_paid_authority.py`` pins that.
+PREDECESSOR_RESULT_SCHEMAS: Mapping[str, str] = {
+    "paired_target_native_import_paid_attempt_authority.v1": (
+        "paired_target_native_import_vast_run.v1"
+    ),
+    AUTHORITY_SCHEMA_VERSION: "native_task_arena_vast_run.v1",
+}
+
+
 def validate_terminal_spend_chain(
     *, authority_path: str | Path, result_path: str | Path, provider_zero_path: str | Path
 ) -> dict[str, Any]:
@@ -102,7 +116,7 @@ def validate_terminal_spend_chain(
     schema = authority.get("schema_version")
     if schema == "paired_target_native_import_paid_attempt_authority.v1":
         authority_digest_field = "authorization_digest"
-        result_schema = "paired_target_native_import_vast_run.v1"
+        result_schema = PREDECESSOR_RESULT_SCHEMAS[schema]
         zero_schema = "paired_target_native_import_provider_zero.v1"
         zero_digest_field = "receipt_digest"
         consumption = result.get("authorization_consumption") or {}
@@ -111,7 +125,7 @@ def validate_terminal_spend_chain(
         zero_result_record = zero.get("terminal_result")
     elif schema == AUTHORITY_SCHEMA_VERSION:
         authority_digest_field = "authorization_digest"
-        result_schema = "native_task_arena_vast_run.v1"
+        result_schema = PREDECESSOR_RESULT_SCHEMAS[schema]
         zero_schema = PROVIDER_ZERO_SCHEMA_VERSION
         zero_digest_field = "receipt_digest"
         consumption = result.get("authorization_consumption") or {}
