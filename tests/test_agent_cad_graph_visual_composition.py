@@ -492,6 +492,10 @@ def test_native_inputs_cli_static_qualification_reopens_registered_asset_bytes(
     )
     graph_usd = tmp_path / "graph.usda"
     graph_receipt = tmp_path / "graph.receipt.json"
+    measured_path = _write(
+        tmp_path / "measured-derivation.json",
+        json.dumps(_washer_measured_derivation(), indent=2, sort_keys=True) + "\n",
+    )
     graph_process = _run_native_inputs_cli(
         "simready-graph-asset",
         "--spec",
@@ -500,6 +504,8 @@ def test_native_inputs_cli_static_qualification_reopens_registered_asset_bytes(
         str(FREEZE_A),
         "--source-asset-receipt",
         str(source_receipt_path),
+        "--measured-derivation",
+        str(measured_path),
         "--output-usd",
         str(graph_usd),
         "--output-receipt",
@@ -841,6 +847,46 @@ def test_composition_set_caps_replacements_at_five(tmp_path: Path) -> None:
     with pytest.raises(AgentCadGraphVisualCompositionError) as caught:
         validate_agent_cad_visual_composition_set(oversized)
     assert "agent_cad_visual_composition_set_count_invalid" in caught.value.codes
+
+
+def _washer_measured_derivation() -> dict:
+    """The 840920 derivation, matching the real spec's measured axis.
+
+    Authoring a commanded joint now requires the scan to corroborate it, and
+    the washer's own derivation -- replayed over the frozen scan on 2026-08-18
+    -- produced exactly this axis.
+    """
+
+    payload = {
+        "schema_version": "measured_articulation_derivation.v1",
+        "status": "derived_from_measurement",
+        "source_vertex_count": 19020,
+        "stage_up_axis_index": 2,
+        "front_plate": {
+            "axis_index": 1,
+            "outward_sign": -1,
+            "plane_m": -0.24,
+            "plate_vertex_count": 872,
+            "shell_vertex_count": 1850,
+            "facing_proposed_by": "task_freeze_observed_placement_scene840920",
+            "facing_is_proposal_not_measurement": True,
+        },
+        "forward_shell": {"vertex_count": 1850, "front_m": -0.301},
+        "target_joint": {
+            "axis": [0.0, 0.0, -1.0],
+            "pivot_asset_m": [-0.299, -0.301, 0.435],
+            "sign_rule": "commanded_travel_must_increase_clearance_from_parent",
+        },
+        "claim_boundary": {
+            "physics_typed_by_hand": False,
+            "axis_sign_is_derived_not_input": True,
+        },
+        "derivation_digest": "",
+    }
+    payload["derivation_digest"] = canonical_digest(
+        payload, digest_field="derivation_digest"
+    )
+    return payload
 
 
 def _amended_freeze_document() -> dict:
