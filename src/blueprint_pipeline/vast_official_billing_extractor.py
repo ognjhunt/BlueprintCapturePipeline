@@ -59,6 +59,12 @@ _PAIRED_NATIVE_RESULT_NAME = "paired_target_native_import_vast_result.v1.json"
 _PAIRED_NATIVE_JOB_DIR = "paired-target-native-import-job"
 _CONTENT_AGENTS_RESULT_NAME = "adp_content_agents_vast_result.json"
 _CONTENT_AGENTS_JOB_DIR = "content-agents-job"
+_ARENA_RESULT_NAME = "adp_arena_vast_result.json"
+#: The three native Arena links share one transport and one result
+#: schema; only the job directory differs.
+_ARENA_JOB_DIRS = frozenset(
+    {"arena-construction-job", "arena-controls-job", "arena-policy-job"}
+)
 
 
 class VastOfficialBillingExtractionError(ValueError):
@@ -749,6 +755,54 @@ def _content_agents_terminal_records(
     }
 
 
+def _native_task_arena_closure_paths(
+    *, result: Mapping[str, Any], result_path: Path, run_root: Path
+) -> tuple[Path, Path]:
+    """Resolve the Arena lane's attempt-scoped closure artifacts.
+
+    The Arena transport seals under a numbered attempt, so its closure files
+    hang off ``attempt_root`` rather than the job directory that every other
+    reconcilable lane uses.  Reading them from the result's own fields and then
+    pinning each against the canonical layout keeps a result from naming a file
+    outside the attempt it describes.
+
+    This exists so a result already written to disk stays reconcilable: a lane
+    that can only be reconciled by a field added later cannot account for the
+    attempts it has already paid for, and an unaccounted attempt blocks every
+    authority chained after it.
+    """
+
+    attempt_root = Path(str(result.get("attempt_root") or ""))
+    job_dir = result_path.parent
+    if (
+        not str(attempt_root)
+        or attempt_root.parent.name != "attempts"
+        or attempt_root.parent.parent != job_dir
+        or job_dir.parent != run_root / "allocator"
+    ):
+        raise VastOfficialBillingExtractionError(
+            "vast_official_terminal_result_invalid"
+        )
+    provider_run = attempt_root / "vast_provider_run"
+    expected = {
+        "adapter_result_path": (
+            provider_run / "vast_provider_adapter_result.json",
+            "vast_official_adapter_result_invalid",
+        ),
+        "teardown_manifest_path": (
+            provider_run / "vast_teardown_manifest.json",
+            "vast_official_teardown_invalid",
+        ),
+    }
+    for field, (expected_path, code) in expected.items():
+        if result.get(field) != str(expected_path):
+            raise VastOfficialBillingExtractionError(code)
+    return (
+        expected["adapter_result_path"][0],
+        expected["teardown_manifest_path"][0],
+    )
+
+
 def _terminal_evidence(
     *, instance_id: int, terminal_result_path: str | Path
 ) -> dict[str, Any]:
@@ -773,7 +827,18 @@ def _terminal_evidence(
         and result_path.parent.parent.name == "allocator"
         and result.get("schema_version") == "adp_content_agents_vast_run.v1"
     )
-    if not artifixer_layout and not paired_native_layout and not content_agents_layout:
+    arena_layout = (
+        result_path.name == _ARENA_RESULT_NAME
+        and result_path.parent.name in _ARENA_JOB_DIRS
+        and result_path.parent.parent.name == "allocator"
+        and result.get("schema_version") == "native_task_arena_vast_run.v1"
+    )
+    if (
+        not artifixer_layout
+        and not paired_native_layout
+        and not content_agents_layout
+        and not arena_layout
+    ):
         raise VastOfficialBillingExtractionError("vast_official_terminal_result_invalid")
     run_root = result_path.parents[2]
     allocator_result_path, allocator_result, allocator_result_bytes = _json_file(
@@ -834,30 +899,59 @@ def _terminal_evidence(
         adapter = json.loads(adapter_bytes)
         teardown = json.loads(teardown_bytes)
     else:
-        closeout = result.get("provider_closeout")
-        if (
-            not isinstance(closeout, Mapping)
-            or closeout.get("provider_zero_confirmed") is not True
-            or closeout.get("all_staged_objects_absent") is not True
-        ):
-            raise VastOfficialBillingExtractionError(
-                "vast_official_terminal_closure_invalid"
+        if arena_layout:
+            # Attempt-scoped layout: the closure files are pinned against the
+            # canonical attempt paths rather than a ``provider_closeout``
+            # block, so an attempt written before that block existed still
+            # reconciles.
+            adapter_path, teardown_path = _native_task_arena_closure_paths(
+                result=result, result_path=result_path, run_root=run_root
             )
-        adapter_path, adapter, adapter_bytes = _bound_json_record(
-            closeout.get("adapter_result"),
-            run_root=run_root,
-            code="vast_official_adapter_result_invalid",
-        )
-        teardown_path, teardown, teardown_bytes = _bound_json_record(
-            closeout.get("teardown_manifest"),
-            run_root=run_root,
-            code="vast_official_teardown_invalid",
-        )
+            adapter_path, adapter, adapter_bytes = _json_file(
+                adapter_path, code="vast_official_adapter_result_invalid"
+            )
+            teardown_path, teardown, teardown_bytes = _json_file(
+                teardown_path, code="vast_official_teardown_invalid"
+            )
+            if result.get("all_staged_objects_absent") is not True:
+                raise VastOfficialBillingExtractionError(
+                    "vast_official_terminal_closure_invalid"
+                )
+            # The Arena lane's adapter status is the provider outcome while its
+            # result status is the lane's own verdict, so a provider attempt
+            # can complete cleanly while the lane blocks on qualification.
+            # That attempt still cost money, and a failed attempt is exactly
+            # the one that gets retried -- demanding the two agree would make
+            # every failure permanently unaccountable and so block the retry
+            # its reconciliation exists to fund. The adapter is still pinned to
+            # an exact path inside this attempt and to this instance id.
+            adapter_status_ok = adapter.get("status") in {"completed", "blocked"}
+        else:
+            closeout = result.get("provider_closeout")
+            if (
+                not isinstance(closeout, Mapping)
+                or closeout.get("provider_zero_confirmed") is not True
+                or closeout.get("all_staged_objects_absent") is not True
+            ):
+                raise VastOfficialBillingExtractionError(
+                    "vast_official_terminal_closure_invalid"
+                )
+            adapter_path, adapter, adapter_bytes = _bound_json_record(
+                closeout.get("adapter_result"),
+                run_root=run_root,
+                code="vast_official_adapter_result_invalid",
+            )
+            teardown_path, teardown, teardown_bytes = _bound_json_record(
+                closeout.get("teardown_manifest"),
+                run_root=run_root,
+                code="vast_official_teardown_invalid",
+            )
+            adapter_status_ok = adapter.get("status") == result_status
         if (
             result.get("adapter_result_path") != str(adapter_path)
             or result.get("teardown_manifest_path") != str(teardown_path)
             or adapter.get("schema_version") not in _SUPPORTED_ADAPTER_SCHEMAS
-            or adapter.get("status") != result_status
+            or not adapter_status_ok
             or adapter.get("vast_instance_ids") != [instance_id]
             or adapter.get("continuing_spend_from_this_run") is not False
             or adapter.get("final_validation_status") != "passed"

@@ -802,6 +802,125 @@ def _content_agents_terminal_fixture(tmp_path: Path) -> Path:
     return result_path
 
 
+ARENA_INSTANCE = 48_032_653
+ARENA_LABEL = "blueprint-native-task-arena-20260818t150350615100000-1787065437"
+ARENA_RUN_ID = "adp-arena-construction-fixture-48032653"
+
+
+def _arena_terminal_fixture(tmp_path: Path) -> Path:
+    """One Arena attempt in its real shape: attempt-scoped, provider-clean, lane-blocked.
+
+    Modelled on the 2026-08-18 construction attempt. The provider side
+    completed and tore down; the lane blocked on its own qualification. That
+    combination is the normal shape of an attempt worth retrying, and it must
+    reconcile or the retry can never be funded.
+    """
+
+    seed_result_path = _terminal_fixture(
+        tmp_path,
+        instance_id=ARENA_INSTANCE,
+        status="blocked",
+        run_id_override=ARENA_RUN_ID,
+        profile_id_override="arena-construction-live-840920-task-a-fixture",
+    )
+    run_root = seed_result_path.parents[2]
+    allocator = run_root / "allocator"
+    job = allocator / "arena-construction-job"
+    # the Arena transport seals under a numbered attempt
+    attempt_root = job / "attempts" / "attempt_001"
+    provider_run = attempt_root / "vast_provider_run"
+
+    seed_result = json.loads(seed_result_path.read_text(encoding="utf-8"))
+    adapter = json.loads(
+        Path(seed_result["adapter_result_path"]).read_text(encoding="utf-8")
+    )
+    adapter["provider_bundle_kind"] = "native_task_arena"
+    # the provider attempt itself completed, unlike the lane verdict below
+    adapter["status"] = "completed"
+    adapter_path = _write(provider_run / "vast_provider_adapter_result.json", adapter)
+    teardown = json.loads(
+        Path(seed_result["teardown_manifest_path"]).read_text(encoding="utf-8")
+    )
+    teardown_path = _write(provider_run / "vast_teardown_manifest.json", teardown)
+
+    watchdog_handoff = {
+        "schema_version": "vast_independent_watchdog_handoff.v1",
+        "status": "provider_terminal",
+        "watchdog_armed_before_allocation": True,
+        "instance_ids": [ARENA_INSTANCE],
+        "provider_absence_confirmed": True,
+        "watchdog_process_exit_code": 0,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
+
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        # the lane refused its own output; the GPU time was still spent
+        "status": "blocked",
+        "attempt_number": 1,
+        "attempt_root": str(attempt_root),
+        "adapter_result_path": str(adapter_path),
+        "teardown_manifest_path": str(teardown_path),
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "independent_watchdog": watchdog_handoff,
+        "blockers": ["native_task_construction_failed_at_dependencies_qualified"],
+        "raw_secret_values_recorded": False,
+    }
+    result_path = _write(job / "adp_arena_vast_result.json", result)
+    allocator_result_path = _write(allocator / "result.json", result)
+
+    receipt_path = run_root / "launch_receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["terminal_evidence"]["result"] = {
+        "path": str(allocator_result_path),
+        "digest": _sha256(allocator_result_path),
+        "exists": True,
+    }
+    receipt["terminal_evidence"]["artifacts"] = {
+        "teardown_manifest_path": {
+            "path": str(teardown_path),
+            "digest": _sha256(teardown_path),
+            "exists": True,
+        },
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write(receipt_path, receipt)
+
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = json.loads(zero_path.read_text(encoding="utf-8"))
+    zero["receipt_digest"] = receipt["receipt_digest"]
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(zero_path, zero)
+    return result_path
+
+
+def _arena_fixture(tmp_path: Path) -> dict[str, object]:
+    fixture = _fixture(tmp_path)
+    response = fixture["responses"][0]
+    assert isinstance(response, Path)
+    payload = json.loads(response.read_text(encoding="utf-8"))
+    payload["results"].append(
+        _charge(
+            instance_id=ARENA_INSTANCE,
+            label=ARENA_LABEL,
+            total=0.072,
+            gpu=0.068,
+            disk=0.004,
+        )
+    )
+    _write(response, payload)
+    _refresh_response_binding(fixture, 0)
+    terminals = fixture["terminals"]
+    assert isinstance(terminals, dict)
+    terminals[ARENA_INSTANCE] = _arena_terminal_fixture(tmp_path)
+    return fixture
+
+
 def _content_agents_fixture(tmp_path: Path) -> dict[str, object]:
     fixture = _fixture(tmp_path)
     response = fixture["responses"][0]
@@ -1570,3 +1689,93 @@ def test_script_entrypoint_is_reachable_without_provider_access() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "--provider-billing-source-receipt" in completed.stdout
     assert "--expected-instance" in completed.stdout
+
+
+def test_accepts_an_attempt_scoped_arena_layout_whose_lane_blocked(
+    tmp_path: Path,
+) -> None:
+    """The Arena lane reconciles an attempt its own verdict rejected.
+
+    Chaining the next Arena authority requires the previous attempt's official
+    posted charges. The 2026-08-18 construction attempt completed on the
+    provider, tore down, confirmed provider zero, and posted $0.072 -- and the
+    lane blocked on its own qualification. If that shape cannot reconcile, the
+    attempts most in need of a retry are exactly the ones that can never fund
+    one.
+    """
+
+    fixture = _arena_fixture(tmp_path)
+    output = tmp_path / "arena-official.json"
+    terminal_path = _spec(fixture, ARENA_INSTANCE, ARENA_LABEL)[2]
+
+    value = _materialize(
+        fixture,
+        output,
+        expected=[(ARENA_INSTANCE, ARENA_LABEL, terminal_path)],
+    )
+
+    assert value["provider_instance_ids"] == [ARENA_INSTANCE]
+    assert value["official_total_usd"] == pytest.approx(0.072)
+    terminal = value["entries"][0]["terminal_execution_evidence"]
+    assert terminal["terminal_result"]["schema_version"] == (
+        "native_task_arena_vast_run.v1"
+    )
+    # the provider completed while the lane blocked, and both are recorded
+    assert terminal["terminal_result"]["status"] == "blocked"
+    assert terminal["provider_adapter_result"]["status"] == "completed"
+    assert validate_vast_official_same_goal_reconciliation(output) == value
+
+
+def test_rejects_an_arena_result_naming_closure_outside_its_own_attempt(
+    tmp_path: Path,
+) -> None:
+    """Attempt-scoped discovery must not let a result point anywhere it likes."""
+
+    fixture = _arena_fixture(tmp_path)
+    terminal_path = _spec(fixture, ARENA_INSTANCE, ARENA_LABEL)[2]
+    result = json.loads(terminal_path.read_text(encoding="utf-8"))
+    job = terminal_path.parent
+
+    # a sibling attempt's adapter is not this attempt's evidence
+    stray = job / "attempts" / "attempt_002" / "vast_provider_run"
+    stray_adapter = _write(
+        stray / "vast_provider_adapter_result.json",
+        json.loads(Path(result["adapter_result_path"]).read_text(encoding="utf-8")),
+    )
+    result["adapter_result_path"] = str(stray_adapter)
+    _write(terminal_path, result)
+    _write(job.parent / "result.json", result)
+
+    with pytest.raises(VastOfficialBillingExtractionError) as excinfo:
+        _materialize(
+            fixture,
+            tmp_path / "arena-stray.json",
+            expected=[(ARENA_INSTANCE, ARENA_LABEL, terminal_path)],
+        )
+
+    assert "adapter_result_invalid" in str(excinfo.value)
+
+
+def test_rejects_an_arena_attempt_root_outside_its_job_directory(
+    tmp_path: Path,
+) -> None:
+    """``attempt_root`` is pinned to this job, not merely to some attempts dir."""
+
+    fixture = _arena_fixture(tmp_path)
+    terminal_path = _spec(fixture, ARENA_INSTANCE, ARENA_LABEL)[2]
+    result = json.loads(terminal_path.read_text(encoding="utf-8"))
+    job = terminal_path.parent
+    result["attempt_root"] = str(
+        job.parent / "arena-policy-job" / "attempts" / "attempt_001"
+    )
+    _write(terminal_path, result)
+    _write(job.parent / "result.json", result)
+
+    with pytest.raises(VastOfficialBillingExtractionError) as excinfo:
+        _materialize(
+            fixture,
+            tmp_path / "arena-wrong-job.json",
+            expected=[(ARENA_INSTANCE, ARENA_LABEL, terminal_path)],
+        )
+
+    assert "terminal_result_invalid" in str(excinfo.value)
