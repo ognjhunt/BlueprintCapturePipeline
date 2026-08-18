@@ -76,6 +76,7 @@ STEPS: dict[str, Step] = {
                 "--source-asset-receipt", required=True
             ),
             "destination": Param("--output-usd", required=True),
+            "measured_derivation": Param("--measured-derivation", json_file=True),
             "receipt_path": Param("--output-receipt", required=True),
         },
     ),

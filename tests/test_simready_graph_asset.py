@@ -121,6 +121,45 @@ def _graph(*, target: bool = True) -> dict:
     }
 
 
+def _measured_derivation(axis=(1.0, 0.0, 0.0)) -> dict:
+    """A derivation receipt corroborating `axis`, shaped like the real one.
+
+    Authoring a commanded joint now requires the scan to agree with the spec,
+    so every fixture that authors one carries its measurement.
+    """
+
+    payload = {
+        "schema_version": "measured_articulation_derivation.v1",
+        "status": "derived_from_measurement",
+        "source_vertex_count": 19020,
+        "stage_up_axis_index": 2,
+        "front_plate": {
+            "axis_index": 1,
+            "outward_sign": -1,
+            "plane_m": -0.24,
+            "plate_vertex_count": 872,
+            "shell_vertex_count": 1850,
+            "facing_proposed_by": "test_scene_context",
+            "facing_is_proposal_not_measurement": True,
+        },
+        "forward_shell": {"vertex_count": 1850, "front_m": -0.301},
+        "target_joint": {
+            "axis": list(axis),
+            "pivot_asset_m": [-0.299, -0.301, 0.435],
+            "sign_rule": "commanded_travel_must_increase_clearance_from_parent",
+        },
+        "claim_boundary": {
+            "physics_typed_by_hand": False,
+            "axis_sign_is_derived_not_input": True,
+        },
+        "derivation_digest": "",
+    }
+    payload["derivation_digest"] = canonical_digest(
+        payload, digest_field="derivation_digest"
+    )
+    return payload
+
+
 def _spec(source_receipt: Path, *, target: bool = True) -> dict:
     source = json.loads(source_receipt.read_text())
 
@@ -194,6 +233,7 @@ def test_general_graph_compiler_authors_articulated_and_rigid_subjects(
         task_freeze_receipt_path=task_freeze,
         source_asset_receipt_path=source,
         destination=tmp_path / f"asset_{target}.usda",
+        measured_derivation=_measured_derivation(),
     )
 
     stage = Usd.Stage.Open(receipt["output_usd"]["path"])
@@ -221,6 +261,7 @@ def test_static_readback_qualifies_authored_structure_but_retains_claim_blockers
         task_freeze_receipt_path=task_freeze,
         source_asset_receipt_path=source,
         destination=tmp_path / "asset.usda",
+        measured_derivation=_measured_derivation(),
         receipt_path=receipt_path,
     )
 
@@ -254,6 +295,8 @@ def test_native_inputs_cli_authors_and_statically_qualifies_exact_graph_bytes(
     source_before = source_asset.read_bytes()
     spec = _spec(source_receipt)
     task_freeze = _task_freeze(tmp_path, spec)
+    measured_path = tmp_path / "measured_derivation.json"
+    measured_path.write_text(json.dumps(_measured_derivation()), encoding="utf-8")
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
     authored_usd = tmp_path / "authored.usda"
@@ -267,6 +310,8 @@ def test_native_inputs_cli_authors_and_statically_qualifies_exact_graph_bytes(
         str(task_freeze),
         "--source-asset-receipt",
         str(source_receipt),
+        "--measured-derivation",
+        str(measured_path),
         "--output-usd",
         str(authored_usd),
         "--output-receipt",
@@ -331,6 +376,8 @@ def test_native_inputs_cli_refuses_drifted_source_and_invalid_registered_bytes(
     source_receipt = _source_receipt(tmp_path)
     spec = _spec(source_receipt)
     task_freeze = _task_freeze(tmp_path, spec)
+    measured_path = tmp_path / "measured_derivation.json"
+    measured_path.write_text(json.dumps(_measured_derivation()), encoding="utf-8")
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec))
     (tmp_path / "source.usda").write_text("changed", encoding="utf-8")
@@ -345,6 +392,8 @@ def test_native_inputs_cli_refuses_drifted_source_and_invalid_registered_bytes(
         str(task_freeze),
         "--source-asset-receipt",
         str(source_receipt),
+        "--measured-derivation",
+        str(measured_path),
         "--output-usd",
         str(authored_usd),
         "--output-receipt",
@@ -370,6 +419,8 @@ def test_native_inputs_cli_refuses_drifted_source_and_invalid_registered_bytes(
         str(task_freeze),
         "--source-asset-receipt",
         str(source_receipt),
+        "--measured-derivation",
+        str(measured_path),
         "--output-usd",
         str(authored_usd),
         "--output-receipt",
@@ -411,6 +462,7 @@ def test_static_readback_qualifies_exact_registered_visual_and_graph_bytes(
         task_freeze_receipt_path=task_freeze,
         source_asset_receipt_path=source,
         destination=tmp_path / "asset.usda",
+        measured_derivation=_measured_derivation(),
         receipt_path=receipt_path,
     )
     final_usd = tmp_path / "registered.usda"
@@ -508,6 +560,7 @@ def test_registered_static_readback_rejects_wrong_final_frame(
         task_freeze_receipt_path=task_freeze,
         source_asset_receipt_path=source,
         destination=tmp_path / "asset.usda",
+        measured_derivation=_measured_derivation(),
         receipt_path=receipt_path,
     )
     final_usd = tmp_path / "registered.usda"
@@ -591,6 +644,7 @@ def test_compiler_retains_declared_drive_semantics_and_box_xform_order(
         task_freeze_receipt_path=task_freeze,
         source_asset_receipt_path=source,
         destination=tmp_path / "asset.usda",
+        measured_derivation=_measured_derivation(),
         receipt_path=receipt_path,
     )
 
@@ -634,6 +688,7 @@ def test_source_receipt_and_asset_bytes_are_verified(tmp_path: Path) -> None:
             task_freeze_receipt_path=task_freeze,
             source_asset_receipt_path=source,
             destination=tmp_path / "asset.usda",
+        measured_derivation=_measured_derivation(),
         )
     assert "graph_asset_source_asset_bytes_changed" in caught.value.codes
 
@@ -652,6 +707,7 @@ def test_task_freeze_identity_and_digest_are_verified(tmp_path: Path) -> None:
             task_freeze_receipt_path=task_freeze,
             source_asset_receipt_path=source,
             destination=tmp_path / "asset.usda",
+        measured_derivation=_measured_derivation(),
         )
     assert "graph_asset_task_freeze_invalid" in caught.value.codes
 
@@ -731,3 +787,96 @@ def test_third_scene_checked_in_graph_assets_retain_static_claim_boundary(
     assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
     assert qualification["claim_boundary"]["appearance_materially_qualified"] is False
     assert qualification["claim_boundary"]["physical_equivalence_proven"] is False
+
+
+def test_a_typed_axis_the_scan_contradicts_cannot_become_an_asset(tmp_path: Path) -> None:
+    """Scene 840920's exact bug, now unreachable.
+
+    The spec carried ``+Z`` while the geometry demanded ``-Z``; it authored
+    cleanly, sealed into a freeze, and cost two paid runs reading a jammed
+    6.01 degrees. Authoring now requires the scan to agree, so the same spec
+    is refused before an asset exists.
+    """
+
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    # Spec says +X; the scan measured -X.
+    with pytest.raises(SimReadyGraphAssetError) as caught:
+        author_simready_graph_asset(
+            spec=spec,
+            task_freeze_receipt_path=task_freeze,
+            source_asset_receipt_path=source,
+            destination=tmp_path / "contradicted.usda",
+            measured_derivation=_measured_derivation(axis=(-1.0, 0.0, 0.0)),
+        )
+    assert "graph_asset_target_axis_contradicts_measurement" in caught.value.codes
+
+
+def test_a_commanded_joint_cannot_be_authored_without_measurement(tmp_path: Path) -> None:
+    """Doctrine 5b in code: no measurement, no physical claim."""
+
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    with pytest.raises(SimReadyGraphAssetError) as caught:
+        author_simready_graph_asset(
+            spec=spec,
+            task_freeze_receipt_path=task_freeze,
+            source_asset_receipt_path=source,
+            destination=tmp_path / "unmeasured.usda",
+        )
+    assert "graph_asset_measured_derivation_required" in caught.value.codes
+
+
+def test_a_tampered_derivation_cannot_launder_a_typed_axis(tmp_path: Path) -> None:
+    """Editing the receipt to agree must break its self-digest."""
+
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    forged = _measured_derivation(axis=(-1.0, 0.0, 0.0))
+    forged["target_joint"]["axis"] = [1.0, 0.0, 0.0]  # now "agrees" with the spec
+    with pytest.raises(SimReadyGraphAssetError) as caught:
+        author_simready_graph_asset(
+            spec=spec,
+            task_freeze_receipt_path=task_freeze,
+            source_asset_receipt_path=source,
+            destination=tmp_path / "forged.usda",
+            measured_derivation=forged,
+        )
+    assert "graph_asset_measured_derivation_digest_invalid" in caught.value.codes
+
+
+def test_the_authored_receipt_carries_its_measurement_proof(tmp_path: Path) -> None:
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    derivation = _measured_derivation()
+    receipt = author_simready_graph_asset(
+        spec=spec,
+        task_freeze_receipt_path=task_freeze,
+        source_asset_receipt_path=source,
+        destination=tmp_path / "proved.usda",
+        measured_derivation=derivation,
+    )
+    binding = receipt["measured_axis_binding"]
+    assert binding["measured_target_axis_required"] is True
+    assert binding["measured_derivation_digest"] == derivation["derivation_digest"]
+    assert binding["measured_target_axis"] == [1.0, 0.0, 0.0]
+    assert binding["facing_proposed_by"] == "test_scene_context"
+
+
+def test_a_graph_with_no_commanded_joint_needs_no_measurement(tmp_path: Path) -> None:
+    """Nothing is commanded, so no physical claim is made to corroborate."""
+
+    source = _source_receipt(tmp_path)
+    spec = _spec(source, target=False)
+    task_freeze = _task_freeze(tmp_path, spec)
+    receipt = author_simready_graph_asset(
+        spec=spec,
+        task_freeze_receipt_path=task_freeze,
+        source_asset_receipt_path=source,
+        destination=tmp_path / "locked_only.usda",
+    )
+    assert receipt["measured_axis_binding"] == {"measured_target_axis_required": False}
