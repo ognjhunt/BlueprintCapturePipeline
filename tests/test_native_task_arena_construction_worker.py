@@ -225,3 +225,77 @@ def test_worker_retains_path_samples_for_general_graph_and_rigid_tasks() -> None
         task_kind="articulated_open_close",
         task_spec={"schema_version": "adp_task_spec.v1"},
     )
+
+
+def test_articulation_device_binding_names_the_asset_on_the_wrong_device() -> None:
+    """A cuda/cpu mismatch must name the asset, not just a kernel argument.
+
+    Isaac Lab raises this from inside a Warp kernel launch:
+
+        Error launching kernel 'get_joint_acc_from_joint_vel', device='cuda:0',
+        but input array for argument 'joint_vel' is on device=cpu
+
+    That message cannot say which articulation is wrong, and attempts r6-r9
+    each spent ~$0.065 failing on it. This reads every articulation directly
+    so one run identifies the asset.
+    """
+
+    from types import SimpleNamespace
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _articulation_device_binding,
+    )
+
+    def _asset(joint_device: str, joints: int, actuators: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            data=SimpleNamespace(
+                joint_pos=SimpleNamespace(device=joint_device),
+                joint_vel=SimpleNamespace(device=joint_device),
+                device="cuda:0",
+            ),
+            joint_names=[f"j{i}" for i in range(joints)],
+            actuators={f"a{i}": None for i in range(actuators)},
+        )
+
+    scene = {
+        "robot": _asset("cuda:0", 13, 8),
+        "task_object": _asset("cpu", 5, 0),
+    }
+    built = SimpleNamespace(
+        env=SimpleNamespace(unwrapped=SimpleNamespace(scene=scene)),
+        scene_asset_names={"task_object": "task_object"},
+    )
+
+    binding = _articulation_device_binding(built, expected_device="cuda:0")
+
+    assert binding["articulations"]["robot"]["on_expected_device"] is True
+    offender = binding["articulations"]["task_object"]
+    assert offender["on_expected_device"] is False
+    assert offender["joint_vel"] == "cpu"
+    # the numbers that distinguish the assets are recorded too
+    assert offender["num_joints"] == 5
+    assert offender["num_actuators"] == 0
+
+
+def test_device_binding_survives_an_unreachable_scene() -> None:
+    """Diagnostics must never replace the real failure with their own."""
+
+    from types import SimpleNamespace
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _articulation_device_binding,
+    )
+
+    class _Boom:
+        @property
+        def scene(self):
+            raise RuntimeError("scene not ready")
+
+    built = SimpleNamespace(
+        env=SimpleNamespace(unwrapped=_Boom()), scene_asset_names={}
+    )
+
+    binding = _articulation_device_binding(built, expected_device="cuda:0")
+
+    assert "unavailable" in binding
+    assert binding["expected_device"] == "cuda:0"

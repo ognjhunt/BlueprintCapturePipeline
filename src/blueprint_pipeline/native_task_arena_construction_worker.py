@@ -497,6 +497,40 @@ def _camera_snapshot(
     return {"snapshot_id": snapshot_id, "cameras": rows}
 
 
+def _articulation_device_binding(
+    built: Any, *, expected_device: str
+) -> dict[str, Any]:
+    """Report the device backing each articulation's joint-state arrays.
+
+    Isaac Lab raises the mismatch from inside a Warp kernel launch, naming the
+    kernel argument, so the message cannot say which asset is on the wrong
+    device. This reads each articulation directly and says so.
+    """
+
+    rows: dict[str, Any] = {"expected_device": expected_device, "articulations": {}}
+    try:
+        scene = built.env.unwrapped.scene
+    except Exception as exc:  # the scene may not be reachable on some failures
+        rows["unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
+        return rows
+    for name in sorted(set(built.scene_asset_names.values()) | {"robot"}):
+        entry: dict[str, Any] = {}
+        try:
+            asset = scene[name]
+            data = asset.data
+            for field in ("joint_pos", "joint_vel"):
+                value = getattr(data, field, None)
+                entry[field] = str(getattr(value, "device", None))
+            entry["num_joints"] = len(getattr(asset, "joint_names", []) or [])
+            entry["num_actuators"] = len(getattr(asset, "actuators", {}) or {})
+            entry["data_device"] = str(getattr(data, "device", None))
+            entry["on_expected_device"] = entry.get("joint_vel") == expected_device
+        except Exception as exc:
+            entry["unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
+        rows["articulations"][name] = entry
+    return rows
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     runtime = Path(__file__).resolve().parent
@@ -619,7 +653,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("native_task_arena_device_binding_failed")
         env = built.env
         seed = int(plan["scenario"]["seed"])
-        env.reset(seed=seed)
+        # env.reset() computes observations, which touches every articulation's
+        # joint state. Attempts r6-r9 all died inside it with a cuda/cpu array
+        # mismatch that names a kernel argument and not the asset, so record
+        # which articulation is backed by which device before re-raising: one
+        # run of certainty instead of another round of hypotheses.
+        result["articulation_device_binding"] = _articulation_device_binding(
+            built, expected_device=str(preconstruction["expected_device"])
+        )
+        try:
+            env.reset(seed=seed)
+        except Exception as exc:
+            result["reset_failure"] = {
+                "error": f"{type(exc).__name__}:{exc}"[:400],
+                "traceback": traceback.format_exc()[-4000:],
+                "articulation_device_binding": result["articulation_device_binding"],
+            }
+            raise
         scene = env.unwrapped.scene
         robot = scene["robot"]
         task_object = scene[built.scene_asset_names["task_object"]]
