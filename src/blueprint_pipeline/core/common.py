@@ -24,6 +24,8 @@ MAXIMUM_HIDDEN_ZONE_BOUND = 0.35
 _GROUP_WORLD_WRITE = stat.S_IWGRP | stat.S_IWOTH
 
 __all__ = [
+    "USD_PAYLOAD_MAGIC",
+    "usd_payload_format_matches",
     "redacted_failure_detail",
     "GCSUri",
     "MAXIMUM_HIDDEN_ZONE_BOUND",
@@ -412,3 +414,37 @@ def redacted_failure_detail(exc: BaseException) -> str:
     if len(detail) > _FAILURE_DETAIL_MAX_CHARS:
         detail = detail[:_FAILURE_DETAIL_MAX_CHARS] + "..."
     return f"{name}:{detail}"
+
+
+#: Leading bytes each USD payload format must begin with.  ``usdz`` is a zip,
+#: ``usdc`` is crate-encoded, ``usda`` is text.
+USD_PAYLOAD_MAGIC: Mapping[str, bytes] = {
+    ".usdz": b"PK\x03\x04",
+    ".usdc": b"PXR-USDC",
+    ".usda": b"#usda",
+}
+
+
+def usd_payload_format_matches(path: Path, filename: str) -> bool:
+    """Do these bytes actually start like the USD format the name declares?
+
+    Provider bundles stage an operator-named path under the fixed filename the
+    runtime will open, and every surrounding check is self-consistent: the
+    caller's digest matches because the wrong file digests perfectly, and the
+    packet verifies the copy against the source it was handed.  So the format
+    is only discovered by ``UsdStage::Open`` on a rented GPU.
+
+    Learned 2026-08-18 for $0.09 of Vast time: an appearance *receipt* was
+    supplied instead of the exported asset, and 3.8 kB of JSON reached a
+    provider as ``scene_appearance.usdz``.  Reading four bytes on the host is
+    the entire fix.  Filenames with no known USD suffix are not guessed at.
+    """
+
+    expected = USD_PAYLOAD_MAGIC.get(Path(filename).suffix)
+    if expected is None:
+        return True
+    try:
+        with Path(path).open("rb") as stream:
+            return stream.read(len(expected)) == expected
+    except OSError:
+        return False

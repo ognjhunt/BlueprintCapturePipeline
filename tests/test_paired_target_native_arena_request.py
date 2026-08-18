@@ -145,3 +145,47 @@ def test_missing_receipt_path_is_a_named_refusal_not_a_typeerror() -> None:
                 digest_field="receipt_digest",
                 code=code,
             )
+
+
+def test_a_receipt_supplied_as_a_usd_asset_is_refused_before_any_spend(
+    tmp_path: Path,
+) -> None:
+    """JSON staged under a ``.usdz`` name must not reach a rented GPU.
+
+    On 2026-08-18 a task input named the appearance receipt instead of the
+    exported asset. The request compiler checked only that the path was a
+    readable file, the packet digested exactly what it copied, and the
+    terminal-contract rehearsal passed, so 3.8 kB of JSON went to a provider
+    as ``scene_appearance.usdz`` and the run died in ``UsdStage::Open``.
+    """
+
+    from blueprint_pipeline.native_task_arena_packet import (
+        usd_payload_format_matches,
+    )
+
+    receipt = tmp_path / "native_appearance_export.v1.json"
+    receipt.write_text('{\n  "schema_version": "x"\n}\n', encoding="utf-8")
+    assert usd_payload_format_matches(receipt, "scene_appearance.usdz") is False
+
+    # the real exported asset is a zip, and each sibling format is checked by
+    # its own magic rather than by its extension alone
+    usdz = tmp_path / "repaired_scene.usdz"
+    usdz.write_bytes(b"PK\x03\x04rest-of-archive")
+    assert usd_payload_format_matches(usdz, "scene_appearance.usdz") is True
+
+    usda = tmp_path / "replacement.usda"
+    usda.write_text("#usda 1.0\n", encoding="utf-8")
+    assert usd_payload_format_matches(usda, "replacement__x.usda") is True
+    assert usd_payload_format_matches(usda, "scene_collision.usdc") is False
+
+    usdc = tmp_path / "scene.usdc"
+    usdc.write_bytes(b"PXR-USDC\x00\x00")
+    assert usd_payload_format_matches(usdc, "scene_collision.usdc") is True
+
+    # an unreadable path is refused, never treated as acceptable
+    assert usd_payload_format_matches(tmp_path / "absent.usdz", "a.usdz") is False
+
+    # a format this packet does not stage is left alone rather than guessed at
+    other = tmp_path / "notes.txt"
+    other.write_text("free text", encoding="utf-8")
+    assert usd_payload_format_matches(other, "notes.txt") is True

@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -29,6 +29,7 @@ from .dual_task_rehearsal_contract import (
     validate_task_freeze,
 )
 from .dual_task_scenario_suite import validate_dual_task_scenario_suite
+from .native_task_arena_packet import usd_payload_format_matches
 from .native_task_runtime_contract import DROID_FRANKA_RESET_JOINT_NAMES
 from .paired_target_native_construction_bindings import (
     validate_materialized_paired_target_native_construction_bindings,
@@ -653,6 +654,24 @@ def materialize_paired_target_native_arena_requests(
                         "visible": True,
                     }
                 )
+            # Every asset is staged under the filename the runtime opens, so a
+            # payload whose bytes are not that format is a guaranteed-null paid
+            # run.  Supplying an appearance *receipt* instead of the exported
+            # asset is the way this actually happened; refuse it here rather
+            # than inside ``UsdStage::Open`` on a rented GPU.
+            for asset in assets:
+                candidate = evidence.joinpath(
+                    *PurePosixPath(
+                        str(asset["source"]["relative_path"])
+                    ).parts
+                )
+                if not usd_payload_format_matches(
+                    candidate, str(asset["filename"])
+                ):
+                    raise PairedTargetNativeArenaRequestError(
+                        "paired_target_arena_request_asset_format_invalid:"
+                        f"{asset['semantic_role']}"
+                    )
             canonical = next(
                 cell for cell in row["scenario"]["cells"] if cell["family"] == "canonical"
             )

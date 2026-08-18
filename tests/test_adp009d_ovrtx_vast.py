@@ -30,7 +30,9 @@ def _sha(path: Path) -> str:
 
 def _probe(tmp_path: Path) -> Path:
     particlefield = tmp_path / "aura.usdc"
-    particlefield.write_bytes(b"particlefield")
+    # crate magic: the bundle refuses a payload that is not the USD format
+    # its staged filename declares
+    particlefield.write_bytes(b"PXR-USDC\x00particlefield")
     rows = []
     for camera_id in ("external", "wrist"):
         config = tmp_path / f"{camera_id}.json"
