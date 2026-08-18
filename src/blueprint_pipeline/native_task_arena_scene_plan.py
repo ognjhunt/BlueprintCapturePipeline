@@ -69,35 +69,40 @@ def _source_to_spawned_prim(
     return f"{ENV_ROOT}/{role}{suffix}"
 
 
-def _articulation_adaptation(asset_path: Path, *, role: str) -> dict[str, Any]:
-    """Freeze the one adaptation PhysX needs, derived from the asset itself."""
+def _verified_articulation_row(
+    asset_path: Path, *, role: str, declared: Any
+) -> dict[str, Any]:
+    """Prove the staged bytes are creatable and agree with the declaration."""
 
     from .native_task_arena_runtime import (
         NativeTaskArenaRuntimeError,
-        articulation_kinematic_adaptation,
+        verify_grounded_articulation,
     )
 
     try:
-        from pxr import Usd, UsdPhysics
-
-        stage = Usd.Stage.Open(str(asset_path))
-    except (ImportError, RuntimeError) as exc:
+        verified = verify_grounded_articulation(asset_path)
+    except NativeTaskArenaRuntimeError as exc:
+        raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
+    except Exception as exc:  # pxr raises Tf.ErrorException on unreadable usd
         raise NativeTaskArenaScenePlanError(
             [f"native_task_arena_articulation_unreadable:{role}"]
         ) from exc
-    default_prim = stage.GetDefaultPrim() if stage is not None else None
-    if default_prim is None or not default_prim.IsValid():
+    declared_base = (
+        declared.get("fixed_base_body_prim_path")
+        if isinstance(declared, Mapping)
+        else None
+    )
+    if verified["fixed_base_body_prim_path"] != declared_base:
         raise NativeTaskArenaScenePlanError(
-            [f"native_task_arena_articulation_default_prim_missing:{role}"]
+            [f"native_task_arena_articulation_adaptation_mismatch:{role}"]
         )
-    try:
-        return articulation_kinematic_adaptation(
-            stage,
-            articulation_root_path=default_prim.GetPath().pathString,
-            usd_physics=UsdPhysics,
-        )
-    except NativeTaskArenaRuntimeError as exc:
-        raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
+    if isinstance(declared, Mapping):
+        return dict(declared)
+    return {
+        "fixed_base_body_prim_path": None,
+        "adaptation": "candidate_authored_dynamic_articulation",
+        "candidate_bytes_modified": False,
+    }
 
 
 def _exact_scene_contact_body_paths(scene_collision_asset_path: Path) -> list[str]:
@@ -219,15 +224,16 @@ def _stage_assets(
                 },
                 "activate_contact_sensors": row["object_type"]
                 in {"RIGID", "ARTICULATION"},
-                # PhysX refuses an articulation containing a kinematic link, so
-                # record which link is the authored fixed base. The runtime
-                # spawns exactly that one dynamic and grounds it with a world
-                # fixed joint; a plan that stays silent produces an
-                # articulation the provider cannot create.
+                # The staged articulated asset must already carry the
+                # probe-proven grounding (base link dynamic + world fixed
+                # joint authored in the USD): PhysX refuses a kinematic link
+                # inside an articulation, and Isaac Lab's fix_root_link is
+                # unimplemented for these assets' topology. Verify the bytes
+                # and carry the request's authored record through the plan.
                 **(
                     {
-                        "articulation_adaptation": _articulation_adaptation(
-                            path, role=role
+                        "articulation_adaptation": _verified_articulation_row(
+                            path, role=role, declared=row.get("articulation_adaptation")
                         )
                     }
                     if row["object_type"] == "ARTICULATION"

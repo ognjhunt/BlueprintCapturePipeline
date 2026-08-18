@@ -221,8 +221,12 @@ def _fixture(root: Path) -> dict:
 
         usd = task_root / "registered.usda"
         usd.parent.mkdir(parents=True, exist_ok=True)
+        # newline-separated metadata: pxr's usda parser rejects the
+        # space-separated form, and the request compiler now opens this stage
+        # to ground articulated assets
         usd.write_text(
-            '#usda 1.0\n(defaultPrim = "Asset" metersPerUnit = 1 upAxis = "Z")\n'
+            '#usda 1.0\n(\n    defaultPrim = "Asset"\n'
+            '    metersPerUnit = 1\n    upAxis = "Z"\n)\n'
             'def Xform "Asset" {}\n',
             encoding="utf-8",
         )

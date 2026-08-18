@@ -568,6 +568,44 @@ def materialize_paired_target_native_arena_requests(
             "paired_target_arena_request_collision_invalid"
         )
     destination.mkdir(parents=True)
+    # PhysX cannot create an articulation containing a kinematic link, and
+    # Isaac Lab's fix_root_link is unimplemented for these assets' topology --
+    # so ground every articulated asset HERE, into a derived copy carrying the
+    # probe-proven adaptation (base link dynamic + world PhysicsFixedJoint),
+    # authored and verifiable on this host before anything is rented. The
+    # sealed bytes are never modified; provenance records their digest.
+    from .native_task_arena_runtime import (
+        NativeTaskArenaRuntimeError,
+        author_grounded_articulation,
+    )
+
+    grounded: dict[str, dict[str, Any]] = {}
+    for task_id in sorted(opened):
+        registered_row = opened[task_id]
+        asset_id = registered_row["registered"]["asset_id"]
+        if asset_id in grounded:
+            continue
+        derived_path = destination / "runtime_articulation" / f"{asset_id}.usda"
+        try:
+            adaptation = author_grounded_articulation(
+                registered_row["usd_path"], derived_path
+            )
+        except NativeTaskArenaRuntimeError as exc:
+            raise PairedTargetNativeArenaRequestError(";".join(exc.errors)) from exc
+        except Exception as exc:  # pxr raises Tf.ErrorException on bad usda
+            raise PairedTargetNativeArenaRequestError(
+                f"paired_target_arena_request_articulation_unreadable:{asset_id}"
+            ) from exc
+        if adaptation is None:
+            grounded[asset_id] = {
+                "usd_path": registered_row["usd_path"],
+                "adaptation": None,
+            }
+        else:
+            grounded[asset_id] = {
+                "usd_path": derived_path,
+                "adaptation": adaptation,
+            }
     request_records = []
     try:
         for task_id in sorted(opened):
@@ -642,16 +680,22 @@ def materialize_paired_target_native_arena_requests(
                     for joint in replacement_graph["joints"]
                     if joint["joint_type"] != "fixed"
                 }
+                staged = grounded[replacement["registered"]["asset_id"]]
                 assets.append(
                     {
                         "semantic_role": "replacement",
                         "asset_id": replacement["registered"]["asset_id"],
                         "filename": f"replacement__{replacement['registered']['asset_id']}.usda",
-                        "source": _relative_source(replacement["usd_path"], evidence_root=evidence),
+                        "source": _relative_source(staged["usd_path"], evidence_root=evidence),
                         "pose_world": replacement["pose"],
                         "object_type": "ARTICULATION",
                         "reset_state": {"joint_positions": joint_resets},
                         "visible": True,
+                        **(
+                            {"articulation_adaptation": staged["adaptation"]}
+                            if staged["adaptation"]
+                            else {}
+                        ),
                     }
                 )
             # Every asset is staged under the filename the runtime opens, so a
