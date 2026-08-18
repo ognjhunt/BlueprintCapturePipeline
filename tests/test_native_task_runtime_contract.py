@@ -504,9 +504,8 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
     )
 
 
-def test_runtime_accepts_paired_target_construction_binding_without_legacy_receipts(
-    tmp_path: Path,
-) -> None:
+def _paired_binding_case(tmp_path: Path) -> dict:
+    """The full paired-binding kwargs the acceptance test builds."""
     articulated = _articulated_fixture()
     rigid = _rigid_fixture()
     rows = []
@@ -669,6 +668,13 @@ def test_runtime_accepts_paired_target_construction_binding_without_legacy_recei
     articulated["construction_bindings"] = paired
     articulated["task_freeze_digest"] = _sha("3")
 
+    return articulated
+
+
+def test_runtime_accepts_paired_target_construction_binding_without_legacy_receipts(
+    tmp_path: Path,
+) -> None:
+    articulated = _paired_binding_case(tmp_path)
     contract = materialize_native_task_runtime_contract(**articulated)
 
     assert contract["task_subject_asset_id"] == "articulated_a"
@@ -1064,4 +1070,59 @@ def test_robot_reset_joint_map_rejects_missing_and_extra_names() -> None:
     assert (
         "native_task_runtime_robot_reset_joint_unexpected:scene_specific_joint"
         in excinfo.value.errors
+    )
+
+
+def test_grounded_replacement_joins_qualification_through_its_declared_source(
+    tmp_path: Path,
+) -> None:
+    """The qualification measured the sealed bytes; staging ships the grounded copy.
+
+    An articulated asset is staged as a derived USD carrying the probe-proven
+    grounding (base link dynamic + world fixed joint -- geometry untouched),
+    so its staged sha differs from the sha the GPU collision qualification
+    measured. The row declares exactly which sealed bytes it derives from, and
+    the qualification joins through that declaration. r6's regeneration was
+    refused with replacement_qualification_asset_mismatch before this.
+    """
+
+    articulated = _paired_binding_case(tmp_path)
+    for row in articulated["assets"]:
+        if row.get("asset_id") == "articulated_a":
+            # staged bytes differ; the declaration names the qualified source
+            row["sha256"] = _sha("f")
+            row["articulation_adaptation"] = {
+                "adaptation": "usd_authored_world_fixed_base",
+                "fixed_base_body_prim_path": "/Asset/links/body",
+                "derived_from_sha256": _sha("c"),
+                "candidate_bytes_modified": False,
+            }
+
+    contract = materialize_native_task_runtime_contract(**articulated)
+
+    assert contract["task_subject_asset_id"] == "articulated_a"
+
+
+def test_grounded_replacement_with_wrong_declared_source_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The declaration is a join key, not an excuse: it must name the qualified sha."""
+
+    articulated = _paired_binding_case(tmp_path)
+    for row in articulated["assets"]:
+        if row.get("asset_id") == "articulated_a":
+            row["sha256"] = _sha("f")
+            row["articulation_adaptation"] = {
+                "adaptation": "usd_authored_world_fixed_base",
+                "fixed_base_body_prim_path": "/Asset/links/body",
+                # names bytes the qualification never measured
+                "derived_from_sha256": _sha("9"),
+                "candidate_bytes_modified": False,
+            }
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**articulated)
+
+    assert "replacement_qualification_asset_mismatch:articulated_a" in str(
+        excinfo.value
     )

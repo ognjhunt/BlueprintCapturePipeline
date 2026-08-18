@@ -342,6 +342,13 @@ def _asset_rows(
                     "root_pose_world": pose,
                     "joint_positions": reset_joints,
                 },
+                # a grounded articulated asset declares which sealed bytes it
+                # derives from; the qualification join reads this
+                **(
+                    {"articulation_adaptation": dict(source["articulation_adaptation"])}
+                    if isinstance(source.get("articulation_adaptation"), Mapping)
+                    else {}
+                ),
             }
         )
     return rows, by_role
@@ -821,11 +828,28 @@ def materialize_native_task_runtime_contract(
                 errors.append("native_task_runtime_construction_task_binding_missing")
             elif task_binding[0]["task_freeze_digest"] != task_freeze_digest:
                 errors.append("native_task_runtime_task_freeze_binding_mismatch")
-            asset_digests = {
-                row["asset_id"]: row["sha256"] for row in replacement_rows
-            }
+            # The GPU collision qualification was measured on the sealed
+            # bytes. A staged articulated asset may instead be the grounded
+            # derived copy (base link dynamic + world fixed joint authored in
+            # USD -- geometry untouched); its row then declares exactly which
+            # sealed bytes it derives from, and the qualification joins
+            # through that declaration. Any other divergence stays a refusal.
+            qualification_digests: dict[str, Any] = {}
+            for row in replacement_rows:
+                adaptation = row.get("articulation_adaptation")
+                derived_from = (
+                    adaptation.get("derived_from_sha256")
+                    if isinstance(adaptation, Mapping)
+                    else None
+                )
+                qualification_digests[row["asset_id"]] = (
+                    derived_from if derived_from else row["sha256"]
+                )
             for row in binding_rows:
-                if asset_digests.get(row["asset_id"]) != row["replacement_asset_sha256"]:
+                if (
+                    qualification_digests.get(row["asset_id"])
+                    != row["replacement_asset_sha256"]
+                ):
                     errors.append(
                         "native_task_runtime_replacement_qualification_asset_mismatch:"
                         + row["asset_id"]
