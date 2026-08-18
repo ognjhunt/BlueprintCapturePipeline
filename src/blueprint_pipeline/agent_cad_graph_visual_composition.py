@@ -18,6 +18,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .freeze_amendment_carry_forward import (
+    FreezeAmendmentCarryForwardError,
+    validate_freeze_amendment_carry_forward_content,
+)
 from .cad_agent_review_media import (
     CadAgentReviewMediaError,
     selected_cad_agent_visual_review,
@@ -673,7 +677,11 @@ def _validate_binding(
         or binding.get("asset_id") != graph.get("asset_id")
         or binding.get("asset_id") != request.get("asset_id")
         or binding.get("task_freeze_digest") != graph.get("task_freeze_digest")
-        or binding.get("task_freeze_digest") != task_freeze.get("task_freeze_digest")
+        or not _freeze_join_accepted(
+            cad_side_digest=str(task_freeze.get("task_freeze_digest") or ""),
+            graph_side_digest=str(binding.get("task_freeze_digest") or ""),
+            proof=binding.get("freeze_amendment_carry_forward"),
+        )
         or binding.get("cad_agent_output_receipt_digest") != cad_output.get("receipt_digest")
         or not _same_file((cad_output.get("artifacts") or {}).get("step"), projection.get("step"))
     ):
@@ -710,6 +718,38 @@ def validate_agent_cad_visual_binding(
     return binding
 
 
+def _freeze_join_accepted(
+    *,
+    cad_side_digest: str,
+    graph_side_digest: str,
+    proof: Any,
+) -> bool:
+    """One amendment-shaped divergence, accepted only with its exact proof.
+
+    The CAD receipts were sealed while the superseded freeze was current; the
+    graph asset is sealed to the amended one. Those citations are both honest,
+    and rewriting either would fake history. What bridges them is a proof that
+    the amendment changed nothing the binding consumes -- pinned to exactly
+    this pair of content digests, so a proof for one amendment can never
+    launder another.
+    """
+
+    if cad_side_digest == graph_side_digest:
+        return True
+    if not isinstance(proof, Mapping):
+        return False
+    try:
+        validate_freeze_amendment_carry_forward_content(
+            proof,
+            sealed_schema=BINDING_SCHEMA_VERSION,
+            superseded_digest=cad_side_digest,
+            amended_digest=graph_side_digest,
+        )
+    except FreezeAmendmentCarryForwardError:
+        return False
+    return True
+
+
 def seal_agent_cad_visual_binding(
     *,
     graph_authoring_receipt_path: str | Path,
@@ -721,6 +761,7 @@ def seal_agent_cad_visual_binding(
     link_bindings: Sequence[Mapping[str, Any]],
     unmapped_graph_link_reasons: Mapping[str, str],
     output_path: str | Path,
+    freeze_carry_forward: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal exact visual mapping data before writing a composed USD."""
 
@@ -763,10 +804,16 @@ def seal_agent_cad_visual_binding(
         graph_stage=graph_stage,
         unmapped_reasons=unmapped_graph_link_reasons,
     )
+    cad_side_freeze_digest = str(task_freeze.get("task_freeze_digest") or "")
+    graph_side_freeze_digest = str(graph.get("task_freeze_digest") or "")
     if (
         request.get("task_id") != graph.get("task_id")
         or request.get("asset_id") != graph.get("asset_id")
-        or task_freeze.get("task_freeze_digest") != graph.get("task_freeze_digest")
+        or not _freeze_join_accepted(
+            cad_side_digest=cad_side_freeze_digest,
+            graph_side_digest=graph_side_freeze_digest,
+            proof=freeze_carry_forward,
+        )
         or not _same_file((cad_output.get("artifacts") or {}).get("step"), projection.get("step"))
     ):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_binding_identity_mismatch"])
@@ -803,6 +850,19 @@ def seal_agent_cad_visual_binding(
         "mesh_projection_receipt": projection_record,
         "link_bindings": rows,
         "unmapped_graph_link_reasons": unmapped,
+        # A binding that spans the amendment says so, and carries the proof
+        # that justifies it: downstream validation re-checks the embedded
+        # proof against the digests it observes, with no side channel.
+        **(
+            {
+                "superseded_task_freeze_digest": cad_side_freeze_digest,
+                "freeze_amendment_carry_forward": json.loads(
+                    json.dumps(freeze_carry_forward)
+                ),
+            }
+            if cad_side_freeze_digest != graph_side_freeze_digest
+            else {}
+        ),
         "claim_boundary": dict(_CLAIM_BOUNDARY),
         "binding_digest": "",
     }

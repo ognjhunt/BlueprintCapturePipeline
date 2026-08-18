@@ -13,6 +13,7 @@ from PIL import Image
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.agent_cad_graph_visual_composition import (
+    validate_agent_cad_visual_binding,
     AgentCadGraphVisualCompositionError,
     materialize_agent_cad_visual_composition,
     seal_agent_cad_visual_binding,
@@ -29,6 +30,9 @@ from blueprint_pipeline.cad_agent_review_media import (
     seal_cad_agent_visual_reference_review,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.freeze_amendment_carry_forward import (
+    evaluate_freeze_amendment_carry_forward,
+)
 from blueprint_pipeline.replacement_asset_frame_registration import (
     seal_replacement_asset_frame_registration,
 )
@@ -340,6 +344,7 @@ def _graph_authoring_receipt(
     collision_isolated: bool = True,
     extra_renderable: bool = False,
     door_translation: tuple[float, float, float] | None = None,
+    task_freeze_digest: str | None = None,
 ) -> Path:
     graph_usd = tmp_path / "graph.usda"
     stage = Usd.Stage.CreateNew(str(graph_usd))
@@ -368,7 +373,7 @@ def _graph_authoring_receipt(
         "status": "simready_candidate_authored",
         "asset_id": ASSET_ID,
         "task_id": TASK_ID,
-        "task_freeze_digest": freeze["task_freeze_digest"],
+        "task_freeze_digest": task_freeze_digest or freeze["task_freeze_digest"],
         "spec_digest": "sha256:" + "a" * 64,
         "output_usd": {
             **_record(graph_usd),
@@ -836,3 +841,139 @@ def test_composition_set_caps_replacements_at_five(tmp_path: Path) -> None:
     with pytest.raises(AgentCadGraphVisualCompositionError) as caught:
         validate_agent_cad_visual_composition_set(oversized)
     assert "agent_cad_visual_composition_set_count_invalid" in caught.value.codes
+
+
+def _amended_freeze_document() -> dict:
+    """FREEZE_A with one joint-axis component flipped and its digest resealed.
+
+    The exact shape of Scene 840920's 2026-08-17 amendment: the washer door
+    hinge was authored backwards, the fix flipped one leaf the CAD lane never
+    reads, and the graph asset was re-authored against the amended freeze while
+    the CAD receipts stayed sealed to the superseded one.
+    """
+
+    amended = json.loads(FREEZE_A.read_text(encoding="utf-8"))
+    joints = amended["articulation_graph"]["joints"]
+    joints[0]["axis"] = [-value for value in joints[0]["axis"]]
+    amended["task_freeze_digest"] = ""
+    amended["task_freeze_digest"] = canonical_digest(
+        amended, digest_field="task_freeze_digest"
+    )
+    return amended
+
+
+def _binding_carry_forward_proof(amended: dict) -> dict:
+    return evaluate_freeze_amendment_carry_forward(
+        superseded_freeze=json.loads(FREEZE_A.read_text(encoding="utf-8")),
+        amended_freeze=amended,
+        sealed_schema="simready_agent_cad_visual_binding.v2",
+    )
+
+
+def test_binding_across_the_freeze_amendment_needs_its_proof(tmp_path: Path) -> None:
+    """CAD sealed to the superseded freeze, graph to the amended one.
+
+    Without a proof that the amendment changed nothing the binding consumes,
+    that divergence stays exactly as fatal as it was -- an unexplained split
+    between the two sides is not a carry-forward.
+    """
+
+    amended = _amended_freeze_document()
+    step, projection = _mesh_projection(tmp_path / "projection")
+    cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
+    graph = _graph_authoring_receipt(
+        tmp_path / "graph", task_freeze_digest=amended["task_freeze_digest"]
+    )
+    bindings = [
+        {
+            "agent_link_id": "body",
+            "graph_link_id": "body",
+            "transform_mode": "explicit_rigid_transform",
+            "T_graph_link_from_agent_asset": _identity(),
+        },
+        {
+            "agent_link_id": "door",
+            "graph_link_id": "door",
+            "transform_mode": "explicit_rigid_transform",
+            "T_graph_link_from_agent_asset": _identity(),
+        },
+    ]
+
+    with pytest.raises(AgentCadGraphVisualCompositionError) as caught:
+        seal_agent_cad_visual_binding(
+            graph_authoring_receipt_path=graph,
+            cad_agent_output_receipt_path=cad_output,
+            cad_agent_visual_review_path=visual_review,
+            mesh_projection_receipt_path=projection,
+            link_bindings=bindings,
+            unmapped_graph_link_reasons={},
+            output_path=tmp_path / "binding_unproven.json",
+        )
+    assert "agent_cad_visual_binding_identity_mismatch" in caught.value.codes
+
+    binding = seal_agent_cad_visual_binding(
+        graph_authoring_receipt_path=graph,
+        cad_agent_output_receipt_path=cad_output,
+        cad_agent_visual_review_path=visual_review,
+        mesh_projection_receipt_path=projection,
+        link_bindings=bindings,
+        unmapped_graph_link_reasons={},
+        output_path=tmp_path / "binding.json",
+        freeze_carry_forward=_binding_carry_forward_proof(amended),
+    )
+    # The binding is sealed to the amended freeze, names the superseded one it
+    # spans, and carries the proof -- so it re-validates with no side channel.
+    assert binding["task_freeze_digest"] == amended["task_freeze_digest"]
+    freeze_a = json.loads(FREEZE_A.read_text(encoding="utf-8"))
+    assert binding["superseded_task_freeze_digest"] == freeze_a["task_freeze_digest"]
+    assert validate_agent_cad_visual_binding(binding) == binding
+
+
+def test_binding_refuses_a_proof_for_a_different_amendment(tmp_path: Path) -> None:
+    """One cheap ruling must not launder every divergence in the tree."""
+
+    amended = _amended_freeze_document()
+    proof = _binding_carry_forward_proof(amended)
+    tampered = dict(proof)
+    tampered["superseded_task_freeze_digest"] = "sha256:" + "e" * 64
+    tampered["carry_forward_digest"] = ""
+    tampered["carry_forward_digest"] = canonical_digest(
+        tampered, digest_field="carry_forward_digest"
+    )
+
+    step, projection = _mesh_projection(tmp_path / "projection")
+    cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
+    graph = _graph_authoring_receipt(
+        tmp_path / "graph", task_freeze_digest=amended["task_freeze_digest"]
+    )
+    with pytest.raises(AgentCadGraphVisualCompositionError) as caught:
+        seal_agent_cad_visual_binding(
+            graph_authoring_receipt_path=graph,
+            cad_agent_output_receipt_path=cad_output,
+            cad_agent_visual_review_path=visual_review,
+            mesh_projection_receipt_path=projection,
+            link_bindings=[
+                {
+                    "agent_link_id": "body",
+                    "graph_link_id": "body",
+                    "transform_mode": "explicit_rigid_transform",
+                    "T_graph_link_from_agent_asset": _identity(),
+                },
+                {
+                    "agent_link_id": "door",
+                    "graph_link_id": "door",
+                    "transform_mode": "explicit_rigid_transform",
+                    "T_graph_link_from_agent_asset": _identity(),
+                },
+            ],
+            unmapped_graph_link_reasons={},
+            output_path=tmp_path / "binding.json",
+            freeze_carry_forward=tampered,
+        )
+    assert "agent_cad_visual_binding_identity_mismatch" in caught.value.codes
