@@ -535,6 +535,10 @@ def validate_dual_task_joint_agent_admission(
         publisher_scene_id=str((admission.get("task") or {}).get("publisher_scene_id") or ""),
         task_freeze=admission.get("task_freeze") or {},
         source_receipt=admission.get("source_receipt") or {},
+        # The retained replacement receipt is part of the input this admission
+        # was built from. Rebuilding without it silently reconstructs a
+        # different admission and reports the difference as tampering.
+        authored_replacement_receipt=admission.get("authored_replacement_receipt"),
     )
     if rebuilt != admission:
         raise DualTaskJointAgentAdmissionError(

@@ -832,6 +832,23 @@ def test_single_link_replacement_is_refused() -> None:
     )
 
 
+def test_replacement_admission_passes_the_standalone_validator() -> None:
+    """The paid-authority path validates the admission alone, with no receipt.
+
+    It rebuilds from what the admission retained, so the retained replacement
+    has to be part of that rebuild -- otherwise a correct admission reads as
+    tampered and the lane refuses before any spend.
+    """
+
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id=SCENE_ID,
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=_source_receipt(task="a"),
+        authored_replacement_receipt=_authored_replacement(),
+    )
+    assert validate_dual_task_joint_agent_admission(admission) == admission
+
+
 def test_replacement_admission_still_rebuilds_byte_for_byte() -> None:
     """An admission whose input cannot be reproduced is not evidence."""
 
