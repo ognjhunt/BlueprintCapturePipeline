@@ -654,3 +654,67 @@ def test_team_manipulation_policy_endpoint_runs_through_policy_execution_bundle(
     attempt = result["trace"]["attempts"][0]
     assert attempt["policy_kind"] == "mobile_manipulation_pick_carry_place"
     assert attempt["metrics"]["grasp_physics_validated"] is True
+
+
+def test_scenario_suite_carries_across_the_freeze_amendment() -> None:
+    """The suite was sealed to the superseded freeze; a proof bridges it.
+
+    The suite carries policy candidates, seeds, and controls, and reads only
+    task identity from the freeze -- nothing a joint-axis amendment touches.
+    Without the proof, the divergence stays fatal; with a proof for a
+    different schema or pair of digests, nothing is accepted.
+    """
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.freeze_amendment_carry_forward import (
+        evaluate_freeze_amendment_carry_forward,
+    )
+    from blueprint_pipeline.paired_target_native_manipulation_preflight import (
+        _scenario_carry_forward_accepted,
+    )
+
+    def _freeze(axis_z: int) -> dict:
+        payload = {
+            "schema_version": "dual_task_task_freeze.v1",
+            "task_id": "task_a",
+            "scene_id": "840920",
+            "articulation_graph": {"joints": [{"joint_id": "door", "axis": [0, 0, axis_z]}]},
+            "task_freeze_digest": "",
+        }
+        payload["task_freeze_digest"] = canonical_digest(
+            payload, digest_field="task_freeze_digest"
+        )
+        return payload
+
+    superseded, amended = _freeze(1), _freeze(-1)
+    proof = evaluate_freeze_amendment_carry_forward(
+        superseded_freeze=superseded,
+        amended_freeze=amended,
+        sealed_schema="third_scene_task_scenario_suite.v1",
+    )
+    assert proof["status"] == "carries_forward"
+
+    ok = _scenario_carry_forward_accepted(
+        proof=proof,
+        superseded_digest=superseded["task_freeze_digest"],
+        amended_digest=amended["task_freeze_digest"],
+    )
+    assert ok is True
+    # No proof: the divergence stays exactly as fatal as it was.
+    assert (
+        _scenario_carry_forward_accepted(
+            proof=None,
+            superseded_digest=superseded["task_freeze_digest"],
+            amended_digest=amended["task_freeze_digest"],
+        )
+        is False
+    )
+    # A proof for another pair of digests rescues nothing.
+    assert (
+        _scenario_carry_forward_accepted(
+            proof=proof,
+            superseded_digest="sha256:" + "e" * 64,
+            amended_digest=amended["task_freeze_digest"],
+        )
+        is False
+    )
