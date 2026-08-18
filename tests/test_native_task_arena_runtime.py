@@ -5,6 +5,7 @@ import hashlib
 import math
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -699,3 +700,106 @@ def test_the_runtime_admits_every_sensor_the_scene_plan_can_emit() -> None:
 
     # and the runtime must not carry an id no producer can emit
     assert sorted(LOGICAL_CONTACT_SENSOR_IDS - emitted) == []
+
+
+def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
+    """A sealed plan whose assets really exist, as the packet stages them."""
+
+    root = tmp_path / "packet"
+    assets = root / "assets"
+    assets.mkdir(parents=True)
+    collision = assets / "collision.usd"
+    task = assets / "task.usda"
+    collision.write_bytes(b"collision")
+    task.write_bytes(b"task")
+    plan = _sealed_scene_plan()
+    plan["asset_directory"] = "assets"
+    for row, path in zip(plan["objects"], (collision, task), strict=True):
+        row["usd_path"] = f"assets/{path.name}"
+        row["size_bytes"] = path.stat().st_size
+        row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return root, plan
+
+
+def test_the_whole_adapter_verdict_is_reachable_without_isaac(tmp_path: Path) -> None:
+    """Answer "would the runtime accept this packet?" on the host, for free.
+
+    Every refusal this adapter raises before construction is a check on the
+    plan, the staged bytes, or the camera rows. Isaac is imported only to build
+    the environment once those pass -- so the entire class is knowable on the
+    host, and each divergence not checked here costs one paid attempt.
+
+    Note there is no ``_install_fake_native_runtime`` here: if this validation
+    ever needed Isaac, this test could not run at all.
+    """
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        validate_native_task_arena_runtime_plan,
+    )
+
+    root, plan = _staged_packet(tmp_path)
+
+    assert validate_native_task_arena_runtime_plan(plan, bundle_root=root) == plan
+
+
+def test_an_unadmitted_sensor_id_is_refused_on_the_host(tmp_path: Path) -> None:
+    """The r2 failure, reproduced with no provider.
+
+    Attempt r2 spent $0.036 to learn that one sensor's ``logical_sensor_id``
+    was outside the runtime's admitted set. The refusal names the sensor's
+    index, which is what an operator needs to find it in a 31-sensor plan.
+    """
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        validate_native_task_arena_runtime_plan,
+    )
+
+    root, plan = _staged_packet(tmp_path)
+    plan["articulation"]["contact_sensors"][1]["logical_sensor_id"] = (
+        "not_a_channel_this_runtime_knows"
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(
+        NativeTaskArenaRuntimeError, match="contact_sensor_contract_invalid:1"
+    ):
+        validate_native_task_arena_runtime_plan(plan, bundle_root=root)
+
+
+def test_a_forbidden_contact_channel_is_optional_not_unknown(tmp_path: Path) -> None:
+    """Admitting an id is not enough; the channel set must allow it too.
+
+    After r2, admitting ``robot_task_forbidden_collision`` in the contract
+    check still left it outside ``required | optional``, so the channels check
+    would have refused the very next attempt for the same sensor. Both halves
+    have to agree, and a diagnostic channel is optional rather than unknown.
+    """
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        OPTIONAL_CONTACT_CHANNELS,
+        required_contact_channels,
+        validate_native_task_arena_runtime_plan,
+    )
+
+    assert "robot_task_forbidden_collision" in OPTIONAL_CONTACT_CHANNELS
+
+    root, plan = _staged_packet(tmp_path)
+    plan["articulation"]["contact_sensors"].append(
+        {
+            "sensor_instance_id": "robot_task_forbidden_collision__graph_00",
+            "logical_sensor_id": "robot_task_forbidden_collision",
+            "prim_path": "{ENV_REGEX_NS}/task_object/links/body",
+            "filter_prim_paths_expr": [
+                "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/left_inner_knuckle"
+            ],
+        }
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    # accepted, and it never becomes a required channel for either task kind
+    assert validate_native_task_arena_runtime_plan(plan, bundle_root=root) == plan
+    for task_kind in ("articulated_open_close", "rigid_pick_place"):
+        assert "robot_task_forbidden_collision" not in required_contact_channels(
+            task_kind
+        )

@@ -280,6 +280,101 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Channels recorded when the plan supplies them but never required.  A
+#: forbidden-contact channel is diagnostic: its absence is not a defect, and
+#: its presence must not be mistaken for an unknown channel.
+OPTIONAL_CONTACT_CHANNELS = frozenset(
+    {"task_scene_collision", "robot_task_forbidden_collision"}
+)
+
+
+def required_contact_channels(task_kind: str) -> frozenset[str]:
+    """The channels a task kind cannot be scored without."""
+
+    if task_kind == "articulated_open_close":
+        return frozenset(
+            {"task_robot_contact", "task_scene_contact", "robot_scene_contact"}
+        )
+    return frozenset(
+        {"task_robot_contact", "task_support_contact", "robot_scene_contact"}
+    )
+
+
+def _invalid_exact_contact_path(path: Any) -> bool:
+    value = str(path)
+    return not value.startswith("{ENV_REGEX_NS}/") or any(
+        token in value for token in ("*", ".*", "[", "]")
+    )
+
+
+def validate_contact_sensor_plan(
+    plan: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """Check every contact sensor and return logical id -> instance ids.
+
+    Pure: no Isaac import, no provider.  This ran inside the construction loop
+    and so was only reachable on a rented GPU, which cost two paid attempts --
+    one for a logical id the runtime did not admit, and the channel check
+    below would have cost a third for the same id being outside the allowed
+    set.
+    """
+
+    sensors = list(plan.get("articulation", {}).get("contact_sensors") or [])
+    names: dict[str, list[str]] = {}
+    seen_instances: set[str] = set()
+    for index, sensor in enumerate(sensors):
+        logical_sensor_id = str(sensor.get("logical_sensor_id") or "")
+        sensor_instance_id = str(sensor.get("sensor_instance_id") or "")
+        prim_path = str(sensor.get("prim_path") or "")
+        filter_paths = list(sensor.get("filter_prim_paths_expr") or [])
+        if (
+            logical_sensor_id not in LOGICAL_CONTACT_SENSOR_IDS
+            or not sensor_instance_id
+            or sensor_instance_id in seen_instances
+            or _invalid_exact_contact_path(prim_path)
+            or not filter_paths
+            or any(_invalid_exact_contact_path(path) for path in filter_paths)
+        ):
+            raise NativeTaskArenaRuntimeError(
+                [f"native_task_arena_contact_sensor_contract_invalid:{index}"]
+            )
+        seen_instances.add(sensor_instance_id)
+        names.setdefault(logical_sensor_id, []).append(sensor_instance_id)
+
+    required = required_contact_channels(str(plan.get("task_kind") or ""))
+    if sensors and not (
+        required.issubset(names)
+        and set(names) <= required | OPTIONAL_CONTACT_CHANNELS
+    ):
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_contact_sensor_channels_incomplete"]
+        )
+    return names
+
+
+def validate_native_task_arena_runtime_plan(
+    scene_plan: Mapping[str, Any], *, bundle_root: str | Path
+) -> dict[str, Any]:
+    """Answer "would the runtime accept this packet?" without renting a GPU.
+
+    Every refusal this adapter raises before it builds anything is a check on
+    the plan, the staged bytes, or the camera rows -- none of it needs Isaac.
+    Isaac is imported only to construct the environment once these pass. So
+    the entire class is knowable on the host, and each divergence that was not
+    checked here cost one paid attempt to discover.
+
+    Returns the validated plan.  Raises ``NativeTaskArenaRuntimeError`` with
+    exactly the code the runtime would have raised.
+    """
+
+    plan = _validated_plan(scene_plan)
+    _resolve_portable_assets(plan, bundle_root=bundle_root)
+    for camera in plan.get("cameras") or []:
+        camera_runtime_parameters(camera)
+    validate_contact_sensor_plan(plan)
+    return plan
+
+
 def build_native_task_arena_environment(
     scene_plan: Mapping[str, Any],
     *,
@@ -509,31 +604,13 @@ def build_native_task_arena_environment(
         assets.append(obj)
         scene_asset_names[runtime_name] = runtime_name
 
-    def invalid_exact_contact_path(path: Any) -> bool:
-        value = str(path)
-        return not value.startswith("{ENV_REGEX_NS}/") or any(
-            token in value for token in ("*", ".*", "[", "]")
-        )
-
-    contact_sensor_names_mutable: dict[str, list[str]] = {}
-    seen_sensor_instances: set[str] = set()
+    # One source of truth: the same pure check the host-side pre-spend gate
+    # runs, so the two can never disagree about what this runtime accepts.
+    contact_sensor_names_mutable = validate_contact_sensor_plan(plan)
     for index, sensor in enumerate(plan["articulation"]["contact_sensors"]):
-        logical_sensor_id = str(sensor.get("logical_sensor_id") or "")
         sensor_instance_id = str(sensor.get("sensor_instance_id") or "")
         prim_path = str(sensor.get("prim_path") or "")
         filter_paths = list(sensor.get("filter_prim_paths_expr") or [])
-        if (
-            logical_sensor_id not in LOGICAL_CONTACT_SENSOR_IDS
-            or not sensor_instance_id
-            or sensor_instance_id in seen_sensor_instances
-            or invalid_exact_contact_path(prim_path)
-            or not filter_paths
-            or any(invalid_exact_contact_path(path) for path in filter_paths)
-        ):
-            raise NativeTaskArenaRuntimeError(
-                [f"native_task_arena_contact_sensor_contract_invalid:{index}"]
-            )
-        seen_sensor_instances.add(sensor_instance_id)
         if index == 0 and task_object is None:
             raise NativeTaskArenaRuntimeError(
                 ["native_task_arena_task_object_missing"]
@@ -546,22 +623,6 @@ def build_native_task_arena_environment(
                     filter_prim_paths_expr=filter_paths,
                 ),
             )
-        )
-        contact_sensor_names_mutable.setdefault(logical_sensor_id, []).append(
-            sensor_instance_id
-        )
-    required_contact_channels = (
-        {"task_robot_contact", "task_scene_contact", "robot_scene_contact"}
-        if plan["task_kind"] == "articulated_open_close"
-        else {"task_robot_contact", "task_support_contact", "robot_scene_contact"}
-    )
-    if plan["articulation"]["contact_sensors"] and not (
-        required_contact_channels.issubset(contact_sensor_names_mutable)
-        and set(contact_sensor_names_mutable)
-        <= required_contact_channels.union({"task_scene_collision"})
-    ):
-        raise NativeTaskArenaRuntimeError(
-            ["native_task_arena_contact_sensor_channels_incomplete"]
         )
     contact_sensor_names = {
         logical_id: tuple(scene_names)

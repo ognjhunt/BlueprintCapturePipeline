@@ -306,13 +306,29 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         request, digest_field="request_digest"
     )
     write_json(packet / "native_task_arena_packet_request.v1.json", request)
-    scene_plan = {
-        "schema_version": "native_task_arena_scene_plan.v1",
-        "scene_id": SCENE_ID,
-        "task_id": TASK_ID,
-        "scenario": {"cell_id": "canonical.seed_1"},
-        "plan_digest": "",
-    }
+    # An executable plan with its assets really staged, because the profile
+    # builder now asks the adapter whether it would accept this packet. A stub
+    # that declares the executable schema but carries no objects, articulation,
+    # or cameras is a packet the runtime refuses -- so a fixture shaped that way
+    # would assert that unlaunchable packets get profiles.
+    from tests.test_native_task_arena_runtime import _sealed_scene_plan
+
+    assets = packet / "assets"
+    assets.mkdir(exist_ok=True)
+    staged = []
+    for name, payload in (("collision.usd", b"collision"), ("task.usda", b"task")):
+        path = assets / name
+        path.write_bytes(payload)
+        staged.append(path)
+    scene_plan = _sealed_scene_plan()
+    scene_plan["scene_id"] = SCENE_ID
+    scene_plan["task_id"] = TASK_ID
+    scene_plan["scenario"] = {"cell_id": "canonical.seed_1", "seed": 1}
+    scene_plan["asset_directory"] = "assets"
+    for row, path in zip(scene_plan["objects"], staged, strict=True):
+        row["usd_path"] = f"assets/{path.name}"
+        row["size_bytes"] = path.stat().st_size
+        row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     scene_plan["plan_digest"] = canonical_digest(
         scene_plan, digest_field="plan_digest"
     )
@@ -655,3 +671,40 @@ def test_the_allocator_still_demands_the_predecessors_this_builder_carries() -> 
     assert "native_task_arena_construction_result" in source
     assert "native_task_arena_control_result" in source
     assert "native_task_arena_policy_execution_spec" in source
+
+
+def test_no_profile_is_built_for_a_packet_the_runtime_would_refuse(lane) -> None:
+    """The chokepoint: no profile, no authority consumed, no provider.
+
+    Two paid attempts were spent learning things the adapter's own pre-build
+    checks answer for free -- a payload that was not USD, then a contact sensor
+    whose logical id the runtime did not admit. None of those checks need
+    Isaac, so the profile builder asks the adapter directly, and a packet it
+    would refuse never becomes launchable.
+    """
+
+    packet = lane["packet"]
+    plan_path = packet / "native_task_arena_scene_plan.v1.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["articulation"]["contact_sensors"][0]["logical_sensor_id"] = "not_a_channel"
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    write_json(plan_path, plan)
+
+    with pytest.raises(TaskEvaluationLaunchError) as excinfo:
+        _build(lane, "construction")
+
+    message = str(excinfo.value)
+    assert "native_task_arena_runtime_would_refuse" in message
+    assert "contact_sensor_contract_invalid:0" in message
+
+
+def test_a_scene_plan_that_cannot_be_read_blocks_rather_than_passes(lane) -> None:
+    """An unreadable plan is refused, never treated as acceptable."""
+
+    plan_path = lane["packet"] / "native_task_arena_scene_plan.v1.json"
+    plan_path.write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(TaskEvaluationLaunchError) as excinfo:
+        _build(lane, "construction")
+
+    assert "native_task_arena_scene_plan" in str(excinfo.value)
