@@ -907,3 +907,40 @@ def test_package_import_is_lazy_and_module_entrypoints_are_not_preloaded() -> No
     )
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == []
+
+
+def test_every_apt_step_in_every_workflow_is_bounded() -> None:
+    """No workflow may shell out to apt without a bound on how long it waits.
+
+    On 2026-08-17 an unbounded ``apt-get`` hung for an hour at the very first
+    step of the deploy-gating full lane, while the identical work normally
+    finishes in about a minute. An earlier fix bounded the one step that had
+    failed and left two siblings unbounded -- including the one that actually
+    gates deploys.
+
+    So this sweeps every workflow rather than naming steps. A step that shells
+    out to apt is a step that can wait on a network mirror, and every one of
+    them must say how long it is willing to.
+    """
+
+    workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "no workflows found to check"
+
+    unbounded: list[str] = []
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        # Split into steps: each begins with a "- name:" at step indentation.
+        steps = re.split(r"(?m)^      - (?=name:|uses:)", text)
+        for step in steps[1:]:
+            if "apt-get" not in step:
+                continue
+            if not re.search(r"(?m)^        timeout-minutes: \d+", step):
+                label = re.match(r"name: (.+)", step)
+                unbounded.append(
+                    f"{path.name}: {label.group(1).strip() if label else step[:40]}"
+                )
+
+    assert not unbounded, (
+        "these steps shell out to apt with no time bound, so a hung mirror "
+        "consumes the whole job: " + "; ".join(unbounded)
+    )

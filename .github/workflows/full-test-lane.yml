@@ -82,6 +82,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install system media dependencies
+        # Bounded so a hung apt mirror fails here, fast and named, instead of
+        # consuming the job it runs in. On 2026-08-17 an unbounded sibling of
+        # this step hung for an hour at the first step of a deploy-gating lane
+        # while the same work normally finishes in about a minute.
+        timeout-minutes: 6
         run: |
           # ffmpeg comes from Ubuntu's repositories. GitHub-hosted runners also
           # carry third-party Microsoft/Azure apt sources, and transient signing
