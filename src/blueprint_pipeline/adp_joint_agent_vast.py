@@ -27,6 +27,9 @@ from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
 from .decision_evidence_contracts import canonical_digest
+from .authored_link_source_components import (
+    SCHEMA_VERSION as AUTHORED_LINK_COMPONENTS_SCHEMA,
+)
 from .dual_task_joint_agent_admission import (
     NON_TASK_MODE as DUAL_TASK_NON_TASK_MODE,
     READY_STATUS as DUAL_TASK_READY_STATUS,
@@ -420,6 +423,7 @@ def build_joint_agent_vast_bundle(
     scene_optimizer_core_zip_path: str | Path,
     job_dir: str | Path,
     dual_task_admission_path: str | Path | None = None,
+    authored_link_components_path: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Bind exact released source, derived USD, authority, config, and runtime."""
@@ -548,11 +552,25 @@ def build_joint_agent_vast_bundle(
 
     packet_source = packet.get("source_asset") or {}
     source_asset = Path(str(packet_source.get("path") or "")).expanduser().resolve()
+    # When the admission accepted an authored replacement, the packet points at
+    # the replacement's receipt while the authority still names the source mesh
+    # it derives its freeze and extent binding from. Both are correct; they are
+    # simply about different documents.
+    authored_replacement = (
+        (dual_task_admission or {}).get("authored_replacement_receipt")
+        if dual_task_admission is not None
+        else None
+    )
+    expected_packet_receipt_digest = (
+        str(authored_replacement.get("receipt_digest") or "")
+        if authored_replacement is not None
+        else authority["joint_agent_source_receipt_digest"]
+    )
     if (
         not source_asset.is_file()
         or _sha256(source_asset) != packet_source.get("sha256")
         or authority["joint_agent_source_asset_digest"] != packet_source.get("sha256")
-        or authority["joint_agent_source_receipt_digest"]
+        or expected_packet_receipt_digest
         != packet_source.get("source_receipt_digest")
         or authority["publisher_scene_id"] != str((freeze.get("scene") or {}).get("publisher_scene_id"))
         or authority["freeze_digest"] != freeze.get("freeze_digest")
@@ -569,13 +587,44 @@ def build_joint_agent_vast_bundle(
         digest_field="receipt_digest",
         error="adp_joint_agent_source_receipt_invalid",
     )
-    if source_receipt["receipt_digest"] != packet_source.get(
-        "source_receipt_digest"
-    ) or not isinstance(source_receipt.get("connected_components"), list):
+    if source_receipt["receipt_digest"] != packet_source.get("source_receipt_digest"):
         raise ValueError("adp_joint_agent_source_receipt_invalid")
+    # The review anchors link membership on component bounds. A source mesh
+    # receipt carries them directly; an authored replacement has named links
+    # instead, so its bounds arrive as a separate document bound to the same
+    # receipt. Either way the runtime receives one file with
+    # `connected_components` in it, and neither may stand in for the other
+    # without the digests agreeing.
+    review_components_path = source_receipt_path
+    if authored_replacement is None:
+        if not isinstance(source_receipt.get("connected_components"), list):
+            raise ValueError("adp_joint_agent_source_receipt_invalid")
+    else:
+        if authored_link_components_path is None:
+            raise ValueError("adp_joint_agent_authored_link_components_missing")
+        review_components_path = (
+            Path(str(authored_link_components_path)).expanduser().resolve()
+        )
+        components = _canonical_receipt(
+            review_components_path,
+            digest_field="components_digest",
+            error="adp_joint_agent_authored_link_components_invalid",
+        )
+        if (
+            components.get("schema_version") != AUTHORED_LINK_COMPONENTS_SCHEMA
+            or components.get("source_receipt_digest")
+            != source_receipt["receipt_digest"]
+            or components.get("spec_digest") != source_receipt.get("spec_digest")
+            or not isinstance(components.get("connected_components"), list)
+            or not components["connected_components"]
+        ):
+            raise ValueError("adp_joint_agent_authored_link_components_invalid")
     if dual_task_admission is not None:
+        # Rebuilt against the source mesh receipt the admission retained: that
+        # is the document the binding was computed from, and the replacement
+        # cannot stand in for it.
         validate_dual_task_joint_agent_source_binding(
-            dual_task_admission, source_receipt
+            dual_task_admission, dual_task_admission.get("source_receipt") or {}
         )
         admission_task = dual_task_admission.get("task") or {}
         admission_source = dual_task_admission.get("source") or {}
@@ -597,7 +646,7 @@ def build_joint_agent_vast_bundle(
     ensure_dir(runtime / "blueprint_src" / "blueprint_pipeline")
     shutil.copy2(source_asset, runtime / "input" / "articulated_source.usda")
     shutil.copy2(
-        source_receipt_path, runtime / "input" / "articulated_source_receipt.json"
+        review_components_path, runtime / "input" / "articulated_source_receipt.json"
     )
     config = _provider_config(
         packet,
@@ -1351,6 +1400,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--freeze")
     parser.add_argument("--scope-amendment")
     parser.add_argument("--dual-task-admission")
+    parser.add_argument(
+        "--authored-link-components",
+        help=(
+            "Required when the admission accepted an authored replacement: the "
+            "per-link bounds the deterministic review anchors membership on."
+        ),
+    )
     parser.add_argument("--nim-preflight")
     parser.add_argument("--model-preflight")
     parser.add_argument("--scene-optimizer-core", required=True)
@@ -1375,6 +1431,7 @@ def main(argv: list[str] | None = None) -> int:
         freeze_path=args.freeze,
         scope_amendment_path=args.scope_amendment,
         dual_task_admission_path=args.dual_task_admission,
+        authored_link_components_path=args.authored_link_components,
         nim_preflight_path=preflight,
         model_preflight_path=args.model_preflight,
         scene_optimizer_core_zip_path=args.scene_optimizer_core,
