@@ -701,7 +701,7 @@ def _authored_replacement(
     source = _source_receipt(task=task)
     payload = {
         "schema_version": "simready_graph_asset_receipt.v1",
-        "status": "materialized",
+        "status": "simready_candidate_authored",
         "task_freeze_digest": (
             freeze_digest
             if freeze_digest is not None
@@ -799,6 +799,22 @@ def test_replacement_sealed_to_another_freeze_is_refused() -> None:
             ),
         )
     assert "joint_agent_authored_replacement_freeze_mismatch" in excinfo.value.errors
+
+
+def test_a_replacement_using_the_wrong_terminal_status_is_refused() -> None:
+    """`materialized` belongs to the source-mesh schema, not to this one."""
+
+    replacement = _authored_replacement()
+    replacement["status"] = "materialized"
+    replacement = _seal({**replacement, "receipt_digest": ""}, "receipt_digest")
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            authored_replacement_receipt=replacement,
+        )
+    assert "joint_agent_authored_replacement_status_invalid" in excinfo.value.errors
 
 
 def test_single_link_replacement_is_refused() -> None:
