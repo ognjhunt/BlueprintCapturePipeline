@@ -506,3 +506,18 @@ def test_recovery_still_requires_the_attempt_instance_to_be_observed_gone(
             output_path=tmp_path / "d.json",
             now=now,
         )
+
+
+def test_a_recovered_predecessor_zero_is_still_chainable() -> None:
+    """A recovered zero proves the same absence, so it cannot be a dead end.
+
+    The chain validator admitted only ``completed``. Sealing a recovered zero
+    would then have produced a receipt no later authority could consume, which
+    is the same stall it exists to prevent -- and the import lane, which has
+    had a recovered seal all along, was already exposed to it.
+    """
+
+    assert paid.ACCEPTED_PREDECESSOR_ZERO_STATUSES == {
+        "completed",
+        "completed_recovered_provider_zero",
+    }

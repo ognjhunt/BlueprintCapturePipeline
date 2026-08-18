@@ -103,6 +103,17 @@ PREDECESSOR_RESULT_SCHEMAS: Mapping[str, str] = {
 }
 
 
+#: Provider-zero statuses a chained authority accepts from its predecessor.
+#: A recovered zero is a full zero -- it proves the same absence from fresher
+#: evidence -- so a lane that had to recover is still chainable. Admitting only
+#: ``completed`` here would have made every recovered attempt a dead end,
+#: silently, on both this lane and the import lane that has had a recovered
+#: seal all along.
+ACCEPTED_PREDECESSOR_ZERO_STATUSES = frozenset(
+    {"completed", "completed_recovered_provider_zero"}
+)
+
+
 def validate_terminal_spend_chain(
     *, authority_path: str | Path, result_path: str | Path, provider_zero_path: str | Path
 ) -> dict[str, Any]:
@@ -155,7 +166,7 @@ def validate_terminal_spend_chain(
         or result.get("continuing_spend_from_this_run") is not False
         or result.get("all_staged_objects_absent") is not True
         or zero.get("schema_version") != zero_schema
-        or zero.get("status") != "completed"
+        or zero.get("status") not in ACCEPTED_PREDECESSOR_ZERO_STATUSES
         or zero.get(zero_digest_field)
         != canonical_digest(zero, digest_field=zero_digest_field)
         or zero_authority_digest != authorization_digest
