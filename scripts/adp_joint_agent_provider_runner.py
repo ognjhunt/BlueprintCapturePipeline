@@ -296,9 +296,20 @@ def main() -> int:
             return _result(["joint_agent_source_receipt_binding_invalid"])
         source_receipt = _load(source_receipt_path)
         source_components = source_receipt.get("connected_components")
+        # Two documents can supply these bounds: a source-mesh receipt, which
+        # seals itself with `receipt_digest`, and an authored-link components
+        # document, which seals itself with `components_digest`. Checking only
+        # the first would reject a valid authored input here -- on the GPU,
+        # after the instance is already running and billing.
+        digest_field = (
+            "components_digest"
+            if source_receipt.get("schema_version")
+            == "authored_link_source_components.v1"
+            else "receipt_digest"
+        )
         if canonical_digest(
-            source_receipt, digest_field="receipt_digest"
-        ) != source_receipt.get("receipt_digest") or not isinstance(
+            source_receipt, digest_field=digest_field
+        ) != source_receipt.get(digest_field) or not isinstance(
             source_components, list
         ):
             return _result(["joint_agent_source_receipt_binding_invalid"])
