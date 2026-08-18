@@ -869,3 +869,32 @@ def test_allocator_execute_binds_paid_attempt_authority(
     assert admission["paid_attempt_authority_digest"] == authority[
         "authorization_digest"
     ]
+
+
+def test_operator_machine_pin_env_parses_and_reaches_the_adapter() -> None:
+    """2026-08-18: three hosts reported `running` while their container never
+    existed. Pinning to a proven machine is the operator's lever when the
+    offer pool serves broken hosts, so the env must parse defensively and the
+    lane must actually thread it.
+    """
+
+    import inspect
+    import os
+
+    from blueprint_pipeline.public_scene_simready_isaac_vast import (
+        SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV,
+        _machine_ids_from_env,
+    )
+    import blueprint_pipeline.public_scene_simready_isaac_vast as lane
+
+    os.environ[SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV] = " 52976,0; -3, junk,52976 ,77 "
+    try:
+        assert _machine_ids_from_env(SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV) == (77, 52976)
+    finally:
+        del os.environ[SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV]
+    assert _machine_ids_from_env(SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV) == ()
+
+    source = inspect.getsource(lane)
+    assert "allowed_machine_ids=_machine_ids_from_env(" in source, (
+        "the lane must pass the pin through to the provider adapter"
+    )

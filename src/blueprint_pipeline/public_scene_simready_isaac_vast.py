@@ -44,6 +44,32 @@ from .wam_provider_object_store import (
 
 from .spend_authority_consumption_root import consumption_root
 
+#: Operator machine pinning for this lane, mirroring the unitree pattern.
+#:
+#: On 2026-08-18 three consecutive attempts died with the instance reported
+#: `running` by the provider while its container never existed and nothing
+#: ever phoned home -- an opaque host-side failure the receipts cannot
+#: distinguish further. The one machine that ran this exact image and
+#: workload to completion that night was provably fine. When the offer pool
+#: is serving broken hosts, the operator can pin to proven ones instead of
+#: buying more samples of the same failure.
+SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV = "BLUEPRINT_VAST_SIMREADY_ISAAC_ALLOWED_MACHINE_ID"
+
+
+def _machine_ids_from_env(name: str) -> tuple[int, ...]:
+    import os
+
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return ()
+    out: list[int] = []
+    for piece in raw.replace(";", ",").split(","):
+        piece = piece.strip()
+        if piece.isdecimal() and int(piece) > 0:
+            out.append(int(piece))
+    return tuple(sorted(set(out)))
+
+
 PROBE_KIND = "adp009b-exact-simready-isaac"
 RESULT_SCHEMA_VERSION = "adp009b_simready_isaac_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_simready_isaac_paid_attempt_authority.v1"
@@ -704,6 +730,9 @@ def run_simready_isaac_vast(
                 preferred_gpu_keywords=("L40S", "RTX 4090", "RTX A6000", "RTX A5000"),
                 prefer_isaac_rt=True,
                 allowed_active_instance_ids=allowed_active_instance_ids,
+                allowed_machine_ids=_machine_ids_from_env(
+                    SIMREADY_ISAAC_ALLOWED_MACHINE_ID_ENV
+                ),
                 machine_avoidlist_path=resolved_avoidlist,
                 # The exact collision-free label the independent process
                 # watches, not merely the same broad lane family.
