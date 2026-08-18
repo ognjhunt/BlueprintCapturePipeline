@@ -1026,3 +1026,119 @@ def test_composition_builds_the_packet_from_the_replacement_receipt(
         "joint_agent_topology_authored_replacement_receipt_mismatch"
         in excinfo.value.errors
     )
+
+
+def _composed_asset(*, asset_id: str = "washer_replacement_v1", **overrides) -> dict:
+    """The authored articulation with agent CAD visuals attached."""
+
+    payload = {
+        "schema_version": "registered_replacement_asset.v1",
+        "asset_id": asset_id,
+        "scene_id": SCENE_ID,
+        "geometry_generated_or_modified": False,
+        "deterministic_pose_composition_only": True,
+        "output_usd": {
+            "path": "registered_replacement.usda",
+            "sha256": _digest("9"),
+            "size_bytes": 91_244,
+        },
+        "receipt_digest": "",
+    }
+    payload.update(overrides)
+    return _seal({**payload, "receipt_digest": ""}, "receipt_digest")
+
+
+def _replacement_with_asset_id() -> dict:
+    replacement = _authored_replacement()
+    replacement["asset_id"] = "washer_replacement_v1"
+    return _seal({**replacement, "receipt_digest": ""}, "receipt_digest")
+
+
+def test_composed_bytes_are_admitted_with_graph_link_identity() -> None:
+    """Both Joint failures cured at once: nameable parts AND visible ones.
+
+    The agent identifies and predicts from rendered views, so it needs an
+    input that is articulated and rendered. The composed asset is the same
+    articulation with visuals attached -- link prims byte-identical -- so
+    only the bytes move and link identity still comes from the graph.
+    """
+
+    replacement = _replacement_with_asset_id()
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id=SCENE_ID,
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=_source_receipt(task="a"),
+        authored_replacement_receipt=replacement,
+        composed_asset_receipt=_composed_asset(),
+    )
+    source = admission["source"]
+    assert source["composed_visual_input"] is True
+    assert source["source_asset_sha256"] == _digest("9")
+    # Link identity is unchanged: still the authored six.
+    assert source["connected_component_count"] == 6
+    # The authored bytes stay named, so the swap is inspectable.
+    assert source["authored_replacement_asset_sha256"] == REPLACEMENT_SHA
+    assert source["independent_topology_inference"] is False
+
+
+def test_composed_bytes_for_another_asset_are_refused() -> None:
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            authored_replacement_receipt=_replacement_with_asset_id(),
+            composed_asset_receipt=_composed_asset(asset_id="some_other_object"),
+        )
+    assert "joint_agent_composed_asset_lineage_invalid" in excinfo.value.errors
+
+
+def test_composed_bytes_claiming_new_geometry_are_refused() -> None:
+    """Composition places authored visuals; it never invents geometry."""
+
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            authored_replacement_receipt=_replacement_with_asset_id(),
+            composed_asset_receipt=_composed_asset(
+                geometry_generated_or_modified=True
+            ),
+        )
+    assert (
+        "joint_agent_composed_asset_geometry_claim_invalid" in excinfo.value.errors
+    )
+
+
+def test_composed_bytes_without_the_authored_graph_are_refused() -> None:
+    """Composed bytes carry no link identity of their own to inherit."""
+
+    with pytest.raises(DualTaskJointAgentAdmissionError) as excinfo:
+        build_dual_task_joint_agent_admission(
+            publisher_scene_id=SCENE_ID,
+            task_freeze=_task_freeze(task="a"),
+            source_receipt=_source_receipt(task="a"),
+            composed_asset_receipt=_composed_asset(),
+        )
+    assert (
+        "joint_agent_composed_asset_requires_authored_replacement"
+        in excinfo.value.errors
+    )
+
+
+def test_a_composed_admission_rebuilds_byte_for_byte() -> None:
+    admission = build_dual_task_joint_agent_admission(
+        publisher_scene_id=SCENE_ID,
+        task_freeze=_task_freeze(task="a"),
+        source_receipt=_source_receipt(task="a"),
+        authored_replacement_receipt=_replacement_with_asset_id(),
+        composed_asset_receipt=_composed_asset(),
+    )
+    assert validate_dual_task_joint_agent_admission(admission) == admission
+    assert (
+        validate_dual_task_joint_agent_source_binding(
+            admission, _source_receipt(task="a")
+        )
+        == admission
+    )
