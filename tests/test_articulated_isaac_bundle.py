@@ -48,6 +48,11 @@ def _probe_root(tmp_path: Path) -> Path:
         locked_joint_motion_tolerance_rad=0.001,
         settle_samples=40,
         control_frequency_hz=15.0,
+        # a commanded probe without drive authority is now refused at
+        # materialization (articulated_native_probe_commanded_mode_drive_required)
+        probe_drive_stiffness=900.0,
+        probe_drive_damping=90.0,
+        probe_drive_max_force=400.0,
     )
     return root
 
