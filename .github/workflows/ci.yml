@@ -106,6 +106,16 @@ jobs:
         timeout-minutes: 4
         run: |
           set -euo pipefail
+          # The runner image ships ffmpeg; installing it again puts every run
+          # on the apt mirror's critical path for nothing. Tonight that mirror
+          # served packages at seconds each: connections flowed, so timeouts
+          # never fired; nothing errored, so retries never fired; the step just
+          # needed more than any sane bound. Skip apt when the tool is already
+          # there, and give the genuine fallback mirror-sized room.
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg already present: $(ffmpeg -version | head -n1)"
+            exit 0
+          fi
           # GitHub-hosted runners also carry third-party Microsoft/Azure apt
           # sources.  A transient mirror or signing failure there must not
           # consume this bounded impacted-test job before its test evidence

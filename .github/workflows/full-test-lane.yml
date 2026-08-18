@@ -86,8 +86,18 @@ jobs:
         # consuming the job it runs in. On 2026-08-17 an unbounded sibling of
         # this step hung for an hour at the first step of a deploy-gating lane
         # while the same work normally finishes in about a minute.
-        timeout-minutes: 6
+        timeout-minutes: 12
         run: |
+          # The runner image ships ffmpeg; installing it again puts every run
+          # on the apt mirror's critical path for nothing. Tonight that mirror
+          # served packages at seconds each: connections flowed, so timeouts
+          # never fired; nothing errored, so retries never fired; the step just
+          # needed more than any sane bound. Skip apt when the tool is already
+          # there, and give the genuine fallback mirror-sized room.
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg already present: $(ffmpeg -version | head -n1)"
+            exit 0
+          fi
           # ffmpeg comes from Ubuntu's repositories. GitHub-hosted runners also
           # carry third-party Microsoft/Azure apt sources, and transient signing
           # or mirror errors there should not block this CPU validation lane.
