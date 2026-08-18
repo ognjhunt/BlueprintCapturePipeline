@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .adp009d_sage_franka_placement import PLACEMENT_PACKET_SCHEMA_VERSION
+from .freeze_amendment_carry_forward import (
+    FreezeAmendmentCarryForwardError,
+    validate_freeze_amendment_carry_forward_content,
+)
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import (
     MAX_REPLACEMENT_OBJECTS,
@@ -298,6 +302,35 @@ def _validate_interaction_affordance_candidate(
     )
 
 
+def _scenario_carry_forward_accepted(
+    *,
+    proof: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+    superseded_digest: str,
+    amended_digest: str,
+) -> bool:
+    """One amendment-shaped divergence, accepted only with its exact proof."""
+
+    if proof is None or not superseded_digest or not amended_digest:
+        return False
+    candidates = [proof] if isinstance(proof, Mapping) else list(proof)
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        if candidate.get("sealed_schema") != SCENARIO_SCHEMA:
+            continue
+        try:
+            validate_freeze_amendment_carry_forward_content(
+                candidate,
+                sealed_schema=SCENARIO_SCHEMA,
+                superseded_digest=superseded_digest,
+                amended_digest=amended_digest,
+            )
+        except FreezeAmendmentCarryForwardError:
+            return False
+        return True
+    return False
+
+
 def materialize_paired_target_native_manipulation_preflight(
     *,
     paired_target_preflight_path: str | Path,
@@ -305,6 +338,7 @@ def materialize_paired_target_native_manipulation_preflight(
     task_records: Sequence[Mapping[str, Any]],
     output_path: str | Path,
     phase: str = "arena_packet",
+    freeze_carry_forward: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bind available manipulation inputs and expose exact remaining blockers."""
 
@@ -455,6 +489,19 @@ def materialize_paired_target_native_manipulation_preflight(
             registered_path,
             f"paired_target_manipulation_registered_asset_invalid:{task_id}",
         )
+        # The scenario suite was prospectively sealed while the superseded
+        # freeze was current: it carries policy candidates, seeds, and
+        # controls, and reads only task identity from the freeze -- nothing a
+        # joint-axis amendment touches. Re-sealing it would rewrite history;
+        # a carry-forward proof pinned to this exact amendment bridges it,
+        # the same acceptance the CAD receipts and visual binding already use.
+        suite_freeze_ok = scenario.get("task_freeze_digest") == freeze[
+            "task_freeze_digest"
+        ] or _scenario_carry_forward_accepted(
+            proof=freeze_carry_forward,
+            superseded_digest=str(scenario.get("task_freeze_digest") or ""),
+            amended_digest=str(freeze["task_freeze_digest"]),
+        )
         if (
             scenario.get("schema_version") != SCENARIO_SCHEMA
             or scenario.get("suite_digest") != scenario_record.get("suite_digest")
@@ -462,7 +509,7 @@ def materialize_paired_target_native_manipulation_preflight(
             != canonical_digest(scenario, digest_field="suite_digest")
             or scenario.get("scene_id") != scene_id
             or scenario.get("task_id") != task_id
-            or scenario.get("task_freeze_digest") != freeze["task_freeze_digest"]
+            or not suite_freeze_ok
             or registered.get("schema_version") != REGISTERED_ASSET_SCHEMA
             or registered.get("receipt_digest")
             != canonical_digest(registered, digest_field="receipt_digest")

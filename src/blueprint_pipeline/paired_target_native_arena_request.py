@@ -17,6 +17,10 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .freeze_amendment_carry_forward import (
+    FreezeAmendmentCarryForwardError,
+    validate_freeze_amendment_carry_forward_content,
+)
 from .articulation_graph_contract import validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import (
@@ -47,7 +51,13 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _read(path: str | Path, code: str) -> tuple[Path, dict[str, Any]]:
+def _read(path: str | Path | None, code: str) -> tuple[Path, dict[str, Any]]:
+    # A task input that simply omits a required receipt path must surface as
+    # the same named refusal as an unreadable file, not as a TypeError from
+    # Path(None) -- the operator needs the field name, and prod needs the
+    # fail-closed code.
+    if path is None:
+        raise PairedTargetNativeArenaRequestError(code)
     source = Path(path).expanduser().resolve()
     try:
         value = json.loads(source.read_text(encoding="utf-8"))
@@ -72,7 +82,7 @@ def _record(path: Path, **extra: Any) -> dict[str, Any]:
 
 
 def _bound_json(
-    path: str | Path,
+    path: str | Path | None,
     *,
     schema: str,
     digest_field: str,
@@ -389,10 +399,40 @@ def _rigid_task_spec(
     return spec, None
 
 
+def _scenario_carry_forward_accepted(
+    *,
+    proof: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+    superseded_digest: str,
+    amended_digest: str,
+) -> bool:
+    """One amendment-shaped divergence, accepted only with its exact proof."""
+
+    if proof is None or not superseded_digest or not amended_digest:
+        return False
+    candidates = [proof] if isinstance(proof, Mapping) else list(proof)
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        if candidate.get("sealed_schema") != "third_scene_task_scenario_suite.v1":
+            continue
+        try:
+            validate_freeze_amendment_carry_forward_content(
+                candidate,
+                sealed_schema="third_scene_task_scenario_suite.v1",
+                superseded_digest=superseded_digest,
+                amended_digest=amended_digest,
+            )
+        except FreezeAmendmentCarryForwardError:
+            return False
+        return True
+    return False
+
+
 def materialize_paired_target_native_arena_requests(
     *,
     construction_bindings_path: str | Path,
     task_inputs: Sequence[Mapping[str, Any]],
+    freeze_carry_forward: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     evidence_root: str | Path,
     output_root: str | Path,
 ) -> dict[str, Any]:
@@ -475,7 +515,18 @@ def materialize_paired_target_native_arena_requests(
             or camera.get("task_id") != task_id
             or camera.get("interaction_affordance_candidate", {}).get("receipt_digest") != affordance["receipt_digest"]
             or scenario.get("task_id") != task_id
-            or scenario.get("task_freeze_digest") != freeze["task_freeze_digest"]
+            or not (
+                scenario.get("task_freeze_digest") == freeze["task_freeze_digest"]
+                # The scenario suite was sealed while the superseded freeze
+                # was current; a carry-forward proof pinned to this exact
+                # amendment bridges it, the same acceptance the manipulation
+                # preflight applies one step earlier.
+                or _scenario_carry_forward_accepted(
+                    proof=freeze_carry_forward,
+                    superseded_digest=str(scenario.get("task_freeze_digest") or ""),
+                    amended_digest=str(freeze["task_freeze_digest"]),
+                )
+            )
             or bindings[task_id]["asset_id"] != registered["asset_id"]
             or bindings[task_id]["replacement_asset_sha256"] != usd_record.get("sha256")
             or not usd_path.is_file()

@@ -86,6 +86,12 @@ CONSUMED_FREEZE_FIELDS: Mapping[str, tuple[str, ...]] = {
         "task_id",
         "removal_plan.replacement_asset_id",
     ),
+    # The scenario suite carries policy candidates, seeds, execution order,
+    # and required controls; from the freeze it reads task identity only.
+    "third_scene_task_scenario_suite.v1": (
+        "task_id",
+        "scene_id",
+    ),
 }
 
 #: Bookkeeping the amendment itself writes.  Counting these as changes would

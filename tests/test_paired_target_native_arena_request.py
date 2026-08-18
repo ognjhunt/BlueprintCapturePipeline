@@ -121,3 +121,27 @@ def test_real_two_task_requests_bind_registered_root_and_compile_packets() -> No
         for left, right in zip(path, path[1:])
         for joint in left["joint_positions"]
     ) <= 0.03
+
+
+def test_missing_receipt_path_is_a_named_refusal_not_a_typeerror() -> None:
+    """A task input omitting a required receipt path names the field's code.
+
+    Both articulated (kinematic path) and rigid (support) inputs reach the
+    reader through ``.get(...)``, so an absent key used to surface as
+    ``TypeError: argument should be a str ... not 'NoneType'`` -- useless to
+    an operator and not a fail-closed refusal.  Pin the named code instead.
+    """
+
+    from blueprint_pipeline.paired_target_native_arena_request import _bound_json
+
+    for code in (
+        "paired_target_arena_request_kinematic_invalid",
+        "paired_target_arena_request_support_invalid",
+    ):
+        with pytest.raises(PairedTargetNativeArenaRequestError, match=code):
+            _bound_json(
+                None,
+                schema="paired_target_articulated_kinematic_path.v1",
+                digest_field="receipt_digest",
+                code=code,
+            )
