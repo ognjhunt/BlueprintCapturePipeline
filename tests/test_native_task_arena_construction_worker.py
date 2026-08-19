@@ -301,61 +301,15 @@ def test_device_binding_survives_an_unreachable_scene() -> None:
     assert binding["expected_device"] == "cuda:0"
 
 
-def _install_fake_stage(monkeypatch, prims) -> None:
-    import sys
-    import types
-    from types import SimpleNamespace
-
-    stage_module = types.ModuleType("isaacsim.core.utils.stage")
-    stage_module.get_current_stage = lambda: SimpleNamespace(
-        Traverse=lambda: list(prims)
-    )
-    pxr_module = types.ModuleType("pxr")
-    pxr_module.UsdPhysics = SimpleNamespace(ArticulationRootAPI=object())
-    pxr_module.Usd = SimpleNamespace(SchemaBase=object)
-    isaacsim = types.ModuleType("isaacsim")
-    core = types.ModuleType("isaacsim.core")
-    utils = types.ModuleType("isaacsim.core.utils")
-    # `import a.b.c as x` resolves through parent attributes, not sys.modules
-    isaacsim.core = core
-    core.utils = utils
-    utils.stage = stage_module
-    for name, module in (
-        ("isaacsim", isaacsim),
-        ("isaacsim.core", core),
-        ("isaacsim.core.utils", utils),
-        ("isaacsim.core.utils.stage", stage_module),
-        ("pxr", pxr_module),
-    ):
-        monkeypatch.setitem(sys.modules, name, module)
-
-
-def _prim(path: str, *, articulation: bool):
-    from types import SimpleNamespace
-
-    class _Path:
-        # dunder lookup happens on the type, so SimpleNamespace cannot fake str()
-        def __init__(self, value: str) -> None:
-            self.pathString = value
-
-        def __str__(self) -> str:
-            return self.pathString
-
-    return SimpleNamespace(
-        GetPath=lambda p=path: _Path(p),
-        HasAPI=lambda _api, a=articulation: a,
-    )
-
-
-def test_articulation_view_devices_separate_scene_wide_from_per_asset(
-    monkeypatch,
-) -> None:
+def test_articulation_view_devices_separate_scene_wide_from_per_asset() -> None:
     """The traceback cannot say whether the whole scene lost GPU dynamics.
 
     If every articulation view is CPU-backed the physics scene never got GPU
     dynamics and the fix is scene-level. If exactly one is CPU-backed the fix
     belongs to that asset. Those are different repairs and nothing else in a
-    failed run tells them apart.
+    failed run tells them apart. Paths come from the scene plan, so this still
+    reports when no stage accessor resolves -- which is exactly what happened
+    on attempt r11, where a single missing module returned no evidence at all.
     """
 
     from types import SimpleNamespace
@@ -363,13 +317,6 @@ def test_articulation_view_devices_separate_scene_wide_from_per_asset(
     from blueprint_pipeline.native_task_arena_construction_worker import (
         _articulation_view_devices,
     )
-
-    prims = [
-        _prim("/World/envs/env_0/Robot", articulation=True),
-        _prim("/World/envs/env_0/task_object", articulation=True),
-        _prim("/World/envs/env_0/scene_collision", articulation=False),
-    ]
-    _install_fake_stage(monkeypatch, prims)
 
     devices = {
         "/World/envs/env_0/Robot": "cuda:0",
@@ -386,12 +333,11 @@ def test_articulation_view_devices_separate_scene_wide_from_per_asset(
         _view=SimpleNamespace(create_articulation_view=create_articulation_view)
     )
 
-    rows = _articulation_view_devices(manager)
+    rows = _articulation_view_devices(manager, list(devices))
 
     assert rows["/World/envs/env_0/Robot"]["device"] == "cuda:0"
     assert rows["/World/envs/env_0/task_object"]["device"] == "cpu"
-    # a non-articulation prim must not be reported as one
-    assert "/World/envs/env_0/scene_collision" not in rows
+    assert rows["/World/envs/env_0/Robot"]["backend_present"] is True
 
 
 def test_articulation_view_devices_report_a_missing_simulation_view() -> None:
@@ -403,18 +349,51 @@ def test_articulation_view_devices_report_a_missing_simulation_view() -> None:
         _articulation_view_devices,
     )
 
-    rows = _articulation_view_devices(SimpleNamespace(_view=None))
+    rows = _articulation_view_devices(SimpleNamespace(_view=None), ["/World/x"])
 
     assert rows == {"unavailable": "simulation_view_is_none"}
 
 
-def test_physics_scene_evidence_never_raises_without_isaac() -> None:
-    """Diagnostics must degrade to a note, never mask the real failure."""
+def test_expected_articulation_prim_paths_come_from_the_plan() -> None:
+    """Paths must not require a stage traversal to obtain."""
 
     from blueprint_pipeline.native_task_arena_construction_worker import (
+        expected_articulation_prim_paths,
+    )
+
+    plan = {
+        "objects": [
+            {"object_type": "ARTICULATION", "prim_path": "{ENV_REGEX_NS}/task_object"},
+            {"object_type": "BASE", "prim_path": "{ENV_REGEX_NS}/scene_collision"},
+        ]
+    }
+
+    paths = expected_articulation_prim_paths(plan)
+
+    assert paths == ["/World/envs/env_0/Robot", "/World/envs/env_0/task_object"]
+
+
+def test_every_evidence_fact_fails_independently() -> None:
+    """No single missing module may empty the whole report.
+
+    r11 spent $0.056 and returned nothing because one unavailable import
+    (`isaacsim.core.utils`, which this runtime does not ship) aborted the
+    entire collection. Each fact is now gathered separately, and every stage
+    accessor attempt is recorded by name.
+    """
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _STAGE_ACCESSORS,
         physics_scene_device_evidence,
     )
 
-    evidence = physics_scene_device_evidence()
+    evidence = physics_scene_device_evidence(["/World/envs/env_0/Robot"])
 
-    assert "unavailable" in evidence or "physics_scenes" in evidence
+    # Isaac is absent here, so every fact should report its own reason
+    assert "physics_manager_unavailable" in evidence
+    assert "simulation_context_unavailable" in evidence
+    assert evidence["stage_source"] is None
+    # and every accessor must have been tried, by name
+    assert set(evidence["stage_attempts"]) == {name for name, _ in _STAGE_ACCESSORS}
+    # the accessor that r11 relied on alone is no longer first
+    assert _STAGE_ACCESSORS[0][0] == "omni.usd"
