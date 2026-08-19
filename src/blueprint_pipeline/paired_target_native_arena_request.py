@@ -22,6 +22,10 @@ from .freeze_amendment_carry_forward import (
     validate_freeze_amendment_carry_forward_content,
 )
 from .articulation_graph_contract import validate_articulation_graph
+from .native_franka_action_math import (
+    NativeFrankaActionMathError,
+    grasp_orientation_contact_xyzw,
+)
 from .decision_evidence_contracts import canonical_digest
 from .native_task_construction_plan import (
     MAX_JOINT_DELTA_RAD,
@@ -272,6 +276,57 @@ def _joint_bindings(graph: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _grasp_orientation_contact_xyzw(
+    candidate: Mapping[str, Any], path_receipt: Mapping[str, Any]
+) -> list[float]:
+    """Author the contact-frame grasp rotation from the sealed candidate axes.
+
+    This slot used to hold a hard-coded ``[0.0, 0.0, 0.0, 1.0]``.  Identity is
+    what a quaternion field holds when nobody authored it, and the plan composes
+    it with the door pose, so every phase commanded the hand to world identity
+    -- 120 degrees from where this arm's hand rests, against an 0.08 rad arrival
+    tolerance.  PR #798 made the *consumer* refuse that value; this is the
+    author, so it derives the value instead of inventing one.
+
+    The two axes carry the meanings ``rigid_root_thinnest_axis_pinch`` gives
+    them: ``approach_unit`` is the direction the gripper travels toward the
+    contact (there, ``normalize(contact - robot_base)``) and ``pinch_axis`` is
+    the axis the jaws close along, the axis ``pinch_span`` is measured on and
+    compared against ``parallel_jaw_stroke``.
+
+    ``target_driven_link_far_edge_pinch`` assigns *both* of them the same panel
+    normal, so for the articulated washer door these axes are parallel and no
+    grasp frame exists.  That is a missing input, not a value to guess, so this
+    fails closed and names it.
+    """
+
+    try:
+        reset_pose = path_receipt["joint_contact_path"][0]["contact_pose_asset_root"]
+        # The offset is relative to the contact frame, not to the stage.
+        contact_rotation = _matrix_from_pose(
+            (0.0, 0.0, 0.0), reset_pose["orientation_xyzw"]
+        )[:3, :3]
+        approach = np.asarray(
+            candidate["approach_unit_registered_stage"], dtype=np.float64
+        )
+        jaw = np.asarray(candidate["pinch_axis_registered_stage"], dtype=np.float64)
+        return grasp_orientation_contact_xyzw(
+            approach_axis=contact_rotation.T @ approach,
+            jaw_axis=contact_rotation.T @ jaw,
+        )
+    # NativeFrankaActionMathError subclasses ValueError, so it must be caught
+    # first or the named refusal collapses into the generic one.
+    except NativeFrankaActionMathError as exc:
+        raise PairedTargetNativeArenaRequestError(
+            "paired_target_arena_request_grasp_orientation_unauthorable:"
+            + ";".join(exc.errors)
+        ) from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PairedTargetNativeArenaRequestError(
+            "paired_target_arena_request_grasp_orientation_axes_invalid"
+        ) from exc
+
+
 def _articulated_task_spec(
     freeze: Mapping[str, Any],
     affordance: Mapping[str, Any],
@@ -299,7 +354,9 @@ def _articulated_task_spec(
         "contact_point_link_m": list(candidate["contact_point_link_m"]),
         "approach_unit_asset_root": list(path_receipt["joint_contact_path"][0]["clearance_unit_asset_root"]),
         "retreat_unit_asset_root": list(path_receipt["joint_contact_path"][-1]["clearance_unit_asset_root"]),
-        "gripper_orientation_contact_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_contact_xyzw": _grasp_orientation_contact_xyzw(
+            candidate, path_receipt
+        ),
         "precontact_clearance_m": 0.12,
         "sweep_clearance_m": 0.025,
         "retreat_clearance_m": 0.12,

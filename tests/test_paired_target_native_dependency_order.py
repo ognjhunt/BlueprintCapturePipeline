@@ -276,6 +276,10 @@ def _fixture(root: Path) -> dict:
                     "contact_point_link_m": [0.0, 0.0, 0.0],
                     "contact_point_registered_stage_m": [0.0, 0.0, 0.0],
                     "approach_unit_registered_stage": [0.0, 1.0, 0.0],
+                    # Independent of the approach: a parallel-jaw grasp frame
+                    # needs two axes, and the request compiler now derives the
+                    # contact-frame grasp rotation from this pair.
+                    "pinch_axis_registered_stage": [0.0, 0.0, 1.0],
                     "pinch_span_m": 0.04,
                     "pinch_span_within_stroke": True,
                 },
@@ -391,6 +395,10 @@ def _fixture(root: Path) -> dict:
                     "joint_contact_path": [
                         {
                             "clearance_unit_asset_root": [0.0, 1.0, 0.0],
+                            "contact_pose_asset_root": {
+                                "position_m": [0.0, 0.0, 0.0],
+                                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                            },
                             "joint_positions": {
                                 row["joint_id"]: float(row["reset_position"])
                                 for row in graph["joints"]
@@ -398,6 +406,10 @@ def _fixture(root: Path) -> dict:
                         },
                         {
                             "clearance_unit_asset_root": [0.0, 1.0, 0.0],
+                            "contact_pose_asset_root": {
+                                "position_m": [0.0, 0.0, 0.0],
+                                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                            },
                             "joint_positions": {
                                 row["joint_id"]: (
                                     0.8
