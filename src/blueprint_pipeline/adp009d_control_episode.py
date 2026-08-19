@@ -116,9 +116,18 @@ CONTROLLED_BODY_ORIENTATION_STRATEGY = "horizontal_support_top_down_task_orienta
 CONTROLLED_BODY_QUATERNION_WORLD_XYZW = [1.0, 0.0, 0.0, 0.0]
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
-# Retained for current-main task-neutral controls; the ADP-009D Newton path
-# uses bounded task-space increments instead of this legacy joint-lead limit.
-MAX_JOINT_SETPOINT_LEAD_RAD = 0.20
+# MAX_JOINT_SETPOINT_LEAD_RAD was defined and exported here at 0.20 and read by
+# nothing -- repo-wide, including scripts and profiles. Its comment claimed it
+# was "retained for current-main task-neutral controls"; those read the value
+# off the plan row, not from here.
+#
+# A dead binding of a live name is a landmine: native_task_construction_plan
+# binds the same name to 1.00, so anything importing it from this module would
+# have silently taken the pre-#786 throttle -- the exact shape that made #786
+# inert for three paid runs.
+#
+# The neighbouring slew constant does NOT shadow: it is deliberately named
+# MAX_JOINT_DELTA_PER_STEP_RAD. That is the pattern to follow here.
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
 # Production v8 proved the 10 mm local Cartesian waypoint preserved lateral
@@ -2059,7 +2068,6 @@ __all__ = [
     "CONTROL_PAIR_SCHEMA_VERSION",
     "CONTROL_PLAN_SCHEMA_VERSION",
     "MAX_JOINT_DELTA_PER_STEP_RAD",
-    "MAX_JOINT_SETPOINT_LEAD_RAD",
     "ControlEpisodeError",
     "SCRIPTED_POSITIVE",
     "TASK_CONTROL_EPISODE_SCHEMA_VERSION",
