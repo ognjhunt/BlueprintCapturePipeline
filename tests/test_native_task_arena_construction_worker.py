@@ -456,3 +456,37 @@ def test_torch_tensors_still_take_the_detach_path() -> None:
     tensor = _Tensor([[7.0, 8.0]])
     assert _jsonable(tensor) == [[7.0, 8.0]]
     assert tensor.detached is True
+
+
+def test_persist_survives_values_json_cannot_encode() -> None:
+    """A receipt that cannot be written destroys the diagnosis of a paid run.
+
+    `_persist` runs from a `finally` and digests *before* it writes, so
+    `default=str` on the write alone did not stop a stray warp array from
+    raising inside the handler and leaving a paid run with no receipt.
+    """
+
+    import json
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _canonical_digest,
+        _persist,
+    )
+
+    class _Unencodable:
+        def __repr__(self) -> str:
+            return "<warp array>"
+
+    with TemporaryDirectory() as directory:
+        target = Path(directory) / "native_task_arena_construction_result.v1.json"
+        _persist(target, {"status": "blocked", "stray": _Unencodable()})
+
+        written = json.loads(target.read_text(encoding="utf-8"))
+
+    assert written["status"] == "blocked"
+    assert written["stray"] == "<warp array>"
+    assert written["result_digest"] == _canonical_digest(
+        written, field="result_digest"
+    )

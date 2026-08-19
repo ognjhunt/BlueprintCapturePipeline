@@ -49,10 +49,21 @@ def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
 
 
 def _persist(output: Path, result: dict[str, Any]) -> None:
-    result["result_digest"] = _canonical_digest(result, field="result_digest")
+    # Normalise before digesting. This runs from a `finally`, and
+    # `_canonical_digest` refuses values json cannot encode -- a stray warp
+    # array or Path would raise *inside* the handler, replace the real
+    # exception and leave a paid run with no receipt at all. Passing
+    # `default=str` to the write alone is not enough, because the digest is
+    # computed first. Normalising both also makes the digest describe exactly
+    # the bytes on disk.
+    normalised = json.loads(json.dumps(result, default=str))
+    normalised["result_digest"] = _canonical_digest(
+        normalised, field="result_digest"
+    )
+    result["result_digest"] = normalised["result_digest"]
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
+        json.dumps(normalised, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 

@@ -360,3 +360,49 @@ def test_controls_binding_refuses_two_absent_digests(tmp_path: Path) -> None:
         "control_plan_construction_scene_plan_digest_vs_scene_plan",
         "control_plan_construction_clearance_plan_digest_vs_construction",
     }
+
+
+def test_persist_survives_values_json_cannot_encode() -> None:
+    """A receipt that cannot be written destroys the diagnosis of a paid run.
+
+    `_persist` is called from a `finally`. The digest is computed *before* the
+    write, so passing `default=str` to the write alone left a stray warp array
+    or Path raising inside the handler -- replacing the real exception and
+    leaving a paid run with no receipt at all. The policy worker fixed this;
+    the controls and construction workers still carried the defect.
+    """
+
+    from tempfile import TemporaryDirectory
+
+    from blueprint_pipeline.native_task_arena_controls_worker import _persist
+
+    class _Unencodable:
+        def __repr__(self) -> str:
+            return "<warp array>"
+
+    with TemporaryDirectory() as directory:
+        target = Path(directory) / "native_task_arena_control_result.v1.json"
+        _persist(target, {"status": "blocked", "stray": _Unencodable()})
+
+        written = json.loads(target.read_text(encoding="utf-8"))
+
+    assert written["status"] == "blocked"
+    assert written["stray"] == "<warp array>"
+    assert written["result_digest"].startswith("sha256:")
+
+
+def test_persisted_controls_digest_describes_the_bytes_on_disk() -> None:
+    """The digest must be recomputable from the receipt a reviewer reads."""
+
+    from tempfile import TemporaryDirectory
+
+    from blueprint_pipeline.native_task_arena_controls_worker import _persist
+
+    with TemporaryDirectory() as directory:
+        target = Path(directory) / "native_task_arena_control_result.v1.json"
+        _persist(target, {"status": "completed", "blockers": []})
+        written = json.loads(target.read_text(encoding="utf-8"))
+
+    assert written["result_digest"] == _canonical_digest(
+        written, field="result_digest"
+    )
