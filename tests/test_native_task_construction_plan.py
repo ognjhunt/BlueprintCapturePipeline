@@ -6,6 +6,8 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_construction_plan import (
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
     NativeTaskConstructionPlanError,
     evaluate_rigid_construction_gates,
     materialize_native_task_construction_phase_plan,
@@ -134,6 +136,40 @@ def test_840796_articulated_fixture_preserves_compatibility_plan() -> None:
     assert dispatched["plan_digest"] == canonical_digest(
         dispatched, digest_field="plan_digest"
     )
+
+
+@pytest.mark.parametrize(
+    "scene,label",
+    [
+        (_rigid_fixture(asset_id="canned_beverage_replacement"), "rigid"),
+        (_articulated_840796_fixture(), "legacy_articulated"),
+    ],
+)
+def test_every_construction_phase_plan_publishes_the_command_limits(
+    scene: dict, label: str
+) -> None:
+    """The worker executes ``execution_parameters``; a plan that omits these two
+    bounds silently hands the run to the servo's own defaults."""
+
+    execution = materialize_native_task_construction_phase_plan(scene)[
+        "execution_parameters"
+    ]
+
+    assert execution["max_joint_delta_rad"] == pytest.approx(MAX_JOINT_DELTA_RAD)
+    assert execution["max_joint_setpoint_lead_rad"] == pytest.approx(
+        MAX_JOINT_SETPOINT_LEAD_RAD
+    )
+
+
+def test_construction_dispatch_forwards_an_overridden_command_limit_pair() -> None:
+    execution = materialize_native_task_construction_phase_plan(
+        _rigid_fixture(asset_id="canned_beverage_replacement"),
+        max_joint_delta_rad=0.10,
+        max_joint_setpoint_lead_rad=1.00,
+    )["execution_parameters"]
+
+    assert execution["max_joint_delta_rad"] == pytest.approx(0.10)
+    assert execution["max_joint_setpoint_lead_rad"] == pytest.approx(1.00)
 
 
 def test_840313_rigid_fixture_has_complete_construction_gate_sequence() -> None:

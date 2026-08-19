@@ -15,6 +15,10 @@ from typing import Any
 
 from .articulated_control_planner import plan_articulated_handle_trajectory
 from .decision_evidence_contracts import canonical_digest
+from .native_task_construction_plan import (
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
+)
 
 
 SCHEMA_VERSION = "adp_task_control_plan.v1"
@@ -27,29 +31,6 @@ GRIPPER_DWELL_MINIMUM_STEPS = 8
 GRIPPER_DWELL_MAXIMUM_STEPS = 20
 ARRIVAL_TOLERANCE_M = 0.02
 ARRIVAL_STABILITY_STEPS = 2
-#: Per-step slew of the commanded setpoint. At 20 Hz control, 0.10 rad/step is
-#: 2 rad/s -- inside a Panda's ~2.6 rad/s joint limit. The previous 0.03 was
-#: 0.6 rad/s, roughly a quarter of the hardware's capability.
-MAX_JOINT_DELTA_RAD = 0.10
-#: How far the commanded setpoint may lead the MEASURED position.
-#:
-#: This is the throttle, not the slew above. The implicit actuator is a PD:
-#: its velocity comes from the position error it is shown, so capping the lead
-#: caps the achievable speed. At 0.20 rad the arm moved 0.0038 rad/joint/step
-#: -- an eighth of what the 0.03 slew already permitted, so the slew never
-#: bound. Measured in r17:
-#:
-#:   total_action_steps        400  (the full budget, exhausted)
-#:   joint travel achieved  10.717 rad
-#:   travel needed, phase 1  8.721 rad   (of nine phases)
-#:
-#: Every phase reported native_task_phase_ik_unreached. The IK solution was
-#: correct on the first step and 1.88 rad away; the arm simply could not be
-#: driven there in the time allowed. Isaac Lab's own IK examples apply no lead
-#: cap at all -- they command the solution and let the actuator's effort and
-#: velocity limits govern. This keeps a bound for stability, but one that does
-#: not sit below the robot's own limits.
-MAX_JOINT_SETPOINT_LEAD_RAD = 1.00
 
 
 class NativeArticulatedControlPlanError(ValueError):

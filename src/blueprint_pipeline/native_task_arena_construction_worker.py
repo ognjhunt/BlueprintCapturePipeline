@@ -392,6 +392,241 @@ def _task_joint_reset_passed(
     return max(float(value) for value in absolute_errors_rad.values()) <= tolerance
 
 
+def _servo_command_limits(
+    execution_parameters: Mapping[str, Any],
+) -> dict[str, float]:
+    """Resolve the joint-command bounds this construction run must execute.
+
+    These two numbers decide how much torque the position actuators can ever
+    develop: the command is clamped to ``max_joint_setpoint_lead_rad`` of the
+    *measured* joint state, so the position error - and therefore the stiffness
+    torque - can never exceed that bound.  They are sealed into the phase plan,
+    so they are read from it rather than defaulted here; a construction run that
+    silently substitutes the servo's own defaults produces travel that is
+    invariant to the sealed configuration and cannot be interpreted.
+    """
+
+    limits: dict[str, float] = {}
+    for field in ("max_joint_delta_rad", "max_joint_setpoint_lead_rad"):
+        try:
+            value = float(execution_parameters[field])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"native_task_construction_servo_command_limit_missing:{field}"
+            ) from exc
+        if not math.isfinite(value) or value <= 0.0:
+            raise RuntimeError(
+                f"native_task_construction_servo_command_limit_invalid:{field}"
+            )
+        limits[field] = value
+    if limits["max_joint_setpoint_lead_rad"] < limits["max_joint_delta_rad"]:
+        raise RuntimeError(
+            "native_task_construction_servo_command_limit_invalid:"
+            "max_joint_setpoint_lead_rad"
+        )
+    return limits
+
+
+# What the pinned Arena embodiment actually applies to the 7 arm joints, read
+# from the provisioned runtime source rather than inferred
+# (IsaacLab-Arena/isaaclab_arena/embodiments/droid/droid.py, DroidSceneCfg):
+#
+#   panda_shoulder  panda_joint[1-4]  stiffness 400.0  damping 80.0
+#                                     effort_limit 87.0  velocity_limit 2.175
+#   panda_forearm   panda_joint[5-7]  stiffness 400.0  damping 80.0
+#                                     effort_limit 12.0  velocity_limit 2.61
+#   spawn.rigid_props.disable_gravity = True
+#
+# Those arm gains are already Isaac Lab's FRANKA_PANDA_HIGH_PD_CFG values
+# (isaaclab_assets/robots/franka.py sets shoulder and forearm to 400.0/80.0 and
+# disable_gravity True), so "adopt the stiffer upstream PD config" is a no-op
+# here and the soft-gain hypothesis does not survive the pinned source.  For
+# implicit actuators effort_limit and effort_limit_sim are synchronized
+# (actuator_base.py: "For implicit actuators, the effort_limit and
+# effort_limit_sim are the same"), so Arena naming the non-_sim field is also
+# not a defect.  Two consequences worth measuring rather than assuming:
+#
+#   saturation error  = effort_limit / stiffness = 0.218 rad shoulder,
+#                       0.030 rad forearm -- the forearm is already at maximum
+#                       torque for any error past 0.03 rad
+#   terminal speed    = (stiffness / damping) * lead = 5 * lead rad/s, capped by
+#                       velocity_limit
+#
+# Isaac Lab has also renamed several joint-limit buffers across releases.  Probe
+# the known names rather than pinning one, and retain which name resolved so the
+# receipt says what was actually read instead of implying a value we guessed.
+ACTUATOR_READBACK_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("joint_stiffness", ("joint_stiffness",)),
+    ("joint_damping", ("joint_damping",)),
+    (
+        "joint_effort_limit_n_m",
+        ("joint_effort_limits_sim", "joint_effort_limits", "joint_effort_limit"),
+    ),
+    (
+        "joint_velocity_limit_rad_s",
+        (
+            "joint_velocity_limits_sim",
+            "joint_velocity_limits",
+            "joint_velocity_limit",
+        ),
+    ),
+    ("joint_friction", ("joint_friction_coeff", "joint_friction")),
+    ("applied_torque_n_m", ("applied_torque",)),
+    ("computed_torque_n_m", ("computed_torque",)),
+)
+
+
+def _arm_slice(value: Any, *, joint_ids: Sequence[int]) -> list[float]:
+    """Return the first environment's value for the bound arm joints."""
+
+    row = _jsonable(value)
+    if isinstance(row, list) and row and isinstance(row[0], list):
+        row = row[0]
+    if not isinstance(row, list):
+        raise TypeError("actuator_readback_not_indexable")
+    return [float(row[index]) for index in joint_ids]
+
+
+def read_native_arm_actuator_readback(
+    robot: Any, *, joint_ids: Sequence[int]
+) -> dict[str, Any]:
+    """Retain the arm actuator configuration that bounds achievable torque.
+
+    A position-controlled joint can only develop ``stiffness * position_error``
+    of restoring torque, and the command clamp bounds that error, so the gains,
+    the effort limit, and the torque actually applied at a stall are the
+    measurements that decide whether a phase failed because it was commanded too
+    conservatively or because the actuator could never deliver the load.  None of
+    that is currently recorded anywhere in a run receipt.
+
+    This is diagnostic evidence, not a gate: a missing or renamed buffer is
+    retained as an explicit unavailability rather than failing a paid run.
+    """
+
+    readback: dict[str, Any] = {
+        "schema_version": "native_task_arena_arm_actuator_readback.v1",
+        "arm_joint_ids": [int(index) for index in joint_ids],
+    }
+    data = getattr(robot, "data", None)
+    for field, candidates in ACTUATOR_READBACK_FIELDS:
+        resolved: str | None = None
+        for candidate in candidates:
+            if data is not None and getattr(data, candidate, None) is not None:
+                resolved = candidate
+                break
+        if resolved is None:
+            readback[field] = {
+                "available": False,
+                "reason": "attribute_absent",
+                "probed_attributes": list(candidates),
+            }
+            continue
+        try:
+            readback[field] = _arm_slice(
+                getattr(data, resolved), joint_ids=joint_ids
+            )
+            readback[f"{field}_source_attribute"] = resolved
+        except Exception as exc:  # noqa: BLE001 - unreadable buffer is evidence
+            readback[field] = {
+                "available": False,
+                "reason": f"{type(exc).__name__}:{exc}",
+                "probed_attributes": list(candidates),
+            }
+
+    # Which joints an actuator group actually covers settles whether the
+    # "Not all actuators are configured" warning is benign (passive gripper
+    # linkage) or is silently leaving arm joints undriven.
+    groups: list[dict[str, Any]] = []
+    actuators = getattr(robot, "actuators", None)
+    if isinstance(actuators, Mapping):
+        for name, actuator in actuators.items():
+            group: dict[str, Any] = {"name": str(name)}
+            group["class"] = type(actuator).__name__
+            for attribute in ("joint_names", "joint_indices"):
+                try:
+                    group[attribute] = _jsonable(getattr(actuator, attribute))
+                except Exception as exc:  # noqa: BLE001
+                    group[attribute] = f"unavailable:{type(exc).__name__}:{exc}"
+            groups.append(group)
+    readback["actuator_groups"] = groups
+    try:
+        joint_names = [str(name) for name in robot.joint_names]
+    except Exception:  # noqa: BLE001
+        joint_names = []
+    covered: set[str] = set()
+    for group in groups:
+        names = group.get("joint_names")
+        if isinstance(names, list):
+            covered.update(str(name) for name in names)
+    readback["joint_names"] = joint_names
+    readback["unactuated_joint_names"] = (
+        sorted(set(joint_names) - covered) if joint_names and covered else []
+    )
+    readback["arm_joint_names_without_actuator_group"] = (
+        sorted(
+            {
+                joint_names[index]
+                for index in joint_ids
+                if 0 <= index < len(joint_names)
+            }
+            - covered
+        )
+        if joint_names and covered
+        else []
+    )
+    for label, source in (
+        ("disable_gravity", ("cfg", "spawn", "rigid_props", "disable_gravity")),
+        ("is_fixed_base", ("is_fixed_base",)),
+    ):
+        cursor: Any = robot
+        for attribute in source:
+            cursor = getattr(cursor, attribute, None)
+            if cursor is None:
+                break
+        readback[label] = (
+            cursor if isinstance(cursor, bool) else {"available": False}
+        )
+    return readback
+
+
+def _arm_buffer(
+    robot: Any, attribute: str, *, joint_ids: Sequence[int]
+) -> list[float] | None:
+    """Return one arm-joint buffer, or ``None`` when it cannot be read."""
+
+    data = getattr(robot, "data", None)
+    value = getattr(data, attribute, None) if data is not None else None
+    if value is None:
+        return None
+    try:
+        return _arm_slice(value, joint_ids=joint_ids)
+    except Exception:  # noqa: BLE001 - absence is retained, never fatal
+        return None
+
+
+def _applied_arm_torque(
+    robot: Any, *, joint_ids: Sequence[int]
+) -> list[float] | None:
+    """Return the arm joints' applied torque, or ``None`` when unreadable."""
+
+    return _arm_buffer(robot, "applied_torque", joint_ids=joint_ids)
+
+
+def _commanded_arm_joint_target(
+    robot: Any, *, joint_ids: Sequence[int]
+) -> list[float] | None:
+    """Return the position target the actuators actually received.
+
+    The worker emits an absolute joint-position action, but everything between
+    that action and the drive - the embodiment's action term, any scale or
+    offset, any clip - is Arena's, not ours.  Retaining the realized target next
+    to the action we sent is what distinguishes "our command was reshaped on the
+    way in" from "the command arrived and the joint could not follow it".
+    """
+
+    return _arm_buffer(robot, "joint_pos_target", joint_ids=joint_ids)
+
+
 def _initial_contact_blocked(
     *, task_kind: str, sample: Mapping[str, Any], collision_threshold_n: float
 ) -> bool:
@@ -936,6 +1171,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
         result["franka_pose_binding"] = servo.binding
+        result["arm_actuator_readback"] = read_native_arm_actuator_readback(
+            robot, joint_ids=servo.binding["arm_joint_ids"]
+        )
         reset_body_pose = servo.current_body_pose_world()
         snapshots = []
         for _ in range(8):
@@ -968,6 +1206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         maximum_steps_per_phase = int(
             execution_parameters["maximum_steps_per_phase"]
         )
+        servo_command_limits = _servo_command_limits(execution_parameters)
+        result["servo_command_limits"] = dict(servo_command_limits)
         for phase in phase_plan["phases"]:
             _announce(f"phase_{phase['phase_id']}")
             servo.reset_command_state()
@@ -1000,6 +1240,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "orientation_world_xyzw", reset_body_pose[3:7]
                     ),
                     gripper_command=gripper_command,
+                    max_joint_delta_rad=servo_command_limits[
+                        "max_joint_delta_rad"
+                    ],
+                    max_joint_setpoint_lead_rad=servo_command_limits[
+                        "max_joint_setpoint_lead_rad"
+                    ],
                 )
                 env.step(
                     torch.tensor(
@@ -1029,6 +1275,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 diagnostic["step_index"] = total_steps
                 diagnostic["position_error_m"] = error
                 diagnostic["orientation_error_rad"] = orientation_error
+                # Torque at the step is what separates "commanded too little"
+                # from "actuator could not deliver the load".  Retained per step
+                # so a stalled phase carries its own attribution.
+                diagnostic["applied_torque_n_m"] = _applied_arm_torque(
+                    robot, joint_ids=servo.binding["arm_joint_ids"]
+                )
+                diagnostic["realized_joint_position_target_rad"] = (
+                    _commanded_arm_joint_target(
+                        robot, joint_ids=servo.binding["arm_joint_ids"]
+                    )
+                )
                 diagnostics.append(diagnostic)
                 if _retain_task_path_samples(
                     task_kind=task_kind, task_spec=plan["task_spec"]

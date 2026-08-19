@@ -13,6 +13,8 @@ from blueprint_pipeline.native_articulated_control_plan import (
     materialize_native_articulated_control_plan,
 )
 from blueprint_pipeline.native_task_construction_plan import (
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
     evaluate_rigid_construction_gates,
     materialize_native_task_construction_phase_plan,
 )
@@ -440,8 +442,10 @@ class _RigidControlEnvironment:
         max_joint_setpoint_lead_rad,
     ) -> list[float]:
         assert target_quaternion_world_xyzw is not None
-        assert max_joint_delta_rad == pytest.approx(0.03)
-        assert max_joint_setpoint_lead_rad == pytest.approx(0.20)
+        assert max_joint_delta_rad == pytest.approx(MAX_JOINT_DELTA_RAD)
+        assert max_joint_setpoint_lead_rad == pytest.approx(
+            MAX_JOINT_SETPOINT_LEAD_RAD
+        )
         self._pending_target = [float(value) for value in target_position_world_m]
         self._pending_orientation = [
             float(value) for value in target_quaternion_world_xyzw
