@@ -468,6 +468,23 @@ def _commit_is_merged_into(commit: str, ref: str) -> bool:
     return result.returncode == 0
 
 
+def release_promotion_eligible(commit: str) -> bool:
+    """Whether this release's evidence may climb above ``development_only``.
+
+    An iteration deploy skips the Full Test Lane to keep a fix-and-fire loop
+    at minutes instead of tens of minutes, and stamps its receipt
+    ``status: "iteration"`` with ``promotion_eligible: false``. Those runs are
+    real and paid, so their evidence is real -- but nothing produced from an
+    unverified release may be presented as adjudication-grade.
+
+    Fail closed: a missing, unreadable, or non-verified receipt is not
+    eligible. Callers record this on the run so the evidence says which kind
+    of release produced it rather than leaving it to be inferred later.
+    """
+
+    return _commit_has_verified_production_promotion(commit)
+
+
 def _commit_has_verified_production_promotion(commit: str) -> bool:
     """Require the exact canonical Full Test Lane receipt for an old release.
 
@@ -729,6 +746,20 @@ def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
             checkout_commit and checkout_commit == remote_main_commit
         ),
         "main_parity_is_diagnostic_not_runtime_identity": True,
+        # An iteration deploy skips the Full Test Lane to keep a fix-and-fire
+        # loop at minutes rather than tens of minutes. Those runs are real and
+        # paid, so their evidence is real -- but it must never be presented as
+        # adjudication-grade. Record which kind of release produced the run
+        # here, where every paid admission already reads, instead of leaving
+        # it to be inferred from the release directory later.
+        "release_promotion_eligible": bool(
+            checkout_commit and release_promotion_eligible(checkout_commit)
+        ),
+        "evidence_grade_ceiling": (
+            "promotion_eligible"
+            if checkout_commit and release_promotion_eligible(checkout_commit)
+            else "development_only"
+        ),
         "raw_secret_values_recorded": False,
     }
     return blockers, identity
