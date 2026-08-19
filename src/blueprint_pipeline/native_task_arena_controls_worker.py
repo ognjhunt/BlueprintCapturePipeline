@@ -357,7 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _announce("preconstruction_device_binding")
         preconstruction = prepare_native_task_arena_preconstruction(
-            expected_device="cuda:0"
+            expected_device=NATIVE_TASK_ARENA_DEVICE
         )
         result["preconstruction_device_binding"] = preconstruction
         if not preconstruction["passed"]:
@@ -368,12 +368,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("environment_build")
         built = build_native_task_arena_environment(
             scene_plan,
-            device="cuda:0",
+            device=NATIVE_TASK_ARENA_DEVICE,
             bundle_root=packet,
             preconstruction_receipt=preconstruction,
         )
         device_readback = read_native_task_arena_device_binding(
-            built, expected_device="cuda:0"
+            built, expected_device=NATIVE_TASK_ARENA_DEVICE
         )
         result["device_readback"] = device_readback
         if not device_readback["passed"]:

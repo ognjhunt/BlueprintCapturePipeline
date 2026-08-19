@@ -308,3 +308,33 @@ def test_every_arena_worker_launches_on_the_shared_device() -> None:
         source = inspect.getsource(module)
         assert "launch_native_task_isaaclab(" in source
         assert "device=NATIVE_TASK_ARENA_DEVICE" in source, module.__name__
+
+
+def test_no_arena_worker_hardcodes_a_device_literal() -> None:
+    """One device string, or the components silently disagree about it.
+
+    The launcher configures the device, the preconstruction probe asserts it,
+    the environment build binds it and the readback verifies it. If any of them
+    carries its own literal, changing the constant leaves them pointing at
+    different devices -- and a device disagreement is exactly the failure that
+    consumed r6-r11: every component kept reporting cuda:0 while the PhysX
+    views handed back CPU arrays, with nothing warning that they had diverged.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import (
+        native_task_arena_construction_worker,
+        native_task_arena_controls_worker,
+        native_task_arena_policy_worker,
+    )
+
+    for module in (
+        native_task_arena_construction_worker,
+        native_task_arena_controls_worker,
+        native_task_arena_policy_worker,
+    ):
+        source = inspect.getsource(module)
+        assert '"cuda:0"' not in source, f"{module.__name__} hardcodes a device"
+        assert "'cuda:0'" not in source, f"{module.__name__} hardcodes a device"
+        assert "NATIVE_TASK_ARENA_DEVICE" in source, module.__name__

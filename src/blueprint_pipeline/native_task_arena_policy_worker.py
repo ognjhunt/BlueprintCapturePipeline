@@ -217,18 +217,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["blockers"].extend(dependencies["blockers"])
             raise RuntimeError("native_task_policy_dependency_preflight_failed")
         preconstruction = prepare_native_task_arena_preconstruction(
-            expected_device="cuda:0"
+            expected_device=NATIVE_TASK_ARENA_DEVICE
         )
         if not preconstruction["passed"]:
             result["blockers"].extend(preconstruction["blockers"])
             raise RuntimeError("native_task_policy_preconstruction_failed")
         built = build_native_task_arena_environment(
             scene_plan,
-            device="cuda:0",
+            device=NATIVE_TASK_ARENA_DEVICE,
             bundle_root=packet,
             preconstruction_receipt=preconstruction,
         )
-        device = read_native_task_arena_device_binding(built, expected_device="cuda:0")
+        device = read_native_task_arena_device_binding(built, expected_device=NATIVE_TASK_ARENA_DEVICE)
         if not device["passed"]:
             result["blockers"].extend(device["blockers"])
             raise RuntimeError("native_task_policy_device_binding_failed")
