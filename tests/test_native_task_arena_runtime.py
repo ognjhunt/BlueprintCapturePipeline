@@ -1202,17 +1202,23 @@ def test_robot_spawns_with_the_plan_orientation_in_isaac_lab_convention(
     )
 
 
-def test_camera_offset_rotation_is_written_in_isaac_lab_convention(
+def test_camera_offset_rotation_is_assigned_without_conversion(
     monkeypatch,
 ) -> None:
-    """Isaac Lab's OffsetCfg.rot is (w, x, y, z), our contract is (x, y, z, w).
+    """The camera offset must NOT be converted by symmetry with the robot spawn.
 
-    Assigning the contract value straight through is the same defect Arena has
-    for the robot spawn: an xyzw identity [0, 0, 0, 1] lands as w=0, z=1 -- a
-    180 degree yaw flip. These are the cameras the policy link conditions on,
-    and the readback previously relabelled the runtime's wxyz bytes as
-    `offset_rotation_xyzw`, so the receipt round-tripped the error and no
-    readback could catch it.
+    It was, in r17, and it blinded both world cameras. Measured task_object
+    pixels per camera, same scene and thresholds:
+
+        r13, assigned directly : external 21871, overview 9053, wrist 51939
+        r17, converted to wxyz : external     0, overview    0, wrist  5326
+
+    The robot spawn genuinely needs the conversion because Arena hands our
+    xyzw straight to Isaac Lab. This camera path does not -- the value is
+    already in the frame the assignment expects -- so converting double-
+    converts and rotates the world cameras off the task object. The wrist
+    camera survives only because its parent prim dominates its pose, which is
+    why a wrist-only check would have missed this.
     """
 
     _install_fake_native_runtime(monkeypatch)
@@ -1226,11 +1232,8 @@ def test_camera_offset_rotation_is_written_in_isaac_lab_convention(
         contract = camera_runtime_parameters(
             next(c for c in plan["cameras"] if c["role"] == role)
         )["offset_rotation_xyzw"]
-        # the runtime holds wxyz: the w component the contract puts last leads
-        assert cfg.offset.rot == pytest.approx(
-            (contract[3], contract[0], contract[1], contract[2])
-        ), role
-        # and the receipt reports the contract ordering, not the runtime's
+        assert cfg.offset.rot == pytest.approx(tuple(contract)), role
+        # the readback reports exactly what was assigned, unrelabelled
         assert built.native_configuration_readback["cameras"][role][
             "offset_rotation_xyzw"
         ] == pytest.approx(list(contract)), role
