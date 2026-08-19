@@ -172,11 +172,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "inputs_verified"
 
         from blueprint_pipeline.native_task_isaaclab_launch import (
+            NATIVE_TASK_ARENA_DEVICE,
             launch_native_task_isaaclab,
         )
 
         simulation_app, launch = launch_native_task_isaaclab(
-            output_root / "native_task_runtime_source_provisioning.v1.json"
+            output_root / "native_task_runtime_source_provisioning.v1.json",
+            device=NATIVE_TASK_ARENA_DEVICE,
         )
         result["isaaclab_launch"] = launch
         import torch
