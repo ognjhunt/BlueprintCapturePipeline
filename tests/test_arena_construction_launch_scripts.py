@@ -175,7 +175,7 @@ def test_fire_waits_for_predecessor_reconciliation_before_submitting() -> None:
     """
 
     text = _text(FIRE)
-    wait = text.find("wait for predecessor webapp sync")
+    wait = text.find("wait for predecessor reconciliation")
     submit = text.find("submit_task_evaluation_launch_via_webapp.py")
     assert wait != -1, "the fire step must wait for predecessor reconciliation"
     assert wait < submit, "the wait must happen before the submission"
@@ -195,6 +195,29 @@ def test_execute_gate_is_still_armed_before_the_reconciliation_wait() -> None:
 
     text = _text(FIRE)
     arm = text.find("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID")
-    wait = text.find("wait for predecessor webapp sync")
+    wait = text.find("wait for predecessor reconciliation")
     submit = text.find("submit_task_evaluation_launch_via_webapp.py")
     assert arm < wait < submit, "arm the execute gate, then wait, then submit"
+
+
+def test_the_reconciliation_wait_does_not_claim_to_fix_the_409() -> None:
+    """r20 ran the wait, reported reconciled, and was still refused.
+
+    A plain retry about two minutes later succeeded, as it did for r19. So
+    reconciler state is not what gates the 409; the evidence points at a
+    server-side cooldown we cannot observe, because the submit tool discards
+    the error body -- correctly, since an untrusted response cannot be launch
+    evidence.
+
+    The wait is worth keeping (submitting while a predecessor is genuinely in
+    flight is wrong regardless, and it costs seconds) but a comment claiming
+    it fixes the 409 would send the next person to the wrong place, and would
+    justify deleting the retry that actually gets a run out.
+    """
+
+    text = _text(FIRE)
+    assert "does not clear a 409 by itself" in text, (
+        "the block must not imply it fixes the 409"
+    )
+    assert "HONEST STATUS" in text
+    assert "cooldown" in text, "record where the evidence actually points"
