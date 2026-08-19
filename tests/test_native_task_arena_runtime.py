@@ -1154,3 +1154,49 @@ def test_tuned_physics_survives_the_upstream_presets_application(monkeypatch) ->
     assert physics is not stock
     assert physics.enable_enhanced_determinism is True
     assert physics.gpu_max_rigid_patch_count == 2**15
+
+
+def test_robot_spawns_with_the_plan_orientation_in_isaac_lab_convention(
+    monkeypatch,
+) -> None:
+    """Arena writes an xyzw quaternion into Isaac Lab's wxyz init_state.
+
+    `isaaclab_arena/embodiments/embodiment_base.py` does
+
+        scene_config.robot.init_state.rot = pose.rotation_xyzw
+
+    but `InitialStateCfg.rot` is (w, x, y, z). Any robot with a non-identity
+    rotation is therefore spawned mis-oriented. Measured on hardware: the plan's
+    +90 deg yaw [0, 0, 0.7071, 0.7071] xyzw arrived as [0, 0.7071, 0.7071, 0],
+    a 180 deg flip, and every IK phase drove the arm into the wrong frame
+    (r13, nine phases, all `ik_unreached`). The builder must set the spawn pose
+    itself, in Isaac Lab's convention.
+    """
+
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    # +90 degree yaw about Z, expressed the way the sealed plan expresses it
+    plan["robot"]["base_pose_world"]["orientation_xyzw"] = [
+        0.0,
+        0.0,
+        0.7071067811865476,
+        0.7071067811865476,
+    ]
+    plan["plan_digest"] = ""
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    build_native_task_arena_environment(plan)
+
+    embodiment = _ArenaBuilder.last.arena_env.embodiment
+    init_state = embodiment.scene_config.robot.init_state
+    # wxyz: the w component leads
+    assert init_state.rot == pytest.approx(
+        (0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
+    )
+    # and emphatically NOT the raw xyzw ordering Arena would have written
+    assert init_state.rot != pytest.approx(
+        (0.0, 0.0, 0.7071067811865476, 0.7071067811865476)
+    )
+    assert init_state.pos == pytest.approx(
+        tuple(plan["robot"]["base_pose_world"]["position_world_m"])
+    )

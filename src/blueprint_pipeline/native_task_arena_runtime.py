@@ -861,6 +861,10 @@ def build_native_task_arena_environment(
                 asset_cfg=asset_cfg,
             )
 
+    from blueprint_pipeline.native_franka_pose_servo import (
+        contract_xyzw_to_native_wxyz,
+    )
+
     robot = plan["robot"]
     robot_pose = robot["base_pose_world"]
     embodiment = DroidAbsoluteJointPositionEmbodiment(
@@ -880,8 +884,21 @@ def build_native_task_arena_environment(
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None
     embodiment.initial_pose = None
+    # Arena assigns the robot's spawn rotation with
+    #   scene_config.robot.init_state.rot = pose.rotation_xyzw
+    # (isaaclab_arena/embodiments/embodiment_base.py), but Isaac Lab's
+    # InitialStateCfg.rot is **wxyz**. Every robot with a non-identity rotation
+    # is therefore spawned mis-oriented: our +90 deg yaw
+    # [0, 0, 0.7071, 0.7071] xyzw arrived as [0, 0.7071, 0.7071, 0], a 180 deg
+    # flip, measured on hardware. The arm then drove every commanded direction
+    # into the wrong frame and no phase could reach its target. Set the pose
+    # here in Isaac Lab's own convention instead of trusting that assignment.
     embodiment.scene_config.robot.init_state = (
-        embodiment.scene_config.robot.init_state.replace(joint_pos=exact_robot_reset)
+        embodiment.scene_config.robot.init_state.replace(
+            joint_pos=exact_robot_reset,
+            pos=tuple(float(value) for value in robot_pose["position_world_m"]),
+            rot=tuple(contract_xyzw_to_native_wxyz(robot_pose["orientation_xyzw"])),
+        )
     )
     embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
 
