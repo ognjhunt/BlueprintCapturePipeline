@@ -125,3 +125,36 @@ def test_authority_chains_off_the_same_attempt_the_reconciliation_describes() ->
         "chaining the authority off a predecessor that never allocated "
         "contradicts the reconciliation"
     )
+
+
+def test_chain_refuses_a_packet_that_disagrees_with_deployed_constants() -> None:
+    """The bundle rebuilds from deployed code; the packet is carried forward.
+
+    That asymmetry is silent. Any fix to a value that lives in PACKET content
+    never reaches the runtime, and the run looks entirely normal while
+    executing the predecessor's plan.
+
+    r19 paid for it: PR #786 raised the servo limits, deployed cleanly, and the
+    run still executed 0.03/0.20 with joint travel identical to r17 to three
+    decimals, because the packet was hardlinked from r18. A GPU run was spent
+    discovering that a merged, deployed fix was inert.
+
+    So the chain compares what the staged packet actually says against the
+    deployed constants and refuses rather than running a stale plan.
+    """
+
+    text = _text(LAUNCH)
+    guard = text.find("staged packet agrees with deployed control constants")
+    stage = text.find("== 2. staged packet")
+    bundle = text.find("== 3. construction bundle")
+    assert guard != -1, "the chain must verify the packet against deployed code"
+    assert stage < guard < bundle, "the check belongs between staging and build"
+
+    for token in ("MAX_JOINT_DELTA_RAD", "MAX_JOINT_SETPOINT_LEAD_RAD"):
+        assert token in text, f"the guard must compare {token}"
+    assert "STALE PACKET" in text, "a stale packet must say so plainly"
+    assert "SystemExit(1)" in text, "the guard must fail closed, not warn"
+    # the guard imports from the deployed tree, so it needs the source on path
+    assert "PYTHONPATH=$CP/src $PY - " in text, (
+        "the guard must run with the deployed source importable"
+    )
