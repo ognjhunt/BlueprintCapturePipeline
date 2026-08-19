@@ -29,6 +29,7 @@ from blueprint_pipeline.native_franka_action_math import (
 )
 from blueprint_pipeline.native_task_construction_plan import (
     MAX_JOINT_DELTA_RAD,
+    VELOCITY_FEEDFORWARD_SCALE,
     MAX_JOINT_SETPOINT_LEAD_RAD,
     NativeTaskConstructionPlanError,
     joint_command_limits,
@@ -93,7 +94,11 @@ def test_compiler_preserves_a_raised_pair_verbatim() -> None:
         max_joint_delta_rad=0.10,
         max_joint_setpoint_lead_rad=1.00,
         error="limits_invalid",
-    ) == {"max_joint_delta_rad": 0.10, "max_joint_setpoint_lead_rad": 1.00}
+    ) == {
+        "max_joint_delta_rad": 0.10,
+        "max_joint_setpoint_lead_rad": 1.00,
+        "velocity_feedforward_scale": VELOCITY_FEEDFORWARD_SCALE,
+    }
 
 
 @pytest.mark.parametrize(
@@ -102,6 +107,12 @@ def test_compiler_preserves_a_raised_pair_verbatim() -> None:
         {},
         {"max_joint_delta_rad": 0.03},
         {"max_joint_setpoint_lead_rad": 0.20},
+        {"max_joint_delta_rad": 0.03, "max_joint_setpoint_lead_rad": 0.20},
+        {
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.20,
+            "velocity_feedforward_scale": 1.5,
+        },
         {"max_joint_delta_rad": 0.0, "max_joint_setpoint_lead_rad": 0.20},
         {"max_joint_delta_rad": 0.03, "max_joint_setpoint_lead_rad": 0.01},
         {"max_joint_delta_rad": "0.03", "max_joint_setpoint_lead_rad": None},
@@ -114,14 +125,19 @@ def test_worker_fails_closed_instead_of_defaulting_the_command_limits(
         worker._servo_command_limits(execution)
 
 
-def test_worker_resolves_both_planned_limits() -> None:
+def test_worker_resolves_every_planned_limit() -> None:
     assert worker._servo_command_limits(
         {
             "max_joint_delta_rad": 0.10,
             "max_joint_setpoint_lead_rad": 1.00,
+            "velocity_feedforward_scale": VELOCITY_FEEDFORWARD_SCALE,
             "stable_samples": 2,
         }
-    ) == {"max_joint_delta_rad": 0.10, "max_joint_setpoint_lead_rad": 1.00}
+    ) == {
+        "max_joint_delta_rad": 0.10,
+        "max_joint_setpoint_lead_rad": 1.00,
+        "velocity_feedforward_scale": VELOCITY_FEEDFORWARD_SCALE,
+    }
 
 
 def _servo_call_keywords() -> set[str]:

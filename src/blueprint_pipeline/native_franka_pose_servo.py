@@ -19,6 +19,8 @@ from typing import Any
 from .native_franka_action_math import (
     bounded_absolute_joint_setpoint,
     controlled_body_pose_for_grasp_frame_target,
+    implicit_pd_torque_terms,
+    joint_velocity_feedforward_rad_s,
 )
 from .native_pose_transforms import (
     pose_world_to_base,
@@ -30,6 +32,10 @@ SCHEMA_VERSION = "native_franka_pose_servo.v1"
 ARM_JOINT_NAMES = tuple(f"panda_joint{index}" for index in range(1, 8))
 FINGER_BODY_NAMES = ("left_inner_finger", "right_inner_finger")
 CONTROLLED_BODY_CANDIDATES = ("panda_hand", "base_link", "panda_link7")
+# Fraction of the commanded setpoint advance rate declared as a joint velocity
+# target.  Defined here rather than in the plan compiler because the runtime
+# bundle ships this module and not the compiler, and both sides must agree.
+DEFAULT_VELOCITY_FEEDFORWARD_SCALE = 1.0
 
 
 class NativeFrankaPoseServoError(RuntimeError):
@@ -154,10 +160,86 @@ class NativeFrankaDifferentialIkServo:
             [rotation], device=env.unwrapped.device, dtype=torch.float32
         ).reshape(1, 3, 3)
         self._last_command: list[float] | None = None
+        unwrapped = env.unwrapped
+        step_dt = getattr(unwrapped, "step_dt", None)
+        if step_dt is None:
+            cfg = getattr(unwrapped, "cfg", None)
+            sim = getattr(cfg, "sim", None)
+            dt = getattr(sim, "dt", None)
+            decimation = getattr(cfg, "decimation", None)
+            step_dt = None if dt is None or decimation is None else dt * decimation
+        try:
+            self._control_period_seconds = float(step_dt)
+        except (TypeError, ValueError) as exc:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_control_period_unresolved"]
+            ) from exc
+        if (
+            not math.isfinite(self._control_period_seconds)
+            or self._control_period_seconds <= 0.0
+        ):
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_control_period_unresolved"]
+            )
+        # Read the drive gains once so the retained torque can be split into the
+        # two terms that produce it.  Absence is recorded, never fatal.
+        self._joint_stiffness = self._arm_gain("joint_stiffness")
+        self._joint_damping = self._arm_gain("joint_damping")
+
+    def _arm_gain(self, attribute: str) -> list[float] | None:
+        data = getattr(self._robot, "data", None)
+        value = getattr(data, attribute, None) if data is not None else None
+        if value is None:
+            return None
+        try:
+            row = self._to_torch(value)[0]
+            return [
+                float(row[index]) for index in self.binding["arm_joint_ids"]
+            ]
+        except Exception:  # noqa: BLE001 - diagnostic only
+            return None
+
+    def read_arm_joint_velocities(self) -> list[float]:
+        values = self._to_torch(self._robot.data.joint_vel)[
+            0, self.binding["arm_joint_ids"]
+        ]
+        return [float(value) for value in values]
+
+    def _write_joint_velocity_target(self, velocities: Sequence[float]) -> None:
+        """Declare the intended joint velocity through the stock Isaac Lab API.
+
+        For implicit actuators ``write_data_to_sim`` sends the position *and*
+        velocity target to PhysX, and the stock ``JointPositionAction`` never
+        touches the velocity target, so this is an addition to the command
+        rather than a competing control path.  The plain
+        ``set_joint_velocity_target`` is deprecated in the pinned revision, so
+        the indexed form is preferred.
+        """
+
+        target = self._torch.tensor(
+            [[float(value) for value in velocities]],
+            device=self._env.unwrapped.device,
+            dtype=self._torch.float32,
+        )
+        joint_ids = list(self.binding["arm_joint_ids"])
+        for name in (
+            "set_joint_velocity_target_index",
+            "set_joint_velocity_target",
+        ):
+            setter = getattr(self._robot, name, None)
+            if setter is None:
+                continue
+            setter(target=target, joint_ids=joint_ids)
+            return
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_velocity_target_api_missing"]
+        )
 
     def reset_command_state(self) -> None:
         self._last_command = None
         self._controller.reset()
+        # A stale feedforward must not survive into the next phase or episode.
+        self._write_joint_velocity_target([0.0] * len(self.binding["arm_joint_ids"]))
 
     def current_body_pose_world(self) -> list[float]:
         pose = self._to_torch(self._robot.data.body_pose_w)[
@@ -199,6 +281,7 @@ class NativeFrankaDifferentialIkServo:
         gripper_command: float,
         max_joint_delta_rad: float = 0.03,
         max_joint_setpoint_lead_rad: float = 0.20,
+        velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     ) -> tuple[list[float], dict[str, Any]]:
         body_pose = self.current_body_pose_world()
         grasp = self.current_grasp_frame_position_world()
@@ -255,6 +338,30 @@ class NativeFrankaDifferentialIkServo:
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
         )
+        # Declare the rate the setpoint is advancing at, so the damping term
+        # stops braking the motion we just commanded.  It is zero whenever the
+        # setpoint holds, which leaves the joint damped at rest.
+        feedforward = joint_velocity_feedforward_rad_s(
+            commanded_joint_positions_rad=bounded,
+            previous_commanded_joint_positions_rad=previous,
+            control_period_seconds=self._control_period_seconds,
+            scale=float(velocity_feedforward_scale),
+        )
+        self._write_joint_velocity_target(feedforward)
+        measured_velocities = self.read_arm_joint_velocities()
+        torque_terms: dict[str, Any] = {
+            "available": False,
+            "reason": "joint_gains_unavailable",
+        }
+        if self._joint_stiffness is not None and self._joint_damping is not None:
+            torque_terms = implicit_pd_torque_terms(
+                commanded_joint_positions_rad=bounded,
+                measured_joint_positions_rad=current_values,
+                commanded_joint_velocities_rad_s=feedforward,
+                measured_joint_velocities_rad_s=measured_velocities,
+                joint_stiffness=self._joint_stiffness,
+                joint_damping=self._joint_damping,
+            )
         self._last_command = list(bounded)
         action = [*bounded, float(gripper_command)]
         diagnostics = {
@@ -278,12 +385,23 @@ class NativeFrankaDifferentialIkServo:
             "desired_joint_positions_rad": desired_values,
             "bounded_joint_positions_rad": bounded,
             "measured_joint_positions_rad": current_values,
+            # An implicit-actuator torque is the sum of two terms that cancel at
+            # steady state.  Retain them apart so a near-zero reading can be
+            # told from gains that never took effect.
+            "commanded_joint_velocity_feedforward_rad_s": feedforward,
+            "measured_joint_velocity_rad_s": measured_velocities,
+            "velocity_feedforward_scale": float(velocity_feedforward_scale),
+            "control_period_seconds": self._control_period_seconds,
+            "joint_stiffness": self._joint_stiffness,
+            "joint_damping": self._joint_damping,
+            "implicit_pd_torque_terms": torque_terms,
         }
         return action, diagnostics
 
 
 __all__ = [
     "ARM_JOINT_NAMES",
+    "DEFAULT_VELOCITY_FEEDFORWARD_SCALE",
     "CONTROLLED_BODY_CANDIDATES",
     "FINGER_BODY_NAMES",
     "NativeFrankaDifferentialIkServo",
