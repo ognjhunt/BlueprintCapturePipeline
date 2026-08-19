@@ -787,6 +787,35 @@ def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
 '''
 
 
+from .adp009d_policy_provisioning import (  # noqa: E402
+    CHECKPOINT_INVENTORY_STAGED_NAME,
+    POLICY_EXECUTION_SPEC_STAGED_NAME,
+)
+
+
+def _verify_execution_spec_matches_provisioned_checkpoint(
+    staged_spec: Path, *, candidate_id: str
+) -> None:
+    """Refuse a served identity that names a checkpoint this lane never fetches."""
+
+    from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+
+    expected = EXPECTED_CANDIDATES.get(candidate_id)
+    if not expected:
+        return
+    try:
+        payload = json.loads(staged_spec.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("adp009d_policy_execution_spec_unreadable") from exc
+    served = str((payload.get("policy_spec") or {}).get("checkpoint_uri") or "")
+    provisioned = str(expected.get("checkpoint_repository") or "")
+    if served and provisioned and served != provisioned:
+        raise ValueError(
+            "adp009d_policy_checkpoint_identity_unreconciled:"
+            f"{candidate_id}:served={served}:provisioned={provisioned}"
+        )
+
+
 def _copy_bound_asset(source: Path, destination: Path, expected_digest: str) -> dict[str, Any]:
     if not source.is_file():
         raise ValueError(f"adp009d_bound_asset_missing:{destination.name}")
@@ -819,6 +848,8 @@ def build_native_microcheck_bundle(
     worker_source: str | Path | None = None,
     runtime_module_source: str | Path | None = None,
     extra_native_paths: Sequence[str | Path] = (),
+    policy_execution_spec_path: str | Path | None = None,
+    checkpoint_inventory_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compile a deterministic bundle from materialized, digest-verified bytes.
 
@@ -1085,6 +1116,10 @@ def build_native_microcheck_bundle(
         "adp009d_groot_worker_identity.py",
         "adp009d_gated_backbone.py",
         "groot_n17_droid_policy_runtime.py",
+        # The pi05 server is Blueprint's identity-bound wrapper, not openpi's
+        # stock serve_policy.py, so the wrapper and the constant it imports
+        # must both ship or the openpi lane cannot start a server at all.
+        "openpi_droid_policy_runtime.py",
         # Imported by the episode for its digest helper.  It has no intra-package
         # imports of its own, so it ships flat without dragging anything with it.
         # Omitting it made both arms of the dual-layout import fail: the flat one
@@ -1094,6 +1129,29 @@ def build_native_microcheck_bundle(
         "decision_evidence_contracts.py",
     ):
         shutil.copy2(source_dir / module_name, runtime / module_name)
+    # The identity the server publishes and the identity the client validates
+    # must be the same bytes, so the sealed execution spec is staged rather
+    # than restated. A second copy of an identity is how a merged fix goes
+    # inert while both halves look correct in isolation.
+    for staged_name, source_path in (
+        (POLICY_EXECUTION_SPEC_STAGED_NAME, policy_execution_spec_path),
+        (CHECKPOINT_INVENTORY_STAGED_NAME, checkpoint_inventory_path),
+    ):
+        if source_path is None:
+            continue
+        resolved = Path(source_path).expanduser().resolve()
+        if not resolved.is_file():
+            raise ValueError(f"adp009d_policy_identity_input_missing:{staged_name}")
+        shutil.copy2(resolved, runtime / staged_name)
+    if policy_execution_spec_path is not None and policy_candidate_id:
+        # The server verifies the fetched bytes against the spec's inventory, so
+        # a spec naming a different checkpoint than provisioning fetches cannot
+        # ever pass -- it would fail after a multi-gigabyte download on a rented
+        # GPU. Refuse here instead, where the answer costs nothing.
+        _verify_execution_spec_matches_provisioned_checkpoint(
+            runtime / POLICY_EXECUTION_SPEC_STAGED_NAME,
+            candidate_id=policy_candidate_id,
+        )
     # The task-centred overview camera is configured before the runtime decides
     # whether this request is diagnostic-only, controls-only, or policy-bearing.
     # Therefore every runnable bundle needs the same frozen destination receipt,
