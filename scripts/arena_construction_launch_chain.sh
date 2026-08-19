@@ -91,6 +91,56 @@ else
   echo "  hardlinked from $PREV"
 fi
 
+# The packet is carried forward unchanged while the bundle is rebuilt from the
+# deployed commit. That asymmetry is silent and expensive: a fix to any value
+# that lives in PACKET content never reaches the runtime, and the run looks
+# normal while executing the predecessor's plan.
+#
+# r19 paid for this. PR #786 raised the servo limits, deployed cleanly, and the
+# run still executed 0.03/0.20 with joint travel identical to r17 to three
+# decimals -- the fix was inert because the packet was hardlinked from r18.
+#
+# So compare what the staged packet actually says against the deployed
+# constants, and refuse rather than run a stale plan.
+echo "== 2b. staged packet agrees with deployed control constants"
+env PYTHONPATH=$CP/src $PY - "$A/arena_packet/$TASK" <<'PYEOF'
+import json, pathlib, sys
+from blueprint_pipeline.native_articulated_control_plan import (
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
+)
+
+packet = pathlib.Path(sys.argv[1])
+mismatched = []
+for path in sorted(packet.glob("*.json")):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    def walk(value):
+        if isinstance(value, dict):
+            if "max_joint_delta_rad" in value:
+                delta = value.get("max_joint_delta_rad")
+                lead = value.get("max_joint_setpoint_lead_rad")
+                if (delta, lead) != (MAX_JOINT_DELTA_RAD, MAX_JOINT_SETPOINT_LEAD_RAD):
+                    mismatched.append((path.name, delta, lead))
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+
+if mismatched:
+    print("  STALE PACKET -- deployed code says "
+          f"({MAX_JOINT_DELTA_RAD}, {MAX_JOINT_SETPOINT_LEAD_RAD}) but the packet says:")
+    for name, delta, lead in mismatched:
+        print(f"    {name}: ({delta}, {lead})")
+    print("  regenerate the packet with materialize_paired_target_native_inputs.py;")
+    print("  hardlinking it forward makes any packet-content fix inert.")
+    raise SystemExit(1)
+print(f"  packet agrees: ({MAX_JOINT_DELTA_RAD}, {MAX_JOINT_SETPOINT_LEAD_RAD})")
+PYEOF
+
 echo "== 3. construction bundle at the deployed commit"
 [ -f $A/arena_construction_job/native_task_arena_provider_bundle_receipt.v1.json ] && echo '  exists, skipping' || \
 $RUN - <<EOF | tail -2
