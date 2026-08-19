@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
 from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 from .articulation_graph_contract import (
     ArticulationGraphContractError,
@@ -1037,6 +1038,12 @@ def materialize_graph_articulated_construction_phase_plan(
             ),
         },
         "gate_contract": gate_contract,
+        # An identity grasp orientation is an unauthored placeholder.  Clearance
+        # phases run open-gripper and bind the measured reset orientation, so
+        # construction still executes; the contact replay refuses instead.
+        "grasp_orientation_authored": not is_unauthored_identity_quaternion_xyzw(
+            affordance["gripper_orientation_contact_xyzw"]
+        ),
         "required_gate_ids": sorted(gate_contract),
         "claim_boundary": {
             "clearance_phases_are_native_ik_targets": True,

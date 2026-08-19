@@ -157,7 +157,7 @@ def _scene() -> dict:
         "contact_point_link_m": [0.4, 0.0, 0.0],
         "approach_unit_asset_root": [0.0, -1.0, 0.0],
         "retreat_unit_asset_root": [0.0, -1.0, 0.0],
-        "gripper_orientation_contact_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_contact_xyzw": [0.5, 0.5, 0.5, 0.5],
         "precontact_clearance_m": 0.12,
         "sweep_clearance_m": 0.025,
         "retreat_clearance_m": 0.12,
@@ -582,7 +582,7 @@ class _GraphControlEnvironment:
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ) -> list[float]:
-        assert target_quaternion_world_xyzw == [0.0, 0.0, 0.0, 1.0]
+        assert target_quaternion_world_xyzw == [0.5, 0.5, 0.5, 0.5]
         assert max_joint_delta_rad == pytest.approx(0.03)
         assert max_joint_setpoint_lead_rad == pytest.approx(0.2)
         return [
@@ -615,7 +615,7 @@ class _GraphControlEnvironment:
                 self.gripper <= 0.5 and self.grasp == self._retreat_target
             ),
             "grasp_frame_position_world_m": list(self.grasp),
-            "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "grasp_frame_orientation_world_xyzw": [0.5, 0.5, 0.5, 0.5],
         }
 
 
@@ -669,3 +669,53 @@ def test_graph_articulated_control_runs_zero_then_positive_through_shared_scorer
     ]
     assert [row["control_passed"] for row in pair["controls"]] == [True, True]
     assert pair["cell_admitted_for_policy_execution"] is True
+
+
+def _scene_with_grasp_orientation(orientation: list[float]) -> dict:
+    scene = _scene()
+    scene["task_spec"]["interaction_affordance"][
+        "gripper_orientation_contact_xyzw"
+    ] = orientation
+    _redigest_affordance(scene)
+    return scene
+
+
+def test_plan_records_an_identity_grasp_orientation_as_unauthored() -> None:
+    """r22 sealed identity here, so every phase commanded the hand 120 degrees
+    away from any pose it rests in and no arrival check could ever pass."""
+
+    unauthored = materialize_native_task_construction_phase_plan(
+        _scene_with_grasp_orientation([0.0, 0.0, 0.0, 1.0])
+    )
+    authored = materialize_native_task_construction_phase_plan(
+        _scene_with_grasp_orientation([0.5, 0.5, 0.5, 0.5])
+    )
+
+    assert unauthored["grasp_orientation_authored"] is False
+    assert authored["grasp_orientation_authored"] is True
+
+
+def test_contact_replay_refuses_an_unauthored_grasp_orientation() -> None:
+    """Construction runs open-gripper clearance probes and may bind the measured
+    reset orientation, but the control plan closes the gripper on the handle --
+    that orientation has to be authored from real geometry, never substituted."""
+
+    scene = _scene_with_grasp_orientation([0.0, 0.0, 0.0, 1.0])
+    with pytest.raises(NativeTaskControlPlanError) as excinfo:
+        materialize_native_task_control_plan(
+            scene_plan=scene, construction_result=_construction(scene)
+        )
+
+    assert any(
+        "gripper_orientation_contact_xyzw_unauthored_identity" in error
+        for error in excinfo.value.errors
+    )
+
+
+def test_contact_replay_accepts_an_authored_grasp_orientation() -> None:
+    scene = _scene_with_grasp_orientation([0.5, 0.5, 0.5, 0.5])
+    plan = materialize_native_task_control_plan(
+        scene_plan=scene, construction_result=_construction(scene)
+    )
+
+    assert plan["scripted_positive_actions"]

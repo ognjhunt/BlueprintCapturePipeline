@@ -175,6 +175,55 @@ def implicit_pd_torque_terms(
     }
 
 
+IDENTITY_QUATERNION_TOLERANCE = 1.0e-6
+
+
+def is_unauthored_identity_quaternion_xyzw(
+    value: Sequence[float] | None, *, tolerance: float = IDENTITY_QUATERNION_TOLERANCE
+) -> bool:
+    """Return whether an orientation is the identity placeholder.
+
+    This slot holds the rotation that aligns a contact frame with the gripper
+    frame.  Isaac Lab's own Franka handle-grasp reference authors exactly such a
+    rotation and says so:
+
+        # cabinet_env_cfg.py, drawer_handle_top FrameCfg
+        offset=OffsetCfg(pos=(0.305, 0.0, 0.01),
+                         rot=(0.5, -0.5, -0.5, 0.5))  # align with end-effector frame
+
+    ``OffsetCfg.rot`` is documented as "(x, y, z, w) w.r.t. the parent frame",
+    applied as ``frame_world = prim_world * offset`` -- the same composition this
+    repository performs.  That reference rotation is 120 degrees; the state
+    machine then grasps with an *identity* offset on top of that already-aligned
+    frame (``transform_multiply(handle_grasp_offset, handle_pose)``).
+
+    So identity here does not mean "aligned", it means the alignment was never
+    authored.  On this arm that costs exactly the reference's 120 degrees: the
+    Franka hand rests at ``(0.5, 0.5, 0.5, 0.5)``, and an identity target
+    commands a 120 degree rotation unrelated to the task.  Near that error the
+    differential IK alternates between solution branches and the arm thrashes
+    into its joint limits at saturated torque while the end-effector never
+    approaches the target.
+
+    A genuinely intended identity alignment is indistinguishable from an
+    unauthored one, so identity is always read as "not authored".
+    """
+
+    if value is None:
+        return True
+    try:
+        quaternion = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return False
+    if len(quaternion) != 4 or not all(math.isfinite(item) for item in quaternion):
+        return False
+    limit = abs(float(tolerance))
+    # Both signs represent the same rotation.
+    return all(abs(item) <= limit for item in quaternion[:3]) and (
+        abs(abs(quaternion[3]) - 1.0) <= limit
+    )
+
+
 def controlled_body_pose_for_grasp_frame_target(
     *,
     current_body_position_world_m: Sequence[float],
