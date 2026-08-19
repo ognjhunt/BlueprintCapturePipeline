@@ -119,9 +119,28 @@ jobs:
 
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render
+        # Bounded and retried on purpose. `playwright install` downloads a
+        # browser and shells out to apt; when either stalls the step has no
+        # timeout of its own, so it hangs until the 90-minute job limit, the
+        # shard is cancelled, and the aggregate step then fails on the missing
+        # shard artifact -- taking the whole lane down and blocking every
+        # production deploy behind it. Two consecutive Full Test Lane runs on
+        # 1703cac2c died exactly this way (shard 2, then shards 0 and 2), with
+        # `npm exec playwright install --with-deps chromium` left as an orphan
+        # process. A stalled download must fail in minutes and retry, not
+        # consume the job.
+        timeout-minutes: 15
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          for attempt in 1 2 3; do
+            if timeout 300 npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::playwright install attempt ${attempt} stalled or failed; retrying"
+            sleep 15
+          done
+          echo "::error::playwright install failed after 3 bounded attempts" >&2
+          exit 1
 
       - name: Install Python dependencies
         run: |
