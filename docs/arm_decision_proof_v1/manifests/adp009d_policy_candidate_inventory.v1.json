@@ -88,18 +88,18 @@
         "source_modifications": []
       },
       "checkpoint": {
-        "repository": "gs://openpi-assets/checkpoints/pi05_droid",
-        "revision": "gcs-generation-inventory:4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12",
+        "repository": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
         "retrieval_method": "openpi_maybe_download_or_generation_pinned_GCS_copy_then_local_sha256_tree",
         "public": true,
         "gated": false,
-        "file_count": 20,
-        "total_bytes": 12429488598,
-        "snapshot_inventory_digest": "sha256:4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12",
-        "publisher_inventory_file_sha256": "sha256:ce3a1d28b9b42d11a38b0d62dd93f102f2165662370812bee5971a6741d74d2a",
+        "file_count": 27,
+        "total_bytes": 12434530837,
+        "snapshot_inventory_digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "publisher_inventory_file_sha256": "sha256:df3a335daeff5ac556e0370a9bf3003397a5b7acbe568e7d474b8c99ce63e774",
         "publisher_object_hashes": "MD5_and_CRC32C_with_generation_not_SHA256",
         "weight_files": [],
-        "sha256_boundary": "object_level_SHA256_not_published_must_materialize_all_20_objects_and_compute_checkpoint_tree_SHA256_before_admission",
+        "sha256_boundary": "object_level_SHA256_not_published_must_materialize_all_27_objects_and_compute_checkpoint_tree_SHA256_before_admission",
         "license": {
           "id": "checkpoint_specific_terms_unresolved",
           "source_repository_license": "Apache-2.0",
@@ -200,7 +200,7 @@
       "selected_for_frozen_evaluation": false,
       "owns_grading": false,
       "claim_ceiling": "inventoried_preferred_candidate_with_prior_smoke_not_admitted_for_ADP009D",
-      "candidate_digest": "sha256:c61e85a366a223afa4646e5dce4452c8e7e3ec333b983d052df02740b7e79ec4"
+      "candidate_digest": "sha256:787d88153deeae020f05481d442c550b6b496cb3225dfe10e13c2449f480d3df"
     },
     {
       "candidate_id": "groot_n17_droid",
@@ -749,5 +749,5 @@
       "candidate_digest": "sha256:8846c0239f84e702bb617b64878a94f3b55f680c735c98820dc4806af3cd7862"
     }
   ],
-  "inventory_digest": "sha256:3c6aead117c8f436b81d81d0d21de0658f5555cded1ac5963619665fac482102"
+  "inventory_digest": "sha256:abdfc142cbf7a1a480cfb7ce343d6330e48d135de259615c43f509f0aef3a4cc"
 }

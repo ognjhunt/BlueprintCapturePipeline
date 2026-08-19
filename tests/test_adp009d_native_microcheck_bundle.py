@@ -3933,6 +3933,7 @@ def test_bundle_refuses_a_named_identity_input_that_does_not_exist(
 _POLARIS_CHECKPOINT_URI = (
     "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris"
 )
+_STOCK_CHECKPOINT_URI = "gs://openpi-assets/checkpoints/pi05_droid"
 
 
 def _arena_policy_execution_spec(tmp_path: Path, *, checkpoint_uri: str) -> Path:
@@ -3951,8 +3952,8 @@ def _arena_policy_execution_spec(tmp_path: Path, *, checkpoint_uri: str) -> Path
                     "checkpoint_object_manifest_sha256": "4" * 64,
                     "checkpoint_generation_manifest_sha256": "3" * 64,
                     "checkpoint_inventory_sha256": "4" * 64,
-                    "checkpoint_object_count": 36,
-                    "checkpoint_size_bytes": 12_429_488_598,
+                    "checkpoint_object_count": 27,
+                    "checkpoint_size_bytes": 12_434_530_837,
                     "action_space": "joint_position",
                     "action_chunk_rows": 15,
                     "open_loop_horizon": 8,
@@ -3966,7 +3967,7 @@ def _arena_policy_execution_spec(tmp_path: Path, *, checkpoint_uri: str) -> Path
 
 
 def test_served_identity_reaches_the_runtime_and_the_client_accepts_it(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     """A fix that merges but never reaches the runtime is worth nothing.
 
@@ -3987,18 +3988,12 @@ def test_served_identity_reaches_the_runtime_and_the_client_accepts_it(
     )
 
     approved, sage, harness, bindings = _inputs(tmp_path)
-    # PENDING DECISION, made explicit rather than assumed: this lane still
-    # provisions openpi's stock `checkpoints/pi05_droid`, which
-    # `OpenPIDroidPolicySpec` refuses outright (polaris-only, joint_position).
-    # The frozen founder-sim protocol and the warehouse cohort already agree the
-    # baseline is the polaris jointpos checkpoint, so ratifying that is what
-    # makes this lane runnable. Pinning the provisioned URI here proves the
-    # whole identity chain is ready for that ratification -- and the companion
-    # test proves the unreconciled pair is refused at build time until then.
-    monkeypatch.setitem(
-        EXPECTED_CANDIDATES["pi05_droid"],
-        "checkpoint_repository",
-        _POLARIS_CHECKPOINT_URI,
+    # The ratified path, with nothing patched: the lane provisions the polaris
+    # joint-position checkpoint, so the served identity and the fetched bytes
+    # finally name one artifact.
+    assert (
+        EXPECTED_CANDIDATES["pi05_droid"]["checkpoint_repository"]
+        == _POLARIS_CHECKPOINT_URI
     )
     spec_path = _arena_policy_execution_spec(
         tmp_path, checkpoint_uri=_POLARIS_CHECKPOINT_URI
@@ -4052,7 +4047,7 @@ def test_bundle_refuses_a_served_checkpoint_this_lane_never_fetches(
 
     approved, sage, harness, bindings = _inputs(tmp_path)
     spec_path = _arena_policy_execution_spec(
-        tmp_path, checkpoint_uri=_POLARIS_CHECKPOINT_URI
+        tmp_path, checkpoint_uri=_STOCK_CHECKPOINT_URI
     )
     inventory = tmp_path / "inventory.json"
     inventory.write_text("{}", encoding="utf-8")
@@ -4073,4 +4068,4 @@ def test_bundle_refuses_a_served_checkpoint_this_lane_never_fetches(
 
     message = str(excinfo.value)
     assert "adp009d_policy_checkpoint_identity_unreconciled" in message
-    assert _POLARIS_CHECKPOINT_URI in message
+    assert _STOCK_CHECKPOINT_URI in message
