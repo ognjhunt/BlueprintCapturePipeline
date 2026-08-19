@@ -28,6 +28,11 @@ from .native_task_runtime_source_packet import (
 )
 
 
+# Every arena link (construction, controls, policy) runs on one device. Keeping
+# it here means the three workers cannot drift apart, and the launcher, the
+# preconstruction probe and the post-build readback all name the same string.
+NATIVE_TASK_ARENA_DEVICE = "cuda:0"
+
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 REQUIRED_EXPERIENCE_FILES = (
@@ -199,25 +204,56 @@ def verify_native_task_isaaclab_launch_contract(
 def launch_native_task_isaaclab(
     provisioning_receipt_path: str | Path,
     *,
-    simulation_app_factory: Callable[..., Any] | None = None,
+    device: str,
+    enable_cameras: bool = True,
+    app_launcher_factory: Callable[..., Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Launch SimulationApp with the verified compatibility experience."""
+    """Launch Isaac Lab on ``device`` with the verified compatibility experience.
+
+    The launch must go through Isaac Lab's ``AppLauncher``, not a bare
+    ``SimulationApp``. ``AppLauncher`` is what resolves the requested device and
+    applies Isaac Lab's GPU-pipeline settings before any physics exists.
+    Launching bare leaves that configuration undone, and the consequence is
+    invisible until much later: ``SimulationContext`` and ``PhysicsManager``
+    both report ``cuda:0`` while the PhysX tensor views hand back CPU-backed
+    arrays, and PhysX logs nothing because from its own side nothing is wrong.
+    The first symptom is a Warp kernel refusing a CPU ``joint_vel`` an
+    environment build later.
+
+    Proven by a controlled A/B on one machine (2026-08-19): the same sealed
+    plan, assets and GPU built cleanly with every articulation on ``cuda:0``
+    under ``AppLauncher``, and reproduced the production failure exactly under
+    a bare ``SimulationApp``.
+    """
 
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
     )
-    if simulation_app_factory is None:
-        from isaacsim.simulation_app import SimulationApp
+    requested_device = str(device).strip()
+    if not requested_device:
+        raise NativeTaskIsaacLabLaunchError(["native_task_isaaclab_device_missing"])
+    if app_launcher_factory is None:
+        from isaaclab.app import AppLauncher
 
-        simulation_app_factory = SimulationApp
-    app = simulation_app_factory(
-        {"headless": True, "renderer": "RayTracedLighting"},
+        app_launcher_factory = AppLauncher
+    launcher = app_launcher_factory(
+        headless=True,
+        device=requested_device,
+        enable_cameras=enable_cameras,
         experience=receipt["experience"]["path"],
     )
+    app = getattr(launcher, "app", launcher)
+    receipt["launch"] = {
+        "launcher": "isaaclab.app.AppLauncher",
+        "requested_device": requested_device,
+        "enable_cameras": bool(enable_cameras),
+        "device_configured_by_launcher": True,
+    }
     return app, receipt
 
 
 __all__ = [
+    "NATIVE_TASK_ARENA_DEVICE",
     "NativeTaskIsaacLabLaunchError",
     "REQUIRED_EXPERIENCE_FILES",
     "SCHEMA_VERSION",

@@ -105,20 +105,22 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
 ) -> None:
     calls = []
 
-    def factory(config, *, experience):
-        calls.append((config, experience))
-        return SimpleNamespace(close=lambda: None)
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(app=SimpleNamespace(close=lambda: None))
 
     app, receipt = launch_native_task_isaaclab(
-        _receipt(tmp_path), simulation_app_factory=factory
+        _receipt(tmp_path), device="cuda:0", app_launcher_factory=factory
     )
 
     assert app is not None
     assert calls == [
-        (
-            {"headless": True, "renderer": "RayTracedLighting"},
-            receipt["experience"]["path"],
-        )
+        {
+            "headless": True,
+            "device": "cuda:0",
+            "enable_cameras": True,
+            "experience": receipt["experience"]["path"],
+        }
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
     assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
@@ -176,7 +178,7 @@ def test_missing_external_warp_fails_before_simulation_app_factory(
         match="native_task_isaaclab_external_warp_import_unqualified",
     ):
         launch_native_task_isaaclab(
-            receipt_path, simulation_app_factory=forbidden_factory
+            receipt_path, device="cuda:0", app_launcher_factory=forbidden_factory
         )
     assert called is False
 
@@ -215,3 +217,94 @@ def test_simulator_wrapper_with_isolated_flag_is_rejected_before_launch(
         match="native_task_isaaclab_runtime_launcher_invalid",
     ):
         verify_native_task_isaaclab_launch_contract(receipt_path)
+
+
+def test_launch_goes_through_app_launcher_not_a_bare_simulation_app() -> None:
+    """The launcher is what configures the device; a bare app leaves it undone.
+
+    Attempts r6-r11 (~$0.37) all died with
+
+        Error launching kernel 'get_joint_acc_from_joint_vel', device='cuda:0',
+        but input array for argument 'joint_vel' is on device=cpu
+
+    A controlled A/B on one machine (2026-08-19) isolated it to this single
+    variable: the same sealed plan, assets and GPU built cleanly with every
+    articulation on cuda:0 under `AppLauncher`, and reproduced the production
+    failure exactly under `SimulationApp({...}, experience=...)`. Nothing warns
+    when the device goes unconfigured -- SimulationContext and PhysicsManager
+    both keep reporting cuda:0 while the PhysX views hand back CPU arrays.
+    """
+
+    import ast
+    import inspect
+    import textwrap
+
+    from blueprint_pipeline import native_task_isaaclab_launch
+
+    # inspect the code, not the prose: the docstring names SimulationApp in
+    # order to explain why it must not be used
+    tree = ast.parse(
+        textwrap.dedent(
+            inspect.getsource(native_task_isaaclab_launch.launch_native_task_isaaclab)
+        )
+    )
+    function = tree.body[0]
+    if (
+        function.body
+        and isinstance(function.body[0], ast.Expr)
+        and isinstance(function.body[0].value, ast.Constant)
+    ):
+        function.body = function.body[1:]  # drop the docstring
+    names = {
+        node.id for node in ast.walk(ast.Module(body=function.body, type_ignores=[]))
+        if isinstance(node, ast.Name)
+    } | {
+        alias.name for node in ast.walk(ast.Module(body=function.body, type_ignores=[]))
+        if isinstance(node, ast.ImportFrom) for alias in node.names
+    }
+    assert "AppLauncher" in names
+    assert "SimulationApp" not in names
+    signature = inspect.signature(
+        native_task_isaaclab_launch.launch_native_task_isaaclab
+    )
+    # the device is required, so no caller can launch without naming one
+    assert signature.parameters["device"].default is inspect.Parameter.empty
+
+
+def test_launch_refuses_an_empty_device(tmp_path: Path) -> None:
+    """Fail closed rather than launch a device-less app that looks healthy."""
+
+    def forbidden(**kwargs):  # pragma: no cover - must never run
+        raise AssertionError("launched without a device")
+
+    with pytest.raises(NativeTaskIsaacLabLaunchError) as excinfo:
+        launch_native_task_isaaclab(
+            _receipt(tmp_path), device="  ", app_launcher_factory=forbidden
+        )
+
+    assert "native_task_isaaclab_device_missing" in excinfo.value.errors
+
+
+def test_every_arena_worker_launches_on_the_shared_device() -> None:
+    """All three links must name one device; drift is how lanes diverge."""
+
+    import inspect
+
+    from blueprint_pipeline import (
+        native_task_arena_construction_worker,
+        native_task_arena_controls_worker,
+        native_task_arena_policy_worker,
+    )
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        NATIVE_TASK_ARENA_DEVICE,
+    )
+
+    assert NATIVE_TASK_ARENA_DEVICE == "cuda:0"
+    for module in (
+        native_task_arena_construction_worker,
+        native_task_arena_controls_worker,
+        native_task_arena_policy_worker,
+    ):
+        source = inspect.getsource(module)
+        assert "launch_native_task_isaaclab(" in source
+        assert "device=NATIVE_TASK_ARENA_DEVICE" in source, module.__name__
