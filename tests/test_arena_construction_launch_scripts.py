@@ -63,3 +63,32 @@ def test_fire_script_never_embeds_a_secret_value() -> None:
     assert "--secret-file" in text
     assert "mktemp" in text
     assert "rm -f" in text, "the temp secret file must be removed on exit"
+
+
+def test_spend_reconciliation_walks_past_runs_that_allocated_nothing() -> None:
+    """A non-allocating run is not a prior paid attempt.
+
+    Reconciliation binds a real positive provider instance id -- it raises
+    `prior_provider_instance_id_invalid` without one -- so a run that ended
+    before allocating (`vast_instance_ids: []`, no billing row, $0.00) cannot
+    be reconciled against and must not be chosen as the spend predecessor.
+    Arena r16 ended exactly this way, and indexing [0] on its empty id list
+    crashed the chain with IndexError before it could reach a GPU.
+
+    Step 0 still seals the immediate predecessor, so skipping a run here
+    proves it empty rather than ignoring it.
+    """
+
+    text = _text(LAUNCH)
+    assert "vast_instance_ids" in text
+    assert "allocated nothing" in text, "the walk must skip non-allocating runs"
+    # the candidate list must span every tag, not just $PREV, or the walk
+    # cannot reach past the immediate predecessor
+    assert "_ALLRUNS" in text
+    assert "JOBSPEND" in text and "ZEROSPEND" in text, (
+        "terminal result, teardown, and provider zero must come from the same "
+        "attempt"
+    )
+    assert "['vast_instance_ids'][0]" not in text, (
+        "indexing the id list unguarded crashes on a run that allocated nothing"
+    )

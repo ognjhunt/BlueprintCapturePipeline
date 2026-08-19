@@ -38,16 +38,44 @@ echo "== 0. predecessor provider zero"
     --output $P/construction_provider_zero.v1.json | tail -1
 
 echo "== 1. lane-local spend reconciliation"
-INST=$($PY -c "import json;print(json.load(open('$JOBPREV/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json'))['vast_instance_ids'][0])")
-echo "  predecessor instance: $INST"
+# Reconciliation is about PROVIDER SPEND, and it binds a real positive
+# instance id (`prior_provider_instance_id_invalid`). A run that ended before
+# allocating -- no offer met the lane's constraints, admission refused -- has
+# `vast_instance_ids: []`, no billing row, and nothing to reconcile. It is not
+# a prior paid attempt, so walk back to the most recent run that actually
+# allocated. Step 0 above still seals the immediate predecessor, so a
+# non-allocating run is proven empty rather than skipped.
+# Newest-first across ALL attempt tags, not just $PREV, so the walk can reach
+# past a run that allocated nothing.
+mapfile -t _ALLRUNS < <(ls -dt ${LR}/adp-arena-construction-840920-task-a-*-api-*/)
+JOBSPEND=""
+ZEROSPEND=""
+for _run in "${_ALLRUNS[@]}"; do
+  _job="$_run/allocator/arena-construction-job"
+  _td="$_job/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json"
+  [ -f "$_td" ] || continue
+  INST=$($PY -c "
+import json
+ids=json.load(open('$_td')).get('vast_instance_ids') or []
+print(ids[0] if ids else '')")
+  _tag=$(basename $_run | sed -E 's/.*-(r[0-9]+)-api-.*/\1/')
+  if [ -z "$INST" ]; then echo "  skipping $_tag: allocated nothing"; continue; fi
+  # terminal result, teardown, and provider zero must all describe the SAME
+  # attempt, so take the zero from that attempt's own input directory.
+  _zero=$E/arena-launch-${_tag}/construction_provider_zero.v1.json
+  [ -f "$_zero" ] || { echo "  skipping $_tag: no sealed provider zero yet"; continue; }
+  JOBSPEND="$_job"; ZEROSPEND="$_zero"; break
+done
+[ -n "$JOBSPEND" ] || { echo "no predecessor run allocated an instance -- nothing to reconcile against"; exit 1; }
+echo "  predecessor instance: $INST (from $_tag)"
 mapfile -t _RESPS < <(grep -l "$INST" ${AUD}response-00*-vast.json)
 VASTRESP=${_RESPS[0]}
 [ -f $A/prior_spend_reconciliation.v1.json ] && echo '  exists, skipping' || \
   $RUN scripts/materialize_same_goal_spend_reconciliation.py \
     --lane native_task_arena \
-    --terminal-result $JOBPREV/adp_arena_vast_result.json \
-    --teardown-manifest $JOBPREV/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json \
-    --provider-zero $P/construction_provider_zero.v1.json \
+    --terminal-result $JOBSPEND/adp_arena_vast_result.json \
+    --teardown-manifest $JOBSPEND/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json \
+    --provider-zero $ZEROSPEND \
     --official-billing-response "$VASTRESP" \
     --provider-billing-source-receipt ${AUD}provider_billing_source_receipt.json \
     --output $A/prior_spend_reconciliation.v1.json | tail -1
