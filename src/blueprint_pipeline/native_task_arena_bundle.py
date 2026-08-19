@@ -85,6 +85,59 @@ def _read_mapping(path: Path, *, error: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _stale_servo_limit_restatements(root: Path) -> list[str]:
+    """Refuse a packet whose restated servo limits predate the deployed code.
+
+    The launch chain rebuilds the bundle from the deployed commit but carries
+    the packet forward unchanged, and that asymmetry is silent: any fix to a
+    value living in PACKET content never reaches the runtime while the run
+    looks entirely normal. r19 paid for exactly this -- PR #786 raised the
+    servo limits, merged and deployed cleanly, and the run still executed the
+    predecessor's 0.03/0.20 because the packet was hardlinked from r18.
+
+    PR #788 added this comparison to the construction launch chain, but only
+    there. Controls and policy consume the same packet, and the controls bundle
+    recompiles its control plan from that packet's scene plan, so a stale
+    packet reaches them unguarded. Checking it here covers every mode that
+    builds a bundle, whatever launches it.
+    """
+
+    from .native_articulated_control_plan import (
+        MAX_JOINT_DELTA_RAD,
+        MAX_JOINT_SETPOINT_LEAD_RAD,
+    )
+
+    stale: list[str] = []
+
+    def walk(value: Any, source: str) -> None:
+        if isinstance(value, Mapping):
+            if "max_joint_delta_rad" in value:
+                observed = (
+                    value.get("max_joint_delta_rad"),
+                    value.get("max_joint_setpoint_lead_rad"),
+                )
+                if observed != (MAX_JOINT_DELTA_RAD, MAX_JOINT_SETPOINT_LEAD_RAD):
+                    stale.append(
+                        "native_task_arena_bundle_packet_servo_limits_stale:"
+                        f"{source}:packet={observed[0]},{observed[1]}:"
+                        f"deployed={MAX_JOINT_DELTA_RAD},"
+                        f"{MAX_JOINT_SETPOINT_LEAD_RAD}"
+                    )
+            for item in value.values():
+                walk(item, source)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, source)
+
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        walk(payload, path.relative_to(root).as_posix())
+    return sorted(set(stale))
+
+
 def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
     raw_root = Path(packet_dir).expanduser()
     if raw_root.is_symlink():
@@ -162,6 +215,7 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
             errors.append(
                 f"native_task_arena_bundle_packet_asset_identity_mismatch:{binding.get('semantic_role') or relative}"
             )
+    errors.extend(_stale_servo_limit_restatements(root))
     if errors:
         raise NativeTaskArenaBundleError(errors)
     return root, receipt, rows

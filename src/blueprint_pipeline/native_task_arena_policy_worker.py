@@ -79,6 +79,75 @@ def _inputs(runtime: Path, manifest: Mapping[str, Any]) -> dict[str, Path]:
     return verified
 
 
+def _bound_digest(value: Any) -> bool:
+    """A digest relation only holds when both sides actually carry a digest."""
+    return isinstance(value, str) and value.startswith("sha256:") and len(value) > 7
+
+
+def _admission_binding_mismatches(
+    *,
+    manifest: Mapping[str, Any],
+    spec: Mapping[str, Any],
+    construction: Mapping[str, Any],
+    controls: Mapping[str, Any],
+    scene_plan: Mapping[str, Any],
+) -> list[str]:
+    """Name every disagreeing admission relation instead of one opaque blocker.
+
+    This gate stands between a frozen candidate and a paid provider run, so a
+    refusal has to say which relation broke. Absent fields are refusals, never
+    agreements: two missing digests must not compare equal.
+    """
+
+    pair = controls.get("control_pair") or {}
+    mismatched: list[str] = []
+    candidate = spec.get("candidate_id")
+    if not candidate or candidate != manifest.get("policy_candidate_id"):
+        mismatched.append("execution_spec_candidate_id_vs_manifest")
+    digests = (
+        (
+            "construction_result_digest_vs_execution_spec",
+            construction.get("result_digest"),
+            spec.get("construction_result_digest"),
+        ),
+        (
+            "control_result_digest_vs_execution_spec",
+            controls.get("result_digest"),
+            spec.get("control_result_digest"),
+        ),
+        (
+            "control_pair_digest_vs_execution_spec",
+            pair.get("pair_digest"),
+            spec.get("control_pair_digest"),
+        ),
+        (
+            "scene_plan_digest_vs_execution_spec",
+            scene_plan.get("plan_digest"),
+            spec.get("scene_plan_digest"),
+        ),
+    )
+    mismatched.extend(
+        relation
+        for relation, left, right in digests
+        if not _bound_digest(left) or not _bound_digest(right) or left != right
+    )
+    qualifications = (
+        (
+            "construction_gate_qualified",
+            construction.get("construction_gate_qualified"),
+        ),
+        ("controls_qualified", controls.get("controls_qualified")),
+        (
+            "control_pair_cell_admitted_for_policy_execution",
+            pair.get("cell_admitted_for_policy_execution"),
+        ),
+    )
+    mismatched.extend(
+        relation for relation, value in qualifications if value is not True
+    )
+    return mismatched
+
+
 def _policy_client(spec: Mapping[str, Any]) -> Any:
     endpoint = spec["policy_endpoint"]
     secret = os.environ.get(str(endpoint["credential_env"]))
@@ -168,19 +237,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         scene_plan = json.loads(
             (packet / "native_task_arena_scene_plan.v1.json").read_text()
         )
-        pair = controls.get("control_pair") or {}
-        if (
-            spec["candidate_id"] != manifest["policy_candidate_id"]
-            or construction.get("result_digest")
-            != spec["construction_result_digest"]
-            or construction.get("construction_gate_qualified") is not True
-            or controls.get("result_digest") != spec["control_result_digest"]
-            or controls.get("controls_qualified") is not True
-            or pair.get("pair_digest") != spec["control_pair_digest"]
-            or pair.get("cell_admitted_for_policy_execution") is not True
-            or scene_plan.get("plan_digest") != spec["scene_plan_digest"]
-        ):
-            raise RuntimeError("native_task_policy_admission_binding_mismatch")
+        admission_mismatches = _admission_binding_mismatches(
+            manifest=manifest,
+            spec=spec,
+            construction=construction,
+            controls=controls,
+            scene_plan=scene_plan,
+        )
+        if admission_mismatches:
+            raise RuntimeError(
+                "native_task_policy_admission_binding_mismatch:"
+                + ",".join(sorted(admission_mismatches))
+            )
         result["phase_reached"] = "inputs_verified"
 
         from blueprint_pipeline.native_task_isaaclab_launch import (
