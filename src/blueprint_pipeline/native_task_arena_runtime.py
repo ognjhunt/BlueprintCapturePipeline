@@ -863,7 +863,6 @@ def build_native_task_arena_environment(
 
     from blueprint_pipeline.native_franka_pose_servo import (
         contract_xyzw_to_native_wxyz,
-        native_wxyz_to_contract_xyzw,
     )
 
     robot = plan["robot"]
@@ -910,14 +909,21 @@ def build_native_task_arena_environment(
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
         camera_cfg.prim_path = parameters["prim_path"]
         camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
-        # Isaac Lab's OffsetCfg.rot is (w, x, y, z) -- its identity default is
-        # (1, 0, 0, 0). Assigning our xyzw contract value directly is the same
-        # mistake Arena makes for the robot spawn (fixed in the block above):
-        # an xyzw identity [0, 0, 0, 1] lands as w=0, z=1, a 180 degree yaw
-        # flip. These are the cameras the policy link conditions on.
-        camera_cfg.offset.rot = tuple(
-            contract_xyzw_to_native_wxyz(parameters["offset_rotation_xyzw"])
-        )
+        # DO NOT convert this to wxyz by symmetry with the robot spawn above.
+        # It was tried (r17) and it blinded both world cameras: measured
+        # task_object pixels per camera, same scene and same thresholds --
+        #
+        #   r13, assigned directly : external 21871, overview 9053, wrist 51939
+        #   r17, converted to wxyz : external     0, overview    0, wrist  5326
+        #
+        # The robot spawn genuinely needs the conversion because Arena hands
+        # our xyzw straight to Isaac Lab. This camera path does not: the value
+        # is already in the frame this assignment expects by the time it gets
+        # here, so converting it double-converts and rotates the world cameras
+        # off the task object. The wrist camera survives only because its
+        # parent prim dominates its pose, and even it lost an order of
+        # magnitude of coverage.
+        camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
         camera_cfg.offset.convention = parameters["isaac_offset_convention"]
         camera_cfg.width = parameters["width"]
         camera_cfg.height = parameters["height"]
@@ -932,11 +938,7 @@ def build_native_task_arena_environment(
         camera_configuration_readback[parameters["role"]] = {
             "runtime_name": parameters["runtime_name"],
             "offset_position_m": list(camera_cfg.offset.pos),
-            # convert back, or the receipt round-trips the runtime's wxyz bytes
-            # under an xyzw label and no readback can ever catch a mismatch
-            "offset_rotation_xyzw": list(
-                native_wxyz_to_contract_xyzw(camera_cfg.offset.rot)
-            ),
+            "offset_rotation_xyzw": list(camera_cfg.offset.rot),
             "focal_length_mm": float(camera_cfg.spawn.focal_length),
         }
 
