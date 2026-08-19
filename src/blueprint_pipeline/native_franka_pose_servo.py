@@ -279,8 +279,21 @@ class NativeFrankaDifferentialIkServo:
         target_position_world_m: Sequence[float],
         target_body_quaternion_world_xyzw: Sequence[float],
         gripper_command: float,
-        max_joint_delta_rad: float = 0.03,
-        max_joint_setpoint_lead_rad: float = 0.20,
+        # Required, not defaulted. These carried 0.03/0.20 as DEFAULTS, and a
+        # default is invisible at the call site: the construction worker simply
+        # omitted both arguments and inherited the pre-#786 pair, so a merged,
+        # deployed limit raise was inert across r17/r19/r20 (PR #793).
+        #
+        # #793 fixed that call site. Removing the defaults closes the door
+        # instead of the instance: with no default there is nothing to inherit,
+        # so the next caller cannot reintroduce the same silence. Both current
+        # callers already pass them explicitly.
+        #
+        # velocity_feedforward_scale below KEEPS its default on purpose: it is
+        # bound to a named constant in this module, not a second copy of a
+        # number defined elsewhere, and #797 designed 0.0 as the A/B baseline.
+        max_joint_delta_rad: float,
+        max_joint_setpoint_lead_rad: float,
         velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     ) -> tuple[list[float], dict[str, Any]]:
         body_pose = self.current_body_pose_world()

@@ -23,7 +23,7 @@ from .freeze_amendment_carry_forward import (
 )
 from .articulation_graph_contract import validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest
-from .native_articulated_control_plan import (
+from .native_task_construction_plan import (
     MAX_JOINT_DELTA_RAD,
     MAX_JOINT_SETPOINT_LEAD_RAD,
 )
@@ -42,6 +42,59 @@ from .paired_target_native_construction_bindings import (
 
 SCHEMA_VERSION = "paired_target_native_arena_requests.v1"
 REQUEST_SCHEMA = "native_task_arena_packet_request.v1"
+#: Arrival orientation tolerance, emitted into BOTH task kinds' affordances.
+#:
+#: This was the same literal written twice, once per task kind, roughly a
+#: hundred lines apart. Both copies are read at run time, so tuning one and
+#: missing the other would qualify the gate at one tolerance and execute at
+#: another, with nothing to say so.
+#:
+#: The two task kinds are NOT required to share this forever. If one needs its
+#: own value, split this into two named constants; do not re-inline a literal,
+#: because a literal is what made the pair drift-prone in the first place.
+ARRIVAL_ORIENTATION_TOLERANCE_RAD = 0.08
+#: The v2 packet's own per-phase control budgets.
+#:
+#: Deliberately NOT imported from ``native_articulated_control_plan``, which
+#: binds five of these six names to different numbers:
+#:
+#:                                  here (v2)   that module (v1)
+#:   motion_minimum_steps                   1                  1
+#:   motion_maximum_steps                  64                 35
+#:   gripper_dwell_minimum_steps            5                  8
+#:   gripper_dwell_maximum_steps           12                 20
+#:   arrival_tolerance_m                 0.02               0.02
+#:   arrival_stability_steps                2                  2
+#:
+#: Those are not stale copies of these. They are a different generation of
+#: control plan: ``materialize_native_task_control_plan`` routes to the v1
+#: adapter only when the task spec is NOT ``adp_task_spec.v2``, and everything
+#: this module emits is v2, so the live lane reads ITS budgets out of the
+#: packet below and never consults the v1 constants.
+#:
+#: They are also structurally incompatible. v1's fixed 12 phases cost
+#: 10*35 + 2*20 = 390 steps, +40 settle = 430 against its 450 budget; the same
+#: phases at 64/5/12 cost 664, +40 = 704, which the v1 compiler refuses with
+#: native_articulated_control_action_budget_exceeded. Unifying them does not
+#: tidy anything -- it breaks whichever generation loses.
+#:
+#: And in the direction that matters here: importing MOTION_MAXIMUM_STEPS would
+#: cut the live motion budget 64 -> 35 in a lane that already fails by running
+#: OUT of steps. The three that happen to agree today are not exempt either:
+#: coupling them to v1 would let a future v1 tune silently retune this packet,
+#: which is the same bug class pointed the other way.
+#:
+#: The servo bounds are the one thing that legitimately crosses over, and for a
+#: reason that does not apply here: those describe the Panda hardware, so they
+#: are identical for both generations. They now live in
+#: native_task_construction_plan and reach this packet through the sealed
+#: affordance (PR #789, #793), not through a literal.
+MOTION_MINIMUM_STEPS = 1
+MOTION_MAXIMUM_STEPS = 64
+GRIPPER_DWELL_MINIMUM_STEPS = 5
+GRIPPER_DWELL_MAXIMUM_STEPS = 12
+ARRIVAL_TOLERANCE_M = 0.02
+ARRIVAL_STABILITY_STEPS = 2
 
 
 class PairedTargetNativeArenaRequestError(ValueError):
@@ -250,13 +303,13 @@ def _articulated_task_spec(
         "precontact_clearance_m": 0.12,
         "sweep_clearance_m": 0.025,
         "retreat_clearance_m": 0.12,
-        "arrival_tolerance_m": 0.02,
-        "arrival_orientation_tolerance_rad": 0.08,
-        "arrival_stability_steps": 2,
-        "motion_minimum_steps": 1,
-        "motion_maximum_steps": 64,
-        "gripper_dwell_minimum_steps": 5,
-        "gripper_dwell_maximum_steps": 12,
+        "arrival_tolerance_m": ARRIVAL_TOLERANCE_M,
+        "arrival_orientation_tolerance_rad": ARRIVAL_ORIENTATION_TOLERANCE_RAD,
+        "arrival_stability_steps": ARRIVAL_STABILITY_STEPS,
+        "motion_minimum_steps": MOTION_MINIMUM_STEPS,
+        "motion_maximum_steps": MOTION_MAXIMUM_STEPS,
+        "gripper_dwell_minimum_steps": GRIPPER_DWELL_MINIMUM_STEPS,
+        "gripper_dwell_maximum_steps": GRIPPER_DWELL_MAXIMUM_STEPS,
         # Imported, not restated. These were literals here while
         # native_articulated_control_plan defined the same two values, so
         # raising the limits there (PR #786) left this path emitting the old
@@ -364,7 +417,7 @@ def _rigid_task_spec(
         "lift_unit_world": [0.0, 0.0, 1.0],
         "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
         "pregrasp_clearance_m": 0.12,
-        "arrival_orientation_tolerance_rad": 0.08,
+        "arrival_orientation_tolerance_rad": ARRIVAL_ORIENTATION_TOLERANCE_RAD,
         "allowed_contact_prim_paths": list(candidate["contact_body_prim_paths"]),
         "intended_support_prim_paths": [str(matches[0]["prim_path"])],
         "affordance_digest": "",
