@@ -397,3 +397,62 @@ def test_every_evidence_fact_fails_independently() -> None:
     assert set(evidence["stage_attempts"]) == {name for name, _ in _STAGE_ACCESSORS}
     # the accessor that r11 relied on alone is no longer first
     assert _STAGE_ACCESSORS[0][0] == "omni.usd"
+
+
+def test_warp_arrays_are_serialised_not_returned_raw() -> None:
+    """Isaac Lab's physics views return warp arrays, not torch tensors.
+
+    A wp.array has neither `detach` nor `tolist`, so it used to fall straight
+    through `_jsonable` unconverted. Nothing failed at that point -- it failed
+    far away, at the first use of the result. r12 reached a clean environment
+    build (every articulation on cuda:0, device readback passed) and then died
+    on `_jsonable(robot.data.root_pose_w)[0]` with "Item indexing is not
+    supported on wp.array objects".
+    """
+
+    from blueprint_pipeline.native_task_arena_construction_worker import _jsonable
+
+    class _WarpArray:
+        """A wp.array as far as _jsonable can tell: numpy() and nothing else."""
+
+        def __init__(self, rows):
+            self._rows = rows
+
+        def numpy(self):
+            import numpy as np
+
+            return np.array(self._rows)
+
+        def __getitem__(self, index):  # pragma: no cover - must never be hit
+            raise RuntimeError("Item indexing is not supported on wp.array objects")
+
+    value = _jsonable(_WarpArray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+
+    assert value == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    # the point of the fix: the caller can index the result
+    assert value[0] == [1.0, 2.0, 3.0]
+
+
+def test_torch_tensors_still_take_the_detach_path() -> None:
+    """The warp branch must not shadow the tensor branch."""
+
+    from blueprint_pipeline.native_task_arena_construction_worker import _jsonable
+
+    class _Tensor:
+        def __init__(self, rows):
+            self._rows = rows
+            self.detached = False
+
+        def detach(self):
+            self.detached = True
+            return self
+
+        def cpu(self):
+            return self
+
+        def tolist(self):
+            return self._rows
+
+    tensor = _Tensor([[7.0, 8.0]])
+    assert _jsonable(tensor) == [[7.0, 8.0]]
+    assert tensor.detached is True
