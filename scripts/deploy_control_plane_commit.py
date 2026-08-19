@@ -508,7 +508,8 @@ def deploy_control_plane_commit(
     release_root: str | Path,
     state_root: str | Path,
     active_link: str | Path,
-    release_provenance: str | Path,
+    release_provenance: str | Path | None = None,
+    iteration: bool = False,
     restart_units: Sequence[str] = DEFAULT_RESTART_UNITS,
     paid_launch_locks: Sequence[str] = DEFAULT_PAID_LAUNCH_LOCKS,
     intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
@@ -536,11 +537,44 @@ def deploy_control_plane_commit(
         or state in releases.parents
     ):
         raise ControlPlaneDeployError("deploy_state_root_overlaps_checkout")
-    _provenance_source, provenance_payload, provenance_receipt = (
-        _validated_release_provenance(
-            release_provenance, source_commit=source_commit
+    if iteration:
+        # An iteration deploy trades promotion evidence for cycle time. The
+        # full lane takes ~15 minutes; a fix-and-fire loop that waits for it
+        # costs ~18 minutes per attempt, which dominates a campaign of dozens
+        # of GPU runs. What must NOT be traded away is knowing exactly which
+        # bytes ran: the release is still built from a real pushed commit, so
+        # the running code and main can never silently diverge.
+        #
+        # The receipt says plainly that no lane verified it.
+        # `_commit_has_verified_production_promotion` requires
+        # status == "verified", so this can never be mistaken for a promoted
+        # release, and paid admission still refuses it as an ancestor.
+        if release_provenance is not None:
+            raise ControlPlaneDeployError("deploy_iteration_provenance_conflict")
+        provenance_receipt = {
+            "schema_version": "blueprint.deploy_release_provenance.v1",
+            "status": "iteration",
+            "git_sha": source_commit,
+            "promotion_eligible": False,
+            "claim_boundary": {
+                "canonical_full_lane_verified": False,
+                "promotion_eligible": False,
+                "evidence_grade": "development_only",
+            },
+        }
+        provenance_payload = (
+            json.dumps(provenance_receipt, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+    else:
+        if release_provenance is None:
+            raise ControlPlaneDeployError("deploy_release_provenance_missing")
+        _provenance_source, provenance_payload, provenance_receipt = (
+            _validated_release_provenance(
+                release_provenance, source_commit=source_commit
+            )
         )
-    )
+        provenance_receipt = dict(provenance_receipt)
+        provenance_receipt.setdefault("promotion_eligible", True)
 
     # Held for the whole deploy, not sampled before it: a launch that starts
     # mid-deploy would read a release being swapped underneath it.
@@ -649,10 +683,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--active-link", required=True)
     parser.add_argument(
         "--release-provenance",
-        required=True,
+        default=None,
         help=(
             "Exact verified blueprint.deploy_release_provenance.v1 receipt "
-            "for --source-commit."
+            "for --source-commit. Required unless --iteration is given."
+        ),
+    )
+    parser.add_argument(
+        "--iteration",
+        action="store_true",
+        help=(
+            "Deploy a pushed commit without waiting for the Full Test Lane. "
+            "The release is stamped promotion_eligible=false and evidence "
+            "grade development_only. Use for fix-and-fire iteration; promote "
+            "with a lane-verified deploy before sealing evidence."
         ),
     )
     parser.add_argument(
@@ -688,6 +732,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             state_root=args.state_root,
             active_link=args.active_link,
             release_provenance=args.release_provenance,
+            iteration=args.iteration,
             restart_units=tuple(args.restart_unit or ()),
             paid_launch_locks=tuple(args.paid_launch_lock or DEFAULT_PAID_LAUNCH_LOCKS),
             intake_runtime_drop_in=args.intake_runtime_drop_in,
