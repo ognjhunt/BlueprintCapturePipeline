@@ -1254,6 +1254,7 @@ def _search_payload(
     limit: int,
     max_hourly_rate: float | None,
     allowed_machine_ids: Iterable[Any] = (),
+    minimum_driver_version: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "limit": limit,
@@ -1265,6 +1266,17 @@ def _search_payload(
     }
     if max_hourly_rate is not None:
         payload["dph_total"] = {"lte": max_hourly_rate}
+    driver_floor = _string(minimum_driver_version)
+    if driver_floor:
+        # Same bounded-page reasoning as the machine allowlist below: the
+        # endpoint returns an arbitrary page of `limit` matches, so filtering
+        # the driver only after the response makes allocation depend on which
+        # offers that page happened to contain. A lane that requires a recent
+        # Isaac driver then reports "no offer meeting minimum driver version"
+        # while hundreds of qualifying offers are rentable and under budget.
+        # The client-side check downstream still runs -- this narrows the
+        # candidate page, it does not replace the fail-closed verification.
+        payload["driver_version"] = {"gte": driver_floor}
     allowed = sorted(_machine_id_set(allowed_machine_ids))
     if allowed:
         # Apply the allowlist at the provider query, not only after the
@@ -6741,7 +6753,11 @@ def run_vast_provider_adapter(
     )
 
     if mode == "dry-run":
-        dry_offer_request = _search_payload(limit=100, max_hourly_rate=max_hourly_rate)
+        dry_offer_request = _search_payload(
+            limit=100,
+            max_hourly_rate=max_hourly_rate,
+            minimum_driver_version=resolved_minimum_driver_version,
+        )
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
             "generated_at": generated_at,
@@ -7509,6 +7525,7 @@ def run_vast_provider_adapter(
             limit=100,
             max_hourly_rate=max_hourly_rate,
             allowed_machine_ids=resolved_allowed_machine_ids,
+            minimum_driver_version=resolved_minimum_driver_version,
         )
         create_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
