@@ -37,6 +37,8 @@ from .spend_authority_consumption_root import consumption_root
 
 AUTHORITY_SCHEMA_VERSION = "native_task_arena_paid_attempt_authority.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "native_task_arena_provider_zero.v1"
+#: Written when the watchdog was armed but the run ended before allocating.
+WATCHDOG_HANDOFF_SCHEMA_VERSION = "vast_independent_watchdog_handoff.v1"
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
 AGGREGATE_GOAL_SPEND_CAP_USD = 12.0
 MAX_HARD_CAP_USD = 2.0
@@ -603,6 +605,21 @@ def materialize_native_task_arena_recovered_provider_zero(
     return receipt
 
 
+def _zero_cost(value: Any) -> bool:
+    """True only when the recorded spend is an explicit, exact zero.
+
+    A missing or unparseable cost is not evidence of zero spend and must not
+    unlock the no-allocation seal.
+    """
+
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def materialize_native_task_arena_provider_zero(
     *, authority_path: str | Path, result_path: str | Path, output_path: str | Path
 ) -> dict[str, Any]:
@@ -635,7 +652,27 @@ def materialize_native_task_arena_provider_zero(
     else:
         inventory = global_inventory
         inventory_scope = "provider_global"
-    if (
+
+    # A run can end before it ever allocates -- no offer met the lane's
+    # constraints, or admission refused. The watchdog then records a handoff
+    # instead of a canary receipt, because it was armed but never had a
+    # resource to observe. There is definitionally nothing to zero, yet the
+    # inventory-based seal below can never be satisfied, which wedges the
+    # whole chain: the successor's first step is sealing its predecessor.
+    #
+    # Accept that state only on proof that nothing was allocated -- zero
+    # provider mutations, armed before allocation, and no continuing spend
+    # anywhere. An orphaned resource requires an allocation to exist, so this
+    # cannot mask one.
+    no_allocation_seal = (
+        watchdog.get("schema_version") == WATCHDOG_HANDOFF_SCHEMA_VERSION
+        and watchdog.get("status") == "cancelled_no_allocation"
+        and watchdog.get("provider_mutations_performed") == 0
+        and watchdog.get("watchdog_armed_before_allocation") is True
+        and _zero_cost(result.get("estimated_cost_usd"))
+    )
+
+    shared_invalid = (
         authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or authority.get("authorization_digest")
         != canonical_digest(authority, digest_field="authorization_digest")
@@ -648,6 +685,15 @@ def materialize_native_task_arena_provider_zero(
         or cleanup.get("all_objects_absent") is not True
         or cleanup.get("signed_url_files_removed") is not True
         or teardown.get("continuing_spend_from_this_run") is not False
+        or adapter.get("continuing_spend_from_this_run") is not False
+    )
+    if no_allocation_seal:
+        inventory = None
+        inventory_scope = "no_provider_allocation"
+        if shared_invalid:
+            raise ValueError("native_task_arena_provider_zero_invalid")
+    elif (
+        shared_invalid
         or watchdog.get("status") != "provider_terminal"
         or watchdog.get("provider_absence_confirmed") is not True
         or not isinstance(global_inventory, Mapping)
@@ -655,7 +701,6 @@ def materialize_native_task_arena_provider_zero(
         or not isinstance(inventory, Mapping)
         or inventory.get("api_confirmed") is not True
         or inventory.get("live_resource_count") != 0
-        or adapter.get("continuing_spend_from_this_run") is not False
     ):
         raise ValueError("native_task_arena_provider_zero_invalid")
     receipt: dict[str, Any] = {
