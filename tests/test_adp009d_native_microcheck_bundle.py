@@ -3856,3 +3856,221 @@ def test_newton_robot_spawn_wrapper_rejects_noncanonical_lazy_callable(
         )
 
     assert resolver_called is False
+
+
+def test_bundle_ships_the_identity_bound_server_and_its_staged_inputs(
+    tmp_path: Path,
+) -> None:
+    """An import the runtime makes must be a file the bundle carries.
+
+    The pi05 lane launches Blueprint's identity-bound wrapper, so the wrapper,
+    the constant it imports, and the two identity inputs it reads all have to be
+    inside the archive at the exact staged names the provisioning script names.
+    """
+
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        CHECKPOINT_INVENTORY_STAGED_NAME,
+        POLICY_EXECUTION_SPEC_STAGED_NAME,
+    )
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    execution_spec = tmp_path / "execution_spec.json"
+    execution_spec.write_text('{"schema_version": "x"}', encoding="utf-8")
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text('{"schema_version": "y"}', encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "pi05",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        policy_candidate_id="pi05_droid",
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        policy_execution_spec_path=execution_spec,
+        checkpoint_inventory_path=inventory,
+    )
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        provisioning = archive.read(
+            "provider_runtime/adp009d_policy_provisioning.pi05_droid.sh"
+        ).decode()
+
+    assert "provider_runtime/openpi_droid_policy_runtime.py" in names
+    assert "provider_runtime/droid_policy_bridge.py" in names
+    assert f"provider_runtime/{POLICY_EXECUTION_SPEC_STAGED_NAME}" in names
+    assert f"provider_runtime/{CHECKPOINT_INVENTORY_STAGED_NAME}" in names
+    # The script the worker actually runs must name the files that shipped.
+    assert POLICY_EXECUTION_SPEC_STAGED_NAME in provisioning
+    assert CHECKPOINT_INVENTORY_STAGED_NAME in provisioning
+    assert "serve_policy.py" not in provisioning
+
+
+def test_bundle_refuses_a_named_identity_input_that_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    """Staging must fail closed rather than ship a lane missing its identity."""
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    with pytest.raises(ValueError, match="adp009d_policy_identity_input_missing"):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "missing",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="a" * 40,
+            policy_candidate_id="pi05_droid",
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+            policy_execution_spec_path=tmp_path / "absent.json",
+            checkpoint_inventory_path=tmp_path / "absent.json",
+        )
+
+
+_POLARIS_CHECKPOINT_URI = (
+    "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris"
+)
+
+
+def _arena_policy_execution_spec(tmp_path: Path, *, checkpoint_uri: str) -> Path:
+    """A spec that satisfies OpenPIDroidPolicySpec under the arena slot name."""
+
+    path = tmp_path / "execution_spec.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "native_task_arena_policy_execution_spec.v1",
+                "candidate_id": "pi05_droid",
+                "policy_spec": {
+                    "policy_id": "pi05_droid",
+                    "config_name": "pi05_droid",
+                    "checkpoint_uri": checkpoint_uri,
+                    "checkpoint_object_manifest_sha256": "4" * 64,
+                    "checkpoint_generation_manifest_sha256": "3" * 64,
+                    "checkpoint_inventory_sha256": "4" * 64,
+                    "checkpoint_object_count": 36,
+                    "checkpoint_size_bytes": 12_429_488_598,
+                    "action_space": "joint_position",
+                    "action_chunk_rows": 15,
+                    "open_loop_horizon": 8,
+                    "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_served_identity_reaches_the_runtime_and_the_client_accepts_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A fix that merges but never reaches the runtime is worth nothing.
+
+    So this follows the identity all the way through: authored spec -> staged
+    bytes inside the bundle -> loaded by the wrapper from those staged bytes ->
+    validated by the same checker the episode client uses.
+    """
+
+    from blueprint_pipeline.adp009d_policy_candidate_admission import (
+        EXPECTED_CANDIDATES,
+    )
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        POLICY_EXECUTION_SPEC_STAGED_NAME,
+    )
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+        validate_server_metadata,
+    )
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    # PENDING DECISION, made explicit rather than assumed: this lane still
+    # provisions openpi's stock `checkpoints/pi05_droid`, which
+    # `OpenPIDroidPolicySpec` refuses outright (polaris-only, joint_position).
+    # The frozen founder-sim protocol and the warehouse cohort already agree the
+    # baseline is the polaris jointpos checkpoint, so ratifying that is what
+    # makes this lane runnable. Pinning the provisioned URI here proves the
+    # whole identity chain is ready for that ratification -- and the companion
+    # test proves the unreconciled pair is refused at build time until then.
+    monkeypatch.setitem(
+        EXPECTED_CANDIDATES["pi05_droid"],
+        "checkpoint_repository",
+        _POLARIS_CHECKPOINT_URI,
+    )
+    spec_path = _arena_policy_execution_spec(
+        tmp_path, checkpoint_uri=_POLARIS_CHECKPOINT_URI
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text('{"schema_version": "openpi_checkpoint_inventory.v1"}', encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "pi05-identity",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        policy_candidate_id="pi05_droid",
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        policy_execution_spec_path=spec_path,
+        checkpoint_inventory_path=inventory,
+    )
+
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    staged = extracted / "provider_runtime" / POLICY_EXECUTION_SPEC_STAGED_NAME
+
+    assert staged.read_bytes() == spec_path.read_bytes()
+
+    served = load_policy_spec_from_execution_spec(staged)
+    metadata = {
+        **served.server_metadata(),
+        "local_checkpoint_verified": True,
+        "local_checkpoint_verification_sha256": "c" * 64,
+        "local_checkpoint_object_count": served.checkpoint_object_count,
+        "local_checkpoint_size_bytes": served.checkpoint_size_bytes,
+    }
+
+    # The episode client's own validator, against the served identity.
+    assert validate_server_metadata(metadata, expected=served) == metadata
+    assert len(served.server_metadata()) == 14
+
+
+def test_bundle_refuses_a_served_checkpoint_this_lane_never_fetches(
+    tmp_path: Path,
+) -> None:
+    """The served identity and the provisioned bytes must name one checkpoint.
+
+    `verify_local_checkpoint` checks the fetched bytes against the spec's
+    inventory, so a disagreement can only fail -- after a multi-gigabyte
+    download on a rented GPU. Refuse at build time instead, and name both sides.
+    """
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    spec_path = _arena_policy_execution_spec(
+        tmp_path, checkpoint_uri=_POLARIS_CHECKPOINT_URI
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "unreconciled",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="a" * 40,
+            policy_candidate_id="pi05_droid",
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+            policy_execution_spec_path=spec_path,
+            checkpoint_inventory_path=inventory,
+        )
+
+    message = str(excinfo.value)
+    assert "adp009d_policy_checkpoint_identity_unreconciled" in message
+    assert _POLARIS_CHECKPOINT_URI in message

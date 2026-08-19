@@ -19,10 +19,22 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
 
-from .droid_policy_bridge import DROID_OPEN_LOOP_HORIZON, OPENPI_SOURCE_REVISION
+# This module is shipped flat into the ADP-009D provider runtime and executed
+# as a script there, so the package-relative form has no parent package. The
+# failure is `ImportError: attempted relative import with no known parent
+# package`, which is NOT a ModuleNotFoundError -- catching the narrower class
+# would let the real error escape, exactly as it did for the episode modules.
+try:  # repository package
+    from .droid_policy_bridge import DROID_OPEN_LOOP_HORIZON, OPENPI_SOURCE_REVISION
+except ImportError:  # flat provider runtime
+    from droid_policy_bridge import (  # type: ignore[no-redef]
+        DROID_OPEN_LOOP_HORIZON,
+        OPENPI_SOURCE_REVISION,
+    )
 
 
 SCHEMA_VERSION = "openpi_droid_policy_runtime.v1"
+EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
 SERVER_METADATA_SCHEMA_VERSION = "openpi_droid_policy_server_metadata.v1"
 SUPPORTED_ACTION_SPACES = frozenset({"joint_position"})
 SUPPORTED_ACTION_CHUNK_ROWS = frozenset({10, 15})
@@ -160,6 +172,35 @@ def load_policy_spec(
         openpi_revision=str(payload["openpi_revision"]),
     )
     spec.validate()
+    return spec
+
+
+def load_policy_spec_from_execution_spec(
+    execution_spec_path: str | Path,
+) -> OpenPIDroidPolicySpec:
+    """Build the served identity from the same sealed bytes the client checks.
+
+    The episode client validates the server's metadata against the
+    ``policy_spec`` carried by the arena's sealed policy execution spec. Giving
+    the server a *second* identity source -- a cohort file naming the same
+    policy under a different id -- is how a server and its client come to
+    disagree while both look correct in isolation. Reading the one sealed
+    artifact makes agreement structural rather than coincidental.
+    """
+
+    payload = json.loads(
+        Path(execution_spec_path).expanduser().read_text(encoding="utf-8")
+    )
+    if payload.get("schema_version") != EXECUTION_SPEC_SCHEMA_VERSION:
+        raise ValueError("unsupported_policy_execution_spec_schema")
+    policy_spec = payload.get("policy_spec")
+    if not isinstance(policy_spec, Mapping):
+        raise ValueError("policy_execution_spec_policy_spec_invalid")
+    spec = OpenPIDroidPolicySpec(**policy_spec)
+    spec.validate()
+    candidate = payload.get("candidate_id")
+    if candidate is not None and str(candidate) != spec.policy_id:
+        raise ValueError("policy_execution_spec_candidate_mismatch")
     return spec
 
 
@@ -386,14 +427,25 @@ def serve_identity_bound_policy(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cohort", required=True)
-    parser.add_argument("--policy-id", required=True)
+    # Two identity sources, never both: the ranking campaign serves a cohort
+    # row, the arena serves the policy_spec its own client will validate.
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--cohort")
+    source.add_argument("--policy-spec")
+    parser.add_argument("--policy-id")
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--checkpoint-inventory", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
-    spec = load_policy_spec(args.cohort, policy_id=args.policy_id)
+    if args.cohort:
+        if not args.policy_id:
+            parser.error("--policy-id is required with --cohort")
+        spec = load_policy_spec(args.cohort, policy_id=args.policy_id)
+    else:
+        spec = load_policy_spec_from_execution_spec(args.policy_spec)
+        if args.policy_id and args.policy_id != spec.policy_id:
+            parser.error("--policy-id disagrees with the sealed execution spec")
     serve_identity_bound_policy(
         spec=spec,
         checkpoint_dir=args.checkpoint_dir,
@@ -412,6 +464,7 @@ __all__ = [
     "OpenPIDroidPolicySpec",
     "OpenPIWebsocketDroidPolicyClient",
     "load_policy_spec",
+    "load_policy_spec_from_execution_spec",
     "serve_identity_bound_policy",
     "validate_server_metadata",
     "verify_local_checkpoint",

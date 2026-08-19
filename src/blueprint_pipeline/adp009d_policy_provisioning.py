@@ -40,6 +40,10 @@ from .adp009d_checkpoint_materialization import (
 from .adp009d_gated_backbone import MODEL_ID as GATED_BACKBONE_MODEL_ID
 from .adp009d_gated_backbone import REVISION as GATED_BACKBONE_REVISION
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES, PROGRAM_ID
+from .adp009d_policy_server_worker import (
+    CANDIDATE_TRANSPORTS,
+    TRANSPORT_OPENPI_WEBSOCKET,
+)
 from .decision_evidence_contracts import canonical_digest
 
 PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
@@ -196,6 +200,12 @@ def _install_commands(candidate_id: str) -> list[str]:
         *_isaac_client_commands(candidate_id),
     ]
 
+# Staged by the bundle builder into the provider runtime dir, read by the
+# server worker. One definition, imported by both, so the path cannot drift.
+POLICY_EXECUTION_SPEC_STAGED_NAME = "adp009d_policy_execution_spec.json"
+CHECKPOINT_INVENTORY_STAGED_NAME = "adp009d_openpi_checkpoint_inventory.json"
+
+
 def build_provisioning_script(candidate_id: str) -> str:
     """Emit the worker-side provisioning script for one candidate."""
 
@@ -212,6 +222,18 @@ def build_provisioning_script(candidate_id: str) -> str:
     identity = ""
     server_identity_arg = ""
     server_checkpoint_root = f"{CHECKPOINT_ROOT}/{candidate_id}"
+    if CANDIDATE_TRANSPORTS[candidate_id] == TRANSPORT_OPENPI_WEBSOCKET:
+        # openpi's stock server publishes empty metadata and the episode client
+        # requires fourteen identity fields, so this lane serves Blueprint's
+        # identity-bound wrapper. Both inputs are staged into the runtime dir by
+        # the bundle builder; the server worker fails closed if either is absent
+        # rather than falling back to a server the episode would refuse.
+        server_identity_arg = (
+            " \\\n  --policy-spec "
+            f'"$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"'
+            " \\\n  --checkpoint-inventory "
+            f'"$RUNTIME_DIR/{CHECKPOINT_INVENTORY_STAGED_NAME}"'
+        )
     credential_contract = (
         "unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true"
     )
