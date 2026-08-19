@@ -20,6 +20,10 @@ import sys
 import time
 import traceback
 from collections.abc import Mapping, Sequence
+
+from blueprint_pipeline.native_franka_action_math import (
+    is_unauthored_identity_quaternion_xyzw,
+)
 from pathlib import Path
 from typing import Any
 
@@ -390,6 +394,29 @@ def _task_joint_reset_passed(
     if not math.isfinite(tolerance) or tolerance < 0.0:
         raise RuntimeError("native_task_joint_reset_tolerance_invalid")
     return max(float(value) for value in absolute_errors_rad.values()) <= tolerance
+
+
+def _phase_target_orientation(
+    phase: Mapping[str, Any], *, reset_body_orientation_xyzw: Sequence[float]
+) -> list[float]:
+    """Bind the phase orientation, treating identity as unspecified.
+
+    ``native_articulated_control_plan._pose_phase`` already declares the intent:
+    a phase with no orientation binds "the controlled body's measured reset
+    orientation. No appliance-facing axis is guessed here."  That fallback was
+    reachable only when the key was absent, so an identity placeholder -- which
+    carries exactly the same meaning -- was executed as a real target instead.
+
+    These construction phases are open-gripper clearance and reachability
+    probes, so the measured reset orientation is a legitimate binding for them.
+    It is not a grasp: the contact replay refuses an unauthored orientation
+    rather than substituting one.
+    """
+
+    orientation = phase.get("orientation_world_xyzw")
+    if is_unauthored_identity_quaternion_xyzw(orientation):
+        return [float(value) for value in reset_body_orientation_xyzw]
+    return [float(value) for value in orientation]
 
 
 def _servo_command_limits(
@@ -1224,8 +1251,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             diagnostics = []
             start_position = servo.current_grasp_frame_position_world()
             start_body_pose = servo.current_body_pose_world()
-            target_orientation = phase.get(
-                "orientation_world_xyzw", reset_body_pose[3:7]
+            target_orientation = _phase_target_orientation(
+                phase, reset_body_orientation_xyzw=reset_body_pose[3:7]
             )
             orientation_tolerance = phase.get(
                 "arrival_orientation_tolerance_rad",
@@ -1245,9 +1272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 action, diagnostic = servo.action_for_grasp_target(
                     target_position_world_m=phase["position_world_m"],
-                    target_body_quaternion_world_xyzw=phase.get(
-                        "orientation_world_xyzw", reset_body_pose[3:7]
-                    ),
+                    target_body_quaternion_world_xyzw=target_orientation,
                     gripper_command=gripper_command,
                     max_joint_delta_rad=servo_command_limits[
                         "max_joint_delta_rad"

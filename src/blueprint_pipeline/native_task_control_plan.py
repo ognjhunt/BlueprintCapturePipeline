@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
 from .native_articulated_control_plan import (
     materialize_native_articulated_control_plan,
 )
@@ -518,6 +519,18 @@ def materialize_native_graph_articulated_control_plan(
         affordance, digest_field="affordance_digest"
     ):
         errors.append("native_articulated_graph_control_interaction_affordance_invalid")
+        affordance = {}
+    if affordance and is_unauthored_identity_quaternion_xyzw(
+        affordance.get("gripper_orientation_contact_xyzw")
+    ):
+        # These phases close the gripper on the handle, so the orientation has to
+        # be authored from the real handle geometry.  Identity is the placeholder
+        # a quaternion field holds when nobody set it, and it is 120 degrees from
+        # this arm's natural hand pose.  Refuse rather than replay it.
+        errors.append(
+            "native_articulated_graph_control_gripper_orientation_contact_xyzw"
+            "_unauthored_identity"
+        )
         affordance = {}
     actions: list[dict[str, Any]] = []
     if affordance:
