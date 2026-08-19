@@ -1255,6 +1255,9 @@ def _search_payload(
     max_hourly_rate: float | None,
     allowed_machine_ids: Iterable[Any] = (),
     minimum_driver_version: str = "",
+    min_gpu_ram_mb: int = 0,
+    min_compute_cap: int = 0,
+    max_compute_cap: int = 0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "limit": limit,
@@ -1266,6 +1269,18 @@ def _search_payload(
     }
     if max_hourly_rate is not None:
         payload["dph_total"] = {"lte": max_hourly_rate}
+    # ``gpu_ram`` is MEGABYTES at this endpoint. A gigabyte value is not
+    # rejected -- it silently matches everything and the page returns
+    # unfiltered -- so the unit here is load-bearing, not cosmetic.
+    if min_gpu_ram_mb > 0:
+        payload["gpu_ram"] = {"gte": int(min_gpu_ram_mb)}
+    compute_cap: dict[str, int] = {}
+    if min_compute_cap > 0:
+        compute_cap["gte"] = int(min_compute_cap)
+    if max_compute_cap > 0:
+        compute_cap["lte"] = int(max_compute_cap)
+    if compute_cap:
+        payload["compute_cap"] = compute_cap
     driver_floor = _string(minimum_driver_version)
     if driver_floor:
         # Same bounded-page reasoning as the machine allowlist below: the
@@ -6757,6 +6772,9 @@ def run_vast_provider_adapter(
             limit=100,
             max_hourly_rate=max_hourly_rate,
             minimum_driver_version=resolved_minimum_driver_version,
+            min_gpu_ram_mb=resolved_min_gpu_ram_mb,
+            min_compute_cap=resolved_min_compute_cap,
+            max_compute_cap=resolved_max_compute_cap,
         )
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -7526,6 +7544,9 @@ def run_vast_provider_adapter(
             max_hourly_rate=max_hourly_rate,
             allowed_machine_ids=resolved_allowed_machine_ids,
             minimum_driver_version=resolved_minimum_driver_version,
+            min_gpu_ram_mb=resolved_min_gpu_ram_mb,
+            min_compute_cap=resolved_min_compute_cap,
+            max_compute_cap=resolved_max_compute_cap,
         )
         create_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
