@@ -331,13 +331,17 @@ class _Robot:
             "left_inner_finger", "right_inner_finger",
         ]
         # Fingers 0.06 m apart in x, so separation is exactly 0.06.
+        # Isaac Lab body_pose_w is position + **wxyz**, so an identity
+        # orientation is (1, 0, 0, 0). These fixtures previously used
+        # (0, 0, 0, 1), which is xyzw identity but a 180 degree yaw in wxyz --
+        # self-consistent only because the adapter read them as xyzw too.
         poses = np.zeros((1, len(bodies), 7), dtype=float)
-        poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+        poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
         poses[0, bodies.index("left_inner_finger"), :7] = [
-            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
         ]
         poses[0, bodies.index("right_inner_finger"), :7] = [
-            0.06, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            0.06, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
         ]
         self.data = _Data(
             body_names=bodies,
@@ -536,8 +540,13 @@ def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
         "raw_body_midpoint_retained": True,
     }
     assert sample["controlled_body_name"] == "base_link"
+    # the raw Isaac pose: position + wxyz, so identity is (1, 0, 0, 0)
     assert sample["controlled_body_pose_world"] == pytest.approx(
-        [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+        [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+    )
+    # and the converted contract ordering alongside it
+    assert sample["controlled_body_orientation_world_xyzw"] == pytest.approx(
+        [0.0, 0.0, 0.0, 1.0]
     )
 
 
@@ -1171,7 +1180,8 @@ def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -
 
     sample = adapter.read_task_sample()
     assert {key: sample[key] for key in observed} == observed
-    assert sample["grasp_frame_orientation_world_xyzw"] == [0.0, 0.0, 1.0, 0.0]
+    # fixture pose is a wxyz identity, so the contract ordering is xyzw identity
+    assert sample["grasp_frame_orientation_world_xyzw"] == [0.0, 0.0, 0.0, 1.0]
     with pytest.raises(
         IsaacEpisodeAdapterError, match="isaac_episode_rigid_task_object_missing"
     ):
@@ -1226,3 +1236,34 @@ def test_the_rigid_task_object_is_not_assumed_to_be_a_can() -> None:
     # vocabulary alive in an otherwise task-neutral seam
     assert "approved_can" not in signature.parameters
     assert signature.parameters["rigid_task_object"].default is None
+
+
+def test_isaac_poses_are_converted_before_every_xyzw_consumer() -> None:
+    """`body_pose_w` / `root_pose_w` are wxyz; every *_xyzw parameter is not.
+
+    Three sites passed Isaac poses straight into xyzw consumers:
+      - `_eef_9d` -> rotation_row_major_from_quaternion_xyzw (the end-effector
+        orientation the GR00T policy conditions on, every step)
+      - `_finger_poses` -> semantic_finger_tool_midpoint_world_m (rotates the
+        pinned 46 mm tool offset, so the grasp frame the scorer reads was wrong)
+      - the task-object pose -> signed_point_to_vertical_cylinder_clearance_m
+    All three now go through `_pose_world_xyzw`, which is the same reordering
+    the file already applied for `controlled_body_orientation_world_xyzw`.
+    """
+
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import (
+        IsaacEpisodeAdapter,
+    )
+
+    # position passes through, and the w component moves from index 3 to last
+    converted = IsaacEpisodeAdapter._pose_world_xyzw(
+        [1.0, 2.0, 3.0, 0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+    )
+
+    assert converted[:3] == [1.0, 2.0, 3.0]
+    assert converted[3:] == pytest.approx(
+        [0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
+    )
+
+    identity = IsaacEpisodeAdapter._pose_world_xyzw([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert identity[3:] == [0.0, 0.0, 0.0, 1.0], "wxyz identity must become xyzw identity"

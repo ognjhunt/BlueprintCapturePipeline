@@ -1208,10 +1208,9 @@ class IsaacEpisodeAdapter:
                 for name in FINGER_BODIES
             ]
         if self._task_object_radius_m is not None:
-            object_pose = [
-                float(value)
-                for value in self._to_torch(self._can.data.root_pose_w)[0, :7]
-            ]
+            object_pose = self._pose_world_xyzw(
+                self._to_torch(self._can.data.root_pose_w)[0]
+            )
             tool_points = (
                 semantic_finger_tool_midpoint_world_m(
                     left_finger_pose_world_xyzw=left_pose,
@@ -1276,11 +1275,34 @@ class IsaacEpisodeAdapter:
         left_pose, right_pose = self._finger_poses()
         return left_pose[:3], right_pose[:3]
 
+    @staticmethod
+    def _pose_world_xyzw(pose: Any) -> list[float]:
+        """Isaac Lab poses are position + **wxyz**; our contracts take xyzw.
+
+        Every `*_pose_world_xyzw` parameter in this file means what it says, and
+        `body_pose_w` / `root_pose_w` do not. Passing one straight into the
+        other silently rotates the value -- the same class of defect as the
+        Arena spawn quaternions (PRs #774, #775, #777).
+        """
+
+        values = [float(value) for value in pose[:7]]
+        return [
+            values[0],
+            values[1],
+            values[2],
+            values[4],
+            values[5],
+            values[6],
+            values[3],
+        ]
+
     def _finger_poses(self) -> tuple[list[float], list[float]]:
         poses = self._to_torch(self._robot.data.body_pose_w)[0]
+        # converted here so both consumers -- the tool-midpoint transform and
+        # the position-only readers -- receive the contract ordering
         return (
-            [float(poses[self._finger_indices[0]][axis]) for axis in range(7)],
-            [float(poses[self._finger_indices[1]][axis]) for axis in range(7)],
+            self._pose_world_xyzw(poses[self._finger_indices[0]]),
+            self._pose_world_xyzw(poses[self._finger_indices[1]]),
         )
 
     def _raw_gripper_body_separation(self) -> float:
@@ -1321,7 +1343,7 @@ class IsaacEpisodeAdapter:
         pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index
         ]
-        values = [float(value) for value in pose[:7]]
+        values = self._pose_world_xyzw(pose)
         if len(values) != 7 or not all(math.isfinite(value) for value in values):
             raise IsaacEpisodeAdapterError(["isaac_episode_end_effector_pose_invalid"])
         try:  # flat provider bundle
