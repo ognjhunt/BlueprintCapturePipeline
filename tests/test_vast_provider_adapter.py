@@ -8136,3 +8136,98 @@ def test_vast_adapter_records_an_unusable_lock_as_unusable_not_busy(
     assert probe["blockers"] == ["vast_paid_launch_lock_unusable"], (
         "the phase artifact recorded a cause the run did not hit"
     )
+
+
+def test_offer_search_pushes_the_driver_floor_into_the_provider_query() -> None:
+    """A bounded result page must not decide whether a driver exists.
+
+    The endpoint returns an arbitrary page of `limit` matches. Filtering the
+    driver only after the response makes allocation depend on which offers
+    that page happened to contain, so a lane requiring a recent Isaac driver
+    reports `no_vast_offer_meeting_minimum_driver_version` while hundreds of
+    qualifying offers are rentable and under budget. Arena run r16 failed
+    exactly this way at $0.00 with offer_count=100, while a direct provider
+    query for the same floor returned offers from $0.37/hr.
+
+    This is the same reasoning the machine allowlist already documents.
+    """
+
+    payload = vpa._search_payload(
+        limit=100,
+        max_hourly_rate=1.0,
+        minimum_driver_version="580.65.06",
+    )
+    assert payload["driver_version"] == {"gte": "580.65.06"}
+    # the page is still bounded by the other admission constraints
+    assert payload["dph_total"] == {"lte": 1.0}
+    assert payload["rentable"] == {"eq": True}
+
+    # No floor requested -> no constraint invented.
+    assert "driver_version" not in vpa._search_payload(
+        limit=100, max_hourly_rate=1.0
+    )
+
+
+def test_driver_floor_comparison_is_numeric_not_lexicographic() -> None:
+    """580.142 is newer than 580.65.06 even though it sorts earlier as text.
+
+    The downstream fail-closed check keeps running after the narrowed query,
+    so a string comparison here would silently reject the newest drivers.
+    """
+
+    assert vpa._version_tuple("580.142") > vpa._version_tuple("580.65.06")
+    assert vpa._version_tuple("595.71.05") > vpa._version_tuple("580.65.06")
+    assert vpa._version_tuple("570.153.02") < vpa._version_tuple("580.65.06")
+
+
+def test_offer_search_pushes_vram_and_compute_cap_into_the_provider_query() -> None:
+    """VRAM and compute cap decide this lane's page more than price does.
+
+    Measured against the live endpoint with the arena lane's own constraints
+    (min_gpu_ram_mb=46000, max_compute_cap=900, driver>=580.65.06):
+
+        current payload      -> 100 offers returned,  9 with >=46000MB VRAM
+        all three pushed     ->  14 offers returned, 14 with >=46000MB VRAM
+
+    The unconstrained page fills with cheap RTX 5090 (32607MB, cap 1200) and
+    5070 Ti (16303MB) that cannot run this lane, so the qualifying RTX 6000Ada
+    at $0.60 never appears. Arena r16 was blocked at $0.00 for exactly this.
+    """
+
+    payload = vpa._search_payload(
+        limit=100,
+        max_hourly_rate=1.0,
+        minimum_driver_version="580.65.06",
+        min_gpu_ram_mb=46000,
+        max_compute_cap=900,
+    )
+    # megabytes, not gigabytes -- see below
+    assert payload["gpu_ram"] == {"gte": 46000}
+    assert payload["compute_cap"] == {"lte": 900}
+    assert payload["driver_version"] == {"gte": "580.65.06"}
+
+    # A floor and a ceiling coexist on the one compute_cap operator map.
+    both = vpa._search_payload(
+        limit=100, max_hourly_rate=1.0, min_compute_cap=750, max_compute_cap=900
+    )
+    assert both["compute_cap"] == {"gte": 750, "lte": 900}
+
+    # Unset constraints must not invent a filter.
+    bare = vpa._search_payload(limit=100, max_hourly_rate=1.0)
+    for key in ("gpu_ram", "compute_cap", "driver_version"):
+        assert key not in bare
+
+
+def test_gpu_ram_floor_is_expressed_in_megabytes() -> None:
+    """A gigabyte value is silently ignored by the endpoint, not rejected.
+
+    Probing the live API with gpu_ram>=46 returned the same unfiltered 100
+    offers as no filter at all, while gpu_ram>=46000 returned 29 offers that
+    all qualified. A GB value would therefore be a no-op fix that still let
+    the page fill with 24GB hardware.
+    """
+
+    payload = vpa._search_payload(limit=100, max_hourly_rate=1.0, min_gpu_ram_mb=46000)
+    floor = payload["gpu_ram"]["gte"]
+    assert floor == 46000
+    assert floor > 1024, "a value this small would be gigabytes and match everything"
