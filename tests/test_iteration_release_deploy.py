@@ -135,3 +135,107 @@ def test_a_normal_deploy_still_demands_lane_provenance(tmp_path: Path) -> None:
             **_disjoint_roots(tmp_path),
         )
     assert "deploy_release_provenance_missing" in str(excinfo.value)
+
+
+def _repo_with_main(tmp_path: Path) -> tuple[Path, str, str]:
+    """A real repo with an origin/main ref, a merged commit, and a stray one."""
+
+    import subprocess
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    run = lambda *a, **kw: subprocess.run(  # noqa: E731
+        list(a), cwd=kw.get("cwd", upstream), check=True,
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "GIT_AUTHOR_NAME": "t",
+             "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+             "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path)},
+    )
+    run("git", "init", "-q", "-b", "main")
+    (upstream / "f").write_text("1")
+    run("git", "add", "f")
+    run("git", "commit", "-qm", "one")
+
+    clone = tmp_path / "clone"
+    run("git", "clone", "-q", str(upstream), str(clone), cwd=tmp_path)
+    merged = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    # a commit that exists locally but was never merged to main
+    (clone / "f").write_text("2")
+    subprocess.run(["git", "-C", str(clone), "add", "f"], check=True,
+                   capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(clone), "commit", "-qm", "local only"], check=True,
+        capture_output=True,
+        env={"PATH": "/usr/bin:/bin", "GIT_AUTHOR_NAME": "t",
+             "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+             "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path)},
+    )
+    unmerged = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return clone, merged, unmerged
+
+
+def test_iteration_refuses_a_commit_that_is_not_on_origin_main(
+    tmp_path: Path,
+) -> None:
+    """The guard must live in the tool, not only in the wrapper.
+
+    Within an hour of the wrapper being written its `git fetch` hit a
+    permission error, and the obvious workaround was to call this tool
+    directly -- which then had no ancestry check at all. Iteration exists to
+    skip the lane, never to skip main, so an unmerged commit must be refused
+    however the tool is invoked.
+    """
+
+    clone, _merged, unmerged = _repo_with_main(tmp_path)
+    roots = _disjoint_roots(tmp_path)
+    roots["source_repo"] = str(clone)
+
+    with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
+        deploy_mod.deploy_control_plane_commit(
+            source_commit=unmerged,
+            release_provenance=None,
+            iteration=True,
+            **roots,
+        )
+    assert "deploy_iteration_commit_not_on_origin_main" in str(excinfo.value)
+
+
+def test_iteration_accepts_a_commit_that_is_on_origin_main(
+    tmp_path: Path,
+) -> None:
+    """A merged commit clears the ancestry guard and proceeds past it."""
+
+    clone, merged, _unmerged = _repo_with_main(tmp_path)
+    roots = _disjoint_roots(tmp_path)
+    roots["source_repo"] = str(clone)
+
+    with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
+        deploy_mod.deploy_control_plane_commit(
+            source_commit=merged,
+            release_provenance=None,
+            iteration=True,
+            **roots,
+        )
+    # It fails later on this synthetic host, but NOT on ancestry.
+    assert "deploy_iteration_commit_not_on_origin_main" not in str(excinfo.value)
+
+
+def test_the_wrapper_fetches_main_specifically(tmp_path: Path) -> None:
+    """A bare `git fetch origin` cannot write new remote ref locks.
+
+    The service account gets "Permission denied" creating
+    .git/refs/remotes/origin/<branch>.lock for unrelated branches, which is
+    what made the wrapper look broken and invited bypassing it.
+    """
+
+    text = (REPO / "scripts" / "deploy_control_plane_iteration.sh").read_text()
+    assert "git fetch -q origin main" in text
+    assert "git fetch -q origin\n" not in text
+    assert "merge-base --is-ancestor" in text
