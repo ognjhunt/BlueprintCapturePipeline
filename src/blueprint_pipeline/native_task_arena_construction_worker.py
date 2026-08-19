@@ -497,43 +497,96 @@ def _camera_snapshot(
     return {"snapshot_id": snapshot_id, "cameras": rows}
 
 
-def physics_scene_device_evidence() -> dict[str, Any]:
-    """Report what PhysX was actually configured with, from the live stage.
+def expected_articulation_prim_paths(plan: Mapping[str, Any]) -> list[str]:
+    """Concrete env-0 prim paths for every articulation the plan declares.
 
-    Articulation initialisation happens inside the environment build, so a
-    failure there leaves no built object to interrogate. The USD stage does
-    survive, and it carries the `physxScene:*` attributes Isaac Lab authored.
-    That is the only place the GPU-dynamics decision is observable: PhysX
-    resolves an unsupported combination (enhanced determinism with GPU
-    dynamics, for instance) in C++ without logging it, and the first visible
-    symptom is a CPU-backed tensor view an hour into the run.
+    The plan carries `{ENV_REGEX_NS}` templates; the tensor views want a real
+    path. Deriving them here means the device report does not depend on a stage
+    traversal, which is exactly what was unavailable when it was needed.
     """
 
-    evidence: dict[str, Any] = {"physics_scenes": {}}
-    try:
-        import isaacsim.core.utils.stage as stage_utils
-        from pxr import Usd
+    env_ns = "/World/envs/env_0"
+    paths = [f"{env_ns}/Robot"]
+    for entry in plan.get("objects", []) or []:
+        if str(entry.get("object_type", "")).upper() != "ARTICULATION":
+            continue
+        prim_path = str(entry.get("prim_path", "")).replace("{ENV_REGEX_NS}", env_ns)
+        if prim_path and prim_path not in paths:
+            paths.append(prim_path)
+    return paths
 
-        stage = stage_utils.get_current_stage()
-    except Exception as exc:  # noqa: BLE001 - absence is itself the evidence
-        evidence["unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
-        return evidence
+
+# Ordered stage accessors, most-certain first. `isaacsim.core.utils` is NOT
+# present in this runtime -- r11 spent $0.056 collecting nothing because the
+# diagnostic imported it and gave up. Its appearance in a shipped isaaclab
+# source file proved only that upstream references it, not that this image
+# ships it. Both entries below are used by isaaclab's own runtime code paths,
+# and a single missing module can no longer blind the whole diagnostic.
+_STAGE_ACCESSORS: tuple[tuple[str, str], ...] = (
+    ("omni.usd", "omni.usd.get_context().get_stage()"),
+    ("isaaclab.sim.utils.stage", "isaaclab.sim.utils.stage.get_current_stage()"),
+    ("isaacsim.core.utils.stage", "isaacsim.core.utils.stage.get_current_stage()"),
+)
+
+
+def _current_stage() -> tuple[Any, dict[str, Any]]:
+    """Return the live USD stage and a note of how it was reached."""
+
+    attempts: dict[str, Any] = {}
+    for module_name, _description in _STAGE_ACCESSORS:
+        try:
+            if module_name == "omni.usd":
+                import omni.usd
+
+                stage = omni.usd.get_context().get_stage()
+            elif module_name == "isaaclab.sim.utils.stage":
+                from isaaclab.sim.utils import stage as stage_utils
+
+                stage = stage_utils.get_current_stage()
+            else:
+                import isaacsim.core.utils.stage as stage_utils
+
+                stage = stage_utils.get_current_stage()
+        except Exception as exc:  # noqa: BLE001
+            attempts[module_name] = f"{type(exc).__name__}:{exc}"[:160]
+            continue
+        if stage is None:
+            attempts[module_name] = "returned_none"
+            continue
+        attempts[module_name] = "ok"
+        return stage, {"stage_source": module_name, "stage_attempts": attempts}
+    return None, {"stage_source": None, "stage_attempts": attempts}
+
+
+def physics_scene_device_evidence(
+    articulation_prim_paths: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Report what PhysX was actually configured with.
+
+    Articulation initialisation happens inside the environment build, so a
+    failure there leaves no built object to interrogate. What does survive is
+    the PhysX manager (the traceback runs through it, so it is certainly
+    importable) and the USD stage carrying the `physxScene:*` attributes Isaac
+    Lab authored. That is the only place the GPU-dynamics decision is
+    observable: PhysX resolves an unsupported scene in C++ without logging it,
+    and the first visible symptom is a CPU-backed tensor view.
+
+    Nothing here may raise, and no single import may make the whole report
+    empty -- each fact is collected independently.
+    """
+
+    evidence: dict[str, Any] = {}
+    # The PhysX manager first: it needs no stage, and it holds the device the
+    # whole decision hangs on.
     try:
-        for prim in stage.Traverse():
-            if not prim.IsA(Usd.SchemaBase) or prim.GetTypeName() != "PhysicsScene":
-                continue
-            attributes: dict[str, Any] = {}
-            for attribute in prim.GetAttributes():
-                name = attribute.GetName()
-                if not name.startswith("physxScene:") and not name.startswith("physics:"):
-                    continue
-                try:
-                    attributes[name] = str(attribute.Get())
-                except Exception as exc:  # noqa: BLE001
-                    attributes[name] = f"unreadable:{type(exc).__name__}:{exc}"[:120]
-            evidence["physics_scenes"][str(prim.GetPath())] = attributes
+        from isaaclab_physx.physics.physx_manager import PhysxManager
+
+        evidence["physics_manager_device"] = str(PhysxManager.get_device())
+        evidence["articulation_view_devices"] = _articulation_view_devices(
+            PhysxManager, articulation_prim_paths
+        )
     except Exception as exc:  # noqa: BLE001
-        evidence["traverse_failed"] = f"{type(exc).__name__}:{exc}"[:200]
+        evidence["physics_manager_unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
     try:
         from isaaclab.sim import SimulationContext
 
@@ -548,55 +601,66 @@ def physics_scene_device_evidence() -> dict[str, Any]:
                 evidence.setdefault("settings", {})[setting] = str(
                     instance.get_setting(setting)
                 )
-            except Exception as exc:  # noqa: BLE001
-                evidence.setdefault("settings", {})[setting] = (
-                    f"unreadable:{type(exc).__name__}"
-                )
+            except Exception:  # noqa: BLE001
+                evidence.setdefault("settings", {})[setting] = "unreadable"
     except Exception as exc:  # noqa: BLE001
         evidence["simulation_context_unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
-    try:
-        from isaaclab_physx.physics.physx_manager import PhysxManager
 
-        evidence["physics_manager_device"] = str(PhysxManager.get_device())
-        evidence["articulation_view_devices"] = _articulation_view_devices(PhysxManager)
+    stage, stage_note = _current_stage()
+    evidence.update(stage_note)
+    if stage is None:
+        return evidence
+    scenes: dict[str, Any] = {}
+    try:
+        for prim in stage.Traverse():
+            # GetTypeName alone identifies the scene; an IsA(SchemaBase) guard
+            # would only add a way for this to raise.
+            if prim.GetTypeName() != "PhysicsScene":
+                continue
+            attributes: dict[str, Any] = {}
+            for attribute in prim.GetAttributes():
+                name = attribute.GetName()
+                if not name.startswith(("physxScene:", "physics:")):
+                    continue
+                try:
+                    attributes[name] = str(attribute.Get())
+                except Exception:  # noqa: BLE001
+                    attributes[name] = "unreadable"
+            scenes[str(prim.GetPath())] = attributes
     except Exception as exc:  # noqa: BLE001
-        evidence["physics_manager_unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
+        evidence["traverse_failed"] = f"{type(exc).__name__}:{exc}"[:200]
+    evidence["physics_scenes"] = scenes
     return evidence
 
 
-def _articulation_view_devices(physx_manager: Any) -> dict[str, Any]:
-    """Report the backing device of every articulation view in the stage.
+def _articulation_view_devices(
+    physx_manager: Any, prim_paths: Sequence[str] | None
+) -> dict[str, Any]:
+    """Report the backing device of every articulation view.
 
     This is the question a device-mismatch traceback cannot answer. If every
     articulation is CPU-backed the scene never got GPU dynamics at all, and the
-    cause is scene-level (a physics-scene attribute PhysX refused). If exactly
-    one is CPU-backed the cause is that asset. Those two answers point at
-    completely different fixes, and nothing else in the run distinguishes them.
+    cause is scene-level. If exactly one is CPU-backed the cause is that asset.
+    Those two answers point at completely different fixes.
+
+    Paths come from the scene plan rather than a stage traversal, so this still
+    reports when no stage accessor resolves.
     """
 
-    rows: dict[str, Any] = {}
     view = getattr(physx_manager, "_view", None)
     if view is None:
-        # A missing view is a different diagnosis from a CPU-backed one, and it
-        # is knowable without importing anything.
         return {"unavailable": "simulation_view_is_none"}
-    try:
-        import isaacsim.core.utils.stage as stage_utils
-        from pxr import UsdPhysics
-
-        stage = stage_utils.get_current_stage()
-    except Exception as exc:  # noqa: BLE001
-        return {"unavailable": f"{type(exc).__name__}:{exc}"[:200]}
-    for prim in stage.Traverse():
-        if not prim.HasAPI(UsdPhysics.ArticulationRootAPI):
-            continue
-        path = str(prim.GetPath())
+    candidates = list(prim_paths or ())
+    if not candidates:
+        return {"unavailable": "no_articulation_prim_paths_supplied"}
+    rows: dict[str, Any] = {}
+    for path in candidates:
         try:
             articulation = view.create_articulation_view(path)
             velocities = articulation.get_dof_velocities()
             rows[path] = {
                 "device": str(getattr(velocities, "device", None)),
-                "backend_present": articulation._backend is not None,
+                "backend_present": getattr(articulation, "_backend", None) is not None,
             }
         except Exception as exc:  # noqa: BLE001
             rows[path] = {"unavailable": f"{type(exc).__name__}:{exc}"[:200]}
@@ -760,7 +824,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["environment_build_failure"] = {
                 "error": f"{type(exc).__name__}:{exc}"[:400],
                 "traceback": traceback.format_exc()[-4000:],
-                "physics_scene_device_evidence": physics_scene_device_evidence(),
+                "physics_scene_device_evidence": physics_scene_device_evidence(
+                    expected_articulation_prim_paths(plan)
+                ),
             }
             raise
         device_readback = read_native_task_arena_device_binding(
