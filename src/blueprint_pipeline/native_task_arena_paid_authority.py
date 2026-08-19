@@ -620,7 +620,21 @@ def materialize_native_task_arena_provider_zero(
     cleanup = _read(cleanup_path, "native_task_arena_cleanup_unreadable")
     adapter = _read(adapter_path, "native_task_arena_adapter_unreadable")
     teardown = _read(teardown_path, "native_task_arena_teardown_unreadable")
-    inventory = watchdog.get("final_global_inventory")
+    global_inventory = watchdog.get("final_global_inventory")
+    # The global sweep observes every instance on the provider account, so an
+    # unrelated debug pod or a concurrent lane blocks this seal forever: the
+    # watchdog receipt is frozen at write time and can never re-observe a
+    # now-quiet account. When the watchdog itself marks the global sweep
+    # informational, its lane-scoped inventory -- matched on this run's own
+    # name prefix -- is the authority on whether THIS run is still spending.
+    # Absent that flag the global sweep stays authoritative, so receipts
+    # written before the watchdog scoped itself keep their original strictness.
+    if watchdog.get("global_inventory_informational_only") is True:
+        inventory = watchdog.get("final_inventory")
+        inventory_scope = "recorded_instance_and_lane_prefix"
+    else:
+        inventory = global_inventory
+        inventory_scope = "provider_global"
     if (
         authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or authority.get("authorization_digest")
@@ -636,6 +650,8 @@ def materialize_native_task_arena_provider_zero(
         or teardown.get("continuing_spend_from_this_run") is not False
         or watchdog.get("status") != "provider_terminal"
         or watchdog.get("provider_absence_confirmed") is not True
+        or not isinstance(global_inventory, Mapping)
+        or global_inventory.get("api_confirmed") is not True
         or not isinstance(inventory, Mapping)
         or inventory.get("api_confirmed") is not True
         or inventory.get("live_resource_count") != 0
@@ -656,6 +672,8 @@ def materialize_native_task_arena_provider_zero(
         "estimated_cost_usd": result.get("estimated_cost_usd"),
         "provider_zero_confirmed": True,
         "inventory": inventory,
+        "inventory_scope": inventory_scope,
+        "global_inventory": global_inventory,
         "continuing_spend_from_this_run": False,
         "all_staged_objects_absent": True,
         "receipt_digest": "",
