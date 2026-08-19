@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 
 
 SCHEMA_VERSION = "native_task_episode_environment.v1"
@@ -144,6 +145,11 @@ def build_native_task_episode_environment(
             gripper_command=kwargs["gripper_command"],
             max_joint_delta_rad=kwargs["max_joint_delta_rad"],
             max_joint_setpoint_lead_rad=kwargs["max_joint_setpoint_lead_rad"],
+            # Controls replay the dynamics construction qualified, so the
+            # feedforward has to be the same on both sides.
+            velocity_feedforward_scale=kwargs.get(
+                "velocity_feedforward_scale", DEFAULT_VELOCITY_FEEDFORWARD_SCALE
+            ),
         )
         return [float(value) for value in action]
 

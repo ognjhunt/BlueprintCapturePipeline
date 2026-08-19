@@ -61,6 +61,120 @@ def bounded_absolute_joint_setpoint(
     return command
 
 
+def joint_velocity_feedforward_rad_s(
+    *,
+    commanded_joint_positions_rad: Sequence[float],
+    previous_commanded_joint_positions_rad: Sequence[float],
+    control_period_seconds: float,
+    scale: float = 1.0,
+) -> list[float]:
+    """Return the velocity the commanded setpoint is advancing at.
+
+    Isaac Lab's implicit actuator is a PD whose torque is
+    ``stiffness * (pos_target - pos) + damping * (vel_target - vel)``.  A
+    position-only command leaves ``vel_target`` at zero, so the damping term
+    becomes pure braking proportional to whatever speed we asked the joint to
+    reach -- the arm settles where the two terms cancel, at
+    ``(stiffness / damping) * position_error``, using almost none of its
+    available torque.  Declaring the velocity we intend cancels that braking
+    while tracking.
+
+    The feedforward is the *commanded* advance rate, not a target speed, so it
+    falls to zero the moment the setpoint stops advancing and the damping term
+    returns to damping the joint at rest.
+    """
+
+    try:
+        commanded = [float(value) for value in commanded_joint_positions_rad]
+        previous = [float(value) for value in previous_commanded_joint_positions_rad]
+        period = float(control_period_seconds)
+        gain = float(scale)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_velocity_feedforward_contract_invalid"]
+        ) from exc
+    if (
+        not commanded
+        or len(commanded) != len(previous)
+        or not all(math.isfinite(value) for value in (*commanded, *previous))
+        or not math.isfinite(period)
+        or period <= 0.0
+        or not math.isfinite(gain)
+        or gain < 0.0
+        or gain > 1.0
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_velocity_feedforward_contract_invalid"]
+        )
+    return [
+        gain * (command - prior) / period
+        for command, prior in zip(commanded, previous, strict=True)
+    ]
+
+
+def implicit_pd_torque_terms(
+    *,
+    commanded_joint_positions_rad: Sequence[float],
+    measured_joint_positions_rad: Sequence[float],
+    commanded_joint_velocities_rad_s: Sequence[float],
+    measured_joint_velocities_rad_s: Sequence[float],
+    joint_stiffness: Sequence[float],
+    joint_damping: Sequence[float],
+) -> dict[str, list[float]]:
+    """Split the implicit-actuator torque into its two competing terms.
+
+    ``applied_torque`` alone is not interpretable: on a gravity-disabled arm at
+    steady state the stiffness and damping terms cancel, so a correctly
+    configured actuator reads near zero and looks indistinguishable from one
+    whose gains were never applied.  Recording both terms and the measured
+    velocity separately removes that ambiguity.
+    """
+
+    try:
+        commanded = [float(value) for value in commanded_joint_positions_rad]
+        measured = [float(value) for value in measured_joint_positions_rad]
+        velocity_target = [
+            float(value) for value in commanded_joint_velocities_rad_s
+        ]
+        velocity = [float(value) for value in measured_joint_velocities_rad_s]
+        stiffness = [float(value) for value in joint_stiffness]
+        damping = [float(value) for value in joint_damping]
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_pd_torque_terms_contract_invalid"]
+        ) from exc
+    lengths = {
+        len(commanded),
+        len(measured),
+        len(velocity_target),
+        len(velocity),
+        len(stiffness),
+        len(damping),
+    }
+    if len(lengths) != 1 or not commanded:
+        raise NativeFrankaActionMathError(
+            ["native_franka_pd_torque_terms_contract_invalid"]
+        )
+    stiffness_term = [
+        gain * (command - state)
+        for gain, command, state in zip(stiffness, commanded, measured, strict=True)
+    ]
+    damping_term = [
+        gain * (command - state)
+        for gain, command, state in zip(
+            damping, velocity_target, velocity, strict=True
+        )
+    ]
+    return {
+        "stiffness_term_n_m": stiffness_term,
+        "damping_term_n_m": damping_term,
+        "predicted_torque_n_m": [
+            first + second
+            for first, second in zip(stiffness_term, damping_term, strict=True)
+        ],
+    }
+
+
 def controlled_body_pose_for_grasp_frame_target(
     *,
     current_body_position_world_m: Sequence[float],

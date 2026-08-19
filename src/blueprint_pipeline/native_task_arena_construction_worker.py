@@ -407,14 +407,23 @@ def _servo_command_limits(
     """
 
     limits: dict[str, float] = {}
-    for field in ("max_joint_delta_rad", "max_joint_setpoint_lead_rad"):
+    for field in (
+        "max_joint_delta_rad",
+        "max_joint_setpoint_lead_rad",
+        "velocity_feedforward_scale",
+    ):
         try:
             value = float(execution_parameters[field])
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
                 f"native_task_construction_servo_command_limit_missing:{field}"
             ) from exc
-        if not math.isfinite(value) or value <= 0.0:
+        floor = 0.0 if field == "velocity_feedforward_scale" else None
+        if (
+            not math.isfinite(value)
+            or (floor is None and value <= 0.0)
+            or (floor is not None and not 0.0 <= value <= 1.0)
+        ):
             raise RuntimeError(
                 f"native_task_construction_servo_command_limit_invalid:{field}"
             )
@@ -1245,6 +1254,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ],
                     max_joint_setpoint_lead_rad=servo_command_limits[
                         "max_joint_setpoint_lead_rad"
+                    ],
+                    velocity_feedforward_scale=servo_command_limits[
+                        "velocity_feedforward_scale"
                     ],
                 )
                 env.step(

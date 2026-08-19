@@ -446,6 +446,7 @@ def test_executable_construction_bundle_freezes_local_phase_plan(
         "articulated_waypoint_count": 8,
         "max_joint_delta_rad": 0.10,
         "max_joint_setpoint_lead_rad": 1.00,
+        "velocity_feedforward_scale": 1.0,
     }
     assert frozen["plan_digest"] == canonical_digest(
         frozen, digest_field="plan_digest"

@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 from .articulation_graph_contract import (
     ArticulationGraphContractError,
     validate_articulation_graph,
@@ -65,6 +66,20 @@ MAX_JOINT_DELTA_RAD = 0.10
 #: velocity limits govern. This keeps a bound for stability, but one that does
 #: not sit below the robot's own limits.
 MAX_JOINT_SETPOINT_LEAD_RAD = 1.00
+#: Fraction of the commanded setpoint advance rate declared as a joint velocity
+#: target.
+#:
+#: The implicit actuator's torque is
+#: ``stiffness * (pos_target - pos) + damping * (vel_target - vel)``.  A
+#: position-only command leaves ``vel_target`` at zero, so the damping term
+#: brakes in proportion to the very motion we asked for and the joint settles
+#: at ``(stiffness / damping) * error`` -- 5 rad/s per rad of lag on this arm,
+#: reached while using two to three percent of the available torque.  Declaring
+#: the intended velocity cancels that braking while tracking and still damps
+#: the joint at rest, which is why this is preferred over lowering damping:
+#: the damping ratio is unchanged, and this task ends in contact with a hinged
+#: door.  1.0 is exact feedforward; 0.0 restores position-only commanding.
+VELOCITY_FEEDFORWARD_SCALE = DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 
 
 class NativeTaskConstructionPlanError(ValueError):
@@ -100,6 +115,7 @@ def joint_command_limits(
     max_joint_delta_rad: Any,
     max_joint_setpoint_lead_rad: Any,
     error: str,
+    velocity_feedforward_scale: Any = VELOCITY_FEEDFORWARD_SCALE,
 ) -> dict[str, float]:
     """Validate the joint-command bound pair the native servo will execute.
 
@@ -112,9 +128,13 @@ def joint_command_limits(
     lead = _positive(max_joint_setpoint_lead_rad, error=error)
     if lead < delta:
         raise NativeTaskConstructionPlanError([error])
+    feedforward = _positive(velocity_feedforward_scale, error=error, allow_zero=True)
+    if feedforward > 1.0:
+        raise NativeTaskConstructionPlanError([error])
     return {
         "max_joint_delta_rad": delta,
         "max_joint_setpoint_lead_rad": lead,
+        "velocity_feedforward_scale": feedforward,
     }
 
 
@@ -1917,6 +1937,7 @@ __all__ = [
     "GRAPH_ARTICULATED_SCHEMA_VERSION",
     "MAX_JOINT_DELTA_RAD",
     "MAX_JOINT_SETPOINT_LEAD_RAD",
+    "VELOCITY_FEEDFORWARD_SCALE",
     "NativeTaskConstructionPlanError",
     "RIGID_SCHEMA_VERSION",
     "SCHEMA_VERSION",
