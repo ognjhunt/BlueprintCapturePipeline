@@ -1200,3 +1200,37 @@ def test_robot_spawns_with_the_plan_orientation_in_isaac_lab_convention(
     assert init_state.pos == pytest.approx(
         tuple(plan["robot"]["base_pose_world"]["position_world_m"])
     )
+
+
+def test_camera_offset_rotation_is_written_in_isaac_lab_convention(
+    monkeypatch,
+) -> None:
+    """Isaac Lab's OffsetCfg.rot is (w, x, y, z), our contract is (x, y, z, w).
+
+    Assigning the contract value straight through is the same defect Arena has
+    for the robot spawn: an xyzw identity [0, 0, 0, 1] lands as w=0, z=1 -- a
+    180 degree yaw flip. These are the cameras the policy link conditions on,
+    and the readback previously relabelled the runtime's wxyz bytes as
+    `offset_rotation_xyzw`, so the receipt round-tripped the error and no
+    readback could catch it.
+    """
+
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+
+    built = build_native_task_arena_environment(plan)
+
+    embodiment = _ArenaBuilder.last.arena_env.embodiment
+    for role, runtime_name in built.camera_scene_names.items():
+        cfg = getattr(embodiment.camera_config, runtime_name)
+        contract = camera_runtime_parameters(
+            next(c for c in plan["cameras"] if c["role"] == role)
+        )["offset_rotation_xyzw"]
+        # the runtime holds wxyz: the w component the contract puts last leads
+        assert cfg.offset.rot == pytest.approx(
+            (contract[3], contract[0], contract[1], contract[2])
+        ), role
+        # and the receipt reports the contract ordering, not the runtime's
+        assert built.native_configuration_readback["cameras"][role][
+            "offset_rotation_xyzw"
+        ] == pytest.approx(list(contract)), role
