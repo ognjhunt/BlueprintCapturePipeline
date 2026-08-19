@@ -27,6 +27,10 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
+from blueprint_pipeline.native_task_isaaclab_launch import (
+    NATIVE_TASK_ARENA_DEVICE,
+)
+
 SCHEMA_VERSION = "adp009d_policy_server_worker.v1"
 
 DEFAULT_HOST = "127.0.0.1"
@@ -112,7 +116,9 @@ def build_serve_command(
         "--embodiment-tag",
         GROOT_DROID_EMBODIMENT_TAG,
         "--device",
-        "cuda:0",
+        # one shared constant: this is the single place the policy server and
+        # Isaac must agree about which card they co-reside on
+        NATIVE_TASK_ARENA_DEVICE,
         "--host",
         DEFAULT_HOST,
         "--port",

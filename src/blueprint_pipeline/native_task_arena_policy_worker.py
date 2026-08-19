@@ -28,9 +28,21 @@ def _sha256(path: Path) -> str:
 def _persist(path: Path, result: dict[str, Any]) -> None:
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
-    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    # Normalise before digesting. This runs from a `finally`, and BOTH
+    # canonical_digest and json.dumps refuse values json cannot encode -- a
+    # stray warp array or Path would raise *inside* the handler, replace the
+    # real exception and leave a paid run with no receipt at all. Hardening only
+    # the write is not enough, because the digest is computed first.
+    normalised = json.loads(json.dumps(result, default=str))
+    normalised["result_digest"] = canonical_digest(
+        normalised, digest_field="result_digest"
+    )
+    result["result_digest"] = normalised["result_digest"]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(normalised, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _to_tensor(value: Any) -> Any:

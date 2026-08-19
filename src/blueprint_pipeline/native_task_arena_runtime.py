@@ -863,6 +863,7 @@ def build_native_task_arena_environment(
 
     from blueprint_pipeline.native_franka_pose_servo import (
         contract_xyzw_to_native_wxyz,
+        native_wxyz_to_contract_xyzw,
     )
 
     robot = plan["robot"]
@@ -909,7 +910,14 @@ def build_native_task_arena_environment(
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
         camera_cfg.prim_path = parameters["prim_path"]
         camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
-        camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
+        # Isaac Lab's OffsetCfg.rot is (w, x, y, z) -- its identity default is
+        # (1, 0, 0, 0). Assigning our xyzw contract value directly is the same
+        # mistake Arena makes for the robot spawn (fixed in the block above):
+        # an xyzw identity [0, 0, 0, 1] lands as w=0, z=1, a 180 degree yaw
+        # flip. These are the cameras the policy link conditions on.
+        camera_cfg.offset.rot = tuple(
+            contract_xyzw_to_native_wxyz(parameters["offset_rotation_xyzw"])
+        )
         camera_cfg.offset.convention = parameters["isaac_offset_convention"]
         camera_cfg.width = parameters["width"]
         camera_cfg.height = parameters["height"]
@@ -924,7 +932,11 @@ def build_native_task_arena_environment(
         camera_configuration_readback[parameters["role"]] = {
             "runtime_name": parameters["runtime_name"],
             "offset_position_m": list(camera_cfg.offset.pos),
-            "offset_rotation_xyzw": list(camera_cfg.offset.rot),
+            # convert back, or the receipt round-trips the runtime's wxyz bytes
+            # under an xyzw label and no readback can ever catch a mismatch
+            "offset_rotation_xyzw": list(
+                native_wxyz_to_contract_xyzw(camera_cfg.offset.rot)
+            ),
             "focal_length_mm": float(camera_cfg.spawn.focal_length),
         }
 
@@ -978,6 +990,21 @@ def build_native_task_arena_environment(
             )
         obj = object_class(
             **object_kwargs,
+        )
+        # Arena writes the spawn pose as `init_state.rot = pose.rotation_xyzw`
+        # while Isaac Lab's InitialStateCfg.rot is (w, x, y, z). PR #774 fixed
+        # this for the robot and left every object on the broken path: an xyzw
+        # identity [0, 0, 0, 1] lands as w=0, z=1, so the task object, the scene
+        # collision and the NuRec appearance were all spawned rotated 180
+        # degrees. That is what produced 9-13 kN of interpenetration at reset
+        # (measured) -- the room and the appliance did not line up.
+        obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
+            pos=tuple(
+                float(value) for value in row["pose_world"]["position_world_m"]
+            ),
+            rot=tuple(
+                contract_xyzw_to_native_wxyz(row["pose_world"]["orientation_xyzw"])
+            ),
         )
         if row["object_type"] == "ARTICULATION":
             reset_positions = dict(
