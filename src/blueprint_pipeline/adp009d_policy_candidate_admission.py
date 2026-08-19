@@ -27,14 +27,24 @@ EXPECTED_CANDIDATES = {
         "source_repository": "https://github.com/Physical-Intelligence/openpi",
         "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
         "source_tree": "a7f18af2745255b5fa98c86d6031f858bf73d1be",
-        "checkpoint_repository": "gs://openpi-assets/checkpoints/pi05_droid",
+        # Ratified onto the polaris joint-position checkpoint (2026-08-19).
+        # The stock `checkpoints/pi05_droid` cannot be described by
+        # OpenPIDroidPolicySpec at all -- it requires the `checkpoints/polaris/`
+        # prefix and a joint_position action space -- so no execution spec could
+        # both name what this lane fetched and satisfy the episode client.
+        # `adp_founder_sim_protocol` and the warehouse cohort already agreed the
+        # baseline was this checkpoint; this makes the provisioned artifact
+        # agree too. Every value below is read from the committed frozen
+        # inventory in docs/experiments/policy_ranking_thesis_20260726/, which
+        # was built from the GCS JSON API and is re-verified by test.
+        "checkpoint_repository": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
         "checkpoint_revision": (
             "gcs-generation-inventory:"
-            "4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12"
+            "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063"
         ),
-        "checkpoint_total_bytes": 12_429_488_598,
+        "checkpoint_total_bytes": 12_434_530_837,
         "checkpoint_inventory_digest": (
-            "sha256:4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12"
+            "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063"
         ),
     },
     "groot_n17_droid": {

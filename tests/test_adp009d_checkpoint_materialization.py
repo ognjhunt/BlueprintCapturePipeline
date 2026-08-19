@@ -35,8 +35,12 @@ def test_pi05_plans_a_credential_free_public_gcs_fetch() -> None:
     assert plan["credentials_required"] is False
     assert plan["materialize_on"] == "gpu_worker"
     assert plan["stage_locally"] is False
+    # Ratified onto the polaris joint-position checkpoint: the stock
+    # `checkpoints/pi05_droid` cannot be described by OpenPIDroidPolicySpec,
+    # so the lane could never serve an identity its own client accepts.
     assert plan["listing_url"].startswith(
-        "https://storage.googleapis.com/storage/v1/b/openpi-assets/o?prefix=checkpoints/pi05_droid/"
+        "https://storage.googleapis.com/storage/v1/b/openpi-assets/o"
+        "?prefix=checkpoints/polaris/pi05_droid_jointpos_polaris/"
     )
     assert plan["expected_total_bytes"] == _PI05_BYTES
 
