@@ -26,7 +26,12 @@ from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
     validate_standing_authorization,
 )
 
-NOW = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+# Anchored to the real clock, not a literal. A hardcoded NOW makes every
+# fixture derived from it expire on a wall-clock date: this file's default
+# authorization was `NOW + 7 days`, so on 2026-08-19T12:00Z it silently began
+# failing every branch and blocking every deploy, because the paths that do not
+# take an explicit `now=` compare against the actual current time.
+NOW = datetime.now(timezone.utc)
 DIGEST = "sha256:" + "a" * 64
 URI = "https://raw.githubusercontent.com/example/repo/" + "0" * 40 + "/request.json"
 
@@ -241,9 +246,13 @@ def test_a_symlinked_authorization_fails_closed(tmp_path: Path) -> None:
 
 def test_a_naive_expiry_is_read_as_utc() -> None:
     """A timestamp without an offset must not be read in the host's timezone."""
-    assert _validate(_authorization(expires_at="2026-08-19T12:00:00")) == []
+    # relative to the real clock, since _validate() with no explicit `now=`
+    # compares against it
+    assert _validate(
+        _authorization(expires_at=(NOW + timedelta(days=7)).isoformat())
+    ) == []
     assert "standing_authorization_expired" in _validate(
-        _authorization(expires_at="2026-08-05T12:00:00")
+        _authorization(expires_at=(NOW - timedelta(days=7)).isoformat())
     )
 
 
