@@ -417,3 +417,26 @@ def test_the_episode_connects_to_the_port_that_actually_started() -> None:
     # Blueprint's flat observation directly to GR00T's nested API.
     assert "GrootN17DroidPolicyClient" in source
     assert "worker_identity_receipt" in source
+
+
+def test_serve_command_uses_the_shared_arena_device_constant() -> None:
+    """Server and Isaac co-reside; they must name one device, not two literals.
+
+    This was the only bare "cuda:0" left in the policy path, and it is the one
+    place where the policy server and the simulator must agree about which card
+    they share. A device disagreement is the failure that consumed r6-r11 in the
+    construction link.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import adp009d_policy_server_worker
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        NATIVE_TASK_ARENA_DEVICE,
+    )
+
+    source = inspect.getsource(adp009d_policy_server_worker)
+    assert '"cuda:0"' not in source
+    assert "'cuda:0'" not in source
+    assert "NATIVE_TASK_ARENA_DEVICE" in source
+    assert NATIVE_TASK_ARENA_DEVICE == "cuda:0"
