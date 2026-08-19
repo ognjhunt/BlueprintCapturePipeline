@@ -237,6 +237,97 @@ def test_provider_zero_requires_watchdog_api_inventory(tmp_path: Path) -> None:
         )
 
 
+def test_provider_zero_scopes_to_this_lane_when_the_watchdog_says_so(
+    tmp_path: Path,
+) -> None:
+    """An unrelated instance on the account must not block this lane's seal.
+
+    The watchdog sweeps the whole provider account but marks that sweep
+    ``global_inventory_informational_only`` and records a lane-scoped
+    ``final_inventory`` matched on the run's own name prefix. Gating on the
+    global sweep meant a debug pod -- or any concurrent lane -- permanently
+    blocked every later arena run, because the receipt is frozen at write time
+    and can never re-observe a now-quiet account. r14 was blocked exactly this
+    way by an interactive pod that had nothing to do with the run.
+
+    The lane-scoped inventory still gates: this must fail closed when THIS
+    run's own resources are still alive.
+    """
+
+    authority = {
+        "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "authority.json"
+    write_json(authority_path, authority)
+    cleanup = tmp_path / "cleanup.json"
+    adapter = tmp_path / "adapter.json"
+    teardown = tmp_path / "teardown.json"
+    watchdog = tmp_path / "watchdog.json"
+    write_json(
+        cleanup, {"all_objects_absent": True, "signed_url_files_removed": True}
+    )
+    write_json(adapter, {"continuing_spend_from_this_run": False})
+    write_json(teardown, {"continuing_spend_from_this_run": False})
+    write_json(
+        watchdog,
+        {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+            "global_inventory_informational_only": True,
+            "final_global_inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 1,
+                "resources": [{"instance_id": "48118775", "status": "running"}],
+            },
+            "final_inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            },
+        },
+    )
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "status": "completed",
+        "authorization_consumption": {
+            "authorization_digest": authority["authorization_digest"]
+        },
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "watchdog_receipt_path": str(watchdog),
+        "object_store_cleanup_path": str(cleanup),
+        "adapter_result_path": str(adapter),
+        "teardown_manifest_path": str(teardown),
+        "estimated_cost_usd": 0.1,
+    }
+    result_path = tmp_path / "result.json"
+    write_json(result_path, result)
+
+    receipt = paid.materialize_native_task_arena_provider_zero(
+        authority_path=authority_path,
+        result_path=result_path,
+        output_path=tmp_path / "provider_zero.json",
+    )
+    assert receipt["provider_zero_confirmed"] is True
+    assert receipt["inventory_scope"] == "recorded_instance_and_lane_prefix"
+    # the unrelated instance is still recorded as evidence, just not as the gate
+    assert receipt["global_inventory"]["live_resource_count"] == 1
+
+    watchdog_value = json.loads(watchdog.read_text())
+    watchdog_value["final_inventory"]["live_resource_count"] = 1
+    write_json(watchdog, watchdog_value)
+    with pytest.raises(ValueError, match="native_task_arena_provider_zero_invalid"):
+        paid.materialize_native_task_arena_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            output_path=tmp_path / "still_spending.json",
+        )
+
+
 def test_every_accepted_predecessor_can_reconcile_its_own_posted_charges() -> None:
     """A chained authority is only issuable if the predecessor reconciles.
 
