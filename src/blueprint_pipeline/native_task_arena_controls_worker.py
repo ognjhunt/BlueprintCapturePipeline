@@ -107,6 +107,71 @@ def _verified_runtime_inputs(
     return verified
 
 
+def _bound_digest(value: Any) -> bool:
+    """A digest relation only holds when both sides actually carry a digest."""
+    return isinstance(value, str) and value.startswith("sha256:") and len(value) > 7
+
+
+def _input_binding_mismatches(
+    *,
+    manifest: Mapping[str, Any],
+    packet_receipt: Mapping[str, Any],
+    scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+) -> list[str]:
+    """Name every disagreeing input relation instead of one opaque blocker.
+
+    Every relation below costs a full paid provider run when it fails, so the
+    blocker has to say which one disagreed. Each pair is also required to be
+    *bound* -- two absent fields are not an agreement, they are two missing
+    digests, and comparing them with ``!=`` alone would admit an unbound cell.
+    """
+
+    phase_plan = construction.get("construction_phase_plan") or {}
+    pairs = (
+        (
+            "packet_receipt_digest_vs_manifest",
+            packet_receipt.get("receipt_digest"),
+            manifest.get("packet_receipt_digest"),
+        ),
+        (
+            "scene_plan_digest_vs_manifest",
+            scene_plan.get("plan_digest"),
+            manifest.get("arena_scene_plan_digest"),
+        ),
+        (
+            "construction_result_digest_vs_control_plan_planner_receipt",
+            construction.get("result_digest"),
+            control_plan.get("planner_receipt_digest"),
+        ),
+        (
+            "control_plan_construction_scene_plan_digest_vs_scene_plan",
+            control_plan.get("construction_scene_plan_digest"),
+            scene_plan.get("plan_digest"),
+        ),
+        (
+            "control_plan_construction_clearance_plan_digest_vs_construction",
+            control_plan.get("construction_clearance_plan_digest"),
+            phase_plan.get("plan_digest"),
+        ),
+        (
+            "control_plan_plan_digest_vs_recomputed_canonical_digest",
+            control_plan.get("plan_digest"),
+            _canonical_digest(control_plan, field="plan_digest"),
+        ),
+    )
+    mismatched = [
+        relation
+        for relation, left, right in pairs
+        if not _bound_digest(left) or not _bound_digest(right) or left != right
+    ]
+    task_kind = control_plan.get("task_kind")
+    if task_kind is not None and task_kind != scene_plan.get("task_kind"):
+        mismatched.append("control_plan_task_kind_vs_scene_plan_task_kind")
+    return mismatched
+
+
 def _to_tensor(value: Any) -> Any:
     if hasattr(value, "detach"):
         return value
@@ -271,27 +336,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_plan = json.loads(
             inputs["adp_task_control_plan.v1.json"].read_text(encoding="utf-8")
         )
-        if (
-            packet_receipt.get("receipt_digest")
-            != manifest.get("packet_receipt_digest")
-            or scene_plan.get("plan_digest")
-            != manifest.get("arena_scene_plan_digest")
-            or construction.get("result_digest")
-            != control_plan.get("planner_receipt_digest")
-            or control_plan.get("construction_scene_plan_digest")
-            != scene_plan.get("plan_digest")
-            or control_plan.get("construction_clearance_plan_digest")
-            != (construction.get("construction_phase_plan") or {}).get(
-                "plan_digest"
+        binding_mismatches = _input_binding_mismatches(
+            manifest=manifest,
+            packet_receipt=packet_receipt,
+            scene_plan=scene_plan,
+            construction=construction,
+            control_plan=control_plan,
+        )
+        if binding_mismatches:
+            raise RuntimeError(
+                "native_task_controls_input_binding_mismatch:"
+                + ",".join(sorted(binding_mismatches))
             )
-            or control_plan.get("plan_digest")
-            != _canonical_digest(control_plan, field="plan_digest")
-            or (
-                control_plan.get("task_kind") is not None
-                and control_plan.get("task_kind") != scene_plan.get("task_kind")
-            )
-        ):
-            raise RuntimeError("native_task_controls_input_binding_mismatch")
         result["manifest_input_digest"] = manifest["input_digest"]
         result["implementation_commit"] = manifest["implementation_commit"]
         result["packet_receipt_digest"] = packet_receipt["receipt_digest"]
