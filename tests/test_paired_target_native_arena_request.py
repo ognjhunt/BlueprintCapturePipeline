@@ -189,3 +189,42 @@ def test_a_receipt_supplied_as_a_usd_asset_is_refused_before_any_spend(
     other = tmp_path / "notes.txt"
     other.write_text("free text", encoding="utf-8")
     assert usd_payload_format_matches(other, "notes.txt") is True
+
+
+def test_servo_limits_are_imported_not_restated() -> None:
+    """One source of truth, or a raised limit silently does not ship.
+
+    These two values were literals here while native_articulated_control_plan
+    defined the same pair. PR #786 raised them there, merged, and deployed --
+    and r19 still executed 0.03/0.20, because the arena request emits the
+    packet and the packet is hardlinked forward. A merged, deployed fix was
+    inert, and a GPU run was spent discovering it.
+
+    Assert the module has no literal copy and that what it emits tracks the
+    constants, so raising them in one place cannot leave this path behind.
+    """
+
+    import pathlib
+    import re
+
+    from blueprint_pipeline.native_articulated_control_plan import (
+        MAX_JOINT_DELTA_RAD,
+        MAX_JOINT_SETPOINT_LEAD_RAD,
+    )
+    import blueprint_pipeline.paired_target_native_arena_request as request_module
+
+    source = pathlib.Path(request_module.__file__).read_text(encoding="utf-8")
+
+    for field in ("max_joint_delta_rad", "max_joint_setpoint_lead_rad"):
+        literal = re.search(rf'"{field}":\s*[0-9]', source)
+        assert literal is None, (
+            f"{field} is restated as a literal; import the constant instead so "
+            "raising it in one place ships everywhere"
+        )
+        assert f'"{field}": MAX_JOINT' in source, (
+            f"{field} must be emitted from the shared constant"
+        )
+
+    # and the constants themselves must still be the raised, physical values
+    assert MAX_JOINT_DELTA_RAD == 0.10
+    assert MAX_JOINT_SETPOINT_LEAD_RAD == 1.00

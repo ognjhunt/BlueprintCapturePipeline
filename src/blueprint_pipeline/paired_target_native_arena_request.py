@@ -23,6 +23,10 @@ from .freeze_amendment_carry_forward import (
 )
 from .articulation_graph_contract import validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest
+from .native_articulated_control_plan import (
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
+)
 from .dual_task_rehearsal_contract import (
     FROZEN_CANDIDATES,
     MAX_REPLACEMENT_OBJECTS,
@@ -253,8 +257,14 @@ def _articulated_task_spec(
         "motion_maximum_steps": 64,
         "gripper_dwell_minimum_steps": 5,
         "gripper_dwell_maximum_steps": 12,
-        "max_joint_delta_rad": 0.03,
-        "max_joint_setpoint_lead_rad": 0.2,
+        # Imported, not restated. These were literals here while
+        # native_articulated_control_plan defined the same two values, so
+        # raising the limits there (PR #786) left this path emitting the old
+        # ones. The packet is built from THIS request and then hardlinked
+        # forward, so r19 executed 0.03/0.20 on a release that had shipped
+        # 0.10/1.00 -- a merged, deployed fix that was inert.
+        "max_joint_delta_rad": MAX_JOINT_DELTA_RAD,
+        "max_joint_setpoint_lead_rad": MAX_JOINT_SETPOINT_LEAD_RAD,
         "joint_contact_path": path_receipt["joint_contact_path"],
         "affordance_digest": "",
     }
