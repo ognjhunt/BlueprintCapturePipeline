@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy
 import pytest
+
+from tests.test_native_task_appearance_frame_alignment import write_appearance_usdz
 
 from blueprint_pipeline.common import sha256_file
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -83,6 +86,20 @@ def _materialized_construction(value: dict) -> dict:
         digest_field="construction_digest",
     )
     return result
+
+
+def _appearance_room_positions():
+    """Gaussian centres spanning every pose these packet fixtures spawn."""
+
+    rng = numpy.random.default_rng(20260819)
+    return numpy.stack(
+        [
+            rng.uniform(0.0, 5.0, 512),
+            rng.uniform(0.0, 5.0, 512),
+            rng.uniform(0.0, 2.8, 512),
+        ],
+        axis=1,
+    ).astype(numpy.float32)
 
 
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
@@ -205,10 +222,10 @@ def Xform "Root"
             "scene_collision.usda",
             collision_asset if articulated else b"#usda 1.0\n# collision\n",
         ),
-        # Placeholder bytes are not accepted for a staged USD payload: the
-        # packet now refuses a file whose magic is not the format its filename
-        # declares, so these fixtures carry the real leading bytes.
-        "scene_appearance": ("scene_appearance.usdc", b"PXR-USDC\x00appearance"),
+        # Placeholder bytes are not accepted for a staged USD payload, and a
+        # placeholder cannot answer where the captured appearance composes
+        # either, so the appearance fixture is a real NuRec volume.
+        "scene_appearance": ("scene_appearance.usdz", None),
         "task_object": (
             "task_object.usda",
             articulated_asset if articulated else b"#usda 1.0\n# rigid\n",
@@ -218,7 +235,13 @@ def Xform "Root"
     for role, (filename, content) in files.items():
         path = evidence / role / filename
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        if content is None:
+            # A real NuRec volume: the scene plan this packet seals now proves
+            # the captured appearance contains the poses it spawns, and a
+            # placeholder byte string cannot answer that either way.
+            write_appearance_usdz(path, _appearance_room_positions())
+        else:
+            path.write_bytes(content)
         assets.append(
             {
                 "semantic_role": role,
@@ -226,7 +249,7 @@ def Xform "Root"
                 "source": {
                     "root": "evidence",
                     "relative_path": f"{role}/{filename}",
-                    "size_bytes": len(content),
+                    "size_bytes": path.stat().st_size,
                     "sha256": f"sha256:{sha256_file(path)}",
                 },
                 "pose_world": _pose(1.0, 2.0, 0.0)
@@ -644,7 +667,7 @@ def test_a_json_receipt_named_as_a_usd_asset_fails_before_packet_copy(
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     request = _request(evidence, articulated=True)
-    receipt = evidence / "scene_appearance" / "scene_appearance.usdc"
+    receipt = evidence / "scene_appearance" / "scene_appearance.usdz"
     receipt.write_text('{"schema_version": "appearance_export.v1"}\n', encoding="utf-8")
     for asset in request["assets"]:
         if asset["semantic_role"] == "scene_appearance":

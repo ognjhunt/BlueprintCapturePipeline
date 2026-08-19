@@ -25,6 +25,10 @@ from .native_articulated_motion_geometry import (
     NativeArticulatedMotionGeometryError,
     derive_native_articulated_motion_geometry,
 )
+from .native_task_appearance_frame_alignment import (
+    NativeTaskAppearanceFrameAlignmentError,
+    require_native_task_appearance_frame_alignment,
+)
 from .native_task_runtime_contract import SCHEMA_VERSION as RUNTIME_CONTRACT_SCHEMA
 from .native_task_gpu_collision_qualification import (
     audit_native_task_gpu_collisions,
@@ -1057,6 +1061,68 @@ def _articulation_plan(
     }
 
 
+def _appearance_frame_alignment(
+    objects: list[dict[str, Any]],
+    *,
+    robot: Mapping[str, Any],
+    asset_directory: Path,
+    contract_objects: list[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Refuse a plan whose captured appearance excludes the task it frames.
+
+    A NuRec volume carries its own frame-to-world matrix, and whether that
+    matrix is correct depends on which frame the trainer left the gaussians
+    in.  Nothing downstream can tell: the appearance asset is the one spawned
+    class the runtime never opens, and the camera observability gate measures
+    the task object's semantic pixels, which are present and correct in a frame
+    whose captured room composed tens of metres away.  So the plan build is the
+    last place a misalignment is cheap, and it is measured here rather than
+    assumed by anyone later.
+    """
+
+    appearance = next(
+        (row for row in objects if row["semantic_role"] == "scene_appearance"),
+        None,
+    )
+    if appearance is None:
+        return None
+    filename = next(
+        (
+            str(row["filename"])
+            for row in contract_objects
+            if row["semantic_role"] == "scene_appearance"
+        ),
+        None,
+    )
+    if filename is None:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_appearance_asset_missing"]
+        )
+    required: dict[str, list[float]] = {
+        "robot_base": [
+            float(value) for value in robot["base_pose_world"]["position_world_m"]
+        ]
+    }
+    for row in objects:
+        # Every spawned body the cameras can see has to be inside the room the
+        # appearance depicts, not only the task subject: a replacement parked
+        # outside it is the same defect seen from a second object.
+        if row["semantic_role"] in {"scene_collision", "scene_appearance"}:
+            continue
+        required[str(row["name"])] = [
+            float(value) for value in row["pose_world"]["position_world_m"]
+        ]
+    try:
+        return require_native_task_appearance_frame_alignment(
+            asset_directory / filename,
+            required_world_positions_m=required,
+            spawn_position_world_m=appearance["pose_world"]["position_world_m"],
+            spawn_orientation_xyzw=appearance["pose_world"]["orientation_xyzw"],
+        )
+    except NativeTaskAppearanceFrameAlignmentError as exc:
+        raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
+
+
 def materialize_native_task_arena_scene_plan(
     *,
     runtime_contract: Mapping[str, Any],
@@ -1124,6 +1190,12 @@ def materialize_native_task_arena_scene_plan(
         task_object_asset_path=task_object_asset_path,
         scene_collision_asset_path=scene_collision_asset_path,
     )
+    appearance_frame_alignment = _appearance_frame_alignment(
+        objects,
+        robot=contract["robot"],
+        asset_directory=asset_directory,
+        contract_objects=list(contract["objects"]),
+    )
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "runtime_contract_digest": contract["contract_digest"],
@@ -1141,6 +1213,7 @@ def materialize_native_task_arena_scene_plan(
         },
         "asset_directory": published_asset_directory or str(asset_directory),
         "objects": objects,
+        "appearance_frame_alignment": appearance_frame_alignment,
         "robot": contract["robot"],
         "cameras": cameras,
         "cadence": _cadence(contract, physics_frequency_hz=physics_frequency_hz),
