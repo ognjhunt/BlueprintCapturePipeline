@@ -19,11 +19,16 @@ set -euo pipefail
 CP=/opt/blueprint/BlueprintCapturePipeline
 PY=$CP/.venv/bin/python
 cd $CP
-sudo -u blueprint git fetch -q origin
-# Fail closed if the commit was never pushed: an unpushed SHA is exactly the
-# local-only drift this mode exists to prevent.
+# Fetch main specifically. A bare `git fetch origin` tries to create a ref lock
+# for every remote branch, and the service account cannot write new ones under
+# .git/refs/remotes -- it fails with "Permission denied" on branches that have
+# nothing to do with this deploy.
+sudo -u blueprint git fetch -q origin main
+# Fail closed if the commit is not on main: an unmerged SHA is exactly the
+# local-only drift this mode exists to prevent. The deploy tool enforces this
+# too, so bypassing this wrapper does not bypass the guard.
 sudo -u blueprint git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null \
-  || { echo "refusing: $SHA is not on origin/main -- push it first"; exit 1; }
+  || { echo "refusing: $SHA is not on origin/main -- merge it first"; exit 1; }
 $PY scripts/deploy_control_plane_commit.py \
   --source-repo $CP \
   --source-commit "$SHA" \

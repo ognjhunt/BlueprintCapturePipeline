@@ -551,6 +551,20 @@ def deploy_control_plane_commit(
         # release, and paid admission still refuses it as an ancestor.
         if release_provenance is not None:
             raise ControlPlaneDeployError("deploy_iteration_provenance_conflict")
+        # The guard belongs here, not in a wrapper script. Within an hour of
+        # the wrapper being written its `git fetch` hit a permission error and
+        # the obvious workaround was to call this tool directly -- which then
+        # had no ancestry check at all. That is how a guard dies: the wrapper
+        # is inconvenient once and the bypass becomes the habit.
+        #
+        # Iteration exists to skip the LANE, never to skip main. A commit that
+        # is not an ancestor of origin/main is exactly the local-only drift
+        # this mode replaces, so refuse it however this tool was invoked.
+        # Fail closed: a stale or missing origin/main refuses rather than
+        # admits, and the operator fetches and retries.
+        code, _ = _git(source, "merge-base", "--is-ancestor", source_commit, "origin/main")
+        if code != 0:
+            raise ControlPlaneDeployError("deploy_iteration_commit_not_on_origin_main")
         provenance_receipt = {
             "schema_version": "blueprint.deploy_release_provenance.v1",
             "status": "iteration",
