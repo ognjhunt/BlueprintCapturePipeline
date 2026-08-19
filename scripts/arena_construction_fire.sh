@@ -55,6 +55,32 @@ print("wrote $REQ")
 PYEOF
 chown blueprint:blueprint $REQ
 
+# Wait for every earlier launch to finish syncing to the website before
+# submitting. The site rejects a submission with HTTP 409 while a predecessor
+# is still unreconciled there, and the submit tool deliberately discards the
+# error body -- so the failure arrives as a bare `webapp_http_error_409` with
+# no cause attached. This cost two runs' worth of blind retrying before it was
+# understood. The reconciler timer runs about every two minutes.
+echo "== wait for predecessor webapp sync =="
+RECON=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-reconciliation/latest.json
+for _ in $(seq 1 20); do
+  if $PY -c "
+import json, sys
+try:
+    d = json.load(open('$RECON'))
+except Exception:
+    sys.exit(1)
+# nothing in flight, and nothing left unsynced
+if d.get('processing_count'):
+    sys.exit(1)
+if d.get('launches'):
+    sys.exit(1)
+sys.exit(0)
+"; then echo "  predecessors reconciled"; break; fi
+  echo "  waiting for reconciler..."
+  sleep 30
+done
+
 echo "== submit through the website =="
 umask 077
 SF=$(mktemp); trap 'rm -f $SF' EXIT

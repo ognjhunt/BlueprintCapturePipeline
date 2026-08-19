@@ -125,3 +125,43 @@ def test_authority_chains_off_the_same_attempt_the_reconciliation_describes() ->
         "chaining the authority off a predecessor that never allocated "
         "contradicts the reconciliation"
     )
+
+
+def test_fire_waits_for_predecessor_reconciliation_before_submitting() -> None:
+    """The site rejects a submit while a predecessor is unreconciled there.
+
+    It answers HTTP 409, and the submit tool deliberately discards the error
+    body -- an untrusted response cannot be launch evidence -- so the failure
+    surfaces as a bare `webapp_http_error_409` with no cause attached. r16 and
+    r19 both hit it, and both times the response was blind retrying on a timer
+    rather than waiting for the condition that actually clears it.
+
+    The reconciler timer runs about every two minutes and publishes whether
+    anything is still in flight, so the fire step can wait on that instead of
+    guessing.
+    """
+
+    text = _text(FIRE)
+    wait = text.find("wait for predecessor webapp sync")
+    submit = text.find("submit_task_evaluation_launch_via_webapp.py")
+    assert wait != -1, "the fire step must wait for predecessor reconciliation"
+    assert wait < submit, "the wait must happen before the submission"
+    assert "processing_count" in text and "launches" in text, (
+        "the wait must read the reconciler's in-flight fields"
+    )
+    # the wait must be bounded -- a hung reconciler cannot block forever
+    assert "seq 1 20" in text, "the reconciliation wait must be bounded"
+
+
+def test_execute_gate_is_still_armed_before_the_reconciliation_wait() -> None:
+    """Adding the wait must not push arming after submission.
+
+    The dispatcher fires on queue-write and blocks at retry-0 without a
+    matching EXECUTE_ID, so the ordering that already cost one run must hold.
+    """
+
+    text = _text(FIRE)
+    arm = text.find("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID")
+    wait = text.find("wait for predecessor webapp sync")
+    submit = text.find("submit_task_evaluation_launch_via_webapp.py")
+    assert arm < wait < submit, "arm the execute gate, then wait, then submit"
