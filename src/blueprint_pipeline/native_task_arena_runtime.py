@@ -991,6 +991,21 @@ def build_native_task_arena_environment(
         obj = object_class(
             **object_kwargs,
         )
+        # Arena writes the spawn pose as `init_state.rot = pose.rotation_xyzw`
+        # while Isaac Lab's InitialStateCfg.rot is (w, x, y, z). PR #774 fixed
+        # this for the robot and left every object on the broken path: an xyzw
+        # identity [0, 0, 0, 1] lands as w=0, z=1, so the task object, the scene
+        # collision and the NuRec appearance were all spawned rotated 180
+        # degrees. That is what produced 9-13 kN of interpenetration at reset
+        # (measured) -- the room and the appliance did not line up.
+        obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
+            pos=tuple(
+                float(value) for value in row["pose_world"]["position_world_m"]
+            ),
+            rot=tuple(
+                contract_xyzw_to_native_wxyz(row["pose_world"]["orientation_xyzw"])
+            ),
+        )
         if row["object_type"] == "ARTICULATION":
             reset_positions = dict(
                 (row.get("reset_state") or {}).get("joint_positions") or {}
