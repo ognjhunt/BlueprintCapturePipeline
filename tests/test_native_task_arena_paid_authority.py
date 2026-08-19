@@ -612,3 +612,127 @@ def test_a_recovered_predecessor_zero_is_still_chainable() -> None:
         "completed",
         "completed_recovered_provider_zero",
     }
+
+
+def _no_allocation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A run that ended before allocating anything, as r16 actually did."""
+
+    authority = {
+        "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "authority.json"
+    write_json(authority_path, authority)
+    cleanup = tmp_path / "cleanup.json"
+    adapter = tmp_path / "adapter.json"
+    teardown = tmp_path / "teardown.json"
+    watchdog = tmp_path / "watchdog.json"
+    write_json(
+        cleanup, {"all_objects_absent": True, "signed_url_files_removed": True}
+    )
+    write_json(adapter, {"continuing_spend_from_this_run": False})
+    write_json(teardown, {"continuing_spend_from_this_run": False})
+    write_json(
+        watchdog,
+        {
+            "schema_version": paid.WATCHDOG_HANDOFF_SCHEMA_VERSION,
+            "status": "cancelled_no_allocation",
+            "provider_mutations_performed": 0,
+            "watchdog_armed_before_allocation": True,
+        },
+    )
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "status": "blocked",
+        "authorization_consumption": {
+            "authorization_digest": authority["authorization_digest"]
+        },
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "watchdog_receipt_path": str(watchdog),
+        "object_store_cleanup_path": str(cleanup),
+        "adapter_result_path": str(adapter),
+        "teardown_manifest_path": str(teardown),
+        "estimated_cost_usd": 0.0,
+    }
+    result_path = tmp_path / "result.json"
+    write_json(result_path, result)
+    return authority_path, result_path, watchdog
+
+
+def test_a_run_that_never_allocated_can_still_seal(tmp_path: Path) -> None:
+    """Otherwise a pre-allocation failure wedges the whole chain.
+
+    When no offer meets the lane's constraints the run ends before creating
+    anything, so the watchdog records a handoff rather than a canary receipt
+    and there is no inventory to prove empty. The successor's first step is
+    sealing its predecessor, so an unsealable predecessor blocks every later
+    attempt permanently. Arena r16 ended exactly this way at $0.00.
+    """
+
+    authority_path, result_path, _ = _no_allocation_fixture(tmp_path)
+    receipt = paid.materialize_native_task_arena_provider_zero(
+        authority_path=authority_path,
+        result_path=result_path,
+        output_path=tmp_path / "provider_zero.json",
+    )
+    assert receipt["provider_zero_confirmed"] is True
+    assert receipt["inventory_scope"] == "no_provider_allocation"
+
+
+def test_the_no_allocation_seal_demands_proof_that_nothing_was_allocated(
+    tmp_path: Path,
+) -> None:
+    """An orphan needs an allocation to exist, so each proof must be required.
+
+    Every one of these mutations describes a run that DID touch the provider,
+    and each must fail closed rather than ride the no-allocation path.
+    """
+
+    for field, value in (
+        ("provider_mutations_performed", 1),
+        ("watchdog_armed_before_allocation", False),
+        ("status", "provider_running"),
+    ):
+        authority_path, result_path, watchdog = _no_allocation_fixture(tmp_path)
+        payload = json.loads(watchdog.read_text())
+        payload[field] = value
+        write_json(watchdog, payload)
+        with pytest.raises(
+            ValueError, match="native_task_arena_provider_zero_invalid"
+        ):
+            paid.materialize_native_task_arena_provider_zero(
+                authority_path=authority_path,
+                result_path=result_path,
+                output_path=tmp_path / f"invalid_{field}.json",
+            )
+
+    # A non-zero, missing, or unparseable cost is not evidence of zero spend.
+    for cost in (0.17, None, "free"):
+        authority_path, result_path, _ = _no_allocation_fixture(tmp_path)
+        payload = json.loads(result_path.read_text())
+        payload["estimated_cost_usd"] = cost
+        write_json(result_path, payload)
+        with pytest.raises(
+            ValueError, match="native_task_arena_provider_zero_invalid"
+        ):
+            paid.materialize_native_task_arena_provider_zero(
+                authority_path=authority_path,
+                result_path=result_path,
+                output_path=tmp_path / f"invalid_cost_{cost}.json",
+            )
+
+    # Continuing spend still fails closed even with nothing allocated.
+    authority_path, result_path, _ = _no_allocation_fixture(tmp_path)
+    payload = json.loads(result_path.read_text())
+    payload["continuing_spend_from_this_run"] = True
+    write_json(result_path, payload)
+    with pytest.raises(ValueError, match="native_task_arena_provider_zero_invalid"):
+        paid.materialize_native_task_arena_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            output_path=tmp_path / "invalid_continuing.json",
+        )

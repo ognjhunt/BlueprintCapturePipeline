@@ -63,3 +63,65 @@ def test_fire_script_never_embeds_a_secret_value() -> None:
     assert "--secret-file" in text
     assert "mktemp" in text
     assert "rm -f" in text, "the temp secret file must be removed on exit"
+
+
+def test_spend_reconciliation_walks_past_runs_that_allocated_nothing() -> None:
+    """A non-allocating run is not a prior paid attempt.
+
+    Reconciliation binds a real positive provider instance id -- it raises
+    `prior_provider_instance_id_invalid` without one -- so a run that ended
+    before allocating (`vast_instance_ids: []`, no billing row, $0.00) cannot
+    be reconciled against and must not be chosen as the spend predecessor.
+    Arena r16 ended exactly this way, and indexing [0] on its empty id list
+    crashed the chain with IndexError before it could reach a GPU.
+
+    Step 0 still seals the immediate predecessor, so skipping a run here
+    proves it empty rather than ignoring it.
+    """
+
+    text = _text(LAUNCH)
+    assert "vast_instance_ids" in text
+    assert "allocated nothing" in text, "the walk must skip non-allocating runs"
+    # the candidate list must span every tag, not just $PREV, or the walk
+    # cannot reach past the immediate predecessor
+    assert "_ALLRUNS" in text
+    assert "JOBSPEND" in text and "ZEROSPEND" in text, (
+        "terminal result, teardown, and provider zero must come from the same "
+        "attempt"
+    )
+    assert "['vast_instance_ids'][0]" not in text, (
+        "indexing the id list unguarded crashes on a run that allocated nothing"
+    )
+
+
+def test_authority_chains_off_the_same_attempt_the_reconciliation_describes() -> None:
+    """The issuer matches the prior result against a reconciliation entry.
+
+    It raises `prior_terminal_attempt_reconciliation_match_invalid` when they
+    disagree, so the prior authority, terminal result, provider zero, and
+    spend reconciliation must all describe ONE attempt. Once the spend walk
+    skips a non-allocating run, chaining the authority off the immediate
+    predecessor instead would describe a different attempt than the
+    reconciliation and fail.
+
+    Step 0 still seals the immediate predecessor, which is why it may differ
+    from the spend predecessor without anything going unproven.
+    """
+
+    text = _text(LAUNCH)
+    step0 = text.find("== 0. predecessor provider zero")
+    step4 = text.find("== 4. attempt authority")
+    assert step0 != -1 and step4 != -1
+
+    seal = text[step0:text.find("== 1.")]
+    assert "JOBPREV" in seal, "step 0 must seal the IMMEDIATE predecessor"
+
+    authority = text[step4:text.find("== 5.")]
+    for token in ("PSPEND", "JOBSPEND", "ZEROSPEND"):
+        assert token in authority, (
+            f"step 4 must chain off the spend predecessor ({token} missing)"
+        )
+    assert "JOBPREV" not in authority, (
+        "chaining the authority off a predecessor that never allocated "
+        "contradicts the reconciliation"
+    )
