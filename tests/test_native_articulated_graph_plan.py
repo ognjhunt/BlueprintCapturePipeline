@@ -286,6 +286,77 @@ def _redigest_affordance(scene: dict) -> None:
     scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
 
 
+def _scene_with_command_limits(delta: float, lead: float) -> dict:
+    scene = _scene()
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["max_joint_delta_rad"] = delta
+    affordance["max_joint_setpoint_lead_rad"] = lead
+    _redigest_affordance(scene)
+    return scene
+
+
+def test_sealed_command_limits_reach_construction_execution_parameters() -> None:
+    """A raised bound must change what construction executes, not just the seal.
+
+    The compiler validated both bounds and then dropped them, so three paid GPU
+    runs executed the servo's own defaults and reported byte-identical arm travel
+    while the sealed affordance differed between them.
+    """
+
+    execution = materialize_native_task_construction_phase_plan(
+        _scene_with_command_limits(0.10, 1.00)
+    )["execution_parameters"]
+
+    assert execution["max_joint_delta_rad"] == pytest.approx(0.10)
+    assert execution["max_joint_setpoint_lead_rad"] == pytest.approx(1.00)
+
+
+def test_construction_execution_limits_track_the_seal_not_a_default() -> None:
+    conservative = materialize_native_task_construction_phase_plan(
+        _scene_with_command_limits(0.03, 0.20)
+    )["execution_parameters"]
+    permissive = materialize_native_task_construction_phase_plan(
+        _scene_with_command_limits(0.10, 1.00)
+    )["execution_parameters"]
+
+    assert (
+        conservative["max_joint_delta_rad"],
+        conservative["max_joint_setpoint_lead_rad"],
+    ) != (
+        permissive["max_joint_delta_rad"],
+        permissive["max_joint_setpoint_lead_rad"],
+    )
+
+
+def test_construction_and_controls_execute_the_same_sealed_limits() -> None:
+    """Controls replay the exact duration construction qualified, so a phase must
+    not be qualified under one bound pair and replayed under another."""
+
+    scene = _scene_with_command_limits(0.10, 1.00)
+    phase_plan = materialize_native_task_construction_phase_plan(scene)
+    control_plan = materialize_native_task_control_plan(
+        scene_plan=scene,
+        construction_result=_construction(scene),
+    )
+
+    execution = phase_plan["execution_parameters"]
+    assert control_plan["scripted_positive_actions"]
+    for action in control_plan["scripted_positive_actions"]:
+        assert action["max_joint_delta_rad"] == pytest.approx(
+            execution["max_joint_delta_rad"]
+        )
+        assert action["max_joint_setpoint_lead_rad"] == pytest.approx(
+            execution["max_joint_setpoint_lead_rad"]
+        )
+
+
+def test_construction_plan_rejects_a_lead_below_the_slew() -> None:
+    with pytest.raises(NativeTaskConstructionPlanError):
+        materialize_native_task_construction_phase_plan(
+            _scene_with_command_limits(0.10, 0.05)
+        )
+
+
 def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -> None:
     plan = materialize_native_task_construction_phase_plan(_scene())
 

@@ -18,6 +18,8 @@ from .native_articulated_control_plan import (
 )
 from .native_task_construction_plan import (
     GRAPH_ARTICULATED_SCHEMA_VERSION,
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
     NativeTaskConstructionPlanError,
     evaluate_graph_articulated_construction_gates,
     materialize_native_task_construction_phase_plan,
@@ -37,8 +39,6 @@ GRAPH_ARTICULATED_GATE_SCHEMA_VERSION = (
     "native_articulated_graph_construction_gate_evaluation.v1"
 )
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
-MAX_JOINT_DELTA_RAD = 0.03
-MAX_JOINT_SETPOINT_LEAD_RAD = 0.20
 
 
 class NativeTaskControlPlanError(ValueError):

@@ -437,11 +437,15 @@ def test_executable_construction_bundle_freezes_local_phase_plan(
                 "native_task_construction_phase_plan.v1.json"
             )
         )
+    # The bundle is what reaches the GPU, so the two bounds the servo executes
+    # have to be frozen into it alongside the tolerances.
     assert frozen["execution_parameters"] == {
         "arrival_tolerance_m": 0.02,
         "stable_samples": 2,
         "maximum_steps_per_phase": 64,
         "articulated_waypoint_count": 8,
+        "max_joint_delta_rad": 0.10,
+        "max_joint_setpoint_lead_rad": 1.00,
     }
     assert frozen["plan_digest"] == canonical_digest(
         frozen, digest_field="plan_digest"
