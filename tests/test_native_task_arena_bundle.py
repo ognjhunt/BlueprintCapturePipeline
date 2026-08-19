@@ -1619,3 +1619,114 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
     assert admission["probe_kind"] == CONTROLS_PROBE_KIND
     assert admission["allocation_binding"]["execution_mode"] == "controls"
     assert admission["candidate_policy_queried"] is False
+
+
+def _repack_scene(packet: Path, scene: dict) -> None:
+    """Rewrite a packet's scene plan and rebind its receipt to the new bytes."""
+
+    plan_path = packet / "native_task_arena_scene_plan.v1.json"
+    scene = dict(scene)
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    plan_path.write_text(json.dumps(scene, sort_keys=True) + "\n", encoding="utf-8")
+    receipt_path = packet / "native_task_arena_packet_receipt.v1.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["arena_scene_plan_digest"] = scene["plan_digest"]
+    artifact = next(
+        row for row in receipt["artifacts"] if row["role"] == "arena_scene_plan"
+    )
+    artifact["size_bytes"] = plan_path.stat().st_size
+    artifact["sha256"] = _sha(plan_path)
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def test_bundle_refuses_a_packet_restating_stale_servo_limits(
+    tmp_path: Path,
+) -> None:
+    """A hardlinked-forward packet must stop the launch, not run.
+
+    r19 executed the predecessor's servo limits because the chain rebuilds the
+    bundle from the deployed commit but carries the packet forward. PR #788
+    caught that in the construction launch chain only; controls and policy
+    consume the same packet, and the controls bundle recompiles its control
+    plan from it. The refusal has to name the offending values.
+    """
+
+    from blueprint_pipeline.native_articulated_control_plan import (
+        MAX_JOINT_DELTA_RAD,
+        MAX_JOINT_SETPOINT_LEAD_RAD,
+    )
+
+    packet, scene = _articulated_packet(tmp_path)
+    scene["task_spec"] = {
+        **scene["task_spec"],
+        "interaction_affordance": {
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.20,
+        },
+    }
+    _repack_scene(packet, scene)
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(NativeTaskArenaBundleError) as excinfo:
+        build_native_task_arena_bundle(
+            job_dir=tmp_path / "stale-job",
+            packet_dir=packet,
+            worker_source=worker,
+            runtime_module_sources=[],
+            implementation_commit="e" * 40,
+            execution_mode="controls",
+            expected_output_filename="native_task_arena_control_result.v1.json",
+            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+            generated_at="fixed",
+        )
+
+    blocker = next(
+        item
+        for item in excinfo.value.errors
+        if item.startswith("native_task_arena_bundle_packet_servo_limits_stale")
+    )
+    assert "packet=0.03,0.2" in blocker
+    assert f"deployed={MAX_JOINT_DELTA_RAD},{MAX_JOINT_SETPOINT_LEAD_RAD}" in blocker
+
+
+def test_bundle_accepts_a_packet_restating_the_deployed_servo_limits(
+    tmp_path: Path,
+) -> None:
+    """The gate must fire on staleness only, never on a fresh restatement."""
+
+    from blueprint_pipeline.native_articulated_control_plan import (
+        MAX_JOINT_DELTA_RAD,
+        MAX_JOINT_SETPOINT_LEAD_RAD,
+    )
+
+    packet, scene = _articulated_packet(tmp_path)
+    scene["task_spec"] = {
+        **scene["task_spec"],
+        "interaction_affordance": {
+            "max_joint_delta_rad": MAX_JOINT_DELTA_RAD,
+            "max_joint_setpoint_lead_rad": MAX_JOINT_SETPOINT_LEAD_RAD,
+        },
+    }
+    _repack_scene(packet, scene)
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+
+    receipt = build_native_task_arena_bundle(
+        job_dir=tmp_path / "fresh-job",
+        packet_dir=packet,
+        worker_source=worker,
+        runtime_module_sources=[],
+        implementation_commit="e" * 40,
+        execution_mode="controls",
+        expected_output_filename="native_task_arena_control_result.v1.json",
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        generated_at="fixed",
+    )
+
+    assert receipt["status"] == "ready"
