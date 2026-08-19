@@ -26,6 +26,7 @@ from .adp_prospective_design import (
 )
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .droid_policy_bridge import OPENPI_SOURCE_REVISION
 from .episode_visual_evidence import (
     FRAME_MANIFEST_SCHEMA_VERSION,
     VISUAL_EVIDENCE_SCHEMA_VERSION,
@@ -265,7 +266,13 @@ def build_founder_sim_protocol() -> dict[str, Any]:
                 "checkpoint_inventory_sha256": (
                     "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063"
                 ),
-                "openpi_revision": ARENA_OPENPI_REVISION,
+                # The policy candidate's openpi revision is the one its
+                # checkpoint identity is bound to, not the one IsaacLab-Arena
+                # pins for its own source tree. ARENA_OPENPI_REVISION is the
+                # latter and belongs beside arena_source/isaac_lab_source; using
+                # it here labelled the baseline with a revision that
+                # OpenPIDroidPolicySpec.validate() rejects outright.
+                "openpi_revision": OPENPI_SOURCE_REVISION,
                 "action_chunk_shape": [15, 8],
             },
             {

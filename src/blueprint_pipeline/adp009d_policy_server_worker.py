@@ -85,28 +85,70 @@ def transport_for(candidate_id: str) -> str:
     return CANDIDATE_TRANSPORTS[candidate_id]
 
 
+IDENTITY_BOUND_OPENPI_SERVER_MODULE = "openpi_droid_policy_runtime.py"
+
+
 def build_serve_command(
-    *, candidate_id: str, python: str, source_root: str, checkpoint_root: str, port: int
+    *,
+    candidate_id: str,
+    python: str,
+    source_root: str,
+    checkpoint_root: str,
+    port: int,
+    policy_spec_path: str | None = None,
+    checkpoint_inventory_path: str | None = None,
+    runtime_dir: str | Path | None = None,
+    host: str = DEFAULT_HOST,
 ) -> list[str]:
     """The launch command for this candidate's own server.
 
-    openpi's form is verified against scripts/serve_policy.py at the frozen
-    revision: tyro.cli over Args{port, policy: Checkpoint|Default}, so the union
-    subcommand is policy:checkpoint with --policy.config and --policy.dir, and
-    its DEFAULT_CHECKPOINT names config "pi05_droid".
+    openpi's stock ``scripts/serve_policy.py`` publishes empty websocket
+    metadata by design. The episode client is
+    ``OpenPIWebsocketDroidPolicyClient``, whose ``__init__`` validates fourteen
+    identity fields plus local checkpoint verification, so a stock server is
+    refused *after* a full Isaac boot and scene build have been paid for. It is
+    therefore not a server this lane can ever launch, and the fallback is
+    removed rather than left as a trap.
+
+    Instead we launch Blueprint's identity-bound wrapper around the same pinned
+    upstream server, matching the pattern the cosmos lane already proved: a repo
+    module that loads the unmodified official server class and serves it with
+    verified identity metadata. Its spec comes from the same sealed execution
+    spec the client validates against, so server and client cannot disagree.
+
+    GR00T keeps its own launch: it shares neither transport nor CLI with openpi.
     """
 
     transport = transport_for(candidate_id)
     if transport == TRANSPORT_OPENPI_WEBSOCKET:
-        config = "pi05_droid" if candidate_id == "pi05_droid" else candidate_id
+        missing = sorted(
+            name
+            for name, value in (
+                ("policy_spec", policy_spec_path),
+                ("checkpoint_inventory", checkpoint_inventory_path),
+            )
+            if not value
+        )
+        if missing:
+            # Failing here is the point. The only other command that could be
+            # produced is a stock server the episode is guaranteed to refuse.
+            raise RuntimeError(
+                "policy_server_identity_inputs_missing:" + ",".join(missing)
+            )
+        runtime = Path(runtime_dir) if runtime_dir else Path(__file__).resolve().parent
         return [
             python,
-            str(Path(source_root, "scripts", "serve_policy.py")),
+            str(runtime / IDENTITY_BOUND_OPENPI_SERVER_MODULE),
+            "--policy-spec",
+            str(policy_spec_path),
+            "--checkpoint-dir",
+            checkpoint_root,
+            "--checkpoint-inventory",
+            str(checkpoint_inventory_path),
+            "--host",
+            host,
             "--port",
             str(port),
-            "policy:checkpoint",
-            f"--policy.config={config}",
-            f"--policy.dir={checkpoint_root}",
         ]
     return [
         python,
@@ -391,6 +433,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log", required=True)
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--worker-identity-receipt")
+    parser.add_argument("--policy-spec")
+    parser.add_argument("--checkpoint-inventory")
     parser.add_argument(
         "--timeout-seconds", type=float, default=READINESS_TIMEOUT_SECONDS
     )
@@ -410,6 +454,9 @@ def main(argv: list[str] | None = None) -> int:
         source_root=args.source_root,
         checkpoint_root=args.checkpoint_root,
         port=port,
+        policy_spec_path=args.policy_spec,
+        checkpoint_inventory_path=args.checkpoint_inventory,
+        host=args.host,
     )
 
     receipt: dict = {

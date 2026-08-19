@@ -14,6 +14,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
+from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 from .articulation_graph_contract import (
     ArticulationGraphContractError,
     validate_articulation_graph,
@@ -33,6 +35,52 @@ GRAPH_ARTICULATED_SCHEMA_VERSION = (
 GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION = (
     "native_articulated_graph_interaction_affordance.v1"
 )
+# Single source of truth for the two bounds that actually reach the native
+# joint-position command.  ``max_joint_delta_rad`` limits how far the commanded
+# setpoint may move in one control step; ``max_joint_setpoint_lead_rad``
+# independently limits how far the command may lead the *measured* joint state,
+# which is what caps the achievable position error and therefore the achievable
+# actuator torque.  Construction and controls must execute the same pair or the
+# controls lane replays a different dynamical system than the one that
+# qualified, so both control-plan compilers import these names from here.
+#
+#: Per-step slew of the commanded setpoint. At 20 Hz control, 0.10 rad/step is
+#: 2 rad/s -- inside a Panda's ~2.6 rad/s joint limit. The previous 0.03 was
+#: 0.6 rad/s, roughly a quarter of the hardware's capability.
+MAX_JOINT_DELTA_RAD = 0.10
+#: How far the commanded setpoint may lead the MEASURED position.
+#:
+#: This is the throttle, not the slew above. The implicit actuator is a PD:
+#: its velocity comes from the position error it is shown, so capping the lead
+#: caps the achievable speed. At 0.20 rad the arm moved 0.0038 rad/joint/step
+#: -- an eighth of what the 0.03 slew already permitted, so the slew never
+#: bound. Measured in r17:
+#:
+#:   total_action_steps        400  (the full budget, exhausted)
+#:   joint travel achieved  10.717 rad
+#:   travel needed, phase 1  8.721 rad   (of nine phases)
+#:
+#: Every phase reported native_task_phase_ik_unreached. The IK solution was
+#: correct on the first step and 1.88 rad away; the arm simply could not be
+#: driven there in the time allowed. Isaac Lab's own IK examples apply no lead
+#: cap at all -- they command the solution and let the actuator's effort and
+#: velocity limits govern. This keeps a bound for stability, but one that does
+#: not sit below the robot's own limits.
+MAX_JOINT_SETPOINT_LEAD_RAD = 1.00
+#: Fraction of the commanded setpoint advance rate declared as a joint velocity
+#: target.
+#:
+#: The implicit actuator's torque is
+#: ``stiffness * (pos_target - pos) + damping * (vel_target - vel)``.  A
+#: position-only command leaves ``vel_target`` at zero, so the damping term
+#: brakes in proportion to the very motion we asked for and the joint settles
+#: at ``(stiffness / damping) * error`` -- 5 rad/s per rad of lag on this arm,
+#: reached while using two to three percent of the available torque.  Declaring
+#: the intended velocity cancels that braking while tracking and still damps
+#: the joint at rest, which is why this is preferred over lowering damping:
+#: the damping ratio is unchanged, and this task ends in contact with a hinged
+#: door.  1.0 is exact feedforward; 0.0 restores position-only commanding.
+VELOCITY_FEEDFORWARD_SCALE = DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 
 
 class NativeTaskConstructionPlanError(ValueError):
@@ -61,6 +109,34 @@ def _positive(value: Any, *, error: str, allow_zero: bool = False) -> float:
     if not math.isfinite(result) or result < 0.0 or (result == 0.0 and not allow_zero):
         raise NativeTaskConstructionPlanError([error])
     return result
+
+
+def joint_command_limits(
+    *,
+    max_joint_delta_rad: Any,
+    max_joint_setpoint_lead_rad: Any,
+    error: str,
+    velocity_feedforward_scale: Any = VELOCITY_FEEDFORWARD_SCALE,
+) -> dict[str, float]:
+    """Validate the joint-command bound pair the native servo will execute.
+
+    ``bounded_absolute_joint_setpoint`` rejects a lead smaller than the slew at
+    runtime, i.e. mid paid run.  Reject it here, while the plan is still being
+    compiled off-GPU, so an unexecutable pair can never reach the simulator.
+    """
+
+    delta = _positive(max_joint_delta_rad, error=error)
+    lead = _positive(max_joint_setpoint_lead_rad, error=error)
+    if lead < delta:
+        raise NativeTaskConstructionPlanError([error])
+    feedforward = _positive(velocity_feedforward_scale, error=error, allow_zero=True)
+    if feedforward > 1.0:
+        raise NativeTaskConstructionPlanError([error])
+    return {
+        "max_joint_delta_rad": delta,
+        "max_joint_setpoint_lead_rad": lead,
+        "velocity_feedforward_scale": feedforward,
+    }
 
 
 def _unit(value: Any, *, error: str) -> list[float]:
@@ -947,8 +1023,27 @@ def materialize_graph_articulated_construction_phase_plan(
             ],
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
+            # The sealed affordance already carries the two bounds the servo
+            # executes.  Publish them here so construction executes the pair the
+            # task author sealed instead of the servo's own defaults.
+            **joint_command_limits(
+                max_joint_delta_rad=affordance["max_joint_delta_rad"],
+                max_joint_setpoint_lead_rad=affordance[
+                    "max_joint_setpoint_lead_rad"
+                ],
+                error=(
+                    "native_articulated_graph_construction_"
+                    "joint_command_limits_invalid"
+                ),
+            ),
         },
         "gate_contract": gate_contract,
+        # An identity grasp orientation is an unauthored placeholder.  Clearance
+        # phases run open-gripper and bind the measured reset orientation, so
+        # construction still executes; the contact replay refuses instead.
+        "grasp_orientation_authored": not is_unauthored_identity_quaternion_xyzw(
+            affordance["gripper_orientation_contact_xyzw"]
+        ),
         "required_gate_ids": sorted(gate_contract),
         "claim_boundary": {
             "clearance_phases_are_native_ik_targets": True,
@@ -1098,6 +1193,8 @@ def materialize_rigid_construction_phase_plan(
     arrival_tolerance_m: float = 0.02,
     stable_samples: int = 2,
     maximum_steps_per_phase: int = 64,
+    max_joint_delta_rad: float = MAX_JOINT_DELTA_RAD,
+    max_joint_setpoint_lead_rad: float = MAX_JOINT_SETPOINT_LEAD_RAD,
 ) -> dict[str, Any]:
     """Freeze one rigid pregrasp/contact/relocation/release construction gate."""
 
@@ -1470,6 +1567,11 @@ def materialize_rigid_construction_phase_plan(
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
             "relocation_waypoint_count": waypoint_count,
+            **joint_command_limits(
+                max_joint_delta_rad=max_joint_delta_rad,
+                max_joint_setpoint_lead_rad=max_joint_setpoint_lead_rad,
+                error="native_rigid_construction_joint_command_limits_invalid",
+            ),
         },
         "thresholds": {
             "task_contact_minimum_force_n": contact_force,
@@ -1762,6 +1864,8 @@ def materialize_native_task_construction_phase_plan(
     arrival_tolerance_m: float = 0.02,
     stable_samples: int = 2,
     maximum_steps_per_phase: int = 64,
+    max_joint_delta_rad: float = MAX_JOINT_DELTA_RAD,
+    max_joint_setpoint_lead_rad: float = MAX_JOINT_SETPOINT_LEAD_RAD,
 ) -> dict[str, Any]:
     """Dispatch one frozen scene plan without scene or object identities."""
 
@@ -1810,6 +1914,11 @@ def materialize_native_task_construction_phase_plan(
             "stable_samples": int(stable_samples),
             "maximum_steps_per_phase": int(maximum_steps_per_phase),
             "articulated_waypoint_count": int(articulated_waypoint_count),
+            **joint_command_limits(
+                max_joint_delta_rad=max_joint_delta_rad,
+                max_joint_setpoint_lead_rad=max_joint_setpoint_lead_rad,
+                error="native_task_construction_joint_command_limits_invalid",
+            ),
         }
         result["plan_digest"] = canonical_digest(
             result, digest_field="plan_digest"
@@ -1822,6 +1931,8 @@ def materialize_native_task_construction_phase_plan(
             arrival_tolerance_m=arrival_tolerance_m,
             stable_samples=stable_samples,
             maximum_steps_per_phase=maximum_steps_per_phase,
+            max_joint_delta_rad=max_joint_delta_rad,
+            max_joint_setpoint_lead_rad=max_joint_setpoint_lead_rad,
         )
     raise NativeTaskConstructionPlanError(
         [f"native_task_construction_task_kind_unsupported:{task_kind or 'missing'}"]
@@ -1831,12 +1942,16 @@ def materialize_native_task_construction_phase_plan(
 __all__ = [
     "GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION",
     "GRAPH_ARTICULATED_SCHEMA_VERSION",
+    "MAX_JOINT_DELTA_RAD",
+    "MAX_JOINT_SETPOINT_LEAD_RAD",
+    "VELOCITY_FEEDFORWARD_SCALE",
     "NativeTaskConstructionPlanError",
     "RIGID_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SUPPORTED_TASK_KINDS",
     "evaluate_graph_articulated_construction_gates",
     "evaluate_rigid_construction_gates",
+    "joint_command_limits",
     "materialize_graph_articulated_construction_phase_plan",
     "materialize_native_task_construction_phase_plan",
     "materialize_rigid_construction_phase_plan",

@@ -218,3 +218,114 @@ def test_policy_server_rejects_non_loopback_bind_before_checkpoint_io(
             host="0.0.0.0",
             port=8000,
         )
+
+
+def _arena_execution_spec(tmp_path: Path, *, policy_id: str = "pi05_droid") -> Path:
+    """The sealed artifact the arena policy bundle stages as a runtime input."""
+
+    spec = load_policy_spec(
+        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
+    )
+    policy_spec = {
+        "policy_id": policy_id,
+        "config_name": policy_id,
+        "checkpoint_uri": spec.checkpoint_uri,
+        "checkpoint_object_manifest_sha256": spec.checkpoint_object_manifest_sha256,
+        "checkpoint_generation_manifest_sha256": (
+            spec.checkpoint_generation_manifest_sha256
+        ),
+        "checkpoint_inventory_sha256": spec.checkpoint_inventory_sha256,
+        "checkpoint_object_count": spec.checkpoint_object_count,
+        "checkpoint_size_bytes": spec.checkpoint_size_bytes,
+        "action_space": spec.action_space,
+        "action_chunk_rows": spec.action_chunk_rows,
+        "open_loop_horizon": spec.open_loop_horizon,
+        "openpi_revision": spec.openpi_revision,
+    }
+    path = tmp_path / "execution_spec.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "native_task_arena_policy_execution_spec.v1",
+                "candidate_id": policy_id,
+                "policy_spec": policy_spec,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_server_identity_comes_from_the_spec_the_client_validates(
+    tmp_path: Path,
+) -> None:
+    """Server and client must read one artifact, not two copies of an identity.
+
+    The arena client validates the server's metadata against the `policy_spec`
+    carried by the sealed execution spec. Serving from a separate cohort file
+    is how the two come to disagree while each looks correct alone.
+    """
+
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+    )
+
+    served = load_policy_spec_from_execution_spec(_arena_execution_spec(tmp_path))
+
+    assert served.policy_id == "pi05_droid"
+    # The identity the wrapper publishes satisfies the client's own validator.
+    metadata = {
+        **served.server_metadata(),
+        "local_checkpoint_verified": True,
+        "local_checkpoint_verification_sha256": "c" * 64,
+        "local_checkpoint_object_count": served.checkpoint_object_count,
+        "local_checkpoint_size_bytes": served.checkpoint_size_bytes,
+    }
+    assert validate_server_metadata(metadata, expected=served) == metadata
+
+
+def test_execution_spec_candidate_and_policy_id_must_agree(tmp_path: Path) -> None:
+    """A spec whose candidate slot disagrees with its policy identity fails closed."""
+
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+    )
+
+    path = _arena_execution_spec(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["candidate_id"] = "some_other_candidate"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy_execution_spec_candidate_mismatch"):
+        load_policy_spec_from_execution_spec(path)
+
+
+def test_identity_bound_server_runs_from_the_flat_provider_runtime() -> None:
+    """It is shipped flat and executed as a script, where relative imports fail.
+
+    `from .droid_policy_bridge import ...` raises ImportError -- *not*
+    ModuleNotFoundError -- when there is no parent package, so a narrower
+    except clause could never catch it.
+    """
+
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+
+    import blueprint_pipeline.openpi_droid_policy_runtime as module
+
+    source_dir = Path(module.__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as raw:
+        flat = Path(raw)
+        for name in ("openpi_droid_policy_runtime.py", "droid_policy_bridge.py"):
+            shutil.copy2(source_dir / name, flat / name)
+        completed = subprocess.run(
+            [sys.executable, str(flat / "openpi_droid_policy_runtime.py"), "--help"],
+            capture_output=True,
+            text=True,
+            cwd=raw,
+        )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--policy-spec" in completed.stdout

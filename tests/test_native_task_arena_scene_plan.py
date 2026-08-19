@@ -5,7 +5,14 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import numpy
 import pytest
+
+from tests.test_native_task_appearance_frame_alignment import (
+    EXPORTER_AXIS_MATRIX,
+    IDENTITY,
+    write_appearance_usdz,
+)
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_scene_plan import (
@@ -21,6 +28,20 @@ from blueprint_pipeline.native_task_runtime_contract import (
 
 def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _fixture_room_positions():
+    """Gaussian centres spanning the fixture's robot, task, and replacement."""
+
+    rng = numpy.random.default_rng(20260819)
+    return numpy.stack(
+        [
+            rng.uniform(0.0, 5.0, 512),
+            rng.uniform(0.0, 5.0, 512),
+            rng.uniform(0.0, 2.8, 512),
+        ],
+        axis=1,
+    ).astype(numpy.float32)
 
 
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
@@ -72,7 +93,9 @@ def _camera(role: str) -> dict:
     }
 
 
-def _contract(tmp_path: Path, *, articulated: bool) -> tuple[dict, Path]:
+def _contract(
+    tmp_path: Path, *, articulated: bool, appearance_matrix=IDENTITY
+) -> tuple[dict, Path]:
     asset_directory = tmp_path / ("articulated" if articulated else "rigid")
     asset_directory.mkdir()
     assets = []
@@ -169,6 +192,13 @@ def Xform "Asset"
 }
 ''',
                 encoding="utf-8",
+            )
+        elif role == "scene_appearance":
+            # A real NuRec volume, not a stub: the plan now proves the captured
+            # appearance actually contains the poses the cameras are aimed at,
+            # and a placeholder cannot answer that question either way.
+            write_appearance_usdz(
+                path, _fixture_room_positions(), matrix=appearance_matrix
             )
         else:
             path.write_bytes(f"fixture:{role}:{articulated}".encode())
@@ -698,4 +728,54 @@ def test_runtime_contract_tamper_is_rejected(tmp_path: Path) -> None:
 
     assert excinfo.value.errors == (
         "native_task_arena_runtime_contract_digest_invalid",
+    )
+
+
+def test_scene_plan_seals_measured_appearance_frame_alignment(tmp_path: Path) -> None:
+    contract, asset_directory = _contract(tmp_path, articulated=True)
+
+    plan = materialize_native_task_arena_scene_plan(
+        runtime_contract=contract,
+        provider_asset_directory=asset_directory,
+        physics_frequency_hz=120,
+    )
+
+    alignment = plan["appearance_frame_alignment"]
+    assert alignment["status"] == "aligned"
+    assert alignment["blockers"] == []
+    assert alignment["measurement_is_not_render_evidence"] is True
+    # Every spawned body the cameras can see is checked, not only the subject.
+    assert set(alignment["spawned_frame_contains"]) == {
+        "robot_base",
+        "task_object",
+    }
+    assert all(alignment["spawned_frame_contains"].values())
+    assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
+
+
+def test_scene_plan_refuses_appearance_composed_outside_the_scene(
+    tmp_path: Path,
+) -> None:
+    """r23 shipped this plan and paid for a GPU run that rendered black.
+
+    The volume's own layer matrix put the captured room tens of metres from
+    the robot, and no gate downstream could see it: the camera observability
+    gate measures the task object's semantic pixels, which stayed correct.
+    """
+
+    contract, asset_directory = _contract(
+        tmp_path, articulated=True, appearance_matrix=EXPORTER_AXIS_MATRIX
+    )
+
+    with pytest.raises(NativeTaskArenaScenePlanError) as excinfo:
+        materialize_native_task_arena_scene_plan(
+            runtime_contract=contract,
+            provider_asset_directory=asset_directory,
+            physics_frequency_hz=120,
+        )
+
+    assert excinfo.value.errors == (
+        "native_task_appearance_frame_excludes_scene_position:robot_base",
+        "native_task_appearance_frame_excludes_scene_position:task_object",
+        "native_task_appearance_layer_transform_spurious",
     )

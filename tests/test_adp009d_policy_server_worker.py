@@ -317,14 +317,15 @@ def test_the_runtime_runs_an_episode_only_with_a_measured_gripper() -> None:
     assert "noqa: BLE001" in episode
 
 
-def test_the_serve_command_matches_openpis_pinned_cli() -> None:
-    """Verified against scripts/serve_policy.py at the frozen source revision.
+def test_the_openpi_lane_serves_identity_not_openpis_stock_server() -> None:
+    """The stock server can never satisfy the episode, so it is not launchable.
 
-    That file uses tyro.cli(Args) where Args.policy is Checkpoint | Default and
-    Checkpoint carries config and dir, so the union subcommand form is
-    policy:checkpoint --policy.config=... --policy.dir=...  Its own
-    DEFAULT_CHECKPOINT maps EnvMode.DROID to config="pi05_droid" against
-    gs://openpi-assets/checkpoints/pi05_droid, which is the checkpoint we fetch.
+    `scripts/serve_policy.py` publishes empty websocket metadata by design,
+    while `OpenPIWebsocketDroidPolicyClient` validates fourteen identity fields.
+    Launching it meant paying for a full Isaac boot and scene build before the
+    episode refused the server. This lane now launches Blueprint's
+    identity-bound wrapper around the same pinned upstream server -- the
+    pattern the cosmos lane already proved.
     """
 
     command = worker.build_serve_command(
@@ -333,14 +334,50 @@ def test_the_serve_command_matches_openpis_pinned_cli() -> None:
         source_root="/source/pi05_droid",
         checkpoint_root="/checkpoints/pi05_droid",
         port=8000,
+        policy_spec_path="/runtime/adp009d_policy_execution_spec.json",
+        checkpoint_inventory_path="/runtime/adp009d_openpi_checkpoint_inventory.json",
+        runtime_dir="/runtime",
     )
 
-    assert "policy:checkpoint" in command
-    assert "--policy.config=pi05_droid" in command
-    assert "--policy.dir=/checkpoints/pi05_droid" in command
-    # Port is a top-level Args field, not nested under policy.
+    assert command[:2] == [
+        "/venv/bin/python",
+        "/runtime/openpi_droid_policy_runtime.py",
+    ]
+    # The stock entrypoint and its tyro CLI must be gone, not merely unused.
+    assert not any("serve_policy.py" in part for part in command)
+    assert not any(part.startswith("policy:checkpoint") for part in command)
+    assert command[command.index("--policy-spec") + 1] == (
+        "/runtime/adp009d_policy_execution_spec.json"
+    )
+    assert command[command.index("--checkpoint-inventory") + 1] == (
+        "/runtime/adp009d_openpi_checkpoint_inventory.json"
+    )
+    assert command[command.index("--checkpoint-dir") + 1] == "/checkpoints/pi05_droid"
     assert command[command.index("--port") + 1] == "8000"
-    assert command.index("--port") < command.index("policy:checkpoint")
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+
+
+def test_openpi_lane_refuses_to_launch_without_its_identity_inputs() -> None:
+    """Absent identity inputs must stop the launch, not fall back to stock.
+
+    A fallback here is worth nothing: the only other command that could be
+    produced is a server the episode is guaranteed to refuse.
+    """
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError) as excinfo:
+        worker.build_serve_command(
+            candidate_id="pi05_droid",
+            python="/venv/bin/python",
+            source_root="/source/pi05_droid",
+            checkpoint_root="/checkpoints/pi05_droid",
+            port=8000,
+        )
+
+    assert "policy_server_identity_inputs_missing" in str(excinfo.value)
+    assert "checkpoint_inventory" in str(excinfo.value)
+    assert "policy_spec" in str(excinfo.value)
 
 
 def test_a_skipped_episode_says_why_rather_than_vanishing() -> None:
@@ -489,3 +526,76 @@ def test_serve_command_uses_the_shared_arena_device_constant() -> None:
     assert "'cuda:0'" not in source
     assert "NATIVE_TASK_ARENA_DEVICE" in source
     assert NATIVE_TASK_ARENA_DEVICE == "cuda:0"
+
+
+def test_readiness_accepts_a_server_that_publishes_identity(monkeypatch) -> None:
+    """The counterpart to the stock-server refusal: identity must let it through.
+
+    A gate that only ever refuses is indistinguishable from a broken lane, so
+    the passing direction is pinned too.
+    """
+
+    import sys
+    import types
+
+    import numpy as np
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    class _IdentityBoundClient:
+        """Blueprint's wrapper: same upstream server, exact identity metadata."""
+
+        def __init__(self, **kwargs):
+            pass
+
+        def get_server_metadata(self):
+            return {
+                "schema_version": "openpi_droid_policy_server_metadata.v1",
+                "policy_id": "pi05_droid",
+                "identity_sha256": "d" * 64,
+                "local_checkpoint_verified": True,
+            }
+
+        def infer(self, observation):
+            return {"actions": np.zeros((15, 8), dtype=float)}
+
+    transport = types.ModuleType("openpi_client.websocket_client_policy")
+    transport.WebsocketClientPolicy = _IdentityBoundClient
+    package = types.ModuleType("openpi_client")
+    package.websocket_client_policy = transport
+    monkeypatch.setitem(sys.modules, "openpi_client", package)
+
+    result = worker.attempt_round_trip(host="127.0.0.1", port=8000)
+
+    assert result["action_chunk_rows"] == 15
+    assert result["action_chunk_width"] == 8
+    assert result["server_metadata"]["policy_id"] == "pi05_droid"
+
+
+def test_provisioning_passes_the_staged_identity_inputs_to_the_server() -> None:
+    """A fix that never reaches the runtime is worth nothing.
+
+    The wiring is only real if the generated worker script actually carries the
+    staged paths, so assert against the emitted script rather than the builder.
+    """
+
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        CHECKPOINT_INVENTORY_STAGED_NAME,
+        POLICY_EXECUTION_SPEC_STAGED_NAME,
+        build_provisioning_script,
+    )
+
+    script = build_provisioning_script("pi05_droid")
+
+    assert f'--policy-spec "$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"' in script
+    assert (
+        f'--checkpoint-inventory "$RUNTIME_DIR/{CHECKPOINT_INVENTORY_STAGED_NAME}"'
+        in script
+    )
+    # The stock server must not survive anywhere in the emitted lane.
+    assert "serve_policy.py" not in script
+
+    # GR00T keeps its own launch and must not acquire openpi's identity flags.
+    groot = build_provisioning_script("groot_n17_droid")
+    assert "--policy-spec" not in groot
+    assert "--worker-identity-receipt" in groot

@@ -157,7 +157,7 @@ def _scene() -> dict:
         "contact_point_link_m": [0.4, 0.0, 0.0],
         "approach_unit_asset_root": [0.0, -1.0, 0.0],
         "retreat_unit_asset_root": [0.0, -1.0, 0.0],
-        "gripper_orientation_contact_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_contact_xyzw": [0.5, 0.5, 0.5, 0.5],
         "precontact_clearance_m": 0.12,
         "sweep_clearance_m": 0.025,
         "retreat_clearance_m": 0.12,
@@ -284,6 +284,77 @@ def _redigest_affordance(scene: dict) -> None:
         affordance, digest_field="affordance_digest"
     )
     scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+
+
+def _scene_with_command_limits(delta: float, lead: float) -> dict:
+    scene = _scene()
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["max_joint_delta_rad"] = delta
+    affordance["max_joint_setpoint_lead_rad"] = lead
+    _redigest_affordance(scene)
+    return scene
+
+
+def test_sealed_command_limits_reach_construction_execution_parameters() -> None:
+    """A raised bound must change what construction executes, not just the seal.
+
+    The compiler validated both bounds and then dropped them, so three paid GPU
+    runs executed the servo's own defaults and reported byte-identical arm travel
+    while the sealed affordance differed between them.
+    """
+
+    execution = materialize_native_task_construction_phase_plan(
+        _scene_with_command_limits(0.10, 1.00)
+    )["execution_parameters"]
+
+    assert execution["max_joint_delta_rad"] == pytest.approx(0.10)
+    assert execution["max_joint_setpoint_lead_rad"] == pytest.approx(1.00)
+
+
+def test_construction_execution_limits_track_the_seal_not_a_default() -> None:
+    conservative = materialize_native_task_construction_phase_plan(
+        _scene_with_command_limits(0.03, 0.20)
+    )["execution_parameters"]
+    permissive = materialize_native_task_construction_phase_plan(
+        _scene_with_command_limits(0.10, 1.00)
+    )["execution_parameters"]
+
+    assert (
+        conservative["max_joint_delta_rad"],
+        conservative["max_joint_setpoint_lead_rad"],
+    ) != (
+        permissive["max_joint_delta_rad"],
+        permissive["max_joint_setpoint_lead_rad"],
+    )
+
+
+def test_construction_and_controls_execute_the_same_sealed_limits() -> None:
+    """Controls replay the exact duration construction qualified, so a phase must
+    not be qualified under one bound pair and replayed under another."""
+
+    scene = _scene_with_command_limits(0.10, 1.00)
+    phase_plan = materialize_native_task_construction_phase_plan(scene)
+    control_plan = materialize_native_task_control_plan(
+        scene_plan=scene,
+        construction_result=_construction(scene),
+    )
+
+    execution = phase_plan["execution_parameters"]
+    assert control_plan["scripted_positive_actions"]
+    for action in control_plan["scripted_positive_actions"]:
+        assert action["max_joint_delta_rad"] == pytest.approx(
+            execution["max_joint_delta_rad"]
+        )
+        assert action["max_joint_setpoint_lead_rad"] == pytest.approx(
+            execution["max_joint_setpoint_lead_rad"]
+        )
+
+
+def test_construction_plan_rejects_a_lead_below_the_slew() -> None:
+    with pytest.raises(NativeTaskConstructionPlanError):
+        materialize_native_task_construction_phase_plan(
+            _scene_with_command_limits(0.10, 0.05)
+        )
 
 
 def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -> None:
@@ -511,7 +582,7 @@ class _GraphControlEnvironment:
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ) -> list[float]:
-        assert target_quaternion_world_xyzw == [0.0, 0.0, 0.0, 1.0]
+        assert target_quaternion_world_xyzw == [0.5, 0.5, 0.5, 0.5]
         assert max_joint_delta_rad == pytest.approx(0.03)
         assert max_joint_setpoint_lead_rad == pytest.approx(0.2)
         return [
@@ -544,7 +615,7 @@ class _GraphControlEnvironment:
                 self.gripper <= 0.5 and self.grasp == self._retreat_target
             ),
             "grasp_frame_position_world_m": list(self.grasp),
-            "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "grasp_frame_orientation_world_xyzw": [0.5, 0.5, 0.5, 0.5],
         }
 
 
@@ -598,3 +669,53 @@ def test_graph_articulated_control_runs_zero_then_positive_through_shared_scorer
     ]
     assert [row["control_passed"] for row in pair["controls"]] == [True, True]
     assert pair["cell_admitted_for_policy_execution"] is True
+
+
+def _scene_with_grasp_orientation(orientation: list[float]) -> dict:
+    scene = _scene()
+    scene["task_spec"]["interaction_affordance"][
+        "gripper_orientation_contact_xyzw"
+    ] = orientation
+    _redigest_affordance(scene)
+    return scene
+
+
+def test_plan_records_an_identity_grasp_orientation_as_unauthored() -> None:
+    """r22 sealed identity here, so every phase commanded the hand 120 degrees
+    away from any pose it rests in and no arrival check could ever pass."""
+
+    unauthored = materialize_native_task_construction_phase_plan(
+        _scene_with_grasp_orientation([0.0, 0.0, 0.0, 1.0])
+    )
+    authored = materialize_native_task_construction_phase_plan(
+        _scene_with_grasp_orientation([0.5, 0.5, 0.5, 0.5])
+    )
+
+    assert unauthored["grasp_orientation_authored"] is False
+    assert authored["grasp_orientation_authored"] is True
+
+
+def test_contact_replay_refuses_an_unauthored_grasp_orientation() -> None:
+    """Construction runs open-gripper clearance probes and may bind the measured
+    reset orientation, but the control plan closes the gripper on the handle --
+    that orientation has to be authored from real geometry, never substituted."""
+
+    scene = _scene_with_grasp_orientation([0.0, 0.0, 0.0, 1.0])
+    with pytest.raises(NativeTaskControlPlanError) as excinfo:
+        materialize_native_task_control_plan(
+            scene_plan=scene, construction_result=_construction(scene)
+        )
+
+    assert any(
+        "gripper_orientation_contact_xyzw_unauthored_identity" in error
+        for error in excinfo.value.errors
+    )
+
+
+def test_contact_replay_accepts_an_authored_grasp_orientation() -> None:
+    scene = _scene_with_grasp_orientation([0.5, 0.5, 0.5, 0.5])
+    plan = materialize_native_task_control_plan(
+        scene_plan=scene, construction_result=_construction(scene)
+    )
+
+    assert plan["scripted_positive_actions"]

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.adp009d_policy_candidate_admission import (
+    EXPECTED_CANDIDATES,
     Adp009dPolicyAdmissionError,
     freeze_policy_candidate_selection,
     validate_policy_candidate_inventory,
@@ -194,3 +195,164 @@ def test_candidate_digest_blocks_caller_relabeling() -> None:
         match="policy_cosmos3_edge_policy_droid_candidate_digest_mismatch",
     ):
         validate_policy_candidate_inventory(inventory)
+
+
+_FROZEN_INVENTORY = (
+    Path(__file__).resolve().parents[1]
+    / "docs/experiments/policy_ranking_thesis_20260726"
+    / "openpi_polaris_checkpoint_inventory.json"
+)
+
+
+def test_ratified_pi05_checkpoint_is_derived_from_the_frozen_gcs_inventory() -> None:
+    """Every ratified value must be readable from evidence, not asserted.
+
+    The polaris checkpoint was ratified as the pi05 baseline. The committed
+    inventory was built from the GCS JSON API and carries the real object
+    generations, so the admission record is pinned to it here rather than
+    restating digits that could drift into a second, silently wrong copy.
+    """
+
+    import hashlib
+    import json
+
+    from blueprint_pipeline.openpi_droid_policy_runtime import canonical_sha256
+
+    raw = _FROZEN_INVENTORY.read_bytes()
+    inventory = json.loads(raw)
+    entry = next(
+        row
+        for row in inventory["entries"]
+        if row["policy_id"] == "pi05_droid_jointpos_polaris"
+    )
+
+    # The inventory is self-consistent: its declared digest is its own content.
+    recomputed = canonical_sha256(
+        {key: value for key, value in inventory.items() if key != "inventory_sha256"}
+    )
+    assert recomputed == inventory["inventory_sha256"]
+    assert inventory["status"] == "frozen"
+    assert inventory["blockers"] == []
+
+    record = EXPECTED_CANDIDATES["pi05_droid"]
+    assert record["checkpoint_repository"] == entry["checkpoint_uri"]
+    assert record["checkpoint_total_bytes"] == entry["size_bytes"]
+    assert record["checkpoint_inventory_digest"] == (
+        "sha256:" + inventory["inventory_sha256"]
+    )
+    assert record["checkpoint_revision"] == (
+        "gcs-generation-inventory:" + inventory["inventory_sha256"]
+    )
+
+    # The published manifest carries the same values, and its file digest is
+    # the one the cohort froze.
+    manifest = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/arm_decision_proof_v1/manifests"
+            / "adp009d_policy_candidate_inventory.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    checkpoint = manifest["candidates"][0]["checkpoint"]
+    assert checkpoint["repository"] == entry["checkpoint_uri"]
+    assert checkpoint["total_bytes"] == entry["size_bytes"]
+    assert checkpoint["file_count"] == entry["object_count"]
+    assert checkpoint["publisher_inventory_file_sha256"] == (
+        "sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+
+
+def test_pi05_checkpoint_identity_satisfies_the_spec_that_refused_the_stock_one(
+    tmp_path: Path,
+) -> None:
+    """The whole point of ratifying: the provisioned URI must now be describable.
+
+    The stock checkpoint failed `checkpoint_uri_not_frozen_openpi_polaris`, so
+    no execution spec could name what the lane fetched and still satisfy the
+    episode client.
+    """
+
+    import json
+
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+    )
+
+    record = EXPECTED_CANDIDATES["pi05_droid"]
+    inventory = json.loads(_FROZEN_INVENTORY.read_text(encoding="utf-8"))
+    entry = next(
+        row
+        for row in inventory["entries"]
+        if row["policy_id"] == "pi05_droid_jointpos_polaris"
+    )
+    path = tmp_path / "execution_spec.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "native_task_arena_policy_execution_spec.v1",
+                "candidate_id": "pi05_droid",
+                "policy_spec": {
+                    "policy_id": "pi05_droid",
+                    "config_name": "pi05_droid",
+                    # The URI this lane actually provisions.
+                    "checkpoint_uri": record["checkpoint_repository"],
+                    "checkpoint_object_manifest_sha256": entry[
+                        "legacy_object_manifest_sha256"
+                    ],
+                    "checkpoint_generation_manifest_sha256": entry[
+                        "generation_manifest_sha256"
+                    ],
+                    "checkpoint_inventory_sha256": inventory["inventory_sha256"],
+                    "checkpoint_object_count": entry["object_count"],
+                    "checkpoint_size_bytes": entry["size_bytes"],
+                    "action_space": "joint_position",
+                    "action_chunk_rows": 15,
+                    "open_loop_horizon": 8,
+                    "openpi_revision": inventory["openpi_revision"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_policy_spec_from_execution_spec(path)
+
+    assert spec.checkpoint_uri == record["checkpoint_repository"]
+    assert spec.checkpoint_size_bytes == record["checkpoint_total_bytes"]
+    assert len(spec.server_metadata()) == 14
+
+
+def test_the_pi05_candidates_openpi_revision_is_the_one_its_checkpoint_is_bound_to(
+) -> None:
+    """Two different pins shared a name; the candidate takes the policy one.
+
+    `ARENA_OPENPI_REVISION` is the openpi source revision IsaacLab-Arena pins
+    for its own tree, alongside arena_source and isaac_lab_source. The frozen
+    inventory that binds these checkpoint bytes, the cohort that names them, the
+    candidate admission record, and `OpenPIDroidPolicySpec.validate()` all name
+    the other one -- so labelling the baseline with Arena's pin made the
+    baseline undescribable.
+    """
+
+    import json
+
+    from blueprint_pipeline.adp_founder_sim_protocol import (
+        ARENA_OPENPI_REVISION,
+        build_founder_sim_protocol,
+    )
+    from blueprint_pipeline.droid_policy_bridge import OPENPI_SOURCE_REVISION
+
+    inventory = json.loads(_FROZEN_INVENTORY.read_text(encoding="utf-8"))
+    assert inventory["openpi_revision"] == OPENPI_SOURCE_REVISION
+    assert EXPECTED_CANDIDATES["pi05_droid"]["source_revision"] == (
+        OPENPI_SOURCE_REVISION
+    )
+    assert ARENA_OPENPI_REVISION != OPENPI_SOURCE_REVISION
+
+    protocol = build_founder_sim_protocol()
+    baseline = next(
+        row
+        for row in protocol["candidates"]
+        if row.get("role") == "baseline"
+    )
+    assert baseline["openpi_revision"] == OPENPI_SOURCE_REVISION

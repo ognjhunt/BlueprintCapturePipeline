@@ -13,11 +13,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
 from .native_articulated_control_plan import (
     materialize_native_articulated_control_plan,
 )
 from .native_task_construction_plan import (
     GRAPH_ARTICULATED_SCHEMA_VERSION,
+    MAX_JOINT_DELTA_RAD,
+    MAX_JOINT_SETPOINT_LEAD_RAD,
     NativeTaskConstructionPlanError,
     evaluate_graph_articulated_construction_gates,
     materialize_native_task_construction_phase_plan,
@@ -37,8 +40,6 @@ GRAPH_ARTICULATED_GATE_SCHEMA_VERSION = (
     "native_articulated_graph_construction_gate_evaluation.v1"
 )
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
-MAX_JOINT_DELTA_RAD = 0.03
-MAX_JOINT_SETPOINT_LEAD_RAD = 0.20
 
 
 class NativeTaskControlPlanError(ValueError):
@@ -518,6 +519,18 @@ def materialize_native_graph_articulated_control_plan(
         affordance, digest_field="affordance_digest"
     ):
         errors.append("native_articulated_graph_control_interaction_affordance_invalid")
+        affordance = {}
+    if affordance and is_unauthored_identity_quaternion_xyzw(
+        affordance.get("gripper_orientation_contact_xyzw")
+    ):
+        # These phases close the gripper on the handle, so the orientation has to
+        # be authored from the real handle geometry.  Identity is the placeholder
+        # a quaternion field holds when nobody set it, and it is 120 degrees from
+        # this arm's natural hand pose.  Refuse rather than replay it.
+        errors.append(
+            "native_articulated_graph_control_gripper_orientation_contact_xyzw"
+            "_unauthored_identity"
+        )
         affordance = {}
     actions: list[dict[str, Any]] = []
     if affordance:

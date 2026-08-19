@@ -117,7 +117,14 @@ def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> N
 
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
     gcs = build_provisioning_script("pi05_droid")
-    assert "gs://openpi-assets/checkpoints/pi05_droid" in gcs
+    # Read from the frozen record rather than restated, so ratifying a
+    # different checkpoint cannot leave this assertion quietly pinning the old
+    # one -- which is how the stock checkpoint survived here in the first place.
+    assert EXPECTED_CANDIDATES["pi05_droid"]["checkpoint_repository"] in gcs
+    assert (
+        EXPECTED_CANDIDATES["pi05_droid"]["checkpoint_repository"]
+        == "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris"
+    )
     assert "huggingface_cli" not in gcs
     assert "gcloud" not in gcs
 
