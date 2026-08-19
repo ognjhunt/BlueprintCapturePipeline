@@ -64,7 +64,7 @@ print(ids[0] if ids else '')")
   # attempt, so take the zero from that attempt's own input directory.
   _zero=$E/arena-launch-${_tag}/construction_provider_zero.v1.json
   [ -f "$_zero" ] || { echo "  skipping $_tag: no sealed provider zero yet"; continue; }
-  JOBSPEND="$_job"; ZEROSPEND="$_zero"; break
+  JOBSPEND="$_job"; ZEROSPEND="$_zero"; PSPEND=$E/arena-launch-${_tag}; break
 done
 [ -n "$JOBSPEND" ] || { echo "no predecessor run allocated an instance -- nothing to reconcile against"; exit 1; }
 echo "  predecessor instance: $INST (from $_tag)"
@@ -103,13 +103,19 @@ r = build_native_task_arena_construction_bundle(
 print("bundle:", r.get("status"), r.get("execution_mode"))
 EOF
 
-echo "== 4. attempt authority chained off $PREV"
+# The authority, terminal result, provider zero, and spend reconciliation must
+# all describe the SAME prior paid attempt -- the issuer matches the prior
+# result against an entry in the reconciliation and refuses on
+# `prior_terminal_attempt_reconciliation_match_invalid` otherwise. So this
+# chains off the spend predecessor found above, not off a $PREV that never
+# allocated. Step 0 has already sealed $PREV either way.
+echo "== 4. attempt authority chained off the last allocating run"
 [ -f $A/native_task_arena_paid_attempt_authority.v1.json ] && echo '  exists, skipping' || \
   $RUN scripts/issue_native_task_arena_paid_attempt_authority.py \
     --bundle-receipt $A/arena_construction_job/native_task_arena_provider_bundle_receipt.v1.json \
-    --prior-authority $P/native_task_arena_paid_attempt_authority.v1.json \
-    --prior-result $JOBPREV/adp_arena_vast_result.json \
-    --prior-provider-zero $P/construction_provider_zero.v1.json \
+    --prior-authority $PSPEND/native_task_arena_paid_attempt_authority.v1.json \
+    --prior-result $JOBSPEND/adp_arena_vast_result.json \
+    --prior-provider-zero $ZEROSPEND \
     --prior-spend-reconciliation $A/prior_spend_reconciliation.v1.json \
     --authority-reference active_goal_scene840920_arena_construction_authorization_20260818 \
     --authorized-by nijelhunt_1 \

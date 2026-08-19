@@ -92,3 +92,36 @@ def test_spend_reconciliation_walks_past_runs_that_allocated_nothing() -> None:
     assert "['vast_instance_ids'][0]" not in text, (
         "indexing the id list unguarded crashes on a run that allocated nothing"
     )
+
+
+def test_authority_chains_off_the_same_attempt_the_reconciliation_describes() -> None:
+    """The issuer matches the prior result against a reconciliation entry.
+
+    It raises `prior_terminal_attempt_reconciliation_match_invalid` when they
+    disagree, so the prior authority, terminal result, provider zero, and
+    spend reconciliation must all describe ONE attempt. Once the spend walk
+    skips a non-allocating run, chaining the authority off the immediate
+    predecessor instead would describe a different attempt than the
+    reconciliation and fail.
+
+    Step 0 still seals the immediate predecessor, which is why it may differ
+    from the spend predecessor without anything going unproven.
+    """
+
+    text = _text(LAUNCH)
+    step0 = text.find("== 0. predecessor provider zero")
+    step4 = text.find("== 4. attempt authority")
+    assert step0 != -1 and step4 != -1
+
+    seal = text[step0:text.find("== 1.")]
+    assert "JOBPREV" in seal, "step 0 must seal the IMMEDIATE predecessor"
+
+    authority = text[step4:text.find("== 5.")]
+    for token in ("PSPEND", "JOBSPEND", "ZEROSPEND"):
+        assert token in authority, (
+            f"step 4 must chain off the spend predecessor ({token} missing)"
+        )
+    assert "JOBPREV" not in authority, (
+        "chaining the authority off a predecessor that never allocated "
+        "contradicts the reconciliation"
+    )
