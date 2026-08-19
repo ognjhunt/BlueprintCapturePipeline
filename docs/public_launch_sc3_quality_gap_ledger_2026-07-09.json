@@ -7462,7 +7462,7 @@
             {
               "artifact_id": "REL-15-AC-01-EV-01",
               "path": ".github/workflows/full-test-lane.yml",
-              "sha256": "sha256:4f69c716a0eb854b3d6e174e4f65f23a2cfc579196cc6bdea229c4169173c85f",
+              "sha256": "sha256:09955ce77dcb35780fa631f627015ce855b336183b51960f1bd3d834bbb4742b",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
