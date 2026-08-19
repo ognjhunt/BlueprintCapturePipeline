@@ -290,8 +290,148 @@ def controlled_body_pose_for_grasp_frame_target(
     return target_body, target_quaternion
 
 
+GRASP_AXIS_DEGENERACY_TOLERANCE = 1.0e-6
+
+
+def grasp_orientation_contact_xyzw(
+    *,
+    approach_axis: Sequence[float],
+    jaw_axis: Sequence[float],
+) -> list[float]:
+    """Build the contact-frame -> gripper-frame rotation for a parallel jaw.
+
+    This is the slot ``gripper_orientation_contact_xyzw`` holds, and it is the
+    same slot Isaac Lab's Franka cabinet reference fills with
+    ``rot=(0.5, -0.5, -0.5, 0.5)  # align with end-effector frame``.  Three
+    independent places in that reference state the same axis convention:
+
+      * ``cabinet_env_cfg.py`` authors the rotation itself, and
+        ``open_cabinet_sm.py`` then drives ``des_ee_pose = handle_pose`` with
+        purely translational grasp offsets, so the offset frame *is* the
+        commanded end-effector frame;
+      * ``franka_cabinet_env.py`` names the axes --
+        ``gripper_forward_axis = +Z`` pairs with ``drawer_inward_axis = -X``,
+        and ``gripper_up_axis = +Y`` pairs with ``drawer_up_axis = +Z``;
+      * ``mdp/rewards.py::align_ee_handle`` restates it in prose: "the z
+        direction of the gripper should be close to the -x direction of the
+        handle and the x direction of the gripper should be close to the -y
+        direction of the handle".
+
+    So the gripper frame is fully determined by two axes:
+
+      * ``+Z`` is the approach axis -- the direction the hand travels *into*
+        the feature.  ``franka_cabinet_env.py`` offsets its grasp point by
+        ``[0, 0.04, 0]``, the finger-open distance, which is why
+      * ``+Y`` is the jaw separation axis, and
+      * ``+X`` completes the right-handed frame.
+
+    ``jaw_axis`` only fixes the roll about the approach, so it is orthogonalised
+    against ``approach_axis`` rather than required to be exactly perpendicular;
+    measured geometry rarely is.  When the two axes are parallel the roll is
+    undefined and no frame exists, so this fails closed instead of picking one.
+    """
+
+    try:
+        approach = [float(value) for value in approach_axis]
+        jaw = [float(value) for value in jaw_axis]
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_grasp_orientation_axes_invalid"]
+        ) from exc
+    if (
+        len(approach) != 3
+        or len(jaw) != 3
+        or not all(math.isfinite(value) for value in (*approach, *jaw))
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_grasp_orientation_axes_invalid"]
+        )
+    approach_norm = math.sqrt(sum(value * value for value in approach))
+    jaw_norm = math.sqrt(sum(value * value for value in jaw))
+    if (
+        approach_norm <= GRASP_AXIS_DEGENERACY_TOLERANCE
+        or jaw_norm <= GRASP_AXIS_DEGENERACY_TOLERANCE
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_grasp_orientation_axes_invalid"]
+        )
+    ee_z = [value / approach_norm for value in approach]
+    jaw_unit = [value / jaw_norm for value in jaw]
+    projection = sum(a * b for a, b in zip(ee_z, jaw_unit, strict=True))
+    if abs(projection) >= 1.0 - GRASP_AXIS_DEGENERACY_TOLERANCE:
+        # Parallel approach and jaw axes cannot span a grasp frame: the roll
+        # about the approach is unconstrained and ee_x collapses to zero.
+        raise NativeFrankaActionMathError(
+            ["native_franka_grasp_orientation_axes_degenerate"]
+        )
+    residual = [
+        value - projection * axis for value, axis in zip(jaw_unit, ee_z, strict=True)
+    ]
+    residual_norm = math.sqrt(sum(value * value for value in residual))
+    ee_y = [value / residual_norm for value in residual]
+    ee_x = [
+        ee_y[1] * ee_z[2] - ee_y[2] * ee_z[1],
+        ee_y[2] * ee_z[0] - ee_y[0] * ee_z[2],
+        ee_y[0] * ee_z[1] - ee_y[1] * ee_z[0],
+    ]
+    # Columns are the gripper axes expressed in contact-frame coordinates,
+    # which is what ``contact_world * offset`` consumes.
+    rotation = [
+        [ee_x[0], ee_y[0], ee_z[0]],
+        [ee_x[1], ee_y[1], ee_z[1]],
+        [ee_x[2], ee_y[2], ee_z[2]],
+    ]
+    trace = rotation[0][0] + rotation[1][1] + rotation[2][2]
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        quaternion = [
+            (rotation[2][1] - rotation[1][2]) / scale,
+            (rotation[0][2] - rotation[2][0]) / scale,
+            (rotation[1][0] - rotation[0][1]) / scale,
+            0.25 * scale,
+        ]
+    elif rotation[0][0] > rotation[1][1] and rotation[0][0] > rotation[2][2]:
+        scale = (
+            math.sqrt(1.0 + rotation[0][0] - rotation[1][1] - rotation[2][2]) * 2.0
+        )
+        quaternion = [
+            0.25 * scale,
+            (rotation[0][1] + rotation[1][0]) / scale,
+            (rotation[0][2] + rotation[2][0]) / scale,
+            (rotation[2][1] - rotation[1][2]) / scale,
+        ]
+    elif rotation[1][1] > rotation[2][2]:
+        scale = (
+            math.sqrt(1.0 + rotation[1][1] - rotation[0][0] - rotation[2][2]) * 2.0
+        )
+        quaternion = [
+            (rotation[0][1] + rotation[1][0]) / scale,
+            0.25 * scale,
+            (rotation[1][2] + rotation[2][1]) / scale,
+            (rotation[0][2] - rotation[2][0]) / scale,
+        ]
+    else:
+        scale = (
+            math.sqrt(1.0 + rotation[2][2] - rotation[0][0] - rotation[1][1]) * 2.0
+        )
+        quaternion = [
+            (rotation[0][2] + rotation[2][0]) / scale,
+            (rotation[1][2] + rotation[2][1]) / scale,
+            0.25 * scale,
+            (rotation[1][0] - rotation[0][1]) / scale,
+        ]
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    quaternion = [value / norm for value in quaternion]
+    if quaternion[3] < 0.0:
+        quaternion = [-value for value in quaternion]
+    return quaternion
+
+
 __all__ = [
+    "GRASP_AXIS_DEGENERACY_TOLERANCE",
     "NativeFrankaActionMathError",
     "bounded_absolute_joint_setpoint",
     "controlled_body_pose_for_grasp_frame_target",
+    "grasp_orientation_contact_xyzw",
+    "is_unauthored_identity_quaternion_xyzw",
 ]
