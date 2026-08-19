@@ -299,3 +299,122 @@ def test_device_binding_survives_an_unreachable_scene() -> None:
 
     assert "unavailable" in binding
     assert binding["expected_device"] == "cuda:0"
+
+
+def _install_fake_stage(monkeypatch, prims) -> None:
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    stage_module = types.ModuleType("isaacsim.core.utils.stage")
+    stage_module.get_current_stage = lambda: SimpleNamespace(
+        Traverse=lambda: list(prims)
+    )
+    pxr_module = types.ModuleType("pxr")
+    pxr_module.UsdPhysics = SimpleNamespace(ArticulationRootAPI=object())
+    pxr_module.Usd = SimpleNamespace(SchemaBase=object)
+    isaacsim = types.ModuleType("isaacsim")
+    core = types.ModuleType("isaacsim.core")
+    utils = types.ModuleType("isaacsim.core.utils")
+    # `import a.b.c as x` resolves through parent attributes, not sys.modules
+    isaacsim.core = core
+    core.utils = utils
+    utils.stage = stage_module
+    for name, module in (
+        ("isaacsim", isaacsim),
+        ("isaacsim.core", core),
+        ("isaacsim.core.utils", utils),
+        ("isaacsim.core.utils.stage", stage_module),
+        ("pxr", pxr_module),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def _prim(path: str, *, articulation: bool):
+    from types import SimpleNamespace
+
+    class _Path:
+        # dunder lookup happens on the type, so SimpleNamespace cannot fake str()
+        def __init__(self, value: str) -> None:
+            self.pathString = value
+
+        def __str__(self) -> str:
+            return self.pathString
+
+    return SimpleNamespace(
+        GetPath=lambda p=path: _Path(p),
+        HasAPI=lambda _api, a=articulation: a,
+    )
+
+
+def test_articulation_view_devices_separate_scene_wide_from_per_asset(
+    monkeypatch,
+) -> None:
+    """The traceback cannot say whether the whole scene lost GPU dynamics.
+
+    If every articulation view is CPU-backed the physics scene never got GPU
+    dynamics and the fix is scene-level. If exactly one is CPU-backed the fix
+    belongs to that asset. Those are different repairs and nothing else in a
+    failed run tells them apart.
+    """
+
+    from types import SimpleNamespace
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _articulation_view_devices,
+    )
+
+    prims = [
+        _prim("/World/envs/env_0/Robot", articulation=True),
+        _prim("/World/envs/env_0/task_object", articulation=True),
+        _prim("/World/envs/env_0/scene_collision", articulation=False),
+    ]
+    _install_fake_stage(monkeypatch, prims)
+
+    devices = {
+        "/World/envs/env_0/Robot": "cuda:0",
+        "/World/envs/env_0/task_object": "cpu",
+    }
+
+    def create_articulation_view(path):
+        return SimpleNamespace(
+            get_dof_velocities=lambda: SimpleNamespace(device=devices[path]),
+            _backend=object(),
+        )
+
+    manager = SimpleNamespace(
+        _view=SimpleNamespace(create_articulation_view=create_articulation_view)
+    )
+
+    rows = _articulation_view_devices(manager)
+
+    assert rows["/World/envs/env_0/Robot"]["device"] == "cuda:0"
+    assert rows["/World/envs/env_0/task_object"]["device"] == "cpu"
+    # a non-articulation prim must not be reported as one
+    assert "/World/envs/env_0/scene_collision" not in rows
+
+
+def test_articulation_view_devices_report_a_missing_simulation_view() -> None:
+    """No view at all is a different diagnosis from a CPU-backed view."""
+
+    from types import SimpleNamespace
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _articulation_view_devices,
+    )
+
+    rows = _articulation_view_devices(SimpleNamespace(_view=None))
+
+    assert rows == {"unavailable": "simulation_view_is_none"}
+
+
+def test_physics_scene_evidence_never_raises_without_isaac() -> None:
+    """Diagnostics must degrade to a note, never mask the real failure."""
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        physics_scene_device_evidence,
+    )
+
+    evidence = physics_scene_device_evidence()
+
+    assert "unavailable" in evidence or "physics_scenes" in evidence

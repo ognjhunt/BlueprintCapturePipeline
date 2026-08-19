@@ -996,18 +996,21 @@ def test_the_physics_backend_is_stated_not_inherited(monkeypatch) -> None:
     """The build must name PhysX rather than inherit whatever the snapshot defaults to.
 
     Doctrine: PhysX is the website default; Newton is experimental comparison
-    evidence. The pinned Isaac Lab snapshot resolves an unset preset to its
-    Newton backend, whose articulation pipeline raised the cuda/cpu joint_vel
-    mismatch that consumed attempts r6 and r7 ($0.13) -- while every PhysX
-    knob our configure callback sets was silently ignored.
+    evidence. The backend is stated by assigning a PhysxCfg in the config
+    callback -- that assignment is what selects it. It must NOT be stated
+    through Arena's `presets`, which upstream applies after the callback by
+    overwriting `sim.physics` wholesale; see the presets tests below.
     """
 
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()
 
-    build_native_task_arena_environment(plan)
+    built = build_native_task_arena_environment(plan)
 
-    assert _ArenaBuilder.last.args.presets == "physx"
+    physics = built.cfg.sim.physics
+    assert physics.solver_type == 1
+    assert physics.gpu_max_rigid_contact_count == 2**23
+    assert _ArenaBuilder.last.args.presets is None
 
 
 OBLONG_COLLISION_USDA = (
@@ -1097,3 +1100,57 @@ def test_a_scene_within_tolerance_is_left_alone(tmp_path: Path) -> None:
 
     assert author_gpu_compatible_scene_collision(scene, derived) is None
     assert not derived.exists()
+
+
+def test_presets_is_left_unset_so_the_callback_physics_survives(monkeypatch) -> None:
+    """Arena applies --presets AFTER env_cfg_callback, replacing sim.physics.
+
+    Naming the backend through `presets` looks like doctrine and reads like a
+    no-op, but upstream implements it as
+    ``env_cfg.sim.physics = getattr(ArenaPhysicsCfg(), presets)`` -- a whole
+    object assignment over a stock ``PhysxCfg()``. Every value the callback set
+    is discarded. The backend is selected by the callback assigning a PhysxCfg.
+    """
+
+    _install_fake_native_runtime(monkeypatch)
+
+    build_native_task_arena_environment(_sealed_scene_plan())
+
+    assert _ArenaBuilder.last.args.presets is None
+
+
+def test_tuned_physics_survives_the_upstream_presets_application(monkeypatch) -> None:
+    """Replay upstream's post-callback presets step and assert nothing is lost."""
+
+    _install_fake_native_runtime(monkeypatch)
+
+    stock = SimpleNamespace(
+        solver_type=1,
+        enable_enhanced_determinism=False,
+        gpu_max_rigid_contact_count=2**23,
+        gpu_max_rigid_patch_count=5 * 2**15,
+    )
+
+    def make_registered_and_return_cfg(self, *, render_mode):
+        cfg = SimpleNamespace(
+            sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
+        )
+        self.arena_env.env_cfg_callback(cfg)
+        # isaaclab_arena/environments/arena_env_builder.py::modify_env_cfg
+        presets = getattr(self.args, "presets", None)
+        if presets is not None:
+            cfg.sim.physics = stock
+        return "native-env", cfg
+
+    monkeypatch.setattr(
+        _ArenaBuilder,
+        "make_registered_and_return_cfg",
+        make_registered_and_return_cfg,
+    )
+
+    built = build_native_task_arena_environment(_sealed_scene_plan())
+
+    physics = built.cfg.sim.physics
+    assert physics is not stock
+    assert physics.enable_enhanced_determinism is True
+    assert physics.gpu_max_rigid_patch_count == 2**15

@@ -497,6 +497,112 @@ def _camera_snapshot(
     return {"snapshot_id": snapshot_id, "cameras": rows}
 
 
+def physics_scene_device_evidence() -> dict[str, Any]:
+    """Report what PhysX was actually configured with, from the live stage.
+
+    Articulation initialisation happens inside the environment build, so a
+    failure there leaves no built object to interrogate. The USD stage does
+    survive, and it carries the `physxScene:*` attributes Isaac Lab authored.
+    That is the only place the GPU-dynamics decision is observable: PhysX
+    resolves an unsupported combination (enhanced determinism with GPU
+    dynamics, for instance) in C++ without logging it, and the first visible
+    symptom is a CPU-backed tensor view an hour into the run.
+    """
+
+    evidence: dict[str, Any] = {"physics_scenes": {}}
+    try:
+        import isaacsim.core.utils.stage as stage_utils
+        from pxr import Usd
+
+        stage = stage_utils.get_current_stage()
+    except Exception as exc:  # noqa: BLE001 - absence is itself the evidence
+        evidence["unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
+        return evidence
+    try:
+        for prim in stage.Traverse():
+            if not prim.IsA(Usd.SchemaBase) or prim.GetTypeName() != "PhysicsScene":
+                continue
+            attributes: dict[str, Any] = {}
+            for attribute in prim.GetAttributes():
+                name = attribute.GetName()
+                if not name.startswith("physxScene:") and not name.startswith("physics:"):
+                    continue
+                try:
+                    attributes[name] = str(attribute.Get())
+                except Exception as exc:  # noqa: BLE001
+                    attributes[name] = f"unreadable:{type(exc).__name__}:{exc}"[:120]
+            evidence["physics_scenes"][str(prim.GetPath())] = attributes
+    except Exception as exc:  # noqa: BLE001
+        evidence["traverse_failed"] = f"{type(exc).__name__}:{exc}"[:200]
+    try:
+        from isaaclab.sim import SimulationContext
+
+        instance = SimulationContext.instance()
+        evidence["simulation_context_device"] = str(getattr(instance, "device", None))
+        for setting in (
+            "/physics/suppressReadback",
+            "/physics/cudaDevice",
+            "/physics/physxDispatcher",
+        ):
+            try:
+                evidence.setdefault("settings", {})[setting] = str(
+                    instance.get_setting(setting)
+                )
+            except Exception as exc:  # noqa: BLE001
+                evidence.setdefault("settings", {})[setting] = (
+                    f"unreadable:{type(exc).__name__}"
+                )
+    except Exception as exc:  # noqa: BLE001
+        evidence["simulation_context_unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
+    try:
+        from isaaclab_physx.physics.physx_manager import PhysxManager
+
+        evidence["physics_manager_device"] = str(PhysxManager.get_device())
+        evidence["articulation_view_devices"] = _articulation_view_devices(PhysxManager)
+    except Exception as exc:  # noqa: BLE001
+        evidence["physics_manager_unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
+    return evidence
+
+
+def _articulation_view_devices(physx_manager: Any) -> dict[str, Any]:
+    """Report the backing device of every articulation view in the stage.
+
+    This is the question a device-mismatch traceback cannot answer. If every
+    articulation is CPU-backed the scene never got GPU dynamics at all, and the
+    cause is scene-level (a physics-scene attribute PhysX refused). If exactly
+    one is CPU-backed the cause is that asset. Those two answers point at
+    completely different fixes, and nothing else in the run distinguishes them.
+    """
+
+    rows: dict[str, Any] = {}
+    view = getattr(physx_manager, "_view", None)
+    if view is None:
+        # A missing view is a different diagnosis from a CPU-backed one, and it
+        # is knowable without importing anything.
+        return {"unavailable": "simulation_view_is_none"}
+    try:
+        import isaacsim.core.utils.stage as stage_utils
+        from pxr import UsdPhysics
+
+        stage = stage_utils.get_current_stage()
+    except Exception as exc:  # noqa: BLE001
+        return {"unavailable": f"{type(exc).__name__}:{exc}"[:200]}
+    for prim in stage.Traverse():
+        if not prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+            continue
+        path = str(prim.GetPath())
+        try:
+            articulation = view.create_articulation_view(path)
+            velocities = articulation.get_dof_velocities()
+            rows[path] = {
+                "device": str(getattr(velocities, "device", None)),
+                "backend_present": articulation._backend is not None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            rows[path] = {"unavailable": f"{type(exc).__name__}:{exc}"[:200]}
+    return rows
+
+
 def _articulation_device_binding(
     built: Any, *, expected_device: str
 ) -> dict[str, Any]:
@@ -638,12 +744,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("preconstruction_device_binding", "completed")
 
         _announce("environment_build")
-        built = build_native_task_arena_environment(
-            plan,
-            device="cuda:0",
-            bundle_root=packet,
-            preconstruction_receipt=preconstruction,
-        )
+        try:
+            built = build_native_task_arena_environment(
+                plan,
+                device="cuda:0",
+                bundle_root=packet,
+                preconstruction_receipt=preconstruction,
+            )
+        except Exception as exc:
+            # Articulation views are created here, inside sim.reset(). Attempts
+            # r6-r10 all died in this call with a cuda/cpu mismatch naming a
+            # Warp kernel argument rather than the asset or the setting that
+            # demoted the scene. Record what PhysX was configured with before
+            # re-raising, so the next failure is diagnosable from the receipt.
+            result["environment_build_failure"] = {
+                "error": f"{type(exc).__name__}:{exc}"[:400],
+                "traceback": traceback.format_exc()[-4000:],
+                "physics_scene_device_evidence": physics_scene_device_evidence(),
+            }
+            raise
         device_readback = read_native_task_arena_device_binding(
             built, expected_device="cuda:0"
         )
