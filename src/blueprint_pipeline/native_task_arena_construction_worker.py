@@ -203,8 +203,16 @@ def _evaluate_task_construction_gates(
 
 
 def _jsonable(value: Any) -> Any:
-    if hasattr(value, "detach"):
+    if hasattr(value, "detach"):  # torch tensor
         value = value.detach().cpu()
+    if not hasattr(value, "tolist") and hasattr(value, "numpy"):
+        # warp arrays have neither `detach` nor `tolist`, so without this they
+        # fell through unconverted and every downstream use failed far away
+        # from here -- r12 died on `_jsonable(robot.data.root_pose_w)[0]` with
+        # "Item indexing is not supported on wp.array objects", after a clean
+        # environment build. Isaac Lab's physics views return warp arrays, so
+        # this is the normal type here, not an exotic one.
+        value = value.numpy()
     if hasattr(value, "tolist"):
         return value.tolist()
     if isinstance(value, Mapping):
