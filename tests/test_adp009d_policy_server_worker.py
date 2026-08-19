@@ -138,6 +138,11 @@ def test_a_malformed_chunk_is_not_readiness(monkeypatch) -> None:
             def __init__(self, **kwargs):
                 pass
 
+            def get_server_metadata(self):
+                # a correctly served policy publishes identity metadata; the
+                # episode client refuses a server that does not
+                return {"policy_id": "pi05_droid", "local_checkpoint_verified": True}
+
             def infer(self, observation):
                 return {"actions": actions}
 
@@ -417,3 +422,47 @@ def test_the_episode_connects_to_the_port_that_actually_started() -> None:
     # Blueprint's flat observation directly to GR00T's nested API.
     assert "GrootN17DroidPolicyClient" in source
     assert "worker_identity_receipt" in source
+
+
+def test_readiness_refuses_a_server_the_episode_would_refuse(monkeypatch) -> None:
+    """A stock server passes a bare probe and is then refused by the episode.
+
+    `build_serve_command` launches OpenPI's stock `serve_policy.py`, which
+    publishes no identity metadata. The arena policy worker builds
+    `OpenPIWebsocketDroidPolicyClient`, whose __init__ validates 14 identity
+    fields plus local checkpoint verification. Readiness previously used a raw
+    client with no identity check, so it passed -- and the run then died at
+    `inputs_verified` after a full Isaac boot and scene build, with zero policy
+    queries. Fail at the cheap end instead.
+    """
+
+    import sys
+    import types
+
+    import numpy as np
+    import pytest as _pytest
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    class _StockClient:
+        """OpenPI's stock server: answers inference, publishes no identity."""
+
+        def __init__(self, **kwargs):
+            pass
+
+        def get_server_metadata(self):
+            return {}
+
+        def infer(self, observation):
+            return {"actions": np.zeros((20, 8), dtype=float)}
+
+    transport = types.ModuleType("openpi_client.websocket_client_policy")
+    transport.WebsocketClientPolicy = _StockClient
+    package = types.ModuleType("openpi_client")
+    package.websocket_client_policy = transport
+    monkeypatch.setitem(sys.modules, "openpi_client", package)
+
+    with _pytest.raises(RuntimeError) as excinfo:
+        worker.attempt_round_trip(host="127.0.0.1", port=8000)
+
+    assert "policy_server_publishes_no_identity_metadata" in str(excinfo.value)

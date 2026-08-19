@@ -190,6 +190,19 @@ def attempt_round_trip(
         client = websocket_client_policy.WebsocketClientPolicy(
             host=host, port=int(port)
         )
+        # Readiness must fail for a server the EPISODE would refuse. The arena
+        # policy worker builds OpenPIWebsocketDroidPolicyClient, whose __init__
+        # validates 14 identity fields plus local checkpoint verification. A
+        # stock `serve_policy.py` publishes none of them, so readiness passing
+        # here while the episode refuses later means a full Isaac boot and
+        # scene build are paid for and zero policy queries run. Check the same
+        # contract now, at the cheap end.
+        metadata = getattr(client, "get_server_metadata", lambda: {})() or {}
+        if not metadata:
+            raise RuntimeError(
+                "policy_server_publishes_no_identity_metadata:"
+                "the episode client requires it, so this server would be refused"
+            )
         response = client.infer(_probe_observation())
         actions = response["actions"] if isinstance(response, dict) else response
         chunk = np.asarray(actions, dtype=float)
