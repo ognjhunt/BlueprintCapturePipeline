@@ -606,6 +606,42 @@ def test_construction_camera_snapshot_fails_a_black_frame(tmp_path) -> None:
     assert "native_task_camera_rgb_frame_void" in observability["blockers"]
 
 
+def test_construction_camera_snapshot_restores_flat_proxy_semantics(tmp_path) -> None:
+    import numpy as np
+
+    semantic = np.zeros((32, 48), dtype=np.int32)
+    semantic[8:24, 12:36] = 7
+    frame = np.full((32, 48, 3), 96, dtype=np.uint8)
+    camera = type("_Camera", (), {})()
+    camera.data = _FakeCameraData(
+        rgb=frame,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+    )
+    camera.data.output["semantic_segmentation"] = semantic.reshape(1, -1, 1)
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _camera_snapshot,
+    )
+
+    snapshot = _camera_snapshot(
+        env=_FakeEnv({"external_cam": camera}),
+        camera_scene_names={"external": "external_cam"},
+        output_root=tmp_path,
+        snapshot_id="flat_proxy",
+    )
+
+    row = snapshot["cameras"][0]
+    assert row["raw_shapes"]["semantic_raw_shape"] == [1, 1536, 1]
+    assert row["raw_shapes"]["semantic_image_shape"] == [32, 48]
+    assert row["observability"]["semantic_passed"] is True
+    assert row["observability"]["pixel_count"] == 384
+    diagnostics = json.loads(
+        (tmp_path / "native_task_camera_snapshot_diagnostics.v1.json").read_text()
+    )
+    assert diagnostics["cameras"][0]["semantic_image_shape"] == [32, 48]
+
+
 def test_construction_camera_snapshot_refuses_when_the_claimed_site_is_void(
     tmp_path,
 ) -> None:
