@@ -143,7 +143,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
             "extension_enabled": False,
             "renderer_hints": 3,
             "multi_gpu_enabled": False,
-            "schema_registered": True,
+            "schema_registered": False,
         },
     )
 
@@ -166,6 +166,8 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     assert receipt["nurec_renderer"]["render_path"] == "plain_nurec_volume"
     assert receipt["nurec_renderer"]["extension_required"] is False
     assert receipt["nurec_renderer"]["extension_enabled"] is False
+    assert receipt["nurec_renderer"]["schema_registration_required"] is False
+    assert receipt["nurec_renderer"]["schema_registered"] is False
     assert receipt["nurec_renderer"]["activation_method"] == (
         "test_injected_post_launch_probe"
     )
@@ -225,6 +227,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
                 "extension_enabled": True,
                 "renderer_hints": 3,
                 "multi_gpu_enabled": False,
+                "schema_registration_required": True,
                 "schema_registered": False,
             },
             "native_task_isaaclab_nurec_schema_not_registered",

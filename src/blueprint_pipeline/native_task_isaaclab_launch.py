@@ -359,6 +359,9 @@ def launch_native_task_isaaclab(
         "renderer_hints_expected": 3,
         "multi_gpu_enabled": raw_nurec.get("multi_gpu_enabled"),
         "schema_type_name": NATIVE_TASK_ARENA_NUREC_SCHEMA,
+        "schema_registration_required": raw_nurec.get(
+            "schema_registration_required"
+        ) is True,
         "schema_registered": raw_nurec.get("schema_registered") is True,
     }
     nurec_errors = []
@@ -368,7 +371,7 @@ def launch_native_task_isaaclab(
         nurec_errors.append("native_task_isaaclab_nurec_renderer_hints_invalid")
     if nurec["multi_gpu_enabled"] is not False:
         nurec_errors.append("native_task_isaaclab_nurec_multi_gpu_not_disabled")
-    if not nurec["schema_registered"]:
+    if nurec["schema_registration_required"] and not nurec["schema_registered"]:
         nurec_errors.append("native_task_isaaclab_nurec_schema_not_registered")
     if nurec_errors:
         # Do not call ``SimulationApp.close()`` here. In this runtime Kit may
