@@ -964,6 +964,11 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
     )
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
+    entrypoint = (
+        extracted / "provider_runtime/run_adp_arena_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    assert 'if [ ! -f "$OUT_DIR/native_task_arena_runtime_preflight.v1.json" ]' in entrypoint
+    assert '"worker_exit_code": runner_rc' in entrypoint
     from blueprint_pipeline.native_task_arena_construction_worker import (
         _load_and_verify_manifest,
     )
