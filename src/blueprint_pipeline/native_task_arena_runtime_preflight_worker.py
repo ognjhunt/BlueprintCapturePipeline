@@ -266,7 +266,6 @@ def _official_nurec_render_setup_and_warmup(
     *,
     warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
     setup_for_rendering_factory: Any = None,
-    orchestrator_step: Any = None,
     progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Apply NVIDIA's shipped NuRec setup and accumulation procedure."""
@@ -288,10 +287,6 @@ def _official_nurec_render_setup_and_warmup(
             )
 
             setup_for_rendering_factory = setup_for_rendering
-        if orchestrator_step is None:
-            import omni.replicator.core as rep
-
-            orchestrator_step = rep.orchestrator.step
         success, nurec, spg, problems = setup_for_rendering_factory(stage)
     except Exception as exc:  # noqa: BLE001 - retained diagnostic boundary
         return {
@@ -317,18 +312,15 @@ def _official_nurec_render_setup_and_warmup(
     updates_per_attempt = max(int(warmup_steps) // attempts, 5)
     warmup_update_count = 0
     prime_update_count = 0
-    orchestrator_errors: list[str] = []
-
-    # Match CameraRenderer in NVIDIA's exact 6.0.1 nurec_utils: tick five
-    # times, prime once, then interleave each orchestrator step with one
-    # eighth of the accumulation updates.
+    # The standalone nurec_render CameraRenderer creates its own Replicator
+    # annotator and therefore calls orchestrator.step(). This lane already has
+    # Isaac Lab CameraCfg render products and annotators. NVIDIA's exact pinned
+    # Isaac Lab Gaussian camera test advances that path with simulation/app
+    # ticks only; invoking Replicator's orchestrator here blocks indefinitely
+    # because this process owns no Replicator trigger graph.
     for _ in range(5):
         simulation_app.update()
         prime_update_count += 1
-    try:
-        orchestrator_step()
-    except Exception as exc:  # noqa: BLE001 - NVIDIA example continues
-        orchestrator_errors.append(type(exc).__name__)
     if progress_callback is not None:
         progress_callback(
             {
@@ -338,10 +330,6 @@ def _official_nurec_render_setup_and_warmup(
             }
         )
     for attempt in range(attempts):
-        try:
-            orchestrator_step()
-        except Exception as exc:  # noqa: BLE001 - NVIDIA example continues
-            orchestrator_errors.append(type(exc).__name__)
         for _ in range(updates_per_attempt):
             simulation_app.update()
             warmup_update_count += 1
@@ -360,15 +348,23 @@ def _official_nurec_render_setup_and_warmup(
         "stage_classified_spg": bool(spg),
         "official_setup_problems": [],
         "requested_warmup_steps": int(warmup_steps),
-        "orchestrator_attempts": attempts + 1,
-        "orchestrator_error_types": orchestrator_errors,
+        "orchestrator_attempts": 0,
+        "orchestrator_error_types": [],
         "prime_app_update_count": prime_update_count,
         "warmup_app_update_count": warmup_update_count,
         "app_update_count": prime_update_count + warmup_update_count,
-        "procedure_source": (
-            "isaac-sim/IsaacSim:source/standalone_examples/nurec/"
-            "nurec_render.py@987015050efebfd0cd5d3736ae47fffe5adee308"
-        ),
+        "procedure_sources": [
+            (
+                "isaac-sim/IsaacSim:source/standalone_examples/nurec/"
+                "nurec_render.py@987015050efebfd0cd5d3736ae47fffe5adee308"
+            ),
+            (
+                "isaac-sim/IsaacLab:source/isaaclab/test/sensors/"
+                "test_camera_ppisp_gaussian.py@"
+                "ffff603eafc6b74264a5261cc0183d6a65390d78"
+            ),
+        ],
+        "camera_warmup_method": "isaaclab_camera_app_updates_without_replicator_orchestrator",
         "passed": warmup_update_count >= int(warmup_steps),
         "blockers": [],
     }
