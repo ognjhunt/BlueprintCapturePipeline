@@ -113,10 +113,13 @@ CAMERA_THRESHOLDS = {
 # Whether this runtime can render the captured-site appearance volume at all.
 #
 # The Arena bundle is pinned separately to Isaac Sim 6.0.1. The sealed site is
-# a plain NuRec volume (no authored ``info:spg:sourceAsset``), so NVIDIA's 6.0.1
-# contract does not require ``omni.rtx.spg``. The preflight verifies that asset
-# classification and the shared launcher refuses unless the plain-volume launch
-# settings and renderer hints read back as qualified, while the packet gate
+# a plain NuRec volume (no authored ``info:spg:sourceAsset``), so it does not
+# execute an SPG/PPISP graph. Live 6.0.1 evidence showed the plain volume remained
+# void without the image's ``omni.rtx.spg`` renderer component loaded at Kit launch.
+# Loading it is the remaining explicit hypothesis; only the pixel gate below may
+# say whether that made the site render. The preflight keeps the claims separate:
+# it verifies the asset classification and refuses unless the launch-time renderer extension,
+# plain-volume settings, and renderer hints read back as qualified, while the packet gate
 # verifies the authored ``OmniNuRecFieldAsset`` type-name signal. NVIDIA's own
 # 6.0.1 NuRec utilities define and detect that raw type name without requiring
 # a concrete ``Usd.SchemaRegistry`` entry. The camera gate remains the independent

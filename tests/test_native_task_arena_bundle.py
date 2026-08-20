@@ -1007,7 +1007,8 @@ def test_runtime_preflight_classifies_plain_volume_without_spg(tmp_path: Path) -
     result = _plain_nurec_volume_contract(packet, plan)
     assert result["passed"] is True
     assert result["render_path"] == "plain_nurec_volume"
-    assert result["omni_rtx_spg_required"] is False
+    assert result["spg_graph_execution_required"] is False
+    assert result["renderer_extension_activation_expected"] is True
 
 
 def test_runtime_preflight_refuses_spg_asset_on_plain_volume_path(tmp_path: Path) -> None:
@@ -1033,7 +1034,7 @@ def test_runtime_preflight_refuses_spg_asset_on_plain_volume_path(tmp_path: Path
     }
     result = _plain_nurec_volume_contract(packet, plan)
     assert result["passed"] is False
-    assert result["omni_rtx_spg_required"] is True
+    assert result["spg_graph_execution_required"] is True
     assert result["blockers"] == [
         "native_task_arena_spg_asset_requires_separate_launch_path"
     ]
