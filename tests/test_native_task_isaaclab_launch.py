@@ -77,7 +77,7 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
         "runtime_dependencies_installed": [
             {
                 "package": "warp-lang",
-                "version": "1.12.0",
+                "version": "1.13.0",
                 "pure_python": False,
                 "wheel_tag": "py3-none-manylinux_2_28_x86_64",
             },
@@ -93,8 +93,8 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
             {
                 "module": "warp",
                 "available": True,
-                "expected_version": "1.12.0",
-                "observed_version": "1.12.0",
+                "expected_version": "1.13.0",
+                "observed_version": "1.13.0",
                 "version_matches": True,
             },
             {

@@ -201,7 +201,7 @@ def _runtime_source_packet(root: Path) -> Path:
                 files[f"source/{name}/setup.py"] = (
                     "from setuptools import setup; "
                     f"setup(name='{name}', install_requires="
-                    f"{['warp-lang==1.12.0', 'torch>=2.10'] if name == 'isaaclab' else []!r})\n"
+                    f"{['warp-lang==1.13.0', 'torch>=2.10'] if name == 'isaaclab' else []!r})\n"
                 )
                 files[f"source/{name}/pyproject.toml"] = (
                     "[build-system]\nrequires=['setuptools']\n"

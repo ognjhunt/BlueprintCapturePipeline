@@ -75,20 +75,20 @@ INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
 BASE_RUNTIME_DEPENDENCY_WHEELS = (
-    # The pinned Isaac Lab Python/API tree declares external Warp 1.12.0.
+    # The pinned Isaac Lab Python/API tree declares external Warp 1.13.0.
     # The compatible Kit experience intentionally excludes ``omni.warp.core``
     # to prevent a second Warp runtime from moving PhysX tensors across CPU and
     # CUDA devices.  Therefore the external wheel is a required runtime input,
     # not an optional transitive dependency supplied by the simulator image.
     {
-        "filename": "warp_lang-1.12.0-py3-none-manylinux_2_28_x86_64.whl",
+        "filename": "warp_lang-1.13.0-py3-none-manylinux_2_28_x86_64.whl",
         "package": "warp-lang",
-        "version": "1.12.0",
+        "version": "1.13.0",
         "license_spdx": "Apache-2.0",
         "pure_python": False,
         "wheel_tag": "py3-none-manylinux_2_28_x86_64",
         "import_module": "warp",
-        "import_version": "1.12.0",
+        "import_version": "1.13.0",
     },
     # Arena imports Isaac Lab task configuration at builder import time.  That
     # path requires Hydra and its complete pure-Python dependency closure;
@@ -593,7 +593,7 @@ def materialize_native_task_runtime_source_packet(
         ),
         b"",
     )
-    if b"warp-lang==1.12.0" not in dependency_manifest:
+    if b"warp-lang==1.13.0" not in dependency_manifest:
         raise NativeTaskRuntimeSourcePacketError(
             ["native_task_runtime_dependency_source_contract_invalid:warp-lang"]
         )
@@ -603,8 +603,8 @@ def materialize_native_task_runtime_source_packet(
         )
     dependency_basis = {
         "package": "warp-lang",
-        "version": "1.12.0",
-        "requirement": "warp-lang==1.12.0",
+        "version": "1.13.0",
+        "requirement": "warp-lang==1.13.0",
         "source_repository": ISAACLAB_REPOSITORY,
         "source_revision": isaaclab_commit,
         "source_tree": isaaclab_tree,
