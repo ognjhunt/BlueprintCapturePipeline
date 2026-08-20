@@ -181,6 +181,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         "isaacsim.replicator.nurec_utils",
     ]
     assert "--/UJITSO/geometry=true" in receipt["launch"]["kit_args"]
+    assert receipt["launch"]["kit_args"][2:4] == ["--enable", "omni.rtx.spg"]
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
@@ -315,7 +316,7 @@ def test_nurec_renderer_readback_error_defers_close_until_receipt(
     assert closed == []
 
 
-def test_plain_particlefield_does_not_require_or_dynamically_enable_spg(
+def test_plain_particlefield_preloads_but_does_not_dynamically_enable_spg(
     tmp_path: Path,
 ) -> None:
     _app, receipt = launch_native_task_isaaclab(
@@ -327,10 +328,10 @@ def test_plain_particlefield_does_not_require_or_dynamically_enable_spg(
         ),
         nurec_renderer_probe_factory=lambda: {
             "render_path": NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
-            "activation_method": "nurec_utils_prelaunch_plain_particlefield_no_spg",
-            "extension_required": False,
-            "extension_was_enabled_before_probe": False,
-            "extension_enabled": False,
+            "activation_method": "kit_prelaunch_extensions_no_dynamic_enable",
+            "extension_required": True,
+            "extension_was_enabled_before_probe": True,
+            "extension_enabled": True,
             "spg_dynamic_enable_attempted": False,
             "nurec_utils_extension_enabled": True,
             "renderer_hints": 3,
@@ -342,8 +343,8 @@ def test_plain_particlefield_does_not_require_or_dynamically_enable_spg(
 
     nurec = receipt["nurec_renderer"]
     assert nurec["status"] == "qualified"
-    assert nurec["extension_required"] is False
-    assert nurec["extension_enabled"] is False
+    assert nurec["extension_required"] is True
+    assert nurec["extension_enabled"] is True
     assert nurec["spg_dynamic_enable_attempted"] is False
 
     import inspect

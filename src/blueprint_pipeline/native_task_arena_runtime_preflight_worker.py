@@ -267,6 +267,7 @@ def _official_nurec_render_setup_and_warmup(
     warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
     setup_for_rendering_factory: Any = None,
     orchestrator_step: Any = None,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Apply NVIDIA's shipped NuRec setup and accumulation procedure."""
 
@@ -314,16 +315,44 @@ def _official_nurec_render_setup_and_warmup(
 
     attempts = 8
     updates_per_attempt = max(int(warmup_steps) // attempts, 5)
-    update_count = 0
+    warmup_update_count = 0
+    prime_update_count = 0
     orchestrator_errors: list[str] = []
-    for _ in range(attempts):
+
+    # Match CameraRenderer in NVIDIA's exact 6.0.1 nurec_utils: tick five
+    # times, prime once, then interleave each orchestrator step with one
+    # eighth of the accumulation updates.
+    for _ in range(5):
+        simulation_app.update()
+        prime_update_count += 1
+    try:
+        orchestrator_step()
+    except Exception as exc:  # noqa: BLE001 - NVIDIA example continues
+        orchestrator_errors.append(type(exc).__name__)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "round": 0,
+                "prime_updates_completed": prime_update_count,
+                "warmup_updates_completed": warmup_update_count,
+            }
+        )
+    for attempt in range(attempts):
         try:
             orchestrator_step()
         except Exception as exc:  # noqa: BLE001 - NVIDIA example continues
             orchestrator_errors.append(type(exc).__name__)
         for _ in range(updates_per_attempt):
             simulation_app.update()
-            update_count += 1
+            warmup_update_count += 1
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "round": attempt + 1,
+                    "prime_updates_completed": prime_update_count,
+                    "warmup_updates_completed": warmup_update_count,
+                }
+            )
     return {
         "schema_version": "native_task_arena_nurec_warmup.v1",
         "official_setup_success": True,
@@ -331,14 +360,16 @@ def _official_nurec_render_setup_and_warmup(
         "stage_classified_spg": bool(spg),
         "official_setup_problems": [],
         "requested_warmup_steps": int(warmup_steps),
-        "orchestrator_attempts": attempts,
+        "orchestrator_attempts": attempts + 1,
         "orchestrator_error_types": orchestrator_errors,
-        "app_update_count": update_count,
+        "prime_app_update_count": prime_update_count,
+        "warmup_app_update_count": warmup_update_count,
+        "app_update_count": prime_update_count + warmup_update_count,
         "procedure_source": (
             "isaac-sim/IsaacSim:source/standalone_examples/nurec/"
             "nurec_render.py@987015050efebfd0cd5d3736ae47fffe5adee308"
         ),
-        "passed": update_count >= int(warmup_steps),
+        "passed": warmup_update_count >= int(warmup_steps),
         "blockers": [],
     }
 
@@ -582,7 +613,11 @@ def main() -> int:
                 )
             result["official_nurec_render_setup"] = (
                 _official_nurec_render_setup_and_warmup(
-                    simulation_app, omni.usd.get_context().get_stage()
+                    simulation_app,
+                    omni.usd.get_context().get_stage(),
+                    progress_callback=lambda row: _announce(
+                        f"nurec_warmup_round_{row['round']}", "completed"
+                    ),
                 )
             )
             if not result["official_nurec_render_setup"]["passed"]:
