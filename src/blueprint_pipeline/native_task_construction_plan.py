@@ -81,6 +81,11 @@ MAX_JOINT_SETPOINT_LEAD_RAD = 1.00
 #: the damping ratio is unchanged, and this task ends in contact with a hinged
 #: door.  1.0 is exact feedforward; 0.0 restores position-only commanding.
 VELOCITY_FEEDFORWARD_SCALE = DEFAULT_VELOCITY_FEEDFORWARD_SCALE
+# Align the wrist while still well clear of the appliance, then perform the
+# existing short Cartesian approach. MoveIt and Isaac's own Franka examples
+# separate these operations; commanding a 120+ degree reorientation only at
+# the final 0.12 m standoff produced real washer contact in Arena r30.
+GRAPH_ARTICULATED_PREALIGN_CLEARANCE_M = 0.30
 
 
 class NativeTaskConstructionPlanError(ValueError):
@@ -703,6 +708,7 @@ def materialize_graph_articulated_construction_phase_plan(
     arrival_tolerance_m: float = 0.02,
     stable_samples: int = 2,
     maximum_steps_per_phase: int = 64,
+    prealign_clearance_m: float = GRAPH_ARTICULATED_PREALIGN_CLEARANCE_M,
 ) -> dict[str, Any]:
     """Compile a complete graph-articulated clearance and contact program."""
 
@@ -846,12 +852,33 @@ def materialize_graph_articulated_construction_phase_plan(
         + approach_unit_world[axis] * float(affordance["precontact_clearance_m"])
         for axis in range(3)
     ]
+    prealign_clearance = _positive(
+        prealign_clearance_m,
+        error="native_articulated_graph_construction_prealign_clearance_invalid",
+    )
+    if prealign_clearance <= float(affordance["precontact_clearance_m"]):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_prealign_clearance_invalid"]
+        )
+    prealign_position = [
+        first["contact_position_world_m"][axis]
+        + approach_unit_world[axis] * prealign_clearance
+        for axis in range(3)
+    ]
     retreat_position = [
         last["contact_position_world_m"][axis]
         + retreat_unit_world[axis] * float(affordance["retreat_clearance_m"])
         for axis in range(3)
     ]
     phases = [
+        _phase(
+            "prealign",
+            prealign_position,
+            gripper_state="open",
+            gate_ids=("precontact_reachability", "base_collision_clearance"),
+            orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+            arrival_orientation_tolerance_rad=orientation_tolerance,
+        ),
         _phase(
             "approach",
             approach_position,
@@ -911,6 +938,14 @@ def materialize_graph_articulated_construction_phase_plan(
         ]
     )
     exact_contact_phases = [
+        _phase(
+            "prealign",
+            prealign_position,
+            gripper_state="open",
+            gate_ids=("precontact_reachability", "base_collision_clearance"),
+            orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+            arrival_orientation_tolerance_rad=orientation_tolerance,
+        ),
         _phase(
             "approach",
             approach_position,
@@ -1016,6 +1051,7 @@ def materialize_graph_articulated_construction_phase_plan(
         "phases": phases,
         "phase_count": len(phases),
         "exact_contact_phases": exact_contact_phases,
+        "prealign_clearance_m": prealign_clearance,
         "execution_parameters": {
             "arrival_tolerance_m": arrival_tolerance,
             "arrival_orientation_tolerance_rad": affordance[
@@ -1046,6 +1082,7 @@ def materialize_graph_articulated_construction_phase_plan(
         ),
         "required_gate_ids": sorted(gate_contract),
         "claim_boundary": {
+            "wrist_alignment_occurs_before_final_appliance_approach": True,
             "clearance_phases_are_native_ik_targets": True,
             "exact_contact_phases_require_qualified_clearance_receipt": True,
             "kinematic_path_correctness_requires_bound_asset_qualification": True,
@@ -1866,6 +1903,9 @@ def materialize_native_task_construction_phase_plan(
     maximum_steps_per_phase: int = 64,
     max_joint_delta_rad: float = MAX_JOINT_DELTA_RAD,
     max_joint_setpoint_lead_rad: float = MAX_JOINT_SETPOINT_LEAD_RAD,
+    graph_articulated_prealign_clearance_m: float = (
+        GRAPH_ARTICULATED_PREALIGN_CLEARANCE_M
+    ),
 ) -> dict[str, Any]:
     """Dispatch one frozen scene plan without scene or object identities."""
 
@@ -1885,6 +1925,7 @@ def materialize_native_task_construction_phase_plan(
                 arrival_tolerance_m=arrival_tolerance_m,
                 stable_samples=stable_samples,
                 maximum_steps_per_phase=maximum_steps_per_phase,
+                prealign_clearance_m=graph_articulated_prealign_clearance_m,
             )
         if task_spec.get("schema_version") != "adp_task_spec.v1":
             raise NativeTaskConstructionPlanError(
