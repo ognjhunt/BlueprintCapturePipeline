@@ -67,7 +67,7 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
             files[f"source/{name}/setup.py"] = (
                 "from setuptools import setup; "
                 f"setup(name='{name}', install_requires="
-                f"{['warp-lang==1.12.0'] if name == 'isaaclab' else []!r})\n"
+                f"{['warp-lang==1.12.0', 'torch>=2.10'] if name == 'isaaclab' else []!r})\n"
             )
             files[f"source/{name}/pyproject.toml"] = (
                 "[build-system]\nrequires=['setuptools']\n"
@@ -128,6 +128,33 @@ def _wheelhouse(root: Path) -> Path:
     return wheelhouse
 
 
+def _successful_import_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "module": "warp",
+            "available": True,
+            "expected_version": "1.12.0",
+            "observed_version": "1.12.0",
+            "version_matches": True,
+        },
+        {
+            "module": "torch",
+            "available": True,
+            "expected_version": "2.10.0+cu128",
+            "observed_version": "2.10.0+cu128",
+            "version_matches": True,
+            "cuda_required": True,
+            "cuda_available": True,
+            "expected_cuda_version": "12.8",
+            "observed_cuda_version": "12.8",
+            "cuda_version_matches": True,
+            "cuda_tensor_device": "cuda:0",
+            "cuda_tensor_sum": 6.0,
+            "cuda_tensor_operation_passed": True,
+        },
+    ]
+
+
 def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     tmp_path: Path,
 ) -> None:
@@ -154,6 +181,9 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     )
     assert verified["runtime_dependency_basis"]["relative_path"] == (
         "runtime_sources/isaaclab/source/isaaclab/setup.py"
+    )
+    assert verified["torch_runtime_dependency_basis"]["requirement"] == (
+        "torch>=2.10"
     )
     assert {
         ("antlr4-python3-runtime", "4.9.3"),
@@ -300,7 +330,22 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
                             "expected_version": "1.12.0",
                             "observed_version": "1.12.0",
                             "version_matches": True,
-                        }
+                        },
+                        {
+                            "module": "torch",
+                            "available": True,
+                            "expected_version": "2.10.0+cu128",
+                            "observed_version": "2.10.0+cu128",
+                            "version_matches": True,
+                            "cuda_required": True,
+                            "cuda_available": True,
+                            "expected_cuda_version": "12.8",
+                            "observed_cuda_version": "12.8",
+                            "cuda_version_matches": True,
+                            "cuda_tensor_device": "cuda:0",
+                            "cuda_tensor_sum": 6.0,
+                            "cuda_tensor_operation_passed": True,
+                        },
                     ]
                 ),
                 stderr="",
@@ -344,6 +389,8 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert "import_module" in observed[1][-1]
     assert result["runtime_import_probes"][0]["module"] == "warp"
     assert result["runtime_import_probes"][0]["version_matches"] is True
+    assert result["runtime_import_probes"][1]["module"] == "torch"
+    assert result["runtime_import_probes"][1]["cuda_tensor_operation_passed"] is True
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
     path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
@@ -394,7 +441,9 @@ def test_external_warp_is_probed_before_runtime_provisioning_can_complete(
 
     assert calls == 2
     assert result["status"] == "blocked"
-    assert result["blockers"] == ["native_task_runtime_import_probe_failed:warp"]
+    assert result["blockers"] == [
+        "native_task_runtime_import_probe_failed:dependencies"
+    ]
     assert result["source_packages_made_importable"] is False
     assert result["dependencies_installed"] is False
 
@@ -412,17 +461,7 @@ def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
     def fake_run(command, **kwargs):
         observed.append(command)
         if "import_module" in command[-1]:
-            stdout = json.dumps(
-                [
-                    {
-                        "module": "warp",
-                        "available": True,
-                        "expected_version": "1.12.0",
-                        "observed_version": "1.12.0",
-                        "version_matches": True,
-                    }
-                ]
-            )
+            stdout = json.dumps(_successful_import_rows())
         else:
             stdout = "found"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
@@ -464,17 +503,7 @@ def test_explicit_interpreter_runtime_probes_remain_isolated(tmp_path: Path) -> 
     def fake_run(command, **kwargs):
         observed.append(command)
         if "import_module" in command[-1]:
-            stdout = json.dumps(
-                [
-                    {
-                        "module": "warp",
-                        "available": True,
-                        "expected_version": "1.12.0",
-                        "observed_version": "1.12.0",
-                        "version_matches": True,
-                    }
-                ]
-            )
+            stdout = json.dumps(_successful_import_rows())
         else:
             stdout = "found"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")

@@ -81,7 +81,13 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
                 "version": "1.12.0",
                 "pure_python": False,
                 "wheel_tag": "py3-none-manylinux_2_28_x86_64",
-            }
+            },
+            {
+                "package": "torch",
+                "version": "2.10.0+cu128",
+                "pure_python": False,
+                "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+            },
         ],
         "runtime_import_probe_returncode": 0,
         "runtime_import_probes": [
@@ -91,7 +97,22 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
                 "expected_version": "1.12.0",
                 "observed_version": "1.12.0",
                 "version_matches": True,
-            }
+            },
+            {
+                "module": "torch",
+                "available": True,
+                "expected_version": "2.10.0+cu128",
+                "observed_version": "2.10.0+cu128",
+                "version_matches": True,
+                "cuda_required": True,
+                "cuda_available": True,
+                "expected_cuda_version": "12.8",
+                "observed_cuda_version": "12.8",
+                "cuda_version_matches": True,
+                "cuda_tensor_device": "cuda:0",
+                "cuda_tensor_sum": 6.0,
+                "cuda_tensor_operation_passed": True,
+            },
         ],
         "receipt_digest": "",
     }
@@ -136,6 +157,9 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
     assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
+    assert receipt["torch"][
+        "import_and_cuda_operation_qualified_before_simulation_app"
+    ] is True
     assert receipt["nurec_renderer"]["status"] == "qualified"
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {

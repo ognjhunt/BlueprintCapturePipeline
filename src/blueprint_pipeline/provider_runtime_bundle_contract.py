@@ -201,7 +201,7 @@ def provider_runtime_contract_blockers(
             and len(result_names) == 1
             and "native_task_arena_process_exited_without_result" in entrypoint_text
         )
-        runner_valid = all(
+        construction_runner_valid = all(
             token in runner_text
             for token in (
                 "native_task_arena_construction_result.v1.json",
@@ -212,6 +212,19 @@ def provider_runtime_contract_blockers(
                 "provider_zero_required_after_return",
             )
         )
+        runtime_preflight_runner_valid = all(
+            token in runner_text
+            for token in (
+                "native_task_arena_runtime_preflight.v1.json",
+                "preflight_native_dependency_matrix",
+                "build_native_task_arena_environment",
+                "NativeFrankaDifferentialIkServo",
+                "task_motion_executed",
+                "candidate_policy_queried",
+                "provider_zero_required_after_return",
+            )
+        )
+        runner_valid = construction_runner_valid or runtime_preflight_runner_valid
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "paired_target_native_import":
         entrypoint_valid = all(

@@ -173,6 +173,16 @@ def verify_native_task_isaaclab_launch_contract(
         for row in provisioning.get("runtime_import_probes") or []
         if isinstance(row, Mapping) and row.get("module") == "warp"
     ]
+    installed_torch = [
+        row
+        for row in provisioning.get("runtime_dependencies_installed") or []
+        if isinstance(row, Mapping) and row.get("package") == "torch"
+    ]
+    import_torch = [
+        row
+        for row in provisioning.get("runtime_import_probes") or []
+        if isinstance(row, Mapping) and row.get("module") == "torch"
+    ]
     if (
         len(installed_warp) != 1
         or installed_warp[0].get("version") != "1.12.0"
@@ -190,6 +200,29 @@ def verify_native_task_isaaclab_launch_contract(
         or import_warp[0].get("version_matches") is not True
     ):
         errors.append("native_task_isaaclab_external_warp_import_unqualified")
+    if (
+        len(installed_torch) != 1
+        or installed_torch[0].get("version") != "2.10.0+cu128"
+        or installed_torch[0].get("pure_python") is not False
+        or installed_torch[0].get("wheel_tag")
+        != "cp312-cp312-manylinux_2_28_x86_64"
+    ):
+        errors.append("native_task_isaaclab_torch_identity_invalid")
+    if (
+        provisioning.get("runtime_import_probe_returncode") != 0
+        or len(import_torch) != 1
+        or import_torch[0].get("available") is not True
+        or import_torch[0].get("expected_version") != "2.10.0+cu128"
+        or import_torch[0].get("observed_version") != "2.10.0+cu128"
+        or import_torch[0].get("version_matches") is not True
+        or import_torch[0].get("cuda_available") is not True
+        or import_torch[0].get("expected_cuda_version") != "12.8"
+        or import_torch[0].get("observed_cuda_version") != "12.8"
+        or import_torch[0].get("cuda_version_matches") is not True
+        or import_torch[0].get("cuda_tensor_device") != "cuda:0"
+        or import_torch[0].get("cuda_tensor_operation_passed") is not True
+    ):
+        errors.append("native_task_isaaclab_torch_cuda_import_unqualified")
     if errors:
         raise NativeTaskIsaacLabLaunchError(errors)
     return {
@@ -204,6 +237,14 @@ def verify_native_task_isaaclab_launch_contract(
             "wheel_tag": "py3-none-manylinux_2_28_x86_64",
             "import_module": "warp",
             "import_qualified_before_simulation_app": True,
+        },
+        "torch": {
+            "package": "torch",
+            "version": "2.10.0+cu128",
+            "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+            "cuda_version": "12.8",
+            "cuda_tensor_device": "cuda:0",
+            "import_and_cuda_operation_qualified_before_simulation_app": True,
         },
         "direct_physx_registration_required": True,
         "device_coherence_still_requires_native_readback": True,

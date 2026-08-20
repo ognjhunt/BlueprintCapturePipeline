@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import sysconfig
@@ -25,6 +26,17 @@ from .native_task_runtime_source_packet import (
 SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 TOP_LEVEL_PACKAGES = (
+    "torch",
+    "triton",
+    "cuda",
+    "filelock",
+    "fsspec",
+    "jinja2",
+    "markupsafe",
+    "mpmath",
+    "networkx",
+    "setuptools",
+    "sympy",
     "warp",
     "cloudpickle",
     "farama_notifications",
@@ -73,6 +85,12 @@ TOP_LEVEL_PACKAGES = (
 )
 RUNTIME_IMPORT_PROBES = (
     {"module": "warp", "expected_version": "1.12.0"},
+    {
+        "module": "torch",
+        "expected_version": "2.10.0+cu128",
+        "cuda_required": True,
+        "expected_cuda_version": "12.8",
+    },
 )
 
 
@@ -110,12 +128,14 @@ def _extract_runtime_dependency_wheels(
             wheel_tag = str(row.get("wheel_tag") or "")
             if expected_root not in wheel_metadata or f"Tag: {wheel_tag}" not in wheel_metadata:
                 raise RuntimeError("native_task_runtime_dependency_wheel_platform_contract_invalid")
-            if not pure_python:
+            if wheel_tag.rsplit("-", 1)[-1] != "any":
                 interpreter, abi, platform_tag = wheel_tag.split("-", 2)
                 if (
                     interpreter not in {runtime_python_tag, "py3"}
                     or abi not in {runtime_python_tag, "abi3", "none"}
-                    or platform_tag not in runtime_platform_tags
+                    or not _platform_tag_compatible(
+                        platform_tag, runtime_platform_tags
+                    )
                 ):
                     raise RuntimeError("native_task_runtime_dependency_binary_wheel_incompatible")
             for name in names:
@@ -142,6 +162,34 @@ def _extract_runtime_dependency_wheels(
     return installed
 
 
+def _platform_tag_compatible(
+    wheel_platform_tag: str, runtime_platform_tags: Sequence[str]
+) -> bool:
+    """Accept a manylinux wheel when the runtime glibc floor is newer."""
+
+    supported = set(runtime_platform_tags)
+    if wheel_platform_tag in supported:
+        return True
+    aliases = {"manylinux2010_x86_64": 12, "manylinux2014_x86_64": 17}
+    required_minor = aliases.get(wheel_platform_tag)
+    if required_minor is None:
+        match = re.fullmatch(r"manylinux_2_(\d+)_x86_64", wheel_platform_tag)
+        if match:
+            required_minor = int(match.group(1))
+    if required_minor is None:
+        return False
+    supported_minors = [
+        int(match.group(1))
+        for tag in supported
+        if (match := re.fullmatch(r"manylinux_2_(\d+)_x86_64", tag))
+    ]
+    if "manylinux2014_x86_64" in supported:
+        supported_minors.append(17)
+    if "manylinux2010_x86_64" in supported:
+        supported_minors.append(12)
+    return bool(supported_minors and required_minor <= max(supported_minors))
+
+
 def _runtime_wheel_compatibility() -> tuple[str, tuple[str, ...]]:
     python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
     if sys.platform != "linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
@@ -153,12 +201,14 @@ def _runtime_wheel_compatibility() -> tuple[str, tuple[str, ...]]:
             major, minor = (int(value) for value in libc_version.split(".")[:2])
         except (TypeError, ValueError):
             major, minor = (0, 0)
-        if (major, minor) >= (2, 28):
-            tags.append("manylinux_2_28_x86_64")
-        if (major, minor) >= (2, 26):
-            tags.append("manylinux_2_26_x86_64")
+        tags.extend(
+            f"manylinux_2_{value}_x86_64"
+            for value in range(minor, 4, -1)
+        )
         if (major, minor) >= (2, 17):
-            tags.extend(("manylinux_2_17_x86_64", "manylinux2014_x86_64"))
+            tags.append("manylinux2014_x86_64")
+        if (major, minor) >= (2, 12):
+            tags.append("manylinux2010_x86_64")
     return python_tag, tuple(tags)
 
 
@@ -179,6 +229,55 @@ def _persist(path: Path, result: dict[str, Any]) -> dict[str, Any]:
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return result
+
+
+def _runtime_import_probe_source() -> str:
+    """Import exact runtimes and execute one real CUDA tensor operation."""
+
+    return f"""
+import importlib
+import json
+
+contracts = {list(RUNTIME_IMPORT_PROBES)!r}
+rows = []
+for contract in contracts:
+    module = importlib.import_module(contract["module"])
+    observed = str(getattr(module, "__version__", "unreported"))
+    row = {{
+        "module": contract["module"],
+        "available": True,
+        "expected_version": contract["expected_version"],
+        "observed_version": observed,
+        "version_matches": observed == contract["expected_version"],
+    }}
+    if contract.get("cuda_required"):
+        row["cuda_required"] = True
+        row["cuda_available"] = bool(module.cuda.is_available())
+        row["expected_cuda_version"] = contract["expected_cuda_version"]
+        row["observed_cuda_version"] = str(module.version.cuda or "")
+        row["cuda_version_matches"] = (
+            row["observed_cuda_version"] == contract["expected_cuda_version"]
+        )
+        tensor = module.arange(4, dtype=module.float32, device="cuda:0")
+        row["cuda_tensor_device"] = str(tensor.device)
+        row["cuda_tensor_sum"] = float(tensor.sum().item())
+        row["cuda_tensor_operation_passed"] = (
+            row["cuda_tensor_device"] == "cuda:0" and row["cuda_tensor_sum"] == 6.0
+        )
+    rows.append(row)
+print(json.dumps(rows, sort_keys=True))
+valid = all(row["version_matches"] for row in rows)
+valid = valid and all(
+    not row.get("cuda_required")
+    or (
+        row.get("cuda_available")
+        and row.get("cuda_version_matches")
+        and row.get("cuda_tensor_operation_passed")
+    )
+    for row in rows
+)
+raise SystemExit(0 if valid else 4)
+""".strip()
 
 
 def provision_native_task_runtime_sources(
@@ -367,20 +466,7 @@ def provision_native_task_runtime_sources(
                 "native_task_runtime_source_package_path_probe_failed"
             )
             return _persist(result_path, result)
-        import_probe = (
-            "import importlib,json;"
-            f"contracts={list(RUNTIME_IMPORT_PROBES)!r};"
-            "rows=[];"
-            "[(lambda module,contract: rows.append({"
-            "'module':contract['module'],'available':True,"
-            "'expected_version':contract['expected_version'],"
-            "'observed_version':str(getattr(module,'__version__','unreported')),"
-            "'version_matches':str(getattr(module,'__version__','unreported'))"
-            "==contract['expected_version']}))"
-            "(importlib.import_module(contract['module']),contract) for contract in contracts];"
-            "print(json.dumps(rows,sort_keys=True));"
-            "raise SystemExit(0 if all(row['version_matches'] for row in rows) else 4)"
-        )
+        import_probe = _runtime_import_probe_source()
         import_command = [
             runtime_python,
             python_probe_flag,
@@ -407,8 +493,19 @@ def provision_native_task_runtime_sources(
             or not isinstance(import_rows, list)
             or len(import_rows) != len(RUNTIME_IMPORT_PROBES)
             or any(row.get("version_matches") is not True for row in import_rows)
+            or any(
+                row.get("cuda_required")
+                and (
+                    row.get("cuda_available") is not True
+                    or row.get("cuda_version_matches") is not True
+                    or row.get("cuda_tensor_operation_passed") is not True
+                )
+                for row in import_rows
+            )
         ):
-            result["blockers"].append("native_task_runtime_import_probe_failed:warp")
+            result["blockers"].append(
+                "native_task_runtime_import_probe_failed:dependencies"
+            )
             return _persist(result_path, result)
         result["status"] = "completed"
         result["source_packages_made_importable"] = True

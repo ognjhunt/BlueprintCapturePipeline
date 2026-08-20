@@ -179,9 +179,15 @@ from .native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
     load_verified_native_task_arena_policy_bundle,
 )
+from .native_task_arena_runtime_preflight_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
+    build_native_task_arena_runtime_preflight_bundle,
+    load_verified_native_task_arena_runtime_preflight_bundle,
+)
 from .native_task_arena_vast import (
     run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
+    run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
 )
 from .native_task_arena_paid_authority import (
@@ -1497,6 +1503,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
@@ -4884,10 +4891,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind in {
+            NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
         }:
+            preflight_requested = (
+                args.probe_kind == NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND
+            )
             controls_requested = args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
             policy_requested = args.probe_kind == NATIVE_TASK_ARENA_POLICY_PROBE_KIND
             missing = [
@@ -4911,7 +4922,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             blockers = [*missing, *control_blockers]
             if args.execute and not args.native_task_arena_bundle_receipt:
                 blockers.append("native_task_arena_execute_requires_dry_run_bundle_receipt")
-            if args.execute and not args.native_task_arena_attempt_authority:
+            if (
+                args.execute
+                and not preflight_requested
+                and not args.native_task_arena_attempt_authority
+            ):
                 blockers.append("native_task_arena_paid_attempt_authority_missing")
             if args.provider != "vast":
                 blockers.append("native_task_arena_provider_must_be_vast")
@@ -4944,7 +4959,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
                         bundle_loader = (
-                            load_verified_native_task_arena_policy_bundle
+                            load_verified_native_task_arena_runtime_preflight_bundle
+                            if preflight_requested
+                            else load_verified_native_task_arena_policy_bundle
                             if policy_requested
                             else load_verified_native_task_arena_controls_bundle
                             if controls_requested
@@ -4970,7 +4987,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "implementation_commit": control_identity["orchestrator_source_commit"],
                         }
                         prepared_bundle = (
-                            build_native_task_arena_policy_bundle(
+                            build_native_task_arena_runtime_preflight_bundle(
+                                **bundle_kwargs
+                            )
+                            if preflight_requested
+                            else build_native_task_arena_policy_bundle(
                                 **bundle_kwargs,
                                 construction_result_path=(
                                     args.native_task_arena_construction_result
@@ -5003,7 +5024,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         .expanduser()
                         .resolve()
                     )
-                    if prepared_bundle is None:
+                    if preflight_requested:
+                        blockers.append(
+                            "native_task_arena_runtime_preflight_authority_unexpected"
+                        )
+                    elif prepared_bundle is None:
                         blockers.append("native_task_arena_authority_requires_bundle")
                     else:
                         validate_native_task_arena_paid_attempt_authority(
@@ -5049,7 +5074,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared_bundle.get("scenario_instance_digest") if prepared_bundle else None
                 ),
                 "execution_mode": (
-                    "policy"
+                    "runtime_preflight"
+                    if preflight_requested
+                    else "policy"
                     if policy_requested
                     else "controls"
                     if controls_requested
@@ -5135,24 +5162,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             else:
                 run_native = (
-                    run_native_task_arena_policy_vast
+                    run_native_task_arena_runtime_preflight_vast
+                    if preflight_requested
+                    else run_native_task_arena_policy_vast
                     if policy_requested
                     else run_native_task_arena_controls_vast
                     if controls_requested
                     else run_native_task_arena_vast
                 )
-                result = run_native(
-                    job_dir=args.adp_job_dir,
-                    prepared_bundle=prepared_bundle,
-                    paid_resource_admission_grant=grant,
-                    execute=args.execute,
-                    machine_avoidlist_path=args.adp_machine_avoidlist,
-                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
-                    hard_cap_usd=args.adp_max_spend_usd,
-                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
-                    allowed_active_instance_ids=(args.adp_allowed_active_vast_instance_id),
-                    paid_attempt_authority=native_authority,
-                )
+                run_kwargs = {
+                    "job_dir": args.adp_job_dir,
+                    "prepared_bundle": prepared_bundle,
+                    "paid_resource_admission_grant": grant,
+                    "execute": args.execute,
+                    "machine_avoidlist_path": args.adp_machine_avoidlist,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "allowed_active_instance_ids": (
+                        args.adp_allowed_active_vast_instance_id
+                    ),
+                }
+                if not preflight_requested:
+                    run_kwargs["paid_attempt_authority"] = native_authority
+                result = run_native(**run_kwargs)
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))

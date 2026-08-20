@@ -61,6 +61,7 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # allocate anything, so it is reached by the allocator rather than by a
     # profile of its own.
     "task-evaluation-profile-preflight": "not_a_website_lane",
+    "native-task-arena-runtime-preflight": "not_a_website_lane",
     # Real debt -- executable, not retired, not frozen, and unreachable -- is
     # empty as of this lane's builder. Every probe kind the allocator can run
     # is now either reachable from the website or a recorded decision. A new
