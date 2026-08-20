@@ -382,6 +382,10 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "output_sha256": "sha256:" + sha256_file(asset),
         "source_sha256": _sha("a"),
         "splat_count": 1_000_000,
+        "sh_degree": 3,
+        "sh_primvar_element_size": 16,
+        "sh_primvar_interpolation": "vertex",
+        "display_color_fallback_authored": True,
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(
@@ -411,10 +415,35 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     assert variant["appearance_variant"]["base_request_digest"] == base[
         "request_digest"
     ]
+    assert variant["appearance_variant"]["sh_primvar_element_size"] == 16
+    assert variant["appearance_variant"]["sh_primvar_interpolation"] == "vertex"
+    assert variant["appearance_variant"]["display_color_fallback_authored"] is True
     assert variant["request_digest"] == canonical_digest(
         variant, digest_field="request_digest"
     )
     assert json.loads(output.read_text()) == variant
+
+    for missing in (
+        "sh_primvar_element_size",
+        "sh_primvar_interpolation",
+        "display_color_fallback_authored",
+    ):
+        invalid = dict(receipt)
+        invalid.pop(missing)
+        invalid["receipt_digest"] = canonical_digest(
+            invalid, digest_field="receipt_digest"
+        )
+        receipt_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(
+            NativeTaskArenaPacketError,
+            match="native_task_arena_appearance_variant_receipt_invalid",
+        ):
+            materialize_native_task_arena_appearance_variant_request(
+                base_request_path=base_path,
+                appearance_authoring_receipt_path=receipt_path,
+                evidence_root=evidence,
+                output_path=output,
+            )
 
 
 @pytest.mark.parametrize("articulated", [False, True])

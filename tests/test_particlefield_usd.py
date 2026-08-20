@@ -104,12 +104,17 @@ def test_full_sh_layout_degree3() -> None:
         rest[:, 30 + k] = 200 + k + 1  # B band
     arr = build_particlefield_arrays(splat, sh_rest=rest)
     assert arr["sh_degree"] == 3
+    assert arr["sh_element_size"] == 16
     assert arr["sh_coefficients"].shape == (n * 16, 3)
     coeffs = arr["sh_coefficients"].reshape(n, 16, 3)
     np.testing.assert_allclose(coeffs[:, 0, :], splat.f_dc, rtol=1e-6)  # DC first
     # coeff 1 == (R_0, G_0, B_0) == (1, 101, 201)
     np.testing.assert_allclose(coeffs[0, 1, :], [1.0, 101.0, 201.0], rtol=1e-6)
     np.testing.assert_allclose(coeffs[0, 15, :], [15.0, 115.0, 215.0], rtol=1e-6)
+    expected_display = np.clip(
+        0.5 + particlefield_usd.SH_C0 * splat.f_dc, 0.0, 1.0
+    )
+    np.testing.assert_allclose(arr["display_colors"], expected_display, rtol=1e-6)
 
 
 def test_extent_is_aabb() -> None:
@@ -140,7 +145,7 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
 ) -> None:
     from pxr import Usd
 
-    splat, _ = _splat(8)
+    splat, rest = _splat(8, with_rest=True)
     source = tmp_path / "retained_scene_gaussians.ply"
     source.write_bytes(b"sealed-standard-3dgs-fixture")
     source_sha256 = f"sha256:{sha256_file(source)}"
@@ -153,6 +158,7 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     result = write_particlefield_usd(
         source,
         out,
+        sh_rest=rest,
         expected_source_sha256=source_sha256,
         receipt_path=receipt,
     )
@@ -164,6 +170,21 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     assert json.loads(receipt.read_text(encoding="utf-8")) == result
     stage = Usd.Stage.Open(str(out))
     assert stage.GetDefaultPrim().GetPath().pathString == "/World"
+    prim = stage.GetPrimAtPath(result["prim_path"])
+    from pxr import UsdGeom
+
+    sh_primvar = UsdGeom.Primvar(
+        prim.GetAttribute("radiance:sphericalHarmonicsCoefficients")
+    )
+    assert sh_primvar.GetElementSize() == 16
+    assert sh_primvar.GetInterpolation() == UsdGeom.Tokens.vertex
+    display_color = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
+    assert display_color
+    assert display_color.GetInterpolation() == UsdGeom.Tokens.vertex
+    assert len(display_color.Get()) == 8
+    assert result["sh_primvar_element_size"] == 16
+    assert result["sh_primvar_interpolation"] == "vertex"
+    assert result["display_color_fallback_authored"] is True
 
 
 @pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
