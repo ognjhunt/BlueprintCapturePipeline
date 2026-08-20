@@ -511,7 +511,12 @@ def _runtime_dependency_rows(
         path = wheel_dir / contract["filename"]
         try:
             with zipfile.ZipFile(path) as archive:
-                wheel_members = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+                wheel_members = [
+                    name
+                    for name in archive.namelist()
+                    if name.endswith(".dist-info/WHEEL")
+                    and len(PurePosixPath(name).parts) == 2
+                ]
                 if len(wheel_members) != 1:
                     raise NativeTaskRuntimeSourcePacketError(
                         ["native_task_runtime_dependency_wheel_metadata_invalid"]

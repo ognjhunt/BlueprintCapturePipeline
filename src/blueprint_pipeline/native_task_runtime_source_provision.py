@@ -118,7 +118,10 @@ def _extract_runtime_dependency_wheels(
             ):
                 raise RuntimeError("native_task_runtime_dependency_wheel_layout_invalid")
             wheel_metadata_names = [
-                name for name in names if name.endswith(".dist-info/WHEEL")
+                name
+                for name in names
+                if name.endswith(".dist-info/WHEEL")
+                and len(Path(name).parts) == 2
             ]
             if len(wheel_metadata_names) != 1:
                 raise RuntimeError("native_task_runtime_dependency_wheel_metadata_invalid")

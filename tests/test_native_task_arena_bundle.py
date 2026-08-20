@@ -252,6 +252,11 @@ def _runtime_source_packet(root: Path) -> Path:
                 f"Tag: {wheel_tag}\n",
             )
             archive.writestr(f"{distribution}/__init__.py", "FIXTURE = True\n")
+            if contract["package"] == "setuptools":
+                archive.writestr(
+                    "setuptools/_vendor/example-1.0.dist-info/WHEEL",
+                    "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+                )
     materialize_native_task_runtime_source_packet(
         output_dir=destination,
         isaaclab_repo=isaaclab,
