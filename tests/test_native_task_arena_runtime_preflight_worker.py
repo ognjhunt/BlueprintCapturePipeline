@@ -11,25 +11,38 @@ pxr = pytest.importorskip("pxr")
 
 
 def _stage(*, interpolation: str = "vertex", element_size: int = 16):
-    from pxr import Gf, Usd, UsdGeom, UsdVol, Vt
+    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
     stage = Usd.Stage.CreateInMemory()
-    field = UsdVol.ParticleField3DGaussianSplat.Define(
-        stage, "/World/envs/env_0/scene_appearance/gauss/gauss"
+    prim = stage.DefinePrim(
+        "/World/envs/env_0/scene_appearance/gauss/gauss",
+        "ParticleField3DGaussianSplat",
     )
     count = 2
-    field.CreatePositionsAttr(Vt.Vec3fArray([Gf.Vec3f()] * count))
-    field.CreateScalesAttr(Vt.Vec3fArray([Gf.Vec3f(1.0)] * count))
-    field.CreateOrientationsAttr(Vt.QuatfArray([Gf.Quatf(1.0)] * count))
-    field.CreateOpacitiesAttr(Vt.FloatArray([1.0] * count))
-    field.CreateRadianceSphericalHarmonicsDegreeAttr(3)
-    sh = field.CreateRadianceSphericalHarmonicsCoefficientsAttr(
-        Vt.Vec3fArray([Gf.Vec3f()] * (count * 16))
+    prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
+        Vt.Vec3fArray([Gf.Vec3f()] * count)
     )
+    prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(
+        Vt.Vec3fArray([Gf.Vec3f(1.0)] * count)
+    )
+    prim.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray).Set(
+        Vt.QuatfArray([Gf.Quatf(1.0)] * count)
+    )
+    prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(
+        Vt.FloatArray([1.0] * count)
+    )
+    prim.CreateAttribute(
+        "radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int
+    ).Set(3)
+    sh = prim.CreateAttribute(
+        "radiance:sphericalHarmonicsCoefficients",
+        Sdf.ValueTypeNames.Float3Array,
+    )
+    sh.Set(Vt.Vec3fArray([Gf.Vec3f()] * (count * 16)))
     primvar = UsdGeom.Primvar(sh)
     primvar.SetElementSize(element_size)
     primvar.SetInterpolation(interpolation)
-    UsdGeom.Boundable(field.GetPrim()).CreateExtentAttr(
+    prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(
         Vt.Vec3fArray([Gf.Vec3f(-1.0), Gf.Vec3f(1.0)])
     )
     return stage
