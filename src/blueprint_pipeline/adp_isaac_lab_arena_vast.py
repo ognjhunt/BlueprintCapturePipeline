@@ -385,6 +385,7 @@ def run_arena_native_control_vast(
         "RTX A5000",
         "RTX 3090",
     ),
+    gpu_selection_policy: str | Mapping[str, Any] | None = None,
     require_independent_watchdog: bool = False,
     authorization_consumption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -598,6 +599,7 @@ def run_arena_native_control_vast(
                 minimum_driver_version=minimum_driver_version,
                 preferred_gpu_keywords=preferred_gpu_keywords,
                 prefer_isaac_rt=True,
+                gpu_selection_policy=gpu_selection_policy,
                 machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix=(
                     watchdog_handle.pod_name_prefix

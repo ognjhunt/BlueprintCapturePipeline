@@ -1012,6 +1012,12 @@ def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(
         "RTX 4090",
     )
     assert "RTX A6000" not in observed["preferred_gpu_keywords"]
+    assert observed["gpu_selection_policy"] == {
+        "policy_id": "native_task_arena_runtime_preflight_ada_only",
+        "allowed_gpu_keywords": ("L40S", "RTX 6000 ADA", "RTX 4090"),
+        "reason": "NuRec runtime preflight is qualified only on Ada GPUs",
+        "minimum_cuda_max_good": 12.8,
+    }
     assert observed["candidate_policy_query_expected"] is False
 
 def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
