@@ -71,6 +71,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     _probe_shell_script,
     _resolve_launch_mode,
     _resolve_probe_image,
+    _select_offer,
 )
 
 
@@ -1014,11 +1015,48 @@ def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(
     assert "RTX A6000" not in observed["preferred_gpu_keywords"]
     assert observed["gpu_selection_policy"] == {
         "policy_id": "native_task_arena_runtime_preflight_ada_only",
-        "allowed_gpu_keywords": ("L40S", "RTX 6000 ADA", "RTX 4090"),
+        "allowed_gpu_keywords": ("L40S", "6000ADA", "RTX 4090"),
         "reason": "NuRec runtime preflight is qualified only on Ada GPUs",
         "minimum_cuda_max_good": 12.8,
     }
     assert observed["candidate_policy_query_expected"] is False
+
+
+def test_runtime_preflight_ada_policy_accepts_provider_slug_and_rejects_a6000() -> None:
+    policy = {
+        "policy_id": "native_task_arena_runtime_preflight_ada_only",
+        "allowed_gpu_keywords": ("L40S", "6000ADA", "RTX 4090"),
+        "minimum_cuda_max_good": 12.8,
+    }
+    selected = _select_offer(
+        [
+            {
+                "ask_contract_id": 1,
+                "gpu_name": "RTX A6000",
+                "gpu_ram_mb": 49_140,
+                "dph_total": 0.45,
+                "driver_version": "580.159.03",
+                "cuda_max_good": 13.0,
+                "machine_id": 1,
+            },
+            {
+                "ask_contract_id": 2,
+                "gpu_name": "rtx_6000ada",
+                "gpu_ram_mb": 49_140,
+                "dph_total": 0.62,
+                "driver_version": "580.119.02",
+                "cuda_max_good": 13.0,
+                "machine_id": 2,
+            },
+        ],
+        max_hourly_rate=0.80,
+        min_gpu_ram_mb=46_000,
+        minimum_driver_version="580.65.06",
+        gpu_selection_policy=policy,
+    )
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["gpu_name"] == "rtx_6000ada"
 
 def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
     receipt = build_native_task_arena_construction_bundle(

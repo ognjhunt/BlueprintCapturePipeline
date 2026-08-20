@@ -167,7 +167,7 @@ def run_native_task_arena_runtime_preflight_vast(
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX 4090"),
         gpu_selection_policy={
             "policy_id": "native_task_arena_runtime_preflight_ada_only",
-            "allowed_gpu_keywords": ("L40S", "RTX 6000 ADA", "RTX 4090"),
+            "allowed_gpu_keywords": ("L40S", "6000ADA", "RTX 4090"),
             "reason": "NuRec runtime preflight is qualified only on Ada GPUs",
             "minimum_cuda_max_good": 12.8,
         },
