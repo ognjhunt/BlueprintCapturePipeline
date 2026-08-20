@@ -13,7 +13,7 @@ contracts remain hermetically testable on a CPU host.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .native_franka_action_math import (
@@ -23,15 +23,78 @@ from .native_franka_action_math import (
     joint_velocity_feedforward_rad_s,
 )
 from .native_pose_transforms import (
+    NativePoseTransformError,
     pose_world_to_base,
     world_to_base_rotation_row_major_xyzw,
 )
 
 
 SCHEMA_VERSION = "native_franka_pose_servo.v1"
+GRIPPER_FRAME_READBACK_SCHEMA_VERSION = "native_franka_gripper_frame_readback.v1"
 ARM_JOINT_NAMES = tuple(f"panda_joint{index}" for index in range(1, 8))
 FINGER_BODY_NAMES = ("left_inner_finger", "right_inner_finger")
 CONTROLLED_BODY_CANDIDATES = ("panda_hand", "base_link", "panda_link7")
+
+# The jaw axis is a line, not an arrow: the two fingers are interchangeable, so
+# the sign of the measured direction is a label this module chooses, not
+# something the asset states.  The ordering is named in the receipt so the sign
+# can be read rather than assumed.
+JAW_AXIS_ORDERING = ("right_inner_finger", "left_inner_finger")
+
+# Below this the two points coincide to within float noise and no direction
+# exists.  Refusing is the only honest outcome: a zero-length difference
+# normalised anyway would publish a unit vector nobody measured.
+GRIPPER_FRAME_DEGENERACY_TOLERANCE_M = 1.0e-9
+
+# The three candidate approach axes below are mutually orthogonal, so they are
+# 90 degrees (1.5708 rad) apart.  A measured axis within this cone of one of
+# them is unambiguously nearer to it than to either other candidate.
+GRIPPER_FRAME_HYPOTHESIS_TOLERANCE_RAD = 0.25
+
+BODY_FRAME_AXES: tuple[tuple[str, tuple[float, float, float]], ...] = (
+    ("+x", (1.0, 0.0, 0.0)),
+    ("-x", (-1.0, 0.0, 0.0)),
+    ("+y", (0.0, 1.0, 0.0)),
+    ("-y", (0.0, -1.0, 0.0)),
+    ("+z", (0.0, 0.0, 1.0)),
+    ("-z", (0.0, 0.0, -1.0)),
+)
+
+# Three sealed artifacts disagree about which frame the controlled body is in,
+# and each predicts a different body-frame approach axis.  They are recorded as
+# predictions here so a completed run compares a measured axis against them
+# arithmetically instead of by argument.  Each hypothesis is named for the
+# artifact that asserts it; none of them is privileged by this module.
+GRIPPER_FRAME_APPROACH_HYPOTHESES: tuple[dict[str, Any], ...] = (
+    {
+        "hypothesis_id": "tool_frame_convention_holds_for_controlled_body",
+        "predicted_approach_axis_body": [0.0, 0.0, 1.0],
+        "predicted_jaw_axis_body_up_to_sign": [0.0, 1.0, 0.0],
+        "asserted_by": (
+            "native_franka_action_math.grasp_orientation_contact_xyzw: "
+            "+Z_ee is the approach axis and +Y_ee the jaw axis"
+        ),
+    },
+    {
+        "hypothesis_id": "reset_body_quaternion_implies_a_coupler_rotation",
+        "predicted_approach_axis_body": [0.0, -1.0, 0.0],
+        "predicted_jaw_axis_body_up_to_sign": None,
+        "asserted_by": (
+            "the measured reset body quaternion (0.5, 0.5, 0.5, 0.5) has no "
+            "axis pointing down except -Y, while this repository's own forward "
+            "kinematics puts the flange +Z straight down at the same joints"
+        ),
+    },
+    {
+        "hypothesis_id": "wrist_camera_optical_axis_is_the_approach_axis",
+        "predicted_approach_axis_body": [1.0, 0.0, 0.0],
+        "predicted_jaw_axis_body_up_to_sign": None,
+        "asserted_by": (
+            "the sealed wrist-camera extrinsic, expressed in base_link, has "
+            "its optical axis at (0.9498, -0.3130, 0.0022) ~ +X_body"
+        ),
+    },
+)
 # Fraction of the commanded setpoint advance rate declared as a joint velocity
 # target.  Defined here rather than in the plan compiler because the runtime
 # bundle ships this module and not the compiler, and both sides must agree.
@@ -119,6 +182,219 @@ def resolve_native_franka_pose_binding(
         "controlled_body_index": body_index,
         "jacobian_body_index": jacobian_index,
         "fixed_base": bool(fixed_base),
+    }
+
+
+def _direction_world_to_body(
+    *, direction_world: Sequence[float], body_quaternion_world_xyzw: Sequence[float]
+) -> list[float]:
+    """Express a world-frame direction in controlled-body coordinates.
+
+    This reuses the sealed ``pose_world_to_base`` rotation rather than restating
+    a quaternion rotation here.  A direction is the offset between two points,
+    so placing the base origin at zero makes the translation cancel and leaves
+    exactly the rotation into body axes.
+    """
+
+    try:
+        body, _ = pose_world_to_base(
+            position_world=direction_world,
+            quaternion_world_xyzw=(0.0, 0.0, 0.0, 1.0),
+            base_position_world=(0.0, 0.0, 0.0),
+            base_quaternion_world_xyzw=body_quaternion_world_xyzw,
+        )
+    except NativePoseTransformError as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_quaternion_invalid"]
+        ) from exc
+    return body
+
+
+def _unit(
+    vector: Sequence[float], *, degeneracy_error: str
+) -> tuple[list[float], float]:
+    norm = math.sqrt(sum(float(value) * float(value) for value in vector))
+    if not math.isfinite(norm) or norm <= GRIPPER_FRAME_DEGENERACY_TOLERANCE_M:
+        raise NativeFrankaPoseServoError([degeneracy_error])
+    return [float(value) / norm for value in vector], norm
+
+
+def _nearest_body_axis(unit_body: Sequence[float]) -> dict[str, Any]:
+    rows = []
+    for label, axis in BODY_FRAME_AXES:
+        dot = sum(
+            float(value) * component
+            for value, component in zip(unit_body, axis, strict=True)
+        )
+        rows.append((label, dot))
+    label, dot = max(rows, key=lambda row: row[1])
+    return {
+        "body_axis_projections": {name: value for name, value in rows},
+        "nearest_body_axis": label,
+        "nearest_body_axis_angle_rad": math.acos(max(-1.0, min(1.0, dot))),
+    }
+
+
+def gripper_frame_axis_readback(
+    *,
+    controlled_body_name: str,
+    body_position_world_m: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    finger_positions_world_m: Mapping[str, Sequence[float]],
+) -> dict[str, Any]:
+    """Measure the controlled body's jaw and approach axes in its own frame.
+
+    Three sealed artifacts disagree about which frame the controlled body is
+    in, and none of them can settle it because they are the things that
+    disagree.  Reading the reset pose back does settle it, and needs no
+    convention at all:
+
+      * the direction between the two ``*_inner_finger`` bodies is the jaw
+        axis, because that is what a parallel jaw separates along;
+      * the direction from the controlled body's own origin to the finger
+        midpoint is the direction the tool extends, which for a parallel jaw is
+        the approach axis.
+
+    Both are already read every control tick and thrown away.  This retains
+    them, rotated into controlled-body coordinates, so a completed run carries
+    the answer instead of a log line that scrolled past.
+
+    What is returned is a measurement, not a verdict.  ``measured`` holds the
+    raw readback -- the body pose and both finger world positions -- so every
+    derived number can be recomputed from the receipt.  ``assessment`` compares
+    the measured approach axis against the three recorded hypotheses
+    arithmetically; it is placed alongside the numbers it came from and never
+    in place of them.
+
+    Absence fails closed.  A finger body that cannot be resolved, a coincident
+    finger pair, or a finger midpoint sitting on the body origin each refuse by
+    name rather than defaulting to an axis nobody measured.
+    """
+
+    errors = [
+        f"native_franka_pose_servo_finger_body_missing:{name}"
+        for name in FINGER_BODY_NAMES
+        if name not in finger_positions_world_m
+    ]
+    if errors:
+        raise NativeFrankaPoseServoError(errors)
+
+    def _position(label: str, value: Sequence[float]) -> list[float]:
+        try:
+            row = [float(item) for item in value]
+        except (TypeError, ValueError) as exc:
+            raise NativeFrankaPoseServoError(
+                [f"native_franka_pose_servo_gripper_frame_position_invalid:{label}"]
+            ) from exc
+        if len(row) != 3 or not all(math.isfinite(item) for item in row):
+            raise NativeFrankaPoseServoError(
+                [f"native_franka_pose_servo_gripper_frame_position_invalid:{label}"]
+            )
+        return row
+
+    body_position = _position("controlled_body", body_position_world_m)
+    fingers = {
+        name: _position(name, finger_positions_world_m[name])
+        for name in FINGER_BODY_NAMES
+    }
+    # Normalising here is what makes the recorded body axes comparable with the
+    # hypotheses; the raw values stay in ``measured`` unchanged.
+    body_quaternion = native_wxyz_to_contract_xyzw(
+        contract_xyzw_to_native_wxyz(body_quaternion_world_xyzw)
+    )
+
+    origin, tip = JAW_AXIS_ORDERING
+    jaw_world = [
+        fingers[tip][index] - fingers[origin][index] for index in range(3)
+    ]
+    jaw_unit_world, separation = _unit(
+        jaw_world,
+        degeneracy_error="native_franka_pose_servo_gripper_frame_jaw_degenerate",
+    )
+    midpoint = [
+        (fingers[origin][index] + fingers[tip][index]) / 2.0 for index in range(3)
+    ]
+    approach_world = [midpoint[index] - body_position[index] for index in range(3)]
+    approach_unit_world, tool_offset = _unit(
+        approach_world,
+        degeneracy_error=(
+            "native_franka_pose_servo_gripper_frame_approach_degenerate"
+        ),
+    )
+
+    jaw_unit_body = _direction_world_to_body(
+        direction_world=jaw_unit_world,
+        body_quaternion_world_xyzw=body_quaternion,
+    )
+    approach_unit_body = _direction_world_to_body(
+        direction_world=approach_unit_world,
+        body_quaternion_world_xyzw=body_quaternion,
+    )
+    midpoint_offset_body = _direction_world_to_body(
+        direction_world=approach_world,
+        body_quaternion_world_xyzw=body_quaternion,
+    )
+    orthogonality_dot = sum(
+        left * right
+        for left, right in zip(jaw_unit_body, approach_unit_body, strict=True)
+    )
+
+    hypotheses = []
+    for candidate in GRIPPER_FRAME_APPROACH_HYPOTHESES:
+        axis = candidate["predicted_approach_axis_body"]
+        dot = sum(
+            value * component
+            for value, component in zip(approach_unit_body, axis, strict=True)
+        )
+        row = dict(candidate)
+        row["approach_dot"] = dot
+        row["approach_angle_rad"] = math.acos(max(-1.0, min(1.0, dot)))
+        row["within_tolerance"] = (
+            row["approach_angle_rad"] <= GRIPPER_FRAME_HYPOTHESIS_TOLERANCE_RAD
+        )
+        hypotheses.append(row)
+    supported = [row["hypothesis_id"] for row in hypotheses if row["within_tolerance"]]
+
+    return {
+        "schema_version": GRIPPER_FRAME_READBACK_SCHEMA_VERSION,
+        "controlled_body_name": str(controlled_body_name),
+        "measured": {
+            "controlled_body_position_world_m": body_position,
+            "controlled_body_quaternion_world_xyzw": body_quaternion,
+            "finger_body_positions_world_m": fingers,
+            "finger_midpoint_world_m": midpoint,
+            "finger_separation_m": separation,
+            "body_origin_to_finger_midpoint_m": tool_offset,
+        },
+        "derived": {
+            "jaw_axis_ordering": list(JAW_AXIS_ORDERING),
+            "jaw_axis_sign_is_a_label_not_a_measurement": True,
+            "jaw_unit_world": jaw_unit_world,
+            "jaw_unit_body": jaw_unit_body,
+            "approach_axis_source": (
+                "controlled_body_origin_to_measured_finger_midpoint"
+            ),
+            "approach_unit_world": approach_unit_world,
+            "approach_unit_body": approach_unit_body,
+            "body_origin_to_finger_midpoint_body_m": midpoint_offset_body,
+            "jaw_approach_orthogonality_dot": orthogonality_dot,
+            "jaw_approach_angle_rad": math.acos(
+                max(-1.0, min(1.0, orthogonality_dot))
+            ),
+        },
+        "assessment": {
+            "hypothesis_tolerance_rad": GRIPPER_FRAME_HYPOTHESIS_TOLERANCE_RAD,
+            "approach": _nearest_body_axis(approach_unit_body),
+            "jaw": _nearest_body_axis(jaw_unit_body),
+            "approach_hypotheses": hypotheses,
+            "supported_hypothesis_ids": supported,
+            "supported_hypothesis_id": supported[0] if len(supported) == 1 else None,
+            "resolution": (
+                "supported"
+                if len(supported) == 1
+                else ("ambiguous" if supported else "none_within_tolerance")
+            ),
+        },
     }
 
 
@@ -256,6 +532,34 @@ class NativeFrankaDifferentialIkServo:
         ]
         midpoint = (poses[0] + poses[1]) / 2.0
         return [float(value) for value in midpoint]
+
+    def current_gripper_frame_axis_readback(self) -> dict[str, Any]:
+        """Retain the jaw and approach axes in controlled-body coordinates.
+
+        Every buffer this reads is already read on the control path -- the
+        controlled body's world pose by ``current_body_pose_world`` above, and
+        both finger world positions by ``current_grasp_frame_position_world``,
+        which averages them and discards the direction.  This costs one extra
+        indexing of ``body_pose_w`` and settles, by measurement, which frame the
+        controlled body is actually in.
+        """
+
+        poses = self._to_torch(self._robot.data.body_pose_w)
+        body = poses[0, self.binding["controlled_body_index"], :7]
+        fingers = {
+            str(name): [float(value) for value in poses[0, index, :3]]
+            for name, index in zip(
+                self.binding["finger_body_names"],
+                self.binding["finger_body_indices"],
+                strict=True,
+            )
+        }
+        return gripper_frame_axis_readback(
+            controlled_body_name=self.binding["controlled_body_name"],
+            body_position_world_m=[float(value) for value in body[:3]],
+            body_quaternion_world_xyzw=native_wxyz_to_contract_xyzw(body[3:7]),
+            finger_positions_world_m=fingers,
+        )
 
     def read_arm_joint_positions(self) -> list[float]:
         values = self._to_torch(self._robot.data.joint_pos)[0, :7]
@@ -414,13 +718,20 @@ class NativeFrankaDifferentialIkServo:
 
 __all__ = [
     "ARM_JOINT_NAMES",
+    "BODY_FRAME_AXES",
     "DEFAULT_VELOCITY_FEEDFORWARD_SCALE",
     "CONTROLLED_BODY_CANDIDATES",
     "FINGER_BODY_NAMES",
+    "GRIPPER_FRAME_APPROACH_HYPOTHESES",
+    "GRIPPER_FRAME_DEGENERACY_TOLERANCE_M",
+    "GRIPPER_FRAME_HYPOTHESIS_TOLERANCE_RAD",
+    "GRIPPER_FRAME_READBACK_SCHEMA_VERSION",
+    "JAW_AXIS_ORDERING",
     "NativeFrankaDifferentialIkServo",
     "NativeFrankaPoseServoError",
     "SCHEMA_VERSION",
     "contract_xyzw_to_native_wxyz",
+    "gripper_frame_axis_readback",
     "native_wxyz_to_contract_xyzw",
     "resolve_native_franka_pose_binding",
 ]
