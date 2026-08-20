@@ -39,7 +39,11 @@ NATIVE_TASK_ARENA_IMAGE = (
 )
 NATIVE_TASK_ARENA_NUREC_EXTENSION = "omni.rtx.spg"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
-NATIVE_TASK_ARENA_KIT_ARGS = "--/renderer/multiGpu/enabled=false"
+NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
+NATIVE_TASK_ARENA_KIT_ARGS = (
+    "--/renderer/multiGpu/enabled=false "
+    "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
+)
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
@@ -304,21 +308,16 @@ def launch_native_task_isaaclab(
             from pxr import Usd
 
             extension_manager = omni.kit.app.get_app().get_extension_manager()
-            extension_was_enabled = extension_manager.is_extension_enabled(
+            extension_enabled = extension_manager.is_extension_enabled(
                 NATIVE_TASK_ARENA_NUREC_EXTENSION
             )
-            if not extension_was_enabled:
-                extension_manager.set_extension_enabled_immediate(
-                    NATIVE_TASK_ARENA_NUREC_EXTENSION, True
-                )
-                omni.kit.app.get_app().update()
             settings = carb.settings.get_settings()
             return {
-                "activation_method": "post_launch_extension_manager",
-                "extension_was_enabled_before_probe": extension_was_enabled,
-                "extension_enabled": extension_manager.is_extension_enabled(
-                    NATIVE_TASK_ARENA_NUREC_EXTENSION
-                ),
+                "render_path": NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+                "activation_method": "not_required_for_plain_nurec_volume",
+                "extension_required": False,
+                "extension_was_enabled_before_probe": extension_enabled,
+                "extension_enabled": extension_enabled,
                 "renderer_hints": settings.get(
                     "/omni/rtx/nre/compositing/rendererHints"
                 ),
@@ -344,7 +343,10 @@ def launch_native_task_isaaclab(
         ) from exc
     nurec = {
         "extension_id": NATIVE_TASK_ARENA_NUREC_EXTENSION,
+        "render_path": raw_nurec.get("render_path")
+        or NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
         "activation_method": raw_nurec.get("activation_method"),
+        "extension_required": raw_nurec.get("extension_required") is True,
         "extension_was_enabled_before_probe": raw_nurec.get(
             "extension_was_enabled_before_probe"
         ),
@@ -356,7 +358,7 @@ def launch_native_task_isaaclab(
         "schema_registered": raw_nurec.get("schema_registered") is True,
     }
     nurec_errors = []
-    if not nurec["extension_enabled"]:
+    if nurec["extension_required"] and not nurec["extension_enabled"]:
         nurec_errors.append("native_task_isaaclab_nurec_extension_not_enabled")
     if nurec["renderer_hints"] != 3:
         nurec_errors.append("native_task_isaaclab_nurec_renderer_hints_invalid")

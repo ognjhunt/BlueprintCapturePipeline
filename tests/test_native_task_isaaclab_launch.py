@@ -138,8 +138,9 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         app_launcher_factory=factory,
         nurec_renderer_probe_factory=lambda: {
             "activation_method": "test_injected_post_launch_probe",
+            "extension_required": False,
             "extension_was_enabled_before_probe": False,
-            "extension_enabled": True,
+            "extension_enabled": False,
             "renderer_hints": 3,
             "multi_gpu_enabled": False,
             "schema_registered": True,
@@ -162,6 +163,9 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         "import_and_cuda_operation_qualified_before_simulation_app"
     ] is True
     assert receipt["nurec_renderer"]["status"] == "qualified"
+    assert receipt["nurec_renderer"]["render_path"] == "plain_nurec_volume"
+    assert receipt["nurec_renderer"]["extension_required"] is False
+    assert receipt["nurec_renderer"]["extension_enabled"] is False
     assert receipt["nurec_renderer"]["activation_method"] == (
         "test_injected_post_launch_probe"
     )
@@ -190,6 +194,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
     [
         (
             {
+                "extension_required": True,
                 "extension_enabled": False,
                 "renderer_hints": 3,
                 "multi_gpu_enabled": False,

@@ -48,6 +48,9 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import (
     build_native_task_arena_runtime_preflight_bundle,
     load_verified_native_task_arena_runtime_preflight_bundle,
 )
+from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
+    _plain_nurec_volume_contract,
+)
 from blueprint_pipeline.native_task_arena_vast import (
     run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
@@ -979,6 +982,61 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
         expected_execution_mode="runtime_preflight",
     )
     assert verified_manifest["execution_mode"] == "runtime_preflight"
+
+
+def test_runtime_preflight_classifies_plain_volume_without_spg(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    asset = packet / "assets" / "scene_appearance.usdz"
+    asset.parent.mkdir(parents=True)
+    with zipfile.ZipFile(asset, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(
+            "gauss.usda",
+            'def Volume "gauss" {\n'
+            "  custom bool omni:nurec:isNuRecVolume = 1\n"
+            '  def OmniNuRecFieldAsset "density_field" {}\n'
+            "}\n",
+        )
+    plan = {
+        "objects": [
+            {
+                "semantic_role": "scene_appearance",
+                "usd_path": "assets/scene_appearance.usdz",
+            }
+        ]
+    }
+    result = _plain_nurec_volume_contract(packet, plan)
+    assert result["passed"] is True
+    assert result["render_path"] == "plain_nurec_volume"
+    assert result["omni_rtx_spg_required"] is False
+
+
+def test_runtime_preflight_refuses_spg_asset_on_plain_volume_path(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    asset = packet / "assets" / "scene_appearance.usdz"
+    asset.parent.mkdir(parents=True)
+    with zipfile.ZipFile(asset, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(
+            "gauss.usda",
+            'def Volume "gauss" {\n'
+            "  custom bool omni:nurec:isNuRecVolume = 1\n"
+            '  custom asset info:spg:sourceAsset = @graph.spg@\n'
+            '  def OmniNuRecFieldAsset "density_field" {}\n'
+            "}\n",
+        )
+    plan = {
+        "objects": [
+            {
+                "semantic_role": "scene_appearance",
+                "usd_path": "assets/scene_appearance.usdz",
+            }
+        ]
+    }
+    result = _plain_nurec_volume_contract(packet, plan)
+    assert result["passed"] is False
+    assert result["omni_rtx_spg_required"] is True
+    assert result["blockers"] == [
+        "native_task_arena_spg_asset_requires_separate_launch_path"
+    ]
 
 
 def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(

@@ -5,12 +5,66 @@ from __future__ import annotations
 import json
 import os
 import traceback
+import zipfile
 from pathlib import Path
 from typing import Any
 
 
 RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
+
+
+def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    appearance_rows = [
+        row
+        for row in plan.get("objects") or []
+        if isinstance(row, dict) and row.get("semantic_role") == "scene_appearance"
+    ]
+    blockers: list[str] = []
+    relative = ""
+    if len(appearance_rows) == 1:
+        relative = str(appearance_rows[0].get("usd_path") or "")
+    parts = Path(relative).parts
+    if (
+        len(appearance_rows) != 1
+        or not relative
+        or Path(relative).is_absolute()
+        or ".." in parts
+    ):
+        blockers.append("native_task_arena_nurec_appearance_path_invalid")
+    asset = (packet / relative).resolve() if relative else packet
+    if asset != packet and packet not in asset.parents:
+        blockers.append("native_task_arena_nurec_appearance_path_escape")
+    text = b""
+    if not blockers:
+        try:
+            with zipfile.ZipFile(asset) as archive:
+                text = b"\n".join(
+                    archive.read(info)
+                    for info in archive.infolist()
+                    if info.filename.lower().endswith((".usd", ".usda"))
+                    and info.file_size <= 2_000_000
+                )
+        except (OSError, zipfile.BadZipFile, KeyError):
+            blockers.append("native_task_arena_nurec_appearance_unreadable")
+    volume = (
+        b"omni:nurec:isNuRecVolume" in text
+        and b"OmniNuRecFieldAsset" in text
+    )
+    spg = b"info:spg:sourceAsset" in text
+    if not volume:
+        blockers.append("native_task_arena_plain_nurec_volume_signals_missing")
+    if spg:
+        blockers.append("native_task_arena_spg_asset_requires_separate_launch_path")
+    return {
+        "render_path": "plain_nurec_volume" if volume and not spg else "unsupported",
+        "asset_relative_path": relative,
+        "nurec_volume_signals_present": volume,
+        "spg_source_asset_authored": spg,
+        "omni_rtx_spg_required": spg,
+        "passed": not blockers,
+        "blockers": sorted(set(blockers)),
+    }
 
 
 def _jsonable(value: Any) -> Any:
@@ -75,6 +129,14 @@ def main() -> int:
         result["manifest_input_digest"] = manifest["input_digest"]
         result["packet_receipt_digest"] = manifest["packet_receipt_digest"]
         result["scene_plan_digest"] = plan["plan_digest"]
+        result["appearance_render_path"] = _plain_nurec_volume_contract(
+            packet, plan
+        )
+        if not result["appearance_render_path"]["passed"]:
+            result["blockers"].extend(
+                result["appearance_render_path"]["blockers"]
+            )
+            raise RuntimeError("native_task_arena_nurec_render_path_failed")
         result["phase_reached"] = "packet_verified"
         _announce("packet_verification", "completed")
 
