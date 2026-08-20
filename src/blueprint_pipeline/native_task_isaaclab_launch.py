@@ -46,6 +46,7 @@ NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
 NATIVE_TASK_ARENA_KIT_ARGS = (
     "--enable isaacsim.replicator.nurec_utils "
     "--enable omni.rtx.spg "
+    "--enable isaacsim.robot_motion.pink "
     "--/UJITSO/geometry=true "
     "--/renderer/multiGpu/enabled=false "
     "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"

@@ -103,6 +103,12 @@ DEPENDENCY_IMPORTS = (
     "isaaclab_visualizers",
     "isaaclab_arena",
     "isaaclab_arena.environments.arena_env_builder",
+    "isaacsim.robot_motion.experimental.motion_generation",
+    "isaacsim.robot_motion.pink",
+    "pinocchio",
+    "pink",
+    "qpsolvers",
+    "osqp",
 )
 CAMERA_THRESHOLDS = {
     "external": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},

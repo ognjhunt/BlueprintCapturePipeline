@@ -1,4 +1,4 @@
-"""Native differential-IK pose servo shared by construction and controls.
+"""Native joint-limited PINK pose servo shared by construction and controls.
 
 This is the task-neutral extraction of the controller first qualified by the
 ADP-009D rigid rehearsal.  It controls the measured midpoint between the two
@@ -115,6 +115,12 @@ DEFAULT_VELOCITY_FEEDFORWARD_SCALE = 1.0
 # 20 Hz control cadence these ceilings are 0.4 m/s and 2 rad/s respectively.
 MAX_CARTESIAN_TRANSLATION_STEP_M = 0.02
 MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
+# Exact values from Isaac Sim 6.0.1's shipped Franka PINK example. Position is
+# intentionally weighted 100x above orientation during reactive reaching, and
+# the posture task keeps the redundant seventh joint away from a limit branch.
+PINK_POSITION_COST = 5.0
+PINK_ORIENTATION_COST = 0.05
+PINK_POSTURE_COST = 5.0e-3
 
 
 class NativeFrankaPoseServoError(RuntimeError):
@@ -415,20 +421,32 @@ def gripper_frame_axis_readback(
 
 
 class NativeFrankaDifferentialIkServo:
-    """One deterministic native pose-servo action per control tick."""
+    """One deterministic PINK/PhysX pose-servo action per control tick.
+
+    The historical class name is retained for bundle/API compatibility; its IK
+    backend is the pinned Isaac Sim 6.0.1 PINK constrained solver.
+    """
 
     def __init__(
         self, *, env: Any, robot: Any, grasp_geometry_factory: Any = None
     ):
+        import numpy as np
         import torch
-        from isaaclab.controllers import DifferentialIKController
-        from isaaclab.controllers import DifferentialIKControllerCfg
-        from isaaclab.utils.math import subtract_frame_transforms
+        import warp as wp
+        import isaacsim.robot_motion.experimental.motion_generation as mg
+        from isaacsim.robot_motion.pink import (
+            PinkIKController,
+            load_pink_supported_robot,
+        )
+        from scipy.spatial.transform import Rotation
 
         self._env = env
         self._robot = robot
+        self._mg = mg
+        self._np = np
+        self._wp = wp
+        self._Rotation = Rotation
         self._torch = torch
-        self._subtract_frame_transforms = subtract_frame_transforms
         self._to_torch = lambda value: (
             value if hasattr(value, "detach") else torch.as_tensor(value)
         )
@@ -436,13 +454,6 @@ class NativeFrankaDifferentialIkServo:
             body_names=list(robot.data.body_names),
             joint_names=list(robot.joint_names),
             fixed_base=bool(robot.is_fixed_base),
-        )
-        self._controller = DifferentialIKController(
-            DifferentialIKControllerCfg(
-                command_type="pose", use_relative_mode=False, ik_method="dls"
-            ),
-            num_envs=1,
-            device=env.unwrapped.device,
         )
         base_pose = self._to_torch(robot.data.root_pose_w)[0, :7]
         self._base_pose = [
@@ -532,6 +543,52 @@ class NativeFrankaDifferentialIkServo:
                 "pad_centers_controlled_body_m"
             ].items()
         }
+        try:
+            pink_robot = load_pink_supported_robot("franka")
+            # The bundled Franka URDF may include Panda fingers, while the
+            # DROID articulation replaces them with one Robotiq mimic chain.
+            # The seven arm joints and kinematics are unchanged; constrain the
+            # solver to that exact common ordered subset.
+            pink_robot.controlled_joint_names = list(
+                self.binding["arm_joint_names"]
+            )
+            self._pink_controller = PinkIKController(
+                pink_robot=pink_robot,
+                robot_joint_space=list(self.binding["arm_joint_names"]),
+                robot_site_space=["panda_hand"],
+                tool_frame="panda_hand",
+                position_cost=PINK_POSITION_COST,
+                orientation_cost=PINK_ORIENTATION_COST,
+                posture_cost=PINK_POSTURE_COST,
+                solver="osqp",
+                dt=self._control_period_seconds,
+            )
+            self._pink_time_seconds = 0.0
+            self._reset_pink_controller()
+            configuration = self._pink_controller._configuration
+            if configuration is None:
+                raise RuntimeError("pink_configuration_missing")
+            hand = configuration.get_transform_frame_to_world("panda_hand")
+            hand_quaternion = self._Rotation.from_matrix(hand.rotation).as_quat()
+            self._pink_hand_pose_at_binding_base = [
+                *[float(value) for value in hand.translation],
+                *[float(value) for value in hand_quaternion],
+            ]
+            grasp_world = self.current_grasp_frame_pose_world()
+            grasp_position_base, grasp_quaternion_base = pose_world_to_base(
+                position_world=grasp_world[:3],
+                quaternion_world_xyzw=grasp_world[3:7],
+                base_position_world=self._base_pose[:3],
+                base_quaternion_world_xyzw=self._base_pose[3:7],
+            )
+            self._pink_grasp_pose_at_binding_base = [
+                *grasp_position_base,
+                *grasp_quaternion_base,
+            ]
+        except Exception as exc:  # noqa: BLE001 - one stable runtime boundary
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_pink_initialization_failed"]
+            ) from exc
 
     def _arm_gain(self, attribute: str) -> list[float] | None:
         data = getattr(self._robot, "data", None)
@@ -584,9 +641,74 @@ class NativeFrankaDifferentialIkServo:
 
     def reset_command_state(self) -> None:
         self._last_command = None
-        self._controller.reset()
+        # Keep PINK's posture target at the episode's bent reset posture across
+        # phase boundaries. Resetting PINK here would redefine its posture task
+        # to the current pose -- including a joint-limit pose at the start of
+        # the next waypoint -- and erase the secondary objective this backend
+        # was selected to provide. ``forward`` refreshes measured joints every
+        # tick, so only the actuator command/feedforward state is phase-local.
         # A stale feedforward must not survive into the next phase or episode.
         self._write_joint_velocity_target([0.0] * len(self.binding["arm_joint_ids"]))
+
+    def _pink_estimated_state(self) -> Any:
+        positions = self._to_torch(self._robot.data.joint_pos)[
+            :, self.binding["arm_joint_ids"]
+        ].contiguous()
+        velocities = self._to_torch(self._robot.data.joint_vel)[
+            :, self.binding["arm_joint_ids"]
+        ].contiguous()
+        names = list(self.binding["arm_joint_names"])
+        return self._mg.RobotState(
+            joints=self._mg.JointState.from_name(
+                robot_joint_space=names,
+                positions=(names, self._wp.from_torch(positions)),
+                velocities=(names, self._wp.from_torch(velocities)),
+            )
+        )
+
+    def _reset_pink_controller(self) -> None:
+        reset = self._pink_controller.reset(
+            self._pink_estimated_state(), None, self._pink_time_seconds
+        )
+        if reset is not True:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_pink_reset_failed"]
+            )
+
+    def _pink_desired_joint_positions(
+        self, *, target_position_base: Sequence[float], target_quaternion_base_xyzw: Sequence[float]
+    ) -> list[float]:
+        names = list(self.binding["arm_joint_names"])
+        position = self._wp.from_numpy(
+            self._np.asarray([target_position_base], dtype=self._np.float32),
+            dtype=self._wp.float32,
+        )
+        orientation = self._wp.from_numpy(
+            self._np.asarray([target_quaternion_base_xyzw], dtype=self._np.float32),
+            dtype=self._wp.float32,
+        )
+        setpoint = self._mg.RobotState(
+            sites=self._mg.SpatialState.from_name(
+                spatial_space=["panda_hand"],
+                positions=(["panda_hand"], position),
+                orientations=(["panda_hand"], orientation),
+            )
+        )
+        desired = self._pink_controller.forward(
+            self._pink_estimated_state(), setpoint, self._pink_time_seconds
+        )
+        self._pink_time_seconds += self._control_period_seconds
+        if desired is None or desired.joints is None or desired.joints.positions is None:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_pink_solution_missing"]
+            )
+        desired_names = list(desired.joints.position_names)
+        raw = self._np.asarray(desired.joints.positions.numpy()).reshape(-1)
+        if not set(names).issubset(desired_names):
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_pink_joint_mapping_invalid"]
+            )
+        return [float(raw[desired_names.index(name)]) for name in names]
 
     def current_body_pose_world(self) -> list[float]:
         pose = self._to_torch(self._robot.data.body_pose_w)[
@@ -712,35 +834,45 @@ class NativeFrankaDifferentialIkServo:
             base_quaternion_world_xyzw=self._base_pose[3:7],
         )
         quaternion_root_native = contract_xyzw_to_native_xyzw(quaternion_root)
-        command = self._torch.tensor(
-            [position_root + quaternion_root_native],
-            device=self._env.unwrapped.device,
-            dtype=self._torch.float32,
+        target_grasp_position_root, target_grasp_quaternion_root = (
+            pose_world_to_base(
+                position_world=local_target_position,
+                quaternion_world_xyzw=local_target_quaternion,
+                base_position_world=self._base_pose[:3],
+                base_quaternion_world_xyzw=self._base_pose[3:7],
+            )
         )
-        self._controller.reset()
-        self._controller.set_command(command)
+        target_pink_hand_position_root, target_pink_hand_quaternion_root = (
+            controlled_body_pose_for_rigid_grasp_frame_target(
+                current_body_position_world_m=(
+                    self._pink_hand_pose_at_binding_base[:3]
+                ),
+                current_body_quaternion_world_xyzw=(
+                    self._pink_hand_pose_at_binding_base[3:7]
+                ),
+                current_grasp_frame_position_world_m=(
+                    self._pink_grasp_pose_at_binding_base[:3]
+                ),
+                current_grasp_frame_quaternion_world_xyzw=(
+                    self._pink_grasp_pose_at_binding_base[3:7]
+                ),
+                target_grasp_frame_position_world_m=(
+                    target_grasp_position_root
+                ),
+                target_grasp_frame_quaternion_world_xyzw=(
+                    target_grasp_quaternion_root
+                ),
+            )
+        )
         jacobian_world, jacobian_root = self._jacobians_world_and_root()
-        body_pose_tensor = self._to_torch(self._robot.data.body_pose_w)[
-            :, self.binding["controlled_body_index"]
-        ]
-        root_pose = self._to_torch(self._robot.data.root_pose_w)
-        body_position_root, body_quaternion_root = self._subtract_frame_transforms(
-            root_pose[:, :3],
-            root_pose[:, 3:7],
-            body_pose_tensor[:, :3],
-            body_pose_tensor[:, 3:7],
-        )
         current = self._to_torch(self._robot.data.joint_pos)[
             :, self.binding["arm_joint_ids"]
         ]
-        desired = self._controller.compute(
-            body_position_root,
-            body_quaternion_root,
-            jacobian_root,
-            current,
+        desired_values = self._pink_desired_joint_positions(
+            target_position_base=target_pink_hand_position_root,
+            target_quaternion_base_xyzw=target_pink_hand_quaternion_root,
         )
         current_values = [float(value) for value in current[0]]
-        desired_values = [float(value) for value in desired[0]]
         desired_within_joint_limits = clip_joint_positions_to_limits(
             desired_joint_positions_rad=desired_values,
             lower_joint_position_limits_rad=self._joint_position_lower,
@@ -803,6 +935,22 @@ class NativeFrankaDifferentialIkServo:
             "current_controlled_body_position_world_m": body_pose[:3],
             "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,
             "controller_target_quaternion_root_xyzw": quaternion_root_native,
+            "ik_backend": "isaacsim.robot_motion.pink.PinkIKController",
+            "pink_position_cost": PINK_POSITION_COST,
+            "pink_orientation_cost": PINK_ORIENTATION_COST,
+            "pink_posture_cost": PINK_POSTURE_COST,
+            "pink_target_hand_position_root_m": (
+                target_pink_hand_position_root
+            ),
+            "pink_target_hand_quaternion_root_xyzw": (
+                target_pink_hand_quaternion_root
+            ),
+            "pink_hand_pose_at_binding_root": (
+                self._pink_hand_pose_at_binding_base
+            ),
+            "pink_grasp_pose_at_binding_root": (
+                self._pink_grasp_pose_at_binding_base
+            ),
             "jacobian_world_frobenius_norm": float(
                 self._torch.linalg.vector_norm(jacobian_world[0])
             ),

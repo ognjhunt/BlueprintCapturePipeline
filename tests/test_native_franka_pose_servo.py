@@ -4,6 +4,9 @@ import pytest
 
 from blueprint_pipeline.native_franka_pose_servo import (
     NativeFrankaPoseServoError,
+    PINK_ORIENTATION_COST,
+    PINK_POSITION_COST,
+    PINK_POSTURE_COST,
     contract_xyzw_to_native_xyzw,
     native_xyzw_to_contract_xyzw,
     resolve_native_franka_pose_binding,
@@ -68,6 +71,32 @@ def test_nonidentity_native_quaternion_preserves_beta2_xyzw_order() -> None:
     assert contract_xyzw_to_native_xyzw(contract_xyzw) == pytest.approx(
         native_xyzw
     )
+
+
+def test_pose_servo_uses_the_exact_shipped_franka_pink_reach_weights() -> None:
+    assert PINK_POSITION_COST == 5.0
+    assert PINK_ORIENTATION_COST == 0.05
+    assert PINK_POSTURE_COST == 5.0e-3
+
+
+def test_pose_servo_uses_pink_limits_and_posture_not_plain_dls() -> None:
+    import inspect
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    source = inspect.getsource(NativeFrankaDifferentialIkServo)
+    assert "PinkIKController" in source
+    assert 'load_pink_supported_robot("franka")' in source
+    assert 'tool_frame="panda_hand"' in source
+    assert "DifferentialIKController" not in source
+    assert "pink_hand_pose_at_binding" in source
+    assert "current_grasp_frame_pose_world" in source
+    reset_source = inspect.getsource(
+        NativeFrankaDifferentialIkServo.reset_command_state
+    )
+    assert "_reset_pink_controller" not in reset_source
 
 
 @pytest.mark.parametrize("value", ([0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]))
