@@ -244,6 +244,11 @@ class _ArenaBuilder:
         return "native-env", cfg
 
 
+class _ArenaBuilderCfg:
+    def __init__(self, **kwargs):
+        vars(self).update(kwargs)
+
+
 def _install_fake_native_runtime(monkeypatch) -> None:
     from blueprint_pipeline import native_task_arena_preconstruction
 
@@ -305,6 +310,9 @@ def _install_fake_native_runtime(monkeypatch) -> None:
         "isaaclab_arena.environments.arena_env_builder": types.ModuleType(
             "isaaclab_arena.environments.arena_env_builder"
         ),
+        "isaaclab_arena.environments.arena_env_builder_cfg": types.ModuleType(
+            "isaaclab_arena.environments.arena_env_builder_cfg"
+        ),
         "isaaclab_arena.environments.isaaclab_arena_environment": types.ModuleType(
             "isaaclab_arena.environments.isaaclab_arena_environment"
         ),
@@ -340,6 +348,9 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules[
         "isaaclab_arena.environments.arena_env_builder"
     ].ArenaEnvBuilder = _ArenaBuilder
+    modules[
+        "isaaclab_arena.environments.arena_env_builder_cfg"
+    ].ArenaEnvBuilderCfg = _ArenaBuilderCfg
     modules[
         "isaaclab_arena.environments.isaaclab_arena_environment"
     ].IsaacLabArenaEnvironment = _ArenaEnvironment
