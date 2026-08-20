@@ -14,6 +14,91 @@ RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
 
 
+def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
+    """Measure whether one conforming ParticleField actually composed live."""
+
+    from pxr import UsdGeom
+
+    rows = []
+    blockers: list[str] = []
+    for prim in stage.Traverse():
+        if str(prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+            continue
+
+        def _count(name: str) -> int:
+            value = prim.GetAttribute(name).Get()
+            return len(value) if value is not None else 0
+
+        degree = prim.GetAttribute(
+            "radiance:sphericalHarmonicsDegree"
+        ).Get()
+        sh_attr = prim.GetAttribute(
+            "radiance:sphericalHarmonicsCoefficients"
+        )
+        sh_primvar = UsdGeom.Primvar(sh_attr)
+        position_count = _count("positions")
+        expected_element_size = (
+            (int(degree) + 1) ** 2
+            if isinstance(degree, int)
+            and not isinstance(degree, bool)
+            and 0 <= int(degree) <= 3
+            else None
+        )
+        raw_extent = prim.GetAttribute("extent").Get()
+        extent = (
+            [[float(component) for component in vector] for vector in raw_extent]
+            if raw_extent is not None
+            else None
+        )
+        row = {
+            "prim_path": str(prim.GetPath()),
+            "active": bool(prim.IsActive()),
+            "defined": bool(prim.IsDefined()),
+            "loaded": bool(prim.IsLoaded()),
+            "position_count": position_count,
+            "scale_count": _count("scales"),
+            "orientation_count": _count("orientations"),
+            "opacity_count": _count("opacities"),
+            "sh_degree": degree,
+            "sh_coefficient_count": _count(
+                "radiance:sphericalHarmonicsCoefficients"
+            ),
+            "sh_element_size": sh_primvar.GetElementSize(),
+            "sh_interpolation": str(sh_primvar.GetInterpolation()),
+            "expected_sh_element_size": expected_element_size,
+            "extent": extent,
+        }
+        row["passed"] = bool(
+            row["active"]
+            and row["defined"]
+            and row["loaded"]
+            and "/scene_appearance/" in row["prim_path"]
+            and position_count > 0
+            and row["scale_count"] == position_count
+            and row["orientation_count"] == position_count
+            and row["opacity_count"] == position_count
+            and expected_element_size is not None
+            and row["sh_element_size"] == expected_element_size
+            and row["sh_interpolation"] == "vertex"
+            and row["sh_coefficient_count"]
+            == position_count * expected_element_size
+            and isinstance(row["extent"], list)
+            and len(row["extent"]) == 2
+        )
+        rows.append(row)
+    if len(rows) != 1:
+        blockers.append("native_task_arena_particlefield_prim_not_exact")
+    if any(not row["passed"] for row in rows):
+        blockers.append("native_task_arena_particlefield_composition_invalid")
+    return {
+        "schema_version": "native_task_arena_particlefield_stage_readback.v1",
+        "particlefield_prim_count": len(rows),
+        "particlefields": rows,
+        "blockers": blockers,
+        "passed": not blockers,
+    }
+
+
 def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str, Any]:
     appearance_rows = [
         row
@@ -221,6 +306,23 @@ def main() -> int:
         env = built.env
         seed = int(plan["scenario"]["seed"])
         env.reset(seed=seed)
+        if result["appearance_render_path"]["render_path"] == (
+            "particlefield_3d_gaussian_splat"
+        ):
+            import omni.usd
+
+            result["particlefield_stage_readback"] = (
+                _particlefield_stage_readback(
+                    omni.usd.get_context().get_stage()
+                )
+            )
+            if not result["particlefield_stage_readback"]["passed"]:
+                result["blockers"].extend(
+                    result["particlefield_stage_readback"]["blockers"]
+                )
+                raise RuntimeError(
+                    "native_task_arena_preflight_particlefield_composition_failed"
+                )
         result["articulation_device_binding"] = _articulation_device_binding(
             built, expected_device=NATIVE_TASK_ARENA_DEVICE
         )
