@@ -98,11 +98,22 @@ def materialize_native_task_arena_appearance_variant_request(
             ["native_task_arena_appearance_variant_input_invalid"]
         ) from exc
     request = _clone_request(base)
+    sh_degree = appearance.get("sh_degree")
+    sh_element_size = (
+        (sh_degree + 1) ** 2
+        if isinstance(sh_degree, int)
+        and not isinstance(sh_degree, bool)
+        and 0 <= sh_degree <= 3
+        else None
+    )
     if (
         appearance.get("schema_version")
         != "particlefield_3dgs_authoring_receipt.v1"
         or appearance.get("status") != "completed"
         or appearance.get("schema") != "ParticleField3DGaussianSplat"
+        or appearance.get("sh_primvar_element_size") != sh_element_size
+        or appearance.get("sh_primvar_interpolation") != "vertex"
+        or appearance.get("display_color_fallback_authored") is not True
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
     ):
@@ -144,6 +155,10 @@ def materialize_native_task_arena_appearance_variant_request(
         "authoring_receipt_digest": appearance["receipt_digest"],
         "source_gaussian_sha256": appearance.get("source_sha256"),
         "splat_count": appearance.get("splat_count"),
+        "sh_degree": sh_degree,
+        "sh_primvar_element_size": sh_element_size,
+        "sh_primvar_interpolation": "vertex",
+        "display_color_fallback_authored": True,
     }
     request["request_digest"] = canonical_digest(
         request, digest_field="request_digest"

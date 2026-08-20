@@ -79,6 +79,17 @@ RENDER_EVIDENCE_SCHEMA_VERSION = "native_task_camera_render_evidence.v1"
 # not reachable by a camera pointed into a room, however dark the room is.
 MAXIMUM_SITE_VOID_PIXEL_FRACTION = 0.50
 
+# Passing side -- eleven genuine InteriorGS room renders (the twelve retained
+# views minus the one exactly-uniform rejected frame) have a most-common exact
+# RGB fraction of 0.00049..0.02122.  The three sealed bb16b12e ParticleField
+# false positives instead show the robot/target over one clear colour covering
+# 0.72014..0.87681 of the frame.  A 0.50 ceiling is therefore over 23x above
+# the worst genuine site render and still 22 points below the shallowest
+# observed false pass.  Object-only canaries are intentionally excluded from
+# this site's passing side: a rendered object over a clear colour does not
+# prove that the captured room appeared.
+MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION = 0.50
+
 # A frame of one repeated value carries no render at all, whatever that value
 # is, and a void fraction cannot see it when the value is not zero.  This is
 # not hypothetical: a retained render at
@@ -108,6 +119,9 @@ BLOCKER_TARGET_TONAL_RANGE = (
     "native_task_camera_rgb_target_region_tonal_range_below_floor"
 )
 BLOCKER_SITE_VOID = "native_task_camera_rgb_site_void_fraction_above_ceiling"
+BLOCKER_SITE_DOMINANT_COLOR = (
+    "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling"
+)
 BLOCKER_SEMANTIC_FRAMING = "native_task_camera_semantic_framing_below_threshold"
 
 # Not a blocker: the caller declared the runtime cannot render the captured
@@ -190,7 +204,9 @@ def _as_uint8_rgb(rgb: Any) -> Any:
     return np.clip(values, 0.0, 255.0).astype(np.uint8)
 
 
-def _region_statistics(luminance: Any, void: Any, selector: Any) -> dict[str, Any]:
+def _region_statistics(
+    luminance: Any, void: Any, selector: Any, *, rgb: Any
+) -> dict[str, Any]:
     """Void fraction and tonal structure over one region of a frame."""
 
     import numpy as np
@@ -203,7 +219,10 @@ def _region_statistics(luminance: Any, void: Any, selector: Any) -> dict[str, An
             "distinct_luminance_levels": 0,
             "luminance_mean": None,
             "luminance_std": None,
+            "dominant_rgb_pixel_fraction": None,
         }
+    colors = rgb[selector].reshape(-1, 3)
+    _, color_counts = np.unique(colors, axis=0, return_counts=True)
     return {
         "pixel_count": int(values.size),
         "void_pixel_fraction": float(void[selector].mean()),
@@ -212,6 +231,7 @@ def _region_statistics(luminance: Any, void: Any, selector: Any) -> dict[str, An
         ),
         "luminance_mean": float(values.mean()),
         "luminance_std": float(values.std()),
+        "dominant_rgb_pixel_fraction": float(color_counts.max() / values.size),
     }
 
 
@@ -277,7 +297,9 @@ def measure_native_task_frame_render_evidence(
     void = frame.max(axis=-1) == 0
     luminance = frame.astype(np.float64).mean(axis=-1)
     everywhere = np.ones_like(void, dtype=bool)
-    frame_statistics = _region_statistics(luminance, void, everywhere)
+    frame_statistics = _region_statistics(
+        luminance, void, everywhere, rgb=frame
+    )
     frame_statistics["near_black_pixel_fraction"] = float(
         (luminance <= NEAR_BLACK_LUMINANCE_MAX).mean()
     )
@@ -291,12 +313,12 @@ def measure_native_task_frame_render_evidence(
             raise NativeTaskCameraObservabilityError([REFUSAL_RGB_SEMANTIC_MISMATCH])
         mask = candidate
     target_statistics = (
-        _region_statistics(luminance, void, mask)
+        _region_statistics(luminance, void, mask, rgb=frame)
         if mask is not None and bool(mask.any())
         else None
     )
     site_statistics = (
-        _region_statistics(luminance, void, ~mask)
+        _region_statistics(luminance, void, ~mask, rgb=frame)
         if mask is not None and bool((~mask).any())
         else None
     )
@@ -323,12 +345,20 @@ def measure_native_task_frame_render_evidence(
     site_rendered: bool | None = None
     notices: list[str] = []
     if site_statistics is not None:
-        site_rendered = bool(
+        site_blockers: list[str] = []
+        if (
             float(site_statistics["void_pixel_fraction"])
-            <= MAXIMUM_SITE_VOID_PIXEL_FRACTION
-        )
-        if site_appearance_render_expected and not site_rendered:
-            blockers.append(BLOCKER_SITE_VOID)
+            > MAXIMUM_SITE_VOID_PIXEL_FRACTION
+        ):
+            site_blockers.append(BLOCKER_SITE_VOID)
+        if (
+            float(site_statistics["dominant_rgb_pixel_fraction"])
+            > MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION
+        ):
+            site_blockers.append(BLOCKER_SITE_DOMINANT_COLOR)
+        site_rendered = not site_blockers
+        if site_appearance_render_expected:
+            blockers.extend(site_blockers)
         if not site_appearance_render_expected and site_rendered:
             notices.append(NOTICE_SITE_RENDERED_WHILE_UNCLAIMED)
 
@@ -347,6 +377,9 @@ def measure_native_task_frame_render_evidence(
         ),
         "thresholds": {
             "maximum_site_void_pixel_fraction": MAXIMUM_SITE_VOID_PIXEL_FRACTION,
+            "maximum_site_dominant_rgb_pixel_fraction": (
+                MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION
+            ),
             "minimum_distinct_luminance_levels": MINIMUM_DISTINCT_LUMINANCE_LEVELS,
             "minimum_luminance_std": MINIMUM_LUMINANCE_STD,
             "near_black_luminance_max": NEAR_BLACK_LUMINANCE_MAX,
@@ -475,6 +508,7 @@ def measure_native_task_camera_observability(
 __all__ = [
     "CLAIM_WITHOUT_SITE",
     "CLAIM_WITH_SITE",
+    "MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION",
     "MAXIMUM_SITE_VOID_PIXEL_FRACTION",
     "MINIMUM_DISTINCT_LUMINANCE_LEVELS",
     "MINIMUM_LUMINANCE_STD",

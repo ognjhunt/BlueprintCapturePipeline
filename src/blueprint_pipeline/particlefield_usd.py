@@ -34,6 +34,18 @@ from .gaussian_splat_decode import (
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
 PARTICLEFIELD_RECEIPT_SCHEMA_VERSION = "particlefield_3dgs_authoring_receipt.v1"
+PARTICLEFIELD_REFERENCE_CONVERTERS = {
+    "openusd_py3dgs_ply_to_usd": (
+        "https://github.com/PixarAnimationStudios/OpenUSD/blob/"
+        "47154dc7b5e28df623745495a7a508b69535ba24/"
+        "extras/imaging/examples/hdParticleField/py3dgsPlyToUsd.py"
+    ),
+    "nvidia_usd_convert_gsplat": (
+        "https://github.com/NVIDIA-Omniverse/usd-convert-gsplat/blob/"
+        "621017ebf78394488260c70ec4eadd70ff621131/"
+        "source/python/usd_convert_gsplat/usd_writer.py"
+    ),
+}
 GAUSSIAN_SURFLET_SCHEMA = "ParticleField+ParticleFieldKernelGaussianSurfletAPI"
 GAUSSIAN_SURFLET_RECEIPT_SCHEMA_VERSION = "aura_ovrtx_particlefield_receipt.v1"
 
@@ -130,6 +142,11 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         sh = dc.reshape(n, 3).astype(np.float32)
 
     extent = np.stack([xyz.min(axis=0), xyz.max(axis=0)]).astype(np.float32)
+    # Both pinned reference converters author displayColor as the deterministic
+    # per-vertex DC-colour fallback alongside spherical-harmonic radiance.
+    display_colors = np.clip(
+        0.5 + SH_C0 * np.asarray(splat.f_dc, dtype=np.float32), 0.0, 1.0
+    ).astype(np.float32)
     return {
         "count": int(n),
         "positions": xyz,
@@ -138,6 +155,8 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "opacities": opac,
         "sh_coefficients": sh,
         "sh_degree": degree,
+        "sh_element_size": int((degree + 1) ** 2),
+        "display_colors": display_colors,
         "extent": extent,
         "positive_infinite_opacity_logit_count": int(
             np.isposinf(raw_opacity).sum()
@@ -450,7 +469,7 @@ def write_particlefield_usd(
     """
     out_path = Path(out_path)
     try:
-        from pxr import Usd, UsdGeom, Gf, Sdf, Vt  # noqa: F401
+        from pxr import Usd, UsdGeom, UsdVol, Gf, Sdf, Vt  # noqa: F401
     except Exception as exc:  # noqa: BLE001 - pxr/usd-core not installed here
         return {
             "status": "blocked",
@@ -497,7 +516,13 @@ def write_particlefield_usd(
     # Arena composes this file as a reference. A standalone stage without a
     # default prim can open successfully yet contribute no referenced scene.
     stage.SetDefaultPrim(world.GetPrim())
-    prim = stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
+    typed_schema = getattr(UsdVol, "ParticleField3DGaussianSplat", None)
+    field = typed_schema.Define(stage, prim_path) if typed_schema else None
+    prim = (
+        field.GetPrim()
+        if field
+        else stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
+    )
     if not prim or not prim.IsValid():
         return {"status": "blocked", "blockers": ["particlefield_schema_unavailable"],
                 "remediation": "usd-core build lacks ParticleField3DGaussianSplat (need a recent UsdVol)"}
@@ -505,22 +530,61 @@ def write_particlefield_usd(
     def vec3f(a: np.ndarray):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(a, dtype=np.float32))
 
-    prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(vec3f(arr["positions"]))
-    prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(vec3f(arr["scales"]))
-    prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(
-        Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
+    if field:
+        field.CreatePositionsAttr(vec3f(arr["positions"]))
+        field.CreateScalesAttr(vec3f(arr["scales"]))
+        field.CreateOpacitiesAttr(
+            Vt.FloatArray.FromNumpy(
+                np.ascontiguousarray(arr["opacities"], dtype=np.float32)
+            )
+        )
+        sh_attr = field.CreateRadianceSphericalHarmonicsCoefficientsAttr(
+            vec3f(arr["sh_coefficients"])
+        )
+        field.CreateRadianceSphericalHarmonicsDegreeAttr(int(arr["sh_degree"]))
+    else:
+        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
+            vec3f(arr["positions"])
+        )
+        prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(
+            vec3f(arr["scales"])
+        )
+        prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(
+            Vt.FloatArray.FromNumpy(
+                np.ascontiguousarray(arr["opacities"], dtype=np.float32)
+            )
+        )
+        sh_attr = prim.CreateAttribute(
+            "radiance:sphericalHarmonicsCoefficients",
+            Sdf.ValueTypeNames.Float3Array,
+        )
+        sh_attr.Set(vec3f(arr["sh_coefficients"]))
+        prim.CreateAttribute(
+            "radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int
+        ).Set(int(arr["sh_degree"]))
+    UsdGeom.Boundable(prim).CreateExtentAttr(vec3f(arr["extent"]))
+
+    # The coefficient array is flattened as (degree + 1)^2 float3 values per
+    # Gaussian. Without these load-bearing primvar opinions, RTX interprets it
+    # as one constant value even though every coefficient byte is present.
+    sh_primvar = UsdGeom.Primvar(sh_attr)
+    sh_primvar.SetElementSize(arr["sh_element_size"])
+    sh_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
+
+    display_color = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+        "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
     )
-    prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
-        vec3f(arr["sh_coefficients"])
-    )
-    prim.CreateAttribute("radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int).Set(int(arr["sh_degree"]))
-    prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(vec3f(arr["extent"]))
+    display_color.Set(vec3f(arr["display_colors"]))
     prim.CreateAttribute("projectionModeHint", Sdf.ValueTypeNames.Token).Set("perspective")
     prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token).Set(sorting_mode)
 
     # quaternions: try numpy fast path, fall back to per-element Gf.Quatf (w, x, y, z)
     q = arr["orientations"]
-    quat_attr = prim.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray)
+    quat_attr = (
+        field.CreateOrientationsAttr()
+        if field
+        else prim.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray)
+    )
     try:
         quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q, dtype=np.float32)))
     except Exception:  # noqa: BLE001
@@ -541,6 +605,10 @@ def write_particlefield_usd(
         "schema": PARTICLEFIELD_SCHEMA,
         "splat_count": arr["count"],
         "sh_degree": arr["sh_degree"],
+        "sh_primvar_element_size": arr["sh_element_size"],
+        "sh_primvar_interpolation": "vertex",
+        "display_color_fallback_authored": True,
+        "reference_converters": PARTICLEFIELD_REFERENCE_CONVERTERS,
         "prim_path": prim_path,
         "default_prim": "/World",
         "source_sha256": source_sha256,

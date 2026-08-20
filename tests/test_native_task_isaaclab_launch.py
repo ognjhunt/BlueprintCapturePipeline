@@ -142,6 +142,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
             "extension_was_enabled_before_probe": True,
             "extension_enabled": True,
             "renderer_hints": 3,
+            "ujitso_geometry_enabled": True,
             "multi_gpu_enabled": False,
             "schema_registered": False,
         },
@@ -166,12 +167,14 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     assert receipt["nurec_renderer"]["render_path"] == "plain_nurec_volume"
     assert receipt["nurec_renderer"]["extension_required"] is True
     assert receipt["nurec_renderer"]["extension_enabled"] is True
+    assert receipt["nurec_renderer"]["ujitso_geometry_enabled"] is True
     assert receipt["nurec_renderer"]["schema_registration_required"] is False
     assert receipt["nurec_renderer"]["schema_registered"] is False
     assert receipt["nurec_renderer"]["activation_method"] == (
         "test_injected_post_launch_probe"
     )
     assert receipt["launch"]["kit_args"][:2] == ["--enable", "omni.rtx.spg"]
+    assert "--/UJITSO/geometry=true" in receipt["launch"]["kit_args"]
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
@@ -199,6 +202,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
                 "extension_required": True,
                 "extension_enabled": False,
                 "renderer_hints": 3,
+                "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": False,
                 "schema_registered": True,
             },
@@ -208,6 +212,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
             {
                 "extension_enabled": True,
                 "renderer_hints": None,
+                "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": False,
                 "schema_registered": True,
             },
@@ -217,6 +222,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
             {
                 "extension_enabled": True,
                 "renderer_hints": 3,
+                "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": True,
                 "schema_registered": True,
             },
@@ -226,11 +232,22 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
             {
                 "extension_enabled": True,
                 "renderer_hints": 3,
+                "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": False,
                 "schema_registration_required": True,
                 "schema_registered": False,
             },
             "native_task_isaaclab_nurec_schema_not_registered",
+        ),
+        (
+            {
+                "extension_enabled": True,
+                "renderer_hints": 3,
+                "ujitso_geometry_enabled": False,
+                "multi_gpu_enabled": False,
+                "schema_registered": True,
+            },
+            "native_task_isaaclab_ujitso_geometry_not_enabled",
         ),
     ],
 )
