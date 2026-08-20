@@ -160,6 +160,24 @@ def test_chain_refuses_a_packet_that_disagrees_with_deployed_constants() -> None
     )
 
 
+def test_chain_uses_the_dependency_complete_runtime_source_packet() -> None:
+    """The original c3e8b79a packet was mutated to an incomplete 152 MB copy.
+
+    The dependency-complete packet is the immutable 4.4 GB source bundle that
+    already passed the production import/render preflight. Both the bundle and
+    live profile must bind that same receipt or a fast deploy can fail before
+    Isaac starts for reasons unrelated to the change under test.
+    """
+
+    text = _text(LAUNCH)
+    declaration = "RUNTIME_SOURCE_PACKET_RECEIPT=${RUNTIME_SOURCE_PACKET_RECEIPT:-"
+    assert declaration in text
+    assert "native-task-runtime-source-c3e8b79a-dependency-complete-62ebe98e" in text
+    assert text.count("$RUNTIME_SOURCE_PACKET_RECEIPT") == 2, (
+        "bundle construction and live profile must consume one source receipt"
+    )
+
+
 def test_fire_waits_for_predecessor_reconciliation_before_submitting() -> None:
     """The site rejects a submit while a predecessor is unreconciled there.
 

@@ -12,6 +12,7 @@ RUN="sudo -u blueprint env PYTHONPATH=$CP/src $PY"
 E=/var/lib/blueprint/task-evaluation-inputs
 A=$E/arena-launch-$CUR
 P=$E/arena-launch-$PREV
+RUNTIME_SOURCE_PACKET_RECEIPT=${RUNTIME_SOURCE_PACKET_RECEIPT:-$E/native-task-runtime-source-c3e8b79a-dependency-complete-62ebe98e/native_task_runtime_source_packet.v1.json}
 LR=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 TASK=task_a_washer_door_open
 
@@ -148,7 +149,7 @@ from blueprint_pipeline.native_task_arena_construction_bundle import build_nativ
 r = build_native_task_arena_construction_bundle(
     job_dir="$A/arena_construction_job",
     packet_dir="$A/arena_packet/$TASK",
-    runtime_source_packet_receipt="$E/native-task-runtime-source-c3e8b79a/native_task_runtime_source_packet.v1.json",
+    runtime_source_packet_receipt="$RUNTIME_SOURCE_PACKET_RECEIPT",
     implementation_commit="$COMMIT")
 print("bundle:", r.get("status"), r.get("execution_mode"))
 EOF
@@ -188,7 +189,7 @@ echo "== 6. live profile"
     --packet-dir $A/arena_packet/$TASK \
     --bundle-receipt $A/arena_construction_job/native_task_arena_provider_bundle_receipt.v1.json \
     --attempt-authority $A/native_task_arena_paid_attempt_authority.v1.json \
-    --runtime-source-packet $E/native-task-runtime-source-c3e8b79a/native_task_runtime_source_packet.v1.json \
+    --runtime-source-packet $RUNTIME_SOURCE_PACKET_RECEIPT \
     --source-commit $COMMIT --scene-id 840920 --task-id $TASK \
     --revision $CUR \
     --raw-manifest-uri $A/bundle_manifest_publication_receipt.json \
