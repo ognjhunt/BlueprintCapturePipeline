@@ -474,6 +474,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("native_task_controls_gripper_convention_unresolved")
         env.reset(seed=seed)
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        # The same sealed-reset measurement the construction worker retains:
+        # which frame the controlled body is actually in, read back from the
+        # finger bodies rather than assumed from a convention.  Taken here,
+        # before any control has moved the arm.
+        result["gripper_frame_axis_readback"] = (
+            servo.current_gripper_frame_axis_readback()
+        )
         episode_environment, environment_receipt = (
             build_native_task_episode_environment(
                 built=built,

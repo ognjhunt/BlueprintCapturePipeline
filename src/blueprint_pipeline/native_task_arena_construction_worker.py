@@ -1210,6 +1210,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["arm_actuator_readback"] = read_native_arm_actuator_readback(
             robot, joint_ids=servo.binding["arm_joint_ids"]
         )
+        # Three sealed artifacts disagree about which frame the controlled body
+        # is in, and none of them can settle it, because they are the things
+        # that disagree.  The reset pose can: the direction between the two
+        # finger bodies is the jaw axis and the direction from the body origin
+        # to their midpoint is the direction the tool extends, both with no
+        # convention assumed.  Both buffers are already read on the control
+        # path and the direction thrown away, so this retains a measurement the
+        # run was making anyway.  It is taken here, at the sealed reset, before
+        # any phase has moved the arm.
+        result["gripper_frame_axis_readback"] = (
+            servo.current_gripper_frame_axis_readback()
+        )
         reset_body_pose = servo.current_body_pose_world()
         snapshots = []
         for _ in range(8):
