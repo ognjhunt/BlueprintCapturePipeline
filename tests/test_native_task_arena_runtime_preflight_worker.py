@@ -99,19 +99,35 @@ def test_official_nurec_setup_runs_the_full_800_update_warmup() -> None:
 
     app = App()
     orchestrator_calls = []
+    progress = []
     result = _official_nurec_render_setup_and_warmup(
         app,
         object(),
         setup_for_rendering_factory=lambda _stage: (True, True, False, []),
         orchestrator_step=lambda: orchestrator_calls.append(True),
+        progress_callback=progress.append,
     )
 
     assert result["passed"] is True
     assert result["stage_classified_nurec"] is True
     assert result["stage_classified_spg"] is False
-    assert result["app_update_count"] == 800
-    assert app.updates == 800
-    assert len(orchestrator_calls) == 8
+    assert result["prime_app_update_count"] == 5
+    assert result["warmup_app_update_count"] == 800
+    assert result["app_update_count"] == 805
+    assert app.updates == 805
+    assert len(orchestrator_calls) == 9
+    assert [row["round"] for row in progress] == list(range(9))
+    assert [row["warmup_updates_completed"] for row in progress] == [
+        0,
+        100,
+        200,
+        300,
+        400,
+        500,
+        600,
+        700,
+        800,
+    ]
 
 
 def test_official_nurec_setup_refuses_a_non_nurec_stage() -> None:

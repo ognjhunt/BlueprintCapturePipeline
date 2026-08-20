@@ -45,6 +45,7 @@ NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH = "particlefield_3d_gaussian_splat"
 NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
 NATIVE_TASK_ARENA_KIT_ARGS = (
     "--enable isaacsim.replicator.nurec_utils "
+    "--enable omni.rtx.spg "
     "--/UJITSO/geometry=true "
     "--/renderer/multiGpu/enabled=false "
     "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
@@ -323,21 +324,15 @@ def launch_native_task_isaaclab(
             extension_enabled = extension_manager.is_extension_enabled(
                 NATIVE_TASK_ARENA_NUREC_EXTENSION
             )
-            particlefield_path = (
-                appearance_render_path
-                == NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH
-            )
             settings = carb.settings.get_settings()
             return {
                 "render_path": appearance_render_path,
-                "activation_method": (
-                    "nurec_utils_prelaunch_plain_particlefield_no_spg"
-                    if particlefield_path
-                    else "kit_launch_argument_for_renderer_registration"
-                ),
-                # nurec_utils classifies plain ParticleField as NuRec without
-                # SPG. SPG is selected only by info:spg:sourceAsset.
-                "extension_required": not particlefield_path,
+                "activation_method": "kit_prelaunch_extensions_no_dynamic_enable",
+                # NVIDIA launches the SPG extension globally even when stage
+                # classification later selects the plain ParticleField render
+                # product. Loading the extension and using the SPG graph are
+                # distinct claims.
+                "extension_required": True,
                 "extension_was_enabled_before_probe": extension_enabled,
                 "extension_enabled": extension_enabled,
                 "spg_dynamic_enable_attempted": False,
