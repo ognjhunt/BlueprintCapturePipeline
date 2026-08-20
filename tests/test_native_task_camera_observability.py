@@ -13,11 +13,13 @@ import pytest
 from blueprint_pipeline.native_task_camera_observability import (
     BLOCKER_FRAME_UNIFORM,
     BLOCKER_FRAME_VOID,
+    BLOCKER_SITE_DOMINANT_COLOR,
     BLOCKER_SITE_VOID,
     BLOCKER_TARGET_VOID,
     CLAIM_WITHOUT_SITE,
     CLAIM_WITH_SITE,
     MAXIMUM_SITE_VOID_PIXEL_FRACTION,
+    MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION,
     MINIMUM_DISTINCT_LUMINANCE_LEVELS,
     NOTICE_SITE_RENDERED_WHILE_UNCLAIMED,
     NativeTaskCameraObservabilityError,
@@ -117,6 +119,37 @@ def test_a_uniform_non_zero_frame_is_not_a_render() -> None:
     assert evidence["blockers"] == [BLOCKER_FRAME_UNIFORM]
 
 
+def test_a_rendered_target_over_a_flat_bright_clear_color_is_not_a_site() -> None:
+    """The exact bb16b12e false-positive shape.
+
+    The target is textured and framed, so frame and target radiance are real.
+    Everything outside it is the renderer clear colour.  Tonal-level and
+    variance checks see the target edges and used to call this a rendered site.
+    """
+
+    shape = (100, 200)
+    semantic = _semantic(shape)
+    frame = np.full((*shape, 3), 231, dtype=np.uint8)
+    frame[30:70, 70:130] = _textured((40, 60), low=40, high=180)
+
+    result = measure_native_task_camera_observability(
+        semantic_ids=semantic,
+        id_to_labels={"7": {"class": "task_object"}},
+        rgb=frame,
+        site_appearance_render_expected=True,
+        minimum_pixels=200,
+        minimum_pixel_fraction=0.005,
+    )
+
+    evidence = result["render_evidence"]
+    assert evidence["frame_rendered"] is True
+    assert evidence["target_rendered"] is True
+    assert evidence["site_rendered"] is False
+    assert evidence["site_region"]["dominant_rgb_pixel_fraction"] == 1.0
+    assert BLOCKER_SITE_DOMINANT_COLOR in result["blockers"]
+    assert result["passed"] is False
+
+
 def test_a_framed_object_whose_own_pixels_rendered_nothing_fails() -> None:
     """The inverse of r13..r23: the site renders, the subject does not.
 
@@ -198,6 +231,14 @@ def test_the_measured_real_render_band_clears_the_thresholds() -> None:
     # ... and the shallowest observed failure is nowhere near it.
     shallowest_observed_failure_void_fraction = 0.88
     assert shallowest_observed_failure_void_fraction > MAXIMUM_SITE_VOID_PIXEL_FRACTION
+
+    worst_genuine_room_dominant_rgb_fraction = 0.02122
+    shallowest_flat_clear_false_pass_fraction = 0.72014
+    assert (
+        worst_genuine_room_dominant_rgb_fraction
+        < MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION
+        < shallowest_flat_clear_false_pass_fraction
+    )
 
 
 # --- absent evidence is not evidence ---------------------------------------
