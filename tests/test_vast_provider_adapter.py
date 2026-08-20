@@ -7558,6 +7558,24 @@ def test_instance_liveness_endpoint_is_absent_not_invented() -> None:
     assert liveness["ssh_port"] is None
 
 
+@pytest.mark.parametrize("instances", ([], None))
+def test_instance_liveness_recognizes_provider_absence_envelopes(instances) -> None:
+    """The detail endpoint returns either empty shape after destruction."""
+
+    liveness = vpa._instance_liveness_from_payload(
+        {"instances": instances}, instance_id=48237576
+    )
+
+    assert liveness == {
+        "probe_error": None,
+        "observed": True,
+        "status": "absent",
+        "exited": True,
+        "ssh_host": None,
+        "ssh_port": None,
+    }
+
+
 def test_request_logs_reports_the_endpoint_for_an_unobservable_instance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
