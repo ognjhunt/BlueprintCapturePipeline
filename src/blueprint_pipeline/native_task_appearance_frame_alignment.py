@@ -47,6 +47,7 @@ SCHEMA_VERSION = "native_task_appearance_frame_alignment.v1"
 # custom attribute, so a stage that never loaded the NuRec schema still reports
 # it -- which is exactly the case on the CPU control plane.
 NUREC_VOLUME_MARKER = "omni:nurec:isNuRecVolume"
+PARTICLEFIELD_TYPE = "ParticleField3DGaussianSplat"
 
 # Floaters are a normal artifact of gaussian training and they push the raw
 # bounding box out by two orders of magnitude: the shipped washer volume spans
@@ -174,6 +175,60 @@ def _gaussian_positions(asset_path: Path, payload_asset_path: str) -> np.ndarray
     return array
 
 
+def _particlefield_prim_transform_positions(
+    asset_path: Path,
+) -> tuple[str, list[list[float]], np.ndarray] | None:
+    """Read an Isaac 6 ParticleField's authored centres and world transform."""
+
+    try:
+        from pxr import Usd, UsdGeom
+    except ImportError as exc:  # pragma: no cover - declared dependency
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_usd_runtime_unavailable"]
+        ) from exc
+    try:
+        stage = Usd.Stage.Open(str(asset_path))
+    except Exception as exc:  # noqa: BLE001
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_asset_unreadable"]
+        ) from exc
+    if stage is None:
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_asset_unreadable"]
+        )
+    if not stage.GetDefaultPrim():
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_default_prim_missing"]
+        )
+    fields = [
+        prim for prim in stage.Traverse() if str(prim.GetTypeName()) == PARTICLEFIELD_TYPE
+    ]
+    if not fields:
+        return None
+    if len(fields) != 1:
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_particlefield_not_exact"]
+        )
+    field = fields[0]
+    raw_positions = field.GetAttribute("positions").Get()
+    positions = np.asarray(raw_positions, dtype=np.float64)
+    if positions.ndim != 2 or positions.shape[1] != 3 or not positions.shape[0]:
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_particlefield_positions_invalid"]
+        )
+    if not np.isfinite(positions).all():
+        raise NativeTaskAppearanceFrameAlignmentError(
+            ["native_task_appearance_particlefield_positions_invalid"]
+        )
+    matrix = UsdGeom.Xformable(field).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()
+    )
+    rows = [
+        [float(matrix[row][column]) for column in range(4)] for row in range(4)
+    ]
+    return str(field.GetPath()), rows, positions
+
+
 def _occupied_bounds(
     positions: np.ndarray, *, quantile: float
 ) -> tuple[list[float], list[float]]:
@@ -252,8 +307,16 @@ def measure_native_task_appearance_frame(
         raise NativeTaskAppearanceFrameAlignmentError(
             ["native_task_appearance_asset_missing"]
         )
-    prim_path, layer_transform, payload = _volume_prim_and_transform(path)
-    positions = _gaussian_positions(path, payload)
+    particlefield = _particlefield_prim_transform_positions(path)
+    if particlefield is None:
+        prim_path, layer_transform, payload = _volume_prim_and_transform(path)
+        positions = _gaussian_positions(path, payload)
+        representation = "nurec_volume"
+        measurement_authority = "nurec_gaussian_centre_quantiles"
+    else:
+        prim_path, layer_transform, positions = particlefield
+        representation = "particlefield_3d_gaussian_splat"
+        measurement_authority = "particlefield_position_quantiles"
     spawn_transform = _spawn_matrix(spawn_position_world_m, spawn_orientation_xyzw)
     stored_lower, stored_upper = _occupied_bounds(
         positions, quantile=float(occupancy_quantile)
@@ -273,6 +336,8 @@ def measure_native_task_appearance_frame(
     )
     return {
         "schema_version": SCHEMA_VERSION,
+        "representation": representation,
+        "appearance_prim_path": prim_path,
         "volume_prim_path": prim_path,
         "gaussian_count": int(positions.shape[0]),
         "occupancy_quantile": float(occupancy_quantile),
@@ -307,7 +372,7 @@ def measure_native_task_appearance_frame(
             "minimum": unmapped_lower,
             "maximum": unmapped_upper,
         },
-        "measurement_authority": "nurec_gaussian_centre_quantiles",
+        "measurement_authority": measurement_authority,
         "measurement_is_not_render_evidence": True,
     }
 
