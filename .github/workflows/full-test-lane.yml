@@ -119,9 +119,22 @@ jobs:
 
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render
+        # This step has hung four full-lane runs. It is a network install of a
+        # Chromium build, it has no natural bound, and a single wedged shard
+        # holds the whole lane until GitHub's 6-hour job timeout -- which
+        # blocks every deploy, because promotion provenance requires a green
+        # lane. Bound it and retry, so a hung mirror costs minutes.
+        timeout-minutes: 12
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          for attempt in 1 2 3; do
+            if timeout 300 npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "playwright chromium install attempt ${attempt} did not finish"
+          done
+          echo "playwright chromium install did not finish in 3 bounded attempts"
+          exit 1
 
       - name: Install Python dependencies
         run: |
