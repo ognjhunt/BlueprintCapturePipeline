@@ -98,13 +98,11 @@ def test_official_nurec_setup_runs_the_full_800_update_warmup() -> None:
             self.updates += 1
 
     app = App()
-    orchestrator_calls = []
     progress = []
     result = _official_nurec_render_setup_and_warmup(
         app,
         object(),
         setup_for_rendering_factory=lambda _stage: (True, True, False, []),
-        orchestrator_step=lambda: orchestrator_calls.append(True),
         progress_callback=progress.append,
     )
 
@@ -115,7 +113,10 @@ def test_official_nurec_setup_runs_the_full_800_update_warmup() -> None:
     assert result["warmup_app_update_count"] == 800
     assert result["app_update_count"] == 805
     assert app.updates == 805
-    assert len(orchestrator_calls) == 9
+    assert result["orchestrator_attempts"] == 0
+    assert result["camera_warmup_method"] == (
+        "isaaclab_camera_app_updates_without_replicator_orchestrator"
+    )
     assert [row["round"] for row in progress] == list(range(9))
     assert [row["warmup_updates_completed"] for row in progress] == [
         0,
@@ -135,7 +136,6 @@ def test_official_nurec_setup_refuses_a_non_nurec_stage() -> None:
         object(),
         object(),
         setup_for_rendering_factory=lambda _stage: (True, False, False, []),
-        orchestrator_step=lambda: None,
     )
 
     assert result["passed"] is False
