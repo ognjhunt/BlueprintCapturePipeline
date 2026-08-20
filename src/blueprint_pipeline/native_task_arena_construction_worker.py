@@ -759,17 +759,33 @@ def _camera_snapshot(
     )
 
     rows = []
+    diagnostics: dict[str, Any] = {
+        "schema_version": "native_task_camera_snapshot_diagnostics.v1",
+        "snapshot_id": snapshot_id,
+        "cameras": [],
+    }
+
+    def _explicit_array(value: Any) -> Any:
+        # Isaac Lab 3.x camera outputs are ProxyArray instances. Their public
+        # contract requires explicit ``.torch`` access; relying on implicit
+        # indexing can preserve the flattened Warp storage shape instead of
+        # the logical image shape.
+        tensor = getattr(value, "torch", value)
+        return np.asarray(_jsonable(tensor))
+
     for role, scene_name in camera_scene_names.items():
         camera = env.unwrapped.scene[scene_name]
         outputs = camera.data.output
-        rgb = _jsonable(outputs["rgb"])[0]
-        rgb_array = np.asarray(rgb)
+        rgb_raw = _explicit_array(outputs["rgb"])
+        rgb_array = rgb_raw[0] if rgb_raw.ndim == 4 and rgb_raw.shape[0] == 1 else rgb_raw
         if rgb_array.shape[-1] == 4:
             rgb_array = rgb_array[..., :3]
         rgb_array = np.clip(rgb_array, 0, 255).astype(np.uint8)
-        semantic = np.asarray(_jsonable(outputs["semantic_segmentation"])[0])
-        if semantic.ndim == 3 and semantic.shape[-1] == 1:
-            semantic = semantic[..., 0]
+        semantic_raw = _explicit_array(outputs["semantic_segmentation"])
+        semantic = np.squeeze(semantic_raw)
+        expected_hw = tuple(int(value) for value in rgb_array.shape[:2])
+        if semantic.shape != expected_hw and semantic.size == expected_hw[0] * expected_hw[1]:
+            semantic = semantic.reshape(expected_hw)
         info = _jsonable((camera.data.info or {}).get("semantic_segmentation") or {})
         labels = info.get("idToLabels") or {}
         thresholds = CAMERA_THRESHOLDS[role]
@@ -781,6 +797,22 @@ def _camera_snapshot(
         frame_path = frame_dir / f"{snapshot_id}.png"
         Image.fromarray(rgb_array, mode="RGB").save(
             frame_path, format="PNG", compress_level=9
+        )
+        diagnostics["cameras"].append(
+            {
+                "role": role,
+                "scene_name": scene_name,
+                "rgb_raw_shape": list(rgb_raw.shape),
+                "rgb_image_shape": list(rgb_array.shape),
+                "semantic_raw_shape": list(semantic_raw.shape),
+                "semantic_image_shape": list(semantic.shape),
+                "semantic_dtype": str(semantic.dtype),
+                "semantic_label_count": len(labels),
+            }
+        )
+        (output_root / "native_task_camera_snapshot_diagnostics.v1.json").write_text(
+            json.dumps(diagnostics, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
         # `rgb_array` is the exact array hashed into `rgb_png.sha256` below, so
         # the verdict is bound to the retained frame rather than to a second
@@ -813,6 +845,7 @@ def _camera_snapshot(
                 )[0],
                 "observability": observability,
                 "semantic_id_to_labels": labels,
+                "raw_shapes": diagnostics["cameras"][-1],
                 "native_sensor_timestamp": _jsonable(
                     getattr(camera.data, "frame", None)
                 ),
