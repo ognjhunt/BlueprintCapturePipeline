@@ -357,6 +357,16 @@ def test_construction_plan_rejects_a_lead_below_the_slew() -> None:
         )
 
 
+def test_graph_construction_rejects_prealign_inside_final_approach() -> None:
+    with pytest.raises(
+        NativeTaskConstructionPlanError,
+        match="native_articulated_graph_construction_prealign_clearance_invalid",
+    ):
+        materialize_native_task_construction_phase_plan(
+            _scene(), graph_articulated_prealign_clearance_m=0.10
+        )
+
+
 def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -> None:
     plan = materialize_native_task_construction_phase_plan(_scene())
 
@@ -369,7 +379,16 @@ def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -
         "passive": ["roller_axis"],
         "locked": ["dial_axis"],
     }
+    assert [row["phase_id"] for row in plan["phases"][:2]] == [
+        "prealign",
+        "approach",
+    ]
+    assert plan["prealign_clearance_m"] == pytest.approx(0.30)
+    assert plan["phases"][0]["position_world_m"] != plan["phases"][1][
+        "position_world_m"
+    ]
     assert [row["phase_id"] for row in plan["exact_contact_phases"]] == [
+        "prealign",
         "approach",
         "contact_open",
         "contact_close",
@@ -378,7 +397,7 @@ def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -
         "release",
         "retreat",
     ]
-    assert plan["exact_contact_phases"][4]["expected_joint_positions"][
+    assert plan["exact_contact_phases"][5]["expected_joint_positions"][
         "panel_hinge"
     ] == pytest.approx(0.8)
     assert plan["interaction_affordance"]["contact_body_prim_paths"] == [
@@ -496,7 +515,7 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     assert [row["phase_id"] for row in control["scripted_positive_actions"]] == [
         row["phase_id"] for row in phase_plan["exact_contact_phases"]
     ]
-    assert control["scripted_positive_actions"][4]["expected_joint_positions"][
+    assert control["scripted_positive_actions"][5]["expected_joint_positions"][
         "panel_hinge"
     ] == pytest.approx(0.8)
     assert all(
