@@ -10,6 +10,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_IMAGE,
     NATIVE_TASK_ARENA_KIT_ARGS,
+    NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
     NativeTaskIsaacLabLaunchError,
     launch_native_task_isaaclab,
     verify_native_task_isaaclab_launch_contract,
@@ -312,6 +313,44 @@ def test_nurec_renderer_readback_error_defers_close_until_receipt(
             nurec_renderer_probe_factory=broken_probe,
         )
     assert closed == []
+
+
+def test_plain_particlefield_does_not_require_or_dynamically_enable_spg(
+    tmp_path: Path,
+) -> None:
+    _app, receipt = launch_native_task_isaaclab(
+        _receipt(tmp_path),
+        device="cuda:0",
+        appearance_render_path=NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+        app_launcher_factory=lambda **_kwargs: SimpleNamespace(
+            app=SimpleNamespace(close=lambda: None)
+        ),
+        nurec_renderer_probe_factory=lambda: {
+            "render_path": NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+            "activation_method": "nurec_utils_prelaunch_plain_particlefield_no_spg",
+            "extension_required": False,
+            "extension_was_enabled_before_probe": False,
+            "extension_enabled": False,
+            "spg_dynamic_enable_attempted": False,
+            "nurec_utils_extension_enabled": True,
+            "renderer_hints": 3,
+            "ujitso_geometry_enabled": True,
+            "multi_gpu_enabled": False,
+            "schema_registered": True,
+        },
+    )
+
+    nurec = receipt["nurec_renderer"]
+    assert nurec["status"] == "qualified"
+    assert nurec["extension_required"] is False
+    assert nurec["extension_enabled"] is False
+    assert nurec["spg_dynamic_enable_attempted"] is False
+
+    import inspect
+
+    assert "enable_omni_rtx_spg" not in inspect.getsource(
+        launch_native_task_isaaclab
+    )
 
 
 def test_nurec_renderer_failure_retains_raw_diagnostics(tmp_path: Path) -> None:
