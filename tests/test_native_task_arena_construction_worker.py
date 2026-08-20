@@ -301,6 +301,51 @@ def test_device_binding_survives_an_unreachable_scene() -> None:
     assert binding["expected_device"] == "cuda:0"
 
 
+def test_articulation_device_binding_skips_plan_declared_base_assets() -> None:
+    from types import SimpleNamespace
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _articulation_device_binding,
+    )
+
+    articulation = SimpleNamespace(
+        data=SimpleNamespace(
+            joint_pos=SimpleNamespace(device="cuda:0"),
+            joint_vel=SimpleNamespace(device="cuda:0"),
+            device="cuda:0",
+        ),
+        joint_names=["joint"],
+        actuators={},
+    )
+    base = SimpleNamespace()
+    scene = {
+        "robot": articulation,
+        "task_object": articulation,
+        "scene_appearance": base,
+        "scene_collision": base,
+    }
+    built = SimpleNamespace(
+        env=SimpleNamespace(unwrapped=SimpleNamespace(scene=scene)),
+        scene_asset_names={name: name for name in scene if name != "robot"},
+        plan={
+            "objects": [
+                {"name": "task_object", "object_type": "ARTICULATION"},
+                {"name": "scene_appearance", "object_type": "BASE"},
+                {"name": "scene_collision", "object_type": "BASE"},
+            ]
+        },
+    )
+
+    binding = _articulation_device_binding(built, expected_device="cuda:0")
+
+    assert sorted(binding["articulations"]) == ["robot", "task_object"]
+    assert binding["required_articulation_names"] == ["robot", "task_object"]
+    assert binding["non_articulation_assets_skipped"] == [
+        "scene_appearance",
+        "scene_collision",
+    ]
+
+
 def test_articulation_view_devices_separate_scene_wide_from_per_asset() -> None:
     """The traceback cannot say whether the whole scene lost GPU dynamics.
 
