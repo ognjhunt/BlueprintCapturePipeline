@@ -82,6 +82,12 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "isaaclab_tasks",
         "isaaclab_teleop",
         "isaaclab_arena.environments.arena_env_builder",
+        "isaacsim.robot_motion.experimental.motion_generation",
+        "isaacsim.robot_motion.pink",
+        "pinocchio",
+        "pink",
+        "qpsolvers",
+        "osqp",
     }.issubset(DEPENDENCY_IMPORTS)
     assert set(TOP_LEVEL_PACKAGES).issubset(DEPENDENCY_IMPORTS)
     assert DEPENDENCY_IMPORTS.index("isaaclab_contrib") < DEPENDENCY_IMPORTS.index(

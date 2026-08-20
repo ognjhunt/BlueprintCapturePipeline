@@ -182,6 +182,9 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     ]
     assert "--/UJITSO/geometry=true" in receipt["launch"]["kit_args"]
     assert receipt["launch"]["kit_args"][2:4] == ["--enable", "omni.rtx.spg"]
+    assert ["--enable", "isaacsim.robot_motion.pink"] == receipt["launch"][
+        "kit_args"
+    ][4:6]
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
