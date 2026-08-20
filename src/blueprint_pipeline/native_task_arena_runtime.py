@@ -777,6 +777,9 @@ def build_native_task_arena_environment(
     from isaaclab.managers import EventTermCfg as EventTerm
     from isaaclab.managers import SceneEntityCfg
     from isaaclab.sensors import ContactSensorCfg
+    from isaaclab_physx.renderers.isaac_rtx_renderer_cfg import (
+        IsaacRtxRendererCfg,
+    )
     from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
@@ -931,6 +934,9 @@ def build_native_task_arena_environment(
         camera_cfg.height = parameters["height"]
         camera_cfg.data_types = list(parameters["data_types"])
         camera_cfg.colorize_semantic_segmentation = False
+        camera_cfg.renderer_cfg = IsaacRtxRendererCfg(
+            colorize_semantic_segmentation=False
+        )
         camera_cfg.update_period = 0.0
         camera_cfg.update_latest_camera_pose = True
         camera_cfg.spawn.focal_length = parameters["focal_length_mm"]

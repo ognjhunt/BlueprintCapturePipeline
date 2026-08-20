@@ -326,6 +326,10 @@ def _install_fake_native_runtime(monkeypatch) -> None:
         "isaaclab_arena.utils.pose": types.ModuleType("isaaclab_arena.utils.pose"),
         "isaaclab_physx": types.ModuleType("isaaclab_physx"),
         "isaaclab_physx.physics": types.ModuleType("isaaclab_physx.physics"),
+        "isaaclab_physx.renderers": types.ModuleType("isaaclab_physx.renderers"),
+        "isaaclab_physx.renderers.isaac_rtx_renderer_cfg": types.ModuleType(
+            "isaaclab_physx.renderers.isaac_rtx_renderer_cfg"
+        ),
     }
     modules["isaaclab.envs.mdp"].reset_joints_by_offset = object()
     modules["isaaclab.sim"].DomeLightCfg = lambda **kwargs: SimpleNamespace(**kwargs)
@@ -360,6 +364,9 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules["isaaclab_physx.physics"].PhysxCfg = (
         lambda **kwargs: SimpleNamespace(**kwargs)
     )
+    modules[
+        "isaaclab_physx.renderers.isaac_rtx_renderer_cfg"
+    ].IsaacRtxRendererCfg = lambda **kwargs: SimpleNamespace(**kwargs)
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -522,6 +529,12 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
     assert built.native_configuration_readback["cameras"]["external"][
         "offset_position_m"
     ] == [1.0, 2.0, 3.0]
+    for camera_cfg in (
+        arena_env.embodiment.camera_config.external_camera,
+        arena_env.embodiment.camera_config.wrist_camera,
+        arena_env.embodiment.camera_config.external_camera_2,
+    ):
+        assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
 
 
 def test_builder_keeps_inactive_articulated_replacement_and_its_reset(
