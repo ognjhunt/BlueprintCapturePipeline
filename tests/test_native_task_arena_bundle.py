@@ -946,6 +946,7 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
         "provider_runtime/blueprint_pipeline/native_task_torch_runtime_lock.py"
         in names
     )
+    assert "provider_runtime/blueprint_pipeline/rigid_frame_transforms.py" in names
     loaded = load_verified_native_task_arena_runtime_preflight_bundle(
         tmp_path
         / "runtime-preflight/native_task_arena_provider_bundle_receipt.v1.json",

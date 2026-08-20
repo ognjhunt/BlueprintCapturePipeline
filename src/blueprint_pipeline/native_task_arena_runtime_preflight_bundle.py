@@ -23,6 +23,7 @@ def _sources() -> tuple[Path, ...]:
     return (
         *construction_runtime_sources(),
         package / "native_task_arena_construction_worker.py",
+        package / "rigid_frame_transforms.py",
     )
 
 
