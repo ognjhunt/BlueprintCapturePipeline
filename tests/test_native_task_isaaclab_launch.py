@@ -8,10 +8,13 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_isaaclab_launch import (
+    NATIVE_TASK_ARENA_IMAGE,
+    NATIVE_TASK_ARENA_KIT_ARGS,
     NativeTaskIsaacLabLaunchError,
     launch_native_task_isaaclab,
     verify_native_task_isaaclab_launch_contract,
 )
+from blueprint_pipeline.adp009d_native_microcheck_bundle import DEFAULT_IMAGE
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_REPOSITORY,
     ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
@@ -110,7 +113,15 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         return SimpleNamespace(app=SimpleNamespace(close=lambda: None))
 
     app, receipt = launch_native_task_isaaclab(
-        _receipt(tmp_path), device="cuda:0", app_launcher_factory=factory
+        _receipt(tmp_path),
+        device="cuda:0",
+        app_launcher_factory=factory,
+        nurec_renderer_probe_factory=lambda: {
+            "extension_enabled": True,
+            "renderer_hints": 3,
+            "multi_gpu_enabled": False,
+            "schema_registered": True,
+        },
     )
 
     assert app is not None
@@ -120,15 +131,110 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
             "device": "cuda:0",
             "enable_cameras": True,
             "experience": receipt["experience"]["path"],
+            "kit_args": NATIVE_TASK_ARENA_KIT_ARGS,
         }
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
     assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
+    assert receipt["nurec_renderer"]["status"] == "qualified"
+    assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
         "isaaclab.python.headless.kit",
         "isaaclab.python.headless.rendering.kit",
     }
+
+
+def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
+    assert NATIVE_TASK_ARENA_IMAGE == (
+        "nvcr.io/nvidia/isaac-sim:6.0.1@"
+        "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+    )
+    assert DEFAULT_IMAGE.endswith(
+        "@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
+    )
+    assert NATIVE_TASK_ARENA_IMAGE != DEFAULT_IMAGE
+
+
+@pytest.mark.parametrize(
+    ("readback", "error"),
+    [
+        (
+            {
+                "extension_enabled": False,
+                "renderer_hints": 3,
+                "multi_gpu_enabled": False,
+                "schema_registered": True,
+            },
+            "native_task_isaaclab_nurec_extension_not_enabled",
+        ),
+        (
+            {
+                "extension_enabled": True,
+                "renderer_hints": None,
+                "multi_gpu_enabled": False,
+                "schema_registered": True,
+            },
+            "native_task_isaaclab_nurec_renderer_hints_invalid",
+        ),
+        (
+            {
+                "extension_enabled": True,
+                "renderer_hints": 3,
+                "multi_gpu_enabled": True,
+                "schema_registered": True,
+            },
+            "native_task_isaaclab_nurec_multi_gpu_not_disabled",
+        ),
+        (
+            {
+                "extension_enabled": True,
+                "renderer_hints": 3,
+                "multi_gpu_enabled": False,
+                "schema_registered": False,
+            },
+            "native_task_isaaclab_nurec_schema_not_registered",
+        ),
+    ],
+)
+def test_nurec_renderer_runtime_readback_fails_closed(
+    tmp_path: Path, readback: dict[str, object], error: str
+) -> None:
+    closed = []
+
+    def factory(**_kwargs):
+        return SimpleNamespace(app=SimpleNamespace(close=lambda: closed.append(True)))
+
+    with pytest.raises(NativeTaskIsaacLabLaunchError, match=error):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            device="cuda:0",
+            app_launcher_factory=factory,
+            nurec_renderer_probe_factory=lambda: readback,
+        )
+    assert closed == [True]
+
+
+def test_nurec_renderer_readback_error_closes_the_app(tmp_path: Path) -> None:
+    closed = []
+
+    def factory(**_kwargs):
+        return SimpleNamespace(app=SimpleNamespace(close=lambda: closed.append(True)))
+
+    def broken_probe():
+        raise AttributeError("schema API drift")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_nurec_runtime_readback_failed",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            device="cuda:0",
+            app_launcher_factory=factory,
+            nurec_renderer_probe_factory=broken_probe,
+        )
+    assert closed == [True]
 
 
 def test_old_experience_that_loads_two_warp_runtimes_fails_before_launch(

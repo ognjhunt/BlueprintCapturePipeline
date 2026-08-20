@@ -561,15 +561,10 @@ def test_construction_camera_snapshot_fails_a_black_frame(tmp_path) -> None:
     assert "native_task_camera_rgb_frame_void" in observability["blockers"]
 
 
-def test_construction_camera_snapshot_passes_a_render_without_claiming_the_site(
+def test_construction_camera_snapshot_refuses_when_the_claimed_site_is_void(
     tmp_path,
 ) -> None:
-    """Today's legitimate state: subject renders, captured site does not.
-
-    The pinned image enables no NuRec renderer, so the gate asserts the weaker
-    claim and records the site's absence rather than failing the run for a
-    cause it cannot see.
-    """
+    """A NuRec-capable image makes site appearance a required pixel claim."""
 
     import numpy as np
 
@@ -577,7 +572,7 @@ def test_construction_camera_snapshot_passes_a_render_without_claiming_the_site(
         SITE_APPEARANCE_RENDER_EXPECTED,
     )
 
-    assert SITE_APPEARANCE_RENDER_EXPECTED is False
+    assert SITE_APPEARANCE_RENDER_EXPECTED is True
 
     generator = np.random.default_rng(20260819)
     semantic = np.zeros((64, 64), dtype=np.int32)
@@ -592,13 +587,11 @@ def test_construction_camera_snapshot_passes_a_render_without_claiming_the_site(
         output_root=tmp_path,
     )
     observability = snapshot["cameras"][0]["observability"]
-    site = observability["render_evidence"]["site_region"]
-
-    assert observability["passed"] is True
-    assert site["void_pixel_fraction"] > 0.85
+    assert observability["passed"] is False
     assert observability["site_appearance_claimed"] is False
     assert (
-        observability["claim"] == "camera_observes_task_object_without_site_appearance"
+        "native_task_camera_rgb_site_void_fraction_above_ceiling"
+        in observability["blockers"]
     )
 
 

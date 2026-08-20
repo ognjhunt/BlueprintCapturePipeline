@@ -35,15 +35,12 @@ and only the first is unconditionally checkable here:
                      captured site appeared.  Measured always; gated only when
                      the caller declares the runtime can render it.
 
-That last conditional is not a convenience.  As of 2026-08-19 the pinned Isaac
-image ships no NuRec renderer at all -- ``omni.nurec``, ``omni.rtx.nre`` and
-``omni.usd.schema.omni_nurec`` all fail to enable and the RTX path reports
-"Failed to create nrend renderer with error code 2" -- so the captured site is
-*legitimately* absent from every frame that image produces while the robot and
-the SimReady asset still render.  Gating ``site_rendered`` unconditionally
-would fail every run for a cause this module cannot see or name.  Leaving it
-unmeasured is how r10..r23 happened.  So it is measured, reported, and
-attached to an explicit declaration the caller cannot omit.
+That last conditional is not a convenience.  The original dev2 Arena image did
+not ship ``omni.rtx.spg``, so the captured site was absent while the robot and
+SimReady asset still rendered.  The Arena lane now pins a NuRec-capable image
+and claims the site; other callers still have to state their own capability.
+Measuring the site in both cases preserves the evidence and makes a stale
+declaration visible instead of silently changing the claim.
 """
 
 from __future__ import annotations

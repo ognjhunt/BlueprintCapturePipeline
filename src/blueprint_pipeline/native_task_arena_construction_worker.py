@@ -102,21 +102,12 @@ CAMERA_THRESHOLDS = {
 
 # Whether this runtime can render the captured-site appearance volume at all.
 #
-# It cannot.  Measured on GPU 2026-08-19 against the pinned construction image:
-# `omni.nurec`, `omni.rtx.nre` and `omni.usd.schema.omni_nurec` all fail to
-# enable, and the RTX path reports "Failed to create nrend renderer with error
-# code 2".  A lit cube renders at rgb_mean 237.5881; adding the NuRec
-# appearance volume to the same stage moves it to 237.5906 -- no contribution.
-#
-# So the site is legitimately absent from every frame this image produces while
-# the robot and the SimReady asset still render, and the camera gate must not
-# fail a run for it.  What the gate does instead is measure the site's share of
-# void anyway and refuse to *claim* the frames show the site.  Flip this to True
-# in the same change that pins an image whose NuRec extensions load; until then
-# the receipt records `site_appearance_claimed: false` per camera, and says
-# `native_task_camera_site_rendered_while_unclaimed` if the site renders anyway
-# so a swapped image cannot quietly leave this declaration stale.
-SITE_APPEARANCE_RENDER_EXPECTED = False
+# The Arena bundle is pinned separately to Isaac Sim 6.0.1, explicitly enables
+# `omni.rtx.spg`, and the shared launcher refuses unless the extension, renderer
+# hints, multi-GPU setting, and `OmniNuRecFieldAsset` schema all read back as
+# qualified.  The camera gate remains the independent content-level check: an
+# enabled renderer cannot vouch that this exact captured site contributed pixels.
+SITE_APPEARANCE_RENDER_EXPECTED = True
 
 
 def _announce(phase: str, status: str = "started") -> None:

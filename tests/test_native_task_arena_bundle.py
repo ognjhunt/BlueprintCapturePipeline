@@ -16,9 +16,6 @@ from blueprint_pipeline import (
 from blueprint_pipeline import native_task_arena_controls_bundle as controls_bundle_module
 from blueprint_pipeline import native_task_arena_policy_bundle as policy_bundle_module
 from blueprint_pipeline.common import write_json
-from blueprint_pipeline.adp009d_native_microcheck_bundle import (
-    DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
-)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
@@ -55,6 +52,7 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     RUNTIME_DEPENDENCY_WHEELS,
     materialize_native_task_runtime_source_packet,
 )
+from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from blueprint_pipeline.droid_policy_bridge import OPENPI_SOURCE_REVISION
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     GrootN17DroidPolicySpec,
@@ -602,6 +600,28 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
     )
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
+    receipt_path = (
+        tmp_path
+        / "policy-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+    )
+    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered["container_image"] = "registry.invalid/image@sha256:" + "0" * 64
+    tampered["input_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in tampered.items()
+            if key not in {"bundle_path", "bundle_size_bytes", "bundle_sha256"}
+        },
+        digest_field="input_digest",
+    )
+    receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="native_task_policy_bundle_image_mismatch"):
+        load_verified_native_task_arena_policy_bundle(
+            receipt_path,
+            expected_implementation_commit="d" * 40,
+        )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
     control_result = json.loads(controls.read_text())
     control_result["controls_qualified"] = False
     control_result["result_digest"] = canonical_digest(
@@ -832,7 +852,7 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
         implementation_commit="e" * 40,
         generated_at="fixed",
     )
-    assert receipt["container_image"] == QUALIFIED_ADP_IMAGE
+    assert receipt["container_image"] == NATIVE_TASK_ARENA_IMAGE
     extracted = tmp_path / f"extracted-{scene_id}"
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
