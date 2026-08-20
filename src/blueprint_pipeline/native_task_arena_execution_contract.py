@@ -37,6 +37,7 @@ RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
         {
             *CONSTRUCTION_RUNTIME_MODULE_NAMES,
             "native_task_arena_construction_worker.py",
+            "rigid_frame_transforms.py",
         }
     )
 )
