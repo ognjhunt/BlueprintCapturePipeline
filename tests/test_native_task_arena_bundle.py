@@ -935,6 +935,9 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
     assert "native_task_arena_runtime_preflight_worker.py" not in names
     assert "task_motion_executed" in worker
     assert "task_motion_executed\"] = True" not in worker
+    assert worker.index("(output_root / RESULT_FILENAME).write_text") < worker.index(
+        "simulation_app.close()"
+    )
     assert (
         "provider_runtime/blueprint_pipeline/native_task_torch_runtime_lock.py"
         in names
