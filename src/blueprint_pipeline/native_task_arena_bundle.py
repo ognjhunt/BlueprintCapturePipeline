@@ -289,12 +289,13 @@ else
 fi
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
-if [ $runner_rc -ne 0 ] && [ ! -f "$OUT_DIR/{expected_output_filename}" ]; then
-/isaac-sim/python.sh - "$OUT_DIR" <<'PY'
+if [ ! -f "$OUT_DIR/{expected_output_filename}" ]; then
+/isaac-sim/python.sh - "$OUT_DIR" "$runner_rc" <<'PY'
 import json
 import sys
 from pathlib import Path
 out = Path(sys.argv[1])
+runner_rc = int(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 name = {quoted}
 (out / name).write_text(json.dumps({{
@@ -304,6 +305,7 @@ name = {quoted}
         "native_task_arena_worker_failed_without_runtime_result",
         "native_task_arena_process_exited_without_result"
     ],
+    "worker_exit_code": runner_rc,
     "candidate_policy_queried": False,
     "candidate_outcomes_accessed": False,
     "provider_zero_required_after_return": True

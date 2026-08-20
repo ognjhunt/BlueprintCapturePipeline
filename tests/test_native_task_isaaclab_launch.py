@@ -138,6 +138,8 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         device="cuda:0",
         app_launcher_factory=factory,
         nurec_renderer_probe_factory=lambda: {
+            "activation_method": "test_injected_post_launch_probe",
+            "extension_was_enabled_before_probe": False,
             "extension_enabled": True,
             "renderer_hints": 3,
             "multi_gpu_enabled": False,
@@ -161,6 +163,10 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         "import_and_cuda_operation_qualified_before_simulation_app"
     ] is True
     assert receipt["nurec_renderer"]["status"] == "qualified"
+    assert receipt["nurec_renderer"]["activation_method"] == (
+        "test_injected_post_launch_probe"
+    )
+    assert "--enable" not in receipt["launch"]["kit_args"]
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",

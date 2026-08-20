@@ -38,9 +38,7 @@ NATIVE_TASK_ARENA_IMAGE = (
 )
 NATIVE_TASK_ARENA_NUREC_EXTENSION = "omni.rtx.spg"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
-NATIVE_TASK_ARENA_KIT_ARGS = (
-    "--enable omni.rtx.spg --/renderer/multiGpu/enabled=false"
-)
+NATIVE_TASK_ARENA_KIT_ARGS = "--/renderer/multiGpu/enabled=false"
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
@@ -303,8 +301,18 @@ def launch_native_task_isaaclab(
             from pxr import Usd
 
             extension_manager = omni.kit.app.get_app().get_extension_manager()
+            extension_was_enabled = extension_manager.is_extension_enabled(
+                NATIVE_TASK_ARENA_NUREC_EXTENSION
+            )
+            if not extension_was_enabled:
+                extension_manager.set_extension_enabled_immediate(
+                    NATIVE_TASK_ARENA_NUREC_EXTENSION, True
+                )
+                omni.kit.app.get_app().update()
             settings = carb.settings.get_settings()
             return {
+                "activation_method": "post_launch_extension_manager",
+                "extension_was_enabled_before_probe": extension_was_enabled,
                 "extension_enabled": extension_manager.is_extension_enabled(
                     NATIVE_TASK_ARENA_NUREC_EXTENSION
                 ),
@@ -333,6 +341,10 @@ def launch_native_task_isaaclab(
         ) from exc
     nurec = {
         "extension_id": NATIVE_TASK_ARENA_NUREC_EXTENSION,
+        "activation_method": raw_nurec.get("activation_method"),
+        "extension_was_enabled_before_probe": raw_nurec.get(
+            "extension_was_enabled_before_probe"
+        ),
         "extension_enabled": raw_nurec.get("extension_enabled") is True,
         "renderer_hints": raw_nurec.get("renderer_hints"),
         "renderer_hints_expected": 3,
