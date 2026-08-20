@@ -73,7 +73,7 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
             files[f"source/{name}/setup.py"] = (
                 "from setuptools import setup; "
                 f"setup(name='{name}', install_requires="
-                f"{['warp-lang==1.12.0', 'torch>=2.10'] if name == 'isaaclab' else []!r})\n"
+                f"{['warp-lang==1.13.0', 'torch>=2.10'] if name == 'isaaclab' else []!r})\n"
             )
             files[f"source/{name}/pyproject.toml"] = (
                 "[build-system]\nrequires=['setuptools']\n"
@@ -153,8 +153,8 @@ def _successful_import_rows() -> list[dict[str, object]]:
         {
             "module": "warp",
             "available": True,
-            "expected_version": "1.12.0",
-            "observed_version": "1.12.0",
+            "expected_version": "1.13.0",
+            "observed_version": "1.13.0",
             "version_matches": True,
         },
         {
@@ -191,7 +191,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     }
     assert verified["install_roots"][-1] == "runtime_sources/arena"
     assert verified["runtime_dependency_basis"]["requirement"] == (
-        "warp-lang==1.12.0"
+        "warp-lang==1.13.0"
     )
     assert verified["runtime_dependency_basis"]["source_repository"] == (
         source_packet.ISAACLAB_REPOSITORY
@@ -217,7 +217,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("lightwheel-sdk", "1.0.3"),
         ("requests", "2.34.2"),
         ("PyYAML", "6.0.3"),
-        ("warp-lang", "1.12.0"),
+        ("warp-lang", "1.13.0"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -347,8 +347,8 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
                         {
                             "module": "warp",
                             "available": True,
-                            "expected_version": "1.12.0",
-                            "observed_version": "1.12.0",
+                            "expected_version": "1.13.0",
+                            "observed_version": "1.13.0",
                             "version_matches": True,
                         },
                         {

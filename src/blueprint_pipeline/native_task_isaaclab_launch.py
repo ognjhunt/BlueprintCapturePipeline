@@ -3,7 +3,7 @@
 The native Arena lane binds the official Isaac Lab 3.0 Beta 2 Patch 1 source
 and Kit experience released for Isaac Sim 6.0.1.  Its experience excludes
 Isaac Sim's bundled Warp extension so it cannot mix with the pinned external
-Warp 1.12 runtime and make a CUDA PhysX view return CPU arrays.  The failure
+Warp 1.13 runtime and make a CUDA PhysX view return CPU arrays.  The failure
 only appears after an expensive native environment build, so this adapter
 reverifies those exact experience bytes and makes them an explicit launch
 input.
@@ -184,7 +184,7 @@ def verify_native_task_isaaclab_launch_contract(
     ]
     if (
         len(installed_warp) != 1
-        or installed_warp[0].get("version") != "1.12.0"
+        or installed_warp[0].get("version") != "1.13.0"
         or installed_warp[0].get("pure_python") is not False
         or installed_warp[0].get("wheel_tag")
         != "py3-none-manylinux_2_28_x86_64"
@@ -194,8 +194,8 @@ def verify_native_task_isaaclab_launch_contract(
         provisioning.get("runtime_import_probe_returncode") != 0
         or len(import_warp) != 1
         or import_warp[0].get("available") is not True
-        or import_warp[0].get("expected_version") != "1.12.0"
-        or import_warp[0].get("observed_version") != "1.12.0"
+        or import_warp[0].get("expected_version") != "1.13.0"
+        or import_warp[0].get("observed_version") != "1.13.0"
         or import_warp[0].get("version_matches") is not True
     ):
         errors.append("native_task_isaaclab_external_warp_import_unqualified")
@@ -232,7 +232,7 @@ def verify_native_task_isaaclab_launch_contract(
         "bundled_isaac_sim_warp_extension_loaded": False,
         "external_warp": {
             "package": "warp-lang",
-            "version": "1.12.0",
+            "version": "1.13.0",
             "wheel_tag": "py3-none-manylinux_2_28_x86_64",
             "import_module": "warp",
             "import_qualified_before_simulation_app": True,

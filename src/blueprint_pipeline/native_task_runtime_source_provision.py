@@ -84,7 +84,7 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_arena",
 )
 RUNTIME_IMPORT_PROBES = (
-    {"module": "warp", "expected_version": "1.12.0"},
+    {"module": "warp", "expected_version": "1.13.0"},
     {
         "module": "torch",
         "expected_version": "2.10.0+cu128",
