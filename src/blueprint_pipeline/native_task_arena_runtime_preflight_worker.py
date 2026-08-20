@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import traceback
 import zipfile
@@ -12,6 +13,127 @@ from typing import Any
 
 RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
+OFFICIAL_NUREC_WARMUP_STEPS = 800
+
+
+def _robot_reset_task_space_readback(
+    *,
+    plan: dict[str, Any],
+    gripper_frame_axis_readback: dict[str, Any],
+    object_reset_readback: dict[str, Any],
+) -> dict[str, Any]:
+    """Reject roots that look correct while the live fingers are unusably placed."""
+
+    from blueprint_pipeline.rigid_frame_transforms import rotate_vector_xyzw
+
+    try:
+        base_pose = plan["robot"]["base_pose_world"]
+        base = [float(value) for value in base_pose["position_world_m"]]
+        base_quaternion = [
+            float(value) for value in base_pose["orientation_xyzw"]
+        ]
+        midpoint = [
+            float(value)
+            for value in gripper_frame_axis_readback["measured"][
+                "finger_midpoint_world_m"
+            ]
+        ]
+        contact = [
+            float(value)
+            for value in object_reset_readback["task_link_frame_equivalence"][
+                "observed_contact_position_world_m"
+            ]
+        ]
+        if not all(len(row) == 3 for row in (base, midpoint, contact)):
+            raise ValueError("vector length")
+        forward = rotate_vector_xyzw(base_quaternion, [1.0, 0.0, 0.0])
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "schema_version": "native_task_arena_robot_reset_task_space.v1",
+            "passed": False,
+            "blockers": [
+                "native_task_arena_robot_reset_task_space_readback_invalid"
+            ],
+            "error_type": type(exc).__name__,
+        }
+
+    base_to_midpoint = [midpoint[index] - base[index] for index in range(3)]
+    base_to_contact = [contact[index] - base[index] for index in range(3)]
+    finger_forward_m = sum(
+        base_to_midpoint[index] * forward[index] for index in range(3)
+    )
+    contact_forward_m = sum(
+        base_to_contact[index] * forward[index] for index in range(3)
+    )
+    finger_lateral_m = math.sqrt(
+        sum(
+            (
+                base_to_midpoint[index] - finger_forward_m * forward[index]
+            )
+            ** 2
+            for index in range(2)
+        )
+    )
+    reach_m = math.dist(base, midpoint)
+    clearance_m = midpoint[2] - base[2]
+    contact_distance_m = math.dist(midpoint, contact)
+    contact_to_base_horizontal = [
+        base[0] - contact[0],
+        base[1] - contact[1],
+        0.0,
+    ]
+    contact_to_base_norm = math.sqrt(
+        sum(value * value for value in contact_to_base_horizontal)
+    )
+    if not math.isfinite(contact_to_base_norm) or contact_to_base_norm <= 1.0e-9:
+        return {
+            "schema_version": "native_task_arena_robot_reset_task_space.v1",
+            "passed": False,
+            "blockers": [
+                "native_task_arena_robot_reset_task_space_readback_invalid"
+            ],
+            "error_type": "DegenerateContactBearing",
+        }
+    approach = [
+        contact[index]
+        + 0.12 * contact_to_base_horizontal[index] / contact_to_base_norm
+        for index in range(3)
+    ]
+    approach_distance_m = math.dist(midpoint, approach)
+    checks = {
+        "finger_midpoint_above_floor": clearance_m >= 0.20,
+        "finger_midpoint_in_front_of_base": finger_forward_m >= 0.15,
+        "finger_midpoint_within_franka_reach": 0.20 <= reach_m <= 0.85,
+        "task_contact_in_front_of_base": contact_forward_m >= 0.40,
+        "finger_midpoint_laterally_task_relevant": finger_lateral_m <= 0.45,
+        "finger_midpoint_near_approach_region": approach_distance_m <= 0.75,
+    }
+    blockers = [
+        f"native_task_arena_robot_reset_{name}_failed"
+        for name, passed in checks.items()
+        if not passed
+    ]
+    return {
+        "schema_version": "native_task_arena_robot_reset_task_space.v1",
+        "robot_forward_axis_source": "robot_base_local_positive_x",
+        "base_position_world_m": base,
+        "base_orientation_world_xyzw": base_quaternion,
+        "robot_forward_unit_world": forward,
+        "finger_midpoint_world_m": midpoint,
+        "observed_contact_position_world_m": contact,
+        "approach_standoff_position_world_m": approach,
+        "approach_standoff_m": 0.12,
+        "finger_height_above_base_m": clearance_m,
+        "finger_forward_projection_m": finger_forward_m,
+        "task_contact_forward_projection_m": contact_forward_m,
+        "finger_lateral_offset_m": finger_lateral_m,
+        "base_to_finger_distance_m": reach_m,
+        "finger_to_contact_distance_m": contact_distance_m,
+        "finger_to_approach_standoff_distance_m": approach_distance_m,
+        "checks": checks,
+        "blockers": blockers,
+        "passed": not blockers,
+    }
 
 
 def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
@@ -50,6 +172,25 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             if raw_extent is not None
             else None
         )
+        material_targets = [
+            str(path)
+            for path in prim.GetRelationship("material:binding").GetTargets()
+        ]
+        material = (
+            stage.GetPrimAtPath(material_targets[0])
+            if len(material_targets) == 1
+            else None
+        )
+        shader = (
+            stage.GetPrimAtPath(f"{material_targets[0]}/Shader")
+            if material
+            else None
+        )
+        source_asset = (
+            shader.GetAttribute("info:mdl:sourceAsset").Get()
+            if shader
+            else None
+        )
         row = {
             "prim_path": str(prim.GetPath()),
             "active": bool(prim.IsActive()),
@@ -67,6 +208,19 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             "sh_interpolation": str(sh_primvar.GetInterpolation()),
             "expected_sh_element_size": expected_element_size,
             "extent": extent,
+            "material_binding_targets": material_targets,
+            "material_prim_valid": bool(material),
+            "material_shader_valid": bool(shader),
+            "material_shader_source_asset": (
+                source_asset.path if source_asset is not None else None
+            ),
+            "material_shader_sub_identifier": (
+                shader.GetAttribute(
+                    "info:mdl:sourceAsset:subIdentifier"
+                ).Get()
+                if shader
+                else None
+            ),
         }
         row["passed"] = bool(
             row["active"]
@@ -84,6 +238,13 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             == position_count * expected_element_size
             and isinstance(row["extent"], list)
             and len(row["extent"]) == 2
+            and len(material_targets) == 1
+            and row["material_prim_valid"]
+            and row["material_shader_valid"]
+            and row["material_shader_source_asset"]
+            == "ParticleFieldEmissive.mdl"
+            and row["material_shader_sub_identifier"]
+            == "ParticleFieldEmissive"
         )
         rows.append(row)
     if len(rows) != 1:
@@ -96,6 +257,89 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
         "particlefields": rows,
         "blockers": blockers,
         "passed": not blockers,
+    }
+
+
+def _official_nurec_render_setup_and_warmup(
+    simulation_app: Any,
+    stage: Any,
+    *,
+    warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
+    setup_for_rendering_factory: Any = None,
+    orchestrator_step: Any = None,
+) -> dict[str, Any]:
+    """Apply NVIDIA's shipped NuRec setup and accumulation procedure."""
+
+    if (
+        isinstance(warmup_steps, bool)
+        or int(warmup_steps) < 40
+        or int(warmup_steps) > 2_000
+    ):
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "passed": False,
+            "blockers": ["native_task_arena_nurec_warmup_steps_invalid"],
+        }
+    try:
+        if setup_for_rendering_factory is None:
+            from isaacsim.replicator.nurec_utils.rendering_setup import (
+                setup_for_rendering,
+            )
+
+            setup_for_rendering_factory = setup_for_rendering
+        if orchestrator_step is None:
+            import omni.replicator.core as rep
+
+            orchestrator_step = rep.orchestrator.step
+        success, nurec, spg, problems = setup_for_rendering_factory(stage)
+    except Exception as exc:  # noqa: BLE001 - retained diagnostic boundary
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "passed": False,
+            "blockers": [
+                "native_task_arena_nurec_official_setup_failed:"
+                f"{type(exc).__name__}"
+            ],
+        }
+    if not success or not nurec:
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "official_setup_success": bool(success),
+            "stage_classified_nurec": bool(nurec),
+            "stage_classified_spg": bool(spg),
+            "official_setup_problems": list(problems or []),
+            "passed": False,
+            "blockers": ["native_task_arena_nurec_official_setup_not_qualified"],
+        }
+
+    attempts = 8
+    updates_per_attempt = max(int(warmup_steps) // attempts, 5)
+    update_count = 0
+    orchestrator_errors: list[str] = []
+    for _ in range(attempts):
+        try:
+            orchestrator_step()
+        except Exception as exc:  # noqa: BLE001 - NVIDIA example continues
+            orchestrator_errors.append(type(exc).__name__)
+        for _ in range(updates_per_attempt):
+            simulation_app.update()
+            update_count += 1
+    return {
+        "schema_version": "native_task_arena_nurec_warmup.v1",
+        "official_setup_success": True,
+        "stage_classified_nurec": True,
+        "stage_classified_spg": bool(spg),
+        "official_setup_problems": [],
+        "requested_warmup_steps": int(warmup_steps),
+        "orchestrator_attempts": attempts,
+        "orchestrator_error_types": orchestrator_errors,
+        "app_update_count": update_count,
+        "procedure_source": (
+            "isaac-sim/IsaacSim:source/standalone_examples/nurec/"
+            "nurec_render.py@987015050efebfd0cd5d3736ae47fffe5adee308"
+        ),
+        "passed": update_count >= int(warmup_steps),
+        "blockers": [],
     }
 
 
@@ -281,6 +525,9 @@ def main() -> int:
         from blueprint_pipeline.native_task_arena_device_readback import (
             read_native_task_arena_device_binding,
         )
+        from blueprint_pipeline.native_task_arena_readback import (
+            read_native_task_arena_object_reset_state,
+        )
 
         _announce("environment_build")
         preconstruction = prepare_native_task_arena_preconstruction(
@@ -306,6 +553,16 @@ def main() -> int:
         env = built.env
         seed = int(plan["scenario"]["seed"])
         env.reset(seed=seed)
+        result["object_reset_readback"] = (
+            read_native_task_arena_object_reset_state(built)
+        )
+        if not result["object_reset_readback"]["passed"]:
+            result["blockers"].append(
+                "native_task_arena_preflight_object_reset_not_equivalent"
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_object_reset_failed"
+            )
         if result["appearance_render_path"]["render_path"] == (
             "particlefield_3d_gaussian_splat"
         ):
@@ -322,6 +579,18 @@ def main() -> int:
                 )
                 raise RuntimeError(
                     "native_task_arena_preflight_particlefield_composition_failed"
+                )
+            result["official_nurec_render_setup"] = (
+                _official_nurec_render_setup_and_warmup(
+                    simulation_app, omni.usd.get_context().get_stage()
+                )
+            )
+            if not result["official_nurec_render_setup"]["passed"]:
+                result["blockers"].extend(
+                    result["official_nurec_render_setup"]["blockers"]
+                )
+                raise RuntimeError(
+                    "native_task_arena_preflight_nurec_setup_failed"
                 )
         result["articulation_device_binding"] = _articulation_device_binding(
             built, expected_device=NATIVE_TASK_ARENA_DEVICE
@@ -351,6 +620,20 @@ def main() -> int:
         result["gripper_frame_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
+        result["robot_reset_task_space_readback"] = (
+            _robot_reset_task_space_readback(
+                plan=plan,
+                gripper_frame_axis_readback=result["gripper_frame_axis_readback"],
+                object_reset_readback=result["object_reset_readback"],
+            )
+        )
+        if not result["robot_reset_task_space_readback"]["passed"]:
+            result["blockers"].extend(
+                result["robot_reset_task_space_readback"]["blockers"]
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_robot_reset_task_space_failed"
+            )
         for _ in range(8):
             current = servo.read_arm_joint_positions()
             env.step(

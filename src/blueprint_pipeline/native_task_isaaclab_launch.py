@@ -38,11 +38,12 @@ NATIVE_TASK_ARENA_IMAGE = (
     "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
 )
 NATIVE_TASK_ARENA_NUREC_EXTENSION = "omni.rtx.spg"
+NATIVE_TASK_ARENA_NUREC_UTILS_EXTENSION = "isaacsim.replicator.nurec_utils"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
 NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
 NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
 NATIVE_TASK_ARENA_KIT_ARGS = (
-    "--enable omni.rtx.spg "
+    "--enable isaacsim.replicator.nurec_utils "
     "--/UJITSO/geometry=true "
     "--/renderer/multiGpu/enabled=false "
     "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
@@ -316,6 +317,11 @@ def launch_native_task_isaaclab(
             import carb
             import omni.kit.app
             from pxr import Usd
+            from isaacsim.replicator.nurec_utils.rendering_setup import (
+                enable_omni_rtx_spg,
+            )
+
+            enable_omni_rtx_spg(app)
 
             extension_manager = omni.kit.app.get_app().get_extension_manager()
             extension_enabled = extension_manager.is_extension_enabled(
@@ -328,6 +334,11 @@ def launch_native_task_isaaclab(
                 "extension_required": True,
                 "extension_was_enabled_before_probe": extension_enabled,
                 "extension_enabled": extension_enabled,
+                "nurec_utils_extension_enabled": (
+                    extension_manager.is_extension_enabled(
+                        NATIVE_TASK_ARENA_NUREC_UTILS_EXTENSION
+                    )
+                ),
                 "renderer_hints": settings.get(
                     "/omni/rtx/nre/compositing/rendererHints"
                 ),
@@ -362,6 +373,11 @@ def launch_native_task_isaaclab(
             "extension_was_enabled_before_probe"
         ),
         "extension_enabled": raw_nurec.get("extension_enabled") is True,
+        "nurec_utils_extension_id": NATIVE_TASK_ARENA_NUREC_UTILS_EXTENSION,
+        "nurec_utils_extension_enabled": raw_nurec.get(
+            "nurec_utils_extension_enabled"
+        )
+        is True,
         "renderer_hints": raw_nurec.get("renderer_hints"),
         "renderer_hints_expected": 3,
         "ujitso_geometry_required": True,
@@ -377,6 +393,10 @@ def launch_native_task_isaaclab(
     nurec_errors = []
     if nurec["extension_required"] and not nurec["extension_enabled"]:
         nurec_errors.append("native_task_isaaclab_nurec_extension_not_enabled")
+    if not nurec["nurec_utils_extension_enabled"]:
+        nurec_errors.append(
+            "native_task_isaaclab_nurec_utils_extension_not_enabled"
+        )
     if nurec["renderer_hints"] != 3:
         nurec_errors.append("native_task_isaaclab_nurec_renderer_hints_invalid")
     if not nurec["ujitso_geometry_enabled"]:
@@ -409,6 +429,7 @@ __all__ = [
     "NATIVE_TASK_ARENA_KIT_ARGS",
     "NATIVE_TASK_ARENA_NUREC_EXTENSION",
     "NATIVE_TASK_ARENA_NUREC_SCHEMA",
+    "NATIVE_TASK_ARENA_NUREC_UTILS_EXTENSION",
     "NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING",
     "NativeTaskIsaacLabLaunchError",
     "REQUIRED_EXPERIENCE_FILES",

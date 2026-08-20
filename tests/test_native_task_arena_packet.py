@@ -386,6 +386,8 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "sh_primvar_element_size": 16,
         "sh_primvar_interpolation": "vertex",
         "display_color_fallback_authored": True,
+        "particlefield_emissive_material_binding_authored": True,
+        "particlefield_emissive_material_inputs": "mdl_defaults",
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(
@@ -418,6 +420,9 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     assert variant["appearance_variant"]["sh_primvar_element_size"] == 16
     assert variant["appearance_variant"]["sh_primvar_interpolation"] == "vertex"
     assert variant["appearance_variant"]["display_color_fallback_authored"] is True
+    assert variant["appearance_variant"][
+        "particlefield_emissive_material_binding_authored"
+    ] is True
     assert variant["request_digest"] == canonical_digest(
         variant, digest_field="request_digest"
     )
@@ -427,6 +432,8 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "sh_primvar_element_size",
         "sh_primvar_interpolation",
         "display_color_fallback_authored",
+        "particlefield_emissive_material_binding_authored",
+        "particlefield_emissive_material_inputs",
     ):
         invalid = dict(receipt)
         invalid.pop(missing)

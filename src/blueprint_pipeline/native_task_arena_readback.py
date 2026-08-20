@@ -150,14 +150,16 @@ def _body_position(
     pose = poses[names.index(body_name)]
     if not isinstance(pose, list) or len(pose) < 7:
         raise NativeTaskArenaReadbackError([error])
-    return [float(value) for value in pose[:3]], _native_wxyz_to_xyzw(pose[3:7])
+    return [float(value) for value in pose[:3]], _native_xyzw_to_contract_xyzw(
+        pose[3:7]
+    )
 
 
-def _native_wxyz_to_xyzw(value: Sequence[float]) -> list[float]:
-    """Convert Isaac Lab's native WXYZ quaternion into contract XYZW order."""
+def _native_xyzw_to_contract_xyzw(value: Sequence[float]) -> list[float]:
+    """Normalize Isaac Lab Beta2's documented native XYZW quaternion."""
 
     try:
-        qw, qx, qy, qz = (float(item) for item in value)
+        qx, qy, qz, qw = (float(item) for item in value)
     except (TypeError, ValueError) as exc:
         raise NativeTaskArenaReadbackError(
             ["native_task_arena_quaternion_invalid"]
@@ -186,6 +188,121 @@ def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
         )
     dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (norm_a * norm_b))
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
+def read_native_task_arena_task_link_frame_equivalence(
+    built: NativeTaskArenaEnvironment,
+    *,
+    position_tolerance_m: float = 0.002,
+    orientation_tolerance_rad: float = 0.01,
+) -> dict[str, Any]:
+    """Compare the live interaction link/handle with authored reset geometry."""
+
+    env = getattr(built.env, "unwrapped", built.env)
+    scene = getattr(env, "scene", None)
+    plan = built.plan
+    articulation = plan.get("articulation") or {}
+    affordance = (plan.get("task_spec") or {}).get("interaction_affordance") or {}
+    path = affordance.get("joint_contact_path") or []
+    if scene is None or not path or not isinstance(path[0], dict):
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_task_link_equivalence_contract_invalid"]
+        )
+    task_row = next(
+        (
+            row
+            for row in plan.get("objects") or []
+            if row.get("task_subject") is True
+            or row.get("semantic_role") == "task_object"
+        ),
+        None,
+    )
+    if not isinstance(task_row, dict):
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_task_link_equivalence_contract_invalid"]
+        )
+    runtime_name = str(task_row.get("name") or "")
+    try:
+        task_object = scene[built.scene_asset_names[runtime_name]]
+        graph = articulation.get("graph_articulation") is True
+        link_name = str(
+            articulation[
+                "interaction_link_native_body_name"
+                if graph
+                else "moving_link_native_body_name"
+            ]
+        )
+        contact_point_link = [
+            float(value)
+            for value in articulation[
+                "contact_point_link_m" if graph else "handle_grasp_point_link_m"
+            ]
+        ]
+        contact_pose = path[0]["contact_pose_asset_root"]
+        contact_pose_asset = [
+            *[float(value) for value in contact_pose["position_m"]],
+            *[float(value) for value in contact_pose["orientation_xyzw"]],
+        ]
+        root_pose = [
+            *[float(value) for value in task_row["pose_world"]["position_world_m"]],
+            *[float(value) for value in task_row["pose_world"]["orientation_xyzw"]],
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_task_link_equivalence_contract_invalid"]
+        ) from exc
+
+    expected_contact = _compose_pose_xyzw(root_pose, contact_pose_asset)
+    expected_link_quaternion = expected_contact[3:]
+    expected_offset = _quaternion_rotate_xyzw(
+        expected_link_quaternion, contact_point_link
+    )
+    expected_link_position = [
+        expected_contact[index] - expected_offset[index] for index in range(3)
+    ]
+    observed_link_position, observed_link_quaternion = _body_position(
+        task_object,
+        body_name=link_name,
+        error="native_task_arena_task_link_pose_missing",
+    )
+    observed_offset = _quaternion_rotate_xyzw(
+        observed_link_quaternion, contact_point_link
+    )
+    observed_contact = [
+        observed_link_position[index] + observed_offset[index]
+        for index in range(3)
+    ]
+    link_position_error = math.dist(
+        observed_link_position, expected_link_position
+    )
+    contact_position_error = math.dist(observed_contact, expected_contact[:3])
+    orientation_error = _quaternion_angle_xyzw(
+        observed_link_quaternion, expected_link_quaternion
+    )
+    passed = bool(
+        link_position_error <= float(position_tolerance_m)
+        and contact_position_error <= float(position_tolerance_m)
+        and orientation_error <= float(orientation_tolerance_rad)
+    )
+    return {
+        "schema_version": "native_task_arena_task_link_frame_equivalence.v1",
+        "interaction_link_native_body_name": link_name,
+        "expected_link_position_world_m": expected_link_position,
+        "observed_link_position_world_m": observed_link_position,
+        "expected_link_orientation_world_xyzw": expected_link_quaternion,
+        "observed_link_orientation_world_xyzw": observed_link_quaternion,
+        "expected_contact_position_world_m": expected_contact[:3],
+        "observed_contact_position_world_m": observed_contact,
+        "link_position_error_m": link_position_error,
+        "contact_position_error_m": contact_position_error,
+        "link_orientation_error_rad": orientation_error,
+        "position_tolerance_m": float(position_tolerance_m),
+        "orientation_tolerance_rad": float(orientation_tolerance_rad),
+        "passed": passed,
+        "blockers": (
+            [] if passed else ["native_task_arena_task_link_frame_not_equivalent"]
+        ),
+    }
 
 
 def _read_bound_locked_joint_state(
@@ -342,7 +459,7 @@ def read_native_task_arena_object_reset_state(
             )
         observed_pose = {
             "position_world_m": [float(item) for item in root_pose[:3]],
-            "orientation_xyzw": _native_wxyz_to_xyzw(root_pose[3:7]),
+            "orientation_xyzw": _native_xyzw_to_contract_xyzw(root_pose[3:7]),
         }
         reset_state = planned.get("reset_state") or {}
         expected_pose = reset_state.get("root_pose_world") or planned["pose_world"]
@@ -412,12 +529,26 @@ def read_native_task_arena_object_reset_state(
         raise NativeTaskArenaReadbackError(
             ["native_task_arena_reset_assets_missing"]
         )
+    contact_path = (
+        ((built.plan.get("task_spec") or {}).get("interaction_affordance") or {}).get(
+            "joint_contact_path"
+        )
+        or []
+    )
+    link_equivalence = (
+        read_native_task_arena_task_link_frame_equivalence(built)
+        if built.plan.get("task_kind") == "articulated_open_close"
+        and contact_path
+        else None
+    )
     return {
-        "passed": all(row["passed"] for row in rows),
+        "passed": all(row["passed"] for row in rows)
+        and (link_equivalence is None or link_equivalence["passed"]),
         "root_translation_tolerance_m": translation_tolerance,
         "root_orientation_tolerance_rad": orientation_tolerance,
         "joint_tolerance_rad": joint_tolerance_rad,
         "objects": rows,
+        "task_link_frame_equivalence": link_equivalence,
     }
 
 
@@ -457,7 +588,7 @@ def read_native_task_arena_scenario_parameters(
                 observed: Any = float(pose[1])
                 error = abs(observed - float(expected))
             else:
-                observed = _native_wxyz_to_xyzw(pose[3:7])
+                observed = _native_xyzw_to_contract_xyzw(pose[3:7])
                 error = _quaternion_angle_xyzw(observed, expected)
                 tolerance = math.radians(tolerance)
         elif kind == "camera_offset_position_x_m":
@@ -539,7 +670,7 @@ class NativeArticulatedTaskArenaReadback:
         )[:7]
         task_root_pose = [
             *[float(value) for value in native_task_root_pose[:3]],
-            *_native_wxyz_to_xyzw(native_task_root_pose[3:7]),
+            *_native_xyzw_to_contract_xyzw(native_task_root_pose[3:7]),
         ]
 
         sensor_forces: dict[str, list[list[float]]] = {}
@@ -753,7 +884,7 @@ class NativeRigidTaskArenaReadback:
             )
         asset_root_pose = [
                 *[float(value) for value in native_pose[:3]],
-                *_native_wxyz_to_xyzw(native_pose[3:7]),
+                *_native_xyzw_to_contract_xyzw(native_pose[3:7]),
             ]
         affordance = (self._built.plan.get("task_spec") or {}).get(
             "interaction_affordance"

@@ -114,6 +114,10 @@ def materialize_native_task_arena_appearance_variant_request(
         or appearance.get("sh_primvar_element_size") != sh_element_size
         or appearance.get("sh_primvar_interpolation") != "vertex"
         or appearance.get("display_color_fallback_authored") is not True
+        or appearance.get("particlefield_emissive_material_binding_authored")
+        is not True
+        or appearance.get("particlefield_emissive_material_inputs")
+        != "mdl_defaults"
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
     ):
@@ -159,6 +163,8 @@ def materialize_native_task_arena_appearance_variant_request(
         "sh_primvar_element_size": sh_element_size,
         "sh_primvar_interpolation": "vertex",
         "display_color_fallback_authored": True,
+        "particlefield_emissive_material_binding_authored": True,
+        "particlefield_emissive_material_inputs": "mdl_defaults",
     }
     request["request_digest"] = canonical_digest(
         request, digest_field="request_digest"

@@ -24,8 +24,8 @@ np = pytest.importorskip("numpy")
 scipy_rotation = pytest.importorskip("scipy.spatial.transform").Rotation
 
 from blueprint_pipeline.native_franka_pose_servo import (  # noqa: E402
-    contract_xyzw_to_native_wxyz,
-    native_wxyz_to_contract_xyzw,
+    contract_xyzw_to_native_xyzw,
+    native_xyzw_to_contract_xyzw,
 )
 from blueprint_pipeline.native_pose_transforms import (  # noqa: E402
     _multiply,
@@ -103,26 +103,23 @@ def test_pose_world_to_base_matches_scipy_frame_subtraction() -> None:
 
 
 def test_contract_and_native_conventions_round_trip() -> None:
-    """xyzw <-> wxyz must be a pure reordering, and its own inverse.
+    """Beta2 spawn, articulation data, and DifferentialIK are all XYZW.
 
-    The degenerate case is what made every one of today's convention bugs
-    expensive: an xyzw identity [0, 0, 0, 1] read as wxyz is w=0, z=1 -- a 180
-    degree yaw, not a no-op. So it is asserted explicitly rather than left to
-    the random sample.
+    The old seam reordered XYZW as WXYZ on both write and read, making an
+    identity spawn into a 180-degree X rotation and then hiding it on readback.
     """
 
     for quaternion in _quaternions(64):
-        native = list(contract_xyzw_to_native_wxyz(quaternion))
+        native = list(contract_xyzw_to_native_xyzw(quaternion))
         # the helper renormalises, so compare as values not bits
-        assert native == pytest.approx([quaternion[3], *quaternion[:3]])
-        assert list(native_wxyz_to_contract_xyzw(native)) == pytest.approx(quaternion)
+        assert native == pytest.approx(quaternion)
+        assert list(native_xyzw_to_contract_xyzw(native)) == pytest.approx(
+            quaternion
+        )
 
     identity_xyzw = [0.0, 0.0, 0.0, 1.0]
-    assert list(contract_xyzw_to_native_wxyz(identity_xyzw)) == [1.0, 0.0, 0.0, 0.0]
-    misread = scipy_rotation.from_quat(
-        [*identity_xyzw[1:], identity_xyzw[0]]  # identity xyzw consumed as wxyz
-    )
+    assert list(contract_xyzw_to_native_xyzw(identity_xyzw)) == identity_xyzw
+    misread = scipy_rotation.from_quat([1.0, 0.0, 0.0, 0.0])
     assert math.isclose(misread.magnitude(), math.pi, abs_tol=1e-9), (
-        "identity read in the wrong convention is a 180 degree rotation, which "
-        "is why these seams fail silently rather than loudly"
+        "the removed reorder turns identity into a 180 degree X rotation"
     )

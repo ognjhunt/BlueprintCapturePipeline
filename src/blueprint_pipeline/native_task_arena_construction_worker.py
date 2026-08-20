@@ -784,6 +784,16 @@ def _camera_snapshot(
         if rgb_array.shape[-1] == 4:
             rgb_array = rgb_array[..., :3]
         rgb_array = np.clip(rgb_array, 0, 255).astype(np.uint8)
+        hdr_raw = None
+        hdr_array = None
+        if "rgb_hdr" in outputs:
+            hdr_raw = _explicit_array(outputs["rgb_hdr"])
+            hdr_array = (
+                hdr_raw[0]
+                if hdr_raw.ndim == 4 and hdr_raw.shape[0] == 1
+                else hdr_raw
+            )
+            hdr_array = np.asarray(hdr_array, dtype=np.float32)[..., :3]
         semantic_raw = _explicit_array(outputs["semantic_segmentation"])
         semantic = np.squeeze(semantic_raw)
         expected_hw = tuple(int(value) for value in rgb_array.shape[:2])
@@ -801,12 +811,32 @@ def _camera_snapshot(
         Image.fromarray(rgb_array, mode="RGB").save(
             frame_path, format="PNG", compress_level=9
         )
+        hdr_record = None
+        if hdr_array is not None:
+            hdr_path = frame_dir / f"{snapshot_id}.rgb_hdr.npy"
+            np.save(hdr_path, hdr_array, allow_pickle=False)
+            hdr_record = {
+                "path": str(hdr_path.relative_to(output_root)),
+                "sha256": _sha256(hdr_path),
+                "shape": list(hdr_array.shape),
+                "minimum": float(hdr_array.min()),
+                "maximum": float(hdr_array.max()),
+                "mean": float(hdr_array.mean()),
+                "std": float(hdr_array.std()),
+                "finite_fraction": float(np.isfinite(hdr_array).mean()),
+            }
         diagnostics["cameras"].append(
             {
                 "role": role,
                 "scene_name": scene_name,
                 "rgb_raw_shape": list(rgb_raw.shape),
                 "rgb_image_shape": list(rgb_array.shape),
+                "rgb_hdr_raw_shape": (
+                    list(hdr_raw.shape) if hdr_raw is not None else None
+                ),
+                "rgb_hdr_image_shape": (
+                    list(hdr_array.shape) if hdr_array is not None else None
+                ),
                 "semantic_raw_shape": list(semantic_raw.shape),
                 "semantic_image_shape": list(semantic.shape),
                 "semantic_dtype": str(semantic.dtype),
@@ -841,6 +871,7 @@ def _camera_snapshot(
                 "rgb_min": int(rgb_array.min()),
                 "rgb_max": int(rgb_array.max()),
                 "rgb_mean": float(rgb_array.mean()),
+                "rgb_hdr": hdr_record,
                 "intrinsic_matrix": _jsonable(camera.data.intrinsic_matrices)[0],
                 "position_world_m": _jsonable(camera.data.pos_w)[0],
                 "quaternion_world_opengl_xyzw": _jsonable(
