@@ -116,8 +116,10 @@ CAMERA_THRESHOLDS = {
 # a plain NuRec volume (no authored ``info:spg:sourceAsset``), so NVIDIA's 6.0.1
 # contract does not require ``omni.rtx.spg``. The preflight verifies that asset
 # classification and the shared launcher refuses unless the plain-volume launch
-# settings, renderer hints, multi-GPU setting, and ``OmniNuRecFieldAsset``
-# schema read back as qualified. The camera gate remains the independent
+# settings and renderer hints read back as qualified, while the packet gate
+# verifies the authored ``OmniNuRecFieldAsset`` type-name signal. NVIDIA's own
+# 6.0.1 NuRec utilities define and detect that raw type name without requiring
+# a concrete ``Usd.SchemaRegistry`` entry. The camera gate remains the independent
 # content-level check: an available renderer cannot vouch that this exact
 # captured site contributed pixels.
 SITE_APPEARANCE_RENDER_EXPECTED = True
