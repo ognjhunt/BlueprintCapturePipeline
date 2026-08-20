@@ -930,6 +930,8 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
         worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
+        extracted = tmp_path / "runtime-preflight-extracted"
+        archive.extractall(extracted)
     assert "native_task_arena_runtime_preflight_worker.py" not in names
     assert "task_motion_executed" in worker
     assert "task_motion_executed\"] = True" not in worker
@@ -959,6 +961,15 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
     )
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _load_and_verify_manifest,
+    )
+
+    verified_manifest = _load_and_verify_manifest(
+        extracted / "provider_runtime",
+        expected_execution_mode="runtime_preflight",
+    )
+    assert verified_manifest["execution_mode"] == "runtime_preflight"
 
 
 def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(

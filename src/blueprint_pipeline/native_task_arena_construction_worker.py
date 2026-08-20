@@ -348,7 +348,9 @@ def _persist(output: Path, result: dict[str, Any]) -> None:
     )
 
 
-def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
+def _load_and_verify_manifest(
+    runtime: Path, *, expected_execution_mode: str = "construction_canary"
+) -> dict[str, Any]:
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
     path = runtime / "adp_arena_provider_manifest.json"
@@ -356,7 +358,7 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
     if (
         not isinstance(manifest, dict)
         or manifest.get("schema_version") != "native_task_arena_provider_bundle.v1"
-        or manifest.get("execution_mode") != "construction_canary"
+        or manifest.get("execution_mode") != expected_execution_mode
         or manifest.get("input_digest")
         != canonical_digest(manifest, digest_field="input_digest")
     ):

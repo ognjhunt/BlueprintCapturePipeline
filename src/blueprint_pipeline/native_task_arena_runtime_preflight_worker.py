@@ -62,7 +62,9 @@ def main() -> int:
         )
 
         _announce("packet_verification")
-        manifest = _load_and_verify_manifest(runtime)
+        manifest = _load_and_verify_manifest(
+            runtime, expected_execution_mode="runtime_preflight"
+        )
         packet = runtime / "native_task_packet"
         plan = json.loads(
             (packet / "native_task_arena_scene_plan.v1.json").read_text(
