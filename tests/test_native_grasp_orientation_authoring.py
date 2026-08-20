@@ -241,10 +241,16 @@ def test_unusable_axes_fail_closed(approach, jaw) -> None:
 
 
 def test_author_refuses_the_sealed_affordance_instead_of_emitting_identity() -> None:
-    """The authoring site, which used to hard-code the identity placeholder."""
+    """The authoring site, which used to hard-code the identity placeholder.
+
+    PR #801 gave the producer a gripper approach axis of its own, so this pair
+    is no longer what a fresh affordance carries.  The refusal stays pinned
+    against the collapsed pair anyway: it is the state r22 and r23 shipped, and
+    a future producer that reintroduced it must still be unable to seal.
+    """
 
     candidate = {
-        "approach_unit_registered_stage": SEALED_APPROACH_UNIT,
+        "gripper_approach_axis_registered_stage": SEALED_APPROACH_UNIT,
         "pinch_axis_registered_stage": SEALED_PINCH_AXIS,
     }
     path_receipt = {
@@ -267,7 +273,7 @@ def test_author_derives_in_the_contact_frame_not_the_stage_frame() -> None:
     into the stage's axes instead of the door's."""
 
     candidate = {
-        "approach_unit_registered_stage": [-1.0, 0.0, 0.0],
+        "gripper_approach_axis_registered_stage": [-1.0, 0.0, 0.0],
         "pinch_axis_registered_stage": [0.0, 0.0, 1.0],
     }
     aligned = _grasp_orientation_contact_xyzw(

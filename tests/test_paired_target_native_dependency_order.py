@@ -275,10 +275,13 @@ def _fixture(root: Path) -> dict:
                     "contact_body_prim_paths": [f"/Asset/links/{contact_link}"],
                     "contact_point_link_m": [0.0, 0.0, 0.0],
                     "contact_point_registered_stage_m": [0.0, 0.0, 0.0],
-                    "approach_unit_registered_stage": [0.0, 1.0, 0.0],
-                    # Independent of the approach: a parallel-jaw grasp frame
-                    # needs two axes, and the request compiler now derives the
+                    # The standoff translation, which for a hinged panel is the
+                    # panel normal and therefore also the jaw axis.
+                    "approach_unit_registered_stage": [0.0, 0.0, 1.0],
+                    # Independent of the jaw axis: a parallel-jaw grasp frame
+                    # needs two axes, and the request compiler derives the
                     # contact-frame grasp rotation from this pair.
+                    "gripper_approach_axis_registered_stage": [0.0, 1.0, 0.0],
                     "pinch_axis_registered_stage": [0.0, 0.0, 1.0],
                     "pinch_span_m": 0.04,
                     "pinch_span_within_stroke": True,

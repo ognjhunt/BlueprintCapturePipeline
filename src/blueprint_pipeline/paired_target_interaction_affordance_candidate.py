@@ -25,6 +25,10 @@ from .dual_task_rehearsal_contract import (
 SCHEMA_VERSION = "paired_target_interaction_affordance_candidate.v1"
 REGISTERED_ASSET_SCHEMA = "registered_replacement_asset.v1"
 DEFAULT_PARALLEL_JAW_STROKE_M = 0.085
+# Matches native_franka_action_math.GRASP_AXIS_DEGENERACY_TOLERANCE, which is
+# where the same collapse is caught on the consuming side.  Pinned equal by
+# test so the producer can never seal a pair the author would refuse.
+GRIPPER_FRAME_INDEPENDENCE_TOLERANCE = 1.0e-6
 
 
 class PairedTargetInteractionAffordanceError(ValueError):
@@ -113,6 +117,28 @@ def _corners(low: Sequence[float], high: Sequence[float]) -> list[list[float]]:
         for y in (0, 1)
         for z in (0, 1)
     ]
+
+
+def refuse_degenerate_gripper_frame(
+    gripper_approach: Sequence[float], pinch_axis: Sequence[float]
+) -> None:
+    """Refuse an approach/jaw pair that cannot span a parallel-jaw frame.
+
+    Two parallel axes give ``ee_x = ee_y x ee_z = (0, 0, 0)`` and leave the roll
+    about the approach unconstrained, so no quaternion exists.  r13-r23 spent
+    ten paid runs on the value that collapse produces, because it is a
+    well-formed-looking quaternion rather than anything that reads as missing.
+    Checked here, against what is about to be sealed, so the refusal names the
+    producer rather than surfacing three modules downstream.
+    """
+
+    if (
+        abs(_dot(gripper_approach, pinch_axis))
+        >= 1.0 - GRIPPER_FRAME_INDEPENDENCE_TOLERANCE
+    ):
+        raise PairedTargetInteractionAffordanceError(
+            "paired_target_affordance_gripper_frame_axes_degenerate"
+        )
 
 
 def _graph_links(freeze: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -310,6 +336,12 @@ def materialize_paired_target_interaction_affordance_candidate(
             [contact_world[index] - base[index] for index in range(3)],
             code="paired_target_affordance_approach_invalid",
         )
+        # A free body has no privileged in-plane direction, so the standoff
+        # direction is also the direction the gripper travels in along.  These
+        # are two different quantities that happen to coincide here; the
+        # articulated branch below is where they must not.
+        gripper_approach = list(approach)
+        gripper_approach_source = "base_to_contact_direction"
     else:
         assert hinge_world is not None and hinge_axis is not None
         inverse = link_world.GetInverse()
@@ -362,9 +394,33 @@ def materialize_paired_target_interaction_affordance_candidate(
         pinch_axis_local = normal
         pinch_axis = normal_world
         approach = normal_world
+        # The panel normal is the jaws' closing axis and the standoff
+        # direction.  It is NOT a second, independent axis, so on its own it
+        # cannot span a gripper frame: ee_x = ee_y x ee_z collapses to zero and
+        # the roll about the approach is unconstrained (PR #799).  The missing
+        # axis is authored here, at the only place that holds the panel basis.
+        #
+        # ``radial`` already points from the hinge toward the panel centre, and
+        # ``contact_local`` is taken at ``far_radial`` -- the free edge.  The
+        # gripper therefore travels INWARD along the panel plane, from beyond
+        # the free edge toward the hinge, which is the one in-plane direction
+        # that leaves the palm and the rear finger in free space rather than
+        # inside the appliance.  Hinge-ward is the only sign that is not a
+        # wrist buried in the cabinet, so the sign is not free either.
+        gripper_approach = _normalize(
+            [
+                float(item)
+                for item in link_world.TransformDir(
+                    Gf.Vec3d(*[-value for value in radial])
+                )
+            ],
+            code="paired_target_affordance_gripper_approach_invalid",
+        )
+        gripper_approach_source = "panel_plane_radial_inward_from_free_edge"
     pinch_span = sum(
         abs(pinch_axis_local[index]) * spans[index] for index in range(3)
     )
+    refuse_degenerate_gripper_frame(gripper_approach, pinch_axis)
     measured_collision_paths = sorted(
         str(prim.GetPath())
         for prim in Usd.PrimRange(link)
@@ -399,6 +455,7 @@ def materialize_paired_target_interaction_affordance_candidate(
         "robot_base_position_world_m": base,
         "selection_contract": {
             "method": method,
+            "gripper_approach_axis_source": gripper_approach_source,
             "link_selected_from_articulation_graph_role": True,
             "object_label_or_task_id_geometry_shortcut_used": False,
             "candidate_geometry_authored_or_modified": False,
@@ -414,6 +471,11 @@ def materialize_paired_target_interaction_affordance_candidate(
             "contact_point_link_m": contact_local,
             "contact_point_registered_stage_m": contact_world,
             "approach_unit_registered_stage": approach,
+            # Consumed as a standoff translation only.  The gripper frame's
+            # approach is the separate axis below, because for a hinged panel
+            # the standoff direction IS the jaw axis and one vector cannot be
+            # both.
+            "gripper_approach_axis_registered_stage": gripper_approach,
             "pinch_axis_registered_stage": pinch_axis,
             "pinch_span_m": pinch_span,
             "parallel_jaw_stroke_m": stroke,
@@ -447,7 +509,9 @@ def materialize_paired_target_interaction_affordance_candidate(
 
 __all__ = [
     "DEFAULT_PARALLEL_JAW_STROKE_M",
+    "GRIPPER_FRAME_INDEPENDENCE_TOLERANCE",
     "PairedTargetInteractionAffordanceError",
     "SCHEMA_VERSION",
     "materialize_paired_target_interaction_affordance_candidate",
+    "refuse_degenerate_gripper_frame",
 ]
