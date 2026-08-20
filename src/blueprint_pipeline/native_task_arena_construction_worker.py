@@ -112,11 +112,14 @@ CAMERA_THRESHOLDS = {
 
 # Whether this runtime can render the captured-site appearance volume at all.
 #
-# The Arena bundle is pinned separately to Isaac Sim 6.0.1, explicitly enables
-# `omni.rtx.spg`, and the shared launcher refuses unless the extension, renderer
-# hints, multi-GPU setting, and `OmniNuRecFieldAsset` schema all read back as
-# qualified.  The camera gate remains the independent content-level check: an
-# enabled renderer cannot vouch that this exact captured site contributed pixels.
+# The Arena bundle is pinned separately to Isaac Sim 6.0.1. The sealed site is
+# a plain NuRec volume (no authored ``info:spg:sourceAsset``), so NVIDIA's 6.0.1
+# contract does not require ``omni.rtx.spg``. The preflight verifies that asset
+# classification and the shared launcher refuses unless the plain-volume launch
+# settings, renderer hints, multi-GPU setting, and ``OmniNuRecFieldAsset``
+# schema read back as qualified. The camera gate remains the independent
+# content-level check: an available renderer cannot vouch that this exact
+# captured site contributed pixels.
 SITE_APPEARANCE_RENDER_EXPECTED = True
 
 
