@@ -18,6 +18,8 @@ from typing import Any
 
 from .native_franka_action_math import (
     bounded_absolute_joint_setpoint,
+    bounded_cartesian_pose_target,
+    clip_joint_positions_to_limits,
     controlled_body_pose_for_rigid_grasp_frame_target,
     implicit_pd_torque_terms,
     joint_velocity_feedforward_rad_s,
@@ -108,6 +110,11 @@ GRIPPER_FRAME_APPROACH_HYPOTHESES: tuple[dict[str, Any], ...] = (
 # target.  Defined here rather than in the plan compiler because the runtime
 # bundle ships this module and not the compiler, and both sides must agree.
 DEFAULT_VELOCITY_FEEDFORWARD_SCALE = 1.0
+# Differential IK is a local linearisation. Keep each Cartesian command local
+# before independently bounding the resulting joint target. At the Arena's
+# 20 Hz control cadence these ceilings are 0.4 m/s and 2 rad/s respectively.
+MAX_CARTESIAN_TRANSLATION_STEP_M = 0.02
+MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
 
 
 class NativeFrankaPoseServoError(RuntimeError):
@@ -472,6 +479,29 @@ class NativeFrankaDifferentialIkServo:
         # two terms that produce it.  Absence is recorded, never fatal.
         self._joint_stiffness = self._arm_gain("joint_stiffness")
         self._joint_damping = self._arm_gain("joint_damping")
+        try:
+            limits = self._to_torch(robot.data.soft_joint_pos_limits)[
+                0, self.binding["arm_joint_ids"], :
+            ]
+            self._joint_position_lower = [float(value) for value in limits[:, 0]]
+            self._joint_position_upper = [float(value) for value in limits[:, 1]]
+        except Exception as exc:  # noqa: BLE001 - fail closed at the command seam
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_joint_limits_unresolved"]
+            ) from exc
+        if any(
+            not math.isfinite(lower)
+            or not math.isfinite(upper)
+            or lower >= upper
+            for lower, upper in zip(
+                self._joint_position_lower,
+                self._joint_position_upper,
+                strict=True,
+            )
+        ):
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_joint_limits_unresolved"]
+            )
         body_pose = self.current_body_pose_world()
         try:
             if grasp_geometry_factory is None:
@@ -651,15 +681,27 @@ class NativeFrankaDifferentialIkServo:
     ) -> tuple[list[float], dict[str, Any]]:
         body_pose = self.current_body_pose_world()
         grasp_pose = self.current_grasp_frame_pose_world()
+        local_target_position, local_target_quaternion = (
+            bounded_cartesian_pose_target(
+                current_position_world_m=grasp_pose[:3],
+                current_quaternion_world_xyzw=grasp_pose[3:7],
+                target_position_world_m=target_position_world_m,
+                target_quaternion_world_xyzw=(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
+                max_translation_step_m=MAX_CARTESIAN_TRANSLATION_STEP_M,
+                max_orientation_step_rad=MAX_CARTESIAN_ORIENTATION_STEP_RAD,
+            )
+        )
         target_body_position, target_body_quaternion = (
             controlled_body_pose_for_rigid_grasp_frame_target(
                 current_body_position_world_m=body_pose[:3],
                 current_body_quaternion_world_xyzw=body_pose[3:7],
                 current_grasp_frame_position_world_m=grasp_pose[:3],
                 current_grasp_frame_quaternion_world_xyzw=grasp_pose[3:7],
-                target_grasp_frame_position_world_m=target_position_world_m,
+                target_grasp_frame_position_world_m=local_target_position,
                 target_grasp_frame_quaternion_world_xyzw=(
-                    target_grasp_frame_quaternion_world_xyzw
+                    local_target_quaternion
                 ),
             )
         )
@@ -699,10 +741,15 @@ class NativeFrankaDifferentialIkServo:
         )
         current_values = [float(value) for value in current[0]]
         desired_values = [float(value) for value in desired[0]]
+        desired_within_joint_limits = clip_joint_positions_to_limits(
+            desired_joint_positions_rad=desired_values,
+            lower_joint_position_limits_rad=self._joint_position_lower,
+            upper_joint_position_limits_rad=self._joint_position_upper,
+        )
         previous = current_values if self._last_command is None else self._last_command
         bounded = bounded_absolute_joint_setpoint(
             measured_joint_positions_rad=current_values,
-            desired_joint_positions_rad=desired_values,
+            desired_joint_positions_rad=desired_within_joint_limits,
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
@@ -742,6 +789,16 @@ class NativeFrankaDifferentialIkServo:
             "target_grasp_frame_quaternion_world_xyzw": list(
                 target_grasp_frame_quaternion_world_xyzw
             ),
+            "local_ik_target_grasp_frame_position_world_m": local_target_position,
+            "local_ik_target_grasp_frame_quaternion_world_xyzw": (
+                local_target_quaternion
+            ),
+            "max_cartesian_translation_step_m": (
+                MAX_CARTESIAN_TRANSLATION_STEP_M
+            ),
+            "max_cartesian_orientation_step_rad": (
+                MAX_CARTESIAN_ORIENTATION_STEP_RAD
+            ),
             "target_controlled_body_position_world_m": target_body_position,
             "current_controlled_body_position_world_m": body_pose[:3],
             "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,
@@ -756,6 +813,11 @@ class NativeFrankaDifferentialIkServo:
                 self._torch.linalg.matrix_rank(jacobian_root[0])
             ),
             "desired_joint_positions_rad": desired_values,
+            "desired_joint_positions_clipped_to_limits_rad": (
+                desired_within_joint_limits
+            ),
+            "joint_position_lower_limits_rad": self._joint_position_lower,
+            "joint_position_upper_limits_rad": self._joint_position_upper,
             "bounded_joint_positions_rad": bounded,
             "measured_joint_positions_rad": current_values,
             # An implicit-actuator torque is the sum of two terms that cancel at

@@ -13,6 +13,7 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _requested_arm_reset,
     _retain_task_path_samples,
     _task_joint_reset_passed,
+    _terminal_grasp_frame_arrival_readback,
     _verified_construction_phase_plan_path,
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
@@ -210,6 +211,32 @@ def test_worker_arrival_requires_orientation_as_well_as_position() -> None:
     assert result["position_error_m"] == 0.0
     assert result["orientation_error_rad"] > 0.05
     assert result["reached"] is False
+
+
+def test_terminal_arrival_uses_commanded_tcp_orientation_not_body_orientation() -> None:
+    result = _terminal_grasp_frame_arrival_readback(
+        grasp_pose_world=[1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0],
+        body_pose_world=[0.9, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0],
+        target_position_world_m=[1.0, 2.0, 3.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        position_tolerance_m=0.01,
+        orientation_tolerance_rad=0.05,
+    )
+
+    assert result["reached"] is True
+    assert result["orientation_error_rad"] == 0.0
+    assert result["terminal_grasp_frame_orientation_world_xyzw"] == [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    assert result["terminal_body_orientation_world_xyzw"] == [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
 
 
 def test_worker_retains_path_samples_for_general_graph_and_rigid_tasks() -> None:
