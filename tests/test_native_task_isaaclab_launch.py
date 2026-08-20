@@ -246,10 +246,12 @@ def test_nurec_renderer_runtime_readback_fails_closed(
             app_launcher_factory=factory,
             nurec_renderer_probe_factory=lambda: readback,
         )
-    assert closed == [True]
+    assert closed == []
 
 
-def test_nurec_renderer_readback_error_closes_the_app(tmp_path: Path) -> None:
+def test_nurec_renderer_readback_error_defers_close_until_receipt(
+    tmp_path: Path,
+) -> None:
     closed = []
 
     def factory(**_kwargs):
@@ -268,7 +270,28 @@ def test_nurec_renderer_readback_error_closes_the_app(tmp_path: Path) -> None:
             app_launcher_factory=factory,
             nurec_renderer_probe_factory=broken_probe,
         )
-    assert closed == [True]
+    assert closed == []
+
+
+def test_nurec_renderer_failure_retains_raw_diagnostics(tmp_path: Path) -> None:
+    with pytest.raises(NativeTaskIsaacLabLaunchError) as excinfo:
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            device="cuda:0",
+            app_launcher_factory=lambda **_kwargs: SimpleNamespace(
+                app=SimpleNamespace(close=lambda: None)
+            ),
+            nurec_renderer_probe_factory=lambda: {
+                "extension_required": False,
+                "extension_enabled": False,
+                "renderer_hints": None,
+                "multi_gpu_enabled": False,
+                "schema_registered": False,
+            },
+        )
+    assert excinfo.value.diagnostics["render_path"] == "plain_nurec_volume"
+    assert excinfo.value.diagnostics["renderer_hints"] is None
+    assert excinfo.value.diagnostics["schema_registered"] is False
 
 
 def test_old_experience_that_loads_two_warp_runtimes_fails_before_launch(

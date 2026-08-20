@@ -258,6 +258,13 @@ def main() -> int:
         result["phase_reached"] = "runtime_preflight_completed"
         result["status"] = "completed"
     except Exception as exc:  # noqa: BLE001 - retained as typed preflight evidence
+        launch_errors = getattr(exc, "errors", None)
+        launch_diagnostics = getattr(exc, "diagnostics", None)
+        if launch_errors is not None:
+            result["isaaclab_launch_error"] = {
+                "errors": list(launch_errors),
+                "diagnostics": dict(launch_diagnostics or {}),
+            }
         result["blockers"].append(
             f"native_task_arena_runtime_preflight_failed_at_{result['phase_reached']}:"
             f"{type(exc).__name__}:{exc}"[:500]

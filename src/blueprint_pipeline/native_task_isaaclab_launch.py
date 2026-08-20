@@ -57,8 +57,14 @@ REQUIRED_EXPERIENCE_FILES = (
 class NativeTaskIsaacLabLaunchError(ValueError):
     """Stable fail-closed launch-contract errors."""
 
-    def __init__(self, errors: list[str]):
+    def __init__(
+        self,
+        errors: list[str],
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ):
         self.errors = tuple(sorted(set(errors)))
+        self.diagnostics = dict(diagnostics or {})
         super().__init__(";".join(self.errors))
 
 
@@ -335,11 +341,9 @@ def launch_native_task_isaaclab(
     try:
         raw_nurec = dict(nurec_renderer_probe_factory())
     except Exception as exc:
-        close = getattr(app, "close", None)
-        if callable(close):
-            close()
         raise NativeTaskIsaacLabLaunchError(
-            ["native_task_isaaclab_nurec_runtime_readback_failed"]
+            ["native_task_isaaclab_nurec_runtime_readback_failed"],
+            diagnostics={"probe_error_type": type(exc).__name__},
         ) from exc
     nurec = {
         "extension_id": NATIVE_TASK_ARENA_NUREC_EXTENSION,
@@ -367,10 +371,11 @@ def launch_native_task_isaaclab(
     if not nurec["schema_registered"]:
         nurec_errors.append("native_task_isaaclab_nurec_schema_not_registered")
     if nurec_errors:
-        close = getattr(app, "close", None)
-        if callable(close):
-            close()
-        raise NativeTaskIsaacLabLaunchError(nurec_errors)
+        # Do not call ``SimulationApp.close()`` here. In this runtime Kit may
+        # terminate the process from close instead of returning, which erases
+        # the worker's sealed failure receipt. The worker records these raw
+        # diagnostics and process exit/atexit owns resource closure.
+        raise NativeTaskIsaacLabLaunchError(nurec_errors, diagnostics=nurec)
     nurec["status"] = "qualified"
     receipt["launch"] = {
         "launcher": "isaaclab.app.AppLauncher",
