@@ -1,11 +1,12 @@
 """Launch native tasks with a digest-bound, Warp-compatible Isaac Lab experience.
 
-Arena 0.2.1 pins an Isaac Lab Python API revision whose Kit experience still
-loads Isaac Sim's bundled Warp extension.  Mixing that extension's Warp with
-the pinned Isaac Lab 1.12 runtime can make a CUDA PhysX view return CPU arrays.
-The failure only appears after an expensive native environment build.  This
-adapter verifies the later official Isaac Lab experience bytes retained in the
-runtime-source packet and makes that experience an explicit launch input.
+The native Arena lane binds the official Isaac Lab 3.0 Beta 2 Patch 1 source
+and Kit experience released for Isaac Sim 6.0.1.  Its experience excludes
+Isaac Sim's bundled Warp extension so it cannot mix with the pinned external
+Warp 1.12 runtime and make a CUDA PhysX view return CPU arrays.  The failure
+only appears after an expensive native environment build, so this adapter
+reverifies those exact experience bytes and makes them an explicit launch
+input.
 
 No scene, robot, object, or policy decision is made here.
 """
@@ -153,10 +154,10 @@ def verify_native_task_isaaclab_launch_contract(
     base = texts.get("isaaclab.python.kit", "")
     headless = texts.get("isaaclab.python.headless.kit", "")
     if (
-        '"isaacsim.core.simulation_manager" = {}' in base
+        '"isaacsim.core.simulation_manager" = {}' not in base
+        or '"isaacsim.core.simulation_manager" = {}' not in headless
         or '"omni.warp.core" = {}' in base
-        or '"omni.physics.physx" = {}' not in base
-        or '"omni.physics.physx" = {}' not in headless
+        or '"omni.warp.core" = {}' in headless
         or "omni.warp.core" not in base
         or "omni.warp.core" not in headless
     ):
@@ -244,7 +245,7 @@ def verify_native_task_isaaclab_launch_contract(
             "cuda_tensor_device": "cuda:0",
             "import_and_cuda_operation_qualified_before_simulation_app": True,
         },
-        "direct_physx_registration_required": True,
+        "isaac_simulation_manager_required": True,
         "device_coherence_still_requires_native_readback": True,
     }
 

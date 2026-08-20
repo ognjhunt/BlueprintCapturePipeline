@@ -10,7 +10,13 @@ import pytest
 
 from blueprint_pipeline import native_task_runtime_source_packet as source_packet
 from blueprint_pipeline.native_task_runtime_source_packet import (
+    ARENA_COMMIT,
+    ARENA_TREE,
+    ISAACLAB_COMMIT,
     ISAACLAB_PACKAGE_NAMES,
+    ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
+    ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
+    ISAACLAB_TREE,
     RUNTIME_DEPENDENCY_WHEELS,
     NativeTaskRuntimeSourcePacketError,
     materialize_native_task_runtime_source_packet,
@@ -49,12 +55,12 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
         files = {
             "LICENSE": "BSD-3-Clause fixture\n",
             "apps/isaaclab.python.kit": (
-                "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                "[dependencies]\n\"isaacsim.core.simulation_manager\" = {}\n"
                 "[settings.app.extensions]\n"
                 "excluded = [\"omni.warp.core\"]\n"
             ),
             "apps/isaaclab.python.headless.kit": (
-                "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                "[dependencies]\n\"isaacsim.core.simulation_manager\" = {}\n"
                 "[settings]\napp.extensions.excluded = [\"omni.warp.core\"]\n"
             ),
             "apps/isaaclab.python.headless.rendering.kit": (
@@ -103,6 +109,15 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         arena_commit=arena_commit,
         arena_tree=arena_tree,
     )
+
+
+def test_default_source_pair_is_the_upstream_601_compatible_release_pair() -> None:
+    assert ISAACLAB_COMMIT == "ffff603eafc6b74264a5261cc0183d6a65390d78"
+    assert ISAACLAB_TREE == "2f82f1afb2cfaf6816b328e03c7b3ddc12069658"
+    assert ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT == ISAACLAB_COMMIT
+    assert ISAACLAB_RUNTIME_COMPATIBILITY_TREE == ISAACLAB_TREE
+    assert ARENA_COMMIT == "8b82dca224f2b5af08f339f987613c59ce9cdbaa"
+    assert ARENA_TREE == "a52514015a8573ac03b6448688bfa61f9cea18a9"
 
 
 def _wheelhouse(root: Path) -> Path:
