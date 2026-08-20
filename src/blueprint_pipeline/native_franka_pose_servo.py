@@ -121,6 +121,13 @@ MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
 PINK_POSITION_COST = 5.0
 PINK_ORIENTATION_COST = 0.05
 PINK_POSTURE_COST = 5.0e-3
+# PINK validates every measured configuration against the URDF limits before it
+# solves.  The DROID reset writes Panda joint 6 at the exact URDF upper limit;
+# after the float32 -> Python conversion observed in r35 that value was
+# 3.7525010109 for a 3.7525000000 limit.  Keep the solver's internal measured
+# configuration a negligible distance inside the same live articulation limits
+# while leaving the real PhysX readback and every commanded target untouched.
+PINK_CONFIGURATION_LIMIT_MARGIN_RAD = 1.0e-5
 
 
 class NativeFrankaPoseServoError(RuntimeError):
@@ -129,6 +136,52 @@ class NativeFrankaPoseServoError(RuntimeError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def pink_configuration_joint_positions(
+    *,
+    measured_joint_positions_rad: Sequence[float],
+    lower_joint_position_limits_rad: Sequence[float],
+    upper_joint_position_limits_rad: Sequence[float],
+    margin_rad: float = PINK_CONFIGURATION_LIMIT_MARGIN_RAD,
+) -> list[float]:
+    """Clamp only PINK's measured configuration just inside its limits.
+
+    This is deliberately distinct from command clipping: PINK refuses to solve
+    when a float-roundtripped reset lies even one ULP outside a URDF limit.
+    The returned values seed the constrained optimizer; PhysX measurements,
+    terminal errors, and actuator commands continue to use the unmodified live
+    joint positions.
+    """
+
+    try:
+        measured = [float(value) for value in measured_joint_positions_rad]
+        lower = [float(value) for value in lower_joint_position_limits_rad]
+        upper = [float(value) for value in upper_joint_position_limits_rad]
+        margin = float(margin_rad)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_pink_configuration_limits_invalid"]
+        ) from exc
+    if (
+        not measured
+        or len(measured) != len(lower)
+        or len(measured) != len(upper)
+        or not math.isfinite(margin)
+        or margin <= 0.0
+        or not all(math.isfinite(value) for value in (*measured, *lower, *upper))
+        or any(
+            low + margin >= high - margin
+            for low, high in zip(lower, upper, strict=True)
+        )
+    ):
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_pink_configuration_limits_invalid"]
+        )
+    return [
+        min(max(value, low + margin), high - margin)
+        for value, low, high in zip(measured, lower, upper, strict=True)
+    ]
 
 
 def native_xyzw_to_contract_xyzw(value: Sequence[float]) -> list[float]:
@@ -651,9 +704,22 @@ class NativeFrankaDifferentialIkServo:
         self._write_joint_velocity_target([0.0] * len(self.binding["arm_joint_ids"]))
 
     def _pink_estimated_state(self) -> Any:
-        positions = self._to_torch(self._robot.data.joint_pos)[
+        measured_positions = self._to_torch(self._robot.data.joint_pos)[
             :, self.binding["arm_joint_ids"]
         ].contiguous()
+        measured_values = [float(value) for value in measured_positions[0]]
+        pink_values = pink_configuration_joint_positions(
+            measured_joint_positions_rad=measured_values,
+            lower_joint_position_limits_rad=self._joint_position_lower,
+            upper_joint_position_limits_rad=self._joint_position_upper,
+        )
+        self._last_pink_measured_joint_positions_rad = measured_values
+        self._last_pink_configuration_joint_positions_rad = pink_values
+        positions = self._torch.tensor(
+            [pink_values],
+            device=self._env.unwrapped.device,
+            dtype=measured_positions.dtype,
+        )
         velocities = self._to_torch(self._robot.data.joint_vel)[
             :, self.binding["arm_joint_ids"]
         ].contiguous()
@@ -963,6 +1029,15 @@ class NativeFrankaDifferentialIkServo:
             "desired_joint_positions_rad": desired_values,
             "desired_joint_positions_clipped_to_limits_rad": (
                 desired_within_joint_limits
+            ),
+            "pink_configuration_limit_margin_rad": (
+                PINK_CONFIGURATION_LIMIT_MARGIN_RAD
+            ),
+            "pink_measured_joint_positions_rad": (
+                self._last_pink_measured_joint_positions_rad
+            ),
+            "pink_configuration_joint_positions_rad": (
+                self._last_pink_configuration_joint_positions_rad
             ),
             "joint_position_lower_limits_rad": self._joint_position_lower,
             "joint_position_upper_limits_rad": self._joint_position_upper,
