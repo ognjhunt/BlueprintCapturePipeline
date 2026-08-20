@@ -210,24 +210,24 @@ def main() -> int:
                     f"native_task_arena_preflight_env_close_failed:{type(exc).__name__}"
                 )
                 result["status"] = "blocked"
-        if simulation_app is not None:
-            try:
-                simulation_app.close()
-            except Exception as exc:  # noqa: BLE001
-                result["blockers"].append(
-                    f"native_task_arena_preflight_app_close_failed:{type(exc).__name__}"
-                )
-                result["status"] = "blocked"
         result["blockers"] = sorted(set(result["blockers"]))
         (output_root / RESULT_FILENAME).write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    print(
-        "BLUEPRINT_NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_"
-        + ("OK" if result["status"] == "completed" else "BLOCKED"),
-        flush=True,
-    )
+        print(
+            "BLUEPRINT_NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_"
+            + ("OK" if result["status"] == "completed" else "BLOCKED"),
+            flush=True,
+        )
+        # Persist before closing. Isaac Sim's close path may terminate the
+        # process instead of returning, which previously erased a successful
+        # preflight receipt while the shell still observed exit code 0.
+        if simulation_app is not None:
+            try:
+                simulation_app.close()
+            except Exception:  # noqa: BLE001 - result is already durable
+                pass
     return 0 if result["status"] == "completed" else 1
 
 
