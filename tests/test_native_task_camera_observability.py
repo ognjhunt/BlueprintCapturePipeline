@@ -378,6 +378,31 @@ def test_exact_semantic_pixels_gate_visibility_and_framing() -> None:
     assert result["passed"] is True
 
 
+@pytest.mark.parametrize("use_signed", [False, True])
+def test_replicator_rgba_tuple_keys_decode_to_exact_scalar_ids(
+    use_signed: bool,
+) -> None:
+    rgba = (240, 4, 111, 255)
+    unsigned = sum(value << (8 * index) for index, value in enumerate(rgba))
+    scalar = unsigned - 2**32 if use_signed and unsigned >= 2**31 else unsigned
+    semantic = np.zeros((32, 48), dtype=np.int64)
+    semantic[8:24, 12:36] = scalar
+
+    result = measure_native_task_camera_observability(
+        semantic_ids=semantic,
+        id_to_labels={str(rgba): {"class": "task_object"}},
+        rgb=_textured((32, 48), low=20, high=240),
+        site_appearance_render_expected=True,
+        minimum_pixels=200,
+        minimum_pixel_fraction=0.005,
+    )
+
+    signed = unsigned - 2**32 if unsigned >= 2**31 else unsigned
+    assert result["target_semantic_ids"] == sorted({unsigned, signed})
+    assert result["pixel_count"] == 384
+    assert result["semantic_passed"] is True
+
+
 def test_wrong_scene_label_cannot_be_counted_as_the_task() -> None:
     shape = (20, 20)
     result = measure_native_task_camera_observability(

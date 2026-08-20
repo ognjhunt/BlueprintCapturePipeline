@@ -45,6 +45,7 @@ declaration visible instead of silently changing the claim.
 
 from __future__ import annotations
 
+import ast
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -132,6 +133,29 @@ class NativeTaskCameraObservabilityError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def _semantic_identifier_candidates(identifier: Any) -> list[int]:
+    """Decode Replicator numeric IDs or its RGBA tuple-key representation."""
+
+    try:
+        return [int(identifier)]
+    except (TypeError, ValueError):
+        pass
+    try:
+        rgba = ast.literal_eval(str(identifier))
+    except (SyntaxError, ValueError):
+        return []
+    if (
+        not isinstance(rgba, tuple)
+        or len(rgba) != 4
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in rgba)
+        or any(value < 0 or value > 255 for value in rgba)
+    ):
+        return []
+    packed = sum(int(value) << (8 * index) for index, value in enumerate(rgba))
+    signed = packed - 2**32 if packed >= 2**31 else packed
+    return sorted({packed, signed})
 
 
 def _as_uint8_rgb(rgb: Any) -> Any:
@@ -377,12 +401,13 @@ def measure_native_task_camera_observability(
         label = entry.get("class") if isinstance(entry, Mapping) else entry
         if label != target_label:
             continue
-        try:
-            target_ids.append(int(identifier))
-        except (TypeError, ValueError) as exc:
+        candidates = _semantic_identifier_candidates(identifier)
+        if not candidates:
             raise NativeTaskCameraObservabilityError(
                 ["native_task_camera_semantic_identifier_invalid"]
-            ) from exc
+            )
+        target_ids.extend(candidates)
+    target_ids = sorted(set(target_ids))
     mask = np.isin(semantic.astype(np.int64), target_ids)
     count = int(mask.sum())
     height, width = (int(value) for value in mask.shape)
