@@ -11,9 +11,61 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
 from blueprint_pipeline.native_franka_action_math import (
     NativeFrankaActionMathError,
     bounded_absolute_joint_setpoint,
+    bounded_cartesian_pose_target,
+    clip_joint_positions_to_limits,
     controlled_body_pose_for_grasp_frame_target,
     controlled_body_pose_for_rigid_grasp_frame_target,
 )
+
+
+def _quaternion_angle(left, right) -> float:
+    import math
+
+    dot = abs(sum(a * b for a, b in zip(left, right, strict=True)))
+    return 2.0 * math.acos(min(1.0, dot))
+
+
+def test_cartesian_pose_target_limits_translation_and_rotation_before_dls() -> None:
+    import math
+
+    position, quaternion = bounded_cartesian_pose_target(
+        current_position_world_m=[0.0, 0.0, 0.0],
+        current_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        target_position_world_m=[0.0, 0.0, 1.0],
+        target_quaternion_world_xyzw=[0.0, 0.0, 1.0, 0.0],
+        max_translation_step_m=0.02,
+        max_orientation_step_rad=0.10,
+    )
+
+    assert position == pytest.approx([0.0, 0.0, 0.02])
+    assert _quaternion_angle([0.0, 0.0, 0.0, 1.0], quaternion) == pytest.approx(
+        0.10
+    )
+    assert math.sqrt(sum(value * value for value in quaternion)) == pytest.approx(
+        1.0
+    )
+
+
+def test_cartesian_pose_target_uses_shortest_equivalent_quaternion_path() -> None:
+    position, quaternion = bounded_cartesian_pose_target(
+        current_position_world_m=[1.0, 2.0, 3.0],
+        current_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        target_position_world_m=[1.0, 2.0, 3.0],
+        target_quaternion_world_xyzw=[0.0, 0.0, 0.0, -1.0],
+        max_translation_step_m=0.02,
+        max_orientation_step_rad=0.10,
+    )
+
+    assert position == [1.0, 2.0, 3.0]
+    assert quaternion == pytest.approx([0.0, 0.0, 0.0, 1.0])
+
+
+def test_local_ik_solution_is_clipped_to_measured_joint_limits() -> None:
+    assert clip_joint_positions_to_limits(
+        desired_joint_positions_rad=[-4.0, 0.5, 8.0],
+        lower_joint_position_limits_rad=[-2.0, -1.0, -3.0],
+        upper_joint_position_limits_rad=[2.0, 1.0, 3.0],
+    ) == [-2.0, 0.5, 3.0]
 
 
 def test_scene_neutral_joint_setpoint_matches_original_rigid_fixture() -> None:

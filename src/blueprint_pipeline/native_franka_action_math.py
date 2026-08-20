@@ -14,6 +14,107 @@ class NativeFrankaActionMathError(ValueError):
         super().__init__(";".join(self.errors))
 
 
+def bounded_cartesian_pose_target(
+    *,
+    current_position_world_m: Sequence[float],
+    current_quaternion_world_xyzw: Sequence[float],
+    target_position_world_m: Sequence[float],
+    target_quaternion_world_xyzw: Sequence[float],
+    max_translation_step_m: float,
+    max_orientation_step_rad: float,
+) -> tuple[list[float], list[float]]:
+    """Return the next local pose target on the shortest Cartesian path.
+
+    Isaac Lab's differential IK controller applies the complete Cartesian pose
+    error in one Jacobian solve and does not impose joint limits. That is safe
+    for the small deltas used by its teleoperation examples, but a large
+    absolute orientation change can produce a multi-radian joint update before
+    the existing joint-space slew limiter gets a chance to act. Interpolating
+    the pose first keeps the Jacobian linearisation local; the joint-space
+    limits remain an independent second bound.
+    """
+
+    try:
+        current_position = [float(value) for value in current_position_world_m]
+        target_position = [float(value) for value in target_position_world_m]
+        current_quaternion = [
+            float(value) for value in current_quaternion_world_xyzw
+        ]
+        target_quaternion = [
+            float(value) for value in target_quaternion_world_xyzw
+        ]
+        translation_limit = float(max_translation_step_m)
+        orientation_limit = float(max_orientation_step_rad)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_cartesian_pose_step_invalid"]
+        ) from exc
+    if not (
+        len(current_position) == len(target_position) == 3
+        and len(current_quaternion) == len(target_quaternion) == 4
+        and all(
+            math.isfinite(value)
+            for row in (
+                current_position,
+                target_position,
+                current_quaternion,
+                target_quaternion,
+            )
+            for value in row
+        )
+        and math.isfinite(translation_limit)
+        and translation_limit > 0.0
+        and math.isfinite(orientation_limit)
+        and 0.0 < orientation_limit <= math.pi
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_cartesian_pose_step_invalid"]
+        )
+
+    def normalize(quaternion: Sequence[float]) -> list[float]:
+        norm = math.sqrt(sum(value * value for value in quaternion))
+        if not math.isfinite(norm) or norm <= 1.0e-12:
+            raise NativeFrankaActionMathError(
+                ["native_franka_cartesian_pose_step_invalid"]
+            )
+        return [value / norm for value in quaternion]
+
+    delta = [
+        target_position[index] - current_position[index] for index in range(3)
+    ]
+    distance = math.sqrt(sum(value * value for value in delta))
+    position_fraction = min(1.0, translation_limit / max(distance, 1.0e-12))
+    next_position = [
+        current_position[index] + position_fraction * delta[index]
+        for index in range(3)
+    ]
+
+    start = normalize(current_quaternion)
+    end = normalize(target_quaternion)
+    dot = sum(left * right for left, right in zip(start, end, strict=True))
+    if dot < 0.0:
+        end = [-value for value in end]
+        dot = -dot
+    dot = max(-1.0, min(1.0, dot))
+    angle = 2.0 * math.acos(dot)
+    orientation_fraction = min(1.0, orientation_limit / max(angle, 1.0e-12))
+    if dot > 0.9995:
+        next_quaternion = [
+            left + orientation_fraction * (right - left)
+            for left, right in zip(start, end, strict=True)
+        ]
+    else:
+        half_angle = math.acos(dot)
+        denominator = math.sin(half_angle)
+        left_weight = math.sin((1.0 - orientation_fraction) * half_angle) / denominator
+        right_weight = math.sin(orientation_fraction * half_angle) / denominator
+        next_quaternion = [
+            left_weight * left + right_weight * right
+            for left, right in zip(start, end, strict=True)
+        ]
+    return next_position, normalize(next_quaternion)
+
+
 def bounded_absolute_joint_setpoint(
     *,
     measured_joint_positions_rad: Sequence[float],
@@ -59,6 +160,37 @@ def bounded_absolute_joint_setpoint(
             )
         command.append(min(max(desired_value, lower), upper))
     return command
+
+
+def clip_joint_positions_to_limits(
+    *,
+    desired_joint_positions_rad: Sequence[float],
+    lower_joint_position_limits_rad: Sequence[float],
+    upper_joint_position_limits_rad: Sequence[float],
+) -> list[float]:
+    """Clip a local IK solution to the articulation's measured soft limits."""
+
+    try:
+        desired = [float(value) for value in desired_joint_positions_rad]
+        lower = [float(value) for value in lower_joint_position_limits_rad]
+        upper = [float(value) for value in upper_joint_position_limits_rad]
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_joint_position_limits_invalid"]
+        ) from exc
+    if not (
+        desired
+        and len(desired) == len(lower) == len(upper)
+        and all(math.isfinite(value) for value in (*desired, *lower, *upper))
+        and all(low < high for low, high in zip(lower, upper, strict=True))
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_joint_position_limits_invalid"]
+        )
+    return [
+        min(max(value, low), high)
+        for value, low, high in zip(desired, lower, upper, strict=True)
+    ]
 
 
 def joint_velocity_feedforward_rad_s(
@@ -535,6 +667,8 @@ __all__ = [
     "GRASP_AXIS_DEGENERACY_TOLERANCE",
     "NativeFrankaActionMathError",
     "bounded_absolute_joint_setpoint",
+    "bounded_cartesian_pose_target",
+    "clip_joint_positions_to_limits",
     "controlled_body_pose_for_grasp_frame_target",
     "controlled_body_pose_for_rigid_grasp_frame_target",
     "grasp_orientation_contact_xyzw",

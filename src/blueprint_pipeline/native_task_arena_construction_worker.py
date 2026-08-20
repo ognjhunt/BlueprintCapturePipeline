@@ -193,6 +193,34 @@ def _pose_arrival_readback(
     }
 
 
+def _terminal_grasp_frame_arrival_readback(
+    *,
+    grasp_pose_world: Sequence[float],
+    body_pose_world: Sequence[float],
+    target_position_world_m: Sequence[float],
+    target_orientation_world_xyzw: Sequence[float],
+    position_tolerance_m: float,
+    orientation_tolerance_rad: float | None,
+) -> dict[str, Any]:
+    """Judge arrival in the commanded TCP frame while retaining the body pose."""
+
+    arrival = _pose_arrival_readback(
+        position_world_m=grasp_pose_world[:3],
+        target_position_world_m=target_position_world_m,
+        orientation_world_xyzw=grasp_pose_world[3:7],
+        target_orientation_world_xyzw=target_orientation_world_xyzw,
+        position_tolerance_m=position_tolerance_m,
+        orientation_tolerance_rad=orientation_tolerance_rad,
+    )
+    return {
+        **arrival,
+        "terminal_grasp_frame_orientation_world_xyzw": list(
+            grasp_pose_world[3:7]
+        ),
+        "terminal_body_orientation_world_xyzw": list(body_pose_world[3:7]),
+    }
+
+
 def _retain_task_path_samples(*, task_kind: str, task_spec: Mapping[str, Any]) -> bool:
     return task_kind == "rigid_pick_place" or (
         task_kind == "articulated_open_close"
@@ -1466,13 +1494,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if stable >= required_stable:
                     break
-            terminal = servo.current_grasp_frame_position_world()
+            terminal_grasp_pose = servo.current_grasp_frame_pose_world()
+            terminal = terminal_grasp_pose[:3]
             terminal_body_pose = servo.current_body_pose_world()
             terminal_error = math.dist(terminal, phase["position_world_m"])
-            terminal_arrival = _pose_arrival_readback(
-                position_world_m=terminal,
+            terminal_arrival = _terminal_grasp_frame_arrival_readback(
+                grasp_pose_world=terminal_grasp_pose,
+                body_pose_world=terminal_body_pose,
                 target_position_world_m=phase["position_world_m"],
-                orientation_world_xyzw=terminal_body_pose[3:7],
                 target_orientation_world_xyzw=target_orientation,
                 position_tolerance_m=arrival_tolerance,
                 orientation_tolerance_rad=(
@@ -1491,7 +1520,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "terminal_position_world_m": terminal,
                 "terminal_position_error_m": terminal_error,
                 "target_orientation_world_xyzw": target_orientation,
-                "terminal_body_orientation_world_xyzw": terminal_body_pose[3:7],
+                "terminal_grasp_frame_orientation_world_xyzw": (
+                    terminal_arrival[
+                        "terminal_grasp_frame_orientation_world_xyzw"
+                    ]
+                ),
+                "terminal_body_orientation_world_xyzw": terminal_arrival[
+                    "terminal_body_orientation_world_xyzw"
+                ],
                 "terminal_orientation_error_rad": terminal_orientation_error,
                 "arrival_orientation_tolerance_rad": orientation_tolerance,
                 "arrival_tolerance_m": arrival_tolerance,
@@ -1522,6 +1558,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         result["phase_results"] = phase_results
         result["total_action_steps"] = total_steps
+        # All attempted and budget-skipped phase rows are now sealed. If a
+        # downstream evaluator refuses a missing path sample, attribute that
+        # refusal to phase execution instead of the much earlier gripper probe.
+        result["phase_reached"] = "phase_execution_complete"
         failed_phases = [
             row["phase_id"] for row in phase_results if not row["target_reached"]
         ]
