@@ -118,9 +118,7 @@ def _camera(role: str) -> dict:
         "scoring_input": False,
         "pose_frame": "robot_body" if wrist else "world",
         "parent_prim_path": (
-            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link"
-            if wrist
-            else "{ENV_REGEX_NS}"
+            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link" if wrist else "{ENV_REGEX_NS}"
         ),
         "optical_convention": "opencv",
         "frame_from_camera_matrix": [
@@ -153,7 +151,7 @@ def _camera(role: str) -> dict:
 
 
 def _request(evidence: Path, *, articulated: bool) -> dict:
-    articulated_asset = b'''#usda 1.0
+    articulated_asset = b"""#usda 1.0
 (
     defaultPrim = "FixtureRoot"
     metersPerUnit = 1
@@ -206,8 +204,8 @@ def Xform "FixtureRoot"
         }
     }
 }
-'''
-    collision_asset = b'''#usda 1.0
+"""
+    collision_asset = b"""#usda 1.0
 (
     defaultPrim = "Root"
     metersPerUnit = 1
@@ -217,7 +215,7 @@ def Xform "Root"
 {
     def Mesh "floor" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {}
 }
-'''
+"""
     files = {
         "scene_collision": (
             "scene_collision.usda",
@@ -253,9 +251,7 @@ def Xform "Root"
                     "size_bytes": path.stat().st_size,
                     "sha256": f"sha256:{sha256_file(path)}",
                 },
-                "pose_world": _pose(1.0, 2.0, 0.0)
-                if role == "task_object"
-                else _pose(),
+                "pose_world": _pose(1.0, 2.0, 0.0) if role == "task_object" else _pose(),
             }
         )
     task_spec = {
@@ -342,8 +338,7 @@ def Xform "Root"
         "assets": assets,
         "robot_base_pose_world": _pose(1.75, 1.99, 0.0),
         "robot_joint_reset_positions_rad": {
-            name: float(index) / 100.0
-            for index, name in enumerate(DROID_FRANKA_RESET_JOINT_NAMES)
+            name: float(index) / 100.0 for index, name in enumerate(DROID_FRANKA_RESET_JOINT_NAMES)
         },
         "cameras": [_camera(role) for role in ("external", "wrist", "overview")],
         "scenario": {
@@ -356,9 +351,7 @@ def Xform "Root"
         "physics_frequency_hz": 120,
         "request_digest": "",
     }
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     return request
 
 
@@ -382,11 +375,13 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "output_sha256": "sha256:" + sha256_file(asset),
         "source_sha256": _sha("a"),
         "splat_count": 1_000_000,
+        "sh_degree": 3,
+        "sh_primvar_element_size": 16,
+        "sh_primvar_interpolation": "vertex",
+        "display_color_fallback_authored": True,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = tmp_path / "authoring_receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     output = tmp_path / "variant_request.json"
@@ -408,13 +403,32 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "size_bytes": asset.stat().st_size,
         "sha256": receipt["output_sha256"],
     }
-    assert variant["appearance_variant"]["base_request_digest"] == base[
-        "request_digest"
-    ]
-    assert variant["request_digest"] == canonical_digest(
-        variant, digest_field="request_digest"
-    )
+    assert variant["appearance_variant"]["base_request_digest"] == base["request_digest"]
+    assert variant["appearance_variant"]["sh_primvar_element_size"] == 16
+    assert variant["appearance_variant"]["sh_primvar_interpolation"] == "vertex"
+    assert variant["appearance_variant"]["display_color_fallback_authored"] is True
+    assert variant["request_digest"] == canonical_digest(variant, digest_field="request_digest")
     assert json.loads(output.read_text()) == variant
+
+    for missing in (
+        "sh_primvar_element_size",
+        "sh_primvar_interpolation",
+        "display_color_fallback_authored",
+    ):
+        invalid = dict(receipt)
+        invalid.pop(missing)
+        invalid["receipt_digest"] = canonical_digest(invalid, digest_field="receipt_digest")
+        receipt_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(
+            NativeTaskArenaPacketError,
+            match="native_task_arena_appearance_variant_receipt_invalid",
+        ):
+            materialize_native_task_arena_appearance_variant_request(
+                base_request_path=base_path,
+                appearance_authoring_receipt_path=receipt_path,
+                evidence_root=evidence,
+                output_path=output,
+            )
 
 
 @pytest.mark.parametrize("articulated", [False, True])
@@ -434,22 +448,14 @@ def test_original_and_second_scene_share_one_packet_materializer(
     assert receipt["native_application_claimed"] is False
     assert receipt["request_digest"] == request["request_digest"]
     assert len(receipt["source_bindings"]) == 3
-    persisted = json.loads(
-        (output / "native_task_arena_packet_receipt.v1.json").read_text()
-    )
+    persisted = json.loads((output / "native_task_arena_packet_receipt.v1.json").read_text())
     assert persisted == receipt
-    contract = json.loads(
-        (output / "native_task_runtime_contract.v1.json").read_text()
-    )
+    contract = json.loads((output / "native_task_runtime_contract.v1.json").read_text())
     assert contract["scenario"]["context_kind"] == (
         "construction_canary" if articulated else "evaluation_cell"
     )
-    task_object = next(
-        row for row in contract["objects"] if row["semantic_role"] == "task_object"
-    )
-    assert task_object["object_type"] == (
-        "ARTICULATION" if articulated else "RIGID"
-    )
+    task_object = next(row for row in contract["objects"] if row["semantic_role"] == "task_object")
+    assert task_object["object_type"] == ("ARTICULATION" if articulated else "RIGID")
     plan = json.loads((output / "native_task_arena_scene_plan.v1.json").read_text())
     assert plan["asset_directory"] == "assets"
     assert {row["usd_path"] for row in plan["objects"]} == {
@@ -469,9 +475,7 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
             "semantic_role": "replacement",
             "asset_id": "articulated_a",
             "object_type": "ARTICULATION",
-            "reset_state": {
-                "joint_positions": {"door_hinge": 0.0, "locked_hinge": 0.0}
-            },
+            "reset_state": {"joint_positions": {"door_hinge": 0.0, "locked_hinge": 0.0}},
         }
     )
     rigid_path = evidence / "rigid_b" / "rigid_b.usda"
@@ -517,8 +521,7 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
                         "collider_deletion_receipt_digest": "sha256:" + "7" * 64,
                         "collider_deletion_qualified": True,
                         "replacement_qualification_id": "qualification_a",
-                        "replacement_qualification_receipt_digest": "sha256:"
-                        + "8" * 64,
+                        "replacement_qualification_receipt_digest": "sha256:" + "8" * 64,
                         "replacement_asset_sha256": task_asset["source"]["sha256"],
                         "replacement_simulator_import_qualified": True,
                     }
@@ -539,11 +542,10 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
                         "collider_deletion_receipt_digest": "sha256:" + "b" * 64,
                         "collider_deletion_qualified": True,
                         "replacement_qualification_id": "qualification_b",
-                        "replacement_qualification_receipt_digest": "sha256:"
-                        + "c" * 64,
-                        "replacement_asset_sha256": articulated_request["assets"][
-                            -1
-                        ]["source"]["sha256"],
+                        "replacement_qualification_receipt_digest": "sha256:" + "c" * 64,
+                        "replacement_asset_sha256": articulated_request["assets"][-1]["source"][
+                            "sha256"
+                        ],
                         "replacement_simulator_import_qualified": True,
                     }
                 ),
@@ -570,9 +572,7 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
         task_state_binding=None,
         task_freeze_digest=rigid_freeze_digest,
     )
-    rigid_request["request_digest"] = canonical_digest(
-        rigid_request, digest_field="request_digest"
-    )
+    rigid_request["request_digest"] = canonical_digest(rigid_request, digest_field="request_digest")
 
     receipts = []
     contracts = []
@@ -585,9 +585,7 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
                 output_dir=output,
             )
         )
-        contracts.append(
-            json.loads((output / "native_task_runtime_contract.v1.json").read_text())
-        )
+        contracts.append(json.loads((output / "native_task_runtime_contract.v1.json").read_text()))
 
     assert all(len(receipt["source_bindings"]) == 4 for receipt in receipts)
     assert [contract["task_subject_asset_id"] for contract in contracts] == [
@@ -601,15 +599,19 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
         articulated_freeze_digest,
         rigid_freeze_digest,
     ]
-    assert {
-        row["asset_id"]
-        for row in contracts[0]["objects"]
-        if row["source_semantic_role"] == "replacement"
-    } == {
-        row["asset_id"]
-        for row in contracts[1]["objects"]
-        if row["source_semantic_role"] == "replacement"
-    } == {"articulated_a", "rigid_b"}
+    assert (
+        {
+            row["asset_id"]
+            for row in contracts[0]["objects"]
+            if row["source_semantic_role"] == "replacement"
+        }
+        == {
+            row["asset_id"]
+            for row in contracts[1]["objects"]
+            if row["source_semantic_role"] == "replacement"
+        }
+        == {"articulated_a", "rigid_b"}
+    )
 
 
 def test_resolved_scenario_parameter_reaches_native_scene_plan(tmp_path: Path) -> None:
@@ -628,22 +630,14 @@ def test_resolved_scenario_parameter_reaches_native_scene_plan(tmp_path: Path) -
             "application_tolerance": 1.0e-4,
         }
     ]
-    context["instance_digest"] = canonical_digest(
-        context, digest_field="instance_digest"
-    )
+    context["instance_digest"] = canonical_digest(context, digest_field="instance_digest")
     request["scenario"]["instance_digest"] = context["instance_digest"]
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     output = tmp_path / "packet"
 
-    materialize_native_task_arena_packet(
-        request=request, evidence_root=evidence, output_dir=output
-    )
+    materialize_native_task_arena_packet(request=request, evidence_root=evidence, output_dir=output)
 
-    contract = json.loads(
-        (output / "native_task_runtime_contract.v1.json").read_text()
-    )
+    contract = json.loads((output / "native_task_runtime_contract.v1.json").read_text())
     plan = json.loads((output / "native_task_arena_scene_plan.v1.json").read_text())
     assert contract["scenario"]["parameter_bindings"][0]["resolved_value"] == 0.02
     application = plan["scenario"]["parameter_applications"][0]
@@ -670,13 +664,9 @@ def test_unsupported_scenario_target_fails_before_packet_copy_is_admitted(
             "application_tolerance": 1.0e-4,
         }
     ]
-    context["instance_digest"] = canonical_digest(
-        context, digest_field="instance_digest"
-    )
+    context["instance_digest"] = canonical_digest(context, digest_field="instance_digest")
     request["scenario"]["instance_digest"] = context["instance_digest"]
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     output = tmp_path / "packet"
 
     with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
@@ -703,9 +693,7 @@ def test_tampered_source_fails_and_removes_partial_packet(tmp_path: Path) -> Non
             request=request, evidence_root=evidence, output_dir=output
         )
 
-    assert excinfo.value.errors == (
-        "native_task_arena_packet_asset_identity_mismatch:task_object",
-    )
+    assert excinfo.value.errors == ("native_task_arena_packet_asset_identity_mismatch:task_object",)
     assert not output.exists()
 
 
@@ -769,9 +757,7 @@ def test_checked_second_scene_packet_v3_binding_is_canonical() -> None:
     )
     binding = json.loads(path.read_text(encoding="utf-8"))
 
-    assert binding["binding_digest"] == canonical_digest(
-        binding, digest_field="binding_digest"
-    )
+    assert binding["binding_digest"] == canonical_digest(binding, digest_field="binding_digest")
     assert binding["native_application_claimed"] is False
     assert binding["motion_geometry"]["derived_from_exact_task_usd"] is True
 
@@ -781,9 +767,7 @@ def test_forged_construction_context_fails_before_copy(tmp_path: Path) -> None:
     evidence.mkdir()
     request = _request(evidence, articulated=True)
     request["scenario"]["context_document"]["seed"] += 1
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     output = tmp_path / "packet"
 
     with pytest.raises(NativeTaskArenaPacketError) as excinfo:
@@ -799,37 +783,23 @@ def test_forged_construction_context_fails_before_copy(tmp_path: Path) -> None:
 
 
 def test_checked_second_scene_request_and_receipt_are_self_consistent() -> None:
-    manifest_root = (
-        Path(__file__).parents[1] / "docs/arm_decision_proof_v1/manifests"
-    )
+    manifest_root = Path(__file__).parents[1] / "docs/arm_decision_proof_v1/manifests"
     request = json.loads(
-        (
-            manifest_root
-            / "second_scene_840796_native_arena_packet_request.v1.json"
-        ).read_text()
+        (manifest_root / "second_scene_840796_native_arena_packet_request.v1.json").read_text()
     )
     receipt = json.loads(
-        (
-            manifest_root
-            / "second_scene_840796_native_arena_packet_receipt.v1.json"
-        ).read_text()
+        (manifest_root / "second_scene_840796_native_arena_packet_receipt.v1.json").read_text()
     )
     orientation = json.loads(
-        (
-            manifest_root
-            / "second_scene_840796_franka_base_orientation.v1.json"
-        ).read_text()
+        (manifest_root / "second_scene_840796_franka_base_orientation.v1.json").read_text()
     )
 
-    assert request["request_digest"] == canonical_digest(
-        request, digest_field="request_digest"
-    )
+    assert request["request_digest"] == canonical_digest(request, digest_field="request_digest")
     assert request["scenario"]["context_kind"] == "construction_canary"
-    assert request["robot_base_pose_world"]["orientation_xyzw"] == orientation[
-        "resolved_orientation_xyzw"
-    ]
-    assert receipt["request_digest"] == request["request_digest"]
-    assert receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest"
+    assert (
+        request["robot_base_pose_world"]["orientation_xyzw"]
+        == orientation["resolved_orientation_xyzw"]
     )
+    assert receipt["request_digest"] == request["request_digest"]
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
     assert receipt["native_application_claimed"] is False
