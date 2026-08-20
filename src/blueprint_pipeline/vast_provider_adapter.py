@@ -4968,10 +4968,16 @@ def _instance_liveness_from_payload(
 
     rows = _instance_list_rows(payload)
     if not rows:
-        if isinstance(payload.get("instances"), list):
+        if "instances" in payload and (
+            payload.get("instances") is None
+            or isinstance(payload.get("instances"), list)
+        ):
             # A well-formed inventory that contains no row for the specific
-            # allocation is positive destruction evidence. This differs from
-            # an arbitrary successful JSON body, which remains unrecognized.
+            # allocation is positive destruction evidence. Vast's per-instance
+            # endpoint returns both ``[]`` and ``null`` after destruction (r29
+            # observed the latter). This differs from an arbitrary successful
+            # JSON body, which remains unrecognized. The log poller still
+            # requires two consecutive exit observations before stopping.
             return {
                 "probe_error": None,
                 "observed": True,
