@@ -490,3 +490,140 @@ def test_persist_survives_values_json_cannot_encode() -> None:
     assert written["result_digest"] == _canonical_digest(
         written, field="result_digest"
     )
+
+
+# --- the construction lane's own camera path must read pixels --------------
+
+
+class _FakeCameraData:
+    """Only what `_camera_snapshot` touches, in the shapes Isaac Lab returns."""
+
+    def __init__(self, *, rgb, semantic, labels) -> None:
+        import numpy as np
+
+        self.output = {"rgb": rgb[None, ...], "semantic_segmentation": semantic[None, ...]}
+        self.info = {"semantic_segmentation": {"idToLabels": labels}}
+        self.intrinsic_matrices = np.eye(3, dtype=np.float32)[None, ...]
+        self.pos_w = np.zeros((1, 3), dtype=np.float32)
+        self.quat_w_opengl = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+        self.frame = 0
+
+
+class _FakeEnv:
+    def __init__(self, cameras) -> None:
+        self.unwrapped = type(
+            "_Unwrapped", (), {"scene": type("_Scene", (), {
+                "__getitem__": lambda _self, name: cameras[name],
+            })()}
+        )()
+
+
+def _snapshot_one_camera(*, rgb, semantic, labels, output_root):
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _camera_snapshot,
+    )
+
+    camera = type("_Camera", (), {})()
+    camera.data = _FakeCameraData(rgb=rgb, semantic=semantic, labels=labels)
+    return _camera_snapshot(
+        env=_FakeEnv({"external_cam": camera}),
+        camera_scene_names={"external": "external_cam"},
+        output_root=output_root,
+        snapshot_id="reset",
+    )
+
+
+def test_construction_camera_snapshot_fails_a_black_frame(tmp_path) -> None:
+    """The exact r13..r23 condition, driven through the lane's real call site.
+
+    `_camera_snapshot` is what both construction snapshot points call (the
+    post-reset one and the per-phase one), and `camera_gates` -- which
+    `native_task_control_plan` and `native_articulated_control_plan` require to
+    be `passed: True` -- is derived from nothing else.
+    """
+
+    import numpy as np
+
+    semantic = np.full((64, 64), 7, dtype=np.int32)
+    black = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    snapshot = _snapshot_one_camera(
+        rgb=black,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+        output_root=tmp_path,
+    )
+    observability = snapshot["cameras"][0]["observability"]
+
+    assert observability["semantic_passed"] is True
+    assert observability["passed"] is False
+    assert observability["rgb_or_model_label_used"] is True
+    assert "native_task_camera_rgb_frame_void" in observability["blockers"]
+
+
+def test_construction_camera_snapshot_passes_a_render_without_claiming_the_site(
+    tmp_path,
+) -> None:
+    """Today's legitimate state: subject renders, captured site does not.
+
+    The pinned image enables no NuRec renderer, so the gate asserts the weaker
+    claim and records the site's absence rather than failing the run for a
+    cause it cannot see.
+    """
+
+    import numpy as np
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        SITE_APPEARANCE_RENDER_EXPECTED,
+    )
+
+    assert SITE_APPEARANCE_RENDER_EXPECTED is False
+
+    generator = np.random.default_rng(20260819)
+    semantic = np.zeros((64, 64), dtype=np.int32)
+    semantic[24:40, 24:40] = 7
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    frame[22:42, 22:42] = generator.integers(60, 200, size=(20, 20, 3), dtype=np.uint8)
+
+    snapshot = _snapshot_one_camera(
+        rgb=frame,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+        output_root=tmp_path,
+    )
+    observability = snapshot["cameras"][0]["observability"]
+    site = observability["render_evidence"]["site_region"]
+
+    assert observability["passed"] is True
+    assert site["void_pixel_fraction"] > 0.85
+    assert observability["site_appearance_claimed"] is False
+    assert (
+        observability["claim"] == "camera_observes_task_object_without_site_appearance"
+    )
+
+
+def test_construction_camera_frame_is_retained_before_the_gate_can_refuse(
+    tmp_path,
+) -> None:
+    """A refusal aborts the run from inside the measurement.
+
+    If the frame were written after the verdict, the one artifact that explains
+    the refusal would never reach the receipt.
+    """
+
+    import numpy as np
+    import pytest
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        NativeTaskCameraObservabilityError,
+    )
+
+    with pytest.raises(NativeTaskCameraObservabilityError):
+        _snapshot_one_camera(
+            rgb=np.zeros((32, 32, 3), dtype=np.uint8),
+            semantic=np.full((64, 64), 7, dtype=np.int32),
+            labels={"7": {"class": "task_object"}},
+            output_root=tmp_path,
+        )
+
+    assert (tmp_path / "construction_frames" / "external" / "reset.png").is_file()
