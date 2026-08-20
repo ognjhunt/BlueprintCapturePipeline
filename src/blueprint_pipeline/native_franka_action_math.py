@@ -290,6 +290,110 @@ def controlled_body_pose_for_grasp_frame_target(
     return target_body, target_quaternion
 
 
+def controlled_body_pose_for_rigid_grasp_frame_target(
+    *,
+    current_body_position_world_m: Sequence[float],
+    current_body_quaternion_world_xyzw: Sequence[float],
+    current_grasp_frame_position_world_m: Sequence[float],
+    current_grasp_frame_quaternion_world_xyzw: Sequence[float],
+    target_grasp_frame_position_world_m: Sequence[float],
+    target_grasp_frame_quaternion_world_xyzw: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Place a rigidly offset grasp/TCP frame at a desired world pose."""
+
+    try:
+        body_position = [float(value) for value in current_body_position_world_m]
+        grasp_position = [
+            float(value) for value in current_grasp_frame_position_world_m
+        ]
+        target_position = [
+            float(value) for value in target_grasp_frame_position_world_m
+        ]
+        body_quaternion = [
+            float(value) for value in current_body_quaternion_world_xyzw
+        ]
+        grasp_quaternion = [
+            float(value) for value in current_grasp_frame_quaternion_world_xyzw
+        ]
+        target_grasp_quaternion = [
+            float(value) for value in target_grasp_frame_quaternion_world_xyzw
+        ]
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_rigid_grasp_frame_transform_invalid"]
+        ) from exc
+    vectors = (body_position, grasp_position, target_position)
+    quaternions = (body_quaternion, grasp_quaternion, target_grasp_quaternion)
+    if not (
+        all(len(vector) == 3 for vector in vectors)
+        and all(len(quaternion) == 4 for quaternion in quaternions)
+        and all(
+            math.isfinite(value)
+            for row in (*vectors, *quaternions)
+            for value in row
+        )
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_rigid_grasp_frame_transform_invalid"]
+        )
+
+    def normalize(quaternion: Sequence[float]) -> list[float]:
+        norm = math.sqrt(sum(value * value for value in quaternion))
+        if not math.isfinite(norm) or norm <= 1.0e-12:
+            raise NativeFrankaActionMathError(
+                ["native_franka_rigid_grasp_frame_transform_invalid"]
+            )
+        return [value / norm for value in quaternion]
+
+    def multiply(left: Sequence[float], right: Sequence[float]) -> list[float]:
+        lx, ly, lz, lw = left
+        rx, ry, rz, rw = right
+        return [
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+            lw * rw - lx * rx - ly * ry - lz * rz,
+        ]
+
+    def inverse(quaternion: Sequence[float]) -> list[float]:
+        x, y, z, w = normalize(quaternion)
+        return [-x, -y, -z, w]
+
+    def rotate(quaternion: Sequence[float], vector: Sequence[float]) -> list[float]:
+        x, y, z, w = normalize(quaternion)
+        vx, vy, vz = vector
+        tx = 2.0 * (y * vz - z * vy)
+        ty = 2.0 * (z * vx - x * vz)
+        tz = 2.0 * (x * vy - y * vx)
+        return [
+            vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx),
+        ]
+
+    body_quaternion = normalize(body_quaternion)
+    grasp_quaternion = normalize(grasp_quaternion)
+    target_grasp_quaternion = normalize(target_grasp_quaternion)
+    body_to_grasp_position = rotate(
+        inverse(body_quaternion),
+        [grasp_position[index] - body_position[index] for index in range(3)],
+    )
+    body_to_grasp_quaternion = normalize(
+        multiply(inverse(body_quaternion), grasp_quaternion)
+    )
+    target_body_quaternion = normalize(
+        multiply(target_grasp_quaternion, inverse(body_to_grasp_quaternion))
+    )
+    target_body_to_grasp_world = rotate(
+        target_body_quaternion, body_to_grasp_position
+    )
+    target_body_position = [
+        target_position[index] - target_body_to_grasp_world[index]
+        for index in range(3)
+    ]
+    return target_body_position, target_body_quaternion
+
+
 GRASP_AXIS_DEGENERACY_TOLERANCE = 1.0e-6
 
 
@@ -432,6 +536,7 @@ __all__ = [
     "NativeFrankaActionMathError",
     "bounded_absolute_joint_setpoint",
     "controlled_body_pose_for_grasp_frame_target",
+    "controlled_body_pose_for_rigid_grasp_frame_target",
     "grasp_orientation_contact_xyzw",
     "is_unauthored_identity_quaternion_xyzw",
 ]

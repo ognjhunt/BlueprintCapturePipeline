@@ -119,7 +119,7 @@ def build_native_task_episode_environment(
         )
     try:
         reset_orientation = [
-            float(value) for value in servo.current_body_pose_world()[3:7]
+            float(value) for value in servo.current_grasp_frame_pose_world()[3:7]
         ]
     except (AttributeError, TypeError, ValueError) as exc:
         raise NativeTaskEpisodeEnvironmentError(
@@ -139,7 +139,7 @@ def build_native_task_episode_environment(
         quaternion = kwargs.get("target_quaternion_world_xyzw")
         action, _diagnostic = servo.action_for_grasp_target(
             target_position_world_m=kwargs["target_position_world_m"],
-            target_body_quaternion_world_xyzw=(
+            target_grasp_frame_quaternion_world_xyzw=(
                 reset_orientation if quaternion is None else quaternion
             ),
             gripper_command=kwargs["gripper_command"],

@@ -12,6 +12,7 @@ from blueprint_pipeline.native_franka_action_math import (
     NativeFrankaActionMathError,
     bounded_absolute_joint_setpoint,
     controlled_body_pose_for_grasp_frame_target,
+    controlled_body_pose_for_rigid_grasp_frame_target,
 )
 
 
@@ -39,6 +40,21 @@ def test_scene_neutral_grasp_transform_matches_articulated_fixture() -> None:
     assert controlled_body_pose_for_grasp_frame_target(
         **kwargs
     ) == original_grasp_target(**kwargs)
+
+
+def test_rigid_grasp_transform_solves_translation_and_coupler_rotation() -> None:
+    root_half = 2.0**-0.5
+    position, quaternion = controlled_body_pose_for_rigid_grasp_frame_target(
+        current_body_position_world_m=[1.0, 2.0, 3.0],
+        current_body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        current_grasp_frame_position_world_m=[1.0, 2.0, 3.2],
+        current_grasp_frame_quaternion_world_xyzw=[root_half, 0.0, 0.0, root_half],
+        target_grasp_frame_position_world_m=[4.0, 5.0, 6.0],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+    )
+
+    assert position == pytest.approx([4.0, 4.8, 6.0])
+    assert quaternion == pytest.approx([-root_half, 0.0, 0.0, root_half])
 
 
 def test_scene_neutral_action_math_fails_closed() -> None:

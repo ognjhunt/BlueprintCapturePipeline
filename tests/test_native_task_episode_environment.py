@@ -18,6 +18,9 @@ class _Servo:
     def current_body_pose_world(self):
         return [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
 
+    def current_grasp_frame_pose_world(self):
+        return [1.0, 2.0, 3.1, 0.0, 0.0, 0.0, 1.0]
+
     def reset_command_state(self):
         self.reset_count += 1
 
@@ -114,7 +117,7 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
         max_joint_setpoint_lead_rad=0.2,
     )
     assert action == [0.0] * 7 + [1.0]
-    assert servo.calls[-1]["target_body_quaternion_world_xyzw"] == [
+    assert servo.calls[-1]["target_grasp_frame_quaternion_world_xyzw"] == [
         0.0,
         0.0,
         0.0,
