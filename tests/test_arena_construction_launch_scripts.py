@@ -178,6 +178,19 @@ def test_chain_uses_the_dependency_complete_runtime_source_packet() -> None:
     )
 
 
+def test_chain_carries_the_predecessor_machine_avoidlist_forward() -> None:
+    """A failed machine must not silently re-enter the next offer search."""
+
+    text = _text(LAUNCH)
+    predecessor = "AVOIDLIST=$JOBPREV/adp_arena_vast_machine_avoidlist.json"
+    fallback = "AVOIDLIST=$E/arena-launch-r5/machine_avoidlist.json"
+    profile_flag = "--machine-avoidlist $AVOIDLIST"
+    assert predecessor in text
+    assert fallback in text
+    assert profile_flag in text
+    assert text.find(predecessor) < text.find(profile_flag)
+
+
 def test_fire_waits_for_predecessor_reconciliation_before_submitting() -> None:
     """The site rejects a submit while a predecessor is unreconciled there.
 

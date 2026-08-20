@@ -21,6 +21,8 @@ TASK=task_a_washer_door_open
 mapfile -t _RUNS < <(ls -dt ${LR}/adp-arena-construction-840920-task-a-*-${PREV}-api-*/)
 RPREV=${_RUNS[0]}
 JOBPREV=$RPREV/allocator/arena-construction-job
+AVOIDLIST=$JOBPREV/adp_arena_vast_machine_avoidlist.json
+[ -f "$AVOIDLIST" ] || AVOIDLIST=$E/arena-launch-r5/machine_avoidlist.json
 mapfile -t _AUDS < <(ls -dt /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit/*/)
 AUD=${_AUDS[0]}
 COMMIT=$(git -C $CP rev-parse HEAD)
@@ -28,6 +30,7 @@ COMMIT=$(git -C $CP rev-parse HEAD)
 echo "prev run: $RPREV"
 echo "commit:   $COMMIT"
 echo "audit:    $AUD"
+echo "avoidlist: $AVOIDLIST"
 sudo -u blueprint mkdir -p $A
 cd $CP
 
@@ -193,7 +196,7 @@ echo "== 6. live profile"
     --source-commit $COMMIT --scene-id 840920 --task-id $TASK \
     --revision $CUR \
     --raw-manifest-uri $A/bundle_manifest_publication_receipt.json \
-    --machine-avoidlist $E/arena-launch-r5/machine_avoidlist.json \
+    --machine-avoidlist $AVOIDLIST \
     --max-hourly-rate-usd 1.0 --max-spend-usd 2.0 --hard-ttl-seconds 7200 \
     --output $A/arena_construction_live_profile.v1.json | tail -1
 
