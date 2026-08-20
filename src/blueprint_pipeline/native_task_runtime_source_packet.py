@@ -47,7 +47,7 @@ ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES = (
     "ffff603eafc6b74264a5261cc0183d6a65390d78",
 )
 RUNTIME_EXPERIENCE_RELATIVE_PATH = (
-    "runtime_sources/isaaclab_runtime_compatibility/apps/"
+    "runtime_sources/isaaclab/apps/"
     "isaaclab.python.headless.rendering.kit"
 )
 RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = (
@@ -662,7 +662,7 @@ def materialize_native_task_runtime_source_packet(
             ),
             "sha256": next(
                 row["sha256"]
-                for row in compatibility["files"]
+                for row in isaaclab["files"]
                 if row["archive_path"] == RUNTIME_EXPERIENCE_RELATIVE_PATH
             ),
         },
