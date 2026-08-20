@@ -1098,6 +1098,7 @@ def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(
         "RTX 6000 Ada",
         "RTX 4090",
     )
+    assert observed["min_gpu_ram_mb"] == 24_000
     assert "RTX A6000" not in observed["preferred_gpu_keywords"]
     assert observed["gpu_selection_policy"] == {
         "policy_id": "native_task_arena_runtime_preflight_ada_only",
@@ -1127,8 +1128,8 @@ def test_runtime_preflight_ada_policy_accepts_provider_slug_and_rejects_a6000() 
             },
             {
                 "ask_contract_id": 2,
-                "gpu_name": "rtx_6000ada",
-                "gpu_ram_mb": 49_140,
+                "gpu_name": "RTX 4090",
+                "gpu_ram_mb": 24_576,
                 "dph_total": 0.62,
                 "driver_version": "580.119.02",
                 "cuda_max_good": 13.0,
@@ -1136,13 +1137,13 @@ def test_runtime_preflight_ada_policy_accepts_provider_slug_and_rejects_a6000() 
             },
         ],
         max_hourly_rate=0.80,
-        min_gpu_ram_mb=46_000,
+        min_gpu_ram_mb=24_000,
         minimum_driver_version="580.65.06",
         gpu_selection_policy=policy,
     )
     assert selected is not None
     assert selected["ask_contract_id"] == 2
-    assert selected["gpu_name"] == "rtx_6000ada"
+    assert selected["gpu_name"] == "RTX 4090"
 
 def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
     receipt = build_native_task_arena_construction_bundle(

@@ -156,7 +156,12 @@ def run_native_task_arena_runtime_preflight_vast(
         object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/runtime-preflight",
         instance_label_prefix="blueprint-native-task-arena-preflight-",
         blocker_prefix="native_task_arena_runtime_preflight",
-        min_gpu_ram_mb=46_000,
+        # This no-motion preflight captures three 320x180 cameras and runs no
+        # policy or training workload.  NVIDIA lists 16 GB as the Isaac Sim
+        # minimum; 24 GB keeps RTX 4090 offers usable, matching this lane's
+        # explicit Ada preference.  Construction/controls/policy retain their
+        # 46 GB floor.
+        min_gpu_ram_mb=24_000,
         allowed_active_instance_ids=allowed_ids,
         vast_launch_lock_file=(
             job / "native_task_arena_runtime_preflight_paid_launch.lock"
