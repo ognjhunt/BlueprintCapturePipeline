@@ -77,6 +77,81 @@ def _clone_request(value: Mapping[str, Any]) -> dict[str, Any]:
     return request
 
 
+def materialize_native_task_arena_appearance_variant_request(
+    *,
+    base_request_path: str | Path,
+    appearance_authoring_receipt_path: str | Path,
+    evidence_root: str | Path,
+    output_path: str | Path,
+    filename: str = "scene_appearance.usdc",
+) -> dict[str, Any]:
+    """Derive one packet request with a sealed ParticleField appearance."""
+
+    root = Path(evidence_root).expanduser().resolve()
+    try:
+        base = json.loads(Path(base_request_path).read_text(encoding="utf-8"))
+        appearance = json.loads(
+            Path(appearance_authoring_receipt_path).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_appearance_variant_input_invalid"]
+        ) from exc
+    request = _clone_request(base)
+    if (
+        appearance.get("schema_version")
+        != "particlefield_3dgs_authoring_receipt.v1"
+        or appearance.get("status") != "completed"
+        or appearance.get("schema") != "ParticleField3DGaussianSplat"
+        or appearance.get("receipt_digest")
+        != canonical_digest(appearance, digest_field="receipt_digest")
+    ):
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_appearance_variant_receipt_invalid"]
+        )
+    asset = Path(str(appearance.get("output") or "")).expanduser().resolve()
+    outside = asset != root and root not in asset.parents
+    if (
+        outside
+        or asset.is_symlink()
+        or not asset.is_file()
+        or asset.stat().st_size != int(appearance.get("output_bytes") or 0)
+        or _sha256(asset) != appearance.get("output_sha256")
+    ):
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_appearance_variant_asset_invalid"]
+        )
+    relative = asset.relative_to(root).as_posix()
+    rows = [
+        row
+        for row in request.get("assets") or []
+        if isinstance(row, dict) and row.get("semantic_role") == "scene_appearance"
+    ]
+    if len(rows) != 1:
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_appearance_variant_role_not_exact"]
+        )
+    rows[0]["filename"] = filename
+    rows[0]["source"] = {
+        "root": "evidence",
+        "relative_path": relative,
+        "size_bytes": asset.stat().st_size,
+        "sha256": appearance["output_sha256"],
+    }
+    request["appearance_variant"] = {
+        "base_request_digest": base["request_digest"],
+        "representation": "particlefield_3d_gaussian_splat",
+        "authoring_receipt_digest": appearance["receipt_digest"],
+        "source_gaussian_sha256": appearance.get("source_sha256"),
+        "splat_count": appearance.get("splat_count"),
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    write_json(Path(output_path), request)
+    return request
+
+
 def _asset_source(
     row: Mapping[str, Any], *, evidence_root: Path
 ) -> tuple[Path, str, int]:
@@ -440,5 +515,6 @@ __all__ = [
     "EVALUATION_INSTANCE_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",
     "REQUEST_SCHEMA_VERSION",
+    "materialize_native_task_arena_appearance_variant_request",
     "materialize_native_task_arena_packet",
 ]

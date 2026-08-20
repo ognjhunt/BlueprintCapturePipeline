@@ -12,6 +12,7 @@ from blueprint_pipeline.common import sha256_file
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_packet import (
     NativeTaskArenaPacketError,
+    materialize_native_task_arena_appearance_variant_request,
     materialize_native_task_arena_packet,
 )
 from blueprint_pipeline.native_task_runtime_contract import (
@@ -359,6 +360,61 @@ def Xform "Root"
         request, digest_field="request_digest"
     )
     return request
+
+
+def test_particlefield_appearance_variant_request_binds_authoring_receipt(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    base = _request(evidence, articulated=True)
+    base_path = tmp_path / "base_request.json"
+    base_path.write_text(json.dumps(base), encoding="utf-8")
+    asset = evidence / "particlefield" / "scene_appearance.usdc"
+    asset.parent.mkdir()
+    asset.write_bytes(b"particlefield fixture")
+    receipt = {
+        "schema_version": "particlefield_3dgs_authoring_receipt.v1",
+        "status": "completed",
+        "schema": "ParticleField3DGaussianSplat",
+        "output": str(asset),
+        "output_bytes": asset.stat().st_size,
+        "output_sha256": "sha256:" + sha256_file(asset),
+        "source_sha256": _sha("a"),
+        "splat_count": 1_000_000,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = tmp_path / "authoring_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    output = tmp_path / "variant_request.json"
+
+    variant = materialize_native_task_arena_appearance_variant_request(
+        base_request_path=base_path,
+        appearance_authoring_receipt_path=receipt_path,
+        evidence_root=evidence,
+        output_path=output,
+    )
+
+    appearance = next(
+        row for row in variant["assets"] if row["semantic_role"] == "scene_appearance"
+    )
+    assert appearance["filename"] == "scene_appearance.usdc"
+    assert appearance["source"] == {
+        "root": "evidence",
+        "relative_path": "particlefield/scene_appearance.usdc",
+        "size_bytes": asset.stat().st_size,
+        "sha256": receipt["output_sha256"],
+    }
+    assert variant["appearance_variant"]["base_request_digest"] == base[
+        "request_digest"
+    ]
+    assert variant["request_digest"] == canonical_digest(
+        variant, digest_field="request_digest"
+    )
+    assert json.loads(output.read_text()) == variant
 
 
 @pytest.mark.parametrize("articulated", [False, True])

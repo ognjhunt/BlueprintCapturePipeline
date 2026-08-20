@@ -194,6 +194,32 @@ def test_metric_tensor_with_identity_transform_qualifies(tmp_path):
     assert receipt["measurement_is_not_render_evidence"] is True
 
 
+def test_particlefield_positions_use_the_same_containment_gate(tmp_path) -> None:
+    from pxr import Sdf, Usd, UsdGeom, Vt
+
+    asset = tmp_path / "scene_appearance.usdc"
+    positions = room_positions()
+    stage = Usd.Stage.CreateNew(str(asset))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+    field = stage.DefinePrim("/World/gauss/gauss", "ParticleField3DGaussianSplat")
+    field.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(positions, dtype=np.float32))
+    )
+    stage.GetRootLayer().Save()
+
+    receipt = require_native_task_appearance_frame_alignment(
+        asset, required_world_positions_m=INSIDE
+    )
+
+    assert receipt["status"] == "aligned"
+    assert receipt["representation"] == "particlefield_3d_gaussian_splat"
+    assert receipt["appearance_prim_path"] == "/World/gauss/gauss"
+    assert receipt["gaussian_count"] == positions.shape[0]
+    assert receipt["measurement_authority"] == "particlefield_position_quantiles"
+
+
 def test_exporter_axis_matrix_on_metric_tensor_is_refused_as_spurious(tmp_path):
     """The r23 defect: a metric tensor plus the exporter's fixed axis matrix.
 

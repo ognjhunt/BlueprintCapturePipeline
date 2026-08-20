@@ -15,6 +15,7 @@ from blueprint_pipeline.agent_cad_graph_visual_composition import (
 )
 from blueprint_pipeline.materializer_cli import Param, Step, run
 from blueprint_pipeline.native_task_arena_packet import (
+    materialize_native_task_arena_appearance_variant_request,
     materialize_native_task_arena_packet,
 )
 from blueprint_pipeline.native_task_arena_policy_bundle import (
@@ -51,6 +52,21 @@ from blueprint_pipeline.source_collider_subtree_removal import (
 
 
 STEPS: dict[str, Step] = {
+    "arena-appearance-variant-request": Step(
+        "Derive a native Arena request with a sealed ParticleField appearance.",
+        materialize_native_task_arena_appearance_variant_request,
+        {
+            "base_request_path": Param("--base-request", required=True),
+            "appearance_authoring_receipt_path": Param(
+                "--appearance-authoring-receipt", required=True
+            ),
+            "evidence_root": Param("--evidence-root", required=True),
+            "output_path": Param("--output", required=True),
+            "filename": Param(
+                "--filename", default="scene_appearance.usdc"
+            ),
+        },
+    ),
     "source-collider-batch-removal": Step(
         "Remove every selected source collider into one shared Arena scene.",
         materialize_source_collider_batch_removal,
