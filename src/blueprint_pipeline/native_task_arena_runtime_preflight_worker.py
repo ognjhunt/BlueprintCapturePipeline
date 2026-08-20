@@ -35,6 +35,27 @@ def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str
     asset = (packet / relative).resolve() if relative else packet
     if asset != packet and packet not in asset.parents:
         blockers.append("native_task_arena_nurec_appearance_path_escape")
+    alignment = plan.get("appearance_frame_alignment") or {}
+    particlefield = (
+        alignment.get("status") == "aligned"
+        and alignment.get("representation")
+        == "particlefield_3d_gaussian_splat"
+        and alignment.get("measurement_authority")
+        == "particlefield_position_quantiles"
+        and relative.lower().endswith((".usd", ".usda", ".usdc"))
+    )
+    if particlefield and not blockers:
+        return {
+            "render_path": "particlefield_3d_gaussian_splat",
+            "asset_relative_path": relative,
+            "nurec_volume_signals_present": False,
+            "particlefield_alignment_receipt_present": True,
+            "spg_source_asset_authored": False,
+            "spg_graph_execution_required": False,
+            "renderer_extension_activation_expected": True,
+            "passed": True,
+            "blockers": [],
+        }
     text = b""
     if not blockers:
         try:
@@ -150,6 +171,7 @@ def main() -> int:
         simulation_app, launch = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
+            appearance_render_path=result["appearance_render_path"]["render_path"],
         )
         result["isaaclab_launch"] = launch
         result["phase_reached"] = "simulation_app_qualified"
