@@ -128,10 +128,12 @@ def verify_native_task_isaaclab_launch_contract(
         errors.append("native_task_isaaclab_experience_missing")
         root = raw_root.resolve()
         experience_path = raw_experience.resolve()
+    expected_experience_path = (root / RUNTIME_EXPERIENCE_RELATIVE_PATH).resolve()
     outside = experience_path != root and root not in experience_path.parents
     if (
         not root.is_dir()
         or outside
+        or experience_path != expected_experience_path
         or not experience_path.is_file()
         or (not outside and _has_symlink_component(experience_path, root=root))
         or _sha256(experience_path) != experience.get("sha256")

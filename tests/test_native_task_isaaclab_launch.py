@@ -35,7 +35,7 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
     apps = (
         extraction
         / "runtime_sources"
-        / "isaaclab_runtime_compatibility"
+        / "isaaclab"
         / "apps"
     )
     apps.mkdir(parents=True)
@@ -288,6 +288,30 @@ def test_experience_byte_or_revision_drift_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(
         NativeTaskIsaacLabLaunchError,
         match="native_task_isaaclab_experience_revision_mismatch",
+    ):
+        verify_native_task_isaaclab_launch_contract(receipt_path)
+
+
+def test_experience_path_must_be_the_manifested_full_source_sibling(
+    tmp_path: Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
+    value = json.loads(receipt_path.read_text(encoding="utf-8"))
+    wrong_path = (
+        Path(value["extraction_dir"])
+        / "runtime_sources"
+        / "isaaclab"
+        / "apps"
+        / "isaaclab.python.kit"
+    )
+    value["runtime_experience"]["path"] = str(wrong_path)
+    value["runtime_experience"]["sha256"] = _sha256(wrong_path)
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_experience_identity_mismatch",
     ):
         verify_native_task_isaaclab_launch_contract(receipt_path)
 
