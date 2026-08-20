@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import gzip
 import importlib.util
-import io
 from pathlib import Path
 import shutil
+import struct
 import sys
 from types import ModuleType, SimpleNamespace
 import zipfile
@@ -20,6 +19,11 @@ from blueprint_pipeline.public_scene_artifixer3d_native_exports import (
 )
 from blueprint_pipeline.public_scene_artifixer3d_vast import _materialize_raw_result
 from blueprint_pipeline.public_scene_artifixer3d_bundle import DUAL_TARGET_PIPELINE_MODE
+from tests.test_native_task_appearance_frame_alignment import (
+    EXPORTER_AXIS_MATRIX,
+    room_positions,
+    write_appearance_usdz,
+)
 
 
 class _Tensor:
@@ -64,14 +68,33 @@ def _install_exporter_seam(monkeypatch: pytest.MonkeyPatch) -> None:
             path.write_bytes(b"ply\nformat binary_little_endian 1.0\nend_header\n")
 
     class USDZExporter:
+        """A real NuRec package carrying the upstream exporter's axis matrix.
+
+        Placeholder layers cannot exercise the export's own contract: the
+        packaged volume has to compose at identity, and that is only checkable
+        against a package a USD runtime can actually open.
+        """
+
         def export(self, _model, path: Path, **_kwargs) -> None:
-            buffer = io.BytesIO()
-            with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=123) as stream:
-                stream.write(b"exact-provider-nurec")
+            write_appearance_usdz(
+                Path(path),
+                room_positions(count=256),
+                matrix=EXPORTER_AXIS_MATRIX,
+                payload_name="repaired_scene.nurec",
+                payload_first=True,
+            )
+            members = []
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    body = archive.read(name)
+                    if name.endswith(".nurec"):
+                        # Non-zero gzip mtime, so the alignment pass's
+                        # normalization stays exercised rather than trivial.
+                        body = body[:4] + struct.pack("<I", 123) + body[8:]
+                    members.append((name, body))
             with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
-                archive.writestr("default.usda", b"#usda 1.0")
-                archive.writestr("repaired_scene.nurec", buffer.getvalue())
-                archive.writestr("gauss.usda", b"#usda 1.0")
+                for name, body in members:
+                    archive.writestr(name, body)
 
     modules = {
         "torch": torch,
