@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import tarfile
 import zipfile
@@ -23,6 +24,7 @@ from typing import Any
 
 from datetime import datetime, timezone
 from .decision_evidence_contracts import canonical_digest
+from .native_task_torch_runtime_lock import TORCH_RUNTIME_DEPENDENCY_WHEELS
 
 
 SCHEMA_VERSION = "native_task_runtime_source_packet.v1"
@@ -75,7 +77,7 @@ ISAACLAB_PACKAGE_NAMES = (
 INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
-RUNTIME_DEPENDENCY_WHEELS = (
+BASE_RUNTIME_DEPENDENCY_WHEELS = (
     # Arena's pinned Isaac Lab Python/API tree declares external Warp 1.12.0.
     # The compatible Kit experience intentionally excludes ``omni.warp.core``
     # to prevent a second Warp runtime from moving PhysX tensors across CPU and
@@ -329,6 +331,9 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
     },
 )
+RUNTIME_DEPENDENCY_WHEELS = (
+    BASE_RUNTIME_DEPENDENCY_WHEELS + TORCH_RUNTIME_DEPENDENCY_WHEELS
+)
 
 
 class NativeTaskRuntimeSourcePacketError(ValueError):
@@ -493,7 +498,7 @@ def _repository_rows(
 
 def _runtime_dependency_rows(
     wheel_dir: Path,
-) -> tuple[list[dict[str, Any]], list[tuple[str, bytes]]]:
+) -> tuple[list[dict[str, Any]], list[tuple[str, Path]]]:
     expected = {row["filename"] for row in RUNTIME_DEPENDENCY_WHEELS}
     observed = {path.name for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else set()
     if observed != expected:
@@ -501,12 +506,11 @@ def _runtime_dependency_rows(
             ["native_task_runtime_dependency_wheel_set_mismatch"]
         )
     rows: list[dict[str, Any]] = []
-    blobs: list[tuple[str, bytes]] = []
+    wheel_files: list[tuple[str, Path]] = []
     for contract in RUNTIME_DEPENDENCY_WHEELS:
         path = wheel_dir / contract["filename"]
-        data = path.read_bytes()
         try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            with zipfile.ZipFile(path) as archive:
                 wheel_members = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
                 if len(wheel_members) != 1:
                     raise NativeTaskRuntimeSourcePacketError(
@@ -530,15 +534,15 @@ def _runtime_dependency_rows(
             "source": contract.get("source")
             or f"https://pypi.org/project/{contract['package']}/{contract['version']}/",
             "archive_path": archive_path,
-            "size_bytes": len(data),
-            "sha256": _sha256_bytes(data),
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256_file(path),
             "pure_python": pure_python,
             "wheel_tag": expected_tag,
             "redistribution_permitted": True,
         }
         rows.append(row)
-        blobs.append((archive_path, data))
-    return rows, blobs
+        wheel_files.append((archive_path, path))
+    return rows, wheel_files
 
 
 def materialize_native_task_runtime_source_packet(
@@ -591,10 +595,24 @@ def materialize_native_task_runtime_source_packet(
         raise NativeTaskRuntimeSourcePacketError(
             ["native_task_runtime_dependency_source_contract_invalid:warp-lang"]
         )
+    if b"torch>=2.10" not in dependency_manifest:
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_dependency_source_contract_invalid:torch"]
+        )
     dependency_basis = {
         "package": "warp-lang",
         "version": "1.12.0",
         "requirement": "warp-lang==1.12.0",
+        "source_repository": ISAACLAB_REPOSITORY,
+        "source_revision": isaaclab_commit,
+        "source_tree": isaaclab_tree,
+        "relative_path": RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
+        "sha256": _sha256_bytes(dependency_manifest),
+    }
+    torch_dependency_basis = {
+        "package": "torch",
+        "version": "2.10.0+cu128",
+        "requirement": "torch>=2.10",
         "source_repository": ISAACLAB_REPOSITORY,
         "source_revision": isaaclab_commit,
         "source_tree": isaaclab_tree,
@@ -624,7 +642,7 @@ def materialize_native_task_runtime_source_packet(
         archive_namespace="arena",
         prefixes=("LICENSE.md", "setup.py", "pyproject.toml", "extension.toml", "isaaclab_arena"),
     )
-    dependency_rows, dependency_blobs = _runtime_dependency_rows(
+    dependency_rows, dependency_files = _runtime_dependency_rows(
         Path(dependency_wheel_dir).expanduser().resolve()
     )
     manifest: dict[str, Any] = {
@@ -649,6 +667,7 @@ def materialize_native_task_runtime_source_packet(
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
         "runtime_dependency_basis": dependency_basis,
+        "torch_runtime_dependency_basis": torch_dependency_basis,
         "source_file_count": (
             isaaclab["file_count"]
             + compatibility["file_count"]
@@ -675,13 +694,21 @@ def materialize_native_task_runtime_source_packet(
             *isaaclab_blobs,
             *compatibility_blobs,
             *arena_blobs,
-            *dependency_blobs,
         ]
         for relative, data in sorted(entries):
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+        for relative, source_path in sorted(dependency_files):
+            info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            info.compress_type = zipfile.ZIP_STORED
+            with source_path.open("rb") as source, archive.open(
+                info, "w", force_zip64=True
+            ) as destination_stream:
+                shutil.copyfileobj(source, destination_stream, length=1024 * 1024)
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": manifest["generated_at"],
@@ -700,6 +727,7 @@ def materialize_native_task_runtime_source_packet(
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
         "runtime_dependency_basis": dependency_basis,
+        "torch_runtime_dependency_basis": torch_dependency_basis,
         "source_file_count": manifest["source_file_count"],
         "packet_path": str(packet_path),
         "packet_size_bytes": packet_path.stat().st_size,
@@ -801,6 +829,12 @@ def verify_native_task_runtime_source_packet(
             ):
                 errors.append(
                     "native_task_runtime_dependency_basis_receipt_manifest_mismatch"
+                )
+            if manifest.get("torch_runtime_dependency_basis") != receipt.get(
+                "torch_runtime_dependency_basis"
+            ):
+                errors.append(
+                    "native_task_torch_dependency_basis_receipt_manifest_mismatch"
                 )
             if manifest.get("runtime_experience") != receipt.get(
                 "runtime_experience"

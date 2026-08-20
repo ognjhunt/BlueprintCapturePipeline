@@ -60,9 +60,15 @@ def _write_zip_file(
     info = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
     info.create_system = 3
     info.external_attr = (source.stat().st_mode & 0xFFFF) << 16
-    info.compress_type = zipfile.ZIP_DEFLATED
-    info._compresslevel = 6
-    with source.open("rb") as input_stream, archive.open(info, "w") as output_stream:
+    already_compressed = source.suffix.lower() in {".zip", ".usdz", ".whl"}
+    info.compress_type = (
+        zipfile.ZIP_STORED if already_compressed else zipfile.ZIP_DEFLATED
+    )
+    if not already_compressed:
+        info._compresslevel = 6
+    with source.open("rb") as input_stream, archive.open(
+        info, "w", force_zip64=True
+    ) as output_stream:
         shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
 
 
@@ -331,7 +337,12 @@ def build_native_task_arena_bundle(
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_implementation_commit_invalid"]
         )
-    if execution_mode not in {"construction_canary", "controls", "policy"}:
+    if execution_mode not in {
+        "runtime_preflight",
+        "construction_canary",
+        "controls",
+        "policy",
+    }:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_execution_mode_invalid"]
         )

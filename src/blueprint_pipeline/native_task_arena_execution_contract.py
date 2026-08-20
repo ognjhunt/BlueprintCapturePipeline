@@ -29,6 +29,16 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_camera_observability.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
+    "native_task_torch_runtime_lock.py",
+)
+
+RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
+    sorted(
+        {
+            *CONSTRUCTION_RUNTIME_MODULE_NAMES,
+            "native_task_arena_construction_worker.py",
+        }
+    )
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
@@ -60,6 +70,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_episode_environment.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
+    "native_task_torch_runtime_lock.py",
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
@@ -78,6 +89,10 @@ class NativeTaskArenaExecutionContract:
 
 
 EXECUTION_MODE_CONTRACTS = {
+    "runtime_preflight": NativeTaskArenaExecutionContract(
+        expected_output_filename="native_task_arena_runtime_preflight.v1.json",
+        runtime_module_names=RUNTIME_PREFLIGHT_MODULE_NAMES,
+    ),
     "construction_canary": NativeTaskArenaExecutionContract(
         expected_output_filename="native_task_arena_construction_result.v1.json",
         runtime_module_names=CONSTRUCTION_RUNTIME_MODULE_NAMES,
@@ -129,5 +144,6 @@ __all__ = [
     "NATIVE_TASK_ARENA_POLICY_CANDIDATES",
     "NativeTaskArenaExecutionContract",
     "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
+    "RUNTIME_PREFLIGHT_MODULE_NAMES",
     "required_archive_entries",
 ]

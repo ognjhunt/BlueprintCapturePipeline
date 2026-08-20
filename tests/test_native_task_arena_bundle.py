@@ -42,9 +42,16 @@ from blueprint_pipeline.native_task_arena_policy_bundle import (
     load_verified_native_task_arena_policy_bundle,
     materialize_native_task_policy_execution_spec,
 )
+from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import (
+    PROBE_KIND as RUNTIME_PREFLIGHT_PROBE_KIND,
+    RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
+    build_native_task_arena_runtime_preflight_bundle,
+    load_verified_native_task_arena_runtime_preflight_bundle,
+)
 from blueprint_pipeline.native_task_arena_vast import (
     run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
+    run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
 )
 from blueprint_pipeline.native_task_runtime_source_packet import (
@@ -73,6 +80,7 @@ def _sha(path: Path) -> str:
 
 def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
     assert set(EXECUTION_MODE_CONTRACTS) == {
+        "runtime_preflight",
         "construction_canary",
         "controls",
         "policy",
@@ -193,7 +201,7 @@ def _runtime_source_packet(root: Path) -> Path:
                 files[f"source/{name}/setup.py"] = (
                     "from setuptools import setup; "
                     f"setup(name='{name}', install_requires="
-                    f"{['warp-lang==1.12.0'] if name == 'isaaclab' else []!r})\n"
+                    f"{['warp-lang==1.12.0', 'torch>=2.10'] if name == 'isaaclab' else []!r})\n"
                 )
                 files[f"source/{name}/pyproject.toml"] = (
                     "[build-system]\nrequires=['setuptools']\n"
@@ -877,7 +885,6 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
         name.startswith("provider_runtime/blueprint_pipeline/adp009d")
         for name in names
     )
-
     modules = [Path(name).stem for name in CONSTRUCTION_RUNTIME_MODULE_NAMES]
     completed = subprocess.run(
         [
@@ -901,6 +908,87 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
     assert "840796" not in worker
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena" in worker
 
+
+def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
+    tmp_path: Path,
+) -> None:
+    receipt = build_native_task_arena_runtime_preflight_bundle(
+        job_dir=tmp_path / "runtime-preflight",
+        packet_dir=_packet(tmp_path, scene_id="840920"),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="e" * 40,
+        generated_at="fixed",
+    )
+    assert receipt["execution_mode"] == "runtime_preflight"
+    assert receipt["expected_output_filename"] == RUNTIME_PREFLIGHT_RESULT_FILENAME
+    assert receipt["container_image"] == NATIVE_TASK_ARENA_IMAGE
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
+    assert "native_task_arena_runtime_preflight_worker.py" not in names
+    assert "task_motion_executed" in worker
+    assert "task_motion_executed\"] = True" not in worker
+    assert (
+        "provider_runtime/blueprint_pipeline/native_task_torch_runtime_lock.py"
+        in names
+    )
+    loaded = load_verified_native_task_arena_runtime_preflight_bundle(
+        tmp_path
+        / "runtime-preflight/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit="e" * 40,
+        expected_packet_receipt_digest=receipt["packet_receipt_digest"],
+        expected_runtime_source_packet_digest=receipt["runtime_source_packet"][
+            "receipt_digest"
+        ],
+    )
+    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "runtime-preflight-static",
+        generated_at="fixed",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="native_task_arena",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
+
+
+def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed: dict = {}
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    result = run_native_task_arena_runtime_preflight_vast(
+        job_dir=tmp_path / "preflight-run",
+        prepared_bundle={
+            "schema_version": "native_task_arena_provider_bundle.v1",
+            "status": "ready",
+            "execution_mode": "runtime_preflight",
+            "policy_candidate_id": None,
+            "candidate_policy_queried": False,
+            "expected_output_filename": RUNTIME_PREFLIGHT_RESULT_FILENAME,
+            "container_image": NATIVE_TASK_ARENA_IMAGE,
+        },
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+    assert result["status"] == "dry_run_ready"
+    assert observed["preferred_gpu_keywords"] == (
+        "L40S",
+        "RTX 6000 Ada",
+        "RTX 4090",
+    )
+    assert "RTX A6000" not in observed["preferred_gpu_keywords"]
+    assert observed["candidate_policy_query_expected"] is False
 
 def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
     receipt = build_native_task_arena_construction_bundle(
@@ -1542,6 +1630,91 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
     assert admission["allocation_binding"][
         "runtime_source_packet_receipt_digest"
     ].startswith("sha256:")
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_canonical_allocator_routes_no_motion_runtime_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
+) -> None:
+    packet = _packet(tmp_path, scene_id="840920")
+    source_packet = _runtime_source_packet(tmp_path)
+    frozen = build_native_task_arena_runtime_preflight_bundle(
+        job_dir=tmp_path / "frozen-preflight-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=source_packet,
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_native_task_arena_runtime_preflight_vast",
+        lambda **kwargs: observed.update(kwargs)
+        or {"status": "completed" if kwargs["execute"] else "dry_run_ready"},
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        RUNTIME_PREFLIGHT_PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "preflight-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "preflight-adapter.json"),
+        "--pod-name",
+        "native-task-arena-runtime-preflight",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(source_packet),
+        "--adp-job-dir",
+        str(tmp_path / "preflight-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+    ]
+    if execute:
+        args.extend(
+            [
+                "--native-task-arena-bundle-receipt",
+                str(
+                    tmp_path
+                    / "frozen-preflight-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+                ),
+                "--execute",
+            ]
+        )
+    assert allocator.main(args) == 0
+    assert observed["execute"] is execute
+    assert isinstance(
+        observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant
+    ) is execute
+    if execute:
+        assert observed["prepared_bundle"]["bundle_sha256"] == frozen["bundle_sha256"]
+    assert "paid_attempt_authority" not in observed
+    admission = json.loads((tmp_path / "preflight-admission.json").read_text())
+    assert admission["probe_kind"] == RUNTIME_PREFLIGHT_PROBE_KIND
+    assert admission["retry_cap"] == 0
+    assert admission["allocation_binding"]["execution_mode"] == "runtime_preflight"
 
 
 @pytest.mark.parametrize("execute", [False, True])
