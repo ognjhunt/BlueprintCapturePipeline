@@ -41,6 +41,7 @@ NATIVE_TASK_ARENA_NUREC_EXTENSION = "omni.rtx.spg"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
 NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
 NATIVE_TASK_ARENA_KIT_ARGS = (
+    "--enable omni.rtx.spg "
     "--/renderer/multiGpu/enabled=false "
     "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
 )
@@ -320,8 +321,8 @@ def launch_native_task_isaaclab(
             settings = carb.settings.get_settings()
             return {
                 "render_path": NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
-                "activation_method": "not_required_for_plain_nurec_volume",
-                "extension_required": False,
+                "activation_method": "kit_launch_argument_for_renderer_registration",
+                "extension_required": True,
                 "extension_was_enabled_before_probe": extension_enabled,
                 "extension_enabled": extension_enabled,
                 "renderer_hints": settings.get(

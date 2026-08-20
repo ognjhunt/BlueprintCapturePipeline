@@ -61,7 +61,8 @@ def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str
         "asset_relative_path": relative,
         "nurec_volume_signals_present": volume,
         "spg_source_asset_authored": spg,
-        "omni_rtx_spg_required": spg,
+        "spg_graph_execution_required": spg,
+        "renderer_extension_activation_expected": True,
         "passed": not blockers,
         "blockers": sorted(set(blockers)),
     }

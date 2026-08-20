@@ -138,9 +138,9 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         app_launcher_factory=factory,
         nurec_renderer_probe_factory=lambda: {
             "activation_method": "test_injected_post_launch_probe",
-            "extension_required": False,
-            "extension_was_enabled_before_probe": False,
-            "extension_enabled": False,
+            "extension_required": True,
+            "extension_was_enabled_before_probe": True,
+            "extension_enabled": True,
             "renderer_hints": 3,
             "multi_gpu_enabled": False,
             "schema_registered": False,
@@ -164,14 +164,14 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     ] is True
     assert receipt["nurec_renderer"]["status"] == "qualified"
     assert receipt["nurec_renderer"]["render_path"] == "plain_nurec_volume"
-    assert receipt["nurec_renderer"]["extension_required"] is False
-    assert receipt["nurec_renderer"]["extension_enabled"] is False
+    assert receipt["nurec_renderer"]["extension_required"] is True
+    assert receipt["nurec_renderer"]["extension_enabled"] is True
     assert receipt["nurec_renderer"]["schema_registration_required"] is False
     assert receipt["nurec_renderer"]["schema_registered"] is False
     assert receipt["nurec_renderer"]["activation_method"] == (
         "test_injected_post_launch_probe"
     )
-    assert "--enable" not in receipt["launch"]["kit_args"]
+    assert receipt["launch"]["kit_args"][:2] == ["--enable", "omni.rtx.spg"]
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
