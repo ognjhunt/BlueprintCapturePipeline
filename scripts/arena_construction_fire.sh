@@ -67,8 +67,8 @@ chown blueprint:blueprint $REQ
 #
 # The wait is kept because submitting while a predecessor is genuinely still
 # in flight is wrong regardless, and it costs seconds. It is NOT a fix for the
-# 409, and the caller should still expect to retry. Do not delete the retry on
-# the strength of this block.
+# 409. The bounded same-request retry below handles only the exact provider-zero
+# refusal observed repeatedly on r19/r20/r28-r32.
 echo "== wait for predecessor reconciliation (does not clear a 409 by itself) =="
 RECON=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-reconciliation/latest.json
 for _ in $(seq 1 20); do
@@ -104,7 +104,40 @@ for e in json.load(sys.stdin):
 else:
     raise SystemExit('submit secret not found')" > $SF
 chmod 600 $SF; chown blueprint:blueprint $SF
-sudo -u blueprint env PYTHONPATH=$CP/src $PY $CP/scripts/submit_task_evaluation_launch_via_webapp.py \
-  --request $REQ --secret-file $SF \
-  --receipt-out $A/webapp_submit_receipt.${CUR}.json 2>&1 | tail -4
+
+submit_once() {
+  set +e
+  SUBMIT_OUTPUT=$(sudo -u blueprint env PYTHONPATH=$CP/src $PY \
+    $CP/scripts/submit_task_evaluation_launch_via_webapp.py \
+    --request $REQ --secret-file $SF \
+    --receipt-out $A/webapp_submit_receipt.${CUR}.json 2>&1)
+  SUBMIT_STATUS=$?
+  set -e
+  printf '%s\n' "$SUBMIT_OUTPUT" | tail -4
+  return "$SUBMIT_STATUS"
+}
+
+if ! submit_once; then
+  # This is not a scientific/provider retry: the refusal explicitly says the
+  # submit tool performed no provider mutation, and the second call reuses the
+  # byte-identical request, launch id, authority, profile, and execute gate.
+  # Any other failure remains terminal. One retry only; no loop can allocate a
+  # second GPU attempt.
+  if printf '%s\n' "$SUBMIT_OUTPUT" \
+      | grep -q '"webapp_http_error_409"' \
+    && printf '%s\n' "$SUBMIT_OUTPUT" \
+      | grep -q '"provider_mutation_performed_by_this_tool": false'; then
+    printf '%s\n' "$SUBMIT_OUTPUT" \
+      > $A/webapp_submit_output.${CUR}.first_409.log
+    chown blueprint:blueprint $A/webapp_submit_output.${CUR}.first_409.log
+    echo "== website returned provider-zero 409; retrying same request after bounded cooldown =="
+    for _cooldown_step in $(seq 1 4); do
+      echo "  cooldown ${_cooldown_step}/4 (30s)"
+      sleep 30
+    done
+    submit_once
+  else
+    exit "$SUBMIT_STATUS"
+  fi
+fi
 echo "LAUNCH_ID=$LID"

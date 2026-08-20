@@ -252,3 +252,16 @@ def test_the_reconciliation_wait_does_not_claim_to_fix_the_409() -> None:
     )
     assert "HONEST STATUS" in text
     assert "cooldown" in text, "record where the evidence actually points"
+
+
+def test_fire_retries_only_the_exact_provider_zero_409_once() -> None:
+    """A server cooldown must not require a human or create a GPU retry loop."""
+
+    text = _text(FIRE)
+    assert text.count("submit_once") == 3  # definition, first call, one retry
+    assert '"webapp_http_error_409"' in text
+    assert '"provider_mutation_performed_by_this_tool": false' in text
+    assert "seq 1 4" in text
+    assert "webapp_submit_output.${CUR}.first_409.log" in text
+    assert "--request $REQ" in text
+    assert "Any other failure remains terminal" in text
