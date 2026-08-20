@@ -100,6 +100,24 @@ CAMERA_THRESHOLDS = {
     "overview": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},
 }
 
+# Whether this runtime can render the captured-site appearance volume at all.
+#
+# It cannot.  Measured on GPU 2026-08-19 against the pinned construction image:
+# `omni.nurec`, `omni.rtx.nre` and `omni.usd.schema.omni_nurec` all fail to
+# enable, and the RTX path reports "Failed to create nrend renderer with error
+# code 2".  A lit cube renders at rgb_mean 237.5881; adding the NuRec
+# appearance volume to the same stage moves it to 237.5906 -- no contribution.
+#
+# So the site is legitimately absent from every frame this image produces while
+# the robot and the SimReady asset still render, and the camera gate must not
+# fail a run for it.  What the gate does instead is measure the site's share of
+# void anyway and refuse to *claim* the frames show the site.  Flip this to True
+# in the same change that pins an image whose NuRec extensions load; until then
+# the receipt records `site_appearance_claimed: false` per camera, and says
+# `native_task_camera_site_rendered_while_unclaimed` if the site renders anyway
+# so a swapped image cannot quietly leave this declaration stale.
+SITE_APPEARANCE_RENDER_EXPECTED = False
+
 
 def _announce(phase: str, status: str = "started") -> None:
     print(
@@ -747,18 +765,26 @@ def _camera_snapshot(
         info = _jsonable((camera.data.info or {}).get("semantic_segmentation") or {})
         labels = info.get("idToLabels") or {}
         thresholds = CAMERA_THRESHOLDS[role]
-        observability = measure_native_task_camera_observability(
-            semantic_ids=semantic,
-            id_to_labels=labels,
-            target_label="task_object",
-            minimum_pixels=thresholds["minimum_pixels"],
-            minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
-        )
+        # Persist before measuring: a refusal (an unreadable frame) aborts the
+        # run from inside the measurement, and the frame that caused it is the
+        # one thing the next engineer needs.
         frame_dir = output_root / "construction_frames" / role
         frame_dir.mkdir(parents=True, exist_ok=True)
         frame_path = frame_dir / f"{snapshot_id}.png"
         Image.fromarray(rgb_array, mode="RGB").save(
             frame_path, format="PNG", compress_level=9
+        )
+        # `rgb_array` is the exact array hashed into `rgb_png.sha256` below, so
+        # the verdict is bound to the retained frame rather than to a second
+        # read of the sensor.
+        observability = measure_native_task_camera_observability(
+            semantic_ids=semantic,
+            id_to_labels=labels,
+            rgb=rgb_array,
+            site_appearance_render_expected=SITE_APPEARANCE_RENDER_EXPECTED,
+            target_label="task_object",
+            minimum_pixels=thresholds["minimum_pixels"],
+            minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
         )
         rows.append(
             {
@@ -1417,9 +1443,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 next(row for row in snapshot["cameras"] if row["role"] == role)
                 for snapshot in snapshots
             ]
+            # Rank a qualifying observation above a larger non-qualifying one.
+            # `passed` is now the conjunction of semantic framing and rendered
+            # radiance, so ranking on pixel_count alone could report a black
+            # frame as `best_observability` beside a passing gate -- the same
+            # shape of claim this gate exists to stop.
             best = max(
                 observations,
-                key=lambda row: row["observability"]["pixel_count"],
+                key=lambda row: (
+                    bool(row["observability"]["passed"]),
+                    row["observability"]["pixel_count"],
+                ),
+            )
+            best_site = (
+                best["observability"]["render_evidence"].get("site_region") or {}
             )
             camera_gates[role] = {
                 "passed": any(
@@ -1427,6 +1464,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "best_snapshot_id": best["snapshot_id"],
                 "best_observability": best["observability"],
+                # Surfaced at the top of the gate, not buried in the frame
+                # statistics: `passed` deliberately does not assert the captured
+                # site rendered while this image ships no NuRec renderer, so the
+                # receipt has to say so where a reader cannot miss it.
+                "claim": best["observability"]["claim"],
+                "site_appearance_claimed": best["observability"][
+                    "site_appearance_claimed"
+                ],
+                "site_void_pixel_fraction": best_site.get("void_pixel_fraction"),
+                "notices": sorted(
+                    {
+                        notice
+                        for row in observations
+                        for notice in row["observability"]["notices"]
+                    }
+                ),
             }
             if not camera_gates[role]["passed"]:
                 result["blockers"].append(
