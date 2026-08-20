@@ -814,11 +814,11 @@ def build_native_task_arena_environment(
 
     class SpawnerObject(Object):
         def __init__(self, *, name: str, prim_path: str, spawner_cfg: Any):
-            self.spawner_cfg = spawner_cfg
             super().__init__(
                 name=name,
                 prim_path=prim_path,
-                object_type=ObjectType.SPAWNER,
+                object_type=ObjectType.BASE,
+                spawner_cfg=spawner_cfg,
             )
 
     class ResettableObject(Object):
