@@ -40,8 +40,10 @@ NATIVE_TASK_ARENA_IMAGE = (
 NATIVE_TASK_ARENA_NUREC_EXTENSION = "omni.rtx.spg"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
 NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
+NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
 NATIVE_TASK_ARENA_KIT_ARGS = (
     "--enable omni.rtx.spg "
+    "--/UJITSO/geometry=true "
     "--/renderer/multiGpu/enabled=false "
     "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
 )
@@ -329,6 +331,9 @@ def launch_native_task_isaaclab(
                 "renderer_hints": settings.get(
                     "/omni/rtx/nre/compositing/rendererHints"
                 ),
+                "ujitso_geometry_enabled": settings.get(
+                    NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING
+                ),
                 "multi_gpu_enabled": settings.get(
                     "/renderer/multiGpu/enabled"
                 ),
@@ -359,6 +364,9 @@ def launch_native_task_isaaclab(
         "extension_enabled": raw_nurec.get("extension_enabled") is True,
         "renderer_hints": raw_nurec.get("renderer_hints"),
         "renderer_hints_expected": 3,
+        "ujitso_geometry_required": True,
+        "ujitso_geometry_enabled": raw_nurec.get("ujitso_geometry_enabled")
+        is True,
         "multi_gpu_enabled": raw_nurec.get("multi_gpu_enabled"),
         "schema_type_name": NATIVE_TASK_ARENA_NUREC_SCHEMA,
         "schema_registration_required": raw_nurec.get(
@@ -371,6 +379,8 @@ def launch_native_task_isaaclab(
         nurec_errors.append("native_task_isaaclab_nurec_extension_not_enabled")
     if nurec["renderer_hints"] != 3:
         nurec_errors.append("native_task_isaaclab_nurec_renderer_hints_invalid")
+    if not nurec["ujitso_geometry_enabled"]:
+        nurec_errors.append("native_task_isaaclab_ujitso_geometry_not_enabled")
     if nurec["multi_gpu_enabled"] is not False:
         nurec_errors.append("native_task_isaaclab_nurec_multi_gpu_not_disabled")
     if nurec["schema_registration_required"] and not nurec["schema_registered"]:
@@ -399,6 +409,7 @@ __all__ = [
     "NATIVE_TASK_ARENA_KIT_ARGS",
     "NATIVE_TASK_ARENA_NUREC_EXTENSION",
     "NATIVE_TASK_ARENA_NUREC_SCHEMA",
+    "NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING",
     "NativeTaskIsaacLabLaunchError",
     "REQUIRED_EXPERIENCE_FILES",
     "SCHEMA_VERSION",
