@@ -288,16 +288,19 @@ def _grasp_orientation_contact_xyzw(
     tolerance.  PR #798 made the *consumer* refuse that value; this is the
     author, so it derives the value instead of inventing one.
 
-    The two axes carry the meanings ``rigid_root_thinnest_axis_pinch`` gives
-    them: ``approach_unit`` is the direction the gripper travels toward the
-    contact (there, ``normalize(contact - robot_base)``) and ``pinch_axis`` is
-    the axis the jaws close along, the axis ``pinch_span`` is measured on and
-    compared against ``parallel_jaw_stroke``.
+    ``pinch_axis`` is the axis the jaws close along -- the axis ``pinch_span``
+    is measured on and compared against ``parallel_jaw_stroke`` -- and it is
+    consumed with the producer's own sign, not negated.
 
-    ``target_driven_link_far_edge_pinch`` assigns *both* of them the same panel
-    normal, so for the articulated washer door these axes are parallel and no
-    grasp frame exists.  That is a missing input, not a value to guess, so this
-    fails closed and names it.
+    The approach comes from ``gripper_approach_axis_registered_stage``, not from
+    ``approach_unit_registered_stage``.  Those were the same field until now,
+    which is the whole defect: ``approach_unit`` is a standoff *translation*,
+    and ``target_driven_link_far_edge_pinch`` sets it to the panel normal --
+    the same vector it gives ``pinch_axis``.  One vector cannot be both the jaw
+    axis and an axis independent of it, so no frame existed (PR #799).  The
+    producer now measures the panel-plane radial as a separate axis, so a
+    receipt that predates it has no approach to read and must be
+    re-materialised rather than silently fall back to the degenerate pair.
     """
 
     try:
@@ -306,16 +309,23 @@ def _grasp_orientation_contact_xyzw(
         contact_rotation = _matrix_from_pose(
             (0.0, 0.0, 0.0), reset_pose["orientation_xyzw"]
         )[:3, :3]
+        if "gripper_approach_axis_registered_stage" not in candidate:
+            raise PairedTargetNativeArenaRequestError(
+                "paired_target_arena_request_gripper_approach_axis_missing"
+            )
         approach = np.asarray(
-            candidate["approach_unit_registered_stage"], dtype=np.float64
+            candidate["gripper_approach_axis_registered_stage"], dtype=np.float64
         )
         jaw = np.asarray(candidate["pinch_axis_registered_stage"], dtype=np.float64)
         return grasp_orientation_contact_xyzw(
             approach_axis=contact_rotation.T @ approach,
             jaw_axis=contact_rotation.T @ jaw,
         )
-    # NativeFrankaActionMathError subclasses ValueError, so it must be caught
-    # first or the named refusal collapses into the generic one.
+    # PairedTargetNativeArenaRequestError and NativeFrankaActionMathError both
+    # subclass ValueError, so both must be caught before the generic clause or
+    # the named refusal collapses into the anonymous one.
+    except PairedTargetNativeArenaRequestError:
+        raise
     except NativeFrankaActionMathError as exc:
         raise PairedTargetNativeArenaRequestError(
             "paired_target_arena_request_grasp_orientation_unauthorable:"
