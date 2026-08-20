@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
+    _gripper_pad_geometry_axis_readback,
     _official_nurec_render_setup_and_warmup,
     _particlefield_stage_readback,
     _robot_reset_task_space_readback,
@@ -10,6 +11,43 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
 
 
 pxr = pytest.importorskip("pxr")
+
+
+def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> None:
+    from pxr import Gf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/envs")
+    UsdGeom.Xform.Define(stage, "/World/envs/env_0")
+    UsdGeom.Xform.Define(stage, "/World/envs/env_0/Robot")
+    for side, y in (("left", 0.04), ("right", -0.04)):
+        parent = UsdGeom.Xform.Define(
+            stage,
+            f"/World/envs/env_0/Robot/Gripper/{side}_inner_finger",
+        )
+        parent.AddTranslateOp().Set(Gf.Vec3d(0.0, y, 0.12))
+        cube = UsdGeom.Cube.Define(stage, f"{parent.GetPath()}/pad_geometry")
+        cube.CreateSizeAttr(0.02)
+
+    result = _gripper_pad_geometry_axis_readback(
+        stage=stage,
+        body_axis_readback={
+            "controlled_body_name": "base_link",
+            "measured": {
+                "controlled_body_position_world_m": [0.0, 0.0, 0.0],
+                "controlled_body_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        },
+    )
+
+    assert result["passed"] is True
+    axis = result["axis_readback"]
+    assert axis["measured"]["finger_separation_m"] == pytest.approx(0.08)
+    assert axis["measured"]["body_origin_to_finger_midpoint_m"] == pytest.approx(
+        0.12
+    )
+    assert abs(axis["derived"]["jaw_approach_orthogonality_dot"]) < 1.0e-9
 
 
 def _stage(*, interpolation: str = "vertex", element_size: int = 16):

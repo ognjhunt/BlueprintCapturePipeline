@@ -136,6 +136,129 @@ def _robot_reset_task_space_readback(
     }
 
 
+def _gripper_pad_geometry_axis_readback(
+    *, stage: Any, body_axis_readback: dict[str, Any]
+) -> dict[str, Any]:
+    """Measure the Robotiq TCP from live left/right finger geometry bounds."""
+
+    from pxr import Usd, UsdGeom
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaPoseServoError,
+        gripper_frame_axis_readback,
+    )
+
+    cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        useExtentsHint=True,
+    )
+    matches: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
+    ranges: dict[str, list[list[float]] | None] = {"left": None, "right": None}
+    for prim in Usd.PrimRange(
+        stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()
+    ):
+        path = str(prim.GetPath())
+        lowered = path.lower()
+        if "/robot/" not in lowered:
+            continue
+        side = next(
+            (
+                label
+                for label in ("left", "right")
+                if f"{label}_inner_finger" in lowered
+                or f"{label}finger" in lowered
+            ),
+            None,
+        )
+        if side is None or not prim.IsA(UsdGeom.Boundable):
+            continue
+        aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        minimum = [float(value) for value in aligned.GetMin()]
+        maximum = [float(value) for value in aligned.GetMax()]
+        if not all(math.isfinite(value) for value in (*minimum, *maximum)):
+            continue
+        matches[side].append(
+            {"prim_path": path, "minimum_world_m": minimum, "maximum_world_m": maximum}
+        )
+        current = ranges[side]
+        if current is None:
+            ranges[side] = [minimum, maximum]
+        else:
+            ranges[side] = [
+                [min(current[0][axis], minimum[axis]) for axis in range(3)],
+                [max(current[1][axis], maximum[axis]) for axis in range(3)],
+            ]
+
+    blockers = [
+        f"native_task_arena_gripper_{side}_pad_geometry_missing"
+        for side in ("left", "right")
+        if ranges[side] is None
+    ]
+    if blockers:
+        return {
+            "schema_version": "native_task_arena_gripper_pad_geometry.v1",
+            "matched_boundables": matches,
+            "blockers": blockers,
+            "passed": False,
+        }
+    centers = {
+        side: [
+            (ranges[side][0][axis] + ranges[side][1][axis]) / 2.0
+            for axis in range(3)
+        ]
+        for side in ("left", "right")
+    }
+    measured = body_axis_readback["measured"]
+    try:
+        axis = gripper_frame_axis_readback(
+            controlled_body_name=str(body_axis_readback["controlled_body_name"]),
+            body_position_world_m=measured["controlled_body_position_world_m"],
+            body_quaternion_world_xyzw=measured[
+                "controlled_body_quaternion_world_xyzw"
+            ],
+            finger_positions_world_m={
+                "left_inner_finger": centers["left"],
+                "right_inner_finger": centers["right"],
+            },
+        )
+    except (KeyError, TypeError, NativeFrankaPoseServoError) as exc:
+        return {
+            "schema_version": "native_task_arena_gripper_pad_geometry.v1",
+            "matched_boundables": matches,
+            "pad_bounds_world_m": ranges,
+            "blockers": [
+                "native_task_arena_gripper_pad_geometry_axis_readback_invalid"
+            ],
+            "error_type": type(exc).__name__,
+            "passed": False,
+        }
+    separation = float(axis["measured"]["finger_separation_m"])
+    tool_offset = float(axis["measured"]["body_origin_to_finger_midpoint_m"])
+    orthogonality = abs(float(axis["derived"]["jaw_approach_orthogonality_dot"]))
+    checks = {
+        "pad_separation_physical": 0.01 <= separation <= 0.12,
+        "body_to_tcp_offset_physical": 0.05 <= tool_offset <= 0.30,
+        "jaw_and_approach_orthogonal": orthogonality <= 0.25,
+    }
+    blockers = [
+        f"native_task_arena_gripper_{name}_failed"
+        for name, passed in checks.items()
+        if not passed
+    ]
+    return {
+        "schema_version": "native_task_arena_gripper_pad_geometry.v1",
+        "measurement_authority": "live_usd_world_bounds_of_robotiq_inner_finger_geometry",
+        "matched_boundables": matches,
+        "pad_bounds_world_m": ranges,
+        "pad_centers_world_m": centers,
+        "axis_readback": axis,
+        "checks": checks,
+        "blockers": blockers,
+        "passed": not blockers,
+    }
+
+
 def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
     """Measure whether one conforming ParticleField actually composed live."""
 
@@ -648,9 +771,27 @@ def main() -> int:
 
         robot = env.unwrapped.scene["robot"]
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
-        result["gripper_frame_axis_readback"] = (
+        result["gripper_body_origin_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
+        import omni.usd
+
+        result["gripper_pad_geometry_readback"] = (
+            _gripper_pad_geometry_axis_readback(
+                stage=omni.usd.get_context().get_stage(),
+                body_axis_readback=result["gripper_body_origin_axis_readback"],
+            )
+        )
+        if not result["gripper_pad_geometry_readback"]["passed"]:
+            result["blockers"].extend(
+                result["gripper_pad_geometry_readback"]["blockers"]
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_gripper_pad_geometry_failed"
+            )
+        result["gripper_frame_axis_readback"] = result[
+            "gripper_pad_geometry_readback"
+        ]["axis_readback"]
         result["robot_reset_task_space_readback"] = (
             _robot_reset_task_space_readback(
                 plan=plan,
