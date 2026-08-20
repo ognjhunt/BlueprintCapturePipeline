@@ -125,6 +125,11 @@ def _wheelhouse(root: Path) -> Path:
             )
             archive.writestr(f"{dist_info}/METADATA", "Metadata-Version: 2.1\n")
             archive.writestr(f"{distribution}/__init__.py", "FIXTURE = True\n")
+            if contract["package"] == "setuptools":
+                archive.writestr(
+                    "setuptools/_vendor/example-1.0.dist-info/WHEEL",
+                    "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+                )
     return wheelhouse
 
 
