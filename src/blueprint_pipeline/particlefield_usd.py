@@ -575,6 +575,32 @@ def write_particlefield_usd(
         "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
     )
     display_color.Set(vec3f(arr["display_colors"]))
+
+    # Match Isaac Lab's own known-working Gaussian camera fixture.  The
+    # ParticleField schema carries geometry/radiance attributes, but the RTX
+    # camera path still needs the emissive MDL bound to turn those attributes
+    # into renderable radiance.  Leave its inputs at MDL defaults: the Isaac
+    # Lab PPISP test overrides them only because that test installs a separate
+    # ISP authority, which this normal LDR camera path does not.
+    material_path = f"{prim.GetParent().GetPath()}/Looks/ParticleFieldEmissive"
+    shader_path = f"{material_path}/Shader"
+    material = stage.DefinePrim(material_path, "Material")
+    shader = stage.DefinePrim(shader_path, "Shader")
+    shader.CreateAttribute(
+        "info:implementationSource", Sdf.ValueTypeNames.Token
+    ).Set("sourceAsset")
+    shader.CreateAttribute(
+        "info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset
+    ).Set("ParticleFieldEmissive.mdl")
+    shader.CreateAttribute(
+        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
+    ).Set("ParticleFieldEmissive")
+    shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
+    for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
+        material.CreateAttribute(
+            f"outputs:{output_name}", Sdf.ValueTypeNames.Token
+        ).AddConnection(shader.GetPath().AppendProperty("outputs:out"))
+    prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
     prim.CreateAttribute("projectionModeHint", Sdf.ValueTypeNames.Token).Set("perspective")
     prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token).Set(sorting_mode)
 
@@ -608,6 +634,9 @@ def write_particlefield_usd(
         "sh_primvar_element_size": arr["sh_element_size"],
         "sh_primvar_interpolation": "vertex",
         "display_color_fallback_authored": True,
+        "particlefield_emissive_material_binding_authored": True,
+        "particlefield_emissive_material_inputs": "mdl_defaults",
+        "particlefield_emissive_material_path": material_path,
         "reference_converters": PARTICLEFIELD_REFERENCE_CONVERTERS,
         "prim_path": prim_path,
         "default_prim": "/World",

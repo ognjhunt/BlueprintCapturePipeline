@@ -21,6 +21,9 @@ from blueprint_pipeline.native_task_arena_packet import (
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     materialize_native_task_policy_execution_spec,
 )
+from blueprint_pipeline.native_task_arena_stance_variant import (
+    materialize_native_task_arena_stance_variant_request,
+)
 from blueprint_pipeline.paired_target_articulated_kinematic_path import (
     materialize_paired_target_articulated_kinematic_path,
 )
@@ -52,6 +55,17 @@ from blueprint_pipeline.source_collider_subtree_removal import (
 
 
 STEPS: dict[str, Step] = {
+    "arena-stance-variant-request": Step(
+        "Derive a front-facing Franka stance from the task affordance.",
+        materialize_native_task_arena_stance_variant_request,
+        {
+            "base_request_path": Param("--base-request", required=True),
+            "output_path": Param("--output", required=True),
+            "door_standoff_m": Param(
+                "--door-standoff-m", type=float, default=0.55
+            ),
+        },
+    ),
     "arena-appearance-variant-request": Step(
         "Derive a native Arena request with a sealed ParticleField appearance.",
         materialize_native_task_arena_appearance_variant_request,

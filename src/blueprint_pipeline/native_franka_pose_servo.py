@@ -109,11 +109,11 @@ class NativeFrankaPoseServoError(RuntimeError):
         super().__init__(";".join(self.errors))
 
 
-def native_wxyz_to_contract_xyzw(value: Sequence[float]) -> list[float]:
-    """Convert an Isaac native quaternion to the harness XYZW contract."""
+def native_xyzw_to_contract_xyzw(value: Sequence[float]) -> list[float]:
+    """Normalize Isaac Lab Beta2's native XYZW quaternion contract."""
 
     try:
-        qw, qx, qy, qz = (float(item) for item in value)
+        qx, qy, qz, qw = (float(item) for item in value)
     except (TypeError, ValueError) as exc:
         raise NativeFrankaPoseServoError(
             ["native_franka_pose_servo_quaternion_invalid"]
@@ -127,8 +127,8 @@ def native_wxyz_to_contract_xyzw(value: Sequence[float]) -> list[float]:
     return [item / norm for item in quaternion]
 
 
-def contract_xyzw_to_native_wxyz(value: Sequence[float]) -> list[float]:
-    """Convert a harness XYZW quaternion to Isaac's native WXYZ order."""
+def contract_xyzw_to_native_xyzw(value: Sequence[float]) -> list[float]:
+    """Normalize a contract quaternion for Beta2 spawn and differential IK."""
 
     try:
         qx, qy, qz, qw = (float(item) for item in value)
@@ -136,7 +136,7 @@ def contract_xyzw_to_native_wxyz(value: Sequence[float]) -> list[float]:
         raise NativeFrankaPoseServoError(
             ["native_franka_pose_servo_quaternion_invalid"]
         ) from exc
-    quaternion = [qw, qx, qy, qz]
+    quaternion = [qx, qy, qz, qw]
     norm = math.sqrt(sum(item * item for item in quaternion))
     if not math.isfinite(norm) or norm <= 0.0:
         raise NativeFrankaPoseServoError(
@@ -299,8 +299,8 @@ def gripper_frame_axis_readback(
     }
     # Normalising here is what makes the recorded body axes comparable with the
     # hypotheses; the raw values stay in ``measured`` unchanged.
-    body_quaternion = native_wxyz_to_contract_xyzw(
-        contract_xyzw_to_native_wxyz(body_quaternion_world_xyzw)
+    body_quaternion = contract_xyzw_to_native_xyzw(
+        body_quaternion_world_xyzw
     )
 
     origin, tip = JAW_AXIS_ORDERING
@@ -429,7 +429,7 @@ class NativeFrankaDifferentialIkServo:
         base_pose = self._to_torch(robot.data.root_pose_w)[0, :7]
         self._base_pose = [
             *[float(value) for value in base_pose[:3]],
-            *native_wxyz_to_contract_xyzw(base_pose[3:7]),
+            *native_xyzw_to_contract_xyzw(base_pose[3:7]),
         ]
         rotation = world_to_base_rotation_row_major_xyzw(self._base_pose[3:7])
         self._world_to_root = torch.tensor(
@@ -523,7 +523,7 @@ class NativeFrankaDifferentialIkServo:
         ]
         return [
             *[float(value) for value in pose[:3]],
-            *native_wxyz_to_contract_xyzw(pose[3:7]),
+            *native_xyzw_to_contract_xyzw(pose[3:7]),
         ]
 
     def current_grasp_frame_position_world(self) -> list[float]:
@@ -557,7 +557,7 @@ class NativeFrankaDifferentialIkServo:
         return gripper_frame_axis_readback(
             controlled_body_name=self.binding["controlled_body_name"],
             body_position_world_m=[float(value) for value in body[:3]],
-            body_quaternion_world_xyzw=native_wxyz_to_contract_xyzw(body[3:7]),
+            body_quaternion_world_xyzw=native_xyzw_to_contract_xyzw(body[3:7]),
             finger_positions_world_m=fingers,
         )
 
@@ -617,7 +617,7 @@ class NativeFrankaDifferentialIkServo:
             base_position_world=self._base_pose[:3],
             base_quaternion_world_xyzw=self._base_pose[3:7],
         )
-        quaternion_root_native = contract_xyzw_to_native_wxyz(quaternion_root)
+        quaternion_root_native = contract_xyzw_to_native_xyzw(quaternion_root)
         command = self._torch.tensor(
             [position_root + quaternion_root_native],
             device=self._env.unwrapped.device,
@@ -689,7 +689,7 @@ class NativeFrankaDifferentialIkServo:
             "target_controlled_body_position_world_m": target_body_position,
             "current_controlled_body_position_world_m": body_pose[:3],
             "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,
-            "controller_target_quaternion_root_wxyz": quaternion_root_native,
+            "controller_target_quaternion_root_xyzw": quaternion_root_native,
             "jacobian_world_frobenius_norm": float(
                 self._torch.linalg.vector_norm(jacobian_world[0])
             ),
@@ -730,8 +730,8 @@ __all__ = [
     "NativeFrankaDifferentialIkServo",
     "NativeFrankaPoseServoError",
     "SCHEMA_VERSION",
-    "contract_xyzw_to_native_wxyz",
+    "contract_xyzw_to_native_xyzw",
     "gripper_frame_axis_readback",
-    "native_wxyz_to_contract_xyzw",
+    "native_xyzw_to_contract_xyzw",
     "resolve_native_franka_pose_binding",
 ]

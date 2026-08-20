@@ -185,6 +185,20 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     assert result["sh_primvar_element_size"] == 16
     assert result["sh_primvar_interpolation"] == "vertex"
     assert result["display_color_fallback_authored"] is True
+    assert result["particlefield_emissive_material_binding_authored"] is True
+    assert result["particlefield_emissive_material_inputs"] == "mdl_defaults"
+    binding = prim.GetRelationship("material:binding").GetTargets()
+    assert [str(path) for path in binding] == [
+        result["particlefield_emissive_material_path"]
+    ]
+    shader = stage.GetPrimAtPath(
+        result["particlefield_emissive_material_path"] + "/Shader"
+    )
+    assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == (
+        "ParticleFieldEmissive.mdl"
+    )
+    assert not shader.GetAttribute("inputs:apply_inverse_tonemap")
+    assert not shader.GetAttribute("inputs:apply_srgb_linear")
 
 
 @pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")

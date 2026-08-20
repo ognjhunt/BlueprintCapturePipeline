@@ -92,6 +92,7 @@ def test_calibrated_cameras_map_to_role_neutral_native_cfg(
     assert parameters["vertical_aperture_mm"] == pytest.approx(
         20.955 * 180.0 / 320.0
     )
+    assert "rgb_hdr" in parameters["data_types"]
 
 
 def test_rotation_is_converted_to_xyzw_not_legacy_wxyz() -> None:
@@ -1183,19 +1184,7 @@ def test_tuned_physics_survives_the_upstream_presets_application(monkeypatch) ->
 def test_robot_spawns_with_the_plan_orientation_in_isaac_lab_convention(
     monkeypatch,
 ) -> None:
-    """Arena writes an xyzw quaternion into Isaac Lab's wxyz init_state.
-
-    `isaaclab_arena/embodiments/embodiment_base.py` does
-
-        scene_config.robot.init_state.rot = pose.rotation_xyzw
-
-    but `InitialStateCfg.rot` is (w, x, y, z). Any robot with a non-identity
-    rotation is therefore spawned mis-oriented. Measured on hardware: the plan's
-    +90 deg yaw [0, 0, 0.7071, 0.7071] xyzw arrived as [0, 0.7071, 0.7071, 0],
-    a 180 deg flip, and every IK phase drove the arm into the wrong frame
-    (r13, nine phases, all `ik_unreached`). The builder must set the spawn pose
-    itself, in Isaac Lab's convention.
-    """
+    """Pinned Beta2 ``InitialStateCfg.rot`` is documented as XYZW."""
 
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()
@@ -1213,12 +1202,7 @@ def test_robot_spawns_with_the_plan_orientation_in_isaac_lab_convention(
 
     embodiment = _ArenaBuilder.last.arena_env.embodiment
     init_state = embodiment.scene_config.robot.init_state
-    # wxyz: the w component leads
     assert init_state.rot == pytest.approx(
-        (0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
-    )
-    # and emphatically NOT the raw xyzw ordering Arena would have written
-    assert init_state.rot != pytest.approx(
         (0.0, 0.0, 0.7071067811865476, 0.7071067811865476)
     )
     assert init_state.pos == pytest.approx(
@@ -1229,7 +1213,7 @@ def test_robot_spawns_with_the_plan_orientation_in_isaac_lab_convention(
 def test_camera_offset_rotation_is_assigned_without_conversion(
     monkeypatch,
 ) -> None:
-    """The camera offset must NOT be converted by symmetry with the robot spawn.
+    """Camera and asset spawn seams both preserve the Beta2 XYZW contract.
 
     It was, in r17, and it blinded both world cameras. Measured task_object
     pixels per camera, same scene and thresholds:
@@ -1237,12 +1221,8 @@ def test_camera_offset_rotation_is_assigned_without_conversion(
         r13, assigned directly : external 21871, overview 9053, wrist 51939
         r17, converted to wxyz : external     0, overview    0, wrist  5326
 
-    The robot spawn genuinely needs the conversion because Arena hands our
-    xyzw straight to Isaac Lab. This camera path does not -- the value is
-    already in the frame the assignment expects -- so converting double-
-    converts and rotates the world cameras off the task object. The wrist
-    camera survives only because its parent prim dominates its pose, which is
-    why a wrist-only check would have missed this.
+    The r17 conversion blinded both world cameras. The same erroneous reorder
+    also flipped asset roots; semantic coverage was never quaternion proof.
     """
 
     _install_fake_native_runtime(monkeypatch)
@@ -1263,18 +1243,10 @@ def test_camera_offset_rotation_is_assigned_without_conversion(
         ] == pytest.approx(list(contract)), role
 
 
-def test_every_object_spawns_with_the_plan_orientation_not_arena_raw(
+def test_every_object_spawns_with_the_plan_xyzw_orientation(
     monkeypatch,
 ) -> None:
-    """PR #774 fixed the robot spawn and left every object on the broken path.
-
-    Arena writes `init_state.rot = pose.rotation_xyzw` while Isaac Lab's
-    InitialStateCfg.rot is (w, x, y, z). An xyzw identity [0, 0, 0, 1] therefore
-    lands as w=0, z=1 -- a 180 degree yaw. The task object, the scene collision
-    and the NuRec appearance were all spawned flipped, which is what produced
-    9-13 kN of interpenetration at reset on hardware (r14): the room and the
-    appliance did not line up.
-    """
+    """Every object must preserve the plan's documented XYZW rotation."""
 
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()
@@ -1293,7 +1265,7 @@ def test_every_object_spawns_with_the_plan_orientation_not_arena_raw(
             continue
         contract = row["pose_world"]["orientation_xyzw"]
         assert asset.object_cfg.init_state.rot == pytest.approx(
-            (contract[3], contract[0], contract[1], contract[2])
+            tuple(contract)
         ), row["semantic_role"]
         assert asset.object_cfg.init_state.pos == pytest.approx(
             tuple(row["pose_world"]["position_world_m"])

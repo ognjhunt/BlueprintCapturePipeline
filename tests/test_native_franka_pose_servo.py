@@ -4,8 +4,8 @@ import pytest
 
 from blueprint_pipeline.native_franka_pose_servo import (
     NativeFrankaPoseServoError,
-    contract_xyzw_to_native_wxyz,
-    native_wxyz_to_contract_xyzw,
+    contract_xyzw_to_native_xyzw,
+    native_xyzw_to_contract_xyzw,
     resolve_native_franka_pose_binding,
 )
 
@@ -59,13 +59,15 @@ def test_canned_beverage_joint_order_cannot_hide_a_wrong_robot_binding() -> None
     )
 
 
-def test_nonidentity_native_quaternion_is_converted_at_the_isaac_boundary() -> None:
-    native_wxyz = [0.5, 0.5, -0.5, 0.5]
+def test_nonidentity_native_quaternion_preserves_beta2_xyzw_order() -> None:
+    native_xyzw = [0.5, 0.5, -0.5, 0.5]
 
-    contract_xyzw = native_wxyz_to_contract_xyzw(native_wxyz)
+    contract_xyzw = native_xyzw_to_contract_xyzw(native_xyzw)
 
-    assert contract_xyzw == pytest.approx([0.5, -0.5, 0.5, 0.5])
-    assert contract_xyzw_to_native_wxyz(contract_xyzw) == pytest.approx(native_wxyz)
+    assert contract_xyzw == pytest.approx(native_xyzw)
+    assert contract_xyzw_to_native_xyzw(contract_xyzw) == pytest.approx(
+        native_xyzw
+    )
 
 
 @pytest.mark.parametrize("value", ([0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]))
@@ -74,4 +76,4 @@ def test_quaternion_boundary_rejects_zero_or_wrong_length(value) -> None:
         NativeFrankaPoseServoError,
         match="native_franka_pose_servo_quaternion_invalid",
     ):
-        native_wxyz_to_contract_xyzw(value)
+        native_xyzw_to_contract_xyzw(value)

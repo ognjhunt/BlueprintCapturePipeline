@@ -270,9 +270,9 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
         "horizontal_aperture_mm": PINHOLE_HORIZONTAL_APERTURE_MM,
         "vertical_aperture_mm": PINHOLE_HORIZONTAL_APERTURE_MM * height / width,
         "data_types": (
-            ["rgb", "distance_to_camera", "semantic_segmentation"]
+            ["rgb", "rgb_hdr", "distance_to_camera", "semantic_segmentation"]
             if role in {"external", "wrist"}
-            else ["rgb", "semantic_segmentation"]
+            else ["rgb", "rgb_hdr", "semantic_segmentation"]
         ),
         "policy_input": bool(camera["policy_input"]),
         "review_only": bool(camera["review_only"]),
@@ -867,7 +867,7 @@ def build_native_task_arena_environment(
             )
 
     from blueprint_pipeline.native_franka_pose_servo import (
-        contract_xyzw_to_native_wxyz,
+        contract_xyzw_to_native_xyzw,
     )
 
     robot = plan["robot"]
@@ -889,20 +889,16 @@ def build_native_task_arena_environment(
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None
     embodiment.initial_pose = None
-    # Arena assigns the robot's spawn rotation with
-    #   scene_config.robot.init_state.rot = pose.rotation_xyzw
-    # (isaaclab_arena/embodiments/embodiment_base.py), but Isaac Lab's
-    # InitialStateCfg.rot is **wxyz**. Every robot with a non-identity rotation
-    # is therefore spawned mis-oriented: our +90 deg yaw
-    # [0, 0, 0.7071, 0.7071] xyzw arrived as [0, 0.7071, 0.7071, 0], a 180 deg
-    # flip, measured on hardware. The arm then drove every commanded direction
-    # into the wrong frame and no phase could reach its target. Set the pose
-    # here in Isaac Lab's own convention instead of trusting that assignment.
+    # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
+    # buffers, and DifferentialIK pose commands are all documented XYZW.  The
+    # predecessor reordered them as WXYZ at both write and read boundaries:
+    # identity spawned as a 180-degree X rotation, and the inverse readback
+    # mistake falsely reported it as identity again. Preserve XYZW end-to-end.
     embodiment.scene_config.robot.init_state = (
         embodiment.scene_config.robot.init_state.replace(
             joint_pos=exact_robot_reset,
             pos=tuple(float(value) for value in robot_pose["position_world_m"]),
-            rot=tuple(contract_xyzw_to_native_wxyz(robot_pose["orientation_xyzw"])),
+            rot=tuple(contract_xyzw_to_native_xyzw(robot_pose["orientation_xyzw"])),
         )
     )
     embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
@@ -914,20 +910,16 @@ def build_native_task_arena_environment(
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
         camera_cfg.prim_path = parameters["prim_path"]
         camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
-        # DO NOT convert this to wxyz by symmetry with the robot spawn above.
+        # Preserve XYZW here too. A predecessor conversion (r17) blinded both
+        # world cameras: measured
         # It was tried (r17) and it blinded both world cameras: measured
         # task_object pixels per camera, same scene and same thresholds --
         #
         #   r13, assigned directly : external 21871, overview 9053, wrist 51939
         #   r17, converted to wxyz : external     0, overview    0, wrist  5326
         #
-        # The robot spawn genuinely needs the conversion because Arena hands
-        # our xyzw straight to Isaac Lab. This camera path does not: the value
-        # is already in the frame this assignment expects by the time it gets
-        # here, so converting it double-converts and rotates the world cameras
-        # off the task object. The wrist camera survives only because its
-        # parent prim dominates its pose, and even it lost an order of
-        # magnitude of coverage.
+        # All Beta2 pose seams are XYZW; the wrist survived only because its
+        # parent prim dominated the mistaken world rotation.
         camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
         camera_cfg.offset.convention = parameters["isaac_offset_convention"]
         camera_cfg.width = parameters["width"]
@@ -1001,19 +993,16 @@ def build_native_task_arena_environment(
         obj = object_class(
             **object_kwargs,
         )
-        # Arena writes the spawn pose as `init_state.rot = pose.rotation_xyzw`
-        # while Isaac Lab's InitialStateCfg.rot is (w, x, y, z). PR #774 fixed
-        # this for the robot and left every object on the broken path: an xyzw
-        # identity [0, 0, 0, 1] lands as w=0, z=1, so the task object, the scene
-        # collision and the NuRec appearance were all spawned rotated 180
-        # degrees. That is what produced 9-13 kN of interpenetration at reset
-        # (measured) -- the room and the appliance did not line up.
+        # Preserve the same XYZW contract for every scene object. The removed
+        # WXYZ reorder turned identity into a 180-degree X rotation, flipping
+        # the washer's front/back and up/down while the equally-wrong readback
+        # gate claimed its root still matched.
         obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
             pos=tuple(
                 float(value) for value in row["pose_world"]["position_world_m"]
             ),
             rot=tuple(
-                contract_xyzw_to_native_wxyz(row["pose_world"]["orientation_xyzw"])
+                contract_xyzw_to_native_xyzw(row["pose_world"]["orientation_xyzw"])
             ),
         )
         if row["object_type"] == "ARTICULATION":

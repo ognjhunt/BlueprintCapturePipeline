@@ -10,6 +10,7 @@ from blueprint_pipeline.native_task_arena_readback import (
     NativeTaskArenaReadbackError,
     read_native_task_arena_object_reset_state,
     read_native_task_arena_scenario_parameters,
+    read_native_task_arena_task_link_frame_equivalence,
 )
 from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaEnvironment
 
@@ -20,14 +21,14 @@ def _built(*, include_forces: bool = True) -> NativeTaskArenaEnvironment:
         data=SimpleNamespace(
             joint_pos=[[0.872664626, 0.0]],
             joint_vel=[[0.0, 0.0]],
-            # Isaac Lab exposes native quaternions in WXYZ order.
-            root_pose_w=[[1.9742142, 1.4792181, 0.0, 1.0, 0.0, 0.0, 0.0]],
+            # Pinned Isaac Lab Beta2 exposes articulation poses in XYZW order.
+            root_pose_w=[[1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]],
             body_names=["cabinet", "upper_door", "lower_door"],
             body_pose_w=[
                 [
-                    [1.9742142, 1.4792181, 0.0, 1.0, 0.0, 0.0, 0.0],
-                    [1.9742142, 1.4792181, 0.0, 1.0, 0.0, 0.0, 0.0],
-                    [1.9742142, 1.4792181, 0.0, 1.0, 0.0, 0.0, 0.0],
+                    [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0],
                 ]
             ],
         ),
@@ -37,8 +38,8 @@ def _built(*, include_forces: bool = True) -> NativeTaskArenaEnvironment:
             body_names=["left_inner_finger", "right_inner_finger"],
             body_pose_w=[
                 [
-                    [2.25, 2.25, 1.02, 1.0, 0.0, 0.0, 0.0],
-                    [2.27, 2.25, 1.02, 1.0, 0.0, 0.0, 0.0],
+                    [2.25, 2.25, 1.02, 0.0, 0.0, 0.0, 1.0],
+                    [2.27, 2.25, 1.02, 0.0, 0.0, 0.0, 1.0],
                 ]
             ],
         )
@@ -426,7 +427,7 @@ def test_reset_readback_covers_active_and_inactive_replacements() -> None:
     built.env.unwrapped.scene[inactive_name] = SimpleNamespace(
         joint_names=["drawer_slide"],
         data=SimpleNamespace(
-            root_pose_w=[[2.0, 3.0, 0.0, 1.0, 0.0, 0.0, 0.0]],
+            root_pose_w=[[2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
             joint_pos=[[0.25]],
         ),
     )
@@ -439,6 +440,34 @@ def test_reset_readback_covers_active_and_inactive_replacements() -> None:
         "inactive_drawer",
     ]
     assert all(row["passed"] for row in report["objects"])
+
+
+def test_task_link_equivalence_catches_an_inverted_live_door_frame() -> None:
+    built = _built()
+    contact = [0.119962, 0.327634, 1.022997]
+    built.plan["task_spec"]["interaction_affordance"] = {
+        "joint_contact_path": [
+            {
+                "contact_pose_asset_root": {
+                    "position_m": contact,
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                }
+            }
+        ]
+    }
+
+    passed = read_native_task_arena_task_link_frame_equivalence(built)
+    assert passed["passed"] is True
+    assert passed["contact_position_error_m"] == pytest.approx(0.0)
+
+    task = built.env.unwrapped.scene["task_object"]
+    task.data.body_pose_w[0][1][3:7] = [1.0, 0.0, 0.0, 0.0]
+    failed = read_native_task_arena_task_link_frame_equivalence(built)
+    assert failed["passed"] is False
+    assert failed["contact_position_error_m"] > 2.0
+    assert failed["blockers"] == [
+        "native_task_arena_task_link_frame_not_equivalent"
+    ]
 
 
 def test_inactive_replacement_mutation_fails_reset_replay() -> None:
@@ -467,7 +496,7 @@ def test_inactive_replacement_mutation_fails_reset_replay() -> None:
     built.scene_asset_names[inactive_name] = inactive_name
     built.env.unwrapped.scene[inactive_name] = SimpleNamespace(
         data=SimpleNamespace(
-            root_pose_w=[[2.02, 3.0, 0.0, 1.0, 0.0, 0.0, 0.0]],
+            root_pose_w=[[2.02, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
         )
     )
 
