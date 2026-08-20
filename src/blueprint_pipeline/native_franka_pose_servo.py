@@ -18,14 +18,23 @@ from typing import Any
 
 from .native_franka_action_math import (
     bounded_absolute_joint_setpoint,
-    controlled_body_pose_for_grasp_frame_target,
+    controlled_body_pose_for_rigid_grasp_frame_target,
     implicit_pd_torque_terms,
     joint_velocity_feedforward_rad_s,
+)
+from .native_franka_grasp_geometry import (
+    NativeFrankaGraspGeometryError,
+    measure_live_robotiq_grasp_geometry,
+    validate_measured_grasp_geometry,
 )
 from .native_pose_transforms import (
     NativePoseTransformError,
     pose_world_to_base,
     world_to_base_rotation_row_major_xyzw,
+)
+from .rigid_frame_transforms import (
+    quaternion_multiply_xyzw,
+    rotate_vector_xyzw,
 )
 
 
@@ -401,7 +410,9 @@ def gripper_frame_axis_readback(
 class NativeFrankaDifferentialIkServo:
     """One deterministic native pose-servo action per control tick."""
 
-    def __init__(self, *, env: Any, robot: Any):
+    def __init__(
+        self, *, env: Any, robot: Any, grasp_geometry_factory: Any = None
+    ):
         import torch
         from isaaclab.controllers import DifferentialIKController
         from isaaclab.controllers import DifferentialIKControllerCfg
@@ -461,6 +472,36 @@ class NativeFrankaDifferentialIkServo:
         # two terms that produce it.  Absence is recorded, never fatal.
         self._joint_stiffness = self._arm_gain("joint_stiffness")
         self._joint_damping = self._arm_gain("joint_damping")
+        body_pose = self.current_body_pose_world()
+        try:
+            if grasp_geometry_factory is None:
+                import omni.usd
+
+                grasp_geometry = measure_live_robotiq_grasp_geometry(
+                    stage=omni.usd.get_context().get_stage(),
+                    controlled_body_position_world_m=body_pose[:3],
+                    controlled_body_quaternion_world_xyzw=body_pose[3:7],
+                )
+            else:
+                grasp_geometry = grasp_geometry_factory(body_pose)
+            self.grasp_geometry = validate_measured_grasp_geometry(
+                grasp_geometry
+            )
+        except (NativeFrankaGraspGeometryError, TypeError) as exc:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_grasp_geometry_invalid"]
+            ) from exc
+        transform = self.grasp_geometry["controlled_body_to_grasp_frame"]
+        self._body_to_grasp_position = list(
+            transform["position_controlled_body_m"]
+        )
+        self._body_to_grasp_quaternion = list(transform["orientation_xyzw"])
+        self._pad_centers_body = {
+            side: list(position)
+            for side, position in self.grasp_geometry[
+                "pad_centers_controlled_body_m"
+            ].items()
+        }
 
     def _arm_gain(self, attribute: str) -> list[float] | None:
         data = getattr(self._robot, "data", None)
@@ -527,11 +568,18 @@ class NativeFrankaDifferentialIkServo:
         ]
 
     def current_grasp_frame_position_world(self) -> list[float]:
-        poses = self._to_torch(self._robot.data.body_pose_w)[
-            0, self.binding["finger_body_indices"], :3
-        ]
-        midpoint = (poses[0] + poses[1]) / 2.0
-        return [float(value) for value in midpoint]
+        return self.current_grasp_frame_pose_world()[:3]
+
+    def current_grasp_frame_pose_world(self) -> list[float]:
+        """Return the measured TCP pose, not the coincident finger body origins."""
+
+        body = self.current_body_pose_world()
+        offset = rotate_vector_xyzw(body[3:7], self._body_to_grasp_position)
+        position = [body[index] + offset[index] for index in range(3)]
+        quaternion = quaternion_multiply_xyzw(
+            body[3:7], self._body_to_grasp_quaternion
+        )
+        return [*position, *quaternion]
 
     def current_gripper_frame_axis_readback(self) -> dict[str, Any]:
         """Retain the jaw and approach axes in controlled-body coordinates.
@@ -544,20 +592,21 @@ class NativeFrankaDifferentialIkServo:
         controlled body is actually in.
         """
 
-        poses = self._to_torch(self._robot.data.body_pose_w)
-        body = poses[0, self.binding["controlled_body_index"], :7]
+        body_pose = self.current_body_pose_world()
         fingers = {
-            str(name): [float(value) for value in poses[0, index, :3]]
-            for name, index in zip(
-                self.binding["finger_body_names"],
-                self.binding["finger_body_indices"],
-                strict=True,
-            )
+            f"{side}_inner_finger": [
+                body_pose[axis]
+                + rotate_vector_xyzw(
+                    body_pose[3:7], self._pad_centers_body[side]
+                )[axis]
+                for axis in range(3)
+            ]
+            for side in ("left", "right")
         }
         return gripper_frame_axis_readback(
             controlled_body_name=self.binding["controlled_body_name"],
-            body_position_world_m=[float(value) for value in body[:3]],
-            body_quaternion_world_xyzw=native_xyzw_to_contract_xyzw(body[3:7]),
+            body_position_world_m=body_pose[:3],
+            body_quaternion_world_xyzw=body_pose[3:7],
             finger_positions_world_m=fingers,
         )
 
@@ -581,7 +630,7 @@ class NativeFrankaDifferentialIkServo:
         self,
         *,
         target_position_world_m: Sequence[float],
-        target_body_quaternion_world_xyzw: Sequence[float],
+        target_grasp_frame_quaternion_world_xyzw: Sequence[float],
         gripper_command: float,
         # Required, not defaulted. These carried 0.03/0.20 as DEFAULTS, and a
         # default is invisible at the call site: the construction worker simply
@@ -601,14 +650,17 @@ class NativeFrankaDifferentialIkServo:
         velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     ) -> tuple[list[float], dict[str, Any]]:
         body_pose = self.current_body_pose_world()
-        grasp = self.current_grasp_frame_position_world()
+        grasp_pose = self.current_grasp_frame_pose_world()
         target_body_position, target_body_quaternion = (
-            controlled_body_pose_for_grasp_frame_target(
+            controlled_body_pose_for_rigid_grasp_frame_target(
                 current_body_position_world_m=body_pose[:3],
                 current_body_quaternion_world_xyzw=body_pose[3:7],
-                current_grasp_frame_position_world_m=grasp,
+                current_grasp_frame_position_world_m=grasp_pose[:3],
+                current_grasp_frame_quaternion_world_xyzw=grasp_pose[3:7],
                 target_grasp_frame_position_world_m=target_position_world_m,
-                target_body_quaternion_world_xyzw=target_body_quaternion_world_xyzw,
+                target_grasp_frame_quaternion_world_xyzw=(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
             )
         )
         position_root, quaternion_root = pose_world_to_base(
@@ -685,7 +737,11 @@ class NativeFrankaDifferentialIkServo:
             "target_grasp_frame_position_world_m": [
                 float(value) for value in target_position_world_m
             ],
-            "current_grasp_frame_position_world_m": grasp,
+            "current_grasp_frame_position_world_m": grasp_pose[:3],
+            "current_grasp_frame_quaternion_world_xyzw": grasp_pose[3:7],
+            "target_grasp_frame_quaternion_world_xyzw": list(
+                target_grasp_frame_quaternion_world_xyzw
+            ),
             "target_controlled_body_position_world_m": target_body_position,
             "current_controlled_body_position_world_m": body_pose[:3],
             "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,

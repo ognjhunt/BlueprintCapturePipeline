@@ -1403,7 +1403,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 action, diagnostic = servo.action_for_grasp_target(
                     target_position_world_m=phase["position_world_m"],
-                    target_body_quaternion_world_xyzw=target_orientation,
+                    target_grasp_frame_quaternion_world_xyzw=target_orientation,
                     gripper_command=gripper_command,
                     max_joint_delta_rad=servo_command_limits[
                         "max_joint_delta_rad"
@@ -1423,13 +1423,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
                 total_steps += 1
-                achieved = servo.current_grasp_frame_position_world()
+                achieved_grasp_pose = servo.current_grasp_frame_pose_world()
+                achieved = achieved_grasp_pose[:3]
                 error = math.dist(achieved, phase["position_world_m"])
-                achieved_body_pose = servo.current_body_pose_world()
                 arrival = _pose_arrival_readback(
                     position_world_m=achieved,
                     target_position_world_m=phase["position_world_m"],
-                    orientation_world_xyzw=achieved_body_pose[3:7],
+                    orientation_world_xyzw=achieved_grasp_pose[3:7],
                     target_orientation_world_xyzw=target_orientation,
                     position_tolerance_m=arrival_tolerance,
                     orientation_tolerance_rad=(
