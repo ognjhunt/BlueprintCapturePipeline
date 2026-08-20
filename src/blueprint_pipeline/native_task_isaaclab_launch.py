@@ -32,6 +32,15 @@ from .native_task_runtime_source_packet import (
 # it here means the three workers cannot drift apart, and the launcher, the
 # preconstruction probe and the post-build readback all name the same string.
 NATIVE_TASK_ARENA_DEVICE = "cuda:0"
+NATIVE_TASK_ARENA_IMAGE = (
+    "nvcr.io/nvidia/isaac-sim:6.0.1@"
+    "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+)
+NATIVE_TASK_ARENA_NUREC_EXTENSION = "omni.rtx.spg"
+NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
+NATIVE_TASK_ARENA_KIT_ARGS = (
+    "--enable omni.rtx.spg --/renderer/multiGpu/enabled=false"
+)
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
@@ -207,6 +216,7 @@ def launch_native_task_isaaclab(
     device: str,
     enable_cameras: bool = True,
     app_launcher_factory: Callable[..., Any] | None = None,
+    nurec_renderer_probe_factory: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Launch Isaac Lab on ``device`` with the verified compatibility experience.
 
@@ -241,19 +251,86 @@ def launch_native_task_isaaclab(
         device=requested_device,
         enable_cameras=enable_cameras,
         experience=receipt["experience"]["path"],
+        kit_args=NATIVE_TASK_ARENA_KIT_ARGS,
     )
     app = getattr(launcher, "app", launcher)
+    if nurec_renderer_probe_factory is None:
+
+        def nurec_renderer_probe_factory() -> Mapping[str, Any]:
+            import carb
+            import omni.kit.app
+            from pxr import Usd
+
+            extension_manager = omni.kit.app.get_app().get_extension_manager()
+            settings = carb.settings.get_settings()
+            return {
+                "extension_enabled": extension_manager.is_extension_enabled(
+                    NATIVE_TASK_ARENA_NUREC_EXTENSION
+                ),
+                "renderer_hints": settings.get(
+                    "/omni/rtx/nre/compositing/rendererHints"
+                ),
+                "multi_gpu_enabled": settings.get(
+                    "/renderer/multiGpu/enabled"
+                ),
+                "schema_registered": (
+                    Usd.SchemaRegistry().FindConcretePrimDefinition(
+                        NATIVE_TASK_ARENA_NUREC_SCHEMA
+                    )
+                    is not None
+                ),
+            }
+
+    try:
+        raw_nurec = dict(nurec_renderer_probe_factory())
+    except Exception as exc:
+        close = getattr(app, "close", None)
+        if callable(close):
+            close()
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_nurec_runtime_readback_failed"]
+        ) from exc
+    nurec = {
+        "extension_id": NATIVE_TASK_ARENA_NUREC_EXTENSION,
+        "extension_enabled": raw_nurec.get("extension_enabled") is True,
+        "renderer_hints": raw_nurec.get("renderer_hints"),
+        "renderer_hints_expected": 3,
+        "multi_gpu_enabled": raw_nurec.get("multi_gpu_enabled"),
+        "schema_type_name": NATIVE_TASK_ARENA_NUREC_SCHEMA,
+        "schema_registered": raw_nurec.get("schema_registered") is True,
+    }
+    nurec_errors = []
+    if not nurec["extension_enabled"]:
+        nurec_errors.append("native_task_isaaclab_nurec_extension_not_enabled")
+    if nurec["renderer_hints"] != 3:
+        nurec_errors.append("native_task_isaaclab_nurec_renderer_hints_invalid")
+    if nurec["multi_gpu_enabled"] is not False:
+        nurec_errors.append("native_task_isaaclab_nurec_multi_gpu_not_disabled")
+    if not nurec["schema_registered"]:
+        nurec_errors.append("native_task_isaaclab_nurec_schema_not_registered")
+    if nurec_errors:
+        close = getattr(app, "close", None)
+        if callable(close):
+            close()
+        raise NativeTaskIsaacLabLaunchError(nurec_errors)
+    nurec["status"] = "qualified"
     receipt["launch"] = {
         "launcher": "isaaclab.app.AppLauncher",
         "requested_device": requested_device,
         "enable_cameras": bool(enable_cameras),
         "device_configured_by_launcher": True,
+        "kit_args": NATIVE_TASK_ARENA_KIT_ARGS.split(),
     }
+    receipt["nurec_renderer"] = nurec
     return app, receipt
 
 
 __all__ = [
     "NATIVE_TASK_ARENA_DEVICE",
+    "NATIVE_TASK_ARENA_IMAGE",
+    "NATIVE_TASK_ARENA_KIT_ARGS",
+    "NATIVE_TASK_ARENA_NUREC_EXTENSION",
+    "NATIVE_TASK_ARENA_NUREC_SCHEMA",
     "NativeTaskIsaacLabLaunchError",
     "REQUIRED_EXPERIENCE_FILES",
     "SCHEMA_VERSION",

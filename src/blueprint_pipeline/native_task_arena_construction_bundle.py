@@ -15,7 +15,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
 from .native_task_arena_execution_contract import (
@@ -24,6 +23,7 @@ from .native_task_arena_execution_contract import (
 from .native_task_construction_plan import (
     materialize_native_task_construction_phase_plan,
 )
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 
 
 PROBE_KIND = "native-task-arena-construction"
@@ -64,7 +64,7 @@ def build_native_task_arena_construction_bundle(
             runtime_module_sources=construction_runtime_sources(),
             implementation_commit=implementation_commit,
             execution_mode="construction_canary",
-            container_image=QUALIFIED_ADP_IMAGE,
+            container_image=NATIVE_TASK_ARENA_IMAGE,
             generated_at=generated_at,
         )
     frozen = materialize_native_task_construction_phase_plan(scene_plan)
@@ -82,7 +82,7 @@ def build_native_task_arena_construction_bundle(
             runtime_module_sources=construction_runtime_sources(),
             implementation_commit=implementation_commit,
             execution_mode="construction_canary",
-            container_image=QUALIFIED_ADP_IMAGE,
+            container_image=NATIVE_TASK_ARENA_IMAGE,
             bound_runtime_inputs={phase_path.name: phase_path},
             generated_at=generated_at,
         )
@@ -128,7 +128,7 @@ def load_verified_native_task_arena_construction_bundle(
         errors.append("native_task_arena_bundle_receipt_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
         errors.append("native_task_arena_bundle_implementation_commit_mismatch")
-    if receipt.get("container_image") != QUALIFIED_ADP_IMAGE:
+    if receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE:
         errors.append("native_task_arena_bundle_container_image_mismatch")
     if expected_packet_receipt_digest and (
         receipt.get("packet_receipt_digest") != expected_packet_receipt_digest

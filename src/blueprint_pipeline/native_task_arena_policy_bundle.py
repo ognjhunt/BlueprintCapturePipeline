@@ -9,12 +9,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
 from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
 from .native_task_runtime_contract import FROZEN_CANDIDATES
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
@@ -224,7 +224,7 @@ def build_native_task_arena_policy_bundle(
             execution_mode="policy",
             policy_candidate_id=spec["candidate_id"],
             expected_output_filename=RESULT_FILENAME,
-            container_image=QUALIFIED_ADP_IMAGE,
+            container_image=NATIVE_TASK_ARENA_IMAGE,
             bound_runtime_inputs={
                 "native_task_arena_construction_result.v1.json": construction_path,
                 "native_task_arena_control_result.v1.json": controls_path,
@@ -271,6 +271,8 @@ def load_verified_native_task_arena_policy_bundle(
         errors.append("native_task_policy_bundle_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
         errors.append("native_task_policy_bundle_commit_mismatch")
+    if receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE:
+        errors.append("native_task_policy_bundle_image_mismatch")
     if expected_packet_receipt_digest and (
         receipt.get("packet_receipt_digest") != expected_packet_receipt_digest
     ):

@@ -20,12 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.adp009d_native_microcheck_bundle import (
-    DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
-)
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_paid_authority as paid
+from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 import blueprint_pipeline.task_evaluation_live_profile as live_profile
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
@@ -146,7 +144,7 @@ def _provider_bundle(
         "program_id": "arm-decision-proof-v1",
         "execution_mode": mode,
         "implementation_commit": COMMIT,
-        "container_image": QUALIFIED_ADP_IMAGE,
+        "container_image": NATIVE_TASK_ARENA_IMAGE,
         "scene_id": SCENE_ID,
         "task_id": TASK_ID,
         "request_digest": request_digest,
