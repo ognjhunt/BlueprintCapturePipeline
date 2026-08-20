@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import importlib.util
-import gzip
-import io
 from pathlib import Path
 import shutil
 import sys
+import struct
 from types import ModuleType, SimpleNamespace
 import zipfile
 
 import pytest
 from PIL import Image
 
+from blueprint_pipeline.native_task_appearance_frame_alignment import (
+    measure_native_task_appearance_frame,
+)
+from blueprint_pipeline.nurec_volume_codec import decode_nurec_bytes, gaussian_arrays
+from tests.test_native_task_appearance_frame_alignment import (
+    EXPORTER_AXIS_MATRIX,
+    room_positions,
+    write_appearance_usdz,
+)
 from tests.test_public_scene_artifixer3d_dual_target_inputs import _dual_candidate
 
 
@@ -394,17 +402,38 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
             output.write_bytes(b"ply")
 
     class USDZExporter:
+        """Stand in for the pinned upstream exporter, defect included.
+
+        It writes a real NuRec package -- decodable payload, real USD layers,
+        the real member order -- carrying the axis matrix the upstream exporter
+        bakes in unconditionally.  A stub that wrote placeholder bytes could
+        not show whether the packaged asset's transform was corrected, which is
+        the only thing this export has to get right.
+        """
+
         def export(self, model, output, *, dataset, conf) -> None:
             assert model.get_n_active_features() == 3
             assert dataset is None and conf is config
             assert conf.export_usdz.apply_normalizing_transform is False
-            buffer = io.BytesIO()
-            with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=123) as stream:
-                stream.write(b"nurec")
-            with zipfile.ZipFile(output, "w") as archive:
-                archive.writestr("default.usda", b"default")
-                archive.writestr("repaired_scene.nurec", buffer.getvalue())
-                archive.writestr("gauss.usda", b"gauss")
+            written = write_appearance_usdz(
+                Path(output),
+                room_positions(count=512),
+                matrix=EXPORTER_AXIS_MATRIX,
+                payload_name="repaired_scene.nurec",
+                payload_first=True,
+            )
+            # A non-zero gzip mtime, so the alignment pass's normalization is
+            # still exercised rather than trivially satisfied.
+            members = []
+            with zipfile.ZipFile(written) as archive:
+                for name in archive.namelist():
+                    body = archive.read(name)
+                    if name.endswith(".nurec"):
+                        body = body[:4] + struct.pack("<I", 123) + body[8:]
+                    members.append((name, body))
+            with zipfile.ZipFile(written, "w", compression=zipfile.ZIP_STORED) as archive:
+                for name, body in members:
+                    archive.writestr(name, body)
 
     ply_module.PLYExporter = PLYExporter
     usdz_module.USDZExporter = USDZExporter
@@ -420,23 +449,37 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
 
     assert result["gaussian_count"] == 2
     assert result["source_checkpoint"]["sha256"] == runner._sha256(checkpoint)
+    identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
     assert result["coordinate_contract"] == {
         "source_gaussian_tensor_coordinates_preserved": True,
         "camera_derived_normalizing_transform_applied": False,
-        "standard_gaussian_ply_transform_matrix": [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        "isaac_nurec_usdz_wrapper_transform_matrix": [
+        "standard_gaussian_ply_transform_matrix": identity,
+        # The exporter authored p -> (-x, -z, -y); the packaged asset must not.
+        "isaac_nurec_usdz_wrapper_transform_matrix": identity,
+        "isaac_nurec_usdz_wrapper_transform_before_identity_pin": [
             [-1.0, 0.0, 0.0, 0.0],
             [0.0, 0.0, -1.0, 0.0],
             [0.0, -1.0, 0.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
-        "usdz_wrapper_transform_role": ("fixed_pinned_3dgrut_to_usd_axis_convention_only"),
+        "usdz_wrapper_transform_role": "identity_pinned_spawn_pose_is_sole_placement",
+        "usdz_wrapper_transform_measured_from_packaged_asset": True,
+        "exporter_axis_matrix_removed": True,
     }
+    # ...and the shipped bytes agree with the receipt, measured independently.
+    assert (
+        measure_native_task_appearance_frame(result["isaac_nurec_usdz"]["path"])[
+            "layer_transform_is_identity"
+        ]
+        is True
+    )
+    assert result["isaac_nurec_usdz_identity_pin"]["exporter_axis_matrix_removed"] is True
+    assert result["isaac_nurec_usdz_identity_pin"]["rewritten_layers"] == ["gauss.usda"]
     assert Path(result["standard_gaussian_ply"]["path"]).read_bytes() == b"ply"
     assert result["isaac_nurec_usdz_archive_contract"]["all_payload_offsets_aligned"] is True
     assert all(
@@ -451,7 +494,7 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         ]
         nurec = archive.read("repaired_scene.nurec")
         assert nurec[4:8] == b"\0" * 4
-        assert gzip.decompress(nurec) == b"nurec"
+        assert gaussian_arrays(decode_nurec_bytes(nurec))["positions"].shape == (512, 3)
     assert result["native_import_qualified"] is False
 
 

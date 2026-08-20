@@ -1374,6 +1374,29 @@ def _extract_output(path: Path | None, destination: Path) -> tuple[dict[str, Any
     return _read(result_path, code="artifixer3d_runtime_result_unreadable"), blockers
 
 
+def _is_identity_matrix(value: Any) -> bool:
+    """True when a receipt's 4x4 row-major matrix is identity.
+
+    Compared with a tolerance rather than by equality: the value is measured
+    out of the packaged USDZ through pxr, so it is a float composition result,
+    and an exact-literal comparison would reject a genuinely identity matrix
+    over a last-bit difference.
+    """
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 4:
+        return False
+    for row_index, row in enumerate(value):
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) != 4:
+            return False
+        for column_index, cell in enumerate(row):
+            if isinstance(cell, bool) or not isinstance(cell, (int, float)):
+                return False
+            expected = 1.0 if row_index == column_index else 0.0
+            if abs(float(cell) - expected) > 1e-6:
+                return False
+    return True
+
+
 def _local_runtime_path(root: Path, provider_path: Any, *, code: str) -> Path:
     value = str(provider_path or "").replace("\\", "/")
     marker = "/runtime_output/"
@@ -1510,15 +1533,17 @@ def _materialize_raw_result(
                     [0.0, 0.0, 1.0, 0.0],
                     [0.0, 0.0, 0.0, 1.0],
                 ]
-                or coordinate.get("isaac_nurec_usdz_wrapper_transform_matrix")
-                != [
-                    [-1.0, 0.0, 0.0, 0.0],
-                    [0.0, 0.0, -1.0, 0.0],
-                    [0.0, -1.0, 0.0, 0.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                ]
+                # The packaged volume must compose at identity.  It used to be
+                # required to carry the exporter's axis matrix, which is
+                # correct only for a tensor still in the exporter's internal
+                # frame -- so this validator was pinning the defect in place.
+                or not _is_identity_matrix(
+                    coordinate.get("isaac_nurec_usdz_wrapper_transform_matrix")
+                )
                 or coordinate.get("usdz_wrapper_transform_role")
-                != "fixed_pinned_3dgrut_to_usd_axis_convention_only"
+                != "identity_pinned_spawn_pose_is_sole_placement"
+                or coordinate.get("usdz_wrapper_transform_measured_from_packaged_asset")
+                is not True
                 or not isinstance(checkpoint_record, Mapping)
                 or not isinstance(source_checkpoint, Mapping)
                 or source_checkpoint.get("size_bytes") != checkpoint_record.get("size_bytes")

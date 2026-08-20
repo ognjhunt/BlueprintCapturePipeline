@@ -837,13 +837,29 @@ class _CheckpointExportModel:
 def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path) -> dict[str, Any]:
     """Serialize one bound checkpoint to standard PLY and Isaac-ready USDZ.
 
-    The trained coordinates are retained verbatim.  In particular, the pinned
-    USDZ exporter's camera-derived recenter/upright transform is disabled.
+    The trained coordinates are retained verbatim.  Two separate transforms
+    have to be suppressed for that to be true of the packaged asset, and only
+    one of them is an exporter setting.
+
+    ``export_usdz.apply_normalizing_transform = False`` disables the
+    camera-derived recenter/upright transform baked into the point data.  It
+    does nothing about the fixed axis-convention matrix the exporter authors
+    into the USD layer, ``p -> (-x, -z, -y)``, which is written
+    unconditionally.  On a tensor fit to metric capture poses that matrix is a
+    spurious mirror-and-rotate: for scene 840920 it moved an 11 m room roughly
+    13 m away and below the floor, and fourteen paid arena runs rendered black
+    while every gate passed.  So the layer transform is pinned to identity
+    here, and the resulting placement is the spawn pose the plan authored and
+    nothing else.
     """
 
     import torch
     from threedgrut.export.ply_exporter import PLYExporter
     from threedgrut.export.usdz_exporter import USDZExporter
+
+    from blueprint_pipeline.nurec_usdz_layer_transform import (
+        pin_nurec_usdz_layer_transform_to_identity,
+    )
 
     output_root = task_output / "native_appearance"
     if output_root.exists() or output_root.is_symlink():
@@ -867,6 +883,9 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
     usdz_path = output_root / "repaired_scene.usdz"
     PLYExporter().export(model, ply_path, dataset=None, conf=config)
     USDZExporter().export(model, usdz_path, dataset=None, conf=config)
+    # Before alignment, so the member digests and offsets this receipt seals
+    # describe the bytes that actually ship.
+    identity_pin = pin_nurec_usdz_layer_transform_to_identity(usdz_path)
     usdz_members = _align_and_validate_usdz(usdz_path)
     if any(
         path.is_symlink() or not path.is_file() or path.stat().st_size <= 0
@@ -887,14 +906,22 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
-            "isaac_nurec_usdz_wrapper_transform_matrix": [
-                [-1.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, -1.0, 0.0],
-                [0.0, -1.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
+            # Measured back out of the packaged archive through the frame
+            # alignment gate, not asserted.  The previous contract declared the
+            # exporter's axis matrix as a constant that no code had read from
+            # the asset, which is how a receipt kept describing a placement
+            # that put the room outside the scene.
+            "isaac_nurec_usdz_wrapper_transform_matrix": identity_pin[
+                "layer_transform_after_row_major"
             ],
-            "usdz_wrapper_transform_role": ("fixed_pinned_3dgrut_to_usd_axis_convention_only"),
+            "isaac_nurec_usdz_wrapper_transform_before_identity_pin": identity_pin[
+                "layer_transform_before_row_major"
+            ],
+            "usdz_wrapper_transform_role": "identity_pinned_spawn_pose_is_sole_placement",
+            "usdz_wrapper_transform_measured_from_packaged_asset": True,
+            "exporter_axis_matrix_removed": identity_pin["exporter_axis_matrix_removed"],
         },
+        "isaac_nurec_usdz_identity_pin": identity_pin,
         "standard_gaussian_ply": _file_record(ply_path),
         "isaac_nurec_usdz": _file_record(usdz_path),
         "isaac_nurec_usdz_archive_contract": {

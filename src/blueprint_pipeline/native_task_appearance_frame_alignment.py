@@ -280,6 +280,16 @@ def measure_native_task_appearance_frame(
         "layer_transform_is_identity": bool(
             np.allclose(np.asarray(layer_transform, dtype=np.float64), np.eye(4))
         ),
+        # The rotate/mirror/scale part, separate from the translation.  A
+        # translation re-places a volume that is otherwise in the world frame
+        # -- ``aura_nurec_usdz`` authors exactly one, from the recentre offset
+        # it applied -- while a non-identity linear part re-*orients* the room,
+        # which only an exporter's frame convention ever wants.
+        "layer_transform_linear_is_identity": bool(
+            np.allclose(
+                np.asarray(layer_transform, dtype=np.float64)[:3, :3], np.eye(3)
+            )
+        ),
         "spawn_transform_row_major": spawn_transform,
         "stored_tensor_occupied_bounds_m": {
             "minimum": stored_lower,
@@ -370,9 +380,21 @@ def qualify_native_task_appearance_frame_alignment(
     # When the stored tensor is already in the world frame that matrix is a
     # spurious rigid motion, and the same measurement that refuses the plan can
     # say so -- without which the next run relitigates the renderer instead.
+    #
+    # Judged on the linear part alone and independently of whether containment
+    # happened to survive.  The first version of this rule only fired once a
+    # required position had already fallen outside, which made it a commentary
+    # on a refusal rather than a refusal: a volume whose occupied box is
+    # roughly symmetric about the mapping's fixed point stays "inside" while
+    # being mirrored and upside down, and would have shipped.  Containment is
+    # a coincidence-tolerant test; the frame question is not.
+    #
+    # A tensor genuinely in the exporter's internal frame is still admitted --
+    # dropping its matrix moves the room away from the scene, so
+    # ``omitted_containment`` is false and nothing here fires.  A pure
+    # translation is admitted too, because its linear part is identity.
     layer_transform_spurious = bool(
-        outside
-        and not measurement["layer_transform_is_identity"]
+        not measurement["layer_transform_linear_is_identity"]
         and all(omitted_containment.values())
     )
     if layer_transform_spurious:

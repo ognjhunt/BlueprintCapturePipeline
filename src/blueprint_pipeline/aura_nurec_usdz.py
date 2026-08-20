@@ -126,8 +126,13 @@ def Xform "{default_prim}"
 """
 
 
-def _write_aligned_usdz(out_path: Path, members: Sequence[tuple[str, bytes]]) -> None:
-    """Write a USDZ: stored members, each payload aligned to 64 bytes."""
+def write_aligned_usdz(out_path: Path, members: Sequence[tuple[str, bytes]]) -> None:
+    """Write a USDZ: stored members, each payload aligned to 64 bytes.
+
+    Public because the appearance *export* path has to repack an upstream
+    archive under the same rule, and a second implementation of the padding
+    arithmetic is a second place to be wrong about it.
+    """
 
     with out_path.open("wb") as handle:
         with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -193,7 +198,7 @@ def write_aura_nurec_usdz(
     root_layer = _ROOT_LAYER.format(
         render_settings=render_settings, default_prim=DEFAULT_PRIM
     )
-    _write_aligned_usdz(
+    write_aligned_usdz(
         out_path,
         [
             ("default.usda", root_layer.encode("utf-8")),
@@ -228,5 +233,6 @@ __all__ = [
     "AURA_NUREC_USDZ_SCHEMA_VERSION",
     "DEFAULT_PRIM",
     "VOLUME_PRIM_PATH",
+    "write_aligned_usdz",
     "write_aura_nurec_usdz",
 ]

@@ -116,6 +116,7 @@ def write_appearance_usdz(
     payload_name: str = "scene.nurec",
     volume_marker: bool = True,
     default_prim: bool = True,
+    payload_first: bool = False,
 ) -> Path:
     """Author a referenceable USDZ wrapping the given gaussian centres."""
 
@@ -135,6 +136,11 @@ def write_appearance_usdz(
         ("gauss.usda", volume_layer.encode("utf-8")),
         (payload_name, nurec_payload(positions)),
     ]
+    if payload_first:
+        # The order the real 3DGRUT export writes, and the one three separate
+        # archive validators assert.  Kept as an option rather than the default
+        # so the existing fixtures stay byte-stable.
+        members = [members[0], members[2], members[1]]
     with path.open("wb") as handle:
         with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
             for name, data in members:
@@ -369,3 +375,64 @@ def test_required_positions_cannot_be_empty(tmp_path):
     assert excinfo.value.errors == (
         "native_task_appearance_required_positions_missing",
     )
+
+
+# The exporter's matrix is judged on its linear part, independently of whether
+# containment happened to survive.  These two cases are the reason: one is the
+# defect hiding inside a passing containment check, the other is a legitimate
+# non-identity transform that must not be called spurious.
+
+
+def symmetric_room_positions(seed: int = 20260820, count: int = 4096) -> np.ndarray:
+    """A room centred on the axis matrix's fixed point.
+
+    ``p -> (-x, -z, -y)`` maps this box onto itself, so a mirrored, upside-down
+    volume still contains every position a plan asks about.
+    """
+
+    rng = np.random.default_rng(seed)
+    return rng.uniform(-5.0, 5.0, (count, 3)).astype(np.float32)
+
+
+def test_a_mirrored_volume_that_still_contains_the_task_is_refused(tmp_path):
+    asset = write_appearance_usdz(
+        tmp_path / "scene_appearance.usdz",
+        symmetric_room_positions(),
+        matrix=EXPORTER_AXIS_MATRIX,
+    )
+    required = {"task_object": [1.0, 2.0, 0.5], "robot_base": [1.0, 1.5, 0.09]}
+    receipt = qualify_native_task_appearance_frame_alignment(
+        asset, required_world_positions_m=required
+    )
+
+    # Containment alone is satisfied both ways -- which is exactly why it is
+    # not enough on its own.
+    assert all(receipt["spawned_frame_contains"].values())
+    assert all(receipt["layer_transform_omitted_frame_contains"].values())
+    assert receipt["layer_transform_linear_is_identity"] is False
+    assert receipt["layer_transform_is_spurious"] is True
+    assert receipt["status"] == "misaligned"
+    assert receipt["blockers"] == ["native_task_appearance_layer_transform_spurious"]
+
+    with pytest.raises(NativeTaskAppearanceFrameAlignmentError):
+        require_native_task_appearance_frame_alignment(
+            asset, required_world_positions_m=required
+        )
+
+
+def test_a_translation_only_transform_is_not_spurious(tmp_path):
+    """``aura_nurec_usdz`` authors one, from the recentre offset it applied."""
+
+    translation = ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.25, -0.4, 0.1, 1))
+    asset = write_appearance_usdz(
+        tmp_path / "scene_appearance.usdz", room_positions(), matrix=translation
+    )
+    receipt = qualify_native_task_appearance_frame_alignment(
+        asset, required_world_positions_m=INSIDE
+    )
+
+    assert receipt["layer_transform_is_identity"] is False
+    assert receipt["layer_transform_linear_is_identity"] is True
+    assert receipt["layer_transform_is_spurious"] is False
+    assert receipt["status"] == "aligned"
+    assert receipt["blockers"] == []
