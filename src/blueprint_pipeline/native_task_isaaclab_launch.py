@@ -268,6 +268,7 @@ def launch_native_task_isaaclab(
     *,
     device: str,
     enable_cameras: bool = True,
+    appearance_render_path: str = NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
     app_launcher_factory: Callable[..., Any] | None = None,
     nurec_renderer_probe_factory: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
@@ -320,7 +321,7 @@ def launch_native_task_isaaclab(
             )
             settings = carb.settings.get_settings()
             return {
-                "render_path": NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+                "render_path": appearance_render_path,
                 "activation_method": "kit_launch_argument_for_renderer_registration",
                 "extension_required": True,
                 "extension_was_enabled_before_probe": extension_enabled,
@@ -349,7 +350,7 @@ def launch_native_task_isaaclab(
     nurec = {
         "extension_id": NATIVE_TASK_ARENA_NUREC_EXTENSION,
         "render_path": raw_nurec.get("render_path")
-        or NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+        or appearance_render_path,
         "activation_method": raw_nurec.get("activation_method"),
         "extension_required": raw_nurec.get("extension_required") is True,
         "extension_was_enabled_before_probe": raw_nurec.get(

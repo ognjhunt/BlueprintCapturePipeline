@@ -1040,6 +1040,33 @@ def test_runtime_preflight_refuses_spg_asset_on_plain_volume_path(tmp_path: Path
     ]
 
 
+def test_runtime_preflight_accepts_sealed_particlefield_alignment(tmp_path: Path) -> None:
+    packet = tmp_path / "packet"
+    asset = packet / "assets" / "scene_appearance.usdc"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"sealed binary ParticleField bytes")
+    plan = {
+        "objects": [
+            {
+                "semantic_role": "scene_appearance",
+                "usd_path": "assets/scene_appearance.usdc",
+            }
+        ],
+        "appearance_frame_alignment": {
+            "status": "aligned",
+            "representation": "particlefield_3d_gaussian_splat",
+            "measurement_authority": "particlefield_position_quantiles",
+        },
+    }
+
+    result = _plain_nurec_volume_contract(packet, plan)
+
+    assert result["passed"] is True
+    assert result["render_path"] == "particlefield_3d_gaussian_splat"
+    assert result["particlefield_alignment_receipt_present"] is True
+    assert result["spg_graph_execution_required"] is False
+
+
 def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
