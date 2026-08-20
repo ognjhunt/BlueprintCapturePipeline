@@ -1001,13 +1001,31 @@ def _articulation_device_binding(
     device. This reads each articulation directly and says so.
     """
 
-    rows: dict[str, Any] = {"expected_device": expected_device, "articulations": {}}
+    rows: dict[str, Any] = {
+        "expected_device": expected_device,
+        "articulations": {},
+        "non_articulation_assets_skipped": [],
+    }
     try:
         scene = built.env.unwrapped.scene
     except Exception as exc:  # the scene may not be reachable on some failures
         rows["unavailable"] = f"{type(exc).__name__}:{exc}"[:200]
         return rows
-    for name in sorted(set(built.scene_asset_names.values()) | {"robot"}):
+    all_asset_names = set(built.scene_asset_names.values()) | {"robot"}
+    plan = getattr(built, "plan", None)
+    if isinstance(plan, Mapping):
+        required_names = {"robot"} | {
+            str(row.get("name") or row.get("semantic_role"))
+            for row in plan.get("objects") or []
+            if isinstance(row, Mapping) and row.get("object_type") == "ARTICULATION"
+        }
+        rows["non_articulation_assets_skipped"] = sorted(
+            all_asset_names - required_names
+        )
+    else:
+        required_names = all_asset_names
+    rows["required_articulation_names"] = sorted(required_names)
+    for name in sorted(required_names):
         entry: dict[str, Any] = {}
         try:
             asset = scene[name]
