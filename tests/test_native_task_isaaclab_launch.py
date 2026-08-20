@@ -39,16 +39,15 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
         / "apps"
     )
     apps.mkdir(parents=True)
-    base = (
-        '[dependencies]\n"isaacsim.core.simulation_manager" = {}\n'
+    base = '[dependencies]\n"isaacsim.core.simulation_manager" = {}\n'
+    base += (
         '"omni.warp.core" = {}\n'
         if old_conflicting_experience
-        else '[dependencies]\n"omni.physics.physx" = {}\n'
-        '[settings.app.extensions]\nexcluded = ["omni.warp.core"]\n'
+        else '[settings.app.extensions]\nexcluded = ["omni.warp.core"]\n'
     )
     (apps / "isaaclab.python.kit").write_text(base, encoding="utf-8")
     (apps / "isaaclab.python.headless.kit").write_text(
-        '[dependencies]\n"omni.physics.physx" = {}\n'
+        '[dependencies]\n"isaacsim.core.simulation_manager" = {}\n'
         '[settings]\napp.extensions.excluded = ["omni.warp.core"]\n',
         encoding="utf-8",
     )

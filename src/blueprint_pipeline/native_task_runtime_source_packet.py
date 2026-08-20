@@ -30,24 +30,21 @@ from .native_task_torch_runtime_lock import TORCH_RUNTIME_DEPENDENCY_WHEELS
 SCHEMA_VERSION = "native_task_runtime_source_packet.v1"
 MANIFEST_SCHEMA_VERSION = "native_task_runtime_source_manifest.v1"
 ISAACLAB_REPOSITORY = "https://github.com/isaac-sim/IsaacLab.git"
-ISAACLAB_COMMIT = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
-ISAACLAB_TREE = "454115265327a80acabd07cbd36e10071fc0c065"
-# Arena 0.2.1 pins the April Isaac Lab source tree above, but that tree's Kit
-# experiences still load Isaac Sim's bundled Warp extension.  Isaac Lab fixed
-# the resulting mixed-Warp tensor devices in the released upstream history by
-# removing those extensions and restoring the direct PhysX registration path.
-# Keep the Python/API source at Arena's exact submodule pin while binding the
-# later official experience files as a separately identified compatibility
-# component.  This is not a mutable local patch: every byte is read from the
-# exact upstream git object below and is independently digest-bound.
+ISAACLAB_COMMIT = "ffff603eafc6b74264a5261cc0183d6a65390d78"
+ISAACLAB_TREE = "2f82f1afb2cfaf6816b328e03c7b3ddc12069658"
+# Isaac Sim 6.0.1 requires the upstream Isaac Lab 3.0 Beta 2 Patch 1 release.
+# The previous mixed source boundary kept Arena 0.2.1's April API tree and a
+# later develop-branch Kit experience.  Both imported, but the 6.0.1 process
+# terminated during AppLauncher startup before control returned to Python.
+# Bind Python, API and Kit bytes to the one upstream release explicitly shipped
+# for 6.0.1.  Arena's paired upgrade below carries its required Beta-2 API and
+# AppLauncher interop fixes.  Every byte is still read from exact git objects.
 ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT = (
-    "a4abce12625f2f1824bf847e9183c18d7eb8b793"
+    "ffff603eafc6b74264a5261cc0183d6a65390d78"
 )
-ISAACLAB_RUNTIME_COMPATIBILITY_TREE = "64e868800aacf68d497843cfefa2f37ae40433c8"
+ISAACLAB_RUNTIME_COMPATIBILITY_TREE = "2f82f1afb2cfaf6816b328e03c7b3ddc12069658"
 ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES = (
-    "03904ab49152d1bae929513529913b9be2e06808",
-    "c4169b2f1c41117b67154c569668b8834519a5ee",
-    "a4abce12625f2f1824bf847e9183c18d7eb8b793",
+    "ffff603eafc6b74264a5261cc0183d6a65390d78",
 )
 RUNTIME_EXPERIENCE_RELATIVE_PATH = (
     "runtime_sources/isaaclab_runtime_compatibility/apps/"
@@ -57,8 +54,8 @@ RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = (
     "runtime_sources/isaaclab/source/isaaclab/setup.py"
 )
 ARENA_REPOSITORY = "https://github.com/isaac-sim/IsaacLab-Arena.git"
-ARENA_COMMIT = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
-ARENA_TREE = "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
+ARENA_COMMIT = "8b82dca224f2b5af08f339f987613c59ce9cdbaa"
+ARENA_TREE = "a52514015a8573ac03b6448688bfa61f9cea18a9"
 ISAACLAB_PACKAGE_NAMES = (
     "isaaclab",
     "isaaclab_assets",
@@ -78,7 +75,7 @@ INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
 BASE_RUNTIME_DEPENDENCY_WHEELS = (
-    # Arena's pinned Isaac Lab Python/API tree declares external Warp 1.12.0.
+    # The pinned Isaac Lab Python/API tree declares external Warp 1.12.0.
     # The compatible Kit experience intentionally excludes ``omni.warp.core``
     # to prevent a second Warp runtime from moving PhysX tensors across CPU and
     # CUDA devices.  Therefore the external wheel is a required runtime input,
