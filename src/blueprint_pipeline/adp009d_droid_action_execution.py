@@ -248,6 +248,10 @@ def plan_chunk_execution(
         {"droid_action": [float(value) for value in values[index]]}
         for index in range(int(horizon))
     ]
+    returned_chunk = [
+        [float(value) for value in values[index]]
+        for index in range(int(values.shape[0]))
+    ]
     return {
         "schema_version": ACTION_EXECUTION_SCHEMA_VERSION,
         "chunk_shape": [int(values.shape[0]), int(values.shape[1])],
@@ -257,6 +261,10 @@ def plan_chunk_execution(
         "control_hz": DROID_CONTROL_HZ,
         "environment_step_seconds": ISAAC_SIM_DT_SECONDS * ISAAC_DECIMATION,
         "actions": rows,
+        # Retain every row the model returned, including the deliberately
+        # unexecuted tail. The open-loop horizon is an execution decision, not
+        # permission to discard model output from the scientific receipt.
+        "returned_chunk": returned_chunk,
         "source_action_space": source_action_space,
         "position_adapter": position_adapter,
         "position_adapter_max_joint_delta_rad": adapter_max_delta,

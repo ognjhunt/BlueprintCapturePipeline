@@ -449,6 +449,15 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
     assert visual["review_observation_count"] == 1
     assert visual["review_frame_count"] == 3
     assert "overview" not in policy.observations[0]
+    exact = receipt["candidate_exact_policy_input_frames"]
+    assert len(exact) == 1
+    assert exact[0]["candidate_exact_policy_input"] is True
+    assert exact[0]["view_order"] == [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
+    assert exact[0]["width"] == 448
+    assert exact[0]["height"] == 224
+    assert exact[0]["frame_manifest_digest"].startswith("sha256:")
+    assert (tmp_path / exact[0]["relative_path"]).is_file()
+    assert receipt["observation_trace_digest"].startswith("sha256:")
 
 
 def test_media_output_and_episode_identity_must_be_bound_together(tmp_path) -> None:
@@ -481,6 +490,11 @@ def test_only_the_open_loop_horizon_of_each_chunk_executes() -> None:
     assert receipt["queries"][0]["chunk_shape"] == [10, 8]
     assert receipt["queries"][0]["executed_rows"] == 8
     assert receipt["queries"][0]["discarded_rows"] == 2
+    assert len(receipt["queries"][0]["returned_chunk"]) == 10
+    assert receipt["queries"][0]["returned_chunk"][8:] == [
+        [0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9]
+    ] * 2
+    assert receipt["queries"][0]["returned_chunk_digest"].startswith("sha256:")
     assert len(environment.steps) == 8 + 2
 
 
