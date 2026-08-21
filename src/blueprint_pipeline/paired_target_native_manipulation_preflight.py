@@ -260,6 +260,21 @@ def _validate_interaction_affordance_candidate(
     robot_base_pose_world: Mapping[str, Any],
 ) -> dict[str, Any]:
     registered_record = candidate.get("registered_asset")
+    selection = candidate.get("selection_contract") or {}
+    grasp = candidate.get("candidate") or {}
+    geometry_modified = selection.get("candidate_geometry_authored_or_modified")
+    try:
+        contact_surface_error = float(
+            grasp.get("contact_point_to_grasp_collider_surface_m") or 0.0
+        )
+    except (TypeError, ValueError):
+        contact_surface_error = float("inf")
+    geometry_modification_admitted = geometry_modified is False or (
+        geometry_modified is True
+        and selection.get("method") == "source_derived_grasp_collision_patch"
+        and bool(grasp.get("grasp_collision_patch_prim_path"))
+        and contact_surface_error <= 0.001
+    )
     if (
         candidate.get("schema_version") != INTERACTION_AFFORDANCE_SCHEMA
         or candidate.get("receipt_digest")
@@ -280,15 +295,12 @@ def _validate_interaction_affordance_candidate(
             candidate.get("robot_base_position_world_m"),
             robot_base_pose_world.get("position_world_m"),
         )
-        or candidate.get("selection_contract", {}).get(
+        or selection.get(
             "object_label_or_task_id_geometry_shortcut_used"
         )
         is not False
-        or candidate.get("selection_contract", {}).get(
-            "candidate_geometry_authored_or_modified"
-        )
-        is not False
-        or candidate.get("candidate", {}).get("pinch_span_within_stroke") is not True
+        or not geometry_modification_admitted
+        or grasp.get("pinch_span_within_stroke") is not True
     ):
         raise PairedTargetNativeManipulationPreflightError(
             f"paired_target_manipulation_interaction_affordance_invalid:{task_id}"
