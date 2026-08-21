@@ -56,7 +56,9 @@ RETREAT_STRATEGY_ID = (
 FRONT_ENTRY_GRASP_ORIENTATION_VARIANT = (
     "parallel_jaw_opposite_sign_equivalent_v1"
 )
-FRONT_ENTRY_BASE_LATERAL_OFFSET_M = 0.025
+FRONT_ENTRY_BASE_LATERAL_OFFSET_MAX_M = 0.05
+FRONT_ENTRY_BASE_LATERAL_OFFSET_STANDOFF_ORIGIN_M = 0.45
+FRONT_ENTRY_BASE_LATERAL_OFFSET_PER_STANDOFF = 0.25
 
 
 class NativeTaskArenaStanceVariantError(ValueError):
@@ -322,11 +324,23 @@ def materialize_native_task_arena_stance_variant_request(
         base_lateral_world = _normalize(
             [-base_outward_world[1], base_outward_world[0], 0.0]
         )
-        base[0] += FRONT_ENTRY_BASE_LATERAL_OFFSET_M * base_lateral_world[0]
-        base[1] += FRONT_ENTRY_BASE_LATERAL_OFFSET_M * base_lateral_world[1]
+        base_lateral_offset = min(
+            FRONT_ENTRY_BASE_LATERAL_OFFSET_MAX_M,
+            max(
+                0.0,
+                (
+                    standoff
+                    - FRONT_ENTRY_BASE_LATERAL_OFFSET_STANDOFF_ORIGIN_M
+                )
+                * FRONT_ENTRY_BASE_LATERAL_OFFSET_PER_STANDOFF,
+            ),
+        )
+        base[0] += base_lateral_offset * base_lateral_world[0]
+        base[1] += base_lateral_offset * base_lateral_world[1]
         base_lateral_source = "world_up_cross_front_entry_outward_axis"
     else:
         base_lateral_world = [0.0, 0.0, 0.0]
+        base_lateral_offset = 0.0
         base_lateral_source = "not_applied_to_legacy_side_entry"
 
     # A retreat is task geometry, not automatically the negated approach.
@@ -486,9 +500,7 @@ def materialize_native_task_arena_stance_variant_request(
         "approach_outward_world": approach_world,
         "base_outward_world": base_outward_world,
         "base_outward_source": base_outward_source,
-        "base_lateral_offset_m": (
-            FRONT_ENTRY_BASE_LATERAL_OFFSET_M if front_entry_patch else 0.0
-        ),
+        "base_lateral_offset_m": base_lateral_offset,
         "base_lateral_world": base_lateral_world,
         "base_lateral_source": base_lateral_source,
         "resolved_base_position_world_m": base,
@@ -545,7 +557,7 @@ __all__ = [
     "FRANKA_ROBOTIQ_READY_RESET",
     "FRANKA_ROBOTIQ_READY_RESET_SOURCE",
     "FRONT_ENTRY_GRASP_ORIENTATION_VARIANT",
-    "FRONT_ENTRY_BASE_LATERAL_OFFSET_M",
+    "FRONT_ENTRY_BASE_LATERAL_OFFSET_MAX_M",
     "NativeTaskArenaStanceVariantError",
     "RETREAT_STRATEGY_ID",
     "materialize_native_task_arena_stance_variant_request",

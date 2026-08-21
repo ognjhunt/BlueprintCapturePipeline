@@ -11,7 +11,7 @@ from blueprint_pipeline.native_task_arena_stance_variant import (
     DROID_ARENA_DEFAULT_RESET_SOURCE,
     FRANKA_ROBOTIQ_READY_RESET,
     FRANKA_ROBOTIQ_READY_RESET_SOURCE,
-    FRONT_ENTRY_BASE_LATERAL_OFFSET_M,
+    FRONT_ENTRY_BASE_LATERAL_OFFSET_MAX_M,
     FRONT_ENTRY_GRASP_ORIENTATION_VARIANT,
     NativeTaskArenaStanceVariantError,
     RETREAT_STRATEGY_ID,
@@ -249,7 +249,7 @@ def test_front_entry_patch_places_base_on_outward_approach_axis(tmp_path) -> Non
     assert stance["derivation"] == (
         "door_contact_plus_front_entry_approach_standoff"
     )
-    assert stance["base_lateral_offset_m"] == FRONT_ENTRY_BASE_LATERAL_OFFSET_M
+    assert stance["base_lateral_offset_m"] == pytest.approx(0.025)
     assert stance["base_lateral_world"] == pytest.approx([1.0, 0.0, 0.0])
     assert stance["base_lateral_source"] == (
         "world_up_cross_front_entry_outward_axis"
@@ -338,6 +338,12 @@ def test_front_entry_jaw_sign_variant_is_idempotent(tmp_path) -> None:
         first["task_spec"]["interaction_affordance"][
             "gripper_orientation_contact_xyzw"
         ]
+    )
+    assert first["stance_variant"]["base_lateral_offset_m"] == (
+        FRONT_ENTRY_BASE_LATERAL_OFFSET_MAX_M
+    )
+    assert first["robot_base_pose_world"]["position_world_m"] == pytest.approx(
+        [3.8134863, 8.806664, 0.090782]
     )
 
 

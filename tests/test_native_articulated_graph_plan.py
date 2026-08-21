@@ -449,10 +449,16 @@ def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -
     assert plan["interaction_affordance"]["contact_body_prim_paths"] == [
         "/Asset/links/panel/contact"
     ]
+    assert plan["phases"][0]["arrival_orientation_tolerance_rad"] is None
+    assert plan["phases"][0]["position_only_arrival"] is True
+    assert plan["exact_contact_phases"][0][
+        "arrival_orientation_tolerance_rad"
+    ] is None
+    assert plan["exact_contact_phases"][0]["position_only_arrival"] is True
     assert all(
         row["arrival_orientation_tolerance_rad"] == pytest.approx(0.04)
-        for row in plan["phases"]
-        + plan["exact_contact_phases"]
+        for row in plan["phases"][1:]
+        + plan["exact_contact_phases"][1:]
     )
     assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
 
@@ -607,9 +613,15 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     assert control["scripted_positive_actions"][5]["expected_joint_positions"][
         "panel_hinge"
     ] == pytest.approx(0.8)
+    assert control["scripted_positive_actions"][0][
+        "arrival_orientation_tolerance_rad"
+    ] is None
+    assert control["scripted_positive_actions"][0][
+        "position_only_arrival"
+    ] is True
     assert all(
         row["arrival_orientation_tolerance_rad"] == pytest.approx(0.04)
-        for row in control["scripted_positive_actions"]
+        for row in control["scripted_positive_actions"][1:]
     )
     assert control["construction_gate_evaluation_digest"]
     assert control[

@@ -386,6 +386,7 @@ def _phase(
     gate_ids: Sequence[str],
     orientation_world_xyzw: Sequence[float],
     arrival_orientation_tolerance_rad: float | None = None,
+    position_only_arrival: bool = False,
     expected_scoring_position_world_m: Sequence[float] | None = None,
     expected_scoring_orientation_world_xyzw: Sequence[float] | None = None,
 ) -> dict[str, Any]:
@@ -404,7 +405,10 @@ def _phase(
         result["expected_scoring_orientation_world_xyzw"] = [
             float(value) for value in expected_scoring_orientation_world_xyzw
         ]
-    if arrival_orientation_tolerance_rad is not None:
+    if position_only_arrival:
+        result["arrival_orientation_tolerance_rad"] = None
+        result["position_only_arrival"] = True
+    elif arrival_orientation_tolerance_rad is not None:
         result["arrival_orientation_tolerance_rad"] = float(
             arrival_orientation_tolerance_rad
         )
@@ -941,7 +945,7 @@ def materialize_graph_articulated_construction_phase_plan(
             gripper_state="open",
             gate_ids=("precontact_reachability", "base_collision_clearance"),
             orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
-            arrival_orientation_tolerance_rad=orientation_tolerance,
+            position_only_arrival=True,
         ),
         _phase(
             "approach",
@@ -1008,7 +1012,7 @@ def materialize_graph_articulated_construction_phase_plan(
             gripper_state="open",
             gate_ids=("precontact_reachability", "base_collision_clearance"),
             orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
-            arrival_orientation_tolerance_rad=orientation_tolerance,
+            position_only_arrival=True,
         ),
         _phase(
             "approach",
