@@ -523,6 +523,9 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
         for row in control["scripted_positive_actions"]
     )
     assert control["construction_gate_evaluation_digest"]
+    assert control[
+        "positive_trajectory_budgets_derived_from_measured_construction"
+    ] is True
     assert control["plan_digest"] == canonical_digest(
         control, digest_field="plan_digest"
     )
