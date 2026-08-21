@@ -4936,6 +4936,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("native_task_arena_hard_ttl_invalid")
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("native_task_arena_allowed_active_instance_id_invalid")
+            native_policy_execution_spec: dict[str, Any] | None = None
+            gated_backbone_access: dict[str, Any] | None = None
+            if policy_requested and args.native_task_arena_policy_execution_spec:
+                try:
+                    native_policy_execution_spec = json.loads(
+                        Path(args.native_task_arena_policy_execution_spec).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    selected_candidate = str(
+                        native_policy_execution_spec.get("candidate_id") or ""
+                    )
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    selected_candidate = ""
+                    blockers.append("native_task_arena_policy_execution_spec_unreadable")
+                groot_selected = selected_candidate == "groot_n17_droid"
+                if groot_selected and not args.adp009d_authorize_gated_backbone:
+                    blockers.append("native_task_arena_groot_gated_backbone_authority_missing")
+                if args.adp009d_authorize_gated_backbone and not groot_selected:
+                    blockers.append("native_task_arena_gated_backbone_authority_without_groot")
+                if groot_selected and args.adp009d_authorize_gated_backbone:
+                    normalize_model_access_env()
+                    secret_status = model_access_secret_status()
+                    if secret_status["huggingface"]["auth_ready"] is not True:
+                        blockers.append("native_task_arena_groot_gated_backbone_token_missing")
+                    else:
+                        gated_backbone_access = probe_gated_backbone_access()
+                        blockers.extend(gated_backbone_access.get("blockers") or [])
             avoidlist_digest = None
             if args.adp_machine_avoidlist:
                 avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
@@ -4997,11 +5025,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     args.native_task_arena_construction_result
                                 ),
                                 control_result_path=(args.native_task_arena_control_result),
-                                policy_execution_spec=json.loads(
-                                    Path(args.native_task_arena_policy_execution_spec).read_text(
-                                        encoding="utf-8"
-                                    )
-                                ),
+                                policy_execution_spec=native_policy_execution_spec,
                             )
                             if policy_requested
                             else build_native_task_arena_controls_bundle(
@@ -5086,6 +5110,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "policy_candidate_id": (
                     prepared_bundle.get("policy_candidate_id") if prepared_bundle else None
                 ),
+                "gated_backbone_authorized": bool(
+                    args.adp009d_authorize_gated_backbone
+                ),
+                "gated_backbone_access_receipt_digest": (
+                    gated_backbone_access.get("receipt_digest")
+                    if gated_backbone_access
+                    else None
+                ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
@@ -5128,6 +5160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "private_data_uploaded": True,
                     "raw_dataset_bytes_uploaded": False,
                     "candidate_policy_queried": policy_requested,
+                    "gated_backbone_access": gated_backbone_access,
                     "physical_outcome_values_uploaded": False,
                     "explicit_concurrent_gpu_authority_bound": bool(
                         args.adp_allowed_active_vast_instance_id
@@ -5185,6 +5218,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 if not preflight_requested:
                     run_kwargs["paid_attempt_authority"] = native_authority
+                if policy_requested:
+                    run_kwargs["authorize_gated_backbone"] = bool(
+                        args.adp009d_authorize_gated_backbone
+                    )
                 result = run_native(**run_kwargs)
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

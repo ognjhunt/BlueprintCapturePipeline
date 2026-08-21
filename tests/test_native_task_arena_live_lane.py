@@ -23,6 +23,9 @@ import pytest
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_paid_authority as paid
+from blueprint_pipeline.native_task_arena_bundle import (
+    POLICY_RUNTIME_ROOT_MODULE_NAMES,
+)
 from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 import blueprint_pipeline.task_evaluation_live_profile as live_profile
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
@@ -135,6 +138,7 @@ def _provider_bundle(
             "native_task_arena_construction_result.v1.json",
             "native_task_arena_control_result.v1.json",
             "native_task_arena_policy_execution_spec.v1.json",
+            "openpi_polaris_checkpoint_inventory.json",
         ),
     }[link]
     manifest = {
@@ -156,6 +160,32 @@ def _provider_bundle(
         "packet_file_count": 0,
         "worker_source_sha256": "sha256:" + "4" * 64,
         "runtime_modules": [],
+        "runtime_root_modules": (
+            [
+                {
+                    "relative_path": name,
+                    "size_bytes": 1,
+                    "sha256": "sha256:" + "8" * 64,
+                }
+                for name in POLICY_RUNTIME_ROOT_MODULE_NAMES
+            ]
+            if link == "policy"
+            else []
+        ),
+        "policy_provisioning_script": (
+            "adp009d_policy_provisioning.pi05_droid.sh"
+            if link == "policy"
+            else None
+        ),
+        "policy_provisioning": (
+            {
+                "relative_path": "adp009d_policy_provisioning.pi05_droid.sh",
+                "size_bytes": 1,
+                "sha256": "sha256:" + "9" * 64,
+            }
+            if link == "policy"
+            else None
+        ),
         "bound_runtime_inputs": [
             {
                 "relative_path": f"runtime_inputs/{name}",

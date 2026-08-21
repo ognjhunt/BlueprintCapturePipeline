@@ -833,6 +833,92 @@ def test_canonical_allocator_routes_native_task_policy_bundle(
     assert observed["allowed_active_instance_ids"] == [47373597]
     admission = json.loads((tmp_path / "policy-admission.json").read_text())
     assert admission["candidate_policy_queried"] is True
+
+
+def test_canonical_allocator_binds_groot_gated_backbone_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    execution_spec = _groot_policy_spec(scene, construction, controls)
+    execution_path = tmp_path / "groot-policy-execution.json"
+    execution_path.write_text(json.dumps(execution_spec))
+    observed: dict = {}
+    access = {"receipt_digest": "sha256:" + "9" * 64, "blockers": []}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "d" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(allocator, "normalize_model_access_env", lambda: None)
+    monkeypatch.setattr(
+        allocator,
+        "model_access_secret_status",
+        lambda: {"huggingface": {"auth_ready": True}},
+    )
+    monkeypatch.setattr(
+        allocator, "probe_gated_backbone_access", lambda: dict(access)
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_native_task_arena_policy_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        "native-task-arena-policy",
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "groot-policy-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "groot-policy-adapter.json"),
+        "--pod-name",
+        "native-task-groot-policy",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
+        "--native-task-arena-construction-result",
+        str(construction),
+        "--native-task-arena-control-result",
+        str(controls),
+        "--native-task-arena-policy-execution-spec",
+        str(execution_path),
+        "--adp-job-dir",
+        str(tmp_path / "groot-policy-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--adp009d-authorize-gated-backbone",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["prepared_bundle"]["policy_candidate_id"] == "groot_n17_droid"
+    assert observed["authorize_gated_backbone"] is True
+    admission = json.loads(
+        (tmp_path / "groot-policy-admission.json").read_text()
+    )
+    assert admission["gated_backbone_access"] == access
+    assert admission["allocation_binding"]["gated_backbone_authorized"] is True
+    assert admission["allocation_binding"][
+        "gated_backbone_access_receipt_digest"
+    ] == access["receipt_digest"]
     assert admission["allocation_binding"]["execution_mode"] == "policy"
 
 
@@ -1716,6 +1802,45 @@ def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
         (tmp_path / "policy").resolve()
         / "native_task_arena_policy_paid_launch.lock"
     )
+
+
+def test_groot_policy_vast_requires_and_forwards_gated_backbone_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed: dict = {}
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "policy",
+        "policy_candidate_id": "groot_n17_droid",
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_policy_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match="gated_backbone_authority_missing"):
+        run_native_task_arena_policy_vast(
+            job_dir=tmp_path / "missing",
+            prepared_bundle=prepared,
+            paid_resource_admission_grant=None,
+            execute=False,
+        )
+
+    run_native_task_arena_policy_vast(
+        job_dir=tmp_path / "authorized",
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+        authorize_gated_backbone=True,
+    )
+
+    assert observed["forward_hf_token"] is True
 
 
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
