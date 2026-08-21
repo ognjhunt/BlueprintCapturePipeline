@@ -3688,13 +3688,21 @@ def _probe_shell_script(
     # this failure.
     curl_download_protocol = (
         "--http1.1 --continue-at - --retry 5 --retry-delay 3 "
-        "--retry-all-errors --connect-timeout 30 "
+        "--retry-all-errors --retry-max-time 420 --connect-timeout 30 "
+        "--speed-limit 4M --speed-time 60 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
         'mkdir -p "$WORK_DIR/blueprint_vast_probe" 2>/dev/null || '
         '{ WORK_DIR=/tmp/blueprint_vast_work; mkdir -p "$WORK_DIR/blueprint_vast_probe"; }; '
         'export BLUEPRINT_VAST_WORK_DIR="$WORK_DIR"; '
+        "if [ \"$(id -u)\" -eq 0 ] && [ ! -L /root/.ssh ] && "
+        "[ -d /root/.ssh ] && [ ! -L /root/.ssh/authorized_keys ] && "
+        "[ -f /root/.ssh/authorized_keys ]; then "
+        "chown root:root /root/.ssh /root/.ssh/authorized_keys && "
+        "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && "
+        "echo BLUEPRINT_VAST_SSH_PERMISSIONS_REPAIRED; "
+        "else echo BLUEPRINT_VAST_SSH_PERMISSIONS_REPAIR_SKIPPED; fi; "
         "echo BLUEPRINT_VAST_WORK_DIR:$WORK_DIR; "
         "PY_NET=''; "
         "if command -v python3 >/dev/null 2>&1; then PY_NET=$(command -v python3); "

@@ -452,6 +452,7 @@ def build_lane_live_profile(
     max_spend_usd: float | None = None,
     extra_paths: Mapping[str, str | Path] | None = None,
     extra_values: Mapping[str, Any] | None = None,
+    runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Derive one lane's live profile, or refuse with every reason at once."""
 
@@ -582,7 +583,7 @@ def build_lane_live_profile(
             "digest": run_spec_digest,
         },
         "immutable_inputs": immutable_inputs,
-        "runtime_environment": {},
+        "runtime_environment": dict(runtime_environment or {}),
         **shared_control_surface(required_providers=spec.required_providers),
     }
     lane_profile_fields = spec.profile_fields(context)

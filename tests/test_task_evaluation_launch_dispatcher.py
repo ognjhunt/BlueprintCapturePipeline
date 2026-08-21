@@ -610,6 +610,20 @@ def test_profile_runtime_environment_is_scoped_to_allocator_call(
     assert __import__("os").environ.get("BLUEPRINT_ADP009D_CAMERA_RESOLUTION") is None
 
 
+def test_vast_geolocation_preference_is_an_allowed_scoped_runtime_key(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    profile["runtime_environment"] = {
+        "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": "california|oregon|texas"
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+    assert validate_launch_profile(profile) == []
+
+
 def test_profile_runtime_environment_rejects_authority_or_output_keys(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
     profile["runtime_environment"] = {
