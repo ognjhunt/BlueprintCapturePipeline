@@ -526,6 +526,27 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     assert control[
         "positive_trajectory_budgets_derived_from_measured_construction"
     ] is True
+    assert control[
+        "positive_trajectory_reexecutes_qualified_clearance_targets"
+    ] is True
+    clearance = {
+        row["phase_id"]: row["position_world_m"]
+        for row in phase_plan["phases"]
+    }
+    actions = {row["phase_id"]: row for row in control["scripted_positive_actions"]}
+    assert actions["contact_open"]["target_position_world_m"] == clearance[
+        "contact_sweep_clearance_00"
+    ]
+    assert actions["contact_close"]["target_position_world_m"] == clearance[
+        "contact_sweep_clearance_00"
+    ]
+    assert actions["joint_path_01"]["target_position_world_m"] == clearance[
+        "contact_sweep_clearance_01"
+    ]
+    assert actions["release"]["target_position_world_m"] == clearance[
+        "release_clearance"
+    ]
+    assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.025)
     assert control["plan_digest"] == canonical_digest(
         control, digest_field="plan_digest"
     )
@@ -549,14 +570,24 @@ def test_graph_articulated_control_rejects_incomplete_clearance_readback() -> No
 
 
 class _GraphControlEnvironment:
-    def __init__(self, construction: dict):
-        phases = construction["construction_phase_plan"]["exact_contact_phases"]
+    def __init__(self, construction: dict, control_plan: dict | None = None):
+        phases = (
+            control_plan["scripted_positive_actions"]
+            if control_plan is not None
+            else construction["construction_phase_plan"]["exact_contact_phases"]
+        )
         self._joint_positions_by_target = {
-            tuple(row["position_world_m"]): dict(row["expected_joint_positions"])
+            tuple(
+                row.get("target_position_world_m")
+                or row["position_world_m"]
+            ): dict(row["expected_joint_positions"])
             for row in phases
             if "expected_joint_positions" in row
         }
-        self._retreat_target = list(phases[-1]["position_world_m"])
+        self._retreat_target = list(
+            phases[-1].get("target_position_world_m")
+            or phases[-1]["position_world_m"]
+        )
         self.reset()
 
     def reset(self) -> None:
@@ -677,7 +708,7 @@ def test_graph_articulated_control_runs_zero_then_positive_through_shared_scorer
     )
 
     pair = run_task_neutral_controls(
-        environment=_GraphControlEnvironment(construction),
+        environment=_GraphControlEnvironment(construction, plan),
         task_spec=scene["task_spec"],
         control_plan=plan,
         gripper_open_command=0.0,
