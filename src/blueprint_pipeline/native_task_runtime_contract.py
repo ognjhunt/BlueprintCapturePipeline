@@ -24,6 +24,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .paired_target_native_construction_bindings import (
+    LEGACY_SCHEMA_VERSION as LEGACY_PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
     PairedTargetNativeConstructionBindingsError,
     SCHEMA_VERSION as PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
     validate_paired_target_native_construction_bindings,
@@ -783,10 +784,10 @@ def materialize_native_task_runtime_contract(
             errors.append("native_task_runtime_construction_bindings_missing")
         else:
             try:
-                if (
-                    construction_bindings.get("schema_version")
-                    == PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION
-                ):
+                if construction_bindings.get("schema_version") in {
+                    LEGACY_PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
+                    PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
+                }:
                     qualified_construction = (
                         validate_paired_target_native_construction_bindings(
                             construction_bindings
@@ -807,10 +808,10 @@ def materialize_native_task_runtime_contract(
             errors.append("native_task_runtime_task_freeze_digest_invalid")
         if qualified_construction is not None:
             binding_rows = qualified_construction["bindings"]
-            if (
-                qualified_construction.get("schema_version")
-                != PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION
-            ):
+            if qualified_construction.get("schema_version") not in {
+                LEGACY_PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
+                PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
+            }:
                 _replacement_construction_evidence_bound(
                     binding_rows=binding_rows,
                     errors=errors,

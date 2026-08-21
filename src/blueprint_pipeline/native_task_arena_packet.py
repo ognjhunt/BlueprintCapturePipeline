@@ -20,7 +20,11 @@ from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
+from .native_task_execution_admission import seal_native_task_execution_admission
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
+from .paired_target_native_construction_bindings import (
+    SCHEMA_VERSION as PAIRED_CONSTRUCTION_SCHEMA_VERSION,
+)
 
 
 REQUEST_SCHEMA_VERSION = "native_task_arena_packet_request.v1"
@@ -532,6 +536,33 @@ def materialize_native_task_arena_packet(
             receipt, digest_field="receipt_digest"
         )
         write_json(output / "native_task_arena_packet_receipt.v1.json", receipt)
+        construction = contract.get("construction_bindings") or {}
+        if construction.get("schema_version") == PAIRED_CONSTRUCTION_SCHEMA_VERSION:
+            candidate_record = construction.get("native_execution_candidate") or {}
+            runtime_record = construction.get("native_import_result") or {}
+            try:
+                candidate = json.loads(
+                    Path(str(candidate_record.get("path") or "")).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                runtime_result = json.loads(
+                    Path(str(runtime_record.get("path") or "")).read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise NativeTaskArenaPacketError(
+                    ["native_task_execution_admission_evidence_missing"]
+                ) from exc
+            seal_native_task_execution_admission(
+                candidate=candidate,
+                runtime_result=runtime_result,
+                packet_receipt=receipt,
+                scene_plan=plan,
+                task_id=contract["task_id"],
+                destination=output / "native_task_execution_admission.v1.json",
+            )
         return json.loads(json.dumps(receipt))
     except Exception:
         shutil.rmtree(output)

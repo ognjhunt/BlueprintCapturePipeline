@@ -328,6 +328,9 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "schema_version": "native_task_arena_packet_request.v1",
         "scene_id": SCENE_ID,
         "task_id": TASK_ID,
+        "construction_bindings": {
+            "schema_version": "paired_target_native_construction_bindings.v2"
+        },
         "request_digest": "",
     }
     request["request_digest"] = canonical_digest(
@@ -397,6 +400,34 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         packet_receipt, digest_field="receipt_digest"
     )
     write_json(packet / builder.PACKET_RECEIPT_NAME, packet_receipt)
+    execution_admission = {
+        "schema_version": "native_task_execution_admission.v1",
+        "status": "admitted_for_native_gpu_construction",
+        "scene_id": SCENE_ID,
+        "task_id": TASK_ID,
+        "asset_id": "task_asset",
+        "registered_asset_sha256": "sha256:" + "1" * 64,
+        "runtime_image": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:" + "2" * 64,
+        "execution_candidate_digest": "sha256:" + "3" * 64,
+        "collision_intent_digest": "sha256:" + "4" * 64,
+        "native_runtime_result_digest": "sha256:" + "5" * 64,
+        "packet_receipt_digest": packet_receipt["receipt_digest"],
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "native_gpu_cooking_readback_qualified": True,
+        "native_simulation_step_qualified": True,
+        "construction_authorized": True,
+        "controls_executed": False,
+        "learned_policy_executed": False,
+        "physical_equivalence_claimed": False,
+        "receipt_digest": "",
+    }
+    execution_admission["receipt_digest"] = canonical_digest(
+        execution_admission, digest_field="receipt_digest"
+    )
+    write_json(
+        packet / "native_task_execution_admission.v1.json",
+        execution_admission,
+    )
     source_packet = tmp_path / "runtime_source_packet.json"
     runtime_source = {
         "schema_version": "native_task_runtime_source_packet.v1",
@@ -619,7 +650,19 @@ def test_bundle_receipt_and_packet_receipt_remain_distinct_predecessors(lane) ->
     assert inputs["native_task_arena_attempt_authority"]["path"] == str(
         lane["authorities"]["construction"].resolve()
     )
+    assert inputs["native_task_execution_admission"]["path"] == str(
+        (
+            lane["packet"] / "native_task_execution_admission.v1.json"
+        ).resolve()
+    )
     assert inputs["source_bundle_manifest"] != inputs["evaluation_run_spec"]
+
+
+def test_missing_execution_admission_is_refused_before_profile(lane) -> None:
+    (lane["packet"] / "native_task_execution_admission.v1.json").unlink()
+
+    with pytest.raises(TaskEvaluationLaunchError):
+        _build(lane, "construction")
 
 
 def test_provider_bundle_byte_tamper_is_refused_before_allocation(lane) -> None:

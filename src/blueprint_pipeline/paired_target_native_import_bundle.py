@@ -24,6 +24,11 @@ from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAGE
+from .native_task_execution_admission import (
+    NativeTaskExecutionAdmissionError,
+    prepare_native_task_execution_candidate,
+    validate_native_task_execution_candidate,
+)
 
 
 SCHEMA_VERSION = "paired_target_native_import_provider_bundle.v1"
@@ -319,6 +324,31 @@ def build_paired_target_native_import_bundle(
                     ]["receipt_digest"],
                 }
             )
+        candidate_path = runtime / "native_task_execution_candidate.v1.json"
+        try:
+            execution_candidate = prepare_native_task_execution_candidate(
+                scene_id=str(source.get("scene_id") or ""),
+                runtime_image=DEFAULT_IMAGE,
+                assets=[
+                    {
+                        "task_id": row["task_id"],
+                        "asset_id": row["asset_id"],
+                        "path": str(row["source_path"]),
+                        "size_bytes": row["source"]["size_bytes"],
+                        "sha256": row["source"]["sha256"],
+                        "registered_static_qualification_digest": row[
+                            "registered_static_qualification"
+                        ]["receipt_digest"],
+                    }
+                    for row in replacements
+                ],
+                destination=candidate_path,
+            )
+        except NativeTaskExecutionAdmissionError as exc:
+            raise PairedTargetNativeImportBundleError(
+                "paired_target_native_import_execution_candidate_blocked:"
+                + ";".join(exc.errors)
+            ) from exc
         request: dict[str, Any] = {
             "schema_version": REQUEST_SCHEMA_VERSION,
             "status": "frozen_pending_native_isaac_import",
@@ -333,6 +363,12 @@ def build_paired_target_native_import_bundle(
             "replacement_count": len(replacement_rows),
             "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
             "replacements": replacement_rows,
+            "execution_candidate": {
+                "relative_path": candidate_path.relative_to(runtime).as_posix(),
+                "size_bytes": candidate_path.stat().st_size,
+                "sha256": _sha256(candidate_path),
+                "candidate_digest": execution_candidate["candidate_digest"],
+            },
             "candidate_policy_queried": False,
             "native_isaac_executed": False,
             "physical_equivalence_claimed": False,
@@ -359,7 +395,7 @@ def build_paired_target_native_import_bundle(
             'import hashlib, json, sys\n'
             'from pathlib import Path\n'
             'path=Path(sys.argv[1])\n'
-            'value={"schema_version":"paired_target_native_import_runtime_result.v1","status":"blocked","native_isaac_executed":False,"all_replacements_import_qualified":False,"candidate_policy_queried":False,"physical_equivalence_claimed":False,"blockers":["paired_target_native_import_runner_failed_without_runtime_result"],"result_digest":""}\n'
+            'value={"schema_version":"paired_target_native_import_runtime_result.v1","status":"blocked","native_isaac_executed":False,"all_replacements_import_qualified":False,"native_gpu_physics_qualified":False,"candidate_policy_queried":False,"physical_equivalence_claimed":False,"blockers":["paired_target_native_import_runner_failed_without_runtime_result"],"result_digest":""}\n'
             'payload=dict(value); payload.pop("result_digest",None)\n'
             'value["result_digest"]="sha256:"+hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()\n'
             'path.write_text(json.dumps(value,indent=2,sort_keys=True)+"\\n",encoding="utf-8")\n'
@@ -389,6 +425,10 @@ def build_paired_target_native_import_bundle(
             "probe_spec_sha256": request["request_digest"],
             "replacement_count": len(replacement_rows),
             "replacements": replacement_rows,
+            "execution_candidate_digest": execution_candidate[
+                "candidate_digest"
+            ],
+            "provider_zero_gpu_collision_qualification_completed": True,
             "input_files": inventory,
             "expected_output_filename": RESULT_FILENAME,
             "expected_output_schema": RESULT_SCHEMA_VERSION,
@@ -444,6 +484,9 @@ def validate_paired_target_native_import_bundle(
         or not 1 <= int(receipt.get("replacement_count") or 0) <= MAX_REPLACEMENT_OBJECTS
         or receipt.get("retry_cap") != 0
         or receipt.get("provider_zero_required_before_and_after") is not True
+        or receipt.get("provider_zero_gpu_collision_qualification_completed")
+        is not True
+        or not isinstance(receipt.get("execution_candidate_digest"), str)
         or receipt.get("raw_nonredistributable_bytes_included") is not False
         or receipt.get("canonical_interiorgs_included_or_mutated") is not False
         or bundle.is_symlink()
@@ -478,6 +521,16 @@ def validate_paired_target_native_import_bundle(
             manifest_name = "paired_target_native_import_bundle_manifest.v1.json"
             if set(members) != {*declared, manifest_name}:
                 raise ValueError("inventory_mismatch")
+            candidate = json.loads(
+                archive.read(members["native_task_execution_candidate.v1.json"])
+            )
+            validate_native_task_execution_candidate(
+                candidate, reopen_files=False
+            )
+            if candidate.get("candidate_digest") != receipt.get(
+                "execution_candidate_digest"
+            ):
+                raise ValueError("execution_candidate_mismatch")
             for relative, record in declared.items():
                 body = archive.read(members[relative])
                 if (

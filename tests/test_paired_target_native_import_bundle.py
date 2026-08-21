@@ -36,7 +36,19 @@ def _source(tmp_path: Path, *, count: int) -> Path:
     for index in range(count):
         path = tmp_path / f"asset_{index}.usda"
         path.write_text(
-            '#usda 1.0\n(defaultPrim="Asset")\ndef Xform "Asset" {}\n',
+            '''#usda 1.0
+(defaultPrim="Asset")
+def Xform "Asset"
+{
+    def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Cube "collider" (prepend apiSchemas = ["PhysicsCollisionAPI"])
+        {
+            double size = 0.1
+        }
+    }
+}
+''',
             encoding="utf-8",
         )
         static_path = tmp_path / f"static_{index}.json"
@@ -189,4 +201,57 @@ def test_rejects_missing_asset_frame_registration(tmp_path: Path) -> None:
             runner_path=ROOT / "scripts/run_paired_target_native_import_probe.py",
             output_root=tmp_path / "bad-registration",
             implementation_commit="e" * 40,
+        )
+
+
+def test_rejects_gpu_unsafe_collision_intent_before_bundle_or_spend(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path, count=1)
+    value = json.loads(source.read_text(encoding="utf-8"))
+    replacement = value["tasks"][0]["co_present_replacements"][0]
+    asset = Path(replacement["visual_usd"]["path"])
+    asset.write_text(
+        '''#usda 1.0
+(defaultPrim="Asset")
+def Xform "Asset"
+{
+    def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Mesh "thin" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            point3f[] points = [(-0.00005, -0.025, -0.025), (0.00005, 0.025, 0.025)]
+        }
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    replacement["visual_usd"] = _record(asset)
+    static_path = Path(replacement["registered_static_qualification"]["path"])
+    static = json.loads(static_path.read_text(encoding="utf-8"))
+    static["replacement_usd"] = _record(asset)
+    static["receipt_digest"] = canonical_digest(
+        static, digest_field="receipt_digest"
+    )
+    static_path.write_text(json.dumps(static), encoding="utf-8")
+    replacement["registered_static_qualification"] = {
+        **_record(static_path),
+        "receipt_digest": static["receipt_digest"],
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    source.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        PairedTargetNativeImportBundleError,
+        match="native_task_dynamic_convex_hull_gpu_oblong",
+    ):
+        build_paired_target_native_import_bundle(
+            native_render_request_path=source,
+            runner_path=ROOT / "scripts/run_paired_target_native_import_probe.py",
+            output_root=tmp_path / "unsafe",
+            implementation_commit="f" * 40,
         )
