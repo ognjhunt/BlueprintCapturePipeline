@@ -86,6 +86,11 @@ VELOCITY_FEEDFORWARD_SCALE = DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 # separate these operations; commanding a 120+ degree reorientation only at
 # the final 0.12 m standoff produced real washer contact in Arena r30.
 GRAPH_ARTICULATED_PREALIGN_CLEARANCE_M = 0.30
+# The outward standoff must oppose the tool's +Z approach axis.  A perpendicular
+# standoff was accepted previously, which made the gripper translate along its
+# jaw-closing axis and strike the door before the panel entered between the
+# fingers.  Keep the tolerance numeric rather than trusting a source label.
+GRAPH_ARTICULATED_STANDOFF_ALIGNMENT_MIN = 1.0 - 1.0e-6
 
 
 class NativeTaskConstructionPlanError(ValueError):
@@ -844,6 +849,27 @@ def materialize_graph_articulated_construction_phase_plan(
     )
     first = world_rows[0]
     last = world_rows[-1]
+    tool_approach_world = _quaternion_rotate_xyzw(
+        first["gripper_orientation_world_xyzw"], [0.0, 0.0, 1.0]
+    )
+    outward_alignment = -sum(
+        standoff * tool
+        for standoff, tool in zip(
+            approach_unit_world, tool_approach_world, strict=True
+        )
+    )
+    if (
+        not is_unauthored_identity_quaternion_xyzw(
+            affordance["gripper_orientation_contact_xyzw"]
+        )
+        and outward_alignment < GRAPH_ARTICULATED_STANDOFF_ALIGNMENT_MIN
+    ):
+        raise NativeTaskConstructionPlanError(
+            [
+                "native_articulated_graph_construction_"
+                "standoff_not_opposite_gripper_approach"
+            ]
+        )
     orientation_tolerance = float(
         affordance["arrival_orientation_tolerance_rad"]
     )

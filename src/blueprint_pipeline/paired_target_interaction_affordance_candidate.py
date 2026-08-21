@@ -393,13 +393,23 @@ def materialize_paired_target_interaction_affordance_candidate(
         ]
         pinch_axis_local = normal
         pinch_axis = normal_world
-        approach = normal_world
-        # The panel normal is the jaws' closing axis and the standoff
-        # direction.  It is NOT a second, independent axis, so on its own it
-        # cannot span a gripper frame: ee_x = ee_y x ee_z collapses to zero and
-        # the roll about the approach is unconstrained (PR #799).  The missing
-        # axis is authored here, at the only place that holds the panel basis.
+        # A parallel-jaw gripper cannot acquire a panel by translating along
+        # the axis its jaws close on: the leading finger/knuckle reaches the
+        # panel before the panel can enter between the open fingers.  Stage the
+        # gripper outside the free edge instead, then travel hinge-ward along
+        # the in-plane radial.  Arena controls c3/c4 measured both sides of the
+        # old defect: exact normal-axis targeting struck the door with a
+        # non-fingertip body, while a 25 mm normal standoff produced no contact.
         #
+        # ``radial`` points from the hinge toward the selected free edge, so it
+        # is the outward standoff direction.  The tool approach axis is its
+        # opposite and remains independent of the jaw axis.
+        radial_world = _normalize(
+            [float(item) for item in link_world.TransformDir(Gf.Vec3d(*radial))],
+            code="paired_target_affordance_radial_direction_invalid",
+        )
+        approach = radial_world
+
         # ``radial`` already points from the hinge toward the panel centre, and
         # ``contact_local`` is taken at ``far_radial`` -- the free edge.  The
         # gripper therefore travels INWARD along the panel plane, from beyond
@@ -407,15 +417,7 @@ def materialize_paired_target_interaction_affordance_candidate(
         # that leaves the palm and the rear finger in free space rather than
         # inside the appliance.  Hinge-ward is the only sign that is not a
         # wrist buried in the cabinet, so the sign is not free either.
-        gripper_approach = _normalize(
-            [
-                float(item)
-                for item in link_world.TransformDir(
-                    Gf.Vec3d(*[-value for value in radial])
-                )
-            ],
-            code="paired_target_affordance_gripper_approach_invalid",
-        )
+        gripper_approach = [-value for value in radial_world]
         gripper_approach_source = "panel_plane_radial_inward_from_free_edge"
     pinch_span = sum(
         abs(pinch_axis_local[index]) * spans[index] for index in range(3)
@@ -456,6 +458,11 @@ def materialize_paired_target_interaction_affordance_candidate(
         "selection_contract": {
             "method": method,
             "gripper_approach_axis_source": gripper_approach_source,
+            "standoff_axis_source": (
+                "panel_plane_radial_outward_from_free_edge"
+                if task_kind == "articulated_interaction"
+                else "base_to_contact_direction"
+            ),
             "link_selected_from_articulation_graph_role": True,
             "object_label_or_task_id_geometry_shortcut_used": False,
             "candidate_geometry_authored_or_modified": False,
@@ -471,10 +478,10 @@ def materialize_paired_target_interaction_affordance_candidate(
             "contact_point_link_m": contact_local,
             "contact_point_registered_stage_m": contact_world,
             "approach_unit_registered_stage": approach,
-            # Consumed as a standoff translation only.  The gripper frame's
-            # approach is the separate axis below, because for a hinged panel
-            # the standoff direction IS the jaw axis and one vector cannot be
-            # both.
+            # Consumed as an outward standoff translation.  For a hinged panel
+            # it is the opposite of the tool approach below, and both are
+            # perpendicular to the jaw axis so the open fingers can surround
+            # the free edge before closing across the panel thickness.
             "gripper_approach_axis_registered_stage": gripper_approach,
             "pinch_axis_registered_stage": pinch_axis,
             "pinch_span_m": pinch_span,

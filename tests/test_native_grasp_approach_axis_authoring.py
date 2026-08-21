@@ -1,10 +1,9 @@
 """Author the missing gripper approach axis, and prove the frame it produces.
 
-PR #799 established the convention and then refused, correctly, to invent the
-input it was missing.  ``target_driven_link_far_edge_pinch`` gave the panel
-normal to BOTH ``approach_unit_registered_stage`` and
-``pinch_axis_registered_stage``, so the sealed affordance carried one axis
-twice: ``ee_x = ee_y x ee_z`` is the zero vector and no quaternion exists.
+PR #799 established the gripper-frame convention and then refused, correctly,
+to invent the axis it was missing.  The later controls canaries exposed a
+second distinction: the outward standoff translation must oppose the tool
+approach, not reuse the panel-normal jaw axis.
 
 The missing axis is not a preference, it is a measurement the producer already
 had and discarded.  ``radial`` -- the in-plane direction from the hinge toward
@@ -190,19 +189,20 @@ def test_producer_approach_points_from_the_free_edge_toward_the_hinge(
     assert float(np.dot(approach, contact - hinge)) < 0.0
 
 
-def test_standoff_direction_is_left_alone(tmp_path: Path) -> None:
-    """``approach_unit`` is a translation and must keep meaning that.
-
-    The plan places the pre-contact standoff at ``contact + approach_unit *
-    clearance``.  Repurposing that field as the gripper axis would have moved
-    the standoff off the panel face, so the new axis is a new field.
-    """
+def test_standoff_is_outside_free_edge_opposite_tool_approach(
+    tmp_path: Path,
+) -> None:
+    """The open jaws stage beyond the edge, then travel inward around it."""
 
     candidate = _articulated_candidate(tmp_path)["candidate"]
-
-    assert candidate["approach_unit_registered_stage"] == pytest.approx(
-        candidate["pinch_axis_registered_stage"], abs=1e-9
+    standoff = np.asarray(candidate["approach_unit_registered_stage"])
+    tool_approach = np.asarray(
+        candidate["gripper_approach_axis_registered_stage"]
     )
+    pinch = np.asarray(candidate["pinch_axis_registered_stage"])
+
+    assert standoff == pytest.approx(-tool_approach, abs=1e-9)
+    assert float(np.dot(standoff, pinch)) == pytest.approx(0.0, abs=1e-9)
 
 
 def test_rigid_branch_keeps_its_own_approach(tmp_path: Path) -> None:
