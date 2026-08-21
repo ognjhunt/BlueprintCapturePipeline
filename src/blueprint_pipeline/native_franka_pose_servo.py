@@ -1127,7 +1127,11 @@ class NativeFrankaDifferentialIkServo:
             "position_error_m": math.inf,
             "orientation_error_rad": math.inf,
             "iterations": 0,
+            "iteration_feedback_clamp_count": 0,
+            "maximum_iteration_feedback_clamp_rad": 0.0,
         }
+        iteration_feedback_clamp_count = 0
+        maximum_iteration_feedback_clamp_rad = 0.0
         try:
             state = self._pink_state_from_joint_positions(seed)
             if self._pink_controller.reset(state, None, 0.0) is not True:
@@ -1140,7 +1144,31 @@ class NativeFrankaDifferentialIkServo:
                     setpoint,
                     iteration * PINK_INTEGRATION_DT_SECONDS,
                 )
-                joints = self._joint_positions_from_pink_state(desired)
+                raw_joints = self._joint_positions_from_pink_state(desired)
+                # Pink integrates the QP velocity in float32 before returning
+                # the next configuration.  At a constrained optimum that can
+                # cross a URDF bound by one or more float ULPs.  Feeding that
+                # result straight back into ``forward`` makes Pink reject the
+                # next iteration before it can solve (observed for every
+                # controls multistart seed in c7).  Clamp only this off-sim
+                # iteration state just inside the same limits, exactly as the
+                # live measured-state boundary already does.  PhysX readback
+                # and native commands remain untouched.
+                joints = pink_configuration_joint_positions(
+                    measured_joint_positions_rad=raw_joints,
+                    lower_joint_position_limits_rad=self._joint_position_lower,
+                    upper_joint_position_limits_rad=self._joint_position_upper,
+                )
+                clamp_delta = max(
+                    abs(raw - bounded)
+                    for raw, bounded in zip(raw_joints, joints, strict=True)
+                )
+                if clamp_delta > 0.0:
+                    iteration_feedback_clamp_count += 1
+                    maximum_iteration_feedback_clamp_rad = max(
+                        maximum_iteration_feedback_clamp_rad,
+                        clamp_delta,
+                    )
                 state = self._pink_state_from_joint_positions(joints)
                 configuration = self._pink_controller._configuration
                 if configuration is None:
@@ -1170,6 +1198,12 @@ class NativeFrankaDifferentialIkServo:
                         "position_error_m": position_error,
                         "orientation_error_rad": orientation_error,
                         "iterations": iteration,
+                        "iteration_feedback_clamp_count": (
+                            iteration_feedback_clamp_count
+                        ),
+                        "maximum_iteration_feedback_clamp_rad": (
+                            maximum_iteration_feedback_clamp_rad
+                        ),
                     }
                 if (
                     position_error <= float(position_tolerance_m)

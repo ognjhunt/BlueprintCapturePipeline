@@ -255,6 +255,75 @@ def test_multistart_prefers_continuous_solved_configuration() -> None:
     )
 
 
+def test_global_pink_iteration_clamps_integrated_float_overshoot() -> None:
+    """The next Pink iteration must never receive its own out-of-limit output."""
+
+    class _Rotation:
+        @staticmethod
+        def from_matrix(_matrix):
+            return SimpleNamespace(as_quat=lambda: np.array([0.0, 0.0, 0.0, 1.0]))
+
+    class _Configuration:
+        def __init__(self, controller):
+            self._controller = controller
+
+        def get_transform_frame_to_world(self, _frame):
+            return SimpleNamespace(
+                translation=np.array(
+                    [1.0, 0.0, 0.0]
+                    if self._controller.forward_calls == 1
+                    else [0.0, 0.0, 0.0]
+                ),
+                rotation=np.eye(3),
+            )
+
+    class _Controller:
+        def __init__(self):
+            self.forward_calls = 0
+            self._configuration = _Configuration(self)
+
+        def reset(self, _state, _setpoint, _time):
+            return True
+
+        def forward(self, state, _setpoint, _time):
+            self.forward_calls += 1
+            if self.forward_calls == 2:
+                assert state[0] == pytest.approx(
+                    1.0 - PINK_CONFIGURATION_LIMIT_MARGIN_RAD
+                )
+                assert -1.0 < state[0] < 1.0
+            return [1.0008, *([0.0] * 6)]
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-1.0] * 7
+    servo._joint_position_upper = [1.0] * 7
+    servo._pink_time_seconds = 0.0
+    servo._pink_controller = _Controller()
+    servo._Rotation = _Rotation
+    servo._pink_hand_target_for_grasp_world = lambda **_kwargs: (
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    )
+    servo._pink_setpoint = lambda **_kwargs: object()
+    servo._pink_state_from_joint_positions = lambda joints: list(joints)
+    servo._joint_positions_from_pink_state = lambda desired: list(desired)
+    servo._reset_pink_controller = lambda: None
+
+    result = servo.solve_grasp_target_from_joint_seed(
+        target_position_world_m=[0.0, 0.0, 0.0],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        seed_joint_positions_rad=[0.0] * 7,
+        maximum_iterations=2,
+    )
+
+    assert result["solved"] is True
+    assert result["iterations"] == 2
+    assert result["iteration_feedback_clamp_count"] == 2
+    assert result["maximum_iteration_feedback_clamp_rad"] == pytest.approx(
+        0.0008 + PINK_CONFIGURATION_LIMIT_MARGIN_RAD
+    )
+
+
 def test_global_joint_solution_replay_stays_under_native_command_bounds() -> None:
     servo = object.__new__(NativeFrankaDifferentialIkServo)
     servo._joint_position_lower = [-2.0] * 7
