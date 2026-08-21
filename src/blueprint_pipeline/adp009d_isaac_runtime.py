@@ -2160,6 +2160,7 @@ def _build_environment(
 ):
     import torch
     import isaaclab.sim as sim_utils
+    from isaaclab.sensors import JointWrenchSensorCfg
     from isaaclab.sensors.contact_sensor import ContactSensorCfg
     from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
@@ -2432,6 +2433,14 @@ def _build_environment(
             debug_vis=False,
         ),
     )
+    robot_joint_wrench = ContactSensorAsset(
+        name="robot_joint_wrench",
+        sensor_cfg=JointWrenchSensorCfg(
+            prim_path="{ENV_REGEX_NS}/Robot",
+            update_period=0.0,
+            debug_vis=False,
+        ),
+    )
     partner_contacts = [
         ContactSensorAsset(
             name=sensor_name,
@@ -2473,6 +2482,7 @@ def _build_environment(
             sage,
             approved_can,
             robot_contact,
+            robot_joint_wrench,
             *partner_contacts,
             *sage_collision_contacts,
             light,
@@ -4029,6 +4039,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         else None
                     ),
                     contact_sensor=env.unwrapped.scene["robot_contact"],
+                    joint_wrench_sensor=env.unwrapped.scene["robot_joint_wrench"],
                     contact_envelope=live_collider.get("contact_envelope"),
                     partner_contact_sensors={
                         sensor_name: env.unwrapped.scene[sensor_name]

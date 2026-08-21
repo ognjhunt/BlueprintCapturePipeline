@@ -1894,6 +1894,20 @@ def test_robot_contact_sensor_is_read_only_and_part_of_the_native_scene() -> Non
     assert "return self.name, None" in contact_sensor_asset
 
 
+def test_robot_joint_wrench_uses_the_isaaclab_3_sensor_api() -> None:
+    """The 6.0.1 stack removed ArticulationData's legacy wrench property."""
+
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert "JointWrenchSensorCfg(" in source
+    assert 'name="robot_joint_wrench"' in source
+    assert 'joint_wrench_sensor=env.unwrapped.scene["robot_joint_wrench"]' in source
+
+
 def test_robot_contact_sensor_targets_nested_robotiq_fingers_per_backend() -> None:
     """The d898 paid canary proved a single-level Robot/.* wildcard resolves zero
     finger bodies: Isaac Lab matches prim-path tokens one USD level at a time and

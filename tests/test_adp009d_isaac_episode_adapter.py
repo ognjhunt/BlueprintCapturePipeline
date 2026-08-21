@@ -319,9 +319,6 @@ class _Data:
                 np.array([[87.0] * 4 + [12.0] * (shape[1] - 4)]),
                 (shape[0], 1),
             )
-            self.body_incoming_joint_wrench_b = np.zeros(
-                (shape[0], len(body_names), 6)
-            )
 
 
 class _Robot:
@@ -366,6 +363,20 @@ class _ContactSensor:
         forces[0, body_names.index("left_inner_finger")] = [3.0, 4.0, 0.0]
         forces[0, body_names.index("right_inner_finger")] = [0.0, 0.0, 6.0]
         self.data = type("ContactData", (), {"net_forces_w": forces})()
+
+
+class _JointWrenchSensor:
+    def __init__(self, body_names):
+        self.body_names = list(body_names)
+        force = np.zeros((1, len(body_names), 3), dtype=float)
+        torque = np.zeros((1, len(body_names), 3), dtype=float)
+        force[0, body_names.index("left_inner_finger")] = [1.0, 2.0, 2.0]
+        torque[0, body_names.index("left_inner_finger")] = [3.0, 4.0, 0.0]
+        self.data = type(
+            "JointWrenchData",
+            (),
+            {"force": force, "torque": torque},
+        )()
 
 
 class _Camera:
@@ -429,6 +440,7 @@ def _adapter(env=None, *, with_contact_sensor=False):
         contact_sensor=(
             _ContactSensor(robot.data.body_names) if with_contact_sensor else None
         ),
+        joint_wrench_sensor=_JointWrenchSensor(robot.data.body_names),
     )
 
 
@@ -449,6 +461,14 @@ def test_arm_dynamics_observation_retains_actuator_and_contact_readback() -> Non
     assert len(dynamics["body_incoming_joint_wrench_body"]) == len(
         adapter._robot.data.body_names
     )
+    assert dynamics["body_incoming_joint_wrench_body"]["left_inner_finger"] == [
+        1.0,
+        2.0,
+        2.0,
+        3.0,
+        4.0,
+        0.0,
+    ]
     assert sample["finger_contact_forces_n"] == [5.0, 6.0]
 
 
@@ -834,6 +854,10 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["contact_force_source"] == (
         "IsaacLab ContactSensor.data.net_forces_w"
     )
+    assert bindings["incoming_joint_wrench_source"] == (
+        "IsaacLab JointWrenchSensor force+torque"
+    )
+    assert bindings["incoming_joint_wrench_convention"] == "incoming_joint_frame"
     assert bindings["scripted_control_task_space_translation_strategies"] == [
         "direct_global_pose_target",
         "orientation_first_bounded_local_increment",
@@ -891,6 +915,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["contact_force_source"] = "inferred_from_motion"
     assert "isaac_episode_adapter_contact_force_source_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["incoming_joint_wrench_convention"] = "unspecified"
+    assert "isaac_episode_adapter_incoming_joint_wrench_convention_drifted" in (
         validate_adapter_bindings(drifted)
     )
 
