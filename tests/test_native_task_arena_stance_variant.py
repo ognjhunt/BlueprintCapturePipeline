@@ -11,6 +11,7 @@ from blueprint_pipeline.native_task_arena_stance_variant import (
     DROID_ARENA_DEFAULT_RESET_SOURCE,
     FRANKA_ROBOTIQ_READY_RESET,
     FRANKA_ROBOTIQ_READY_RESET_SOURCE,
+    FRONT_ENTRY_GRASP_ORIENTATION_VARIANT,
     NativeTaskArenaStanceVariantError,
     RETREAT_STRATEGY_ID,
     materialize_native_task_arena_stance_variant_request,
@@ -249,9 +250,88 @@ def test_front_entry_patch_places_base_on_outward_approach_axis(tmp_path) -> Non
     )
     assert result["robot_joint_reset_positions_rad"] == DROID_ARENA_DEFAULT_RESET
     assert stance["reset_source"] == DROID_ARENA_DEFAULT_RESET_SOURCE
+    assert stance["grasp_orientation_variant"] == (
+        FRONT_ENTRY_GRASP_ORIENTATION_VARIANT
+    )
     assert result["robot_joint_reset_positions_rad"]["panda_joint7"] == 0.0
     assert result["robot_joint_reset_positions_rad"]["panda_joint6"] == pytest.approx(
         3.0 * math.pi / 5.0
+    )
+    flipped = result["task_spec"]["interaction_affordance"][
+        "gripper_orientation_contact_xyzw"
+    ]
+    assert flipped == pytest.approx(
+        [-math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]
+    )
+    # The local +Z tool approach remains inward +Y while local +Y changes from
+    # +Z to -Z. The affordance's outward approach vector is the opposite, -Y.
+    assert _rotate(flipped, [0.0, 0.0, 1.0]) == pytest.approx(
+        [0.0, 1.0, 0.0]
+    )
+    assert _rotate(flipped, [0.0, 1.0, 0.0]) == pytest.approx(
+        [0.0, 0.0, -1.0]
+    )
+
+
+def _rotate(quaternion, vector):
+    x, y, z, w = quaternion
+    vx, vy, vz = vector
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
+
+
+def test_front_entry_jaw_sign_variant_is_idempotent(tmp_path) -> None:
+    request = _request()
+    affordance = request["task_spec"]["interaction_affordance"]
+    affordance.update(
+        {
+            "approach_unit_asset_root": [0.0, -1.0, 0.0],
+            "gripper_orientation_contact_xyzw": [
+                0.0,
+                -math.sqrt(0.5),
+                -math.sqrt(0.5),
+                0.0,
+            ],
+            "contact_outward_standoff_m": 0.01,
+            "grasp_swept_volume_receipt_digest": "sha256:" + "f" * 64,
+        }
+    )
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    request["task_state_binding"]["interaction_affordance_digest"] = affordance[
+        "affordance_digest"
+    ]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(request), encoding="utf-8")
+    first_path = tmp_path / "first.json"
+    first = materialize_native_task_arena_stance_variant_request(
+        base_request_path=source,
+        output_path=first_path,
+        door_standoff_m=0.65,
+    )
+
+    second = materialize_native_task_arena_stance_variant_request(
+        base_request_path=first_path,
+        output_path=tmp_path / "second.json",
+        door_standoff_m=0.65,
+    )
+
+    assert second["task_spec"]["interaction_affordance"][
+        "gripper_orientation_contact_xyzw"
+    ] == pytest.approx(
+        first["task_spec"]["interaction_affordance"][
+            "gripper_orientation_contact_xyzw"
+        ]
     )
 
 
