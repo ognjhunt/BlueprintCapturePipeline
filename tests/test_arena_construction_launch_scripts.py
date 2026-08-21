@@ -152,6 +152,9 @@ def test_chain_refuses_a_packet_that_disagrees_with_deployed_constants() -> None
 
     for token in ("MAX_JOINT_DELTA_RAD", "MAX_JOINT_SETPOINT_LEAD_RAD"):
         assert token in text, f"the guard must compare {token}"
+    assert "RETREAT_STRATEGY_ID" in text, (
+        "the guard must refuse a hardlinked packet with the failed retreat"
+    )
     assert "STALE PACKET" in text, "a stale packet must say so plainly"
     assert "SystemExit(1)" in text, "the guard must fail closed, not warn"
     # the guard imports from the deployed tree, so it needs the source on path

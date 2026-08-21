@@ -31,6 +31,7 @@ RESET_SOURCE = (
     "isaac-sim/IsaacLab:isaaclab_assets/robots/franka.py:"
     "FRANKA_ROBOTIQ_GRIPPER_CFG@ffff603eafc6b74264a5261cc0183d6a65390d78"
 )
+RETREAT_STRATEGY_ID = "world_up_when_reverse_approach_enters_base_dead_zone_v1"
 
 
 class NativeTaskArenaStanceVariantError(ValueError):
@@ -182,6 +183,57 @@ def materialize_native_task_arena_stance_variant_request(
         closed[1] + standoff * approach_world[1],
         base_z,
     ]
+
+    # A retreat is task geometry, not automatically the negated approach.
+    # r38 proved the washer's authored -Y retreat moved the TCP *toward* the
+    # Franka base: joint 4 and joint 7 reached their lower limits, while every
+    # earlier construction phase and recovery passed. MoveIt's Franka examples
+    # likewise choose post-release retreat in an explicit world direction,
+    # including world-up. Preserve the authored direction when it increases
+    # horizontal base clearance; otherwise lift in world Z so the retreat adds
+    # clearance instead of folding the arm into its base dead zone.
+    try:
+        authored_retreat_asset = _normalize(
+            affordance["retreat_unit_asset_root"]
+        )
+        retreat_clearance = float(affordance["retreat_clearance_m"])
+        if not math.isfinite(retreat_clearance) or retreat_clearance <= 0.0:
+            raise ValueError("retreat clearance")
+        authored_retreat_world = _normalize(
+            _rotate_xyzw(root_orientation, authored_retreat_asset)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NativeTaskArenaStanceVariantError(
+            "native_task_arena_stance_retreat_invalid"
+        ) from exc
+    final_contact = phase_targets[-1]
+    authored_retreat_target = [
+        final_contact[index]
+        + authored_retreat_world[index] * retreat_clearance
+        for index in range(3)
+    ]
+    final_horizontal_base_clearance = math.dist(final_contact[:2], base[:2])
+    authored_horizontal_base_clearance = math.dist(
+        authored_retreat_target[:2], base[:2]
+    )
+    retreat_enters_base_dead_zone = (
+        authored_horizontal_base_clearance + 1.0e-6
+        < final_horizontal_base_clearance
+    )
+    if retreat_enters_base_dead_zone:
+        qx, qy, qz, qw = (float(value) for value in root_orientation)
+        resolved_retreat_asset = _normalize(
+            _rotate_xyzw((-qx, -qy, -qz, qw), (0.0, 0.0, 1.0))
+        )
+        resolved_retreat_world = [0.0, 0.0, 1.0]
+    else:
+        resolved_retreat_asset = authored_retreat_asset
+        resolved_retreat_world = authored_retreat_world
+    affordance["retreat_unit_asset_root"] = resolved_retreat_asset
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    request["task_spec"] = task_spec
     into_door = [-approach_world[0], -approach_world[1], 0.0]
     yaw = math.atan2(into_door[1], into_door[0])
     phase_bearings = [
@@ -238,6 +290,20 @@ def materialize_native_task_arena_stance_variant_request(
         "resolved_base_yaw_world_rad": yaw,
         "maximum_door_sweep_bearing_deviation_rad": maximum_deviation,
         "full_sweep_within_front_quarter_sphere": True,
+        "retreat_strategy_id": RETREAT_STRATEGY_ID,
+        "authored_retreat_unit_asset_root": authored_retreat_asset,
+        "resolved_retreat_unit_asset_root": resolved_retreat_asset,
+        "resolved_retreat_unit_world": resolved_retreat_world,
+        "authored_retreat_target_world_m": authored_retreat_target,
+        "final_contact_horizontal_base_clearance_m": (
+            final_horizontal_base_clearance
+        ),
+        "authored_retreat_horizontal_base_clearance_m": (
+            authored_horizontal_base_clearance
+        ),
+        "authored_retreat_enters_base_dead_zone": (
+            retreat_enters_base_dead_zone
+        ),
         "reset_source": RESET_SOURCE,
         "external_camera_source": "front_side_zero_roll_vision_geometry_candidate",
         "overview_camera_source": "front_side_zero_roll_vision_geometry_candidate",
@@ -263,5 +329,6 @@ def materialize_native_task_arena_stance_variant_request(
 __all__ = [
     "FRANKA_ROBOTIQ_READY_RESET",
     "NativeTaskArenaStanceVariantError",
+    "RETREAT_STRATEGY_ID",
     "materialize_native_task_arena_stance_variant_request",
 ]
