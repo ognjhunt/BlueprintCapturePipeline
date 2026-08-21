@@ -31,7 +31,9 @@ RESET_SOURCE = (
     "isaac-sim/IsaacLab:isaaclab_assets/robots/franka.py:"
     "FRANKA_ROBOTIQ_GRIPPER_CFG@ffff603eafc6b74264a5261cc0183d6a65390d78"
 )
-RETREAT_STRATEGY_ID = "world_up_when_reverse_approach_enters_base_dead_zone_v1"
+RETREAT_STRATEGY_ID = (
+    "qualified_front_staging_when_reverse_approach_enters_base_dead_zone_v2"
+)
 
 
 class NativeTaskArenaStanceVariantError(ValueError):
@@ -188,17 +190,26 @@ def materialize_native_task_arena_stance_variant_request(
     # r38 proved the washer's authored -Y retreat moved the TCP *toward* the
     # Franka base: joint 4 and joint 7 reached their lower limits, while every
     # earlier construction phase and recovery passed. MoveIt's Franka examples
-    # likewise choose post-release retreat in an explicit world direction,
-    # including world-up. Preserve the authored direction when it increases
-    # horizontal base clearance; otherwise lift in world Z so the retreat adds
-    # clearance instead of folding the arm into its base dead zone.
+    # likewise choose post-release retreat in an explicit task/world direction.
+    # r39 proved that world-up alone then drove joint 2 and joint 4 to their
+    # lower limits. Both r38 and r39 subsequently reached the front-side
+    # approach pose in 15 steps without contact or collision. Preserve the
+    # authored direction when it increases horizontal base clearance;
+    # otherwise withdraw to that already-qualified task-relative staging pose
+    # rather than guessing another axis.
     try:
         authored_retreat_asset = _normalize(
             affordance["retreat_unit_asset_root"]
         )
         retreat_clearance = float(affordance["retreat_clearance_m"])
+        precontact_clearance = float(affordance["precontact_clearance_m"])
         if not math.isfinite(retreat_clearance) or retreat_clearance <= 0.0:
             raise ValueError("retreat clearance")
+        if (
+            not math.isfinite(precontact_clearance)
+            or precontact_clearance <= 0.0
+        ):
+            raise ValueError("precontact clearance")
         authored_retreat_world = _normalize(
             _rotate_xyzw(root_orientation, authored_retreat_asset)
         )
@@ -221,15 +232,32 @@ def materialize_native_task_arena_stance_variant_request(
         < final_horizontal_base_clearance
     )
     if retreat_enters_base_dead_zone:
+        front_staging_target = [
+            closed[index] + approach_world[index] * precontact_clearance
+            for index in range(3)
+        ]
+        resolved_retreat_vector_world = [
+            front_staging_target[index] - final_contact[index]
+            for index in range(3)
+        ]
+        resolved_retreat_clearance = math.sqrt(
+            sum(value * value for value in resolved_retreat_vector_world)
+        )
+        resolved_retreat_world = _normalize(resolved_retreat_vector_world)
         qx, qy, qz, qw = (float(value) for value in root_orientation)
         resolved_retreat_asset = _normalize(
-            _rotate_xyzw((-qx, -qy, -qz, qw), (0.0, 0.0, 1.0))
+            _rotate_xyzw(
+                (-qx, -qy, -qz, qw), resolved_retreat_world
+            )
         )
-        resolved_retreat_world = [0.0, 0.0, 1.0]
+        resolved_retreat_target = front_staging_target
     else:
         resolved_retreat_asset = authored_retreat_asset
         resolved_retreat_world = authored_retreat_world
+        resolved_retreat_clearance = retreat_clearance
+        resolved_retreat_target = authored_retreat_target
     affordance["retreat_unit_asset_root"] = resolved_retreat_asset
+    affordance["retreat_clearance_m"] = resolved_retreat_clearance
     affordance["affordance_digest"] = canonical_digest(
         affordance, digest_field="affordance_digest"
     )
@@ -309,6 +337,8 @@ def materialize_native_task_arena_stance_variant_request(
         "authored_retreat_unit_asset_root": authored_retreat_asset,
         "resolved_retreat_unit_asset_root": resolved_retreat_asset,
         "resolved_retreat_unit_world": resolved_retreat_world,
+        "resolved_retreat_clearance_m": resolved_retreat_clearance,
+        "resolved_retreat_target_world_m": resolved_retreat_target,
         "authored_retreat_target_world_m": authored_retreat_target,
         "final_contact_horizontal_base_clearance_m": (
             final_horizontal_base_clearance

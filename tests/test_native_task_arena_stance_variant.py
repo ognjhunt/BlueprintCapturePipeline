@@ -55,6 +55,7 @@ def _request() -> dict:
             "interaction_affordance": {
                 "approach_unit_asset_root": [0.0, -1.0, 0.0],
                 "retreat_unit_asset_root": [0.0, -1.0, 0.0],
+                "precontact_clearance_m": 0.12,
                 "retreat_clearance_m": 0.12,
                 "affordance_digest": "",
                 "joint_contact_path": [
@@ -128,10 +129,26 @@ def test_stance_centers_floor_base_on_door_normal_and_replaces_reset(tmp_path) -
     assert stance["native_ik_qualified"] is False
     assert stance["retreat_strategy_id"] == RETREAT_STRATEGY_ID
     assert stance["authored_retreat_enters_base_dead_zone"] is True
-    assert stance["resolved_retreat_unit_world"] == [0.0, 0.0, 1.0]
+    closed = stance["closed_contact_world_m"]
+    expected_front_staging = [closed[0], closed[1] - 0.12, closed[2]]
+    assert stance["resolved_retreat_target_world_m"] == pytest.approx(
+        expected_front_staging
+    )
+    assert stance["resolved_retreat_clearance_m"] > 0.1
     affordance = result["task_spec"]["interaction_affordance"]
-    assert affordance["retreat_unit_asset_root"] == pytest.approx(
-        [0.0, 0.0, 1.0]
+    final_contact = [
+        3.5154863 + 0.08949,
+        9.758716 - 0.664167,
+        0.405,
+    ]
+    resolved_target = [
+        final_contact[index]
+        + affordance["retreat_unit_asset_root"][index]
+        * affordance["retreat_clearance_m"]
+        for index in range(3)
+    ]
+    assert resolved_target == pytest.approx(
+        expected_front_staging
     )
     assert affordance["affordance_digest"] == canonical_digest(
         affordance, digest_field="affordance_digest"
