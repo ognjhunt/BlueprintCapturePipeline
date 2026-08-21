@@ -232,7 +232,8 @@ def _normalize_grasp_collision_patches(value: Any) -> list[dict[str, Any]]:
             or pinch is None
             or abs(sum(a * b for a, b in zip(outward, pinch, strict=True)))
             > 1.0e-6
-            or raw.get("collision_approximation") != "convexHull"
+            or raw.get("collision_approximation")
+            not in {"convexHull", "convexDecomposition"}
         ):
             raise AgentCadGraphVisualCompositionError(
                 ["agent_cad_grasp_collision_patches_invalid"]
@@ -249,7 +250,7 @@ def _normalize_grasp_collision_patches(value: Any) -> list[dict[str, Any]]:
                 "maximum_axis_value_m": maximum_value,
                 "approach_outward_unit_graph_link": outward,
                 "pinch_axis_graph_link": pinch,
-                "collision_approximation": "convexHull",
+                "collision_approximation": raw["collision_approximation"],
             }
         )
     return sorted(rows, key=lambda row: row["patch_id"])
@@ -1128,7 +1129,7 @@ def _copy_grasp_collision_patch(
     mesh.CreateDoubleSidedAttr(bool(source_mesh.GetDoubleSidedAttr().Get()))
     UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
     UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr().Set(
-        "convexHull"
+        request["collision_approximation"]
     )
     material = stage.GetPrimAtPath(
         f"/Asset/materials/{request['graph_link_id']}"
@@ -1218,7 +1219,7 @@ def _validate_composition_stage(stage: Any, receipt: Mapping[str, Any]) -> None:
         if (
             not mesh
             or not prim.HasAPI(UsdPhysics.CollisionAPI)
-            or str(approximation) != "convexHull"
+            or str(approximation) != row.get("collision_approximation")
             or imageable.ComputePurpose() != UsdGeom.Tokens.guide
             or imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
             or prim.GetCustomDataByKey("blueprint:collisionGeometryOnly") is not True
