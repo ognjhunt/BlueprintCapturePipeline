@@ -170,8 +170,25 @@ def test_missing_force_matrix_never_defaults_to_no_collision() -> None:
 
 def test_multiple_native_sensor_instances_aggregate_into_one_logical_channel() -> None:
     built = _built()
+    built.plan["articulation"]["contact_sensors"] = [
+        {
+            "sensor_instance_id": "robot_scene_contact",
+            "logical_sensor_id": "robot_scene_contact",
+            "prim_path": "{ENV_REGEX_NS}/Robot/panda_link0",
+            "filter_prim_paths_expr": ["{ENV_REGEX_NS}/scene_collision/floor"],
+        },
+        {
+            "sensor_instance_id": "robot_scene_contact_2",
+            "logical_sensor_id": "robot_scene_contact",
+            "prim_path": "{ENV_REGEX_NS}/Robot/panda_link1",
+            "filter_prim_paths_expr": [
+                "{ENV_REGEX_NS}/scene_collision/floor",
+                "{ENV_REGEX_NS}/scene_collision/wall",
+            ],
+        },
+    ]
     built.env.unwrapped.scene["robot_scene_contact_2"].data.force_matrix_w = [
-        [[[2.0, 0.0, 0.0]]]
+        [[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]]
     ]
 
     sample = NativeArticulatedTaskArenaReadback(built).read_task_sample()
@@ -180,6 +197,24 @@ def test_multiple_native_sensor_instances_aggregate_into_one_logical_channel() -
     assert sample["native_readback"]["robot_scene_contact_peak_force_n"] == (
         pytest.approx(2.0)
     )
+    attribution = sample["native_readback"]["contact_sensor_instance_readback"][
+        "robot_scene_contact"
+    ]
+    assert attribution[1] == {
+        "sensor_instance_id": "robot_scene_contact_2",
+        "peak_force_n": pytest.approx(2.0),
+        "attribution_available": True,
+        "sensing_prim_path": "{ENV_REGEX_NS}/Robot/panda_link1",
+        "filter_count": 2,
+        "nonzero_filter_forces": [
+            {
+                "filter_index": 1,
+                "filter_prim_path_expr": "{ENV_REGEX_NS}/scene_collision/wall",
+                "force_world_n": pytest.approx([2.0, 0.0, 0.0]),
+                "force_magnitude_n": pytest.approx(2.0),
+            }
+        ],
+    }
 
 
 def test_graph_articulation_readback_uses_interaction_link_and_forbidden_contact() -> None:

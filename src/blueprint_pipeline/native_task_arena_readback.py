@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .native_articulated_task_state import compile_native_articulated_task_sample
 from .native_task_arena_runtime import NativeTaskArenaEnvironment
@@ -67,6 +67,65 @@ def _force_vectors(value: Any, *, sensor_id: str) -> list[list[float]]:
             [f"native_task_arena_force_matrix_invalid:{sensor_id}"]
         )
     return vectors
+
+
+def _filtered_force_readback(
+    value: Any,
+    *,
+    sensor_id: str,
+    filter_prim_paths_expr: Sequence[str],
+) -> dict[str, Any]:
+    """Retain Isaac Lab's per-filter force axis instead of flattening it away."""
+
+    paths = [str(path) for path in filter_prim_paths_expr]
+    nested = _native_list(
+        value, error=f"native_task_arena_force_matrix_missing:{sensor_id}"
+    )
+    try:
+        # ContactSensorCfg prim paths are exact single bodies. Isaac Lab's
+        # documented shape is (environment, sensor body, filtered body, xyz).
+        rows = nested[0][0]
+    except (IndexError, TypeError) as exc:
+        raise NativeTaskArenaReadbackError(
+            [f"native_task_arena_force_matrix_filter_axis_invalid:{sensor_id}"]
+        ) from exc
+    if not isinstance(rows, list) or len(rows) != len(paths):
+        raise NativeTaskArenaReadbackError(
+            [f"native_task_arena_force_matrix_filter_axis_invalid:{sensor_id}"]
+        )
+    nonzero: list[dict[str, Any]] = []
+    peak = 0.0
+    for index, (path, row) in enumerate(zip(paths, rows, strict=True)):
+        if not isinstance(row, list) or len(row) != 3:
+            raise NativeTaskArenaReadbackError(
+                [f"native_task_arena_force_matrix_filter_axis_invalid:{sensor_id}"]
+            )
+        try:
+            vector = [float(item) for item in row]
+        except (TypeError, ValueError) as exc:
+            raise NativeTaskArenaReadbackError(
+                [f"native_task_arena_force_matrix_filter_axis_invalid:{sensor_id}"]
+            ) from exc
+        if not all(math.isfinite(item) for item in vector):
+            raise NativeTaskArenaReadbackError(
+                [f"native_task_arena_force_matrix_filter_axis_invalid:{sensor_id}"]
+            )
+        magnitude = math.sqrt(sum(item * item for item in vector))
+        peak = max(peak, magnitude)
+        if magnitude > 1.0e-9:
+            nonzero.append(
+                {
+                    "filter_index": index,
+                    "filter_prim_path_expr": path,
+                    "force_world_n": vector,
+                    "force_magnitude_n": magnitude,
+                }
+            )
+    return {
+        "filter_count": len(paths),
+        "peak_force_n": peak,
+        "nonzero_filter_forces": nonzero,
+    }
 
 
 def _names(value: Any, *, error: str) -> list[str]:
@@ -674,6 +733,12 @@ class NativeArticulatedTaskArenaReadback:
         ]
 
         sensor_forces: dict[str, list[list[float]]] = {}
+        sensor_instance_readback: dict[str, list[dict[str, Any]]] = {}
+        sensor_plan = {
+            str(row.get("sensor_instance_id") or ""): row
+            for row in self._built.plan["articulation"].get("contact_sensors") or []
+            if isinstance(row, Mapping)
+        }
         for logical_sensor_id, scene_names in self._built.contact_sensor_names.items():
             if isinstance(scene_names, str) or not scene_names:
                 raise NativeTaskArenaReadbackError(
@@ -683,6 +748,7 @@ class NativeArticulatedTaskArenaReadback:
                     ]
                 )
             aggregate: list[list[float]] = []
+            instances: list[dict[str, Any]] = []
             for scene_name in scene_names:
                 try:
                     sensor = scene[scene_name]
@@ -693,17 +759,42 @@ class NativeArticulatedTaskArenaReadback:
                             f"{logical_sensor_id}:{scene_name}"
                         ]
                     ) from exc
-                aggregate.extend(
-                    _force_vectors(
-                        getattr(
-                            getattr(sensor, "data", None),
-                            "force_matrix_w",
-                            None,
-                        ),
-                        sensor_id=f"{logical_sensor_id}:{scene_name}",
-                    )
+                force_matrix = getattr(
+                    getattr(sensor, "data", None),
+                    "force_matrix_w",
+                    None,
                 )
+                instance_sensor_id = f"{logical_sensor_id}:{scene_name}"
+                vectors = _force_vectors(
+                    force_matrix,
+                    sensor_id=instance_sensor_id,
+                )
+                aggregate.extend(vectors)
+                metadata = sensor_plan.get(scene_name)
+                instance = {
+                    "sensor_instance_id": scene_name,
+                    "peak_force_n": max(
+                        math.sqrt(sum(component * component for component in vector))
+                        for vector in vectors
+                    ),
+                    "attribution_available": metadata is not None,
+                }
+                if metadata is not None:
+                    instance.update(
+                        {
+                            "sensing_prim_path": str(metadata.get("prim_path") or ""),
+                            **_filtered_force_readback(
+                                force_matrix,
+                                sensor_id=instance_sensor_id,
+                                filter_prim_paths_expr=list(
+                                    metadata.get("filter_prim_paths_expr") or []
+                                ),
+                            ),
+                        }
+                    )
+                instances.append(instance)
             sensor_forces[logical_sensor_id] = aggregate
+            sensor_instance_readback[logical_sensor_id] = instances
 
         grasp_frame = self._built.plan["robot"]["grasp_frame"]
         if grasp_frame.get("kind") != "body_midpoint":
@@ -763,7 +854,7 @@ class NativeArticulatedTaskArenaReadback:
             *reset_object["pose_world"]["position_world_m"],
             *reset_object["pose_world"]["orientation_xyzw"],
         ]
-        return compile_native_articulated_task_sample(
+        sample = compile_native_articulated_task_sample(
             task_spec=self._built.plan["task_spec"],
             task_sample_binding=self._built.plan["task_sample_binding"],
             task_state_binding=self._built.plan["task_state_binding"],
@@ -781,6 +872,10 @@ class NativeArticulatedTaskArenaReadback:
             grasp_frame_position_world_m=grasp_position,
             handle_reference_position_world_m=handle_position,
         )
+        sample["native_readback"]["contact_sensor_instance_readback"] = (
+            sensor_instance_readback
+        )
+        return sample
 
 
 class NativeRigidTaskArenaReadback:

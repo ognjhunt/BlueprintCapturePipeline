@@ -20,7 +20,9 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
 )
 from blueprint_pipeline.native_task_control_plan import (
     NativeTaskControlPlanError,
+    ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M,
     ROBOTOIQ_2F85_BITE_DEPTH_M,
+    ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M,
     materialize_native_task_control_plan,
 )
 
@@ -597,6 +599,9 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
         for row in phase_plan["exact_contact_phases"]
     }
     actions = {row["phase_id"]: row for row in control["scripted_positive_actions"]}
+    assert ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M == pytest.approx(0.0185)
+    assert ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M == pytest.approx(0.005)
+    assert ROBOTOIQ_2F85_BITE_DEPTH_M == pytest.approx(0.0235)
     def bite_target(exact_id: str, clearance_id: str) -> list[float]:
         target = exact[exact_id]
         clear = clearance[clearance_id]
