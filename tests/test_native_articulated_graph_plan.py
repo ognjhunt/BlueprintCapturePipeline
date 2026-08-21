@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 import pytest
 
@@ -21,6 +22,14 @@ from blueprint_pipeline.native_task_control_plan import (
     NativeTaskControlPlanError,
     materialize_native_task_control_plan,
 )
+
+
+AUTHORED_GRASP_ORIENTATION = [
+    -math.sqrt(0.5),
+    0.0,
+    0.0,
+    math.sqrt(0.5),
+]
 
 
 def _graph() -> dict:
@@ -157,7 +166,7 @@ def _scene() -> dict:
         "contact_point_link_m": [0.4, 0.0, 0.0],
         "approach_unit_asset_root": [0.0, -1.0, 0.0],
         "retreat_unit_asset_root": [0.0, -1.0, 0.0],
-        "gripper_orientation_contact_xyzw": [0.5, 0.5, 0.5, 0.5],
+        "gripper_orientation_contact_xyzw": AUTHORED_GRASP_ORIENTATION,
         "precontact_clearance_m": 0.12,
         "sweep_clearance_m": 0.025,
         "retreat_clearance_m": 0.12,
@@ -411,6 +420,30 @@ def test_graph_articulated_construction_binds_complete_graph_and_exact_paths() -
     assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
 
 
+def test_graph_articulated_construction_refuses_perpendicular_standoff() -> None:
+    """Regression for Arena controls c3/c4.
+
+    The old washer packet oriented tool +Z hinge-ward along -X but staged the
+    gripper along the jaw axis -Y. That let a non-fingertip body hit the door
+    before the panel entered between the open fingers.
+    """
+
+    scene = _scene()
+    scene["task_spec"]["interaction_affordance"][
+        "gripper_orientation_contact_xyzw"
+    ] = [-math.sqrt(0.5), 0.0, math.sqrt(0.5), 0.0]
+    _redigest_affordance(scene)
+
+    with pytest.raises(
+        NativeTaskConstructionPlanError,
+        match=(
+            "native_articulated_graph_construction_"
+            "standoff_not_opposite_gripper_approach"
+        ),
+    ):
+        materialize_native_task_construction_phase_plan(scene)
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     (
@@ -635,7 +668,7 @@ class _GraphControlEnvironment:
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ) -> list[float]:
-        assert target_quaternion_world_xyzw == [0.5, 0.5, 0.5, 0.5]
+        assert target_quaternion_world_xyzw == AUTHORED_GRASP_ORIENTATION
         assert max_joint_delta_rad == pytest.approx(0.03)
         assert max_joint_setpoint_lead_rad == pytest.approx(0.2)
         return [
@@ -668,7 +701,7 @@ class _GraphControlEnvironment:
                 self.gripper <= 0.5 and self.grasp == self._retreat_target
             ),
             "grasp_frame_position_world_m": list(self.grasp),
-            "grasp_frame_orientation_world_xyzw": [0.5, 0.5, 0.5, 0.5],
+            "grasp_frame_orientation_world_xyzw": AUTHORED_GRASP_ORIENTATION,
         }
 
 
@@ -741,7 +774,7 @@ def test_plan_records_an_identity_grasp_orientation_as_unauthored() -> None:
         _scene_with_grasp_orientation([0.0, 0.0, 0.0, 1.0])
     )
     authored = materialize_native_task_construction_phase_plan(
-        _scene_with_grasp_orientation([0.5, 0.5, 0.5, 0.5])
+        _scene_with_grasp_orientation(AUTHORED_GRASP_ORIENTATION)
     )
 
     assert unauthored["grasp_orientation_authored"] is False
@@ -766,7 +799,7 @@ def test_contact_replay_refuses_an_unauthored_grasp_orientation() -> None:
 
 
 def test_contact_replay_accepts_an_authored_grasp_orientation() -> None:
-    scene = _scene_with_grasp_orientation([0.5, 0.5, 0.5, 0.5])
+    scene = _scene_with_grasp_orientation(AUTHORED_GRASP_ORIENTATION)
     plan = materialize_native_task_control_plan(
         scene_plan=scene, construction_result=_construction(scene)
     )
