@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paired_target_interaction_affordance_candidate import (
@@ -235,6 +236,111 @@ def test_graph_roles_select_geometry_without_object_names(
     assert all(abs(value) <= 1.0 for value in contact)
     assert result["native_contact_executed"] is False
     assert "native_reach_and_two_finger_contact_unproven" in result["blockers"]
+
+
+def test_tagged_source_patch_authors_front_approach_and_vertical_pinch(
+    tmp_path: Path,
+) -> None:
+    freeze = _freeze(tmp_path / "freeze.json", task_kind="articulated_interaction")
+    usd = _usd(tmp_path / "asset.usda", articulated=True)
+    stage = Usd.Stage.Open(str(usd))
+    patch = UsdGeom.Mesh.Define(
+        stage, "/Asset/links/panel/grasp_collision_patches/right_outer_rim"
+    )
+    patch.CreatePointsAttr(
+        [
+            Gf.Vec3f(x, y, z)
+            for x in (0.246, 0.248)
+            for y in (0.0, 0.049)
+            for z in (-0.05, 0.0)
+        ]
+    )
+    patch.CreateFaceVertexCountsAttr([3, 3, 3, 3])
+    patch.CreateFaceVertexIndicesAttr([0, 1, 3, 0, 3, 2, 4, 7, 5, 4, 6, 7])
+    UsdPhysics.CollisionAPI.Apply(patch.GetPrim())
+    UsdPhysics.MeshCollisionAPI.Apply(patch.GetPrim()).CreateApproximationAttr().Set(
+        "convexHull"
+    )
+    patch.GetPrim().SetCustomDataByKey(
+        "blueprint:graspAffordanceRole", "parallel_jaw_outer_rim_patch"
+    )
+    patch.GetPrim().SetCustomDataByKey(
+        "blueprint:graspContactPointLinkM", Gf.Vec3d(0.248, 0.0, -0.025)
+    )
+    patch.GetPrim().SetCustomDataByKey(
+        "blueprint:graspApproachOutwardUnitLink", Gf.Vec3d(0.0, -1.0, 0.0)
+    )
+    patch.GetPrim().SetCustomDataByKey(
+        "blueprint:graspPinchAxisLink", Gf.Vec3d(0.0, 0.0, 1.0)
+    )
+    patch.GetPrim().SetCustomDataByKey("blueprint:graspPinchSpanM", 0.05)
+    stage.GetRootLayer().Save()
+    registered = _registered(
+        tmp_path / "registered.json", freeze, usd, task_id="task_a"
+    )
+
+    result = materialize_paired_target_interaction_affordance_candidate(
+        task_freeze_path=freeze,
+        registered_asset_receipt_path=registered,
+        robot_base_position_world_m=[0.0, -1.0, 0.0],
+        output_path=tmp_path / "result.json",
+    )
+
+    candidate = result["candidate"]
+    assert result["selection_contract"]["method"] == (
+        "source_derived_grasp_collision_patch"
+    )
+    assert result["selection_contract"]["standoff_axis_source"] == (
+        "grasp_patch_front_normal_outward"
+    )
+    assert candidate["contact_point_link_m"] == pytest.approx(
+        [0.248, 0.0, -0.025]
+    )
+    assert candidate["approach_unit_registered_stage"] == pytest.approx(
+        [0.0, -1.0, 0.0]
+    )
+    assert candidate["gripper_approach_axis_registered_stage"] == pytest.approx(
+        [0.0, 1.0, 0.0]
+    )
+    assert candidate["pinch_axis_registered_stage"] == pytest.approx(
+        [0.0, 0.0, 1.0]
+    )
+    assert candidate["pinch_span_m"] == pytest.approx(0.05)
+    assert candidate["grasp_collision_patch_prim_path"].endswith(
+        "/right_outer_rim"
+    )
+    assert candidate["contact_point_to_grasp_collider_surface_m"] == pytest.approx(
+        0.0, abs=1.0e-8
+    )
+
+    stage = Usd.Stage.Open(str(usd))
+    stage.GetPrimAtPath(
+        "/Asset/links/panel/grasp_collision_patches/right_outer_rim"
+    ).SetCustomDataByKey(
+        "blueprint:graspContactPointLinkM", Gf.Vec3d(9.0, 9.0, 9.0)
+    )
+    stage.GetRootLayer().Save()
+    registered_value = json.loads(registered.read_text(encoding="utf-8"))
+    registered_value["output_usd"].update(
+        {
+            "size_bytes": usd.stat().st_size,
+            "sha256": _sha(usd),
+        }
+    )
+    registered_value["receipt_digest"] = canonical_digest(
+        registered_value, digest_field="receipt_digest"
+    )
+    registered.write_text(json.dumps(registered_value), encoding="utf-8")
+    with pytest.raises(
+        PairedTargetInteractionAffordanceError,
+        match="paired_target_affordance_grasp_contact_off_collider",
+    ):
+        materialize_paired_target_interaction_affordance_candidate(
+            task_freeze_path=freeze,
+            registered_asset_receipt_path=registered,
+            robot_base_position_world_m=[0.0, -1.0, 0.0],
+            output_path=tmp_path / "tampered-result.json",
+        )
 
 
 def test_registered_usd_tamper_fails_closed(tmp_path: Path) -> None:

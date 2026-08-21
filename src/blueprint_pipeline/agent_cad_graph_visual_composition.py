@@ -164,6 +164,97 @@ def _safe_prim_token(value: str, fallback: str) -> str:
     return "p_" + result if result[0].isdigit() else result
 
 
+def _unit_vector(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != 3:
+        return None
+    try:
+        vector = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(item) for item in vector):
+        return None
+    norm = math.sqrt(sum(item * item for item in vector))
+    if norm <= 1.0e-9:
+        return None
+    return [item / norm for item in vector]
+
+
+def _normalize_grasp_collision_patches(value: Any) -> list[dict[str, Any]]:
+    """Validate exact-mesh patch requests without embedding object labels."""
+
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_grasp_collision_patches_invalid"]
+        )
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_patches_invalid"]
+            )
+        patch_id = _identifier(raw.get("patch_id"))
+        graph_link_id = _identifier(raw.get("graph_link_id"))
+        source_mesh_path = str(raw.get("source_mesh_path") or "")
+        role = str(raw.get("grasp_affordance_role") or "")
+        axis = raw.get("selection_axis_index")
+        minimum = raw.get("minimum_axis_value_m")
+        maximum = raw.get("maximum_axis_value_m")
+        outward = _unit_vector(raw.get("approach_outward_unit_graph_link"))
+        pinch = _unit_vector(raw.get("pinch_axis_graph_link"))
+        try:
+            minimum_value = float(minimum)
+            maximum_value = None if maximum is None else float(maximum)
+        except (TypeError, ValueError) as exc:
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_patches_invalid"]
+            ) from exc
+        if (
+            not patch_id
+            or patch_id in seen
+            or not graph_link_id
+            or not source_mesh_path.startswith("/Asset/")
+            or role != "parallel_jaw_outer_rim_patch"
+            or isinstance(axis, bool)
+            or not isinstance(axis, int)
+            or axis not in {0, 1, 2}
+            or not math.isfinite(minimum_value)
+            or (
+                maximum_value is not None
+                and (
+                    not math.isfinite(maximum_value)
+                    or maximum_value <= minimum_value
+                )
+            )
+            or outward is None
+            or pinch is None
+            or abs(sum(a * b for a, b in zip(outward, pinch, strict=True)))
+            > 1.0e-6
+            or raw.get("collision_approximation") != "convexHull"
+        ):
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_patches_invalid"]
+            )
+        seen.add(patch_id)
+        rows.append(
+            {
+                "patch_id": patch_id,
+                "graph_link_id": graph_link_id,
+                "source_mesh_path": source_mesh_path,
+                "grasp_affordance_role": role,
+                "selection_axis_index": axis,
+                "minimum_axis_value_m": minimum_value,
+                "maximum_axis_value_m": maximum_value,
+                "approach_outward_unit_graph_link": outward,
+                "pinch_axis_graph_link": pinch,
+                "collision_approximation": "convexHull",
+            }
+        )
+    return sorted(rows, key=lambda row: row["patch_id"])
+
+
 def _matrix(value: Any) -> list[list[float]] | None:
     if not isinstance(value, list) or len(value) != 4:
         return None
@@ -937,6 +1028,152 @@ def _copy_visual_mesh(
     return len(source_points), len(counts)
 
 
+def _copy_grasp_collision_patch(
+    *,
+    stage: Any,
+    source_mesh: Any,
+    transform: Sequence[Sequence[float]],
+    graph_link_path: str,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive one invisible convex collision patch from exact STEP vertices."""
+
+    from pxr import Gf, UsdGeom, UsdPhysics, UsdShade
+
+    if source_mesh.GetOrderedXformOps():
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_visual_projection_mesh_xform_unsupported"]
+        )
+    source_points = source_mesh.GetPointsAttr().Get()
+    counts = source_mesh.GetFaceVertexCountsAttr().Get()
+    indices = source_mesh.GetFaceVertexIndicesAttr().Get()
+    if not source_points or not counts or not indices:
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_grasp_collision_source_topology_invalid"]
+        )
+    points = [_transform_point(transform, point) for point in source_points]
+    axis = int(request["selection_axis_index"])
+    minimum = float(request["minimum_axis_value_m"])
+    maximum = request.get("maximum_axis_value_m")
+
+    selected_faces: list[list[int]] = []
+    offset = 0
+    for count in counts:
+        face = [int(value) for value in indices[offset : offset + int(count)]]
+        offset += int(count)
+        if len(face) < 3 or any(index < 0 or index >= len(points) for index in face):
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_source_topology_invalid"]
+            )
+        if all(
+            points[index][axis] >= minimum - 1.0e-9
+            and (maximum is None or points[index][axis] <= float(maximum) + 1.0e-9)
+            for index in face
+        ):
+            selected_faces.append(face)
+    used = sorted({index for face in selected_faces for index in face})
+    if len(used) < 4 or len(selected_faces) < 4:
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_grasp_collision_patch_empty_or_degenerate"]
+        )
+    remap = {old: new for new, old in enumerate(used)}
+    patch_points = [points[index] for index in used]
+    patch_faces = [[remap[index] for index in face] for face in selected_faces]
+    lower = [min(point[index] for point in patch_points) for index in range(3)]
+    upper = [max(point[index] for point in patch_points) for index in range(3)]
+    if any(upper[index] - lower[index] <= 1.0e-6 for index in range(3)):
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_grasp_collision_patch_empty_or_degenerate"]
+        )
+    outward = [float(value) for value in request["approach_outward_unit_graph_link"]]
+    pinch = [float(value) for value in request["pinch_axis_graph_link"]]
+    pinch_values = [sum(a * b for a, b in zip(point, pinch, strict=True)) for point in patch_points]
+    selection_extreme = max(point[axis] for point in patch_points)
+    candidates = [
+        point for point in patch_points if abs(point[axis] - selection_extreme) <= 1.0e-6
+    ]
+    outward_extreme = max(
+        sum(a * b for a, b in zip(point, outward, strict=True))
+        for point in candidates
+    )
+    contact_face_points = [
+        point
+        for point in candidates
+        if abs(
+            sum(a * b for a, b in zip(point, outward, strict=True))
+            - outward_extreme
+        )
+        <= 1.0e-6
+    ]
+    # The midpoint of the selected outer/front face is a measured surface
+    # point for the convex patch.  Picking an arbitrary corner made an
+    # otherwise symmetric jaw target depend on source vertex ordering.
+    contact = [
+        sum(point[index] for point in contact_face_points)
+        / len(contact_face_points)
+        for index in range(3)
+    ]
+    patch_path = (
+        f"{graph_link_path}/grasp_collision_patches/{request['patch_id']}"
+    )
+    UsdGeom.Scope.Define(stage, f"{graph_link_path}/grasp_collision_patches")
+    mesh = UsdGeom.Mesh.Define(stage, patch_path)
+    mesh.CreatePointsAttr([Gf.Vec3f(*point) for point in patch_points])
+    mesh.CreateFaceVertexCountsAttr([len(face) for face in patch_faces])
+    mesh.CreateFaceVertexIndicesAttr([index for face in patch_faces for index in face])
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    mesh.CreateOrientationAttr(source_mesh.GetOrientationAttr().Get() or UsdGeom.Tokens.rightHanded)
+    mesh.CreatePurposeAttr(UsdGeom.Tokens.guide)
+    mesh.CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+    mesh.CreateDoubleSidedAttr(bool(source_mesh.GetDoubleSidedAttr().Get()))
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr().Set(
+        "convexHull"
+    )
+    material = stage.GetPrimAtPath(
+        f"/Asset/materials/{request['graph_link_id']}"
+    )
+    if not material.IsValid():
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_grasp_collision_physics_material_missing"]
+        )
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(
+        UsdShade.Material(material), materialPurpose="physics"
+    )
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:geometryProvenance", "exact_agent_authored_step_convex_patch"
+    )
+    mesh.GetPrim().SetCustomDataByKey("blueprint:collisionGeometryOnly", True)
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:agentCadSourceMeshPath", str(source_mesh.GetPath())
+    )
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:graspAffordanceRole", request["grasp_affordance_role"]
+    )
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:graspContactPointLinkM", Gf.Vec3d(*contact)
+    )
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:graspApproachOutwardUnitLink", Gf.Vec3d(*outward)
+    )
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:graspPinchAxisLink", Gf.Vec3d(*pinch)
+    )
+    pinch_span = max(pinch_values) - min(pinch_values)
+    mesh.GetPrim().SetCustomDataByKey("blueprint:graspPinchSpanM", pinch_span)
+    return {
+        **dict(request),
+        "collision_prim_path": patch_path,
+        "source_point_count": len(source_points),
+        "selected_point_count": len(patch_points),
+        "selected_face_count": len(patch_faces),
+        "selected_bounds_graph_link_m": {"minimum": lower, "maximum": upper},
+        "contact_point_graph_link_m": contact,
+        "pinch_span_m": pinch_span,
+        "selected_point_digest": canonical_digest({"points": patch_points}),
+    }
+
+
 def _validate_composition_stage(stage: Any, receipt: Mapping[str, Any]) -> None:
     from pxr import UsdGeom, UsdPhysics
 
@@ -967,6 +1204,40 @@ def _validate_composition_stage(stage: Any, receipt: Mapping[str, Any]) -> None:
         actual_paths.add(str(prim.GetPath()))
     if actual_paths != {str(row["visual_mesh_path"]) for row in expected}:
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
+    patches = receipt.get("grasp_collision_patches") or []
+    actual_patch_paths: set[str] = set()
+    for row in patches:
+        if not isinstance(row, Mapping):
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_patch_receipt_invalid"]
+            )
+        prim = stage.GetPrimAtPath(str(row.get("collision_prim_path") or ""))
+        mesh = UsdGeom.Mesh(prim)
+        imageable = UsdGeom.Imageable(prim)
+        approximation = UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+        if (
+            not mesh
+            or not prim.HasAPI(UsdPhysics.CollisionAPI)
+            or str(approximation) != "convexHull"
+            or imageable.ComputePurpose() != UsdGeom.Tokens.guide
+            or imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
+            or prim.GetCustomDataByKey("blueprint:collisionGeometryOnly") is not True
+            or prim.GetCustomDataByKey("blueprint:graspAffordanceRole")
+            != row.get("grasp_affordance_role")
+            or len(mesh.GetPointsAttr().Get() or []) != row.get("selected_point_count")
+            or len(mesh.GetFaceVertexCountsAttr().Get() or [])
+            != row.get("selected_face_count")
+        ):
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_patch_usd_invalid"]
+            )
+        actual_patch_paths.add(str(prim.GetPath()))
+    if actual_patch_paths != {
+        str(row["collision_prim_path"]) for row in patches
+    }:
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_grasp_collision_patch_usd_invalid"]
+        )
 
 
 def materialize_agent_cad_visual_composition(
@@ -974,6 +1245,7 @@ def materialize_agent_cad_visual_composition(
     binding_path: str | Path,
     destination_usd_path: str | Path,
     receipt_path: str | Path | None = None,
+    grasp_collision_patches: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Copy exact agent mesh visuals into an immutable graph-asset USD clone."""
 
@@ -1000,6 +1272,9 @@ def materialize_agent_cad_visual_composition(
     )
     if stage is None or source_stage is None:
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
+    patch_requests = _normalize_grasp_collision_patches(
+        None if grasp_collision_patches is None else list(grasp_collision_patches)
+    )
     materials: dict[tuple[float, float, float, float], Any] = {}
 
     def material_for(color: Sequence[float]) -> Any:
@@ -1025,6 +1300,7 @@ def materialize_agent_cad_visual_composition(
 
     by_agent_link = {row["agent_link_id"]: row for row in binding["link_bindings"]}
     visual_meshes: list[dict[str, Any]] = []
+    source_mesh_context: dict[str, tuple[Any, Mapping[str, Any], Mapping[str, Any]]] = {}
     used_paths: set[str] = set()
     for index, row in enumerate(context["packet"]["meshes"]):
         source_path = row["prim_path"]
@@ -1037,6 +1313,7 @@ def materialize_agent_cad_visual_composition(
                 ["agent_cad_visual_agent_authored_color_missing"]
             )
         mapping = by_agent_link[row["link_id"]]
+        source_mesh_context[source_path] = (source_mesh, row, mapping)
         graph_link_path = context["graph"]["link_paths"][mapping["graph_link_id"]]
         UsdGeom.Scope.Define(stage, f"{graph_link_path}/visuals")
         leaf = _safe_prim_token(
@@ -1068,6 +1345,28 @@ def materialize_agent_cad_visual_composition(
                 "agent_authored_display_color_rgba": display_color,
             }
         )
+    collision_patches: list[dict[str, Any]] = []
+    for request in patch_requests:
+        context_row = source_mesh_context.get(request["source_mesh_path"])
+        if context_row is None:
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_source_mesh_missing"]
+            )
+        source_mesh, _packet_row, mapping = context_row
+        if mapping["graph_link_id"] != request["graph_link_id"]:
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_grasp_collision_link_binding_mismatch"]
+            )
+        graph_link_path = context["graph"]["link_paths"][request["graph_link_id"]]
+        collision_patches.append(
+            _copy_grasp_collision_patch(
+                stage=stage,
+                source_mesh=source_mesh,
+                transform=mapping["T_graph_link_from_agent_asset"],
+                graph_link_path=graph_link_path,
+                request=request,
+            )
+        )
     stage.GetRootLayer().documentation = (
         "Graph collision candidate plus exact agent-authored STEP visual geometry; "
         "native behavior and appearance material qualification remain unresolved."
@@ -1092,6 +1391,14 @@ def materialize_agent_cad_visual_composition(
         "agent_authored_display_color_mesh_count": len(visual_meshes),
         "neutral_fallback_mesh_count": 0,
         "generated_texture_map_count": 0,
+        **(
+            {
+                "grasp_collision_patches": collision_patches,
+                "grasp_collision_patch_count": len(collision_patches),
+            }
+            if collision_patches
+            else {}
+        ),
         "claim_boundary": dict(_COMPOSITION_CLAIM_BOUNDARY),
         "receipt_digest": "",
     }
@@ -1117,6 +1424,8 @@ def validate_agent_cad_visual_composition(
     """Verify a composed USD without upgrading its simulator/physics claims."""
 
     receipt = _clone(value)
+    patches = receipt.get("grasp_collision_patches")
+    patch_rows = [] if patches is None else patches
     if (
         receipt.get("schema_version") != COMPOSITION_SCHEMA_VERSION
         or receipt.get("status") != "agent_cad_visuals_composed"
@@ -1143,6 +1452,36 @@ def validate_agent_cad_visual_composition(
         or receipt.get("neutral_fallback_mesh_count") != 0
         or receipt.get("generated_texture_map_count") != 0
         or receipt.get("collision_visual_isolation_verified") is not True
+        or not isinstance(patch_rows, list)
+        or (
+            patches is None
+            and "grasp_collision_patch_count" in receipt
+        )
+        or (
+            patches is not None
+            and (
+                not patch_rows
+                or receipt.get("grasp_collision_patch_count") != len(patch_rows)
+                or _normalize_grasp_collision_patches(patch_rows) != [
+                    {
+                        key: row[key]
+                        for key in (
+                            "patch_id",
+                            "graph_link_id",
+                            "source_mesh_path",
+                            "grasp_affordance_role",
+                            "selection_axis_index",
+                            "minimum_axis_value_m",
+                            "maximum_axis_value_m",
+                            "approach_outward_unit_graph_link",
+                            "pinch_axis_graph_link",
+                            "collision_approximation",
+                        )
+                    }
+                    for row in patch_rows
+                ]
+            )
+        )
     ):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_binding_mismatch"])
     if verify_files:

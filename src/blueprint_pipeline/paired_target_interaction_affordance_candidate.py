@@ -96,6 +96,103 @@ def _cross(left: Sequence[float], right: Sequence[float]) -> list[float]:
     ]
 
 
+def _subtract(left: Sequence[float], right: Sequence[float]) -> list[float]:
+    return [float(a) - float(b) for a, b in zip(left, right, strict=True)]
+
+
+def _point_segment_distance(
+    point: Sequence[float], start: Sequence[float], end: Sequence[float]
+) -> float:
+    edge = _subtract(end, start)
+    length_squared = _dot(edge, edge)
+    if length_squared <= 1.0e-18:
+        return math.dist(point, start)
+    fraction = max(0.0, min(1.0, _dot(_subtract(point, start), edge) / length_squared))
+    closest = [start[index] + fraction * edge[index] for index in range(3)]
+    return math.dist(point, closest)
+
+
+def _point_triangle_distance(
+    point: Sequence[float],
+    first: Sequence[float],
+    second: Sequence[float],
+    third: Sequence[float],
+) -> float:
+    edge_a = _subtract(second, first)
+    edge_b = _subtract(third, first)
+    normal = _cross(edge_a, edge_b)
+    normal_norm = math.sqrt(_dot(normal, normal))
+    if normal_norm <= 1.0e-12:
+        return min(
+            _point_segment_distance(point, first, second),
+            _point_segment_distance(point, second, third),
+            _point_segment_distance(point, third, first),
+        )
+    unit_normal = [value / normal_norm for value in normal]
+    plane_distance = _dot(_subtract(point, first), unit_normal)
+    projected = [
+        float(point[index]) - plane_distance * unit_normal[index]
+        for index in range(3)
+    ]
+    dot_aa = _dot(edge_a, edge_a)
+    dot_ab = _dot(edge_a, edge_b)
+    dot_bb = _dot(edge_b, edge_b)
+    from_first = _subtract(projected, first)
+    dot_pa = _dot(from_first, edge_a)
+    dot_pb = _dot(from_first, edge_b)
+    denominator = dot_aa * dot_bb - dot_ab * dot_ab
+    if denominator > 1.0e-18:
+        u = (dot_bb * dot_pa - dot_ab * dot_pb) / denominator
+        v = (dot_aa * dot_pb - dot_ab * dot_pa) / denominator
+        if u >= -1.0e-9 and v >= -1.0e-9 and u + v <= 1.0 + 1.0e-9:
+            return abs(plane_distance)
+    return min(
+        _point_segment_distance(point, first, second),
+        _point_segment_distance(point, second, third),
+        _point_segment_distance(point, third, first),
+    )
+
+
+def _mesh_surface_distance(prim: Any, point: Sequence[float]) -> float:
+    from pxr import UsdGeom
+
+    mesh = UsdGeom.Mesh(prim)
+    points = mesh.GetPointsAttr().Get() if mesh else None
+    counts = mesh.GetFaceVertexCountsAttr().Get() if mesh else None
+    indices = mesh.GetFaceVertexIndicesAttr().Get() if mesh else None
+    if not points or not counts or not indices:
+        raise PairedTargetInteractionAffordanceError(
+            "paired_target_affordance_grasp_collision_patch_invalid"
+        )
+    distances: list[float] = []
+    offset = 0
+    for count in counts:
+        face = [int(value) for value in indices[offset : offset + int(count)]]
+        offset += int(count)
+        if len(face) < 3 or any(index < 0 or index >= len(points) for index in face):
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_collision_patch_invalid"
+            )
+        for index in range(1, len(face) - 1):
+            distances.append(
+                _point_triangle_distance(
+                    point,
+                    points[face[0]],
+                    points[face[index]],
+                    points[face[index + 1]],
+                )
+            )
+    if not distances:
+        raise PairedTargetInteractionAffordanceError(
+            "paired_target_affordance_grasp_collision_patch_invalid"
+        )
+    return min(distances)
+
+
+def _custom_vector(prim: Any, key: str, *, code: str) -> list[float]:
+    return _vector(prim.GetCustomDataByKey(key), length=3, code=code)
+
+
 def _bounds(cache: Any, prim: Any, *, local: bool) -> tuple[list[float], list[float]]:
     extent = (
         cache.ComputeRelativeBound(prim, prim) if local else cache.ComputeWorldBound(prim)
@@ -319,7 +416,89 @@ def materialize_paired_target_interaction_affordance_candidate(
     center = [(low[index] + high[index]) / 2.0 for index in range(3)]
     spans = [high[index] - low[index] for index in range(3)]
     link_world = UsdGeom.XformCache().GetLocalToWorldTransform(link)
-    if task_kind == "rigid_object_manipulation":
+    grasp_patches = [
+        prim
+        for prim in Usd.PrimRange(link)
+        if prim.HasAPI(UsdPhysics.CollisionAPI)
+        and prim.GetCustomDataByKey("blueprint:graspAffordanceRole")
+        == "parallel_jaw_outer_rim_patch"
+    ]
+    if len(grasp_patches) > 1:
+        raise PairedTargetInteractionAffordanceError(
+            "paired_target_affordance_grasp_collision_patch_ambiguous"
+        )
+    grasp_patch = grasp_patches[0] if grasp_patches else None
+    grasp_collision_patch_path = None
+    candidate_geometry_modified = False
+    if grasp_patch is not None:
+        if task_kind != "articulated_interaction":
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_collision_patch_task_invalid"
+            )
+        contact_local = _custom_vector(
+            grasp_patch,
+            "blueprint:graspContactPointLinkM",
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
+        outward_local = _normalize(
+            _custom_vector(
+                grasp_patch,
+                "blueprint:graspApproachOutwardUnitLink",
+                code="paired_target_affordance_grasp_collision_patch_invalid",
+            ),
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
+        pinch_axis_local = _normalize(
+            _custom_vector(
+                grasp_patch,
+                "blueprint:graspPinchAxisLink",
+                code="paired_target_affordance_grasp_collision_patch_invalid",
+            ),
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
+        try:
+            pinch_span = float(
+                grasp_patch.GetCustomDataByKey("blueprint:graspPinchSpanM")
+            )
+        except (TypeError, ValueError) as exc:
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_collision_patch_invalid"
+            ) from exc
+        if not math.isfinite(pinch_span) or pinch_span <= 0.0:
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_collision_patch_invalid"
+            )
+        contact_surface_error_m = _mesh_surface_distance(
+            grasp_patch, contact_local
+        )
+        if contact_surface_error_m > 0.001:
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_contact_off_collider"
+            )
+        approach = _normalize(
+            [
+                float(item)
+                for item in link_world.TransformDir(Gf.Vec3d(*outward_local))
+            ],
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
+        gripper_approach = [-value for value in approach]
+        pinch_axis = _normalize(
+            [
+                float(item)
+                for item in link_world.TransformDir(Gf.Vec3d(*pinch_axis_local))
+            ],
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
+        contact_world = [
+            float(item) for item in link_world.Transform(Gf.Vec3d(*contact_local))
+        ]
+        method = "source_derived_grasp_collision_patch"
+        gripper_approach_source = "grasp_patch_front_normal_inward"
+        standoff_axis_source = "grasp_patch_front_normal_outward"
+        grasp_collision_patch_path = str(grasp_patch.GetPath())
+        candidate_geometry_modified = True
+    elif task_kind == "rigid_object_manipulation":
         pinch_axis_index = min(range(3), key=spans.__getitem__)
         pinch_axis_local = [
             1.0 if index == pinch_axis_index else 0.0 for index in range(3)
@@ -342,6 +521,7 @@ def materialize_paired_target_interaction_affordance_candidate(
         # articulated branch below is where they must not.
         gripper_approach = list(approach)
         gripper_approach_source = "base_to_contact_direction"
+        standoff_axis_source = "base_to_contact_direction"
     else:
         assert hinge_world is not None and hinge_axis is not None
         inverse = link_world.GetInverse()
@@ -419,9 +599,11 @@ def materialize_paired_target_interaction_affordance_candidate(
         # wrist buried in the cabinet, so the sign is not free either.
         gripper_approach = [-value for value in radial_world]
         gripper_approach_source = "panel_plane_radial_inward_from_free_edge"
-    pinch_span = sum(
-        abs(pinch_axis_local[index]) * spans[index] for index in range(3)
-    )
+        standoff_axis_source = "panel_plane_radial_outward_from_free_edge"
+    if grasp_patch is None:
+        pinch_span = sum(
+            abs(pinch_axis_local[index]) * spans[index] for index in range(3)
+        )
     refuse_degenerate_gripper_frame(gripper_approach, pinch_axis)
     measured_collision_paths = sorted(
         str(prim.GetPath())
@@ -458,14 +640,10 @@ def materialize_paired_target_interaction_affordance_candidate(
         "selection_contract": {
             "method": method,
             "gripper_approach_axis_source": gripper_approach_source,
-            "standoff_axis_source": (
-                "panel_plane_radial_outward_from_free_edge"
-                if task_kind == "articulated_interaction"
-                else "base_to_contact_direction"
-            ),
+            "standoff_axis_source": standoff_axis_source,
             "link_selected_from_articulation_graph_role": True,
             "object_label_or_task_id_geometry_shortcut_used": False,
-            "candidate_geometry_authored_or_modified": False,
+            "candidate_geometry_authored_or_modified": candidate_geometry_modified,
         },
         "candidate": {
             "link_id": link_id,
@@ -475,6 +653,10 @@ def materialize_paired_target_interaction_affordance_candidate(
             # children.  Preserve the measured collision region separately.
             "contact_body_prim_paths": [link_path],
             "measured_collision_prim_paths": measured_collision_paths,
+            "grasp_collision_patch_prim_path": grasp_collision_patch_path,
+            "contact_point_to_grasp_collider_surface_m": (
+                contact_surface_error_m if grasp_patch is not None else None
+            ),
             "contact_point_link_m": contact_local,
             "contact_point_registered_stage_m": contact_world,
             "approach_unit_registered_stage": approach,
