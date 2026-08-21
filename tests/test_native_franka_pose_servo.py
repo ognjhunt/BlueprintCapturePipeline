@@ -12,6 +12,7 @@ from blueprint_pipeline.native_franka_pose_servo import (
     PINK_POSTURE_COST,
     contract_xyzw_to_native_xyzw,
     contract_xyzw_to_pink_wxyz,
+    deterministic_pink_joint_seeds,
     native_xyzw_to_contract_xyzw,
     pink_configuration_joint_positions,
     resolve_native_franka_pose_binding,
@@ -135,6 +136,127 @@ def test_pink_configuration_limit_contract_refuses_collapsed_margin() -> None:
             lower_joint_position_limits_rad=[-1.0e-6],
             upper_joint_position_limits_rad=[1.0e-6],
         )
+
+
+def test_global_pink_seeds_are_deterministic_bounded_and_preferred_first() -> None:
+    lower = [-2.0] * 7
+    upper = [2.0] * 7
+    preferred = [[0.0] * 7, [1.0] * 7]
+
+    first = deterministic_pink_joint_seeds(
+        lower_joint_position_limits_rad=lower,
+        upper_joint_position_limits_rad=upper,
+        preferred_seeds=preferred,
+        seed_count=12,
+    )
+    second = deterministic_pink_joint_seeds(
+        lower_joint_position_limits_rad=lower,
+        upper_joint_position_limits_rad=upper,
+        preferred_seeds=preferred,
+        seed_count=12,
+    )
+
+    assert first == second
+    assert first[:2] == preferred
+    assert len(first) == 12
+    assert len({tuple(row) for row in first}) == 12
+    assert all(
+        -2.0 < value < 2.0 for row in first for value in row
+    )
+
+
+def test_global_pink_seeds_reject_invalid_joint_boxes() -> None:
+    with pytest.raises(
+        NativeFrankaPoseServoError,
+        match="native_franka_pose_servo_global_seeds_invalid",
+    ):
+        deterministic_pink_joint_seeds(
+            lower_joint_position_limits_rad=[-1.0] * 6,
+            upper_joint_position_limits_rad=[1.0] * 6,
+        )
+
+
+def test_multistart_prefers_continuous_solved_configuration() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-2.0] * 7
+    servo._joint_position_upper = [2.0] * 7
+
+    def solve(**kwargs):
+        joints = list(kwargs["seed_joint_positions_rad"])
+        return {
+            "solved": True,
+            "joint_positions_rad": joints,
+            "position_error_m": 0.001,
+            "orientation_error_rad": 0.01,
+            "iterations": 4,
+        }
+
+    servo.solve_grasp_target_from_joint_seed = solve
+    result = servo.solve_grasp_target_multistart(
+        target_position_world_m=[0.5, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[1.0] * 7, [0.2] * 7],
+        reference_joint_positions_rad=[0.0] * 7,
+        seed_count=2,
+    )
+
+    assert result["solved"] is True
+    assert result["selected"]["seed_index"] == 1
+    assert result["selected"]["joint_positions_rad"] == pytest.approx(
+        [0.2] * 7
+    )
+
+
+def test_global_joint_solution_replay_stays_under_native_command_bounds() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-2.0] * 7
+    servo._joint_position_upper = [2.0] * 7
+    servo._last_command = None
+    servo._last_gripper_command = 0.0
+    servo._control_period_seconds = 1.0 / 15.0
+    servo.read_arm_joint_positions = lambda: [0.0] * 7
+    observed_velocity = []
+    servo._write_joint_velocity_target = observed_velocity.extend
+
+    action, diagnostic = servo.action_for_joint_target(
+        target_joint_positions_rad=[1.0] * 7,
+        gripper_command=0.25,
+        max_joint_delta_rad=0.05,
+        max_joint_setpoint_lead_rad=0.2,
+        velocity_feedforward_scale=1.0,
+    )
+
+    assert action[:7] == pytest.approx([0.05] * 7)
+    assert action[7] == 0.25
+    assert observed_velocity == pytest.approx([0.75] * 7)
+    assert diagnostic["bounded_joint_positions_rad"] == pytest.approx(
+        [0.05] * 7
+    )
+    assert diagnostic["ik_backend"].endswith("_multistart_replay")
+
+
+def test_multistart_avoids_a_joint_limit_solution_before_continuity() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-2.0] * 7
+    servo._joint_position_upper = [2.0] * 7
+    servo.solve_grasp_target_from_joint_seed = lambda **kwargs: {
+        "solved": True,
+        "joint_positions_rad": list(kwargs["seed_joint_positions_rad"]),
+        "position_error_m": 0.001,
+        "orientation_error_rad": 0.01,
+        "iterations": 4,
+    }
+
+    result = servo.solve_grasp_target_multistart(
+        target_position_world_m=[0.5, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[1.99] * 7, [0.5] * 7],
+        reference_joint_positions_rad=[1.99] * 7,
+        seed_count=2,
+    )
+
+    assert result["selected"]["seed_index"] == 1
+    assert result["selected"]["minimum_joint_limit_margin_rad"] > 0.05
 
 
 def test_pose_servo_uses_pink_limits_and_posture_not_plain_dls() -> None:

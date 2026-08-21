@@ -764,3 +764,17 @@ def test_construction_camera_frame_is_retained_before_the_gate_can_refuse(
         )
 
     assert (tmp_path / "construction_frames" / "external" / "reset.png").is_file()
+
+
+def test_front_entry_construction_uses_off_sim_multistart_then_native_replay() -> None:
+    import inspect
+
+    from blueprint_pipeline.native_task_arena_construction_worker import main
+
+    source = inspect.getsource(main)
+    assert "solve_grasp_target_multistart" in source
+    assert "action_for_joint_target" in source
+    assert '"physics_steps_performed": 0' in source
+    assert "native_execution_remains_" in source
+    assert "reset_grasp_pose = servo.current_grasp_frame_pose_world()" in source
+    assert "reset_body_pose = servo.current_body_pose_world()" not in source

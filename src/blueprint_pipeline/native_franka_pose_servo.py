@@ -142,6 +142,31 @@ PINK_INTEGRATION_DT_SECONDS = 1.0 / 20.0
 # configuration a negligible distance inside the same live articulation limits
 # while leaving the real PhysX readback and every commanded target untouched.
 PINK_CONFIGURATION_LIMIT_MARGIN_RAD = 1.0e-5
+PINK_GLOBAL_SEED_COUNT = 16
+PINK_GLOBAL_MAX_ITERATIONS = 192
+PINK_GLOBAL_POSITION_TOLERANCE_M = 0.005
+PINK_GLOBAL_ORIENTATION_TOLERANCE_RAD = 0.04
+PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD = 0.05
+_HALTON_PRIMES = (2, 3, 5, 7, 11, 13, 17)
+# Deterministic, publisher-authored starts before the low-discrepancy sweep:
+# exact IsaacLab Arena DROID, IsaacLab Franka+Robotiq ready, and IsaacLab's
+# cabinet-manipulation posture. They are IK hypotheses only; native execution
+# still decides collision, contact, and arrival.
+# Sources: IsaacLab-Arena droid.py@8b4a3a47 and IsaacLab robot/cabinet configs
+# @ffff603e, the exact revisions already carried by the runtime source packet.
+PINK_GLOBAL_REFERENCE_SEEDS: tuple[tuple[float, ...], ...] = (
+    (
+        0.0,
+        -math.pi / 5.0,
+        0.0,
+        -4.0 * math.pi / 5.0,
+        0.0,
+        3.0 * math.pi / 5.0,
+        0.0,
+    ),
+    (0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741),
+    (1.157, -1.066, -0.155, -2.239, -1.841, 1.003, 0.469),
+)
 
 
 class NativeFrankaPoseServoError(RuntimeError):
@@ -150,6 +175,96 @@ class NativeFrankaPoseServoError(RuntimeError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def _radical_inverse(index: int, base: int) -> float:
+    result = 0.0
+    denominator = 1.0
+    while index:
+        index, digit = divmod(index, base)
+        denominator *= base
+        result += digit / denominator
+    return result
+
+
+def deterministic_pink_joint_seeds(
+    *,
+    lower_joint_position_limits_rad: Sequence[float],
+    upper_joint_position_limits_rad: Sequence[float],
+    preferred_seeds: Sequence[Sequence[float]] = (),
+    seed_count: int = PINK_GLOBAL_SEED_COUNT,
+) -> list[list[float]]:
+    """Return reproducible multi-start configurations inside live limits.
+
+    Pink is explicitly a local solver. A low-discrepancy Halton set covers the
+    seven-dimensional Panda joint box without introducing a random seed or a
+    new planner dependency. Caller-supplied configurations remain first so a
+    continuous previous solution is always tried before global alternatives.
+    """
+
+    try:
+        lower = [float(value) for value in lower_joint_position_limits_rad]
+        upper = [float(value) for value in upper_joint_position_limits_rad]
+        count = int(seed_count)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_global_seeds_invalid"]
+        ) from exc
+    if (
+        len(lower) != 7
+        or len(upper) != 7
+        or isinstance(seed_count, bool)
+        or count <= 0
+        or count > 256
+        or any(
+            not math.isfinite(lo)
+            or not math.isfinite(hi)
+            or hi - lo <= 2.0 * PINK_CONFIGURATION_LIMIT_MARGIN_RAD
+            for lo, hi in zip(lower, upper, strict=True)
+        )
+    ):
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_global_seeds_invalid"]
+        )
+
+    seeds: list[list[float]] = []
+
+    def append_unique(raw: Sequence[float]) -> None:
+        seed = pink_configuration_joint_positions(
+            measured_joint_positions_rad=raw,
+            lower_joint_position_limits_rad=lower,
+            upper_joint_position_limits_rad=upper,
+        )
+        if not any(
+            max(abs(a - b) for a, b in zip(seed, existing, strict=True))
+            <= 1.0e-9
+            for existing in seeds
+        ):
+            seeds.append(seed)
+
+    for seed in preferred_seeds:
+        append_unique(seed)
+        if len(seeds) >= count:
+            return seeds
+    sample_index = 1
+    while len(seeds) < count:
+        append_unique(
+            [
+                lo
+                + PINK_CONFIGURATION_LIMIT_MARGIN_RAD
+                + _radical_inverse(sample_index, _HALTON_PRIMES[axis])
+                * (
+                    hi
+                    - lo
+                    - 2.0 * PINK_CONFIGURATION_LIMIT_MARGIN_RAD
+                )
+                for axis, (lo, hi) in enumerate(
+                    zip(lower, upper, strict=True)
+                )
+            ]
+        )
+        sample_index += 1
+    return seeds
 
 
 def pink_configuration_joint_positions(
@@ -773,6 +888,44 @@ class NativeFrankaDifferentialIkServo:
         # A stale feedforward must not survive into the next phase or episode.
         self._write_joint_velocity_target([0.0] * len(self.binding["arm_joint_ids"]))
 
+    def _pink_state_from_joint_positions(
+        self,
+        joint_positions_rad: Sequence[float],
+        joint_velocities_rad_s: Sequence[float] | None = None,
+    ) -> Any:
+        values = [float(value) for value in joint_positions_rad]
+        velocities_values = (
+            [0.0] * len(values)
+            if joint_velocities_rad_s is None
+            else [float(value) for value in joint_velocities_rad_s]
+        )
+        if len(values) != len(self.binding["arm_joint_names"]) or not all(
+            math.isfinite(value) for value in values
+        ) or len(velocities_values) != len(values) or not all(
+            math.isfinite(value) for value in velocities_values
+        ):
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_pink_state_invalid"]
+            )
+        positions = self._torch.tensor(
+            [values],
+            device=self._env.unwrapped.device,
+            dtype=self._torch.float32,
+        )
+        velocities = self._torch.tensor(
+            [velocities_values],
+            device=self._env.unwrapped.device,
+            dtype=self._torch.float32,
+        )
+        names = list(self.binding["arm_joint_names"])
+        return self._mg.RobotState(
+            joints=self._mg.JointState.from_name(
+                robot_joint_space=names,
+                positions=(names, self._wp.from_torch(positions)),
+                velocities=(names, self._wp.from_torch(velocities)),
+            )
+        )
+
     def _pink_estimated_state(self) -> Any:
         measured_positions = self._to_torch(self._robot.data.joint_pos)[
             :, self.binding["arm_joint_ids"]
@@ -785,21 +938,12 @@ class NativeFrankaDifferentialIkServo:
         )
         self._last_pink_measured_joint_positions_rad = measured_values
         self._last_pink_configuration_joint_positions_rad = pink_values
-        positions = self._torch.tensor(
-            [pink_values],
-            device=self._env.unwrapped.device,
-            dtype=measured_positions.dtype,
-        )
-        velocities = self._to_torch(self._robot.data.joint_vel)[
+        measured_velocities = self._to_torch(self._robot.data.joint_vel)[
             :, self.binding["arm_joint_ids"]
         ].contiguous()
-        names = list(self.binding["arm_joint_names"])
-        return self._mg.RobotState(
-            joints=self._mg.JointState.from_name(
-                robot_joint_space=names,
-                positions=(names, self._wp.from_torch(positions)),
-                velocities=(names, self._wp.from_torch(velocities)),
-            )
+        return self._pink_state_from_joint_positions(
+            pink_values,
+            [float(value) for value in measured_velocities[0]],
         )
 
     def _reset_pink_controller(self) -> None:
@@ -814,7 +958,22 @@ class NativeFrankaDifferentialIkServo:
     def _pink_desired_joint_positions(
         self, *, target_position_base: Sequence[float], target_quaternion_base_xyzw: Sequence[float]
     ) -> list[float]:
-        names = list(self.binding["arm_joint_names"])
+        setpoint = self._pink_setpoint(
+            target_position_base=target_position_base,
+            target_quaternion_base_xyzw=target_quaternion_base_xyzw,
+        )
+        desired = self._pink_controller.forward(
+            self._pink_estimated_state(), setpoint, self._pink_time_seconds
+        )
+        self._pink_time_seconds += PINK_INTEGRATION_DT_SECONDS
+        return self._joint_positions_from_pink_state(desired)
+
+    def _pink_setpoint(
+        self,
+        *,
+        target_position_base: Sequence[float],
+        target_quaternion_base_xyzw: Sequence[float],
+    ) -> Any:
         target_quaternion_base_wxyz = contract_xyzw_to_pink_wxyz(
             target_quaternion_base_xyzw
         )
@@ -829,17 +988,16 @@ class NativeFrankaDifferentialIkServo:
             self._np.asarray([target_quaternion_base_wxyz], dtype=self._np.float32),
             dtype=self._wp.float32,
         )
-        setpoint = self._mg.RobotState(
+        return self._mg.RobotState(
             sites=self._mg.SpatialState.from_name(
                 spatial_space=["panda_hand"],
                 positions=(["panda_hand"], position),
                 orientations=(["panda_hand"], orientation),
             )
         )
-        desired = self._pink_controller.forward(
-            self._pink_estimated_state(), setpoint, self._pink_time_seconds
-        )
-        self._pink_time_seconds += PINK_INTEGRATION_DT_SECONDS
+
+    def _joint_positions_from_pink_state(self, desired: Any) -> list[float]:
+        names = list(self.binding["arm_joint_names"])
         if desired is None or desired.joints is None or desired.joints.positions is None:
             raise NativeFrankaPoseServoError(
                 ["native_franka_pose_servo_pink_solution_missing"]
@@ -851,6 +1009,253 @@ class NativeFrankaDifferentialIkServo:
                 ["native_franka_pose_servo_pink_joint_mapping_invalid"]
             )
         return [float(raw[desired_names.index(name)]) for name in names]
+
+    @staticmethod
+    def _quaternion_error_rad(
+        observed_xyzw: Sequence[float], target_xyzw: Sequence[float]
+    ) -> float:
+        observed = [float(value) for value in observed_xyzw]
+        target = [float(value) for value in target_xyzw]
+        observed_norm = math.sqrt(sum(value * value for value in observed))
+        target_norm = math.sqrt(sum(value * value for value in target))
+        if observed_norm <= 1.0e-12 or target_norm <= 1.0e-12:
+            return math.inf
+        dot = abs(
+            sum(
+                left * right
+                for left, right in zip(observed, target, strict=True)
+            )
+            / (observed_norm * target_norm)
+        )
+        return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+    def _pink_hand_target_for_grasp_world(
+        self,
+        *,
+        target_position_world_m: Sequence[float],
+        target_grasp_frame_quaternion_world_xyzw: Sequence[float],
+    ) -> tuple[list[float], list[float]]:
+        target_grasp_position_root, target_grasp_quaternion_root = (
+            pose_world_to_base(
+                position_world=target_position_world_m,
+                quaternion_world_xyzw=(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
+                base_position_world=self._base_pose[:3],
+                base_quaternion_world_xyzw=self._base_pose[3:7],
+            )
+        )
+        return controlled_body_pose_for_rigid_grasp_frame_target(
+            current_body_position_world_m=(
+                self._pink_hand_pose_at_binding_base[:3]
+            ),
+            current_body_quaternion_world_xyzw=(
+                self._pink_hand_pose_at_binding_base[3:7]
+            ),
+            current_grasp_frame_position_world_m=(
+                self._pink_grasp_pose_at_binding_base[:3]
+            ),
+            current_grasp_frame_quaternion_world_xyzw=(
+                self._pink_grasp_pose_at_binding_base[3:7]
+            ),
+            target_grasp_frame_position_world_m=target_grasp_position_root,
+            target_grasp_frame_quaternion_world_xyzw=(
+                target_grasp_quaternion_root
+            ),
+        )
+
+    def solve_grasp_target_from_joint_seed(
+        self,
+        *,
+        target_position_world_m: Sequence[float],
+        target_grasp_frame_quaternion_world_xyzw: Sequence[float],
+        seed_joint_positions_rad: Sequence[float],
+        maximum_iterations: int = PINK_GLOBAL_MAX_ITERATIONS,
+        position_tolerance_m: float = PINK_GLOBAL_POSITION_TOLERANCE_M,
+        orientation_tolerance_rad: float = PINK_GLOBAL_ORIENTATION_TOLERANCE_RAD,
+    ) -> dict[str, Any]:
+        """Solve one exact pose off-sim from one seed, then restore live PINK.
+
+        The estimated state supplied to ``PinkIKController.forward`` is an
+        in-memory RobotState. No articulation target is written and PhysX is
+        never stepped. This turns Pink into a bounded multi-start preflight;
+        native execution remains the collision and dynamics authority.
+        """
+
+        seed = pink_configuration_joint_positions(
+            measured_joint_positions_rad=seed_joint_positions_rad,
+            lower_joint_position_limits_rad=self._joint_position_lower,
+            upper_joint_position_limits_rad=self._joint_position_upper,
+        )
+        target_position, target_quaternion = (
+            self._pink_hand_target_for_grasp_world(
+                target_position_world_m=target_position_world_m,
+                target_grasp_frame_quaternion_world_xyzw=(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
+            )
+        )
+        setpoint = self._pink_setpoint(
+            target_position_base=target_position,
+            target_quaternion_base_xyzw=target_quaternion,
+        )
+        original_time = self._pink_time_seconds
+        best = {
+            "solved": False,
+            "joint_positions_rad": list(seed),
+            "position_error_m": math.inf,
+            "orientation_error_rad": math.inf,
+            "iterations": 0,
+        }
+        try:
+            state = self._pink_state_from_joint_positions(seed)
+            if self._pink_controller.reset(state, None, 0.0) is not True:
+                raise NativeFrankaPoseServoError(
+                    ["native_franka_pose_servo_global_seed_reset_failed"]
+                )
+            for iteration in range(1, int(maximum_iterations) + 1):
+                desired = self._pink_controller.forward(
+                    state,
+                    setpoint,
+                    iteration * PINK_INTEGRATION_DT_SECONDS,
+                )
+                joints = self._joint_positions_from_pink_state(desired)
+                state = self._pink_state_from_joint_positions(joints)
+                configuration = self._pink_controller._configuration
+                if configuration is None:
+                    break
+                hand = configuration.get_transform_frame_to_world(
+                    "panda_hand"
+                )
+                hand_quaternion = self._Rotation.from_matrix(
+                    hand.rotation
+                ).as_quat()
+                position_error = math.dist(
+                    [float(value) for value in hand.translation],
+                    target_position,
+                )
+                orientation_error = self._quaternion_error_rad(
+                    [float(value) for value in hand_quaternion],
+                    target_quaternion,
+                )
+                if (
+                    position_error + orientation_error
+                    < best["position_error_m"]
+                    + best["orientation_error_rad"]
+                ):
+                    best = {
+                        "solved": False,
+                        "joint_positions_rad": joints,
+                        "position_error_m": position_error,
+                        "orientation_error_rad": orientation_error,
+                        "iterations": iteration,
+                    }
+                if (
+                    position_error <= float(position_tolerance_m)
+                    and orientation_error <= float(
+                        orientation_tolerance_rad
+                    )
+                ):
+                    best["solved"] = True
+                    break
+        finally:
+            self._pink_time_seconds = original_time
+            self._reset_pink_controller()
+        for field in ("position_error_m", "orientation_error_rad"):
+            if not math.isfinite(float(best[field])):
+                best[field] = None
+        return best
+
+    def solve_grasp_target_multistart(
+        self,
+        *,
+        target_position_world_m: Sequence[float],
+        target_grasp_frame_quaternion_world_xyzw: Sequence[float],
+        preferred_seeds: Sequence[Sequence[float]],
+        reference_joint_positions_rad: Sequence[float],
+        seed_count: int = PINK_GLOBAL_SEED_COUNT,
+    ) -> dict[str, Any]:
+        seeds = deterministic_pink_joint_seeds(
+            lower_joint_position_limits_rad=self._joint_position_lower,
+            upper_joint_position_limits_rad=self._joint_position_upper,
+            preferred_seeds=preferred_seeds,
+            seed_count=seed_count,
+        )
+        reference = [float(value) for value in reference_joint_positions_rad]
+        attempts = []
+        for index, seed in enumerate(seeds):
+            try:
+                attempt = self.solve_grasp_target_from_joint_seed(
+                    target_position_world_m=target_position_world_m,
+                    target_grasp_frame_quaternion_world_xyzw=(
+                        target_grasp_frame_quaternion_world_xyzw
+                    ),
+                    seed_joint_positions_rad=seed,
+                )
+            except NativeFrankaPoseServoError as exc:
+                attempt = {
+                    "solved": False,
+                    "joint_positions_rad": list(seed),
+                    "position_error_m": None,
+                    "orientation_error_rad": None,
+                    "iterations": 0,
+                    "blockers": list(exc.errors),
+                }
+            margins = [
+                min(value - lower, upper - value)
+                for value, lower, upper in zip(
+                    attempt["joint_positions_rad"],
+                    self._joint_position_lower,
+                    self._joint_position_upper,
+                    strict=True,
+                )
+            ]
+            attempt.update(
+                {
+                    "seed_index": index,
+                    "seed_joint_positions_rad": seed,
+                    "minimum_joint_limit_margin_rad": min(margins),
+                    "maximum_reference_joint_delta_rad": max(
+                        abs(value - prior)
+                        for value, prior in zip(
+                            attempt["joint_positions_rad"],
+                            reference,
+                            strict=True,
+                        )
+                    ),
+                }
+            )
+            attempts.append(attempt)
+        solved = [row for row in attempts if row["solved"]]
+        selected = (
+            min(
+                solved,
+                key=lambda row: (
+                    row["minimum_joint_limit_margin_rad"]
+                    < PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD,
+                    row["maximum_reference_joint_delta_rad"],
+                    -row["minimum_joint_limit_margin_rad"],
+                    row["position_error_m"] + row["orientation_error_rad"],
+                    row["seed_index"],
+                ),
+            )
+            if solved
+            else None
+        )
+        return {
+            "solved": selected is not None,
+            "selected": None if selected is None else dict(selected),
+            "attempts": attempts,
+            "seed_count": len(seeds),
+            "solver": "isaacsim.robot_motion.pink.PinkIKController_multistart",
+            "position_tolerance_m": PINK_GLOBAL_POSITION_TOLERANCE_M,
+            "orientation_tolerance_rad": (
+                PINK_GLOBAL_ORIENTATION_TOLERANCE_RAD
+            ),
+            "preferred_minimum_joint_limit_margin_rad": (
+                PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD
+            ),
+        }
 
     def current_body_pose_world(self) -> list[float]:
         pose = self._to_torch(self._robot.data.body_pose_w)[
@@ -950,6 +1355,56 @@ class NativeFrankaDifferentialIkServo:
         root[:, :3, :] = self._torch.bmm(self._world_to_root, world[:, :3, :])
         root[:, 3:, :] = self._torch.bmm(self._world_to_root, world[:, 3:, :])
         return world, root
+
+    def action_for_joint_target(
+        self,
+        *,
+        target_joint_positions_rad: Sequence[float],
+        gripper_command: float,
+        max_joint_delta_rad: float,
+        max_joint_setpoint_lead_rad: float,
+        velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
+    ) -> tuple[list[float], dict[str, Any]]:
+        """Track one globally solved pose as bounded native joint targets."""
+
+        self._last_gripper_command = float(gripper_command)
+        current = self.read_arm_joint_positions()
+        desired = clip_joint_positions_to_limits(
+            desired_joint_positions_rad=target_joint_positions_rad,
+            lower_joint_position_limits_rad=self._joint_position_lower,
+            upper_joint_position_limits_rad=self._joint_position_upper,
+        )
+        previous = current if self._last_command is None else self._last_command
+        bounded = bounded_absolute_joint_setpoint(
+            measured_joint_positions_rad=current,
+            desired_joint_positions_rad=desired,
+            previous_commanded_joint_positions_rad=previous,
+            max_command_slew_per_step_rad=float(max_joint_delta_rad),
+            max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+        )
+        feedforward = joint_velocity_feedforward_rad_s(
+            commanded_joint_positions_rad=bounded,
+            previous_commanded_joint_positions_rad=previous,
+            control_period_seconds=self._control_period_seconds,
+            scale=float(velocity_feedforward_scale),
+        )
+        self._write_joint_velocity_target(feedforward)
+        self._last_command = list(bounded)
+        return [*bounded, float(gripper_command)], {
+            "ik_backend": (
+                "isaacsim.robot_motion.pink.PinkIKController_multistart_replay"
+            ),
+            "measured_joint_positions_rad": current,
+            "desired_joint_positions_rad": desired,
+            "bounded_joint_positions_rad": bounded,
+            "commanded_joint_velocity_feedforward_rad_s": feedforward,
+            "joint_position_lower_limits_rad": list(
+                self._joint_position_lower
+            ),
+            "joint_position_upper_limits_rad": list(
+                self._joint_position_upper
+            ),
+        }
 
     def action_for_grasp_target(
         self,
@@ -1184,10 +1639,13 @@ __all__ = [
     "JAW_AXIS_ORDERING",
     "NativeFrankaDifferentialIkServo",
     "NativeFrankaPoseServoError",
+    "PINK_GLOBAL_REFERENCE_SEEDS",
+    "PINK_GLOBAL_SEED_COUNT",
     "PINK_INTEGRATION_DT_SECONDS",
     "SCHEMA_VERSION",
     "contract_xyzw_to_native_xyzw",
     "contract_xyzw_to_pink_wxyz",
+    "deterministic_pink_joint_seeds",
     "gripper_frame_axis_readback",
     "native_xyzw_to_contract_xyzw",
     "resolve_native_franka_pose_binding",

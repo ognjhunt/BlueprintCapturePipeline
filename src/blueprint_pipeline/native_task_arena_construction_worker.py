@@ -543,7 +543,7 @@ def _task_joint_reset_passed(
 def _phase_target_orientation(
     phase: Mapping[str, Any], *, reset_body_orientation_xyzw: Sequence[float]
 ) -> list[float]:
-    """Bind the phase orientation, treating identity as unspecified.
+    """Bind the grasp-frame phase orientation, treating identity as unspecified.
 
     ``native_articulated_control_plan._pose_phase`` already declares the intent:
     a phase with no orientation binds "the controlled body's measured reset
@@ -551,10 +551,13 @@ def _phase_target_orientation(
     reachable only when the key was absent, so an identity placeholder -- which
     carries exactly the same meaning -- was executed as a real target instead.
 
-    These construction phases are open-gripper clearance and reachability
-    probes, so the measured reset orientation is a legitimate binding for them.
-    It is not a grasp: the contact replay refuses an unauthored orientation
-    rather than substituting one.
+    The argument retains its historical name for compatibility, but callers
+    pass the measured reset *grasp-frame* orientation. Passing the controlled
+    body orientation here became wrong once the TCP transform was measured:
+    the returned quaternion is consumed as a grasp-frame target. These phases
+    are open-gripper clearance and reachability probes, so the measured reset
+    grasp orientation is a legitimate binding. It is not a contact grasp: the
+    contact replay still refuses an unauthored orientation.
     """
 
     orientation = phase.get("orientation_world_xyzw")
@@ -1365,6 +1368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,
+            PINK_GLOBAL_REFERENCE_SEEDS,
         )
         from blueprint_pipeline.native_task_arena_readback import (
             NativeArticulatedTaskArenaReadback,
@@ -1525,7 +1529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["gripper_frame_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
-        reset_body_pose = servo.current_body_pose_world()
+        reset_grasp_pose = servo.current_grasp_frame_pose_world()
         snapshots = []
         for _ in range(8):
             current = servo.read_arm_joint_positions()
@@ -1559,6 +1563,82 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         servo_command_limits = _servo_command_limits(execution_parameters)
         result["servo_command_limits"] = dict(servo_command_limits)
+        global_ik_solutions: dict[str, list[float]] = {}
+        affordance = phase_plan.get("interaction_affordance") or {}
+        front_entry_multistart = bool(
+            float(affordance.get("contact_outward_standoff_m", 0.0)) > 0.0
+            and affordance.get("grasp_swept_volume_receipt_digest")
+        )
+        if front_entry_multistart:
+            _announce("pink_global_ik_preflight")
+            reference_joints = servo.read_arm_joint_positions()
+            preflight_phases = []
+            for phase in phase_plan["phases"]:
+                _announce(f"pink_global_ik_{phase['phase_id']}")
+                target_orientation = _phase_target_orientation(
+                    phase,
+                    reset_body_orientation_xyzw=reset_grasp_pose[3:7],
+                )
+                solved = servo.solve_grasp_target_multistart(
+                    target_position_world_m=phase["position_world_m"],
+                    target_grasp_frame_quaternion_world_xyzw=(
+                        target_orientation
+                    ),
+                    preferred_seeds=[
+                        reference_joints,
+                        *PINK_GLOBAL_REFERENCE_SEEDS,
+                    ],
+                    reference_joint_positions_rad=reference_joints,
+                )
+                selected = solved.get("selected")
+                preflight_phases.append(
+                    {
+                        "phase_id": phase["phase_id"],
+                        **solved,
+                    }
+                )
+                if isinstance(selected, Mapping):
+                    reference_joints = [
+                        float(value)
+                        for value in selected["joint_positions_rad"]
+                    ]
+                    global_ik_solutions[str(phase["phase_id"])] = list(
+                        reference_joints
+                    )
+                    _announce(
+                        f"pink_global_ik_{phase['phase_id']}",
+                        "completed",
+                    )
+                else:
+                    _announce(
+                        f"pink_global_ik_{phase['phase_id']}",
+                        "blocked",
+                    )
+            result["pink_global_ik_preflight"] = {
+                "schema_version": "native_task_pink_global_ik_preflight.v1",
+                "status": (
+                    "all_phases_solved"
+                    if len(global_ik_solutions) == len(phase_plan["phases"])
+                    else "partial"
+                ),
+                "phase_count": len(phase_plan["phases"]),
+                "solved_phase_count": len(global_ik_solutions),
+                "phases": preflight_phases,
+                "provider_mutation_performed": False,
+                "physics_steps_performed": 0,
+                "claim_boundary": (
+                    "off_sim_multistart_pose_ik_only;native_execution_remains_"
+                    "the_collision_contact_dynamics_and_arrival_authority"
+                ),
+            }
+            _announce(
+                "pink_global_ik_preflight",
+                (
+                    "completed"
+                    if len(global_ik_solutions) == len(phase_plan["phases"])
+                    else "blocked"
+                ),
+            )
         for phase in phase_plan["phases"]:
             _announce(f"phase_{phase['phase_id']}")
             servo.reset_command_state()
@@ -1567,7 +1647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             start_position = servo.current_grasp_frame_position_world()
             start_body_pose = servo.current_body_pose_world()
             target_orientation = _phase_target_orientation(
-                phase, reset_body_orientation_xyzw=reset_body_pose[3:7]
+                phase, reset_body_orientation_xyzw=reset_grasp_pose[3:7]
             )
             orientation_tolerance = phase.get(
                 "arrival_orientation_tolerance_rad",
@@ -1585,20 +1665,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_steps < max_total_steps
                 and len(diagnostics) < maximum_steps_per_phase
             ):
-                action, diagnostic = servo.action_for_grasp_target(
-                    target_position_world_m=phase["position_world_m"],
-                    target_grasp_frame_quaternion_world_xyzw=target_orientation,
-                    gripper_command=gripper_command,
-                    max_joint_delta_rad=servo_command_limits[
-                        "max_joint_delta_rad"
-                    ],
-                    max_joint_setpoint_lead_rad=servo_command_limits[
-                        "max_joint_setpoint_lead_rad"
-                    ],
-                    velocity_feedforward_scale=servo_command_limits[
-                        "velocity_feedforward_scale"
-                    ],
+                global_target = global_ik_solutions.get(
+                    str(phase["phase_id"])
                 )
+                if global_target is not None:
+                    action, diagnostic = servo.action_for_joint_target(
+                        target_joint_positions_rad=global_target,
+                        gripper_command=gripper_command,
+                        max_joint_delta_rad=servo_command_limits[
+                            "max_joint_delta_rad"
+                        ],
+                        max_joint_setpoint_lead_rad=servo_command_limits[
+                            "max_joint_setpoint_lead_rad"
+                        ],
+                        velocity_feedforward_scale=servo_command_limits[
+                            "velocity_feedforward_scale"
+                        ],
+                    )
+                    diagnostic["pink_global_ik_phase_solution_used"] = True
+                else:
+                    action, diagnostic = servo.action_for_grasp_target(
+                        target_position_world_m=phase["position_world_m"],
+                        target_grasp_frame_quaternion_world_xyzw=(
+                            target_orientation
+                        ),
+                        gripper_command=gripper_command,
+                        max_joint_delta_rad=servo_command_limits[
+                            "max_joint_delta_rad"
+                        ],
+                        max_joint_setpoint_lead_rad=servo_command_limits[
+                            "max_joint_setpoint_lead_rad"
+                        ],
+                        velocity_feedforward_scale=servo_command_limits[
+                            "velocity_feedforward_scale"
+                        ],
+                    )
+                    diagnostic["pink_global_ik_phase_solution_used"] = False
                 env.step(
                     torch.tensor(
                         [action],
