@@ -444,6 +444,25 @@ def test_graph_articulated_construction_refuses_perpendicular_standoff() -> None
         materialize_native_task_construction_phase_plan(scene)
 
 
+def test_graph_articulated_construction_refuses_late_sweep_misalignment() -> None:
+    """Every waypoint must rotate its standoff with the moving panel."""
+
+    scene = _scene()
+    scene["task_spec"]["interaction_affordance"]["joint_contact_path"][-1][
+        "clearance_unit_asset_root"
+    ] = [1.0, 0.0, 0.0]
+    _redigest_affordance(scene)
+
+    with pytest.raises(
+        NativeTaskConstructionPlanError,
+        match=(
+            "native_articulated_graph_construction_"
+            "standoff_not_opposite_gripper_approach:mechanism_path_02"
+        ),
+    ):
+        materialize_native_task_construction_phase_plan(scene)
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     (

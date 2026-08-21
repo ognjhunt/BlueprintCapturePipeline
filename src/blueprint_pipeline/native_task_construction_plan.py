@@ -849,25 +849,28 @@ def materialize_graph_articulated_construction_phase_plan(
     )
     first = world_rows[0]
     last = world_rows[-1]
-    tool_approach_world = _quaternion_rotate_xyzw(
-        first["gripper_orientation_world_xyzw"], [0.0, 0.0, 1.0]
+    authored_grasp = not is_unauthored_identity_quaternion_xyzw(
+        affordance["gripper_orientation_contact_xyzw"]
     )
-    outward_alignment = -sum(
-        standoff * tool
-        for standoff, tool in zip(
-            approach_unit_world, tool_approach_world, strict=True
+    misaligned_waypoints = []
+    for row in world_rows:
+        tool_approach_world = _quaternion_rotate_xyzw(
+            row["gripper_orientation_world_xyzw"], [0.0, 0.0, 1.0]
         )
-    )
-    if (
-        not is_unauthored_identity_quaternion_xyzw(
-            affordance["gripper_orientation_contact_xyzw"]
+        outward_alignment = -sum(
+            standoff * tool
+            for standoff, tool in zip(
+                row["clearance_unit_world"], tool_approach_world, strict=True
+            )
         )
-        and outward_alignment < GRAPH_ARTICULATED_STANDOFF_ALIGNMENT_MIN
-    ):
+        if outward_alignment < GRAPH_ARTICULATED_STANDOFF_ALIGNMENT_MIN:
+            misaligned_waypoints.append(str(row.get("waypoint_id") or ""))
+    if authored_grasp and misaligned_waypoints:
         raise NativeTaskConstructionPlanError(
             [
                 "native_articulated_graph_construction_"
-                "standoff_not_opposite_gripper_approach"
+                "standoff_not_opposite_gripper_approach:"
+                + ",".join(misaligned_waypoints)
             ]
         )
     orientation_tolerance = float(
