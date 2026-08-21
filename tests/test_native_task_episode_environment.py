@@ -21,14 +21,18 @@ class _Servo:
     def current_grasp_frame_pose_world(self):
         return [1.0, 2.0, 3.1, 0.0, 0.0, 0.0, 1.0]
 
-    def current_gripper_frame_axis_readback(self):
+    def current_gripper_pad_readback(self):
         return {
             "measured": {
-                "finger_separation_m": 0.06,
+                "pad_separation_m": 0.06,
                 "controlled_body_position_world_m": [1.0, 2.0, 3.0],
                 "controlled_body_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
-                "finger_midpoint_world_m": [1.0, 2.0, 3.1],
+                "pad_midpoint_world_m": [1.0, 2.0, 3.1],
                 "finger_body_positions_world_m": {
+                    "left": [0.96, 2.0, 3.1],
+                    "right": [1.04, 2.0, 3.1],
+                },
+                "pad_centers_world_m": {
                     "left": [0.97, 2.0, 3.1],
                     "right": [1.03, 2.0, 3.1],
                 },
@@ -154,11 +158,15 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
             1.0,
         ]
         assert sample["gripper_finger_body_positions_world_m"] == {
+            "left": [0.96, 2.0, 3.1],
+            "right": [1.04, 2.0, 3.1],
+        }
+        assert sample["gripper_pad_centers_world_m"] == {
             "left": [0.97, 2.0, 3.1],
             "right": [1.03, 2.0, 3.1],
         }
         assert receipt["gripper_state_source"] == (
-            "native_inner_finger_body_world_pose_readback_each_sample"
+            "native_finger_body_pose_plus_probe_sealed_pad_offset_each_sample"
         )
     else:
         assert receipt["gripper_state_source"] is None

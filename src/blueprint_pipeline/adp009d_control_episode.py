@@ -1683,6 +1683,33 @@ def validate_task_control_plan(
                 }
             )
             maximum_scripted_steps += 1
+    for index, action in enumerate(normalized_actions):
+        if not action.get(
+            "hold_arm_joint_positions_during_gripper_transition"
+        ):
+            continue
+        if index == 0:
+            errors.append("task_control_gripper_transition_predecessor_invalid")
+            continue
+        previous = normalized_actions[index - 1]
+        phase_id = action["phase_id"]
+        same_pose = (
+            previous.get("mode") == "ik_pose"
+            and previous.get("target_position_world_m")
+            == action.get("target_position_world_m")
+            and previous.get("target_quaternion_world_xyzw")
+            == action.get("target_quaternion_world_xyzw")
+        )
+        predecessor_valid = (
+            phase_id == "contact_close"
+            and previous.get("phase_id") == "contact_open"
+            and previous.get("gripper_state") == "open"
+        ) or (
+            phase_id == "release"
+            and previous.get("gripper_state") == "closed"
+        )
+        if not same_pose or not predecessor_valid:
+            errors.append("task_control_gripper_transition_predecessor_invalid")
     kind = task.get("task_kind")
     if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         try:
@@ -1780,6 +1807,35 @@ def _run_task_control_episode(
             if hold_arm_during_gripper_transition
             else None
         )
+        arrival_target_position = row.get("target_position_world_m")
+        arrival_target_orientation = row.get("target_quaternion_world_xyzw")
+        arrival_target_source = "commanded_phase_pose"
+        if hold_arm_during_gripper_transition:
+            arrival_target_position = start_sample.get(
+                "grasp_frame_position_world_m"
+            )
+            arrival_target_orientation = start_sample.get(
+                "grasp_frame_orientation_world_xyzw"
+            )
+            if (
+                not isinstance(arrival_target_position, Sequence)
+                or isinstance(arrival_target_position, (str, bytes))
+                or not isinstance(arrival_target_orientation, Sequence)
+                or isinstance(arrival_target_orientation, (str, bytes))
+            ):
+                raise ControlEpisodeError(
+                    ["task_control_gripper_transition_entry_pose_missing"]
+                )
+            arrival_target_position = [
+                float(value) for value in arrival_target_position
+            ]
+            arrival_target_orientation = [
+                float(value) for value in arrival_target_orientation
+            ]
+            arrival_target_source = (
+                "previous_phase_qualified_entry_pose_held_during_gripper_"
+                "transition"
+            )
         for _ in range(phase_steps):
             before = [float(value) for value in environment.read_arm_joint_positions()]
             dynamics_before = _canonical_dynamics_observation(
@@ -1881,7 +1937,7 @@ def _run_task_control_episode(
                 try:
                     error = math.dist(
                         [float(value) for value in measured],
-                        row["target_position_world_m"],
+                        arrival_target_position,
                     )
                 except (TypeError, ValueError) as exc:
                     raise ControlEpisodeError(
@@ -1903,7 +1959,7 @@ def _run_task_control_episode(
                         )
                     orientation_error = _quaternion_angle_xyzw(
                         measured_orientation,
-                        row["target_quaternion_world_xyzw"],
+                        arrival_target_orientation,
                     )
                 arrived = error <= float(row["arrival_tolerance_m"]) and (
                     orientation_error is None
@@ -1921,7 +1977,7 @@ def _run_task_control_episode(
         if pose_mode:
             measured = samples[-1].get("grasp_frame_position_world_m")
             terminal_error = math.dist(
-                [float(value) for value in measured], row["target_position_world_m"]
+                [float(value) for value in measured], arrival_target_position
             )
             orientation_tolerance = row.get("arrival_orientation_tolerance_rad")
             measured_orientation = samples[-1].get(
@@ -1932,7 +1988,7 @@ def _run_task_control_episode(
                 if orientation_tolerance is None
                 else _quaternion_angle_xyzw(
                     measured_orientation,
-                    row["target_quaternion_world_xyzw"],
+                    arrival_target_orientation,
                 )
             )
             arrival = {
@@ -1940,11 +1996,16 @@ def _run_task_control_episode(
                 "start_position_world_m": start_sample.get(
                     "grasp_frame_position_world_m"
                 ),
-                "target_position_world_m": row["target_position_world_m"],
+                "target_position_world_m": arrival_target_position,
+                "commanded_target_position_world_m": row[
+                    "target_position_world_m"
+                ],
+                "arrival_target_source": arrival_target_source,
                 "terminal_position_world_m": measured,
                 "terminal_position_error_m": terminal_error,
                 "arrival_tolerance_m": float(row["arrival_tolerance_m"]),
-                "target_orientation_world_xyzw": row[
+                "target_orientation_world_xyzw": arrival_target_orientation,
+                "commanded_target_orientation_world_xyzw": row[
                     "target_quaternion_world_xyzw"
                 ],
                 "terminal_orientation_world_xyzw": measured_orientation,

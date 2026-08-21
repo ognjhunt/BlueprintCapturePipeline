@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
 
 from blueprint_pipeline.native_franka_pose_servo import (
@@ -37,6 +40,51 @@ def test_grasp_tcp_interpolates_between_measured_gripper_endpoints() -> None:
     assert servo._grasp_position_for_command(0.5) == pytest.approx(
         [0.10, 0.01, 0.01]
     )
+
+
+def test_live_pad_readback_uses_moving_finger_bodies_and_local_offsets() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo.binding = {
+        "controlled_body_name": "base_link",
+        "controlled_body_index": 0,
+    }
+    servo._finger_body_indices = {"left": 1, "right": 2}
+    servo._pad_center_offsets_in_finger_body = {
+        "left": [0.01, 0.0, 0.0],
+        "right": [-0.01, 0.0, 0.0],
+    }
+    servo._robot = SimpleNamespace(
+        data=SimpleNamespace(
+            body_pose_w=np.array(
+                [
+                    [
+                        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                        [-0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                        [0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    ]
+                ],
+                dtype=float,
+            )
+        )
+    )
+    servo._to_torch = lambda value: value
+
+    readback = servo.current_gripper_pad_readback()
+
+    assert readback["measured"]["finger_body_positions_world_m"] == {
+        "left": [-0.05, 0.0, 0.0],
+        "right": [0.05, 0.0, 0.0],
+    }
+    assert readback["measured"]["pad_centers_world_m"]["left"] == pytest.approx(
+        [-0.04, 0.0, 0.0]
+    )
+    assert readback["measured"]["pad_centers_world_m"]["right"] == pytest.approx(
+        [0.04, 0.0, 0.0]
+    )
+    assert readback["measured"]["pad_midpoint_world_m"] == pytest.approx(
+        [0.0, 0.0, 0.0]
+    )
+    assert readback["measured"]["pad_separation_m"] == pytest.approx(0.08)
 
 
 def _bodies() -> list[str]:
