@@ -23,13 +23,13 @@ from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PA
 
 
 def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
+    import numpy as np
     import pytest
-    import torch
 
     robot = SimpleNamespace(
         data=SimpleNamespace(
             body_names=["left_inner_finger", "right_inner_finger"],
-            body_pose_w=torch.tensor(
+            body_pose_w=np.asarray(
                 [
                     [
                         [0.0, 0.04, 0.0, 0.0, 0.0, 0.0, 1.0],
@@ -43,7 +43,7 @@ def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
     centers = _pad_centers_from_finger_body_offsets(
         robot=robot,
         offsets_body_m={"left": [0.0, 0.01, 0.0], "right": [0.0, -0.01, 0.0]},
-        torch=torch,
+        torch=SimpleNamespace(as_tensor=np.asarray),
     )
 
     assert centers["left"] == pytest.approx([0.0, 0.05, 0.0])
