@@ -182,6 +182,145 @@ def test_materializer_produces_each_issuer_lane_ledger(tmp_path: Path, lane: str
     assert reopened["receipt_digest"] == record["receipt_digest"]
 
 
+def _zero_charge_absence_fixture(root: Path) -> dict[str, Path]:
+    fixture = _fixture(root, instance_id=48344658, amount=0.001)
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result["generated_at"] = "2026-08-21T23:03:10+00:00"
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+    teardown = json.loads(fixture["teardown"].read_text(encoding="utf-8"))
+    teardown["generated_at"] = "2026-08-21T23:03:38+00:00"
+    fixture["teardown"].write_text(json.dumps(teardown), encoding="utf-8")
+    billing = {"results": [{"source": "instance-48342135", "amount": 0.275}]}
+    fixture["billing"].write_text(json.dumps(billing), encoding="utf-8")
+    billing_sha = "sha256:" + hashlib.sha256(
+        fixture["billing"].read_bytes()
+    ).hexdigest()
+    post_source = {
+        "schema_version": "blueprint.provider_billing_source_receipt.v1",
+        "status": "reconciled",
+        "generated_at": "2026-08-21T23:13:49+00:00",
+        "provider_totals_usd": {"vast": 301.242},
+        "sources": [
+            {
+                "provider": "vast",
+                "retained_path": str(fixture["billing"].resolve()),
+                "response_digest": billing_sha,
+                "response_size_bytes": fixture["billing"].stat().st_size,
+            }
+        ],
+    }
+    fixture["billing_source"].write_text(
+        json.dumps(_digest_bound(post_source)), encoding="utf-8"
+    )
+    fixture["pre_billing_source"] = _write(
+        root / "pre-billing-source.json",
+        _digest_bound(
+            {
+                "schema_version": "blueprint.provider_billing_source_receipt.v1",
+                "status": "reconciled",
+                "generated_at": "2026-08-21T22:50:59+00:00",
+                "provider_totals_usd": {"vast": 301.242},
+                "sources": [],
+            }
+        ),
+    )
+    return fixture
+
+
+def test_native_arena_reconciles_provider_confirmed_zero_charge_absence(
+    tmp_path: Path,
+) -> None:
+    fixture = _zero_charge_absence_fixture(tmp_path / "zero-charge")
+    output = tmp_path / "zero-charge" / "reconciliation.json"
+
+    value = materialize_same_goal_spend_reconciliation(
+        lane="native_task_arena",
+        terminal_result_paths=[fixture["result"]],
+        teardown_manifest_paths=[fixture["teardown"]],
+        provider_zero_paths=[fixture["zero"]],
+        official_billing_response_paths=[fixture["billing"]],
+        provider_billing_source_receipt_paths=[fixture["billing_source"]],
+        pre_attempt_provider_billing_source_receipt_paths=[
+            fixture["pre_billing_source"]
+        ],
+        output_path=output,
+    )
+
+    assert value["total_cost_usd"] == 0.0
+    assert value["entries"][0]["provider_instance_id"] == 48344658
+    assert value["entries"][0]["evidence_kind"] == (
+        "official_billing_zero_charge_absence_after_grace"
+    )
+    assert bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="native_task_arena",
+    )["actual_total_usd"] == 0.0
+
+
+@pytest.mark.parametrize("mutation", ["total_changed", "grace_too_short"])
+def test_native_arena_refuses_ambiguous_zero_charge_absence(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _zero_charge_absence_fixture(tmp_path / mutation)
+    if mutation == "total_changed":
+        post = json.loads(fixture["billing_source"].read_text(encoding="utf-8"))
+        post["provider_totals_usd"]["vast"] = 301.243
+        post["receipt_digest"] = canonical_digest(post, digest_field="receipt_digest")
+        fixture["billing_source"].write_text(json.dumps(post), encoding="utf-8")
+    elif mutation == "grace_too_short":
+        post = json.loads(fixture["billing_source"].read_text(encoding="utf-8"))
+        post["generated_at"] = "2026-08-21T23:12:00+00:00"
+        post["receipt_digest"] = canonical_digest(post, digest_field="receipt_digest")
+        fixture["billing_source"].write_text(json.dumps(post), encoding="utf-8")
+    with pytest.raises(ValueError):
+        materialize_same_goal_spend_reconciliation(
+            lane="native_task_arena",
+            terminal_result_paths=[fixture["result"]],
+            teardown_manifest_paths=[fixture["teardown"]],
+            provider_zero_paths=[fixture["zero"]],
+            official_billing_response_paths=[fixture["billing"]],
+            provider_billing_source_receipt_paths=[fixture["billing_source"]],
+            pre_attempt_provider_billing_source_receipt_paths=[
+                fixture["pre_billing_source"]
+            ],
+            output_path=tmp_path / mutation / "blocked.json",
+        )
+
+
+def test_native_arena_prefers_posted_charge_over_zero_charge_absence(
+    tmp_path: Path,
+) -> None:
+    fixture = _zero_charge_absence_fixture(tmp_path / "posted")
+    billing = json.loads(fixture["billing"].read_text(encoding="utf-8"))
+    billing["results"].append({"source": "instance-48344658", "amount": 0.001})
+    fixture["billing"].write_text(json.dumps(billing), encoding="utf-8")
+    post = json.loads(fixture["billing_source"].read_text(encoding="utf-8"))
+    post["sources"][0]["response_digest"] = "sha256:" + hashlib.sha256(
+        fixture["billing"].read_bytes()
+    ).hexdigest()
+    post["sources"][0]["response_size_bytes"] = fixture["billing"].stat().st_size
+    post["receipt_digest"] = canonical_digest(post, digest_field="receipt_digest")
+    fixture["billing_source"].write_text(json.dumps(post), encoding="utf-8")
+
+    value = materialize_same_goal_spend_reconciliation(
+        lane="native_task_arena",
+        terminal_result_paths=[fixture["result"]],
+        teardown_manifest_paths=[fixture["teardown"]],
+        provider_zero_paths=[fixture["zero"]],
+        official_billing_response_paths=[fixture["billing"]],
+        provider_billing_source_receipt_paths=[fixture["billing_source"]],
+        pre_attempt_provider_billing_source_receipt_paths=[
+            fixture["pre_billing_source"]
+        ],
+        output_path=tmp_path / "posted" / "reconciliation.json",
+    )
+
+    assert value["total_cost_usd"] == 0.001
+    assert value["entries"][0]["evidence_kind"] == "fully_bound_official_billing"
+
+
 def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path / "semantic")
     result = json.loads(fixture["result"].read_text(encoding="utf-8"))

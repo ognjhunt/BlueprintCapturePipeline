@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -18,6 +19,10 @@ SAME_GOAL_ENTRY_SCHEMA = "adp_same_goal_spend_entry.v1"
 SAME_GOAL_RECONCILIATION_STATUS = (
     "all_same_goal_paid_attempts_terminal_and_provider_zero"
 )
+ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
+    "official_billing_zero_charge_absence_after_grace"
+)
+ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
 JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA = (
     "joint_agent_same_goal_spend_lineage.v1"
 )
@@ -80,6 +85,18 @@ def _finite(value: Any) -> bool:
     )
 
 
+def _timestamp(value: Any) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("same_goal_spend_zero_charge_timestamp_invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("same_goal_spend_zero_charge_timestamp_invalid") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("same_goal_spend_zero_charge_timestamp_invalid")
+    return parsed.astimezone(timezone.utc)
+
+
 def _json_path(value: Any, path: Any) -> Any:
     if not isinstance(path, list) or not path:
         raise ValueError("same_goal_spend_binding_path_invalid")
@@ -139,7 +156,11 @@ def validate_same_goal_spend_reconciliation(
             or not attempt_id
             or attempt_id in attempt_ids
             or not str(entry.get("lane") or "").strip()
-            or entry.get("evidence_kind") != "fully_bound_official_billing"
+            or entry.get("evidence_kind")
+            not in {
+                "fully_bound_official_billing",
+                ZERO_CHARGE_ABSENCE_EVIDENCE_KIND,
+            }
             or not _finite(cost)
             or entry.get("continuing_spend_from_this_run") is not False
             or entry.get("provider_zero_confirmed") is not True
@@ -220,13 +241,43 @@ def validate_same_goal_spend_reconciliation(
             if kind == "bundle_sha256" and observed != entry.get("bundle_sha256"):
                 raise ValueError("same_goal_spend_binding_invalid")
         required = {
-            "cost_usd",
             "provider_zero",
             "continuing_spend",
             "instance_id",
             "authority_digest",
             "bundle_sha256",
         }
+        if entry.get("evidence_kind") == "fully_bound_official_billing":
+            required.add("cost_usd")
+        else:
+            required.update({"pre_vast_total_usd", "post_vast_total_usd"})
+            pre_source = reopened.get("pre_attempt_provider_billing_source_receipt")
+            post_source = reopened.get("provider_billing_source_receipt")
+            result_source = reopened.get("terminal_result")
+            teardown_source = reopened.get("teardown_manifest")
+            billing_source = reopened.get("official_billing_response")
+            instance_id = entry.get("provider_instance_id")
+            if (
+                not isinstance(pre_source, Mapping)
+                or not isinstance(post_source, Mapping)
+                or not isinstance(result_source, Mapping)
+                or not isinstance(teardown_source, Mapping)
+                or not isinstance(billing_source, Mapping)
+                or cost != 0.0
+                or (pre_source.get("provider_totals_usd") or {}).get("vast")
+                != (post_source.get("provider_totals_usd") or {}).get("vast")
+                or any(
+                    isinstance(row, Mapping)
+                    and row.get("source") == f"instance-{instance_id}"
+                    for row in billing_source.get("results") or []
+                )
+                or _timestamp(pre_source.get("generated_at"))
+                > _timestamp(result_source.get("generated_at"))
+                or _timestamp(post_source.get("generated_at"))
+                < _timestamp(teardown_source.get("generated_at"))
+                + ZERO_CHARGE_BILLING_GRACE
+            ):
+                raise ValueError("same_goal_spend_zero_charge_absence_invalid")
         if observed_kinds != required:
             raise ValueError("same_goal_spend_binding_incomplete")
         costs.append(float(cost))
@@ -370,9 +421,12 @@ def bind_lane_prior_spend(
                 and int(single_instance_id) > 0
             ):
                 teardown_instance_ids = [int(single_instance_id)]
+        zero_charge_absence = (
+            entry.get("evidence_kind") == ZERO_CHARGE_ABSENCE_EVIDENCE_KIND
+        )
         if (
             len(linked_sources) != 1
-            or len(charge_rows) != 1
+            or len(charge_rows) != (0 if zero_charge_absence else 1)
             or billing_source.get("status") != "reconciled"
             or teardown.get("status") not in {"completed", "PASS"}
             or teardown.get("continuing_spend_from_this_run", False) is not False
@@ -387,7 +441,15 @@ def bind_lane_prior_spend(
             )
             is not True
             or zero.get("continuing_spend_from_this_run", False) is not False
-            or float(charge_rows[0].get("amount", -1)) != float(entry["cost_usd"])
+            or (
+                zero_charge_absence
+                and float(entry["cost_usd"]) != 0.0
+            )
+            or (
+                not zero_charge_absence
+                and float(charge_rows[0].get("amount", -1))
+                != float(entry["cost_usd"])
+            )
         ):
             raise ValueError("prior_terminal_billing_or_zero_invalid")
         estimate = result.get("estimated_cost_usd", result.get("cost_usd"))
