@@ -5,7 +5,7 @@
       -1.0,
       0.0
     ],
-    "collision_approximation": "convexHull",
+    "collision_approximation": "convexDecomposition",
     "graph_link_id": "door",
     "grasp_affordance_role": "parallel_jaw_outer_rim_patch",
     "maximum_axis_value_m": null,

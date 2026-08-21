@@ -479,7 +479,7 @@ def test_exact_visual_vertices_can_materialize_an_isolated_grasp_patch(
                 "maximum_axis_value_m": None,
                 "approach_outward_unit_graph_link": [0.0, -1.0, 0.0],
                 "pinch_axis_graph_link": [0.0, 0.0, 1.0],
-                "collision_approximation": "convexHull",
+                "collision_approximation": "convexDecomposition",
             }
         ],
     )
@@ -497,7 +497,7 @@ def test_exact_visual_vertices_can_materialize_an_isolated_grasp_patch(
     assert prim.HasAPI(UsdPhysics.CollisionAPI)
     assert (
         UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
-        == "convexHull"
+        == "convexDecomposition"
     )
     assert UsdGeom.Imageable(prim).ComputePurpose() == UsdGeom.Tokens.guide
     assert UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible
