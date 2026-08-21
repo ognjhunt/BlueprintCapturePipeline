@@ -28,6 +28,10 @@ class _Servo:
         self.calls.append(kwargs)
         return [0.0] * 7 + [float(kwargs["gripper_command"])], {"ok": True}
 
+    def action_for_joint_target(self, **kwargs):
+        self.calls.append(kwargs)
+        return [0.25] * 7 + [float(kwargs["gripper_command"])], {"ok": True}
+
 
 class _Readback:
     def read_task_sample(self):
@@ -158,6 +162,75 @@ def test_articulated_factory_requires_native_task_readback() -> None:
             servo=_Servo(),
             task_readback=None,
             to_tensor=lambda value: value,
+        )
+
+
+def test_factory_replays_construction_global_ik_joint_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    servo = _Servo()
+    adapter, receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"),
+        gripper_convention={
+            "closed_command": 1.0,
+            "open_command": 0.0,
+            "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+        },
+        servo=servo,
+        task_readback=_Readback(),
+        to_tensor=lambda value: value,
+        scripted_pose_joint_targets=[
+            {
+                "phase_id": "approach",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "joint_positions_rad": [0.1] * 7,
+            }
+        ],
+    )
+
+    action = adapter.kwargs["scripted_pose_action_callback"](
+        target_position_world_m=[1.0, 2.0, 3.0],
+        target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        gripper_command=1.0,
+        max_joint_delta_rad=0.03,
+        max_joint_setpoint_lead_rad=0.2,
+    )
+
+    assert action == [0.25] * 7 + [1.0]
+    assert servo.calls[-1]["target_joint_positions_rad"] == [0.1] * 7
+    assert receipt["scripted_pose_source"] == (
+        "construction_global_ik_joint_target_with_native_pose_fallback"
+    )
+    assert receipt["scripted_pose_joint_targets"][0]["phase_id"] == "approach"
+
+
+def test_factory_rejects_malformed_construction_joint_target() -> None:
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_episode_scripted_joint_target_invalid:0",
+    ):
+        build_native_task_episode_environment(
+            built=_built("articulated_open_close"),
+            gripper_convention={
+                "closed_command": 1.0,
+                "open_command": 0.0,
+                "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+            },
+            servo=_Servo(),
+            task_readback=_Readback(),
+            to_tensor=lambda value: value,
+            scripted_pose_joint_targets=[
+                {
+                    "phase_id": "approach",
+                    "target_position_world_m": [1.0, 2.0, 3.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "joint_positions_rad": [0.1] * 6,
+                }
+            ],
         )
 
 

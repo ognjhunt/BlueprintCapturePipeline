@@ -10,10 +10,108 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_controls_worker import (
     _RigidScoringEnvironment,
     _canonical_digest,
+    _construction_global_ik_joint_targets,
     _input_binding_mismatches,
     _load_and_verify_manifest,
     _verified_runtime_inputs,
 )
+
+
+def test_controls_bind_construction_global_ik_branch_to_same_pose_phase() -> None:
+    rows = _construction_global_ik_joint_targets(
+        construction={
+            "pink_global_ik_preflight": {
+                "schema_version": "native_task_pink_global_ik_preflight.v1",
+                "phases": [
+                    {"phase_id": "prealign", "selected": None},
+                    {
+                        "phase_id": "approach",
+                        "selected": {
+                            "solved": True,
+                            "joint_positions_rad": [0.1] * 7,
+                        },
+                    },
+                ],
+            },
+            "phase_results": [
+                {
+                    "phase_id": "prealign",
+                    "target_position_world_m": [1.0, 2.0, 2.5],
+                    "target_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                {
+                    "phase_id": "approach",
+                    "target_position_world_m": [1.0, 2.0, 3.0],
+                    "target_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+            ],
+        },
+        control_plan={
+            "scripted_positive_actions": [
+                {
+                    "phase_id": "prealign",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [1.0, 2.0, 2.5],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                {
+                    "phase_id": "approach",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [1.0, 2.0, 3.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+            ]
+        },
+    )
+
+    assert rows == [
+        {
+            "phase_id": "approach",
+            "target_position_world_m": [1.0, 2.0, 3.0],
+            "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "joint_positions_rad": [0.1] * 7,
+        }
+    ]
+
+
+def test_controls_reject_global_ik_phase_with_different_control_pose() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="native_task_controls_global_ik_binding_invalid",
+    ):
+        _construction_global_ik_joint_targets(
+            construction={
+                "pink_global_ik_preflight": {
+                    "schema_version": "native_task_pink_global_ik_preflight.v1",
+                    "phases": [
+                        {
+                            "phase_id": "approach",
+                            "selected": {
+                                "solved": True,
+                                "joint_positions_rad": [0.1] * 7,
+                            },
+                        }
+                    ],
+                },
+                "phase_results": [
+                    {
+                        "phase_id": "approach",
+                        "target_position_world_m": [1.0, 2.0, 3.0],
+                        "target_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    }
+                ],
+            },
+            control_plan={
+                "scripted_positive_actions": [
+                    {
+                        "phase_id": "approach",
+                        "mode": "ik_pose",
+                        "target_position_world_m": [1.0, 2.0, 3.1],
+                        "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    }
+                ]
+            },
+        )
 
 
 def test_controls_worker_source_has_no_scene_task_or_policy_identity() -> None:
