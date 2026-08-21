@@ -753,12 +753,18 @@ def materialize_native_graph_articulated_control_plan(
                     "gripper_state": gripper_state,
                     "minimum_steps": int(
                         affordance[
-                            "gripper_dwell_minimum_steps"
+                            "gripper_dwell_maximum_steps"
                             if dwell
                             else "motion_minimum_steps"
                         ]
                     ),
                     "maximum_steps": derived_maximum,
+                    "hold_arm_joint_positions_during_gripper_transition": dwell,
+                    "authored_gripper_dwell_minimum_steps": (
+                        int(affordance["gripper_dwell_minimum_steps"])
+                        if dwell
+                        else None
+                    ),
                     "construction_phase_id": construction_phase_id,
                     "construction_observed_steps": observed_steps,
                     "target_position_source_phase_id": phase_id,
@@ -781,7 +787,7 @@ def materialize_native_graph_articulated_control_plan(
                         prealign_retraction_toward_phase_id
                     ),
                     "step_budget_derivation": (
-                        "gripper_dwell_authored"
+                        "fixed_gripper_dwell_authored"
                         if dwell
                         else "three_x_measured_plus_five_with_25_floor"
                         if observed_steps is not None
