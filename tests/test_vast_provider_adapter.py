@@ -5215,6 +5215,24 @@ def test_vast_adapter_small_provider_helper_edges(
     assert "BLUEPRINT_VAST_CUDA_RUNTIME_OK" in script
     assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:cuda_runtime_incompatible" in script
     assert "/isaac-sim/python.sh" in script
+    arena_script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="native_task_arena",
+    )
+    assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in arena_script
+    assert "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_READY" in arena_script
+    assert "runtime_dependency_download_failed" in arena_script
+    layered_env = vpa._probe_env(
+        job_dir=tmp_path / "layered-arena",
+        enable_isaac_smoke=True,
+        runtime_dependency_url="https://layers.example/runtime.zip?token=secret",
+        provider_bundle_kind="native_task_arena",
+    )
+    assert layered_env["BLUEPRINT_RUNTIME_DEPENDENCY_URI"].startswith(
+        "https://layers.example/"
+    )
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         vpa._probe_shell_script("https://heartbeat.example", provider_bundle_kind="bad")
     wam_script = vpa._probe_shell_script(

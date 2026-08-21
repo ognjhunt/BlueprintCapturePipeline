@@ -882,12 +882,16 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
     assert expected.issubset(names)
     assert (
         "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip"
-        in names
+        not in names
     )
     bundle_root = Path(receipt["bundle_path"]).parent / "provider_runtime"
     assert not (bundle_root / "native_task_packet").exists()
     assert not (bundle_root / "native_task_runtime_sources").exists()
     assert receipt["runtime_source_packet"]["redistribution_permitted"] is True
+    assert receipt["runtime_source_packet"]["transport"] == (
+        "content_addressed_external_layer.v1"
+    )
+    assert receipt["runtime_source_packet"]["embedded_in_provider_bundle"] is False
     assert "provider_runtime/blueprint_pipeline/native_task_arena_scene_plan.py" not in names
     assert "provider_runtime/blueprint_pipeline/adp009d_approach_capture.py" not in names
     assert not any(
