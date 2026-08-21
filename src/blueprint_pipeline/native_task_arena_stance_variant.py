@@ -27,9 +27,28 @@ FRANKA_ROBOTIQ_READY_RESET = {
     "left_inner_finger_knuckle_joint": 0.0,
     "left_inner_finger_joint": 0.0,
 }
-RESET_SOURCE = (
+FRANKA_ROBOTIQ_READY_RESET_SOURCE = (
     "isaac-sim/IsaacLab:isaaclab_assets/robots/franka.py:"
     "FRANKA_ROBOTIQ_GRIPPER_CFG@ffff603eafc6b74264a5261cc0183d6a65390d78"
+)
+DROID_ARENA_DEFAULT_RESET = {
+    "panda_joint1": 0.0,
+    "panda_joint2": -math.pi / 5.0,
+    "panda_joint3": 0.0,
+    "panda_joint4": -4.0 * math.pi / 5.0,
+    "panda_joint5": 0.0,
+    "panda_joint6": 3.0 * math.pi / 5.0,
+    "panda_joint7": 0.0,
+    "finger_joint": 0.0,
+    "right_outer_knuckle_joint": 0.0,
+    "right_inner_finger_joint": 0.0,
+    "right_inner_finger_knuckle_joint": 0.0,
+    "left_inner_finger_knuckle_joint": 0.0,
+    "left_inner_finger_joint": 0.0,
+}
+DROID_ARENA_DEFAULT_RESET_SOURCE = (
+    "isaac-sim/IsaacLab-Arena:isaaclab_arena/embodiments/droid/droid.py:"
+    "DroidSceneCfg.robot.init_state@8b4a3a47fc53de23e8205089d71109a2e2348acd"
 )
 RETREAT_STRATEGY_ID = (
     "qualified_front_staging_when_reverse_approach_enters_base_dead_zone_v2"
@@ -210,6 +229,8 @@ def materialize_native_task_arena_stance_variant_request(
             base_outward_world = list(approach_world)
             base_outward_source = "measured_front_entry_approach_outward_axis"
             stance_derivation = "door_contact_plus_front_entry_approach_standoff"
+            reset_positions = DROID_ARENA_DEFAULT_RESET
+            reset_source = DROID_ARENA_DEFAULT_RESET_SOURCE
         else:
             # Legacy side-entry pinch: +Y is the authored jaw axis, signed
             # toward the robot/front side of the panel.
@@ -218,6 +239,8 @@ def materialize_native_task_arena_stance_variant_request(
             )
             base_outward_source = "authored_gripper_positive_jaw_axis"
             stance_derivation = "door_contact_plus_gripper_jaw_front_standoff"
+            reset_positions = FRANKA_ROBOTIQ_READY_RESET
+            reset_source = FRANKA_ROBOTIQ_READY_RESET_SOURCE
     except (KeyError, TypeError, ValueError) as exc:
         raise NativeTaskArenaStanceVariantError(
             "native_task_arena_stance_affordance_invalid"
@@ -383,7 +406,7 @@ def materialize_native_task_arena_stance_variant_request(
         ],
     }
     request["robot_joint_reset_positions_rad"] = dict(
-        FRANKA_ROBOTIQ_READY_RESET
+        reset_positions
     )
 
     cameras = [dict(row) for row in request.get("cameras") or []]
@@ -432,7 +455,7 @@ def materialize_native_task_arena_stance_variant_request(
         "authored_retreat_enters_base_dead_zone": (
             retreat_enters_base_dead_zone
         ),
-        "reset_source": RESET_SOURCE,
+        "reset_source": reset_source,
         "external_camera_source": "front_side_zero_roll_vision_geometry_candidate",
         "overview_camera_source": "front_side_zero_roll_vision_geometry_candidate",
         "native_ik_qualified": False,
@@ -455,7 +478,10 @@ def materialize_native_task_arena_stance_variant_request(
 
 
 __all__ = [
+    "DROID_ARENA_DEFAULT_RESET",
+    "DROID_ARENA_DEFAULT_RESET_SOURCE",
     "FRANKA_ROBOTIQ_READY_RESET",
+    "FRANKA_ROBOTIQ_READY_RESET_SOURCE",
     "NativeTaskArenaStanceVariantError",
     "RETREAT_STRATEGY_ID",
     "materialize_native_task_arena_stance_variant_request",
