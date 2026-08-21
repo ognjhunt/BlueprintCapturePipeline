@@ -53,20 +53,28 @@ def _request() -> dict:
             "subject_asset_id": "washer",
             "articulation_graph_digest": "sha256:" + "a" * 64,
             "interaction_affordance": {
-                "approach_unit_asset_root": [0.0, -1.0, 0.0],
+                "approach_unit_asset_root": [1.0, 0.0, 0.0],
                 "retreat_unit_asset_root": [0.0, -1.0, 0.0],
+                "gripper_orientation_contact_xyzw": [
+                    -math.sqrt(0.5),
+                    0.0,
+                    math.sqrt(0.5),
+                    0.0,
+                ],
                 "precontact_clearance_m": 0.12,
                 "retreat_clearance_m": 0.12,
                 "affordance_digest": "",
                 "joint_contact_path": [
                     {
                         "contact_pose_asset_root": {
-                            "position_m": [0.248, -0.302052, 0.405]
+                            "position_m": [0.248, -0.302052, 0.405],
+                            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                         }
                     },
                     {
                         "contact_pose_asset_root": {
-                            "position_m": [0.08949, -0.664167, 0.405]
+                            "position_m": [0.08949, -0.664167, 0.405],
+                            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                         }
                     },
                 ],
@@ -105,7 +113,7 @@ def _request() -> dict:
     return request
 
 
-def test_stance_centers_floor_base_on_door_normal_and_replaces_reset(tmp_path) -> None:
+def test_stance_keeps_front_base_while_tool_approaches_free_edge(tmp_path) -> None:
     request = _request()
     source = tmp_path / "request.json"
     source.write_text(json.dumps(request), encoding="utf-8")
@@ -125,6 +133,9 @@ def test_stance_centers_floor_base_on_door_normal_and_replaces_reset(tmp_path) -
     assert result["robot_joint_reset_positions_rad"] == FRANKA_ROBOTIQ_READY_RESET
     stance = result["stance_variant"]
     assert stance["door_standoff_m"] == 0.55
+    assert stance["approach_outward_world"] == pytest.approx([1.0, 0.0, 0.0])
+    assert stance["base_outward_world"] == pytest.approx([0.0, -1.0, 0.0])
+    assert stance["base_outward_source"] == "authored_gripper_positive_jaw_axis"
     assert stance["maximum_door_sweep_bearing_deviation_rad"] < math.pi / 4.0
     assert stance["native_ik_qualified"] is False
     assert stance["retreat_strategy_id"] == RETREAT_STRATEGY_ID
