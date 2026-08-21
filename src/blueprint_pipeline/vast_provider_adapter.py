@@ -5034,7 +5034,7 @@ def _instance_liveness_from_payload(
         if row_instance_id is None or row_instance_id == float(int(instance_id)):
             status = _instance_status(row).lower()
             ssh_port = _number(row.get("ssh_port"))
-            return {
+            result = {
                 "observed": True,
                 "status": status,
                 "exited": status in {"exited", "stopped_before_start"},
@@ -5044,6 +5044,13 @@ def _instance_liveness_from_payload(
                 "ssh_host": _string(row.get("ssh_host")) or None,
                 "ssh_port": int(ssh_port) if ssh_port is not None else None,
             }
+            terminal_startup_error = _terminal_startup_error(row)
+            if terminal_startup_error:
+                # Retain a stable classification, never the provider's raw
+                # daemon text.  The latter can be long, host-specific, and is
+                # not needed to make this paid-runtime decision.
+                result["terminal_startup_error"] = terminal_startup_error
+            return result
     # A different id at the per-instance endpoint is an API-shape fault, not
     # evidence that the allocation was destroyed.
     return {
@@ -5054,6 +5061,26 @@ def _instance_liveness_from_payload(
         "ssh_host": None,
         "ssh_port": None,
     }
+
+
+def _terminal_startup_error(row: Mapping[str, Any]) -> str | None:
+    """Classify provider-reported container faults that cannot recover in place.
+
+    Vast can keep ``actual_status=created`` after Docker has already rejected
+    the container. Treating every ``created`` row as an image-pull race then
+    burns the full startup timeout even though the provider has supplied a
+    definitive host fault. Match only the narrow, documented NVIDIA CDI
+    failure observed in production; unknown daemon text remains under the
+    existing bounded startup watchdog.
+    """
+
+    status_message = _string(row.get("status_msg")).lower()
+    if (
+        "failed to inject cdi devices" in status_message
+        and "unresolvable cdi devices" in status_message
+    ):
+        return "vast_gpu_cdi_device_unresolvable"
+    return None
 
 
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -5624,6 +5651,9 @@ def _request_logs_and_fetch(
                 "container_missing_marker_observed": container_missing,
                 "container_missing_observed_count": container_missing_count,
                 "instance_status": last_instance_liveness.get("status"),
+                "terminal_startup_error": last_instance_liveness.get(
+                    "terminal_startup_error"
+                ),
                 "instance_exited_observed_count": instance_exited_count,
                 "instance_liveness_probe_error": last_instance_liveness.get("probe_error"),
             }
@@ -5689,6 +5719,8 @@ def _request_logs_and_fetch(
         )
         if marker_found:
             break_reason = "success_marker_found"
+        elif last_instance_liveness.get("terminal_startup_error"):
+            break_reason = _string(last_instance_liveness["terminal_startup_error"])
         elif waiting_for_post_output_log_refresh:
             # Object-store visibility can lead Vast's log tail by one poll.  A
             # final bounded refresh preserves the upload/completion marker when
@@ -5733,6 +5765,7 @@ def _request_logs_and_fetch(
         "no_progress_timeout_seconds": no_progress_limit_seconds,
         "no_progress_timeout_reached": no_progress_timeout_reached,
         "instance_final_status": last_instance_liveness.get("status"),
+        "terminal_startup_error": last_instance_liveness.get("terminal_startup_error"),
         "instance_exited_observed": instance_exited_count >= 2,
         "log_bytes_ever_read": log_bytes_ever_read,
         "log_transport_failure_streak": log_transport_failure_streak,
