@@ -34,6 +34,23 @@ from .native_task_runtime_source_packet import (
 
 SCHEMA_VERSION = "native_task_arena_provider_bundle.v1"
 DEFAULT_EXPECTED_OUTPUT_FILENAME = "native_task_arena_construction_result.v1.json"
+RESULT_SCHEMA_BY_MODE = {
+    "runtime_preflight": "native_task_arena_runtime_preflight.v1",
+    "construction_canary": "native_task_arena_construction_result.v1",
+    "controls": "native_task_arena_control_result.v1",
+    "policy": "native_task_arena_policy_result.v1",
+}
+POLICY_RUNTIME_ROOT_MODULE_NAMES = (
+    "adp009d_checkpoint_fetch_worker.py",
+    "adp009d_gated_backbone.py",
+    "adp009d_groot_worker_identity.py",
+    "adp009d_policy_server_worker.py",
+    "adp009d_provisioning_preflight.py",
+    "decision_evidence_contracts.py",
+    "droid_policy_bridge.py",
+    "groot_n17_droid_policy_runtime.py",
+    "openpi_droid_policy_runtime.py",
+)
 
 
 class NativeTaskArenaBundleError(ValueError):
@@ -228,10 +245,16 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
 
 
 def _entrypoint(
-    *, expected_output_filename: str, runtime_source_packet_required: bool
+    *,
+    expected_output_filename: str,
+    expected_result_schema: str,
+    runtime_source_packet_required: bool,
+    policy_provisioning_script_name: str | None,
 ) -> str:
     quoted = json.dumps(str(expected_output_filename))
+    result_schema = json.dumps(str(expected_result_schema))
     source_required = "true" if runtime_source_packet_required else "false"
+    provisioning_script = json.dumps(str(policy_provisioning_script_name or ""))
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -277,6 +300,37 @@ PY
   exit $provision_rc
 fi
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:completed"
+POLICY_PROVISIONING_SCRIPT={provisioning_script}
+if [ -n "$POLICY_PROVISIONING_SCRIPT" ]; then
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:policy_provisioning:started"
+  bash "$RUNTIME_DIR/$POLICY_PROVISIONING_SCRIPT" \
+    >"$OUT_DIR/native_task_arena_policy_provisioning.log" 2>&1
+  policy_provision_rc=$?
+  if [ $policy_provision_rc -ne 0 ]; then
+    echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:policy_provisioning:blocked"
+    /isaac-sim/python.sh - "$OUT_DIR" "$policy_provision_rc" <<'PY'
+import json
+import sys
+from pathlib import Path
+out = Path(sys.argv[1])
+rc = int(sys.argv[2])
+out.mkdir(parents=True, exist_ok=True)
+name = {quoted}
+(out / name).write_text(json.dumps({{
+    "schema_version": {result_schema},
+    "status": "blocked",
+    "phase_reached": "policy_provisioning",
+    "blockers": ["native_task_arena_policy_provisioning_failed"],
+    "policy_provisioning_exit_code": rc,
+    "candidate_policy_queried": False,
+    "candidate_outcomes_accessed": False,
+    "provider_zero_required_after_return": True
+}}, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+PY
+    exit $policy_provision_rc
+  fi
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:policy_provisioning:completed"
+fi
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \
@@ -431,6 +485,75 @@ def build_native_task_arena_bundle(
                 "sha256": _sha256(destination),
             }
         )
+    runtime_root_rows: list[dict[str, Any]] = []
+    policy_provisioning_script_name: str | None = None
+    policy_provisioning_record: dict[str, Any] | None = None
+    if execution_mode == "policy":
+        from .adp009d_policy_provisioning import (
+            CHECKPOINT_INVENTORY_STAGED_NAME,
+            POLICY_EXECUTION_SPEC_STAGED_NAME,
+            build_provisioning_script,
+        )
+
+        candidate = str(policy_candidate_id)
+        policy_provisioning_script_name = (
+            f"adp009d_policy_provisioning.{candidate}.sh"
+        )
+        provisioning_path = runtime / policy_provisioning_script_name
+        provisioning_path.write_text(
+            build_provisioning_script(candidate), encoding="utf-8"
+        )
+        provisioning_path.chmod(
+            provisioning_path.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+        policy_provisioning_record = {
+            "relative_path": policy_provisioning_script_name,
+            "size_bytes": provisioning_path.stat().st_size,
+            "sha256": _sha256(provisioning_path),
+        }
+        package_source = Path(__file__).resolve().parent
+        for name in POLICY_RUNTIME_ROOT_MODULE_NAMES:
+            source = package_source / name
+            if not source.is_file():
+                raise NativeTaskArenaBundleError(
+                    [f"native_task_arena_policy_runtime_helper_missing:{name}"]
+                )
+            destination = runtime / name
+            shutil.copy2(source, destination)
+            runtime_root_rows.append(
+                {
+                    "relative_path": name,
+                    "size_bytes": destination.stat().st_size,
+                    "sha256": _sha256(destination),
+                }
+            )
+        inputs_by_name = {relative.name: source for relative, source in input_sources}
+        execution_spec_source = inputs_by_name.get(
+            "native_task_arena_policy_execution_spec.v1.json"
+        )
+        if execution_spec_source is None:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_policy_execution_spec_staging_missing"]
+            )
+        shutil.copy2(
+            execution_spec_source,
+            runtime / POLICY_EXECUTION_SPEC_STAGED_NAME,
+        )
+        if candidate == "pi05_droid":
+            inventory_source = inputs_by_name.get(
+                "openpi_polaris_checkpoint_inventory.json"
+            )
+            if inventory_source is None:
+                raise NativeTaskArenaBundleError(
+                    ["native_task_arena_openpi_checkpoint_inventory_staging_missing"]
+                )
+            shutil.copy2(
+                inventory_source,
+                runtime / CHECKPOINT_INVENTORY_STAGED_NAME,
+            )
     if runtime_source_receipt is not None:
         source_receipt_path = Path(runtime_source_packet_receipt).expanduser().resolve()
         source_packet_path = Path(runtime_source_receipt["verified_packet_path"])
@@ -447,7 +570,9 @@ def build_native_task_arena_bundle(
     entrypoint.write_text(
         _entrypoint(
             expected_output_filename=expected_output_filename,
+            expected_result_schema=RESULT_SCHEMA_BY_MODE[execution_mode],
             runtime_source_packet_required=runtime_source_receipt is not None,
+            policy_provisioning_script_name=policy_provisioning_script_name,
         ),
         encoding="utf-8",
     )
@@ -474,6 +599,9 @@ def build_native_task_arena_bundle(
         "packet_file_count": len(packet_rows),
         "worker_source_sha256": _sha256(worker),
         "runtime_modules": module_rows,
+        "runtime_root_modules": runtime_root_rows,
+        "policy_provisioning_script": policy_provisioning_script_name,
+        "policy_provisioning": policy_provisioning_record,
         "bound_runtime_inputs": input_rows,
         "runtime_source_packet": (
             {
@@ -556,6 +684,7 @@ def build_native_task_arena_bundle(
 __all__ = [
     "DEFAULT_EXPECTED_OUTPUT_FILENAME",
     "NativeTaskArenaBundleError",
+    "POLICY_RUNTIME_ROOT_MODULE_NAMES",
     "SCHEMA_VERSION",
     "build_native_task_arena_bundle",
 ]
