@@ -9,19 +9,27 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_bundle import (
+    POLICY_RUNTIME_ROOT_MODULE_NAMES,
+    build_native_task_arena_bundle,
+)
 from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
-from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
 RESULT_FILENAME = "native_task_arena_policy_result.v1.json"
 EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
 PROBE_KIND = "native-task-arena-policy"
+OPENPI_CHECKPOINT_INVENTORY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs/experiments/policy_ranking_thesis_20260726/"
+    "openpi_polaris_checkpoint_inventory.json"
+)
 
 
 def _read(path: str | Path, *, error: str) -> dict[str, Any]:
@@ -40,6 +48,50 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _verified_openpi_checkpoint_inventory(
+    policy_spec: Mapping[str, Any],
+) -> Path:
+    from .openpi_droid_policy_runtime import canonical_sha256
+
+    path = OPENPI_CHECKPOINT_INVENTORY_PATH
+    inventory = _read(
+        path, error="native_task_policy_openpi_checkpoint_inventory_invalid"
+    )
+    digest_payload = dict(inventory)
+    digest_payload.pop("inventory_sha256", None)
+    matches = [
+        row
+        for row in inventory.get("entries", [])
+        if isinstance(row, Mapping)
+        and row.get("policy_id") == policy_spec.get("policy_id")
+    ]
+    if (
+        inventory.get("schema_version") != "openpi_checkpoint_inventory.v1"
+        or inventory.get("status") != "frozen"
+        or inventory.get("blockers")
+        or inventory.get("inventory_sha256") != canonical_sha256(digest_payload)
+        or inventory.get("inventory_sha256")
+        != policy_spec.get("checkpoint_inventory_sha256")
+        or len(matches) != 1
+    ):
+        raise ValueError("native_task_policy_openpi_checkpoint_inventory_invalid")
+    entry = matches[0]
+    expected = {
+        "checkpoint_uri": policy_spec.get("checkpoint_uri"),
+        "object_count": policy_spec.get("checkpoint_object_count"),
+        "size_bytes": policy_spec.get("checkpoint_size_bytes"),
+        "legacy_object_manifest_sha256": policy_spec.get(
+            "checkpoint_object_manifest_sha256"
+        ),
+        "generation_manifest_sha256": policy_spec.get(
+            "checkpoint_generation_manifest_sha256"
+        ),
+    }
+    if any(entry.get(field) != value for field, value in expected.items()):
+        raise ValueError("native_task_policy_openpi_checkpoint_inventory_invalid")
+    return path
 
 
 def validate_native_task_policy_execution_spec(
@@ -235,6 +287,15 @@ def build_native_task_arena_policy_bundle(
         package = Path(__file__).resolve().parent
         sources = set(controls_runtime_sources())
         sources.update(package / name for name in POLICY_EXTRA_RUNTIME_MODULE_NAMES)
+        bound_inputs = {
+            "native_task_arena_construction_result.v1.json": construction_path,
+            "native_task_arena_control_result.v1.json": controls_path,
+            execution_path.name: execution_path,
+        }
+        if spec["candidate_id"] == "pi05_droid":
+            bound_inputs["openpi_polaris_checkpoint_inventory.json"] = (
+                _verified_openpi_checkpoint_inventory(spec["policy_spec"])
+            )
         receipt = build_native_task_arena_bundle(
             job_dir=job_dir,
             packet_dir=packet,
@@ -246,11 +307,7 @@ def build_native_task_arena_policy_bundle(
             policy_candidate_id=spec["candidate_id"],
             expected_output_filename=RESULT_FILENAME,
             container_image=NATIVE_TASK_ARENA_IMAGE,
-            bound_runtime_inputs={
-                "native_task_arena_construction_result.v1.json": construction_path,
-                "native_task_arena_control_result.v1.json": controls_path,
-                execution_path.name: execution_path,
-            },
+            bound_runtime_inputs=bound_inputs,
             generated_at=generated_at,
         )
     return receipt
@@ -275,6 +332,19 @@ def load_verified_native_task_arena_policy_bundle(
         for row in receipt.get("bound_runtime_inputs") or []
         if isinstance(row, Mapping)
     }
+    candidate_id = str(receipt.get("policy_candidate_id") or "")
+    expected_input_names = {
+        "native_task_arena_construction_result.v1.json",
+        "native_task_arena_control_result.v1.json",
+        "native_task_arena_policy_execution_spec.v1.json",
+    }
+    if candidate_id == "pi05_droid":
+        expected_input_names.add("openpi_polaris_checkpoint_inventory.json")
+    runtime_root_names = {
+        str(row.get("relative_path") or "")
+        for row in receipt.get("runtime_root_modules") or []
+        if isinstance(row, Mapping)
+    }
     if (
         receipt.get("schema_version") != "native_task_arena_provider_bundle.v1"
         or receipt.get("status") != "ready"
@@ -282,12 +352,13 @@ def load_verified_native_task_arena_policy_bundle(
         or receipt.get("policy_candidate_id") not in FROZEN_CANDIDATES
         or receipt.get("candidate_policy_queried") is not False
         or receipt.get("expected_output_filename") != RESULT_FILENAME
-        or input_names
-        != {
-            "native_task_arena_construction_result.v1.json",
-            "native_task_arena_control_result.v1.json",
-            "native_task_arena_policy_execution_spec.v1.json",
-        }
+        or input_names != expected_input_names
+        or receipt.get("policy_provisioning_script")
+        != f"adp009d_policy_provisioning.{candidate_id}.sh"
+        or (receipt.get("policy_provisioning") or {}).get("relative_path")
+        != f"adp009d_policy_provisioning.{candidate_id}.sh"
+        or runtime_root_names
+        != set(POLICY_RUNTIME_ROOT_MODULE_NAMES)
     ):
         errors.append("native_task_policy_bundle_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:

@@ -499,6 +499,18 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
 def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
     construction_result = json.loads(construction.read_text())
     control_result = json.loads(controls.read_text())
+    inventory = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/experiments/policy_ranking_thesis_20260726/"
+            "openpi_polaris_checkpoint_inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    entry = next(
+        row
+        for row in inventory["entries"]
+        if row["policy_id"] == "pi05_droid_jointpos_polaris"
+    )
     spec = {
         "schema_version": "native_task_arena_policy_execution_spec.v1",
         "candidate_id": "pi05_droid",
@@ -517,15 +529,16 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
         "policy_spec": {
             "policy_id": "pi05_droid_jointpos_polaris",
             "config_name": "pi05_droid_jointpos_polaris",
-            "checkpoint_uri": (
-                "gs://openpi-assets/checkpoints/polaris/"
-                "pi05_droid_jointpos_polaris"
-            ),
-            "checkpoint_object_manifest_sha256": "1" * 64,
-            "checkpoint_generation_manifest_sha256": "2" * 64,
-            "checkpoint_inventory_sha256": "3" * 64,
-            "checkpoint_object_count": 1,
-            "checkpoint_size_bytes": 1024,
+            "checkpoint_uri": entry["checkpoint_uri"],
+            "checkpoint_object_manifest_sha256": entry[
+                "legacy_object_manifest_sha256"
+            ],
+            "checkpoint_generation_manifest_sha256": entry[
+                "generation_manifest_sha256"
+            ],
+            "checkpoint_inventory_sha256": inventory["inventory_sha256"],
+            "checkpoint_object_count": entry["object_count"],
+            "checkpoint_size_bytes": entry["size_bytes"],
             "action_space": "joint_position",
             "action_chunk_rows": 15,
             "open_loop_horizon": 8,
@@ -610,6 +623,27 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             "provider_runtime/runtime_inputs/native_task_arena_control_result.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_policy_execution_spec.v1.json",
         }.issubset(names)
+        assert {
+            "provider_runtime/adp009d_policy_provisioning.pi05_droid.sh",
+            "provider_runtime/adp009d_policy_execution_spec.json",
+            "provider_runtime/adp009d_openpi_checkpoint_inventory.json",
+            "provider_runtime/adp009d_policy_server_worker.py",
+            "provider_runtime/adp009d_checkpoint_fetch_worker.py",
+            "provider_runtime/adp009d_provisioning_preflight.py",
+            "provider_runtime/openpi_droid_policy_runtime.py",
+            "provider_runtime/droid_policy_bridge.py",
+        }.issubset(names)
+        entrypoint = archive.read(
+            "provider_runtime/run_adp_arena_provider_runtime.sh"
+        ).decode()
+        assert entrypoint.index("policy_provisioning:started") < entrypoint.index(
+            '"$RUNTIME_DIR/adp_arena_provider_runner.py"'
+        )
+        provisioning = archive.read(
+            "provider_runtime/adp009d_policy_provisioning.pi05_droid.sh"
+        ).decode()
+        assert "BLUEPRINT_ADP009D_POLICY_PROVISIONED:pi05_droid" in provisioning
+        assert "XLA_PYTHON_CLIENT_PREALLOCATE=\"false\"" in provisioning
         worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
         assert "840313" not in worker
         assert "840796" not in worker
