@@ -56,6 +56,7 @@ RETREAT_STRATEGY_ID = (
 FRONT_ENTRY_GRASP_ORIENTATION_VARIANT = (
     "parallel_jaw_opposite_sign_equivalent_v1"
 )
+FRONT_ENTRY_BASE_LATERAL_OFFSET_M = 0.025
 
 
 class NativeTaskArenaStanceVariantError(ValueError):
@@ -307,6 +308,26 @@ def materialize_native_task_arena_stance_variant_request(
         closed[1] + standoff * base_outward_world[1],
         base_z,
     ]
+    if front_entry_patch:
+        # The source patch is the right-most rim segment. Centering the base
+        # exactly under that point put prealign, approach, and closed contact
+        # on Franka's sagittal singularity: 16 deterministic global seeds
+        # found no entry solution, while the first waypoint only 1.8 cm to the
+        # left solved. Move the base 2.5 cm farther toward the same outer-rim
+        # side--enough to clear the observed singularity while keeping the
+        # full sweep inside the existing 45-degree front arc even at the
+        # minimum admitted standoff. ``world_up x outward`` derives the
+        # direction from the
+        # admitted approach rather than hard-coding a world axis.
+        base_lateral_world = _normalize(
+            [-base_outward_world[1], base_outward_world[0], 0.0]
+        )
+        base[0] += FRONT_ENTRY_BASE_LATERAL_OFFSET_M * base_lateral_world[0]
+        base[1] += FRONT_ENTRY_BASE_LATERAL_OFFSET_M * base_lateral_world[1]
+        base_lateral_source = "world_up_cross_front_entry_outward_axis"
+    else:
+        base_lateral_world = [0.0, 0.0, 0.0]
+        base_lateral_source = "not_applied_to_legacy_side_entry"
 
     # A retreat is task geometry, not automatically the negated approach.
     # r38 proved the washer's authored -Y retreat moved the TCP *toward* the
@@ -465,6 +486,11 @@ def materialize_native_task_arena_stance_variant_request(
         "approach_outward_world": approach_world,
         "base_outward_world": base_outward_world,
         "base_outward_source": base_outward_source,
+        "base_lateral_offset_m": (
+            FRONT_ENTRY_BASE_LATERAL_OFFSET_M if front_entry_patch else 0.0
+        ),
+        "base_lateral_world": base_lateral_world,
+        "base_lateral_source": base_lateral_source,
         "resolved_base_position_world_m": base,
         "resolved_base_yaw_world_rad": yaw,
         "maximum_door_sweep_bearing_deviation_rad": maximum_deviation,
@@ -519,6 +545,7 @@ __all__ = [
     "FRANKA_ROBOTIQ_READY_RESET",
     "FRANKA_ROBOTIQ_READY_RESET_SOURCE",
     "FRONT_ENTRY_GRASP_ORIENTATION_VARIANT",
+    "FRONT_ENTRY_BASE_LATERAL_OFFSET_M",
     "NativeTaskArenaStanceVariantError",
     "RETREAT_STRATEGY_ID",
     "materialize_native_task_arena_stance_variant_request",
