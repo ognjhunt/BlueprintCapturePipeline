@@ -18,6 +18,9 @@ from blueprint_pipeline.native_task_arena_packet import (
     materialize_native_task_arena_appearance_variant_request,
     materialize_native_task_arena_packet,
 )
+from blueprint_pipeline.native_droid_grasp_swept_volume import (
+    materialize_native_droid_grasp_swept_volume,
+)
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     materialize_native_task_policy_execution_spec,
 )
@@ -59,6 +62,33 @@ from blueprint_pipeline.source_collider_subtree_removal import (
 
 
 STEPS: dict[str, Step] = {
+    "droid-grasp-swept-volume": Step(
+        "Conservatively qualify DROID open-gripper clearance at a grasp patch.",
+        materialize_native_droid_grasp_swept_volume,
+        {
+            "robot_usd_path": Param("--robot-usd", required=True),
+            "expected_robot_sha256": Param(
+                "--expected-robot-sha256", required=True
+            ),
+            "robot_asset_uri": Param("--robot-asset-uri", required=True),
+            "registered_asset_receipt_path": Param(
+                "--registered-asset-receipt", required=True
+            ),
+            "interaction_affordance_path": Param(
+                "--interaction-affordance", required=True
+            ),
+            "output_path": Param("--output", required=True),
+            "search_step_m": Param(
+                "--search-step-m", type=float, default=0.001
+            ),
+            "clearance_margin_m": Param(
+                "--clearance-margin-m", type=float, default=0.004
+            ),
+            "maximum_standoff_m": Param(
+                "--maximum-standoff-m", type=float, default=0.03
+            ),
+        },
+    ),
     "arena-stance-variant-request": Step(
         "Derive a front-facing Franka stance from the task affordance.",
         materialize_native_task_arena_stance_variant_request,
