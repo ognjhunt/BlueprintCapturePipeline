@@ -5,6 +5,7 @@ import pytest
 from blueprint_pipeline.native_franka_pose_servo import (
     NativeFrankaPoseServoError,
     PINK_CONFIGURATION_LIMIT_MARGIN_RAD,
+    PINK_INTEGRATION_DT_SECONDS,
     PINK_ORIENTATION_COST,
     PINK_POSITION_COST,
     PINK_POSTURE_COST,
@@ -86,6 +87,7 @@ def test_pose_servo_uses_pinned_pink_manipulation_weights() -> None:
     assert PINK_POSITION_COST == 5.0
     assert PINK_ORIENTATION_COST == 1.0
     assert PINK_POSTURE_COST == 5.0e-3
+    assert PINK_INTEGRATION_DT_SECONDS == pytest.approx(1.0 / 20.0)
 
 
 def test_pink_configuration_clamps_float_roundtrip_just_inside_limits() -> None:
@@ -125,6 +127,8 @@ def test_pose_servo_uses_pink_limits_and_posture_not_plain_dls() -> None:
     assert "PinkIKController" in source
     assert 'load_pink_supported_robot("franka")' in source
     assert 'tool_frame="panda_hand"' in source
+    assert "dt=PINK_INTEGRATION_DT_SECONDS" in source
+    assert "self._pink_time_seconds += PINK_INTEGRATION_DT_SECONDS" in source
     assert "DifferentialIKController" not in source
     assert "pink_hand_pose_at_binding" in source
     assert "current_grasp_frame_pose_world" in source
