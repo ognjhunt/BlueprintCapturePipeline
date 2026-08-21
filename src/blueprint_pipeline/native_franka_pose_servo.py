@@ -125,6 +125,16 @@ MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
 PINK_POSITION_COST = 5.0
 PINK_ORIENTATION_COST = 1.0
 PINK_POSTURE_COST = 5.0e-3
+# PINK's ``dt`` is its QP integration timestep: it changes velocity limits and
+# the next configuration the solver returns. It is not merely a timestamp.
+# r40 qualified this controller at 20 Hz. r41 changed the task/policy cadence
+# to 15 Hz and, because this value was copied from ``env.step_dt``, PINK chose a
+# different joint-limit branch: Cartesian position converged to millimetres but
+# orientation remained 0.54--0.85 rad wrong for all 400 steps. Keep the proven
+# numerical integrator while the environment and learned policies run at their
+# required 15 Hz. NVIDIA's own 6.0.1 examples likewise set PINK ``dt`` as an
+# explicit controller integration parameter.
+PINK_INTEGRATION_DT_SECONDS = 1.0 / 20.0
 # PINK validates every measured configuration against the URDF limits before it
 # solves.  The DROID reset writes Panda joint 6 at the exact URDF upper limit;
 # after the float32 -> Python conversion observed in r35 that value was
@@ -631,7 +641,7 @@ class NativeFrankaDifferentialIkServo:
                 orientation_cost=PINK_ORIENTATION_COST,
                 posture_cost=PINK_POSTURE_COST,
                 solver="osqp",
-                dt=self._control_period_seconds,
+                dt=PINK_INTEGRATION_DT_SECONDS,
             )
             self._pink_time_seconds = 0.0
             self._reset_pink_controller()
@@ -786,7 +796,7 @@ class NativeFrankaDifferentialIkServo:
         desired = self._pink_controller.forward(
             self._pink_estimated_state(), setpoint, self._pink_time_seconds
         )
-        self._pink_time_seconds += self._control_period_seconds
+        self._pink_time_seconds += PINK_INTEGRATION_DT_SECONDS
         if desired is None or desired.joints is None or desired.joints.positions is None:
             raise NativeFrankaPoseServoError(
                 ["native_franka_pose_servo_pink_solution_missing"]
@@ -1028,6 +1038,7 @@ class NativeFrankaDifferentialIkServo:
             "pink_position_cost": PINK_POSITION_COST,
             "pink_orientation_cost": PINK_ORIENTATION_COST,
             "pink_posture_cost": PINK_POSTURE_COST,
+            "pink_integration_dt_seconds": PINK_INTEGRATION_DT_SECONDS,
             "pink_target_hand_position_root_m": (
                 target_pink_hand_position_root
             ),
@@ -1096,6 +1107,7 @@ __all__ = [
     "JAW_AXIS_ORDERING",
     "NativeFrankaDifferentialIkServo",
     "NativeFrankaPoseServoError",
+    "PINK_INTEGRATION_DT_SECONDS",
     "SCHEMA_VERSION",
     "contract_xyzw_to_native_xyzw",
     "contract_xyzw_to_pink_wxyz",
