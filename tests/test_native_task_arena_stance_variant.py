@@ -9,6 +9,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_stance_variant import (
     FRANKA_ROBOTIQ_READY_RESET,
     NativeTaskArenaStanceVariantError,
+    RETREAT_STRATEGY_ID,
     materialize_native_task_arena_stance_variant_request,
 )
 
@@ -52,6 +53,9 @@ def _request() -> dict:
             "subject_asset_id": "washer",
             "interaction_affordance": {
                 "approach_unit_asset_root": [0.0, -1.0, 0.0],
+                "retreat_unit_asset_root": [0.0, -1.0, 0.0],
+                "retreat_clearance_m": 0.12,
+                "affordance_digest": "",
                 "joint_contact_path": [
                     {
                         "contact_pose_asset_root": {
@@ -81,6 +85,13 @@ def _request() -> dict:
     request["request_digest"] = canonical_digest(
         request, digest_field="request_digest"
     )
+    affordance = request["task_spec"]["interaction_affordance"]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
     return request
 
 
@@ -106,6 +117,16 @@ def test_stance_centers_floor_base_on_door_normal_and_replaces_reset(tmp_path) -
     assert stance["door_standoff_m"] == 0.55
     assert stance["maximum_door_sweep_bearing_deviation_rad"] < math.pi / 4.0
     assert stance["native_ik_qualified"] is False
+    assert stance["retreat_strategy_id"] == RETREAT_STRATEGY_ID
+    assert stance["authored_retreat_enters_base_dead_zone"] is True
+    assert stance["resolved_retreat_unit_world"] == [0.0, 0.0, 1.0]
+    affordance = result["task_spec"]["interaction_affordance"]
+    assert affordance["retreat_unit_asset_root"] == pytest.approx(
+        [0.0, 0.0, 1.0]
+    )
+    assert affordance["affordance_digest"] == canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
     assert result["request_digest"] == canonical_digest(
         result, digest_field="request_digest"
     )

@@ -113,6 +113,9 @@ from blueprint_pipeline.native_articulated_control_plan import (
     MAX_JOINT_DELTA_RAD,
     MAX_JOINT_SETPOINT_LEAD_RAD,
 )
+from blueprint_pipeline.native_task_arena_stance_variant import (
+    RETREAT_STRATEGY_ID,
+)
 
 packet = pathlib.Path(sys.argv[1])
 mismatched = []
@@ -141,6 +144,23 @@ if mismatched:
         print(f"    {name}: ({delta}, {lead})")
     print("  regenerate the packet with materialize_paired_target_native_inputs.py;")
     print("  hardlinking it forward makes any packet-content fix inert.")
+    raise SystemExit(1)
+request = json.loads(
+    (packet / "native_task_arena_packet_request.v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+observed_retreat_strategy = (request.get("stance_variant") or {}).get(
+    "retreat_strategy_id"
+)
+if observed_retreat_strategy != RETREAT_STRATEGY_ID:
+    print(
+        "  STALE PACKET -- deployed retreat strategy says "
+        f"{RETREAT_STRATEGY_ID!r} but packet says "
+        f"{observed_retreat_strategy!r}"
+    )
+    print("  regenerate the stance variant request and Arena packet;")
+    print("  hardlinking it forward would keep the failed retreat target.")
     raise SystemExit(1)
 print(f"  packet agrees: ({MAX_JOINT_DELTA_RAD}, {MAX_JOINT_SETPOINT_LEAD_RAD})")
 PYEOF
