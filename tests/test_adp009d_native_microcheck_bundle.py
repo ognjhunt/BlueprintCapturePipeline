@@ -3960,8 +3960,8 @@ def _arena_policy_execution_spec(tmp_path: Path, *, checkpoint_uri: str) -> Path
                 "schema_version": "native_task_arena_policy_execution_spec.v1",
                 "candidate_id": "pi05_droid",
                 "policy_spec": {
-                    "policy_id": "pi05_droid",
-                    "config_name": "pi05_droid",
+                    "policy_id": "pi05_droid_jointpos_polaris",
+                    "config_name": "pi05_droid_jointpos_polaris",
                     "checkpoint_uri": checkpoint_uri,
                     "checkpoint_object_manifest_sha256": "4" * 64,
                     "checkpoint_generation_manifest_sha256": "3" * 64,
