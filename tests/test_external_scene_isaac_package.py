@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import zipfile
 
 import numpy as np
 import trimesh
@@ -100,6 +101,14 @@ def test_packages_registered_particlefield_and_static_collision_without_video(
     assert collider.HasAPI(UsdPhysics.CollisionAPI)
     assert UsdGeom.Imageable(collider).ComputeVisibility() == UsdGeom.Tokens.invisible
     assert result["collision_geometry_render_hidden"] is True
+    assert result["runtime_material_dependencies"] == ["ParticleFieldEmissive.mdl"]
+    assert result["runtime_material_dependencies_packaged_as_local_files"] is False
+    with zipfile.ZipFile(package) as archive:
+        assert archive.namelist() == [
+            "default.usda",
+            "appearance.usdc",
+            "collision.usda",
+        ]
     xform = UsdGeom.Xformable(
         stage.GetPrimAtPath("/World/BlueprintReconstruction/Appearance")
     ).GetLocalTransformation()
