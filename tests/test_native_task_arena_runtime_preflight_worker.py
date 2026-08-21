@@ -14,7 +14,7 @@ pxr = pytest.importorskip("pxr")
 
 
 def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> None:
-    from pxr import Gf, Usd, UsdGeom
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.Xform.Define(stage, "/World")
@@ -29,6 +29,7 @@ def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> 
         parent.AddTranslateOp().Set(Gf.Vec3d(0.0, y, 0.12))
         cube = UsdGeom.Cube.Define(stage, f"{parent.GetPath()}/pad_geometry")
         cube.CreateSizeAttr(0.02)
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
 
     result = _gripper_pad_geometry_axis_readback(
         stage=stage,

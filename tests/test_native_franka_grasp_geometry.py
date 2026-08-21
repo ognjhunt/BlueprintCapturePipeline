@@ -12,7 +12,7 @@ pxr = pytest.importorskip("pxr")
 
 
 def test_live_pad_bounds_define_an_explicit_rigid_tcp() -> None:
-    from pxr import Gf, Usd, UsdGeom
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.Xform.Define(stage, "/World")
@@ -25,7 +25,13 @@ def test_live_pad_bounds_define_an_explicit_rigid_tcp() -> None:
             f"/World/envs/env_0/Robot/Gripper/{side}_inner_finger",
         )
         finger.AddTranslateOp().Set(Gf.Vec3d(0.0, y, 0.12))
-        UsdGeom.Cube.Define(stage, f"{finger.GetPath()}/pad").CreateSizeAttr(0.02)
+        proximal = UsdGeom.Cube.Define(stage, f"{finger.GetPath()}/finger")
+        proximal.CreateSizeAttr(0.02)
+        proximal.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.04))
+        UsdPhysics.CollisionAPI.Apply(proximal.GetPrim())
+        pad = UsdGeom.Cube.Define(stage, f"{finger.GetPath()}/pad")
+        pad.CreateSizeAttr(0.02)
+        UsdPhysics.CollisionAPI.Apply(pad.GetPrim())
 
     result = measure_live_robotiq_grasp_geometry(
         stage=stage,
@@ -40,4 +46,12 @@ def test_live_pad_bounds_define_an_explicit_rigid_tcp() -> None:
     assert result["controlled_body_to_grasp_frame"][
         "orientation_xyzw"
     ] == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert all(
+        row["prim_path"].endswith("/pad")
+        for row in result["selected_pad_colliders"].values()
+    )
+    assert all(
+        len(result["matched_collision_candidates"][side]) == 2
+        for side in ("left", "right")
+    )
     assert validate_measured_grasp_geometry(result) == result
