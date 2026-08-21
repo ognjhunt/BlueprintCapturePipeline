@@ -65,10 +65,12 @@ def measure_live_robotiq_grasp_geometry(
             ),
             None,
         )
+        collision = UsdPhysics.CollisionAPI(prim)
         if (
             side is None
-            or not prim.IsA(UsdGeom.Boundable)
-            or not bool(UsdPhysics.CollisionAPI(prim))
+            or not prim.IsA(UsdGeom.Imageable)
+            or not prim.HasAPI(UsdPhysics.CollisionAPI)
+            or collision.GetCollisionEnabledAttr().Get() is False
         ):
             continue
         aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
@@ -145,7 +147,7 @@ def measure_live_robotiq_grasp_geometry(
     return {
         "schema_version": SCHEMA_VERSION,
         "measurement_authority": (
-            "live_usd_world_bounds_of_distal_robotiq_inner_finger_collision"
+            "live_usd_world_bounds_of_distal_robotiq_inner_finger_collision_prim"
         ),
         "matched_collision_candidates": matches,
         "selected_pad_colliders": {

@@ -608,9 +608,13 @@ class NativeFrankaDifferentialIkServo:
             self.grasp_geometry = validate_measured_grasp_geometry(
                 grasp_geometry
             )
-        except (NativeFrankaGraspGeometryError, TypeError) as exc:
+        except NativeFrankaGraspGeometryError as exc:
             raise NativeFrankaPoseServoError(
-                ["native_franka_pose_servo_grasp_geometry_invalid"]
+                [f"native_franka_pose_servo_grasp_geometry_invalid:{exc}"]
+            ) from exc
+        except TypeError as exc:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_grasp_geometry_invalid:type_error"]
             ) from exc
         transform = self.grasp_geometry["controlled_body_to_grasp_frame"]
         self._body_to_grasp_position = list(
