@@ -220,7 +220,12 @@ def test_policy_server_rejects_non_loopback_bind_before_checkpoint_io(
         )
 
 
-def _arena_execution_spec(tmp_path: Path, *, policy_id: str = "pi05_droid") -> Path:
+def _arena_execution_spec(
+    tmp_path: Path,
+    *,
+    candidate_id: str = "pi05_droid",
+    policy_id: str = "pi05_droid_jointpos_polaris",
+) -> Path:
     """The sealed artifact the arena policy bundle stages as a runtime input."""
 
     spec = load_policy_spec(
@@ -247,7 +252,7 @@ def _arena_execution_spec(tmp_path: Path, *, policy_id: str = "pi05_droid") -> P
         json.dumps(
             {
                 "schema_version": "native_task_arena_policy_execution_spec.v1",
-                "candidate_id": policy_id,
+                "candidate_id": candidate_id,
                 "policy_spec": policy_spec,
             }
         ),
@@ -272,7 +277,7 @@ def test_server_identity_comes_from_the_spec_the_client_validates(
 
     served = load_policy_spec_from_execution_spec(_arena_execution_spec(tmp_path))
 
-    assert served.policy_id == "pi05_droid"
+    assert served.policy_id == "pi05_droid_jointpos_polaris"
     # The identity the wrapper publishes satisfies the client's own validator.
     metadata = {
         **served.server_metadata(),
@@ -295,6 +300,19 @@ def test_execution_spec_candidate_and_policy_id_must_agree(tmp_path: Path) -> No
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["candidate_id"] = "some_other_candidate"
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy_execution_spec_candidate_mismatch"):
+        load_policy_spec_from_execution_spec(path)
+
+
+def test_execution_spec_refuses_candidate_alias_as_upstream_identity(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        load_policy_spec_from_execution_spec,
+    )
+
+    path = _arena_execution_spec(tmp_path, policy_id="pi05_droid")
 
     with pytest.raises(ValueError, match="policy_execution_spec_candidate_mismatch"):
         load_policy_spec_from_execution_spec(path)

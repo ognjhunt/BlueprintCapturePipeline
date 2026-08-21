@@ -292,8 +292,8 @@ def test_pi05_checkpoint_identity_satisfies_the_spec_that_refused_the_stock_one(
                 "schema_version": "native_task_arena_policy_execution_spec.v1",
                 "candidate_id": "pi05_droid",
                 "policy_spec": {
-                    "policy_id": "pi05_droid",
-                    "config_name": "pi05_droid",
+                    "policy_id": "pi05_droid_jointpos_polaris",
+                    "config_name": "pi05_droid_jointpos_polaris",
                     # The URI this lane actually provisions.
                     "checkpoint_uri": record["checkpoint_repository"],
                     "checkpoint_object_manifest_sha256": entry[
@@ -317,6 +317,8 @@ def test_pi05_checkpoint_identity_satisfies_the_spec_that_refused_the_stock_one(
 
     spec = load_policy_spec_from_execution_spec(path)
 
+    assert spec.policy_id == entry["policy_id"]
+    assert spec.config_name == "pi05_droid_jointpos_polaris"
     assert spec.checkpoint_uri == record["checkpoint_repository"]
     assert spec.checkpoint_size_bytes == record["checkpoint_total_bytes"]
     assert len(spec.server_metadata()) == 14

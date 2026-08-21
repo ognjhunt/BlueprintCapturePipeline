@@ -84,12 +84,15 @@ def validate_native_task_policy_execution_spec(
     if isinstance(payload.get("policy_spec"), Mapping):
         try:
             if candidate == "pi05_droid":
-                from .openpi_droid_policy_runtime import OpenPIDroidPolicySpec
+                from .openpi_droid_policy_runtime import (
+                    OpenPIDroidPolicySpec,
+                    validate_arena_candidate_policy_binding,
+                )
 
                 policy_spec = OpenPIDroidPolicySpec(**payload["policy_spec"])
-                policy_spec.validate()
-                if policy_spec.policy_id != candidate:
-                    errors.append("native_task_policy_spec_candidate_mismatch")
+                validate_arena_candidate_policy_binding(
+                    candidate_id=candidate, spec=policy_spec
+                )
             elif candidate == "groot_n17_droid":
                 from .groot_n17_droid_policy_runtime import (
                     GrootN17DroidPolicySpec,

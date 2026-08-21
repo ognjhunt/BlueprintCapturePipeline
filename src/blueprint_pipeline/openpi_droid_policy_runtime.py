@@ -46,6 +46,9 @@ LOCAL_VERIFICATION_FIELDS = frozenset(
         "local_checkpoint_size_bytes",
     }
 )
+ARENA_CANDIDATE_POLICY_IDS = {
+    "pi05_droid": "pi05_droid_jointpos_polaris",
+}
 
 
 def canonical_sha256(value: Any) -> str:
@@ -133,6 +136,21 @@ class OpenPIDroidPolicySpec:
         return identity
 
 
+def validate_arena_candidate_policy_binding(
+    *, candidate_id: str, spec: OpenPIDroidPolicySpec
+) -> None:
+    """Bind Blueprint's candidate alias to the exact upstream OpenPI identity."""
+
+    spec.validate()
+    expected_policy_id = ARENA_CANDIDATE_POLICY_IDS.get(str(candidate_id))
+    if (
+        expected_policy_id is None
+        or spec.policy_id != expected_policy_id
+        or spec.config_name != expected_policy_id
+    ):
+        raise ValueError("policy_execution_spec_candidate_mismatch")
+
+
 def load_policy_spec(
     cohort_path: str | Path,
     *,
@@ -199,8 +217,10 @@ def load_policy_spec_from_execution_spec(
     spec = OpenPIDroidPolicySpec(**policy_spec)
     spec.validate()
     candidate = payload.get("candidate_id")
-    if candidate is not None and str(candidate) != spec.policy_id:
-        raise ValueError("policy_execution_spec_candidate_mismatch")
+    if candidate is not None:
+        validate_arena_candidate_policy_binding(
+            candidate_id=str(candidate), spec=spec
+        )
     return spec
 
 
@@ -461,11 +481,13 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "ARENA_CANDIDATE_POLICY_IDS",
     "OpenPIDroidPolicySpec",
     "OpenPIWebsocketDroidPolicyClient",
     "load_policy_spec",
     "load_policy_spec_from_execution_spec",
     "serve_identity_bound_policy",
     "validate_server_metadata",
+    "validate_arena_candidate_policy_binding",
     "verify_local_checkpoint",
 ]

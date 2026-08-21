@@ -514,16 +514,19 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
             "credential_env": "BLUEPRINT_PI05_API_KEY",
         },
         "policy_spec": {
-            "policy_id": "pi05_droid",
-            "config_name": "pi05_droid",
-            "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi05_droid",
+            "policy_id": "pi05_droid_jointpos_polaris",
+            "config_name": "pi05_droid_jointpos_polaris",
+            "checkpoint_uri": (
+                "gs://openpi-assets/checkpoints/polaris/"
+                "pi05_droid_jointpos_polaris"
+            ),
             "checkpoint_object_manifest_sha256": "1" * 64,
             "checkpoint_generation_manifest_sha256": "2" * 64,
             "checkpoint_inventory_sha256": "3" * 64,
             "checkpoint_object_count": 1,
             "checkpoint_size_bytes": 1024,
             "action_space": "joint_position",
-            "action_chunk_rows": 10,
+            "action_chunk_rows": 15,
             "open_loop_horizon": 8,
             "openpi_revision": OPENPI_SOURCE_REVISION,
         },
