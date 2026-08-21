@@ -220,6 +220,19 @@ def contract_xyzw_to_native_xyzw(value: Sequence[float]) -> list[float]:
     return [item / norm for item in quaternion]
 
 
+def contract_xyzw_to_pink_wxyz(value: Sequence[float]) -> list[float]:
+    """Convert Blueprint/Isaac Lab XYZW to PINK SpatialState WXYZ.
+
+    Isaac Sim 6.0.1's ``PinkIKController`` explicitly decodes its site
+    quaternion as ``[w, x, y, z]``.  The Arena and every Blueprint pose
+    contract use ``[x, y, z, w]``. Keep that exceptional conversion at the
+    single PINK boundary.
+    """
+
+    qx, qy, qz, qw = contract_xyzw_to_native_xyzw(value)
+    return [qw, qx, qy, qz]
+
+
 def resolve_native_franka_pose_binding(
     *, body_names: Sequence[str], joint_names: Sequence[str], fixed_base: bool
 ) -> dict[str, Any]:
@@ -745,12 +758,18 @@ class NativeFrankaDifferentialIkServo:
         self, *, target_position_base: Sequence[float], target_quaternion_base_xyzw: Sequence[float]
     ) -> list[float]:
         names = list(self.binding["arm_joint_names"])
+        target_quaternion_base_wxyz = contract_xyzw_to_pink_wxyz(
+            target_quaternion_base_xyzw
+        )
+        self._last_pink_target_hand_quaternion_root_wxyz = (
+            target_quaternion_base_wxyz
+        )
         position = self._wp.from_numpy(
             self._np.asarray([target_position_base], dtype=self._np.float32),
             dtype=self._wp.float32,
         )
         orientation = self._wp.from_numpy(
-            self._np.asarray([target_quaternion_base_xyzw], dtype=self._np.float32),
+            self._np.asarray([target_quaternion_base_wxyz], dtype=self._np.float32),
             dtype=self._wp.float32,
         )
         setpoint = self._mg.RobotState(
@@ -1011,6 +1030,9 @@ class NativeFrankaDifferentialIkServo:
             "pink_target_hand_quaternion_root_xyzw": (
                 target_pink_hand_quaternion_root
             ),
+            "pink_spatial_state_hand_quaternion_root_wxyz": (
+                self._last_pink_target_hand_quaternion_root_wxyz
+            ),
             "pink_hand_pose_at_binding_root": (
                 self._pink_hand_pose_at_binding_base
             ),
@@ -1072,6 +1094,7 @@ __all__ = [
     "NativeFrankaPoseServoError",
     "SCHEMA_VERSION",
     "contract_xyzw_to_native_xyzw",
+    "contract_xyzw_to_pink_wxyz",
     "gripper_frame_axis_readback",
     "native_xyzw_to_contract_xyzw",
     "resolve_native_franka_pose_binding",

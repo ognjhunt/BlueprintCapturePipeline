@@ -9,6 +9,7 @@ from blueprint_pipeline.native_franka_pose_servo import (
     PINK_POSITION_COST,
     PINK_POSTURE_COST,
     contract_xyzw_to_native_xyzw,
+    contract_xyzw_to_pink_wxyz,
     native_xyzw_to_contract_xyzw,
     pink_configuration_joint_positions,
     resolve_native_franka_pose_binding,
@@ -72,6 +73,12 @@ def test_nonidentity_native_quaternion_preserves_beta2_xyzw_order() -> None:
     assert contract_xyzw == pytest.approx(native_xyzw)
     assert contract_xyzw_to_native_xyzw(contract_xyzw) == pytest.approx(
         native_xyzw
+    )
+
+
+def test_pink_spatial_state_boundary_converts_xyzw_to_wxyz() -> None:
+    assert contract_xyzw_to_pink_wxyz([0.1, -0.2, 0.3, 0.9]) == pytest.approx(
+        [0.9233805169, 0.1025978352, -0.2051956704, 0.3077935056]
     )
 
 
