@@ -532,6 +532,68 @@ def test_two_task_chain_orders_pre_arena_construction_arena_then_full_gate(
     assert final["learned_policies_executed"] is False
 
 
+def test_source_derived_grasp_patch_is_admitted_after_native_import(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    task = fixture["manipulation_tasks"][0]
+    affordance_path = Path(task["interaction_affordance_candidate_path"])
+    affordance = json.loads(affordance_path.read_text(encoding="utf-8"))
+    affordance["selection_contract"].update(
+        {
+            "method": "source_derived_grasp_collision_patch",
+            "candidate_geometry_authored_or_modified": True,
+        }
+    )
+    affordance["candidate"].update(
+        {
+            "grasp_collision_patch_prim_path": (
+                "/Asset/links/door/grasp_collision_patches/right_outer_rim"
+            ),
+            "contact_point_to_grasp_collider_surface_m": 0.0005,
+        }
+    )
+    affordance["receipt_digest"] = canonical_digest(
+        affordance, digest_field="receipt_digest"
+    )
+    affordance_path.write_text(json.dumps(affordance), encoding="utf-8")
+    camera_path = Path(task["native_camera_rig_candidate_path"])
+    camera = json.loads(camera_path.read_text(encoding="utf-8"))
+    camera["interaction_affordance_candidate"]["receipt_digest"] = affordance[
+        "receipt_digest"
+    ]
+    camera["receipt_digest"] = canonical_digest(
+        camera, digest_field="receipt_digest"
+    )
+    camera_path.write_text(json.dumps(camera), encoding="utf-8")
+
+    result = materialize_paired_target_native_manipulation_preflight(
+        paired_target_preflight_path=fixture["paired"],
+        native_import_result_path=fixture["native_import"],
+        task_records=fixture["manipulation_tasks"],
+        output_path=tmp_path / "patch-preflight.json",
+        phase="pre_arena",
+    )
+    assert result["native_construction_bindings_ready"] is True
+
+    affordance["candidate"]["contact_point_to_grasp_collider_surface_m"] = 0.002
+    affordance["receipt_digest"] = canonical_digest(
+        affordance, digest_field="receipt_digest"
+    )
+    affordance_path.write_text(json.dumps(affordance), encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match="paired_target_manipulation_interaction_affordance_invalid",
+    ):
+        materialize_paired_target_native_manipulation_preflight(
+            paired_target_preflight_path=fixture["paired"],
+            native_import_result_path=fixture["native_import"],
+            task_records=fixture["manipulation_tasks"],
+            output_path=tmp_path / "off-surface-preflight.json",
+            phase="pre_arena",
+        )
+
+
 def test_pre_arena_phase_rejects_missing_native_import_qualification(
     tmp_path: Path,
 ) -> None:
