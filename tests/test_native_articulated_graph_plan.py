@@ -363,6 +363,39 @@ def test_construction_and_controls_execute_the_same_sealed_limits() -> None:
         )
 
 
+def test_measured_outward_standoff_replaces_generic_inward_bite() -> None:
+    scene = _scene_with_command_limits(0.10, 1.00)
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["contact_outward_standoff_m"] = 0.01
+    affordance["grasp_swept_volume_receipt_digest"] = "sha256:" + "f" * 64
+    _redigest_affordance(scene)
+
+    phase_plan = materialize_native_task_construction_phase_plan(scene)
+    exact = {row["phase_id"]: row for row in phase_plan["exact_contact_phases"]}
+    assert exact["contact_open"]["position_world_m"][1] == pytest.approx(1.99)
+    clearance = {
+        row["phase_id"]: row for row in phase_plan["phases"]
+    }
+    assert clearance["contact_sweep_clearance_00"]["position_world_m"][
+        1
+    ] == pytest.approx(1.965)
+
+    control = materialize_native_task_control_plan(
+        scene_plan=scene,
+        construction_result=_construction(scene),
+    )
+    actions = {row["phase_id"]: row for row in control["scripted_positive_actions"]}
+    assert actions["contact_open"]["target_position_world_m"] == pytest.approx(
+        exact["contact_open"]["position_world_m"]
+    )
+    assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.01)
+    assert actions["contact_open"]["contact_bite_depth_m"] == pytest.approx(0.0)
+    assert control["positive_trajectory_executes_bite_adjusted_contact_targets"] is False
+    assert control["contact_standoff_source"] == (
+        "native_droid_grasp_swept_volume"
+    )
+
+
 def test_construction_plan_rejects_a_lead_below_the_slew() -> None:
     with pytest.raises(NativeTaskConstructionPlanError):
         materialize_native_task_construction_phase_plan(

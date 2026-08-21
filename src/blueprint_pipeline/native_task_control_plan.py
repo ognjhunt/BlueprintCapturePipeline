@@ -674,6 +674,8 @@ def materialize_native_graph_articulated_control_plan(
                 prealign_retraction_toward_phase_id = "approach"
             bite_depth = 0.0
             bite_direction_source_phase_id = None
+            contact_standoff = 0.0
+            contact_standoff_source = None
             clearance_phase_id = measured_construction_phase_id(phase_id)
             if phase_id in {"contact_open", "contact_close", "release"} or phase_id.startswith(
                 "joint_path_"
@@ -709,11 +711,26 @@ def materialize_native_graph_articulated_control_plan(
                     )
                     continue
                 outward_unit = [value / outward_norm for value in outward]
-                bite_depth = ROBOTOIQ_2F85_BITE_DEPTH_M
-                position = [
-                    position[axis] - outward_unit[axis] * bite_depth
-                    for axis in range(3)
-                ]
+                explicit_standoff = float(
+                    affordance.get("contact_outward_standoff_m", 0.0)
+                )
+                if explicit_standoff > 0.0:
+                    # Construction already qualified the receipt-bound
+                    # outward-shifted target. Re-applying the generic inward
+                    # bite here would undo that clearance and reproduce the
+                    # forbidden palm/knuckle contact it measured.
+                    contact_standoff = explicit_standoff
+                    contact_standoff_source = (
+                        "native_droid_grasp_swept_volume"
+                    )
+                else:
+                    bite_depth = ROBOTOIQ_2F85_BITE_DEPTH_M
+                    position = [
+                        position[axis] - outward_unit[axis] * bite_depth
+                        for axis in range(3)
+                    ]
+                    contact_standoff = -bite_depth
+                    contact_standoff_source = ROBOTOIQ_2F85_BITE_SOURCE
                 bite_direction_source_phase_id = clearance_phase_id
             derived_maximum, construction_phase_id, observed_steps = (
                 motion_step_budget(phase_id)
@@ -742,7 +759,8 @@ def materialize_native_graph_articulated_control_plan(
                     "construction_phase_id": construction_phase_id,
                     "construction_observed_steps": observed_steps,
                     "target_position_source_phase_id": phase_id,
-                    "contact_standoff_m": -bite_depth,
+                    "contact_standoff_m": contact_standoff,
+                    "contact_standoff_source": contact_standoff_source,
                     "contact_bite_depth_m": bite_depth,
                     "contact_bite_source": (
                         ROBOTOIQ_2F85_BITE_SOURCE if bite_depth else None
@@ -840,9 +858,13 @@ def materialize_native_graph_articulated_control_plan(
         "positive_trajectory_reexecutes_exact_qualified_phase_targets": False,
         "positive_trajectory_reexecutes_qualified_clearance_targets": False,
         "positive_trajectory_executes_exact_contact_targets_after_clearance_qualification": False,
-        "positive_trajectory_executes_bite_adjusted_contact_targets": True,
+        "positive_trajectory_executes_bite_adjusted_contact_targets": (
+            float(affordance.get("contact_outward_standoff_m", 0.0)) <= 0.0
+        ),
         "contact_standoff_source": (
-            "nvlabs_graspdatagen_robotiq_2f85_bite_depth"
+            "native_droid_grasp_swept_volume"
+            if float(affordance.get("contact_outward_standoff_m", 0.0)) > 0.0
+            else "nvlabs_graspdatagen_robotiq_2f85_bite_depth"
         ),
         "positive_trajectory_budgets_derived_from_measured_construction": True,
         "candidate_policy_queried": False,

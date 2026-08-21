@@ -517,6 +517,31 @@ def _graph_articulated_affordance(
         value.get("gripper_orientation_contact_xyzw"),
         error="native_articulated_graph_construction_gripper_orientation_invalid",
     )
+    try:
+        contact_standoff = float(value.get("contact_outward_standoff_m", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_contact_standoff_invalid"]
+        ) from exc
+    standoff_digest = value.get("grasp_swept_volume_receipt_digest")
+    if (
+        not math.isfinite(contact_standoff)
+        or contact_standoff < 0.0
+        or (
+            contact_standoff > 0.0
+            and (
+                not isinstance(standoff_digest, str)
+                or len(standoff_digest) != 71
+                or not standoff_digest.startswith("sha256:")
+            )
+        )
+        or (contact_standoff == 0.0 and standoff_digest not in (None, ""))
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_contact_standoff_invalid"]
+        )
+    if "contact_outward_standoff_m" in value:
+        value["contact_outward_standoff_m"] = contact_standoff
     for field in (
         "precontact_clearance_m",
         "sweep_clearance_m",
@@ -847,6 +872,16 @@ def materialize_graph_articulated_construction_phase_plan(
     retreat_unit_world = _quaternion_rotate_xyzw(
         root_orientation, affordance["retreat_unit_asset_root"]
     )
+    contact_standoff = float(affordance.get("contact_outward_standoff_m", 0.0))
+    if contact_standoff > 0.0:
+        for row in world_rows:
+            surface_position = list(row["contact_position_world_m"])
+            row["surface_contact_position_world_m"] = surface_position
+            row["contact_position_world_m"] = [
+                surface_position[axis]
+                + row["clearance_unit_world"][axis] * contact_standoff
+                for axis in range(3)
+            ]
     first = world_rows[0]
     last = world_rows[-1]
     authored_grasp = not is_unauthored_identity_quaternion_xyzw(

@@ -26,6 +26,9 @@ from .native_franka_action_math import (
     NativeFrankaActionMathError,
     grasp_orientation_contact_xyzw,
 )
+from .native_droid_grasp_swept_volume import (
+    SCHEMA_VERSION as DROID_GRASP_SWEPT_VOLUME_SCHEMA,
+)
 from .decision_evidence_contracts import canonical_digest
 from .native_task_construction_plan import (
     MAX_JOINT_DELTA_RAD,
@@ -341,6 +344,7 @@ def _articulated_task_spec(
     freeze: Mapping[str, Any],
     affordance: Mapping[str, Any],
     path_receipt: Mapping[str, Any],
+    grasp_swept_volume: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     graph = validate_articulation_graph(freeze["articulation_graph"])
     graph_digest = canonical_digest(graph)
@@ -362,6 +366,16 @@ def _articulated_task_spec(
         "contact_link_id": candidate["link_id"],
         "contact_body_prim_paths": list(candidate["contact_body_prim_paths"]),
         "contact_point_link_m": list(candidate["contact_point_link_m"]),
+        "contact_outward_standoff_m": (
+            0.0
+            if grasp_swept_volume is None
+            else float(grasp_swept_volume["selected_outward_standoff_m"])
+        ),
+        "grasp_swept_volume_receipt_digest": (
+            None
+            if grasp_swept_volume is None
+            else grasp_swept_volume["receipt_digest"]
+        ),
         "approach_unit_asset_root": list(path_receipt["joint_contact_path"][0]["clearance_unit_asset_root"]),
         "retreat_unit_asset_root": list(path_receipt["joint_contact_path"][-1]["clearance_unit_asset_root"]),
         "gripper_orientation_contact_xyzw": _grasp_orientation_contact_xyzw(
@@ -621,6 +635,42 @@ def materialize_paired_target_native_arena_requests(
             digest_field="receipt_digest",
             code="paired_target_arena_request_affordance_invalid",
         )
+        grasp_swept_path = None
+        grasp_swept = None
+        has_grasp_patch = bool(
+            (affordance.get("candidate") or {}).get(
+                "grasp_collision_patch_prim_path"
+            )
+        )
+        supplied_grasp_swept = raw.get("grasp_swept_volume_preflight_path")
+        if has_grasp_patch:
+            grasp_swept_path, grasp_swept = _bound_json(
+                supplied_grasp_swept,
+                schema=DROID_GRASP_SWEPT_VOLUME_SCHEMA,
+                digest_field="receipt_digest",
+                code="paired_target_arena_request_grasp_swept_volume_invalid",
+            )
+            if (
+                grasp_swept.get("status")
+                != "conservative_open_gripper_standoff_qualified"
+                or (grasp_swept.get("registered_asset") or {}).get(
+                    "receipt_digest"
+                )
+                != registered.get("receipt_digest")
+                or (grasp_swept.get("interaction_affordance") or {}).get(
+                    "receipt_digest"
+                )
+                != affordance.get("receipt_digest")
+                or float(grasp_swept.get("selected_outward_standoff_m") or 0.0)
+                <= 0.0
+            ):
+                raise PairedTargetNativeArenaRequestError(
+                    "paired_target_arena_request_grasp_swept_volume_invalid"
+                )
+        elif supplied_grasp_swept is not None:
+            raise PairedTargetNativeArenaRequestError(
+                "paired_target_arena_request_grasp_swept_volume_without_patch"
+            )
         camera_path, camera = _bound_json(
             raw.get("camera_rig_path"),
             schema="paired_target_native_camera_rig_candidate.v1",
@@ -681,6 +731,8 @@ def materialize_paired_target_native_arena_requests(
             "root_matrix": root_matrix,
             "affordance_path": affordance_path,
             "affordance": affordance,
+            "grasp_swept_path": grasp_swept_path,
+            "grasp_swept": grasp_swept,
             "camera_path": camera_path,
             "camera": camera,
             "scenario_path": scenario_path,
@@ -774,7 +826,10 @@ def materialize_paired_target_native_arena_requests(
                     code="paired_target_arena_request_kinematic_invalid",
                 )
                 task_spec, state = _articulated_task_spec(
-                    freeze, affordance, path_receipt
+                    freeze,
+                    affordance,
+                    path_receipt,
+                    row["grasp_swept"],
                 )
                 support_record = None
                 kinematic_record = _record(
@@ -963,6 +1018,14 @@ def materialize_paired_target_native_arena_requests(
                     ),
                     "support_receipt": support_record,
                     "kinematic_path": kinematic_record,
+                    "grasp_swept_volume_preflight": (
+                        None
+                        if row["grasp_swept"] is None
+                        else _record(
+                            row["grasp_swept_path"],
+                            receipt_digest=row["grasp_swept"]["receipt_digest"],
+                        )
+                    ),
                     "registered_root_pose_world": row["pose"],
                 }
             )
