@@ -3689,7 +3689,12 @@ def _probe_shell_script(
     curl_download_protocol = (
         "--http1.1 --continue-at - --retry 5 --retry-delay 3 "
         "--retry-all-errors --retry-max-time 420 --connect-timeout 30 "
-        "--speed-limit 4M --speed-time 60 "
+        # curl's --speed-limit takes an integer byte rate.  Some curl builds
+        # accept suffixes for other rate options, but Ubuntu 24.04 curl 8.5.0
+        # rejects ``4M`` here and silently sends this path to the unguarded wget
+        # fallback.  Spell 4 MiB/s as bytes so the slow-transfer guard actually
+        # runs on the provider image.
+        "--speed-limit 4194304 --speed-time 60 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
