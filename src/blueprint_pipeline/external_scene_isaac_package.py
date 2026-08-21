@@ -125,7 +125,7 @@ def compile_external_scene_isaac_package(
         raise ExternalSceneIsaacPackageError(["external_package_output_invalid"])
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
     except ImportError as exc:
         raise ExternalSceneIsaacPackageError(["external_package_openusd_unavailable"]) from exc
     temporary = Path(tempfile.mkdtemp(prefix=".external-isaac-package-", dir=destination.parent))
@@ -207,9 +207,22 @@ def compile_external_scene_isaac_package(
         root.GetRootLayer().subLayerPaths = ["appearance.usdc", "collision.usda"]
         root.GetRootLayer().Save()
         package_temp = temporary / "scene.usdz"
-        if not UsdUtils.CreateNewUsdzPackage(
-            Sdf.AssetPath(str(temporary / "default.usda")), str(package_temp)
-        ):
+        # CreateNewUsdzPackage recursively localizes every Sdf asset, including
+        # Isaac's built-in ``ParticleFieldEmissive.mdl`` shader. That shader is
+        # a runtime MDL search-path dependency, not a local file; generic USD
+        # builds therefore fail trying to map a file that correctly does not
+        # exist beside the layer. Package the three exact local USD layers
+        # directly. Sdf.ZipFileWriter preserves USDZ alignment while leaving
+        # the built-in MDL identifier external for Isaac to resolve.
+        writer = Sdf.ZipFileWriter.CreateNew(str(package_temp))
+        if writer is None:
+            raise ExternalSceneIsaacPackageError(["external_package_usdz_creation_failed"])
+        added = [
+            writer.AddFile(str(temporary / name), name)
+            for name in ("default.usda", "appearance.usdc", "collision.usda")
+        ]
+        if added != ["default.usda", "appearance.usdc", "collision.usda"] or not writer.Save():
+            writer.Discard()
             raise ExternalSceneIsaacPackageError(["external_package_usdz_creation_failed"])
         os.replace(package_temp, destination)
     finally:
@@ -241,6 +254,8 @@ def compile_external_scene_isaac_package(
         "source_video_available": admitted["source_video_available"],
         "source_video_required_for_candidate_packaging": False,
         "generated_fill_used": False,
+        "runtime_material_dependencies": ["ParticleFieldEmissive.mdl"],
+        "runtime_material_dependencies_packaged_as_local_files": False,
         "proof_effect": "external_scene_isaac_package_candidate",
         "claim_ceiling": "isaac_input_candidate",
         "unsupported_claims": [
