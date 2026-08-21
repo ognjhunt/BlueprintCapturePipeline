@@ -234,6 +234,21 @@ def materialize_native_task_arena_stance_variant_request(
         affordance, digest_field="affordance_digest"
     )
     request["task_spec"] = task_spec
+    task_state_binding = request.get("task_state_binding")
+    if (
+        not isinstance(task_state_binding, dict)
+        or task_state_binding.get("schema_version")
+        != "native_articulated_graph_task_state_binding.v1"
+        or task_state_binding.get("articulation_graph_digest")
+        != task_spec.get("articulation_graph_digest")
+    ):
+        raise NativeTaskArenaStanceVariantError(
+            "native_task_arena_stance_task_state_binding_invalid"
+        )
+    task_state_binding["interaction_affordance_digest"] = affordance[
+        "affordance_digest"
+    ]
+    request["task_state_binding"] = task_state_binding
     into_door = [-approach_world[0], -approach_world[1], 0.0]
     yaw = math.atan2(into_door[1], into_door[0])
     phase_bearings = [

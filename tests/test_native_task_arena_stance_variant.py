@@ -51,6 +51,7 @@ def _request() -> dict:
         ],
         "task_spec": {
             "subject_asset_id": "washer",
+            "articulation_graph_digest": "sha256:" + "a" * 64,
             "interaction_affordance": {
                 "approach_unit_asset_root": [0.0, -1.0, 0.0],
                 "retreat_unit_asset_root": [0.0, -1.0, 0.0],
@@ -69,6 +70,11 @@ def _request() -> dict:
                     },
                 ],
             },
+        },
+        "task_state_binding": {
+            "schema_version": "native_articulated_graph_task_state_binding.v1",
+            "articulation_graph_digest": "sha256:" + "a" * 64,
+            "interaction_affordance_digest": "",
         },
         "cameras": [
             {**camera, "role": "external"},
@@ -89,6 +95,9 @@ def _request() -> dict:
     affordance["affordance_digest"] = canonical_digest(
         affordance, digest_field="affordance_digest"
     )
+    request["task_state_binding"]["interaction_affordance_digest"] = affordance[
+        "affordance_digest"
+    ]
     request["request_digest"] = canonical_digest(
         request, digest_field="request_digest"
     )
@@ -126,6 +135,9 @@ def test_stance_centers_floor_base_on_door_normal_and_replaces_reset(tmp_path) -
     )
     assert affordance["affordance_digest"] == canonical_digest(
         affordance, digest_field="affordance_digest"
+    )
+    assert result["task_state_binding"]["interaction_affordance_digest"] == (
+        affordance["affordance_digest"]
     )
     assert result["request_digest"] == canonical_digest(
         result, digest_field="request_digest"
