@@ -60,7 +60,7 @@ except ModuleNotFoundError:  # repository package
         validate_backend_contact_configuration,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v12"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v13"
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
@@ -569,6 +569,7 @@ class IsaacEpisodeAdapter:
         ]
         | None = None,
         task_sample_callback: Callable[[], Mapping[str, Any]] | None = None,
+        grasp_frame_pose_callback: Callable[[], Sequence[float]] | None = None,
         camera_scene_names: Mapping[str, str] | None = None,
         contact_sensor: Any | None = None,
         joint_wrench_sensor: Any | None = None,
@@ -600,6 +601,7 @@ class IsaacEpisodeAdapter:
         self._scripted_pose_action_callback = scripted_pose_action_callback
         self._camera_pose_callback = camera_pose_callback
         self._task_sample_callback = task_sample_callback
+        self._grasp_frame_pose_callback = grasp_frame_pose_callback
         self._camera_scene_names = dict(
             DEFAULT_CAMERA_SCENE_NAMES
             if camera_scene_names is None
@@ -1287,9 +1289,32 @@ class IsaacEpisodeAdapter:
             float(controlled_body_pose[6]),
             float(controlled_body_pose[3]),
         ]
-        result["grasp_frame_orientation_world_xyzw"] = list(
-            result["controlled_body_orientation_world_xyzw"]
-        )
+        if self._grasp_frame_pose_callback is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_grasp_frame_pose_callback_missing"]
+            )
+        try:
+            grasp_pose = [
+                float(value) for value in self._grasp_frame_pose_callback()
+            ]
+        except (TypeError, ValueError) as exc:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_grasp_frame_pose_invalid"]
+            ) from exc
+        if (
+            len(grasp_pose) != 7
+            or not all(math.isfinite(value) for value in grasp_pose)
+            or abs(
+                math.sqrt(sum(value * value for value in grasp_pose[3:7]))
+                - 1.0
+            )
+            > 1.0e-5
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_grasp_frame_pose_invalid"]
+            )
+        result["grasp_frame_position_world_m"] = grasp_pose[:3]
+        result["grasp_frame_orientation_world_xyzw"] = grasp_pose[3:7]
         return result
 
     # -- internals ----------------------------------------------------------

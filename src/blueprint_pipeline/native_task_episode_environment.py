@@ -16,7 +16,7 @@ from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
 from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 
 
-SCHEMA_VERSION = "native_task_episode_environment.v1"
+SCHEMA_VERSION = "native_task_episode_environment.v2"
 
 
 class NativeTaskEpisodeEnvironmentError(ValueError):
@@ -172,6 +172,7 @@ def build_native_task_episode_environment(
             if task_kind == "articulated_open_close"
             else None
         ),
+        grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
         camera_scene_names=camera_scene_names,
         joint_wrench_sensor=joint_wrench_sensor,
     )
@@ -190,7 +191,10 @@ def build_native_task_episode_environment(
         "scripted_pose_source": "native_franka_differential_ik_servo",
         "joint_wrench_source": "IsaacLab JointWrenchSensor force+torque",
         "joint_wrench_convention": "incoming_joint_frame",
-        "controlled_body_orientation_source": "native_reset_readback",
+        "controlled_body_orientation_source": "native_body_pose_readback",
+        "grasp_frame_pose_source": (
+            "native_franka_pose_servo.measured_controlled_body_to_grasp_frame"
+        ),
         "gripper_command_mapping": {
             "closed_command": closed_command,
             "open_command": open_command,

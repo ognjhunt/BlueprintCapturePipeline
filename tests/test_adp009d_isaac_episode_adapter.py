@@ -1206,12 +1206,28 @@ def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
         task_sample_callback=lambda: observed,
+        grasp_frame_pose_callback=lambda: [
+            9.0,
+            8.0,
+            7.0,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+        ],
     )
 
     sample = adapter.read_task_sample()
     assert {key: sample[key] for key in observed} == observed
-    # fixture pose is a wxyz identity, so the contract ordering is xyzw identity
-    assert sample["grasp_frame_orientation_world_xyzw"] == [0.0, 0.0, 0.0, 1.0]
+    assert sample["grasp_frame_position_world_m"] == [9.0, 8.0, 7.0]
+    assert sample["grasp_frame_orientation_world_xyzw"] == [0.5] * 4
+    # The body frame remains separately measured rather than relabeled as TCP.
+    assert sample["controlled_body_orientation_world_xyzw"] == [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
     with pytest.raises(
         IsaacEpisodeAdapterError, match="isaac_episode_rigid_task_object_missing"
     ):

@@ -116,10 +116,16 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert adapter.kwargs["joint_wrench_sensor"] is (
         built.env.unwrapped.scene["robot_joint_wrench"]
     )
+    assert adapter.kwargs["grasp_frame_pose_callback"] == (
+        servo.current_grasp_frame_pose_world
+    )
     assert receipt["joint_wrench_source"] == (
         "IsaacLab JointWrenchSensor force+torque"
     )
     assert receipt["joint_wrench_convention"] == "incoming_joint_frame"
+    assert receipt["grasp_frame_pose_source"] == (
+        "native_franka_pose_servo.measured_controlled_body_to_grasp_frame"
+    )
 
     action = adapter.kwargs["scripted_pose_action_callback"](
         target_position_world_m=[1.0, 2.0, 3.0],
