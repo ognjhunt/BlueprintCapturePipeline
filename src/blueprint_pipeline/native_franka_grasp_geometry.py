@@ -29,7 +29,7 @@ def measure_live_robotiq_grasp_geometry(
 ) -> dict[str, Any]:
     """Measure pad centers and the rigid body-to-grasp transform from live USD."""
 
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, UsdPhysics
 
     body_position = [float(value) for value in controlled_body_position_world_m]
     body_quaternion = [
@@ -49,7 +49,6 @@ def measure_live_robotiq_grasp_geometry(
         useExtentsHint=True,
     )
     matches: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
-    ranges: dict[str, list[list[float]] | None] = {"left": None, "right": None}
     for prim in Usd.PrimRange(
         stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()
     ):
@@ -66,33 +65,50 @@ def measure_live_robotiq_grasp_geometry(
             ),
             None,
         )
-        if side is None or not prim.IsA(UsdGeom.Boundable):
+        if (
+            side is None
+            or not prim.IsA(UsdGeom.Boundable)
+            or not bool(UsdPhysics.CollisionAPI(prim))
+        ):
             continue
         aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
         minimum = [float(value) for value in aligned.GetMin()]
         maximum = [float(value) for value in aligned.GetMax()]
         if not all(math.isfinite(value) for value in (*minimum, *maximum)):
             continue
+        center = [
+            (minimum[axis] + maximum[axis]) / 2.0 for axis in range(3)
+        ]
+        distance = math.dist(center, body_position)
         matches[side].append(
-            {"prim_path": path, "minimum_world_m": minimum, "maximum_world_m": maximum}
+            {
+                "prim_path": path,
+                "minimum_world_m": minimum,
+                "maximum_world_m": maximum,
+                "center_world_m": center,
+                "distance_from_controlled_body_m": distance,
+            }
         )
-        current = ranges[side]
-        if current is None:
-            ranges[side] = [minimum, maximum]
-        else:
-            ranges[side] = [
-                [min(current[0][axis], minimum[axis]) for axis in range(3)],
-                [max(current[1][axis], maximum[axis]) for axis in range(3)],
-            ]
-    if any(ranges[side] is None for side in ("left", "right")):
+    if any(not matches[side] for side in ("left", "right")):
         raise NativeFrankaGraspGeometryError(
             "native_franka_grasp_geometry_pad_bounds_missing"
         )
-    centers = {
+    selected = {
+        side: max(
+            matches[side],
+            key=lambda row: float(row["distance_from_controlled_body_m"]),
+        )
+        for side in ("left", "right")
+    }
+    ranges = {
         side: [
-            (ranges[side][0][axis] + ranges[side][1][axis]) / 2.0
-            for axis in range(3)
+            list(selected[side]["minimum_world_m"]),
+            list(selected[side]["maximum_world_m"]),
         ]
+        for side in ("left", "right")
+    }
+    centers = {
+        side: list(selected[side]["center_world_m"])
         for side in ("left", "right")
     }
     midpoint = [
@@ -128,8 +144,13 @@ def measure_live_robotiq_grasp_geometry(
     }
     return {
         "schema_version": SCHEMA_VERSION,
-        "measurement_authority": "live_usd_world_bounds_of_robotiq_inner_finger_geometry",
-        "matched_boundables": matches,
+        "measurement_authority": (
+            "live_usd_world_bounds_of_distal_robotiq_inner_finger_collision"
+        ),
+        "matched_collision_candidates": matches,
+        "selected_pad_colliders": {
+            side: dict(selected[side]) for side in ("left", "right")
+        },
         "pad_bounds_world_m": ranges,
         "pad_centers_world_m": centers,
         "pad_centers_controlled_body_m": pad_centers_body,
