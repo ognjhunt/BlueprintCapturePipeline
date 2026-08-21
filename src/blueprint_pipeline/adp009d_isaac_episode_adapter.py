@@ -60,7 +60,7 @@ except ModuleNotFoundError:  # repository package
         validate_backend_contact_configuration,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v11"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v12"
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
@@ -571,6 +571,7 @@ class IsaacEpisodeAdapter:
         task_sample_callback: Callable[[], Mapping[str, Any]] | None = None,
         camera_scene_names: Mapping[str, str] | None = None,
         contact_sensor: Any | None = None,
+        joint_wrench_sensor: Any | None = None,
         contact_envelope: Mapping[str, Any] | None = None,
         partner_contact_sensors: Mapping[str, Any] | None = None,
         backend_contact_configuration: Mapping[str, Any] | None = None,
@@ -605,6 +606,7 @@ class IsaacEpisodeAdapter:
             else camera_scene_names
         )
         self._contact_sensor = contact_sensor
+        self._joint_wrench_sensor = joint_wrench_sensor
         if contact_envelope is None:
             self._contact_envelope = None
         else:
@@ -887,15 +889,36 @@ class IsaacEpisodeAdapter:
         return forces
 
     def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:
-        raw = getattr(self._robot.data, "body_incoming_joint_wrench_b", None)
-        if raw is None:
+        if self._joint_wrench_sensor is None:
             raise IsaacEpisodeAdapterError(
-                ["isaac_episode_arm_dynamics_missing:body_incoming_joint_wrench_b"]
+                ["isaac_episode_arm_dynamics_missing:joint_wrench_sensor"]
             )
-        wrenches = self._to_torch(raw)[0]
+        sensor_data = self._joint_wrench_sensor.data
+        raw_force = getattr(sensor_data, "force", None)
+        raw_torque = getattr(sensor_data, "torque", None)
+        if raw_force is None or raw_torque is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_arm_dynamics_missing:joint_wrench_sensor_data"]
+            )
+        # IsaacLab 3.0 sensors expose backend-neutral ProxyArrays.  Their
+        # documented torch view is the stable consumer boundary for both the
+        # PhysX and Newton implementations.
+        forces = self._to_torch(getattr(raw_force, "torch", raw_force))[0]
+        torques = self._to_torch(getattr(raw_torque, "torch", raw_torque))[0]
+        body_names = list(self._joint_wrench_sensor.body_names)
+        if (
+            len(body_names) != len(forces)
+            or len(body_names) != len(torques)
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_joint_wrench_body_count_invalid"]
+            )
         result: dict[str, list[float]] = {}
-        for index, name in enumerate(self._robot.data.body_names):
-            vector = [float(value) for value in wrenches[index, :6]]
+        for index, name in enumerate(body_names):
+            vector = [
+                *[float(value) for value in forces[index, :3]],
+                *[float(value) for value in torques[index, :3]],
+            ]
             if not all(math.isfinite(value) for value in vector):
                 raise IsaacEpisodeAdapterError(
                     [f"isaac_episode_incoming_joint_wrench_invalid:{name}"]
@@ -1385,8 +1408,9 @@ def describe_adapter() -> dict[str, Any]:
         "backend_contact_configuration_retained_in_arm_dynamics_observation": True,
         "contact_force_source": "IsaacLab ContactSensor.data.net_forces_w",
         "incoming_joint_wrench_source": (
-            "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
+            "IsaacLab JointWrenchSensor force+torque"
         ),
+        "incoming_joint_wrench_convention": "incoming_joint_frame",
         "scripted_control_task_space_translation_strategies": [
             DIRECT_GLOBAL_POSE_TARGET,
             ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
@@ -1451,9 +1475,11 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
     ):
         errors.append("isaac_episode_adapter_contact_force_source_drifted")
     if bindings.get("incoming_joint_wrench_source") != (
-        "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
+        "IsaacLab JointWrenchSensor force+torque"
     ):
         errors.append("isaac_episode_adapter_incoming_joint_wrench_source_drifted")
+    if bindings.get("incoming_joint_wrench_convention") != "incoming_joint_frame":
+        errors.append("isaac_episode_adapter_incoming_joint_wrench_convention_drifted")
     if list(
         bindings.get("scripted_control_task_space_translation_strategies") or []
     ) != [DIRECT_GLOBAL_POSE_TARGET, ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT]:

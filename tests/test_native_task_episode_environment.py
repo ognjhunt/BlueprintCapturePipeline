@@ -40,7 +40,11 @@ class _Adapter:
 
 
 def _built(task_kind: str):
-    scene = {"robot": object(), "bound_task_asset": object()}
+    scene = {
+        "robot": object(),
+        "bound_task_asset": object(),
+        "robot_joint_wrench": object(),
+    }
     env = SimpleNamespace(
         unwrapped=SimpleNamespace(
             scene=scene,
@@ -85,8 +89,9 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
 
     monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
     servo = _Servo()
+    built = _built(task_kind)
     adapter, receipt = build_native_task_episode_environment(
-        built=_built(task_kind),
+        built=built,
         gripper_convention={
             "closed_command": 1.0,
             "open_command": 0.0,
@@ -99,7 +104,7 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
 
     assert receipt["task_kind"] == task_kind
     assert receipt["task_state_source"] == expected_source
-    assert receipt["camera_scene_names"] == _built(task_kind).camera_scene_names
+    assert receipt["camera_scene_names"] == built.camera_scene_names
     assert adapter.kwargs["camera_scene_names"] == receipt["camera_scene_names"]
     assert (adapter.kwargs["rigid_task_object"] is None) == (
         task_kind == "articulated_open_close"
@@ -108,6 +113,13 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
         task_kind == "rigid_pick_place"
     )
     assert adapter.kwargs["simulation_step_seconds"] == pytest.approx(1.0 / 15.0)
+    assert adapter.kwargs["joint_wrench_sensor"] is (
+        built.env.unwrapped.scene["robot_joint_wrench"]
+    )
+    assert receipt["joint_wrench_source"] == (
+        "IsaacLab JointWrenchSensor force+torque"
+    )
+    assert receipt["joint_wrench_convention"] == "incoming_joint_frame"
 
     action = adapter.kwargs["scripted_pose_action_callback"](
         target_position_world_m=[1.0, 2.0, 3.0],

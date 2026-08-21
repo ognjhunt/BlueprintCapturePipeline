@@ -79,6 +79,7 @@ def build_native_task_episode_environment(
         scene = env.unwrapped.scene
         robot = scene["robot"]
         task_object = scene[scene_asset_names["task_object"]]
+        joint_wrench_sensor = scene["robot_joint_wrench"]
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_native_binding_missing"]
@@ -172,6 +173,7 @@ def build_native_task_episode_environment(
             else None
         ),
         camera_scene_names=camera_scene_names,
+        joint_wrench_sensor=joint_wrench_sensor,
     )
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -186,6 +188,8 @@ def build_native_task_episode_environment(
             else "native_rigid_body_readback"
         ),
         "scripted_pose_source": "native_franka_differential_ik_servo",
+        "joint_wrench_source": "IsaacLab JointWrenchSensor force+torque",
+        "joint_wrench_convention": "incoming_joint_frame",
         "controlled_body_orientation_source": "native_reset_readback",
         "gripper_command_mapping": {
             "closed_command": closed_command,

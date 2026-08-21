@@ -776,7 +776,7 @@ def build_native_task_arena_environment(
     import isaaclab.sim as sim_utils
     from isaaclab.managers import EventTermCfg as EventTerm
     from isaaclab.managers import SceneEntityCfg
-    from isaaclab.sensors import ContactSensorCfg
+    from isaaclab.sensors import ContactSensorCfg, JointWrenchSensorCfg
     from isaaclab_physx.renderers.isaac_rtx_renderer_cfg import (
         IsaacRtxRendererCfg,
     )
@@ -1043,6 +1043,22 @@ def build_native_task_arena_environment(
         logical_id: tuple(scene_names)
         for logical_id, scene_names in sorted(contact_sensor_names_mutable.items())
     }
+
+    # IsaacLab 3.0 removed ArticulationData.body_incoming_joint_wrench_b.
+    # Its replacement is a scene sensor with matching PhysX and Newton
+    # implementations.  Keep this separate from task-contact sensors: those
+    # answer which shapes touched, while this reports each robot joint's
+    # reaction wrench.
+    assets.append(
+        ConfigAsset(
+            name="robot_joint_wrench",
+            object_cfg=JointWrenchSensorCfg(
+                prim_path="{ENV_REGEX_NS}/Robot",
+                update_period=0.0,
+                debug_vis=False,
+            ),
+        )
+    )
 
     assets.append(
         SpawnerObject(

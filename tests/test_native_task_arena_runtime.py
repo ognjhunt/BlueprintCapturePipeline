@@ -343,6 +343,9 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules["isaaclab.sensors"].ContactSensorCfg = (
         lambda **kwargs: SimpleNamespace(**kwargs)
     )
+    modules["isaaclab.sensors"].JointWrenchSensorCfg = (
+        lambda **kwargs: SimpleNamespace(**kwargs)
+    )
     modules["isaaclab_arena.assets.asset"].Asset = _Asset
     modules["isaaclab_arena.assets.object"].Object = _Object
     modules["isaaclab_arena.assets.object_base"].ObjectType = _ObjectType
@@ -513,6 +516,14 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "overview": "external_camera_2",
     }
     arena_env = _ArenaBuilder.last.arena_env
+    joint_wrench = next(
+        asset
+        for asset in arena_env.scene.assets
+        if asset.name == "robot_joint_wrench"
+    )
+    assert joint_wrench.object_cfg.prim_path == "{ENV_REGEX_NS}/Robot"
+    assert joint_wrench.object_cfg.update_period == 0.0
+    assert joint_wrench.object_cfg.debug_vis is False
     task_object = next(
         asset for asset in arena_env.scene.assets if asset.name == "task_object"
     )
