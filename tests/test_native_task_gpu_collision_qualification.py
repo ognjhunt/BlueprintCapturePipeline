@@ -44,6 +44,8 @@ def Xform "Asset"
         {
             uniform token physics:approximation = "convexHull"
             point3f[] points = [(-1, -0.004, -0.004), (1, 0.004, 0.004)]
+            uniform token purpose = "guide"
+            token visibility = "invisible"
         }
         def Mesh "regular" (
             prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]

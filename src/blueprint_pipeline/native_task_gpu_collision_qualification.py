@@ -83,7 +83,22 @@ def audit_native_task_gpu_collisions(
     stage = _stage(path)
     from pxr import Usd, UsdGeom, UsdPhysics
 
-    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    # Collision geometry is deliberately guide/invisible so it never leaks
+    # into policy or review pixels. Measuring only default-purpose geometry
+    # therefore returns an empty range for the exact colliders this audit is
+    # meant to qualify, which serialized as Infinity and poisoned the sealed
+    # scene plan. Include every render purpose while still traversing only
+    # prims carrying CollisionAPI below.
+    cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.guide,
+            UsdGeom.Tokens.proxy,
+            UsdGeom.Tokens.render,
+        ],
+        useExtentsHint=False,
+    )
     rows: list[dict[str, Any]] = []
     primitive_rows: list[dict[str, Any]] = []
     blockers: list[str] = []
