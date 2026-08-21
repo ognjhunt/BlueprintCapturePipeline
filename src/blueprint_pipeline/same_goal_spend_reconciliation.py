@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -38,6 +39,10 @@ SUPPORTED_LANES = frozenset(
         "simready_isaac",
     }
 )
+ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
+    "official_billing_zero_charge_absence_after_grace"
+)
+ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
 _DIGEST_FIELDS = (
     "receipt_digest",
     "result_digest",
@@ -88,6 +93,18 @@ def _digest(value: Any) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _timestamp(value: Any, *, code: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(code)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(code) from exc
+    if parsed.tzinfo is None:
+        raise ValueError(code)
+    return parsed.astimezone(timezone.utc)
 
 
 def _source(role: str, path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -320,6 +337,7 @@ def _entry(
     provider_zero_path: str | Path,
     official_billing_response_path: str | Path,
     provider_billing_source_receipt_path: str | Path,
+    pre_attempt_provider_billing_source_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
     result_path, result = _read(
         terminal_result_path, code="same_goal_spend_terminal_result_invalid"
@@ -384,10 +402,9 @@ def _entry(
         ("provider_zero_confirmed",),
         ("provider_zero_api_confirmed",),
     )
-    estimate_path, estimated_cost = _json_path(
+    _estimate_path, estimated_cost = _json_path(
         result, ("estimated_cost_usd",), ("cost_usd",)
     )
-    del estimate_path
     if (
         result.get("status")
         not in {"completed", "blocked", "sealed_completed_attempt", "sealed_blocked_attempt"}
@@ -422,17 +439,6 @@ def _entry(
             continue
         if instance_id in teardown_ids:
             candidates.append((index, instance_id, row))
-    if len(candidates) != 1:
-        raise ValueError("same_goal_spend_billing_instance_match_invalid")
-    billing_index, instance_id, charge = candidates[0]
-    amount = charge.get("amount")
-    if (
-        isinstance(amount, bool)
-        or not isinstance(amount, (int, float))
-        or not math.isfinite(float(amount))
-        or float(amount) < 0
-    ):
-        raise ValueError("same_goal_spend_billing_amount_invalid")
     linked = [
         row
         for row in billing_source.get("sources") or []
@@ -452,6 +458,105 @@ def _entry(
         _source("official_billing_response", billing_path, billing),
         _source("provider_billing_source_receipt", billing_source_path, billing_source),
     ]
+    evidence_kind = "fully_bound_official_billing"
+    if len(candidates) == 1:
+        billing_index, instance_id, charge = candidates[0]
+        amount = charge.get("amount")
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(float(amount))
+            or float(amount) < 0
+        ):
+            raise ValueError("same_goal_spend_billing_amount_invalid")
+        cost_usd = float(amount)
+        cost_and_instance_bindings = [
+            {
+                "kind": "cost_usd",
+                "source_role": "official_billing_response",
+                "json_path": ["results", billing_index, "amount"],
+                "expected_value": amount,
+            },
+            {
+                "kind": "instance_id",
+                "source_role": "official_billing_response",
+                "json_path": ["results", billing_index, "source"],
+                "expected_value": f"instance-{instance_id}",
+            },
+        ]
+    elif (
+        len(candidates) == 0
+        and lane == "native_task_arena"
+        and pre_attempt_provider_billing_source_receipt_path is not None
+        and len(teardown_ids) == 1
+    ):
+        pre_source_path, pre_source = _read(
+            pre_attempt_provider_billing_source_receipt_path,
+            code="same_goal_spend_pre_billing_source_invalid",
+        )
+        pre_total = (pre_source.get("provider_totals_usd") or {}).get("vast")
+        post_total = (billing_source.get("provider_totals_usd") or {}).get("vast")
+        pre_generated = _timestamp(
+            pre_source.get("generated_at"),
+            code="same_goal_spend_pre_billing_timestamp_invalid",
+        )
+        post_generated = _timestamp(
+            billing_source.get("generated_at"),
+            code="same_goal_spend_post_billing_timestamp_invalid",
+        )
+        result_generated = _timestamp(
+            result.get("generated_at"),
+            code="same_goal_spend_terminal_timestamp_invalid",
+        )
+        teardown_generated = _timestamp(
+            teardown.get("generated_at"),
+            code="same_goal_spend_teardown_timestamp_invalid",
+        )
+        if (
+            pre_source.get("status") != "reconciled"
+            or isinstance(pre_total, bool)
+            or not isinstance(pre_total, (int, float))
+            or not math.isfinite(float(pre_total))
+            or isinstance(post_total, bool)
+            or not isinstance(post_total, (int, float))
+            or not math.isfinite(float(post_total))
+            or float(pre_total) != float(post_total)
+            or pre_generated > result_generated
+            or post_generated < teardown_generated + ZERO_CHARGE_BILLING_GRACE
+        ):
+            raise ValueError("same_goal_spend_zero_charge_absence_invalid")
+        instance_id = teardown_ids[0]
+        cost_usd = 0.0
+        evidence_kind = ZERO_CHARGE_ABSENCE_EVIDENCE_KIND
+        sources.append(
+            _source(
+                "pre_attempt_provider_billing_source_receipt",
+                pre_source_path,
+                pre_source,
+            )
+        )
+        cost_and_instance_bindings = [
+            {
+                "kind": "pre_vast_total_usd",
+                "source_role": "pre_attempt_provider_billing_source_receipt",
+                "json_path": ["provider_totals_usd", "vast"],
+                "expected_value": pre_total,
+            },
+            {
+                "kind": "post_vast_total_usd",
+                "source_role": "provider_billing_source_receipt",
+                "json_path": ["provider_totals_usd", "vast"],
+                "expected_value": post_total,
+            },
+            {
+                "kind": "instance_id",
+                "source_role": "teardown_manifest",
+                "json_path": ["vast_instance_ids", 0],
+                "expected_value": instance_id,
+            },
+        ]
+    else:
+        raise ValueError("same_goal_spend_billing_instance_match_invalid")
     if admission_source is not None:
         admission_path, admission = admission_source
         admission_record = _source("admission", admission_path, admission)
@@ -464,32 +569,21 @@ def _entry(
         "goal_id": "arm-decision-proof-v1",
         "attempt_id": _attempt_id(result_path, result),
         "lane": lane,
-        "evidence_kind": "fully_bound_official_billing",
+        "evidence_kind": evidence_kind,
         "provider_instance_id": instance_id,
-        "cost_usd": float(amount),
+        "cost_usd": cost_usd,
         "authority_digest": authority_digest,
         "bundle_sha256": bundle_sha256,
         "continuing_spend_from_this_run": False,
         "provider_zero_confirmed": True,
         "source_receipts": sources,
         "bindings": [
-            {
-                "kind": "cost_usd",
-                "source_role": "official_billing_response",
-                "json_path": ["results", billing_index, "amount"],
-                "expected_value": amount,
-            },
+            *cost_and_instance_bindings,
             {
                 "kind": "continuing_spend",
                 "source_role": "terminal_result",
                 "json_path": continuing_path,
                 "expected_value": False,
-            },
-            {
-                "kind": "instance_id",
-                "source_role": "official_billing_response",
-                "json_path": ["results", billing_index, "source"],
-                "expected_value": f"instance-{instance_id}",
             },
             {
                 "kind": "authority_digest",
@@ -526,6 +620,9 @@ def materialize_same_goal_spend_reconciliation(
     official_billing_response_paths: Sequence[str | Path],
     provider_billing_source_receipt_paths: Sequence[str | Path],
     output_path: str | Path,
+    pre_attempt_provider_billing_source_receipt_paths: Sequence[
+        str | Path | None
+    ] | None = None,
 ) -> dict[str, Any]:
     """Derive and exclusively write one lane-local reconciliation."""
 
@@ -538,6 +635,11 @@ def materialize_same_goal_spend_reconciliation(
     }
     if lane not in SUPPORTED_LANES or counts == {0} or len(counts) != 1:
         raise ValueError("same_goal_spend_materialization_arguments_invalid")
+    pre_sources = list(pre_attempt_provider_billing_source_receipt_paths or [])
+    if not pre_sources:
+        pre_sources = [None] * len(terminal_result_paths)
+    if len(pre_sources) != len(terminal_result_paths):
+        raise ValueError("same_goal_spend_materialization_arguments_invalid")
     entries = [
         _entry(
             lane=lane,
@@ -546,13 +648,15 @@ def materialize_same_goal_spend_reconciliation(
             provider_zero_path=zero,
             official_billing_response_path=billing,
             provider_billing_source_receipt_path=billing_source,
+            pre_attempt_provider_billing_source_receipt_path=pre_source,
         )
-        for result, teardown, zero, billing, billing_source in zip(
+        for result, teardown, zero, billing, billing_source, pre_source in zip(
             terminal_result_paths,
             teardown_manifest_paths,
             provider_zero_paths,
             official_billing_response_paths,
             provider_billing_source_receipt_paths,
+            pre_sources,
             strict=True,
         )
     ]
@@ -614,6 +718,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--provider-billing-source-receipt", action="append", required=True
     )
+    parser.add_argument(
+        "--pre-attempt-provider-billing-source-receipt", action="append"
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -624,6 +731,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider_zero_paths=args.provider_zero,
             official_billing_response_paths=args.official_billing_response,
             provider_billing_source_receipt_paths=args.provider_billing_source_receipt,
+            pre_attempt_provider_billing_source_receipt_paths=(
+                args.pre_attempt_provider_billing_source_receipt
+            ),
             output_path=args.output,
         )
     except (OSError, ValueError) as exc:
