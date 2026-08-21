@@ -368,6 +368,9 @@ def materialize_native_rigid_control_plan(
                     "arrival_orientation_tolerance_rad": (
                         arrival_orientation_tolerance
                     ),
+                    "position_only_arrival": bool(
+                        phase.get("position_only_arrival") is True
+                    ),
                     "arrival_stability_steps": stable_samples,
                     "max_joint_delta_rad": MAX_JOINT_DELTA_RAD,
                     "max_joint_setpoint_lead_rad": MAX_JOINT_SETPOINT_LEAD_RAD,
@@ -785,8 +788,16 @@ def materialize_native_graph_articulated_control_plan(
                         else "authored_compatibility_fallback"
                     ),
                     "arrival_tolerance_m": float(affordance["arrival_tolerance_m"]),
-                    "arrival_orientation_tolerance_rad": float(
-                        phase["arrival_orientation_tolerance_rad"]
+                    "arrival_orientation_tolerance_rad": (
+                        None
+                        if phase.get("arrival_orientation_tolerance_rad")
+                        is None
+                        else float(
+                            phase["arrival_orientation_tolerance_rad"]
+                        )
+                    ),
+                    "position_only_arrival": bool(
+                        phase.get("position_only_arrival") is True
                     ),
                     "arrival_stability_steps": int(
                         affordance["arrival_stability_steps"]

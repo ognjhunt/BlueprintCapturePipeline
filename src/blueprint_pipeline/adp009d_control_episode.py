@@ -1564,6 +1564,7 @@ def validate_task_control_plan(
                 max_joint_delta_rad = 0.0
                 max_joint_setpoint_lead_rad = 0.0
             gripper_state = str(raw.get("gripper_state") or "")
+            position_only_arrival = raw.get("position_only_arrival") is True
             quaternion_valid = quaternion is None or (
                 len(quaternion) == 4
                 and all(math.isfinite(value) for value in quaternion)
@@ -1589,6 +1590,11 @@ def validate_task_control_plan(
                     quaternion is not None
                     and task.get("schema_version") == "adp_task_spec.v2"
                     and arrival_orientation_tolerance_rad is None
+                    and not position_only_arrival
+                )
+                or (
+                    position_only_arrival
+                    and (phase_id != "prealign" or gripper_state != "open")
                 )
                 or (
                     arrival_orientation_tolerance_rad is not None
@@ -1618,6 +1624,7 @@ def validate_task_control_plan(
                         "arrival_orientation_tolerance_rad": (
                             arrival_orientation_tolerance_rad
                         ),
+                        "position_only_arrival": position_only_arrival,
                         "max_joint_delta_rad": max_joint_delta_rad,
                         "max_joint_setpoint_lead_rad": max_joint_setpoint_lead_rad,
                     }
