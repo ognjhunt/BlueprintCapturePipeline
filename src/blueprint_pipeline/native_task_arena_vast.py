@@ -30,6 +30,8 @@ PROBE_KIND = "native-task-arena-construction"
 RESULT_SCHEMA_VERSION = "native_task_arena_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/native-task-arena"
 MINIMUM_DRIVER_VERSION = "580.65.06"
+NO_POLICY_MIN_GPU_RAM_MB = 24_000
+NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
 
 
 def run_native_task_arena_vast(
@@ -100,13 +102,18 @@ def run_native_task_arena_vast(
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
         instance_label_prefix="blueprint-native-task-arena-",
         blocker_prefix="native_task_arena",
-        min_gpu_ram_mb=46_000,
+        # Construction loads Isaac, NuRec, and one robot/scene but no policy
+        # checkpoint. NVIDIA lists 8 GB minimum and 16 GB "good" for Isaac;
+        # exact Scene 840920 runs peaked near 5.2 GB on A6000/6000 Ada. Keep a
+        # 24 GB floor, matching this module's already-qualified runtime
+        # preflight, so live RTX 4090 capacity is not falsely rejected.
+        min_gpu_ram_mb=NO_POLICY_MIN_GPU_RAM_MB,
         allowed_active_instance_ids=allowed_ids,
         vast_launch_lock_file=(
             job / "native_task_arena_paid_launch.lock" if allowed_ids else None
         ),
         candidate_policy_query_expected=False,
-        preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+        preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
         authorization_consumption=consumption,
@@ -249,7 +256,9 @@ def run_native_task_arena_controls_vast(
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
         instance_label_prefix="blueprint-native-task-controls-",
         blocker_prefix="native_task_arena_controls",
-        min_gpu_ram_mb=46_000,
+        # Deterministic controls load the same Isaac scene and no model.
+        # Policies retain their independent 46 GB floor below.
+        min_gpu_ram_mb=NO_POLICY_MIN_GPU_RAM_MB,
         allowed_active_instance_ids=allowed_ids,
         vast_launch_lock_file=(
             job / "native_task_arena_controls_paid_launch.lock"
@@ -257,7 +266,7 @@ def run_native_task_arena_controls_vast(
             else None
         ),
         candidate_policy_query_expected=False,
-        preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+        preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
         authorization_consumption=consumption,
@@ -354,6 +363,8 @@ def run_native_task_arena_policy_vast(
 __all__ = [
     "EXECUTION_RESULT_SCHEMA_VERSION",
     "MINIMUM_DRIVER_VERSION",
+    "NO_POLICY_MIN_GPU_RAM_MB",
+    "NO_POLICY_PREFERRED_GPU_KEYWORDS",
     "PROBE_KIND",
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_vast",
