@@ -710,6 +710,32 @@ def run_policy_episode(
 
         if media_root is not None and episode_id is not None:
             phase_started = time.monotonic()
+            view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
+            if candidate_id == "groot_n17_droid":
+                view_order = [
+                    GROOT_HISTORICAL_VIEW_KEYS[view]
+                    for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                ] + view_order
+            exact_frame = persist_observation_frame(
+                _policy_view_composite(observation, candidate_id=candidate_id),
+                output_dir=media_root,
+                episode_id=episode_id,
+                frame_index=query_index,
+                kind="policy-input",
+            )
+            exact_frame.update(
+                {
+                    "candidate_id": candidate_id,
+                    "candidate_exact_policy_input": True,
+                    "view_order": view_order,
+                    "view_shapes": {
+                        view: list(observation[view].shape)
+                        for view in view_order
+                    },
+                }
+            )
+            exact_frame["frame_manifest_digest"] = canonical_digest(exact_frame)
+            retained_policy_frames.append(exact_frame)
             if multicamera_evaluation_available:
                 retained_multicamera_observations.append(
                     _persist_evaluation_camera_observation(
@@ -721,18 +747,6 @@ def run_policy_episode(
                     )
                 )
                 media_observation_index += 1
-            else:
-                retained_policy_frames.append(
-                    persist_observation_frame(
-                        _policy_view_composite(
-                            observation, candidate_id=candidate_id
-                        ),
-                        output_dir=media_root,
-                        episode_id=episode_id,
-                        frame_index=query_index,
-                        kind="policy-input",
-                    )
-                )
             timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
         phase_started = time.monotonic()
@@ -849,6 +863,10 @@ def run_policy_episode(
                 "chunk_shape": plan["chunk_shape"],
                 "executed_rows": plan["executed_rows"],
                 "discarded_rows": plan["discarded_rows"],
+                "returned_chunk": plan["returned_chunk"],
+                "returned_chunk_digest": canonical_digest(
+                    {"returned_chunk": plan["returned_chunk"]}
+                ),
                 "source_action_space": plan["source_action_space"],
                 "position_adapter": plan["position_adapter"],
                 "position_adapter_max_joint_delta_rad": plan[
@@ -1063,14 +1081,14 @@ def run_policy_episode(
         "episode_id": episode_id,
         "visual_evidence": visual_evidence,
         "media_artifacts": media_artifacts,
+        "candidate_exact_policy_input_frames": retained_policy_frames,
+        "candidate_exact_policy_input_manifest_digest": (
+            canonical_digest({"frames": retained_policy_frames})
+            if retained_policy_frames
+            else None
+        ),
         "observation_trace_digest": (
-            canonical_digest(
-                {
-                    "observations": [
-                        row["raw_rgb_sha256"] for row in retained_policy_frames
-                    ]
-                }
-            )
+            canonical_digest({"observations": retained_policy_frames})
             if retained_policy_frames
             else None
         ),
