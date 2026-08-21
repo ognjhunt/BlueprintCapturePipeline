@@ -7581,6 +7581,72 @@ def test_instance_liveness_endpoint_is_absent_not_invented() -> None:
     assert liveness["ssh_port"] is None
 
 
+def test_instance_liveness_classifies_unresolvable_gpu_cdi_device() -> None:
+    payload = {
+        "instances": {
+            "id": 48315465,
+            "actual_status": "created",
+            "cur_state": "running",
+            "status_msg": (
+                "OCI runtime create failed: failed to inject CDI devices: "
+                "unresolvable CDI devices D.example/gpu=5"
+            ),
+        }
+    }
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=48315465)
+
+    assert liveness["status"] == "created"
+    assert liveness["exited"] is False
+    assert liveness["terminal_startup_error"] == "vast_gpu_cdi_device_unresolvable"
+
+
+def test_request_logs_stops_immediately_on_unresolvable_gpu_cdi_device(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    calls = {"logs": 0, "liveness": 0}
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        if kwargs["method"] == "PUT":
+            calls["logs"] += 1
+            return 200, {"result_url": "https://example.invalid/log.txt"}
+        calls["liveness"] += 1
+        return 200, {
+            "instances": {
+                "actual_status": "created",
+                "cur_state": "running",
+                "status_msg": (
+                    "failed to inject CDI devices: unresolvable CDI devices "
+                    "D.example/gpu=5"
+                ),
+            }
+        }
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=48315465,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=10,
+        max_wait_seconds=420,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=1800,
+    )
+
+    assert calls == {"logs": 1, "liveness": 1}
+    assert result["break_reason"] == "vast_gpu_cdi_device_unresolvable"
+    assert result["terminal_startup_error"] == "vast_gpu_cdi_device_unresolvable"
+    assert result["log_poll_attempts"][0]["terminal_startup_error"] == (
+        "vast_gpu_cdi_device_unresolvable"
+    )
+
+
 @pytest.mark.parametrize("instances", ([], None))
 def test_instance_liveness_recognizes_provider_absence_envelopes(instances) -> None:
     """The detail endpoint returns either empty shape after destruction."""
