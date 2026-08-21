@@ -40,6 +40,14 @@ GRAPH_ARTICULATED_GATE_SCHEMA_VERSION = (
     "native_articulated_graph_construction_gate_evaluation.v1"
 )
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
+# NVIDIA GraspDataGen's Robotiq 2F-85 definition uses an 18.5 mm bite: half
+# the 37 mm finger-pad length. Closing with the TCP at the panel's mathematical
+# edge gives the pads zero overlap; c5/c6 then measured outer-link collision
+# while both allowed inner-finger channels remained at 0 N.
+ROBOTOIQ_2F85_BITE_DEPTH_M = 0.0185
+ROBOTOIQ_2F85_BITE_SOURCE = (
+    "NVlabs/GraspDataGen:robotiq_2f_85:bite=0.0185"
+)
 
 
 class NativeTaskControlPlanError(ValueError):
@@ -537,6 +545,11 @@ def materialize_native_graph_articulated_control_plan(
         for row in phase_results or []
         if isinstance(row, Mapping)
     }
+    qualified_clearance_targets = {
+        str(row.get("phase_id") or ""): row
+        for row in phase_plan.get("phases") or []
+        if isinstance(row, Mapping)
+    }
     def measured_construction_phase_id(phase_id: str) -> str | None:
         if phase_id in {"prealign", "approach", "retreat"}:
             return phase_id
@@ -602,6 +615,49 @@ def materialize_native_graph_articulated_control_plan(
                 continue
             dwell = phase.get("phase_id") in {"contact_close", "release"}
             phase_id = str(phase.get("phase_id") or "")
+            bite_depth = 0.0
+            bite_direction_source_phase_id = None
+            clearance_phase_id = measured_construction_phase_id(phase_id)
+            if phase_id in {"contact_open", "contact_close", "release"} or phase_id.startswith(
+                "joint_path_"
+            ):
+                clearance = qualified_clearance_targets.get(clearance_phase_id or "")
+                try:
+                    clearance_position = _vector(
+                        clearance.get("position_world_m")
+                        if isinstance(clearance, Mapping)
+                        else None,
+                        length=3,
+                        error=(
+                            "native_articulated_graph_control_"
+                            f"qualified_clearance_target_missing:{phase_id}"
+                        ),
+                    )
+                except NativeTaskControlPlanError as exc:
+                    errors.extend(exc.errors)
+                    continue
+                outward = [
+                    clearance_position[axis] - position[axis]
+                    for axis in range(3)
+                ]
+                outward_norm = math.sqrt(sum(value * value for value in outward))
+                if (
+                    not math.isfinite(outward_norm)
+                    or abs(outward_norm - float(affordance["sweep_clearance_m"]))
+                    > 1.0e-6
+                ):
+                    errors.append(
+                        "native_articulated_graph_control_"
+                        f"qualified_clearance_direction_invalid:{phase_id}"
+                    )
+                    continue
+                outward_unit = [value / outward_norm for value in outward]
+                bite_depth = ROBOTOIQ_2F85_BITE_DEPTH_M
+                position = [
+                    position[axis] - outward_unit[axis] * bite_depth
+                    for axis in range(3)
+                ]
+                bite_direction_source_phase_id = clearance_phase_id
             derived_maximum, construction_phase_id, observed_steps = (
                 motion_step_budget(phase_id)
                 if not dwell
@@ -629,7 +685,14 @@ def materialize_native_graph_articulated_control_plan(
                     "construction_phase_id": construction_phase_id,
                     "construction_observed_steps": observed_steps,
                     "target_position_source_phase_id": phase_id,
-                    "contact_standoff_m": 0.0,
+                    "contact_standoff_m": -bite_depth,
+                    "contact_bite_depth_m": bite_depth,
+                    "contact_bite_source": (
+                        ROBOTOIQ_2F85_BITE_SOURCE if bite_depth else None
+                    ),
+                    "bite_direction_source_phase_id": (
+                        bite_direction_source_phase_id
+                    ),
                     "step_budget_derivation": (
                         "gripper_dwell_authored"
                         if dwell
@@ -710,9 +773,10 @@ def materialize_native_graph_articulated_control_plan(
         "locked_joint_ids": phase_plan["joint_ids_by_role"]["locked"],
         "positive_trajectory_reexecutes_exact_qualified_phase_targets": False,
         "positive_trajectory_reexecutes_qualified_clearance_targets": False,
-        "positive_trajectory_executes_exact_contact_targets_after_clearance_qualification": True,
+        "positive_trajectory_executes_exact_contact_targets_after_clearance_qualification": False,
+        "positive_trajectory_executes_bite_adjusted_contact_targets": True,
         "contact_standoff_source": (
-            "exact_contact_after_side_entry_clearance_qualification"
+            "nvlabs_graspdatagen_robotiq_2f85_bite_depth"
         ),
         "positive_trajectory_budgets_derived_from_measured_construction": True,
         "candidate_policy_queried": False,
