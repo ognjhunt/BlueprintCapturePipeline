@@ -53,6 +53,9 @@ DROID_ARENA_DEFAULT_RESET_SOURCE = (
 RETREAT_STRATEGY_ID = (
     "qualified_front_staging_when_reverse_approach_enters_base_dead_zone_v2"
 )
+FRONT_ENTRY_GRASP_ORIENTATION_VARIANT = (
+    "parallel_jaw_opposite_sign_equivalent_v1"
+)
 
 
 class NativeTaskArenaStanceVariantError(ValueError):
@@ -213,13 +216,41 @@ def materialize_native_task_arena_stance_variant_request(
         gripper_orientation_contact = affordance[
             "gripper_orientation_contact_xyzw"
         ]
-        gripper_world_orientation = _multiply_xyzw(
-            _multiply_xyzw(root_orientation, first_contact_orientation),
-            gripper_orientation_contact,
-        )
         front_entry_patch = (
             float(affordance.get("contact_outward_standoff_m", 0.0)) > 0.0
             and bool(affordance.get("grasp_swept_volume_receipt_digest"))
+        )
+        previous_orientation_variant = str(
+            (request.get("stance_variant") or {}).get(
+                "grasp_orientation_variant"
+            )
+            or ""
+        )
+        if front_entry_patch:
+            if previous_orientation_variant == "":
+                # A parallel jaw defines an unoriented line: swapping left and
+                # right pads preserves the physical grasp while rotating the
+                # tool 180 degrees about its approach axis. The first native
+                # front-entry run reached the rim but saturated joints 5 and 7
+                # on the authored sign. Select the other exactly equivalent
+                # roll branch; do not relax the orientation gate.
+                gripper_orientation_contact = _multiply_xyzw(
+                    gripper_orientation_contact,
+                    [0.0, 0.0, 1.0, 0.0],
+                )
+                affordance["gripper_orientation_contact_xyzw"] = list(
+                    gripper_orientation_contact
+                )
+            elif (
+                previous_orientation_variant
+                != FRONT_ENTRY_GRASP_ORIENTATION_VARIANT
+            ):
+                raise NativeTaskArenaStanceVariantError(
+                    "native_task_arena_stance_grasp_orientation_variant_invalid"
+                )
+        gripper_world_orientation = _multiply_xyzw(
+            _multiply_xyzw(root_orientation, first_contact_orientation),
+            gripper_orientation_contact,
         )
         if front_entry_patch:
             # The source-derived rim patch closes vertically, so its +Y jaw
@@ -456,6 +487,11 @@ def materialize_native_task_arena_stance_variant_request(
             retreat_enters_base_dead_zone
         ),
         "reset_source": reset_source,
+        "grasp_orientation_variant": (
+            FRONT_ENTRY_GRASP_ORIENTATION_VARIANT
+            if front_entry_patch
+            else "authored_positive_jaw_sign"
+        ),
         "external_camera_source": "front_side_zero_roll_vision_geometry_candidate",
         "overview_camera_source": "front_side_zero_roll_vision_geometry_candidate",
         "native_ik_qualified": False,
@@ -482,6 +518,7 @@ __all__ = [
     "DROID_ARENA_DEFAULT_RESET_SOURCE",
     "FRANKA_ROBOTIQ_READY_RESET",
     "FRANKA_ROBOTIQ_READY_RESET_SOURCE",
+    "FRONT_ENTRY_GRASP_ORIENTATION_VARIANT",
     "NativeTaskArenaStanceVariantError",
     "RETREAT_STRATEGY_ID",
     "materialize_native_task_arena_stance_variant_request",
