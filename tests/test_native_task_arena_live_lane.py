@@ -290,7 +290,7 @@ def _attempt_authority(
         "maximum_hourly_rate_usd": 1.0,
         "maximum_single_resource_ttl_seconds": 7_200,
         "aggregate_goal_spend_before_attempt_usd": 0.05,
-        "aggregate_goal_spend_cap_usd": 12.0,
+        "aggregate_goal_spend_cap_usd": paid.AGGREGATE_GOAL_SPEND_CAP_USD,
         "prior_terminal_attempt": {
             "authority": _record(predecessor["authority"]),
             "terminal_result": _record(predecessor["result"]),

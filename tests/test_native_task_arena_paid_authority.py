@@ -133,6 +133,10 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     )
 
     assert authority["aggregate_goal_spend_before_attempt_usd"] == 11.236507
+    # A current program-level ceiling may explicitly supersede the lower
+    # immutable ceiling recorded by the predecessor.  Per-attempt limits and
+    # the predecessor's spend still remain digest-bound.
+    assert authority["aggregate_goal_spend_cap_usd"] == 25.0
     assert authority["prior_terminal_attempt"]["attempt_cost_usd"] == 0.092936
     assert authority["prior_terminal_attempt"]["actual_provider_charge_usd"] == 0.025
     assert authority["prior_terminal_attempt"]["terminal_result"]["path"] == str(

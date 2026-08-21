@@ -40,7 +40,12 @@ PROVIDER_ZERO_SCHEMA_VERSION = "native_task_arena_provider_zero.v1"
 #: Written when the watchdog was armed but the run ended before allocating.
 WATCHDOG_HANDOFF_SCHEMA_VERSION = "vast_independent_watchdog_handoff.v1"
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
-AGGREGATE_GOAL_SPEND_CAP_USD = 12.0
+# Explicitly expanded by the active Task Arena goal owner on 2026-08-21 so the
+# controls and two frozen policy candidates can keep using ordinary 24 GB GPU
+# offers.  The aggregate ceiling does not weaken the per-attempt contract:
+# every authority remains single-use, retry-0, provider-zero-gated, and bounded
+# by ``MAX_HARD_CAP_USD`` below.
+AGGREGATE_GOAL_SPEND_CAP_USD = 25.0
 MAX_HARD_CAP_USD = 2.0
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
@@ -251,7 +256,12 @@ def materialize_native_task_arena_paid_attempt_authority(
         + reconciled["actual_total_usd"],
         6,
     )
-    aggregate_cap = min(AGGREGATE_GOAL_SPEND_CAP_USD, prior["aggregate_goal_spend_cap_usd"])
+    # A newly deployed program ceiling is itself the authority boundary.  The
+    # predecessor's lower historical ceiling remains bound in its immutable
+    # receipt, but must not make an explicitly raised current ceiling
+    # impossible to issue: taking ``min`` here permanently froze the chain at
+    # its first value even after the owner expanded the active goal budget.
+    aggregate_cap = AGGREGATE_GOAL_SPEND_CAP_USD
     if (
         not authorization_reference.strip()
         or not authorized_by.strip()
@@ -414,7 +424,7 @@ def validate_native_task_arena_paid_attempt_authority(
             or value.get("aggregate_goal_spend_before_attempt_usd")
             != actual_after
             or value.get("aggregate_goal_spend_cap_usd")
-            != prior["aggregate_goal_spend_cap_usd"]
+            != AGGREGATE_GOAL_SPEND_CAP_USD
             or value.get("aggregate_goal_spend_before_attempt_usd", 0) + hard_cap_usd
             > value.get("aggregate_goal_spend_cap_usd", 0)
         ):
