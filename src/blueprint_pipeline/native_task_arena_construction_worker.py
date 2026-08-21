@@ -833,6 +833,7 @@ def _initial_contact_blocked(
 def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) -> dict[str, Any]:
     separations: dict[str, float] = {}
     pad_centers: dict[str, dict[str, list[float]]] = {}
+    pad_midpoint_controlled_body: dict[str, list[float]] = {}
     pad_offsets: dict[str, list[float]] | None = None
     geometry: dict[str, Any] | None = None
     for command in (0.0, 1.0):
@@ -856,6 +857,30 @@ def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) ->
         separations[str(command)] = math.dist(
             centers["left"], centers["right"]
         )
+        controlled_body_name = next(
+            (
+                name
+                for name in ("panda_hand", "base_link")
+                if name in list(robot.data.body_names)
+            ),
+            None,
+        )
+        if controlled_body_name is None:
+            raise RuntimeError("native_task_gripper_controlled_body_missing")
+        controlled_body_pose = _body_pose_world(
+            robot, body_name=controlled_body_name, torch=torch
+        )
+        endpoint_midpoint = [
+            (centers["left"][axis] + centers["right"][axis]) / 2.0
+            for axis in range(3)
+        ]
+        pad_midpoint_controlled_body[str(command)] = rotate_vector_xyzw(
+            quaternion_conjugate_xyzw(controlled_body_pose[3:7]),
+            [
+                endpoint_midpoint[axis] - controlled_body_pose[axis]
+                for axis in range(3)
+            ],
+        )
     travel = abs(separations["0.0"] - separations["1.0"])
     midpoint = {
         command: [
@@ -870,6 +895,7 @@ def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) ->
         "pad_centers_world_m": pad_centers,
         "pad_center_offsets_in_finger_body_m": pad_offsets,
         "pad_midpoint_world_m": midpoint,
+        "pad_midpoint_controlled_body_m": pad_midpoint_controlled_body,
         "pad_midpoint_travel_m": midpoint_travel,
         "selected_pad_colliders": (
             None if geometry is None else geometry["selected_pad_colliders"]
@@ -1472,7 +1498,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "gripper_convention_measured"
         _announce("gripper_convention", "completed")
 
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        servo = NativeFrankaDifferentialIkServo(
+            env=env, robot=robot, gripper_convention=gripper
+        )
         result["franka_pose_binding"] = servo.binding
         result["arm_actuator_readback"] = read_native_arm_actuator_readback(
             robot, joint_ids=servo.binding["arm_joint_ids"]

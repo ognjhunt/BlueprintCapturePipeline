@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.native_franka_pose_servo import (
+    NativeFrankaDifferentialIkServo,
     NativeFrankaPoseServoError,
     PINK_CONFIGURATION_LIMIT_MARGIN_RAD,
     PINK_INTEGRATION_DT_SECONDS,
@@ -15,6 +16,26 @@ from blueprint_pipeline.native_franka_pose_servo import (
     pink_configuration_joint_positions,
     resolve_native_franka_pose_binding,
 )
+
+
+def test_grasp_tcp_interpolates_between_measured_gripper_endpoints() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._body_to_grasp_position = [9.0, 9.0, 9.0]
+    servo._body_to_grasp_positions_by_command = {
+        0.0: [0.10, 0.00, 0.02],
+        1.0: [0.10, 0.02, 0.00],
+    }
+    servo._last_gripper_command = 0.0
+
+    assert servo._grasp_position_for_command(0.0) == pytest.approx(
+        [0.10, 0.00, 0.02]
+    )
+    assert servo._grasp_position_for_command(1.0) == pytest.approx(
+        [0.10, 0.02, 0.00]
+    )
+    assert servo._grasp_position_for_command(0.5) == pytest.approx(
+        [0.10, 0.01, 0.01]
+    )
 
 
 def _bodies() -> list[str]:
