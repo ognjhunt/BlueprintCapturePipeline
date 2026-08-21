@@ -3687,7 +3687,8 @@ def _probe_shell_script(
     # transient HTTP status codes and timeouts, so it would not have retried
     # this failure.
     curl_download_protocol = (
-        "--http1.1 --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 30 "
+        "--http1.1 --continue-at - --retry 5 --retry-delay 3 "
+        "--retry-all-errors --connect-timeout 30 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
