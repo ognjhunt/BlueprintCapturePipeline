@@ -77,6 +77,14 @@ def _clone_request(value: Mapping[str, Any]) -> dict[str, Any]:
     return request
 
 
+def validate_native_task_arena_packet_request(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate and clone a packet request without materializing its assets."""
+
+    return _clone_request(value)
+
+
 def materialize_native_task_arena_appearance_variant_request(
     *,
     base_request_path: str | Path,
@@ -538,4 +546,5 @@ __all__ = [
     "REQUEST_SCHEMA_VERSION",
     "materialize_native_task_arena_appearance_variant_request",
     "materialize_native_task_arena_packet",
+    "validate_native_task_arena_packet_request",
 ]
