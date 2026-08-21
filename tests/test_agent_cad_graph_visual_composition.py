@@ -10,7 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from PIL import Image
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from blueprint_pipeline.agent_cad_graph_visual_composition import (
     validate_agent_cad_visual_binding,
@@ -148,8 +148,17 @@ def _mesh_projection(tmp_path: Path) -> tuple[Path, Path]:
                 "link_id": "door",
                 "solid_id": "rim",
                 "assembly_transform_applied": True,
-                "points_mm": [[0, 0, 10], [50, 0, 10], [0, 50, 10]],
-                "triangles": [[0, 1, 2]],
+                "points_mm": [
+                    [246, 0, -50], [248, 0, -50],
+                    [246, 49, -50], [248, 49, -50],
+                    [246, 0, 0], [248, 0, 0],
+                    [246, 49, 0], [248, 49, 0],
+                ],
+                "triangles": [
+                    [0, 1, 3], [0, 3, 2], [4, 7, 5], [4, 6, 7],
+                    [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6],
+                    [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3],
+                ],
                 "agent_authored_display_color_rgba": [0.1, 0.1, 0.1, 1.0],
             },
         ],
@@ -355,6 +364,8 @@ def _graph_authoring_receipt(
     stage.SetDefaultPrim(root.GetPrim())
     body = UsdGeom.Xform.Define(stage, "/Asset/links/body")
     door = UsdGeom.Xform.Define(stage, "/Asset/links/door")
+    door_material = UsdShade.Material.Define(stage, "/Asset/materials/door")
+    UsdPhysics.MaterialAPI.Apply(door_material.GetPrim())
     if door_translation is not None:
         door.AddTranslateOp().Set(Gf.Vec3d(*door_translation))
         door.AddOrientOp().Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
@@ -448,6 +459,51 @@ def test_agent_cad_visuals_are_composed_without_promoting_collision_meshes(
     proxy = stage.GetPrimAtPath("/Asset/links/body/geometry/proxy")
     assert UsdGeom.Imageable(proxy).ComputePurpose() == UsdGeom.Tokens.guide
     assert UsdGeom.Imageable(proxy).ComputeVisibility() == UsdGeom.Tokens.invisible
+
+
+def test_exact_visual_vertices_can_materialize_an_isolated_grasp_patch(
+    tmp_path: Path,
+) -> None:
+    binding_path, destination = _prepared(tmp_path)
+    receipt = materialize_agent_cad_visual_composition(
+        binding_path=binding_path,
+        destination_usd_path=destination,
+        grasp_collision_patches=[
+            {
+                "patch_id": "right_outer_rim",
+                "graph_link_id": "door",
+                "source_mesh_path": "/Asset/links/door/geometry/rim",
+                "grasp_affordance_role": "parallel_jaw_outer_rim_patch",
+                "selection_axis_index": 0,
+                "minimum_axis_value_m": 0.246,
+                "maximum_axis_value_m": None,
+                "approach_outward_unit_graph_link": [0.0, -1.0, 0.0],
+                "pinch_axis_graph_link": [0.0, 0.0, 1.0],
+                "collision_approximation": "convexHull",
+            }
+        ],
+    )
+
+    assert receipt["grasp_collision_patch_count"] == 1
+    row = receipt["grasp_collision_patches"][0]
+    assert row["contact_point_graph_link_m"] == pytest.approx(
+        [0.248, 0.0, -0.025]
+    )
+    assert row["pinch_span_m"] == pytest.approx(0.05)
+    assert validate_agent_cad_visual_composition(receipt) == receipt
+    stage = Usd.Stage.Open(str(destination))
+    prim = stage.GetPrimAtPath(row["collision_prim_path"])
+    assert prim.IsA(UsdGeom.Mesh)
+    assert prim.HasAPI(UsdPhysics.CollisionAPI)
+    assert (
+        UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+        == "convexHull"
+    )
+    assert UsdGeom.Imageable(prim).ComputePurpose() == UsdGeom.Tokens.guide
+    assert UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible
+    assert prim.GetCustomDataByKey("blueprint:graspAffordanceRole") == (
+        "parallel_jaw_outer_rim_patch"
+    )
 
 
 def test_native_inputs_cli_static_qualification_reopens_registered_asset_bytes(
@@ -703,7 +759,9 @@ def test_binding_can_derive_link_local_transform_from_graph_reset_pose(
     )
     stage = Usd.Stage.Open(str(destination))
     visual = UsdGeom.Mesh(stage.GetPrimAtPath("/Asset/links/door/visuals/door__rim"))
-    assert list(visual.GetPointsAttr().Get())[0] == pytest.approx((0.0, -0.2, -0.29))
+    assert list(visual.GetPointsAttr().Get())[0] == pytest.approx(
+        (0.246, -0.2, -0.35)
+    )
 
 
 def test_binding_selects_one_exact_candidate_from_a_verified_cad_matrix(

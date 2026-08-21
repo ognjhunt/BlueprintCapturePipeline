@@ -159,6 +159,9 @@ STEPS: dict[str, Step] = {
             "binding_path": Param("--binding", required=True),
             "destination_usd_path": Param("--output-usd", required=True),
             "receipt_path": Param("--receipt"),
+            "grasp_collision_patches": Param(
+                "--grasp-collision-patches", json_file=True
+            ),
         },
     ),
     "registered-asset": Step(
