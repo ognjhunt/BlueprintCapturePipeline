@@ -40,13 +40,21 @@ GRAPH_ARTICULATED_GATE_SCHEMA_VERSION = (
     "native_articulated_graph_construction_gate_evaluation.v1"
 )
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
-# NVIDIA GraspDataGen's Robotiq 2F-85 definition uses an 18.5 mm bite: half
-# the 37 mm finger-pad length. Closing with the TCP at the panel's mathematical
-# edge gives the pads zero overlap; c5/c6 then measured outer-link collision
-# while both allowed inner-finger channels remained at 0 N.
-ROBOTOIQ_2F85_BITE_DEPTH_M = 0.0185
+# NVIDIA GraspDataGen's Robotiq 2F-85 definition uses an 18.5 mm minimum bite:
+# half the 37 mm finger-pad length. Native c10 then placed the measured distal
+# pad center at that target and measured 0 N on both allowed inner fingers;
+# c7's prior aggregate-frame bias placed the physical pads about 9.7 mm deeper,
+# produced strong allowed contact, and over-seated into a forbidden collision.
+# Use the rounded midpoint of that measured bracket for the next explicit,
+# receipt-visible contact-surface qualification instead of hiding it in TCP.
+ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M = 0.0185
+ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M = 0.005
+ROBOTOIQ_2F85_BITE_DEPTH_M = (
+    ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M + ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M
+)
 ROBOTOIQ_2F85_BITE_SOURCE = (
-    "NVlabs/GraspDataGen:robotiq_2f_85:bite=0.0185"
+    "NVlabs/GraspDataGen:robotiq_2f_85:minimum_bite=0.0185;"
+    "Blueprint:c7_c10_measured_depth_bracket_midpoint=0.005"
 )
 
 
