@@ -9,8 +9,16 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paired_target_native_arena_request import (
     PairedTargetNativeArenaRequestError,
     _pose_from_matrix,
+    _sweep_clearance_m,
     materialize_paired_target_native_arena_requests,
 )
+
+
+def test_front_entry_adds_clearance_without_changing_legacy_sweep() -> None:
+    assert _sweep_clearance_m(None) == pytest.approx(0.025)
+    assert _sweep_clearance_m({"selected_outward_standoff_m": 0.01}) == (
+        pytest.approx(0.030)
+    )
 
 
 def test_pose_roundtrip_preserves_registered_quarter_turn() -> None:

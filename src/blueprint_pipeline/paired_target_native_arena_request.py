@@ -60,6 +60,20 @@ REQUEST_SCHEMA = "native_task_arena_packet_request.v1"
 #: own value, split this into two named constants; do not re-inline a literal,
 #: because a literal is what made the pair drift-prone in the first place.
 ARRIVAL_ORIENTATION_TOLERANCE_RAD = 0.08
+DEFAULT_SWEEP_CLEARANCE_M = 0.025
+FRONT_ENTRY_SWEEP_CLEARANCE_M = 0.030
+
+
+def _sweep_clearance_m(
+    grasp_swept_volume: Mapping[str, Any] | None,
+) -> float:
+    """Keep exact contact fixed while adding clearance for front-entry replay."""
+
+    return (
+        FRONT_ENTRY_SWEEP_CLEARANCE_M
+        if grasp_swept_volume is not None
+        else DEFAULT_SWEEP_CLEARANCE_M
+    )
 #: The v2 packet's own per-phase control budgets.
 #:
 #: Deliberately NOT imported from ``native_articulated_control_plan``, which
@@ -382,7 +396,11 @@ def _articulated_task_spec(
             candidate, path_receipt
         ),
         "precontact_clearance_m": 0.12,
-        "sweep_clearance_m": 0.025,
+        # The swept-volume receipt binds the exact contact standoff. One native
+        # construction run still observed a transient latch contact at the
+        # first open-gripper clearance point with 25 mm extra clearance. Add
+        # 5 mm only to the no-contact sweep; exact contact remains unchanged.
+        "sweep_clearance_m": _sweep_clearance_m(grasp_swept_volume),
         "retreat_clearance_m": 0.12,
         "arrival_tolerance_m": ARRIVAL_TOLERANCE_M,
         "arrival_orientation_tolerance_rad": ARRIVAL_ORIENTATION_TOLERANCE_RAD,
