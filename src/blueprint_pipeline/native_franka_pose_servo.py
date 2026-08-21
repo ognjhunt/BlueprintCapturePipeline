@@ -115,11 +115,15 @@ DEFAULT_VELOCITY_FEEDFORWARD_SCALE = 1.0
 # 20 Hz control cadence these ceilings are 0.4 m/s and 2 rad/s respectively.
 MAX_CARTESIAN_TRANSLATION_STEP_M = 0.02
 MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
-# Exact values from Isaac Sim 6.0.1's shipped Franka PINK example. Position is
-# intentionally weighted 100x above orientation during reactive reaching, and
-# the posture task keeps the redundant seventh joint away from a limit branch.
+# Position and posture retain Isaac Sim 6.0.1's shipped Franka PINK example.
+# Orientation uses the pinned IsaacLab manipulation setting rather than the
+# demo's 0.05: r37 proved that a 100:1 position/orientation ratio reached every
+# Cartesian position to 6-10 mm while leaving 1.59-2.19 rad of rotation error.
+# IsaacLab's exact pick/place configs use orientation cost 1.0 (or 4.0) with
+# position cost 8.0; 1.0 here preserves position priority while making this a
+# manipulation controller rather than a position-dominant reaching demo.
 PINK_POSITION_COST = 5.0
-PINK_ORIENTATION_COST = 0.05
+PINK_ORIENTATION_COST = 1.0
 PINK_POSTURE_COST = 5.0e-3
 # PINK validates every measured configuration against the URDF limits before it
 # solves.  The DROID reset writes Panda joint 6 at the exact URDF upper limit;

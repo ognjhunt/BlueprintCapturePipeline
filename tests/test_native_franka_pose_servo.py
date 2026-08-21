@@ -82,9 +82,9 @@ def test_pink_spatial_state_boundary_converts_xyzw_to_wxyz() -> None:
     )
 
 
-def test_pose_servo_uses_the_exact_shipped_franka_pink_reach_weights() -> None:
+def test_pose_servo_uses_pinned_pink_manipulation_weights() -> None:
     assert PINK_POSITION_COST == 5.0
-    assert PINK_ORIENTATION_COST == 0.05
+    assert PINK_ORIENTATION_COST == 1.0
     assert PINK_POSTURE_COST == 5.0e-3
 
 
