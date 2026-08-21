@@ -5518,6 +5518,7 @@ def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
     # Intent, not flag order: HTTP/1.1 with retries, however it is spelled.
     # A literal pin here broke when retry flags were added between the two.
     assert '--http1.1' in script and '--retry-all-errors' in script
+    assert '--continue-at -' in script
     assert '-fL "$blueprint_download_src"' in script
 
 
