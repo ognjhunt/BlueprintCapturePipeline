@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,15 @@ def test_derives_reset_to_target_path_from_usd_joint_frames(tmp_path: Path) -> N
     assert rows[0]["contact_pose_asset_root"]["position_m"] != rows[-1][
         "contact_pose_asset_root"
     ]["position_m"]
+    # The clearance is attached to the moving panel, not copied from reset.
+    assert rows[0]["clearance_unit_asset_root"] != pytest.approx(
+        rows[-1]["clearance_unit_asset_root"], abs=1e-6
+    )
+    assert all(
+        math.sqrt(sum(value * value for value in row["clearance_unit_asset_root"]))
+        == pytest.approx(1.0, abs=1e-9)
+        for row in rows
+    )
     assert result["native_ik_or_contact_executed"] is False
 
 

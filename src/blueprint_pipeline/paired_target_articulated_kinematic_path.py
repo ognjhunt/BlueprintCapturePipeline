@@ -283,6 +283,15 @@ def materialize_paired_target_articulated_kinematic_path(
                 f"paired_target_kinematic_path_reset_fk_mismatch:{link_id}"
             )
 
+    # ``approach`` is the outward free-edge standoff at reset, expressed in
+    # the asset-root frame. Preserve that direction in the moving link frame,
+    # then transform it back at every waypoint. Copying the reset vector into
+    # every row makes the clearance stop rotating while the door and gripper
+    # do rotate, so later sweep targets are no longer outside the edge they
+    # claim to qualify.
+    reset_contact_rotation = reset_transforms[contact_link_id][:3, :3]
+    clearance_link_local = reset_contact_rotation.T @ approach
+
     rows = []
     for index in range(waypoint_count):
         fraction = index / (waypoint_count - 1)
@@ -292,6 +301,8 @@ def materialize_paired_target_articulated_kinematic_path(
         positions = joint_positions(target)
         transform = all_link_transforms(positions)[contact_link_id]
         point = transform @ np.asarray([*contact_local, 1.0], dtype=np.float64)
+        clearance = transform[:3, :3] @ clearance_link_local
+        clearance /= np.linalg.norm(clearance)
         gf_transform = Gf.Matrix4d(*transform.T.reshape(-1).tolist())
         rotation = gf_transform.ExtractRotationQuat()
         rows.append(
@@ -307,7 +318,9 @@ def materialize_paired_target_articulated_kinematic_path(
                         float(rotation.GetReal()),
                     ],
                 },
-                "clearance_unit_asset_root": approach,
+                "clearance_unit_asset_root": [
+                    float(item) for item in clearance
+                ],
             }
         )
     payload: dict[str, Any] = {
