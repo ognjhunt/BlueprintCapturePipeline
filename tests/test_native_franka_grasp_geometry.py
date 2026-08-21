@@ -25,13 +25,19 @@ def test_live_pad_bounds_define_an_explicit_rigid_tcp() -> None:
             f"/World/envs/env_0/Robot/Gripper/{side}_inner_finger",
         )
         finger.AddTranslateOp().Set(Gf.Vec3d(0.0, y, 0.12))
-        proximal = UsdGeom.Cube.Define(stage, f"{finger.GetPath()}/finger")
+        proximal_collider = UsdGeom.Xform.Define(
+            stage, f"{finger.GetPath()}/finger"
+        )
+        UsdPhysics.CollisionAPI.Apply(proximal_collider.GetPrim())
+        proximal = UsdGeom.Cube.Define(
+            stage, f"{proximal_collider.GetPath()}/geometry"
+        )
         proximal.CreateSizeAttr(0.02)
         proximal.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.04))
-        UsdPhysics.CollisionAPI.Apply(proximal.GetPrim())
-        pad = UsdGeom.Cube.Define(stage, f"{finger.GetPath()}/pad")
+        pad_collider = UsdGeom.Xform.Define(stage, f"{finger.GetPath()}/pad")
+        UsdPhysics.CollisionAPI.Apply(pad_collider.GetPrim())
+        pad = UsdGeom.Cube.Define(stage, f"{pad_collider.GetPath()}/geometry")
         pad.CreateSizeAttr(0.02)
-        UsdPhysics.CollisionAPI.Apply(pad.GetPrim())
 
     result = measure_live_robotiq_grasp_geometry(
         stage=stage,
