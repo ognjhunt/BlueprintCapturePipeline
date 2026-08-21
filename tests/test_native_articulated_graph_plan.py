@@ -580,25 +580,34 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     ] is True
     assert control[
         "positive_trajectory_reexecutes_qualified_clearance_targets"
+    ] is False
+    assert control[
+        "positive_trajectory_executes_exact_contact_targets_after_clearance_qualification"
     ] is True
     clearance = {
         row["phase_id"]: row["position_world_m"]
         for row in phase_plan["phases"]
     }
+    exact = {
+        row["phase_id"]: row["position_world_m"]
+        for row in phase_plan["exact_contact_phases"]
+    }
     actions = {row["phase_id"]: row for row in control["scripted_positive_actions"]}
-    assert actions["contact_open"]["target_position_world_m"] == clearance[
+    assert actions["contact_open"]["target_position_world_m"] == exact[
+        "contact_open"
+    ]
+    assert actions["contact_close"]["target_position_world_m"] == exact[
+        "contact_close"
+    ]
+    assert actions["joint_path_01"]["target_position_world_m"] == exact[
+        "joint_path_01"
+    ]
+    assert actions["release"]["target_position_world_m"] == exact["release"]
+    assert actions["contact_open"]["target_position_world_m"] != clearance[
         "contact_sweep_clearance_00"
     ]
-    assert actions["contact_close"]["target_position_world_m"] == clearance[
-        "contact_sweep_clearance_00"
-    ]
-    assert actions["joint_path_01"]["target_position_world_m"] == clearance[
-        "contact_sweep_clearance_01"
-    ]
-    assert actions["release"]["target_position_world_m"] == clearance[
-        "release_clearance"
-    ]
-    assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.025)
+    assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.0)
+    assert "exact_contact_region" in actions["contact_open"]["gate_ids"]
     assert control["plan_digest"] == canonical_digest(
         control, digest_field="plan_digest"
     )

@@ -537,12 +537,6 @@ def materialize_native_graph_articulated_control_plan(
         for row in phase_results or []
         if isinstance(row, Mapping)
     }
-    qualified_clearance_targets = {
-        str(row.get("phase_id") or ""): row
-        for row in phase_plan.get("phases") or []
-        if isinstance(row, Mapping)
-    }
-
     def measured_construction_phase_id(phase_id: str) -> str | None:
         if phase_id in {"prealign", "approach", "retreat"}:
             return phase_id
@@ -608,29 +602,6 @@ def materialize_native_graph_articulated_control_plan(
                 continue
             dwell = phase.get("phase_id") in {"contact_close", "release"}
             phase_id = str(phase.get("phase_id") or "")
-            target_source_phase_id = measured_construction_phase_id(phase_id)
-            target_source = qualified_clearance_targets.get(
-                target_source_phase_id or ""
-            )
-            if target_source_phase_id and target_source_phase_id not in {
-                "prealign",
-                "approach",
-                "retreat",
-            }:
-                try:
-                    position = _vector(
-                        target_source.get("position_world_m")
-                        if isinstance(target_source, Mapping)
-                        else None,
-                        length=3,
-                        error=(
-                            "native_articulated_graph_control_"
-                            f"qualified_clearance_target_missing:{phase_id}"
-                        ),
-                    )
-                except NativeTaskControlPlanError as exc:
-                    errors.extend(exc.errors)
-                    continue
             derived_maximum, construction_phase_id, observed_steps = (
                 motion_step_budget(phase_id)
                 if not dwell
@@ -657,15 +628,8 @@ def materialize_native_graph_articulated_control_plan(
                     "maximum_steps": derived_maximum,
                     "construction_phase_id": construction_phase_id,
                     "construction_observed_steps": observed_steps,
-                    "target_position_source_phase_id": target_source_phase_id,
-                    "contact_standoff_m": (
-                        float(affordance["sweep_clearance_m"])
-                        if target_source_phase_id
-                        and target_source_phase_id.startswith(
-                            "contact_sweep_clearance_"
-                        )
-                        else 0.0
-                    ),
+                    "target_position_source_phase_id": phase_id,
+                    "contact_standoff_m": 0.0,
                     "step_budget_derivation": (
                         "gripper_dwell_authored"
                         if dwell
@@ -684,14 +648,7 @@ def materialize_native_graph_articulated_control_plan(
                     "max_joint_setpoint_lead_rad": float(
                         affordance["max_joint_setpoint_lead_rad"]
                     ),
-                    "gate_ids": [
-                        (
-                            "qualified_contact_standoff"
-                            if gate_id == "exact_contact_region"
-                            else gate_id
-                        )
-                        for gate_id in (phase.get("gate_ids") or [])
-                    ],
+                    "gate_ids": list(phase.get("gate_ids") or []),
                     **(
                         {
                             "expected_joint_positions": dict(
@@ -752,9 +709,10 @@ def materialize_native_graph_articulated_control_plan(
         "passive_joint_ids": phase_plan["joint_ids_by_role"]["passive"],
         "locked_joint_ids": phase_plan["joint_ids_by_role"]["locked"],
         "positive_trajectory_reexecutes_exact_qualified_phase_targets": False,
-        "positive_trajectory_reexecutes_qualified_clearance_targets": True,
+        "positive_trajectory_reexecutes_qualified_clearance_targets": False,
+        "positive_trajectory_executes_exact_contact_targets_after_clearance_qualification": True,
         "contact_standoff_source": (
-            "construction_qualified_sweep_clearance_m"
+            "exact_contact_after_side_entry_clearance_qualification"
         ),
         "positive_trajectory_budgets_derived_from_measured_construction": True,
         "candidate_policy_queried": False,
