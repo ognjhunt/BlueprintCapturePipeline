@@ -20,10 +20,10 @@ import stat
 from typing import Any, Mapping
 import zipfile
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE
 from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAGE
 
 
 SCHEMA_VERSION = "paired_target_native_import_provider_bundle.v1"

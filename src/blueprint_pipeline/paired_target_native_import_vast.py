@@ -13,7 +13,7 @@ import shutil
 import zipfile
 from typing import Any
 
-from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAGE
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_attempt_authority import (
