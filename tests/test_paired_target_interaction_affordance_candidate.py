@@ -313,6 +313,35 @@ def test_tagged_source_patch_authors_front_approach_and_vertical_pinch(
         0.0, abs=1.0e-8
     )
 
+    stage = Usd.Stage.Open(str(usd))
+    stage.GetPrimAtPath(
+        "/Asset/links/panel/grasp_collision_patches/right_outer_rim"
+    ).SetCustomDataByKey(
+        "blueprint:graspContactPointLinkM", Gf.Vec3d(9.0, 9.0, 9.0)
+    )
+    stage.GetRootLayer().Save()
+    registered_value = json.loads(registered.read_text(encoding="utf-8"))
+    registered_value["output_usd"].update(
+        {
+            "size_bytes": usd.stat().st_size,
+            "sha256": _sha(usd),
+        }
+    )
+    registered_value["receipt_digest"] = canonical_digest(
+        registered_value, digest_field="receipt_digest"
+    )
+    registered.write_text(json.dumps(registered_value), encoding="utf-8")
+    with pytest.raises(
+        PairedTargetInteractionAffordanceError,
+        match="paired_target_affordance_grasp_contact_off_collider",
+    ):
+        materialize_paired_target_interaction_affordance_candidate(
+            task_freeze_path=freeze,
+            registered_asset_receipt_path=registered,
+            robot_base_position_world_m=[0.0, -1.0, 0.0],
+            output_path=tmp_path / "tampered-result.json",
+        )
+
 
 def test_registered_usd_tamper_fails_closed(tmp_path: Path) -> None:
     freeze = _freeze(tmp_path / "freeze.json", task_kind="rigid_object_manipulation")
