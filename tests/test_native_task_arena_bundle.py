@@ -1765,6 +1765,13 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
 
     assert observed["require_independent_watchdog"] is True
     assert observed["instance_label_prefix"] == expected_prefix
+    if execution_mode in {"construction_canary", "controls"}:
+        assert observed["min_gpu_ram_mb"] == 24_000
+        assert "RTX 4090" in observed["preferred_gpu_keywords"]
+        assert "RTX A6000" not in observed["preferred_gpu_keywords"]
+    else:
+        assert observed["min_gpu_ram_mb"] == 46_000
+        assert "RTX A6000" in observed["preferred_gpu_keywords"]
 
 
 def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
