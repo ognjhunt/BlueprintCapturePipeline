@@ -68,6 +68,25 @@ def _rotate_xyzw(quaternion: Sequence[float], vector: Sequence[float]) -> list[f
     ]
 
 
+def _multiply_xyzw(
+    left: Sequence[float], right: Sequence[float]
+) -> list[float]:
+    lx, ly, lz, lw = (float(value) for value in left)
+    rx, ry, rz, rw = (float(value) for value in right)
+    result = [
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+        lw * rw - lx * rx - ly * ry - lz * rz,
+    ]
+    norm = math.sqrt(sum(value * value for value in result))
+    if norm <= 1.0e-9 or not math.isfinite(norm):
+        raise NativeTaskArenaStanceVariantError(
+            "native_task_arena_stance_task_orientation_invalid"
+        )
+    return [value / norm for value in result]
+
+
 def _look_at(position: Sequence[float], target: Sequence[float]) -> list[float]:
     forward = _normalize(
         [float(target[index]) - float(position[index]) for index in range(3)]
@@ -169,6 +188,23 @@ def materialize_native_task_arena_stance_variant_request(
         approach_world = _normalize(
             _rotate_xyzw(root_orientation, approach_local)
         )
+        first_contact_orientation = path[0]["contact_pose_asset_root"][
+            "orientation_xyzw"
+        ]
+        gripper_orientation_contact = affordance[
+            "gripper_orientation_contact_xyzw"
+        ]
+        gripper_world_orientation = _multiply_xyzw(
+            _multiply_xyzw(root_orientation, first_contact_orientation),
+            gripper_orientation_contact,
+        )
+        # +Y is the authored jaw axis. The affordance producer signs it toward
+        # the robot/front side of the panel. Keep the fixed base on that proven
+        # front side while the tool itself stages outside the free edge along
+        # its independent radial approach axis.
+        base_outward_world = _normalize(
+            _rotate_xyzw(gripper_world_orientation, [0.0, 1.0, 0.0])
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise NativeTaskArenaStanceVariantError(
             "native_task_arena_stance_affordance_invalid"
@@ -177,12 +213,20 @@ def materialize_native_task_arena_stance_variant_request(
         raise NativeTaskArenaStanceVariantError(
             "native_task_arena_stance_front_normal_not_horizontal"
         )
+    if abs(base_outward_world[2]) > 0.05:
+        raise NativeTaskArenaStanceVariantError(
+            "native_task_arena_stance_base_normal_not_horizontal"
+        )
+    if abs(sum(a * b for a, b in zip(approach_world, base_outward_world, strict=True))) > 0.05:
+        raise NativeTaskArenaStanceVariantError(
+            "native_task_arena_stance_base_and_tool_axes_not_independent"
+        )
     closed = phase_targets[0]
     old_base = request.get("robot_base_pose_world") or {}
     base_z = float((old_base.get("position_world_m") or [0.0, 0.0, 0.0])[2])
     base = [
-        closed[0] + standoff * approach_world[0],
-        closed[1] + standoff * approach_world[1],
+        closed[0] + standoff * base_outward_world[0],
+        closed[1] + standoff * base_outward_world[1],
         base_z,
     ]
 
@@ -245,7 +289,7 @@ def materialize_native_task_arena_stance_variant_request(
     )
     if retreat_enters_base_dead_zone:
         front_staging_target = [
-            closed[index] + approach_world[index] * precontact_clearance
+            closed[index] + base_outward_world[index] * precontact_clearance
             for index in range(3)
         ]
         resolved_retreat_vector_world = [
@@ -289,7 +333,7 @@ def materialize_native_task_arena_stance_variant_request(
         "affordance_digest"
     ]
     request["task_state_binding"] = task_state_binding
-    into_door = [-approach_world[0], -approach_world[1], 0.0]
+    into_door = [-base_outward_world[0], -base_outward_world[1], 0.0]
     yaw = math.atan2(into_door[1], into_door[0])
     phase_bearings = [
         math.atan2(target[1] - base[1], target[0] - base[0])
@@ -337,10 +381,12 @@ def materialize_native_task_arena_stance_variant_request(
     request["cameras"] = [by_role[role] for role in ("external", "wrist", "overview")]
     request["stance_variant"] = {
         "base_request_digest": request["request_digest"],
-        "derivation": "door_contact_point_plus_outward_normal_standoff",
+        "derivation": "door_contact_plus_gripper_jaw_front_standoff",
         "door_standoff_m": standoff,
         "closed_contact_world_m": closed,
         "approach_outward_world": approach_world,
+        "base_outward_world": base_outward_world,
+        "base_outward_source": "authored_gripper_positive_jaw_axis",
         "resolved_base_position_world_m": base,
         "resolved_base_yaw_world_rad": yaw,
         "maximum_door_sweep_bearing_deviation_rad": maximum_deviation,
