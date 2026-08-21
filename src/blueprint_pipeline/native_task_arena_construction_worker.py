@@ -24,6 +24,13 @@ from collections.abc import Mapping, Sequence
 from blueprint_pipeline.native_franka_action_math import (
     is_unauthored_identity_quaternion_xyzw,
 )
+from blueprint_pipeline.native_franka_grasp_geometry import (
+    measure_live_robotiq_grasp_geometry,
+)
+from blueprint_pipeline.rigid_frame_transforms import (
+    quaternion_conjugate_xyzw,
+    rotate_vector_xyzw,
+)
 from pathlib import Path
 from typing import Any
 
@@ -429,11 +436,85 @@ def _verified_construction_phase_plan_path(
     return path
 
 
-def _finger_separation(robot: Any, *, torch: Any) -> float:
+def _body_pose_world(
+    robot: Any, *, body_name: str, torch: Any
+) -> list[float]:
     names = list(robot.data.body_names)
-    indices = [names.index(name) for name in ("left_inner_finger", "right_inner_finger")]
-    positions = torch.as_tensor(robot.data.body_pose_w)[0, indices, :3]
-    return float(torch.linalg.vector_norm(positions[0] - positions[1]))
+    if body_name not in names:
+        raise RuntimeError(f"native_task_gripper_body_missing:{body_name}")
+    pose = torch.as_tensor(robot.data.body_pose_w)[0, names.index(body_name), :7]
+    result = [float(value) for value in pose]
+    norm = math.sqrt(sum(value * value for value in result[3:7]))
+    if len(result) != 7 or not all(math.isfinite(value) for value in result) or norm <= 0.0:
+        raise RuntimeError(f"native_task_gripper_body_pose_invalid:{body_name}")
+    result[3:7] = [value / norm for value in result[3:7]]
+    return result
+
+
+def _pad_centers_from_finger_body_offsets(
+    *, robot: Any, offsets_body_m: Mapping[str, Sequence[float]], torch: Any
+) -> dict[str, list[float]]:
+    centers: dict[str, list[float]] = {}
+    for side in ("left", "right"):
+        pose = _body_pose_world(
+            robot, body_name=f"{side}_inner_finger", torch=torch
+        )
+        offset = rotate_vector_xyzw(pose[3:7], offsets_body_m[side])
+        centers[side] = [pose[axis] + offset[axis] for axis in range(3)]
+    return centers
+
+
+def _physical_pad_binding(
+    *, robot: Any, torch: Any
+) -> tuple[dict[str, Any], dict[str, list[float]]]:
+    import omni.usd
+    from pxr import Usd, UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    body_name = next(
+        (
+            name
+            for name in ("panda_hand", "base_link")
+            if name in list(robot.data.body_names)
+        ),
+        None,
+    )
+    if body_name is None:
+        raise RuntimeError("native_task_gripper_controlled_body_missing")
+    body_pose = _body_pose_world(robot, body_name=body_name, torch=torch)
+    geometry = measure_live_robotiq_grasp_geometry(
+        stage=stage,
+        controlled_body_position_world_m=body_pose[:3],
+        controlled_body_quaternion_world_xyzw=body_pose[3:7],
+    )
+    offsets: dict[str, list[float]] = {}
+    xforms = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for side in ("left", "right"):
+        pad_path = geometry["selected_pad_colliders"][side]["prim_path"]
+        finger_prim = stage.GetPrimAtPath(pad_path)
+        while finger_prim and finger_prim.GetName() != f"{side}_inner_finger":
+            finger_prim = finger_prim.GetParent()
+        if not finger_prim:
+            raise RuntimeError(
+                f"native_task_gripper_pad_finger_ancestor_missing:{side}"
+            )
+        matrix = xforms.GetLocalToWorldTransform(finger_prim)
+        translation = matrix.ExtractTranslation()
+        quaternion = matrix.ExtractRotationQuat()
+        imaginary = quaternion.GetImaginary()
+        finger = [
+            *[float(translation[axis]) for axis in range(3)],
+            *[float(imaginary[axis]) for axis in range(3)],
+            float(quaternion.GetReal()),
+        ]
+        world_offset = [
+            float(geometry["pad_centers_world_m"][side][axis]) - finger[axis]
+            for axis in range(3)
+        ]
+        offsets[side] = rotate_vector_xyzw(
+            quaternion_conjugate_xyzw(finger[3:7]), world_offset
+        )
+    return geometry, offsets
 
 
 def _requested_arm_reset(
@@ -751,6 +832,9 @@ def _initial_contact_blocked(
 
 def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) -> dict[str, Any]:
     separations: dict[str, float] = {}
+    pad_centers: dict[str, dict[str, list[float]]] = {}
+    pad_offsets: dict[str, list[float]] | None = None
+    geometry: dict[str, Any] | None = None
     for command in (0.0, 1.0):
         env.reset(seed=seed)
         for _ in range(30):
@@ -761,13 +845,42 @@ def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) ->
                 dtype=torch.float32,
             )
             env.step(action)
-        separations[str(command)] = _finger_separation(robot, torch=torch)
+        if pad_offsets is None:
+            geometry, pad_offsets = _physical_pad_binding(
+                robot=robot, torch=torch
+            )
+        centers = _pad_centers_from_finger_body_offsets(
+            robot=robot, offsets_body_m=pad_offsets, torch=torch
+        )
+        pad_centers[str(command)] = centers
+        separations[str(command)] = math.dist(
+            centers["left"], centers["right"]
+        )
     travel = abs(separations["0.0"] - separations["1.0"])
+    midpoint = {
+        command: [
+            (centers["left"][axis] + centers["right"][axis]) / 2.0
+            for axis in range(3)
+        ]
+        for command, centers in pad_centers.items()
+    }
+    midpoint_travel = math.dist(midpoint["0.0"], midpoint["1.0"])
+    evidence = {
+        "separation_measurement": "distal_collision_pad_center_distance",
+        "pad_centers_world_m": pad_centers,
+        "pad_center_offsets_in_finger_body_m": pad_offsets,
+        "pad_midpoint_world_m": midpoint,
+        "pad_midpoint_travel_m": midpoint_travel,
+        "selected_pad_colliders": (
+            None if geometry is None else geometry["selected_pad_colliders"]
+        ),
+    }
     if travel < 1.0e-3:
         return {
             "status": "ambiguous",
             "finger_separation_m": separations,
             "separation_travel_m": travel,
+            **evidence,
             "blockers": ["native_task_gripper_convention_travel_below_floor"],
         }
     closed = 1.0 if separations["1.0"] < separations["0.0"] else 0.0
@@ -775,6 +888,7 @@ def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) ->
         "status": "measured",
         "finger_separation_m": separations,
         "separation_travel_m": travel,
+        **evidence,
         "closed_command": closed,
         "open_command": 1.0 - closed,
         "blockers": [],

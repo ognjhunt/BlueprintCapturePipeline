@@ -23,6 +23,7 @@ from blueprint_pipeline.native_task_control_plan import (
     ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M,
     ROBOTOIQ_2F85_BITE_DEPTH_M,
     ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M,
+    ROBOTOIQ_2F85_PREALIGN_RETRACTION_M,
     materialize_native_task_control_plan,
 )
 
@@ -602,6 +603,23 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     assert ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M == pytest.approx(0.0185)
     assert ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M == pytest.approx(0.005)
     assert ROBOTOIQ_2F85_BITE_DEPTH_M == pytest.approx(0.0235)
+    prealign_exact = exact["prealign"]
+    approach_exact = exact["approach"]
+    toward_approach = [
+        approach_exact[axis] - prealign_exact[axis] for axis in range(3)
+    ]
+    toward_norm = math.sqrt(sum(value * value for value in toward_approach))
+    assert actions["prealign"]["target_position_world_m"] == pytest.approx(
+        [
+            prealign_exact[axis]
+            + toward_approach[axis]
+            / toward_norm
+            * ROBOTOIQ_2F85_PREALIGN_RETRACTION_M
+            for axis in range(3)
+        ]
+    )
+    assert actions["prealign"]["prealign_retraction_m"] == pytest.approx(0.05)
+    assert actions["prealign"]["prealign_retraction_toward_phase_id"] == "approach"
     def bite_target(exact_id: str, clearance_id: str) -> list[float]:
         target = exact[exact_id]
         clear = clearance[clearance_id]

@@ -56,6 +56,15 @@ ROBOTOIQ_2F85_BITE_SOURCE = (
     "NVlabs/GraspDataGen:robotiq_2f_85:minimum_bite=0.0185;"
     "Blueprint:c7_c10_measured_depth_bracket_midpoint=0.005"
 )
+# c10/c11 attributed a 718-1423 N prealign contact to panda_link5 against the
+# same retained-room collider while the grasp TCP sat at the 0.30 m clearance
+# target. Move only the controls prealign target 5 cm toward the already
+# construction-qualified approach segment; contact and sweep targets remain
+# unchanged.
+ROBOTOIQ_2F85_PREALIGN_RETRACTION_M = 0.05
+ROBOTOIQ_2F85_PREALIGN_RETRACTION_SOURCE = (
+    "Blueprint:c10_c11:panda_link5_vs_Z4P5JBBVAJJWSPTUK4888888"
+)
 
 
 class NativeTaskControlPlanError(ValueError):
@@ -558,6 +567,9 @@ def materialize_native_graph_articulated_control_plan(
         for row in phase_plan.get("phases") or []
         if isinstance(row, Mapping)
     }
+    exact_phase_targets = {
+        str(row.get("phase_id") or ""): row for row in exact_phases
+    }
     def measured_construction_phase_id(phase_id: str) -> str | None:
         if phase_id in {"prealign", "approach", "retreat"}:
             return phase_id
@@ -623,6 +635,43 @@ def materialize_native_graph_articulated_control_plan(
                 continue
             dwell = phase.get("phase_id") in {"contact_close", "release"}
             phase_id = str(phase.get("phase_id") or "")
+            prealign_retraction = 0.0
+            prealign_retraction_toward_phase_id = None
+            if phase_id == "prealign":
+                approach = exact_phase_targets.get("approach")
+                try:
+                    approach_position = _vector(
+                        approach.get("position_world_m")
+                        if isinstance(approach, Mapping)
+                        else None,
+                        length=3,
+                        error="native_articulated_graph_control_approach_target_missing",
+                    )
+                except NativeTaskControlPlanError as exc:
+                    errors.extend(exc.errors)
+                    continue
+                toward = [
+                    approach_position[axis] - position[axis]
+                    for axis in range(3)
+                ]
+                toward_norm = math.sqrt(sum(value * value for value in toward))
+                if (
+                    not math.isfinite(toward_norm)
+                    or toward_norm <= ROBOTOIQ_2F85_PREALIGN_RETRACTION_M
+                ):
+                    errors.append(
+                        "native_articulated_graph_control_prealign_retraction_invalid"
+                    )
+                    continue
+                position = [
+                    position[axis]
+                    + toward[axis]
+                    / toward_norm
+                    * ROBOTOIQ_2F85_PREALIGN_RETRACTION_M
+                    for axis in range(3)
+                ]
+                prealign_retraction = ROBOTOIQ_2F85_PREALIGN_RETRACTION_M
+                prealign_retraction_toward_phase_id = "approach"
             bite_depth = 0.0
             bite_direction_source_phase_id = None
             clearance_phase_id = measured_construction_phase_id(phase_id)
@@ -700,6 +749,15 @@ def materialize_native_graph_articulated_control_plan(
                     ),
                     "bite_direction_source_phase_id": (
                         bite_direction_source_phase_id
+                    ),
+                    "prealign_retraction_m": prealign_retraction,
+                    "prealign_retraction_source": (
+                        ROBOTOIQ_2F85_PREALIGN_RETRACTION_SOURCE
+                        if prealign_retraction
+                        else None
+                    ),
+                    "prealign_retraction_toward_phase_id": (
+                        prealign_retraction_toward_phase_id
                     ),
                     "step_budget_derivation": (
                         "gripper_dwell_authored"
