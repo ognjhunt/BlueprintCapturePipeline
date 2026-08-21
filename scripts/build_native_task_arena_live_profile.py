@@ -389,7 +389,7 @@ def _lane_blockers(
     return blockers
 
 
-def _lane_argv(link: ArenaLink):
+def _lane_argv(link: ArenaLink, *, authorize_gated_backbone: bool = False):
     def argv(context: LaneLiveProfileContext) -> list[str]:
         built = [
             "--native-task-arena-packet", str(context.extra_paths["packet_dir"]),
@@ -409,6 +409,8 @@ def _lane_argv(link: ArenaLink):
         avoidlist = context.extra_paths.get("machine_avoidlist")
         if avoidlist is not None:
             built += ["--adp-machine-avoidlist", str(avoidlist)]
+        if authorize_gated_backbone:
+            built += ["--adp009d-authorize-gated-backbone"]
         return built
 
     return argv
@@ -469,6 +471,7 @@ def _spec(
     expected_scene_id: str = "contract_probe_scene",
     expected_task_id: str = "contract_probe_task",
     with_avoidlist: bool = False,
+    authorize_gated_backbone: bool = False,
 ) -> LaneLiveProfileSpec:
     if isinstance(link, str):
         # Shared builder-contract probes call candidate factories with a
@@ -491,7 +494,9 @@ def _spec(
         # capture, which is what the closest sibling in this family
         # (`build_adp009d_840313_launch_profile`) declares for the same scene.
         source_kind="interiorgs_sage",
-        lane_argv=_lane_argv(link),
+        lane_argv=_lane_argv(
+            link, authorize_gated_backbone=authorize_gated_backbone
+        ),
         immutable_inputs=_immutable_inputs(link),
         lane_blockers=_lane_blockers(
             link,
@@ -524,6 +529,7 @@ def build_native_task_arena_live_profile(
     construction_result_path: str | Path | None = None,
     control_result_path: str | Path | None = None,
     policy_execution_spec_path: str | Path | None = None,
+    authorize_gated_backbone: bool = False,
     machine_avoidlist_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
@@ -550,6 +556,23 @@ def build_native_task_arena_live_profile(
         raise TaskEvaluationLaunchError(
             f"native_task_arena_predecessor_required:{','.join(sorted(missing))}"
         )
+    if link == "policy":
+        try:
+            policy_request = _read_mapping(
+                Path(policy_execution_spec_path).expanduser().resolve(),
+                error="native_task_arena_policy_execution_spec_invalid",
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationLaunchError(str(exc)) from exc
+        groot_selected = policy_request.get("candidate_id") == "groot_n17_droid"
+        if groot_selected != bool(authorize_gated_backbone):
+            raise TaskEvaluationLaunchError(
+                "native_task_arena_groot_gated_backbone_authority_mismatch"
+            )
+    elif authorize_gated_backbone:
+        raise TaskEvaluationLaunchError(
+            "native_task_arena_gated_backbone_authority_without_policy"
+        )
     extra = {
         name: value
         for name, value in supplied.items()
@@ -571,6 +594,7 @@ def build_native_task_arena_live_profile(
             expected_scene_id=scene_id,
             expected_task_id=task_id,
             with_avoidlist=machine_avoidlist_path is not None,
+            authorize_gated_backbone=authorize_gated_backbone,
         ),
         bundle_receipt_path=bundle_receipt_path,
         source_commit=source_commit,
@@ -615,6 +639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             target.add_argument("--control-result", required=True)
         if "policy_execution_spec" in entry.predecessors:
             target.add_argument("--policy-execution-spec", required=True)
+            target.add_argument(
+                "--authorize-gated-backbone",
+                action="store_true",
+            )
     args = parser.parse_args(argv)
 
     try:
@@ -631,6 +659,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             construction_result_path=getattr(args, "construction_result", None),
             control_result_path=getattr(args, "control_result", None),
             policy_execution_spec_path=getattr(args, "policy_execution_spec", None),
+            authorize_gated_backbone=getattr(
+                args, "authorize_gated_backbone", False
+            ),
             machine_avoidlist_path=args.machine_avoidlist,
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,

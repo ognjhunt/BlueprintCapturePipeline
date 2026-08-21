@@ -276,6 +276,7 @@ def run_native_task_arena_policy_vast(
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
+    authorize_gated_backbone: bool = False,
 ) -> dict[str, Any]:
     """Run one admitted candidate through the same zero-retry Vast transport."""
 
@@ -305,6 +306,10 @@ def run_native_task_arena_policy_vast(
     )
     if execute and authority is None:
         raise ValueError("native_task_arena_paid_execution_authority_missing")
+    if candidate == "groot_n17_droid" and not authorize_gated_backbone:
+        raise ValueError("native_task_arena_groot_gated_backbone_authority_missing")
+    if candidate != "groot_n17_droid" and authorize_gated_backbone:
+        raise ValueError("native_task_arena_gated_backbone_authority_without_groot")
     consumption = consume_native_task_arena_authority_once(authority) if execute else None
     if consumption is not None and consumption.get("status") != "consumed":
         return {
@@ -338,6 +343,7 @@ def run_native_task_arena_policy_vast(
             job / "native_task_arena_policy_paid_launch.lock" if allowed_ids else None
         ),
         candidate_policy_query_expected=True,
+        forward_hf_token=(candidate == "groot_n17_droid"),
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
