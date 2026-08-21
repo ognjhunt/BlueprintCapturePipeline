@@ -352,7 +352,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             servo.current_gripper_frame_axis_readback()
         )
         task_readback = (
-            NativeArticulatedTaskArenaReadback(built)
+            NativeArticulatedTaskArenaReadback(
+                built,
+                grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
+            )
             if scene_plan["task_kind"] == "articulated_open_close"
             else None
         )
