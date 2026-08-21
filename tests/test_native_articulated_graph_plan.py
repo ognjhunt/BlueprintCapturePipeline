@@ -20,6 +20,7 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
 )
 from blueprint_pipeline.native_task_control_plan import (
     NativeTaskControlPlanError,
+    ROBOTOIQ_2F85_BITE_DEPTH_M,
     materialize_native_task_control_plan,
 )
 
@@ -583,6 +584,9 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     ] is False
     assert control[
         "positive_trajectory_executes_exact_contact_targets_after_clearance_qualification"
+    ] is False
+    assert control[
+        "positive_trajectory_executes_bite_adjusted_contact_targets"
     ] is True
     clearance = {
         row["phase_id"]: row["position_world_m"]
@@ -593,20 +597,37 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
         for row in phase_plan["exact_contact_phases"]
     }
     actions = {row["phase_id"]: row for row in control["scripted_positive_actions"]}
-    assert actions["contact_open"]["target_position_world_m"] == exact[
-        "contact_open"
-    ]
-    assert actions["contact_close"]["target_position_world_m"] == exact[
-        "contact_close"
-    ]
-    assert actions["joint_path_01"]["target_position_world_m"] == exact[
-        "joint_path_01"
-    ]
-    assert actions["release"]["target_position_world_m"] == exact["release"]
+    def bite_target(exact_id: str, clearance_id: str) -> list[float]:
+        target = exact[exact_id]
+        clear = clearance[clearance_id]
+        outward = [clear[axis] - target[axis] for axis in range(3)]
+        norm = math.sqrt(sum(value * value for value in outward))
+        return [
+            target[axis] - outward[axis] / norm * ROBOTOIQ_2F85_BITE_DEPTH_M
+            for axis in range(3)
+        ]
+
+    assert actions["contact_open"]["target_position_world_m"] == pytest.approx(
+        bite_target("contact_open", "contact_sweep_clearance_00")
+    )
+    assert actions["contact_close"]["target_position_world_m"] == pytest.approx(
+        bite_target("contact_close", "contact_sweep_clearance_00")
+    )
+    assert actions["joint_path_01"]["target_position_world_m"] == pytest.approx(
+        bite_target("joint_path_01", "contact_sweep_clearance_01")
+    )
+    assert actions["release"]["target_position_world_m"] == pytest.approx(
+        bite_target("release", "release_clearance")
+    )
     assert actions["contact_open"]["target_position_world_m"] != clearance[
         "contact_sweep_clearance_00"
     ]
-    assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.0)
+    assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(
+        -ROBOTOIQ_2F85_BITE_DEPTH_M
+    )
+    assert actions["contact_open"]["contact_bite_depth_m"] == pytest.approx(
+        ROBOTOIQ_2F85_BITE_DEPTH_M
+    )
     assert "exact_contact_region" in actions["contact_open"]["gate_ids"]
     assert control["plan_digest"] == canonical_digest(
         control, digest_field="plan_digest"
