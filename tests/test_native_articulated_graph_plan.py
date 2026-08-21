@@ -361,6 +361,26 @@ def test_construction_and_controls_execute_the_same_sealed_limits() -> None:
         assert action["max_joint_setpoint_lead_rad"] == pytest.approx(
             execution["max_joint_setpoint_lead_rad"]
         )
+    actions = {
+        row["phase_id"]: row
+        for row in control_plan["scripted_positive_actions"]
+    }
+    for phase_id in ("contact_close", "release"):
+        assert actions[phase_id][
+            "hold_arm_joint_positions_during_gripper_transition"
+        ] is True
+        assert actions[phase_id]["minimum_steps"] == actions[phase_id][
+            "maximum_steps"
+        ]
+        assert actions[phase_id][
+            "authored_gripper_dwell_minimum_steps"
+        ] == 5
+        assert actions[phase_id]["step_budget_derivation"] == (
+            "fixed_gripper_dwell_authored"
+        )
+    assert actions["contact_open"][
+        "hold_arm_joint_positions_during_gripper_transition"
+    ] is False
 
 
 def test_measured_outward_standoff_replaces_generic_inward_bite() -> None:

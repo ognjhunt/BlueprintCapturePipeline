@@ -1565,6 +1565,10 @@ def validate_task_control_plan(
                 max_joint_setpoint_lead_rad = 0.0
             gripper_state = str(raw.get("gripper_state") or "")
             position_only_arrival = raw.get("position_only_arrival") is True
+            hold_arm_during_gripper_transition = (
+                raw.get("hold_arm_joint_positions_during_gripper_transition")
+                is True
+            )
             quaternion_valid = quaternion is None or (
                 len(quaternion) == 4
                 and all(math.isfinite(value) for value in quaternion)
@@ -1597,6 +1601,11 @@ def validate_task_control_plan(
                     and (phase_id != "prealign" or gripper_state != "open")
                 )
                 or (
+                    hold_arm_during_gripper_transition
+                    and (phase_id, gripper_state)
+                    not in {("contact_close", "closed"), ("release", "open")}
+                )
+                or (
                     arrival_orientation_tolerance_rad is not None
                     and (
                         arrival_orientation_tolerance_rad <= 0.0
@@ -1625,6 +1634,9 @@ def validate_task_control_plan(
                             arrival_orientation_tolerance_rad
                         ),
                         "position_only_arrival": position_only_arrival,
+                        "hold_arm_joint_positions_during_gripper_transition": (
+                            hold_arm_during_gripper_transition
+                        ),
                         "max_joint_delta_rad": max_joint_delta_rad,
                         "max_joint_setpoint_lead_rad": max_joint_setpoint_lead_rad,
                     }
@@ -1751,11 +1763,23 @@ def _run_task_control_episode(
         )
     for row in trajectory:
         pose_mode = row.get("mode") == "ik_pose"
+        hold_arm_during_gripper_transition = bool(
+            pose_mode
+            and row.get(
+                "hold_arm_joint_positions_during_gripper_transition"
+            )
+            is True
+        )
         phase_steps = int(row["maximum_steps"]) if pose_mode else 1
         phase_steps_executed = 0
         stable_steps = 0
         termination_reason = "fixed_steps_completed"
         start_sample = samples[-1]
+        held_arm_joint_positions = (
+            [float(value) for value in environment.read_arm_joint_positions()]
+            if hold_arm_during_gripper_transition
+            else None
+        )
         for _ in range(phase_steps):
             before = [float(value) for value in environment.read_arm_joint_positions()]
             dynamics_before = _canonical_dynamics_observation(
@@ -1776,17 +1800,20 @@ def _run_task_control_episode(
                     if state == "open"
                     else float(gripper_closed_command)
                 )
-                action = environment.scripted_action_for_pose(
-                    target_position_world_m=row["target_position_world_m"],
-                    target_quaternion_world_xyzw=row[
-                        "target_quaternion_world_xyzw"
-                    ],
-                    gripper_command=command,
-                    max_joint_delta_rad=float(row["max_joint_delta_rad"]),
-                    max_joint_setpoint_lead_rad=float(
-                        row["max_joint_setpoint_lead_rad"]
-                    ),
-                )
+                if held_arm_joint_positions is not None:
+                    action = [*held_arm_joint_positions, command]
+                else:
+                    action = environment.scripted_action_for_pose(
+                        target_position_world_m=row["target_position_world_m"],
+                        target_quaternion_world_xyzw=row[
+                            "target_quaternion_world_xyzw"
+                        ],
+                        gripper_command=command,
+                        max_joint_delta_rad=float(row["max_joint_delta_rad"]),
+                        max_joint_setpoint_lead_rad=float(
+                            row["max_joint_setpoint_lead_rad"]
+                        ),
+                    )
             elif "isaac_action" in row:
                 action = row["isaac_action"]
             else:
@@ -1817,7 +1844,14 @@ def _run_task_control_episode(
                     observed_before=before,
                     observed_after=after,
                     dynamics_before=dynamics_before, dynamics_after=dynamics_after,
-                    action_recomputed=True, action_hold_index=0,
+                    action_recomputed=(
+                        not hold_arm_during_gripper_transition
+                    ),
+                    action_hold_index=(
+                        phase_steps_executed - 1
+                        if hold_arm_during_gripper_transition
+                        else 0
+                    ),
                 )
             )
             samples.append(
