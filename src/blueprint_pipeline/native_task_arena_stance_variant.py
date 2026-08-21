@@ -198,10 +198,22 @@ def materialize_native_task_arena_stance_variant_request(
     # otherwise withdraw to that already-qualified task-relative staging pose
     # rather than guessing another axis.
     try:
-        authored_retreat_asset = _normalize(
-            affordance["retreat_unit_asset_root"]
+        previous_variant = request.get("stance_variant") or {}
+        if not isinstance(previous_variant, Mapping):
+            raise ValueError("previous stance variant")
+        authored_retreat_source = previous_variant.get(
+            "authored_retreat_unit_asset_root",
+            affordance["retreat_unit_asset_root"],
         )
-        retreat_clearance = float(affordance["retreat_clearance_m"])
+        authored_retreat_asset = _normalize(
+            authored_retreat_source
+        )
+        retreat_clearance = float(
+            previous_variant.get(
+                "authored_retreat_clearance_m",
+                affordance["retreat_clearance_m"],
+            )
+        )
         precontact_clearance = float(affordance["precontact_clearance_m"])
         if not math.isfinite(retreat_clearance) or retreat_clearance <= 0.0:
             raise ValueError("retreat clearance")
@@ -335,6 +347,7 @@ def materialize_native_task_arena_stance_variant_request(
         "full_sweep_within_front_quarter_sphere": True,
         "retreat_strategy_id": RETREAT_STRATEGY_ID,
         "authored_retreat_unit_asset_root": authored_retreat_asset,
+        "authored_retreat_clearance_m": retreat_clearance,
         "resolved_retreat_unit_asset_root": resolved_retreat_asset,
         "resolved_retreat_unit_world": resolved_retreat_world,
         "resolved_retreat_clearance_m": resolved_retreat_clearance,

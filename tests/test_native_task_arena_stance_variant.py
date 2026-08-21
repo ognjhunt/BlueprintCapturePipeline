@@ -187,6 +187,49 @@ def test_stance_centers_floor_base_on_door_normal_and_replaces_reset(tmp_path) -
     assert overview["frame_from_camera_matrix"][7] < 9.456664
 
 
+def test_stance_variant_reapplication_preserves_original_retreat_geometry(
+    tmp_path,
+) -> None:
+    request = _request()
+    source = tmp_path / "request.json"
+    source.write_text(json.dumps(request), encoding="utf-8")
+    first_path = tmp_path / "first.json"
+    first = materialize_native_task_arena_stance_variant_request(
+        base_request_path=source,
+        output_path=first_path,
+        door_standoff_m=0.65,
+    )
+
+    second = materialize_native_task_arena_stance_variant_request(
+        base_request_path=first_path,
+        output_path=tmp_path / "second.json",
+        door_standoff_m=0.65,
+    )
+
+    first_stance = first["stance_variant"]
+    second_stance = second["stance_variant"]
+    assert second_stance["authored_retreat_unit_asset_root"] == pytest.approx(
+        [0.0, -1.0, 0.0]
+    )
+    assert second_stance["resolved_retreat_target_world_m"] == pytest.approx(
+        first_stance["resolved_retreat_target_world_m"]
+    )
+    assert second["task_spec"]["interaction_affordance"][
+        "retreat_unit_asset_root"
+    ] == pytest.approx(
+        first["task_spec"]["interaction_affordance"][
+            "retreat_unit_asset_root"
+        ]
+    )
+    assert second["task_spec"]["interaction_affordance"][
+        "retreat_clearance_m"
+    ] == pytest.approx(
+        first["task_spec"]["interaction_affordance"][
+            "retreat_clearance_m"
+        ]
+    )
+
+
 def test_stance_refuses_a_base_too_close_to_the_door(tmp_path) -> None:
     request = _request()
     source = tmp_path / "request.json"
