@@ -508,7 +508,12 @@ class NativeFrankaDifferentialIkServo:
     """
 
     def __init__(
-        self, *, env: Any, robot: Any, grasp_geometry_factory: Any = None
+        self,
+        *,
+        env: Any,
+        robot: Any,
+        grasp_geometry_factory: Any = None,
+        gripper_convention: Mapping[str, Any] | None = None,
     ):
         import numpy as np
         import torch
@@ -621,6 +626,39 @@ class NativeFrankaDifferentialIkServo:
             transform["position_controlled_body_m"]
         )
         self._body_to_grasp_quaternion = list(transform["orientation_xyzw"])
+        self._body_to_grasp_positions_by_command: dict[float, list[float]] = {}
+        self._open_gripper_command: float | None = None
+        self._last_gripper_command: float | None = None
+        if gripper_convention is not None:
+            try:
+                endpoint_positions = gripper_convention[
+                    "pad_midpoint_controlled_body_m"
+                ]
+                open_command = float(gripper_convention["open_command"])
+                closed_command = float(gripper_convention["closed_command"])
+                resolved_positions = {
+                    float(command): [float(value) for value in position]
+                    for command, position in endpoint_positions.items()
+                }
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeFrankaPoseServoError(
+                    ["native_franka_pose_servo_gripper_endpoint_tcp_invalid"]
+                ) from exc
+            if (
+                open_command == closed_command
+                or set(resolved_positions) != {open_command, closed_command}
+                or any(
+                    len(position) != 3
+                    or not all(math.isfinite(value) for value in position)
+                    for position in resolved_positions.values()
+                )
+            ):
+                raise NativeFrankaPoseServoError(
+                    ["native_franka_pose_servo_gripper_endpoint_tcp_invalid"]
+                )
+            self._body_to_grasp_positions_by_command = resolved_positions
+            self._open_gripper_command = open_command
+            self._last_gripper_command = open_command
         self._pad_centers_body = {
             side: list(position)
             for side, position in self.grasp_geometry[
@@ -725,6 +763,7 @@ class NativeFrankaDifferentialIkServo:
 
     def reset_command_state(self) -> None:
         self._last_command = None
+        self._last_gripper_command = self._open_gripper_command
         # Keep PINK's posture target at the episode's bent reset posture across
         # phase boundaries. Resetting PINK here would redefine its posture task
         # to the current pose -- including a joint-limit pose at the start of
@@ -822,14 +861,45 @@ class NativeFrankaDifferentialIkServo:
             *native_xyzw_to_contract_xyzw(pose[3:7]),
         ]
 
+    def _grasp_position_for_command(
+        self, gripper_command: float | None
+    ) -> list[float]:
+        if not self._body_to_grasp_positions_by_command:
+            return list(self._body_to_grasp_position)
+        command = (
+            self._last_gripper_command
+            if gripper_command is None
+            else float(gripper_command)
+        )
+        if command is None or not math.isfinite(command):
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_gripper_endpoint_tcp_invalid"]
+            )
+        endpoints = sorted(self._body_to_grasp_positions_by_command)
+        low, high = endpoints[0], endpoints[-1]
+        if abs(high - low) <= 1.0e-9:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_gripper_endpoint_tcp_invalid"]
+            )
+        alpha = max(0.0, min(1.0, (command - low) / (high - low)))
+        return [
+            self._body_to_grasp_positions_by_command[low][axis] * (1.0 - alpha)
+            + self._body_to_grasp_positions_by_command[high][axis] * alpha
+            for axis in range(3)
+        ]
+
     def current_grasp_frame_position_world(self) -> list[float]:
         return self.current_grasp_frame_pose_world()[:3]
 
-    def current_grasp_frame_pose_world(self) -> list[float]:
+    def current_grasp_frame_pose_world(
+        self, *, gripper_command: float | None = None
+    ) -> list[float]:
         """Return the measured TCP pose, not the coincident finger body origins."""
 
         body = self.current_body_pose_world()
-        offset = rotate_vector_xyzw(body[3:7], self._body_to_grasp_position)
+        offset = rotate_vector_xyzw(
+            body[3:7], self._grasp_position_for_command(gripper_command)
+        )
         position = [body[index] + offset[index] for index in range(3)]
         quaternion = quaternion_multiply_xyzw(
             body[3:7], self._body_to_grasp_quaternion
@@ -904,8 +974,11 @@ class NativeFrankaDifferentialIkServo:
         max_joint_setpoint_lead_rad: float,
         velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     ) -> tuple[list[float], dict[str, Any]]:
+        self._last_gripper_command = float(gripper_command)
         body_pose = self.current_body_pose_world()
-        grasp_pose = self.current_grasp_frame_pose_world()
+        grasp_pose = self.current_grasp_frame_pose_world(
+            gripper_command=gripper_command
+        )
         local_target_position, local_target_quaternion = (
             bounded_cartesian_pose_target(
                 current_position_world_m=grasp_pose[:3],

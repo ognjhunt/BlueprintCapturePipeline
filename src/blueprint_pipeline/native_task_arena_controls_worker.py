@@ -473,7 +473,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if gripper["status"] != "measured":
             raise RuntimeError("native_task_controls_gripper_convention_unresolved")
         env.reset(seed=seed)
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        servo = NativeFrankaDifferentialIkServo(
+            env=env, robot=robot, gripper_convention=gripper
+        )
         # The same sealed-reset measurement the construction worker retains:
         # which frame the controlled body is actually in, read back from the
         # finger bodies rather than assumed from a convention.  Taken here,
