@@ -3399,6 +3399,7 @@ def _probe_env(
     enable_isaac_smoke: bool,
     provider_bundle_url: str | None = None,
     provider_output_put_url: str | None = None,
+    runtime_dependency_url: str | None = None,
     provider_bundle_inline_base64: str | None = None,
     provider_bundle_inline_sha256: str | None = None,
     retain_cosmos_server: bool = False,
@@ -3442,6 +3443,10 @@ def _probe_env(
         env["BLUEPRINT_EVAL_MANIFEST_URI"] = _string(provider_bundle_url)
     if _string(provider_output_put_url):
         env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] = _string(provider_output_put_url)
+    if _string(runtime_dependency_url):
+        env["BLUEPRINT_RUNTIME_DEPENDENCY_URI"] = _string(
+            runtime_dependency_url
+        )
     if _string(provider_bundle_inline_base64):
         env[VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] = _string(provider_bundle_inline_base64)
     if _string(provider_bundle_inline_sha256):
@@ -3979,6 +3984,16 @@ def _probe_shell_script(
                 )
                 + '" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
                 "else "
+                'dependency_receipt="$WORK_DIR/adp_arena_provider_bundle/provider_runtime/native_task_runtime_sources/native_task_runtime_source_packet.v1.json"; '
+                'dependency_packet="$WORK_DIR/adp_arena_provider_bundle/provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip"; '
+                "dependency_rc=0; "
+                'if [ -f "$dependency_receipt" ] && [ ! -f "$dependency_packet" ]; then '
+                'DEPENDENCY_URL="${BLUEPRINT_RUNTIME_DEPENDENCY_URI:-}"; '
+                'if [ -z "$DEPENDENCY_URL" ]; then dependency_rc=21; '
+                'else blueprint_download_url "$DEPENDENCY_URL" "$dependency_packet"; dependency_rc=$?; fi; '
+                "fi; "
+                'if [ $dependency_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:runtime_dependency_download_failed:$dependency_rc; '
+                "else echo BLUEPRINT_VAST_RUNTIME_DEPENDENCY_READY; "
                 'export BLUEPRINT_ADP_ARENA_OUTPUT_DIR="$WORK_DIR/adp_arena_provider_bundle/runtime_output"; '
                 'mkdir -p "$BLUEPRINT_ADP_ARENA_OUTPUT_DIR"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
@@ -4015,7 +4030,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; "
             )
         elif provider_bundle_kind == "adp009d_ovrtx":
             script += (
@@ -6381,6 +6396,7 @@ def run_vast_provider_adapter(
     provider_bundle_url: str | None = None,
     provider_output_put_url: str | None = None,
     provider_output_get_url: str | None = None,
+    runtime_dependency_url: str | None = None,
     provider_runtime_output_zip: str | Path | None = None,
     enable_isaac_smoke: bool = False,
     enable_blueprint_bundle: bool = False,
@@ -7497,7 +7513,12 @@ def run_vast_provider_adapter(
         docker_pat,
         hf_token,
         *_forwarded_secret_values(),
-        *_url_secret_values(provider_bundle_url, provider_output_put_url, provider_output_get_url),
+        *_url_secret_values(
+            provider_bundle_url,
+            provider_output_put_url,
+            provider_output_get_url,
+            runtime_dependency_url,
+        ),
         _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
     ]
     teardown_actions: list[dict[str, Any]] = []
@@ -7680,6 +7701,7 @@ def run_vast_provider_adapter(
                     enable_isaac_smoke=enable_isaac_smoke,
                     provider_bundle_url=provider_bundle_url,
                     provider_output_put_url=provider_output_put_url,
+                    runtime_dependency_url=runtime_dependency_url,
                     provider_bundle_inline_base64=_string(
                         inline_bundle_transport.get("inline_provider_bundle_base64")
                     ),

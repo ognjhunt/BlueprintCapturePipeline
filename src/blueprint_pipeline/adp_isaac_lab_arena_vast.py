@@ -40,7 +40,9 @@ from .vast_provider_adapter import (
 )
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
+    close_cached_runtime_dependency_staging,
     cleanup_staged_wam_provider_objects,
+    stage_cached_runtime_dependency_object_store,
     stage_wam_provider_bundle_object_store,
 )
 
@@ -520,6 +522,47 @@ def run_arena_native_control_vast(
         _write_run_result(job, attempt_root, result)
         return result
 
+    runtime_dependency_dir = attempt_root / "runtime_dependency_cache"
+    runtime_source_value = bundle.get("runtime_source_packet")
+    runtime_source = (
+        dict(runtime_source_value)
+        if isinstance(runtime_source_value, Mapping)
+        else {}
+    )
+    runtime_dependency = {"status": "not_required"}
+    runtime_dependency_url = ""
+    if runtime_source.get("transport") == "content_addressed_external_layer.v1":
+        runtime_dependency = stage_cached_runtime_dependency_object_store(
+            job_dir=runtime_dependency_dir,
+            dependency_path=str(runtime_source.get("packet_path") or ""),
+            expected_sha256=str(runtime_source.get("packet_sha256") or ""),
+            key_prefix=os.getenv(
+                "BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX",
+                object_store_key_prefix,
+            ),
+            expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
+            generated_at=generated,
+        )
+        if runtime_dependency.get("status") != "completed":
+            cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+            close_cached_runtime_dependency_staging(runtime_dependency_dir)
+            result = {
+                "schema_version": result_schema_version,
+                "generated_at": generated,
+                "status": "blocked",
+                "attempt_number": attempt_number,
+                "attempt_root": str(attempt_root),
+                "provider_mutations_performed": 0,
+                "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+                "blockers": runtime_dependency.get("blockers")
+                or ["adp_arena_runtime_dependency_cache_blocked"],
+            }
+            _write_run_result(job, attempt_root, result)
+            return result
+        runtime_dependency_url = (
+            runtime_dependency_dir / "provider_runtime_dependency_url.txt"
+        ).read_text(encoding="utf-8").strip()
+
     bundle_url = (staging_dir / "provider_bundle_url.txt").read_text().strip()
     output_put_url = (staging_dir / "provider_output_put_url.txt").read_text().strip()
     output_get_url = (staging_dir / "provider_output_get_url.txt").read_text().strip()
@@ -528,6 +571,7 @@ def run_arena_native_control_vast(
     adapter: dict[str, Any] = {}
     watchdog_handoff: dict[str, Any] = {"status": "not_required"}
     watchdog_close: dict[str, Any] = {"status": "not_required"}
+    runtime_dependency_closeout: dict[str, Any] = {"status": "not_required"}
     watchdog_handle = None
     if require_independent_watchdog:
         watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
@@ -539,6 +583,9 @@ def run_arena_native_control_vast(
         )
         if watchdog_handle is None:
             cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+            runtime_dependency_closeout = close_cached_runtime_dependency_staging(
+                runtime_dependency_dir
+            )
             result = {
                 "schema_version": result_schema_version,
                 "generated_at": generated,
@@ -577,6 +624,7 @@ def run_arena_native_control_vast(
                 provider_bundle_url=bundle_url,
                 provider_output_put_url=output_put_url,
                 provider_output_get_url=output_get_url,
+                runtime_dependency_url=runtime_dependency_url,
                 provider_runtime_output_zip=output_zip,
                 enable_isaac_smoke=enable_isaac_smoke,
                 enable_blueprint_bundle=True,
@@ -651,6 +699,13 @@ def run_arena_native_control_vast(
                 )
         finally:
             cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+            runtime_dependency_closeout = (
+                close_cached_runtime_dependency_staging(
+                    runtime_dependency_dir
+                )
+                if runtime_dependency.get("status") == "completed"
+                else {"status": "not_required"}
+            )
     extracted = _extract_provider_output(
         output_zip,
         attempt_root / "immutable_execution",
@@ -741,6 +796,8 @@ def run_arena_native_control_vast(
         "object_store_cleanup_path": str(
             staging_dir / "wam_provider_object_store_cleanup.json"
         ),
+        "runtime_dependency_cache": runtime_dependency,
+        "runtime_dependency_cache_closeout": runtime_dependency_closeout,
         "candidate_policy_query_expected": bool(candidate_policy_query_expected),
         # Digest-bound closure, in the shape every reconcilable lane emits, so
         # this attempt's official posted charges can be extracted and the next

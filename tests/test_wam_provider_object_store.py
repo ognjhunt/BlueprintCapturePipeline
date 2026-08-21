@@ -12,6 +12,100 @@ from urllib.parse import urlparse
 from blueprint_pipeline import wam_provider_object_store as object_store
 
 
+def test_runtime_dependency_layer_uploads_once_then_hits_digest_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    dependency = tmp_path / "runtime.zip"
+    dependency.write_bytes(b"immutable-runtime-layer")
+    digest = hashlib.sha256(dependency.read_bytes()).hexdigest()
+    for name, value in (
+        ("access", "access"),
+        ("secret", "secret"),
+        ("endpoint", "https://nyc3.digitaloceanspaces.com"),
+        ("bucket", "blueprint-wam"),
+        ("region", "nyc3"),
+    ):
+        path = tmp_path / name
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+        env = {
+            "access": "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE",
+            "secret": "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE",
+            "endpoint": "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE",
+            "bucket": "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE",
+            "region": "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE",
+        }[name]
+        monkeypatch.setenv(env, str(path))
+
+    class FakeConfig:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.objects: dict[tuple[str, str], dict] = {}
+            self.upload_count = 0
+
+        def head_object(self, *, Bucket: str, Key: str):
+            if (Bucket, Key) not in self.objects:
+                error = RuntimeError("not found")
+                error.response = {  # type: ignore[attr-defined]
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                    "Error": {"Code": "NoSuchKey"},
+                }
+                raise error
+            return self.objects[(Bucket, Key)]
+
+        def upload_file(self, source, bucket, key, ExtraArgs=None):
+            self.upload_count += 1
+            self.objects[(bucket, key)] = {
+                "ContentLength": Path(source).stat().st_size,
+                "Metadata": dict((ExtraArgs or {}).get("Metadata") or {}),
+            }
+
+        def generate_presigned_url(self, operation, *, Params, ExpiresIn, HttpMethod):
+            return (
+                f"https://nyc3.digitaloceanspaces.com/{Params['Bucket']}/"
+                f"{Params['Key']}?signature=secret&expires={ExpiresIn}"
+            )
+
+    client = FakeClient()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda *_args, **_kwargs: client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig)
+    )
+
+    first = object_store.stage_cached_runtime_dependency_object_store(
+        job_dir=tmp_path / "run1",
+        dependency_path=dependency,
+        expected_sha256="sha256:" + digest,
+        key_prefix="blueprint/arena",
+        expiration_seconds=600,
+    )
+    second = object_store.stage_cached_runtime_dependency_object_store(
+        job_dir=tmp_path / "run2",
+        dependency_path=dependency,
+        expected_sha256="sha256:" + digest,
+        key_prefix="blueprint/arena",
+        expiration_seconds=600,
+    )
+
+    assert first["status"] == second["status"] == "completed"
+    assert first["upload_performed"] is True
+    assert second["cache_hit"] is True
+    assert client.upload_count == 1
+    closeout = object_store.close_cached_runtime_dependency_staging(
+        tmp_path / "run2"
+    )
+    assert closeout["signed_url_file_removed"] is True
+    assert closeout["content_addressed_cache_object_retained"] is True
+
+
 def test_presigned_url_expiry_metadata_uses_generated_at() -> None:
     meta = object_store._presigned_url_expiry_metadata(
         "2026-06-29T12:00:00Z",

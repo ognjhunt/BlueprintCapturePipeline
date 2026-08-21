@@ -47,6 +47,11 @@ SIGNED_OUTPUT_SENTINEL_BYTES = 96
 SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS = 30
 SIGNED_OUTPUT_MAX_RESPONSE_BYTES = 64 * 1024
 OBJECT_CLEANUP_SCHEMA_VERSION = "wam_provider_object_store_cleanup.v1"
+RUNTIME_DEPENDENCY_CACHE_SCHEMA_VERSION = "wam_provider_runtime_dependency_cache.v1"
+RUNTIME_DEPENDENCY_CACHE_CLOSEOUT_SCHEMA_VERSION = (
+    "wam_provider_runtime_dependency_cache_closeout.v1"
+)
+RUNTIME_DEPENDENCY_URL_FILENAME = "provider_runtime_dependency_url.txt"
 STAGING_BINDING_SCHEMA_VERSION = "wam_provider_object_store_binding.v1"
 STAGING_BINDING_FILENAME = "wam_provider_object_store_staging_binding.json"
 STAGING_MANIFEST_FILENAME = "wam_provider_object_store_staging_manifest.json"
@@ -157,6 +162,191 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def stage_cached_runtime_dependency_object_store(
+    *,
+    job_dir: str | Path,
+    dependency_path: str | Path,
+    expected_sha256: str,
+    key_prefix: str,
+    expiration_seconds: int,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Publish one immutable runtime layer once and issue a run-local GET URL."""
+
+    generated = generated_at or utc_now_iso()
+    job = Path(job_dir).expanduser().resolve()
+    dependency = Path(dependency_path).expanduser().resolve()
+    ensure_dir(job)
+    digest = _sha256_file(dependency) if dependency.is_file() else ""
+    expected = str(expected_sha256 or "").removeprefix("sha256:")
+    safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
+    key = f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
+    blockers: list[str] = []
+    if not dependency.is_file() or not expected or digest != expected:
+        blockers.append("runtime_dependency_local_identity_mismatch")
+
+    access_key, access_meta = _read_first_file(
+        explicit_path=None,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
+        default_paths=DEFAULT_ACCESS_KEY_FILES,
+        label="object_store_access_key_id",
+    )
+    secret_key, secret_meta = _read_first_file(
+        explicit_path=None,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
+        default_paths=DEFAULT_SECRET_KEY_FILES,
+        label="object_store_secret_access_key",
+    )
+    endpoint, endpoint_meta = _read_first_file(
+        explicit_path=None,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
+        default_paths=DEFAULT_ENDPOINT_FILES,
+        label="object_store_endpoint_url",
+        allow_env_value=True,
+    )
+    bucket, bucket_meta = _read_first_file(
+        explicit_path=None,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
+        default_paths=DEFAULT_BUCKET_FILES,
+        label="object_store_bucket",
+        allow_env_value=True,
+    )
+    region, region_meta = _read_first_file(
+        explicit_path=None,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
+        default_paths=DEFAULT_REGION_FILES,
+        label="object_store_region",
+        allow_env_value=True,
+    )
+    if not access_key or not secret_key or not bucket:
+        blockers.append("runtime_dependency_object_store_credentials_missing")
+
+    cache_hit = False
+    remote_verified = False
+    url = ""
+    upload_performed = False
+    if not blockers:
+        try:
+            import boto3  # type: ignore[import-not-found]
+            from botocore.client import Config  # type: ignore[import-not-found]
+
+            kwargs: dict[str, Any] = {
+                "aws_access_key_id": access_key,
+                "aws_secret_access_key": secret_key,
+                "region_name": region or "us-east-1",
+                "config": Config(signature_version="s3v4"),
+            }
+            if endpoint:
+                kwargs["endpoint_url"] = endpoint
+            client = boto3.client("s3", **kwargs)
+            try:
+                head = client.head_object(Bucket=bucket, Key=key)
+                cache_hit = True
+            except Exception as exc:  # noqa: BLE001 - provider shape varies
+                response = _mapping(getattr(exc, "response", {}))
+                status = int(
+                    _mapping(response.get("ResponseMetadata")).get(
+                        "HTTPStatusCode"
+                    )
+                    or 0
+                )
+                code = _string(_mapping(response.get("Error")).get("Code"))
+                if status != 404 and code.lower() not in {
+                    "404",
+                    "nosuchkey",
+                    "notfound",
+                }:
+                    raise
+                client.upload_file(
+                    str(dependency),
+                    bucket,
+                    key,
+                    ExtraArgs={"Metadata": {"sha256": expected}},
+                )
+                upload_performed = True
+                head = client.head_object(Bucket=bucket, Key=key)
+            metadata = _mapping(head.get("Metadata"))
+            remote_verified = (
+                int(head.get("ContentLength") or -1) == dependency.stat().st_size
+                and metadata.get("sha256") == expected
+            )
+            if not remote_verified:
+                blockers.append("runtime_dependency_remote_identity_mismatch")
+            else:
+                url = client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": bucket,
+                        "Key": key,
+                        "ResponseCacheControl": "no-store, max-age=0",
+                    },
+                    ExpiresIn=int(expiration_seconds),
+                    HttpMethod="GET",
+                )
+        except Exception as exc:  # noqa: BLE001 - fail closed before GPU
+            blockers.append(
+                f"runtime_dependency_cache_failed:{type(exc).__name__}"
+            )
+
+    url_path = job / RUNTIME_DEPENDENCY_URL_FILENAME
+    url_status = (
+        _write_sensitive_file(
+            url_path, url, label="provider_runtime_dependency_url"
+        )
+        if url and not blockers
+        else _file_status(url_path, label="provider_runtime_dependency_url")
+    )
+    result = {
+        "schema_version": RUNTIME_DEPENDENCY_CACHE_SCHEMA_VERSION,
+        "generated_at": generated,
+        "status": "completed" if url and not blockers else "blocked",
+        "dependency_path": str(dependency),
+        "dependency_sha256": f"sha256:{digest}" if digest else None,
+        "dependency_size_bytes": dependency.stat().st_size
+        if dependency.is_file()
+        else 0,
+        "content_addressed_key_sha256": hashlib.sha256(
+            key.encode("utf-8")
+        ).hexdigest(),
+        "cache_hit": cache_hit,
+        "upload_performed": upload_performed,
+        "remote_identity_verified": remote_verified,
+        "signed_url_file": url_status,
+        "object_store": {
+            "access_key_id": access_meta,
+            "secret_access_key": secret_meta,
+            "endpoint_url": endpoint_meta,
+            "bucket": bucket_meta,
+            "region": region_meta,
+            "expiration_seconds": int(expiration_seconds),
+        },
+        "cache_object_retained_for_reuse": bool(remote_verified),
+        "blockers": sorted(set(blockers)),
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job / "wam_provider_runtime_dependency_cache.json", result)
+    return result
+
+
+def close_cached_runtime_dependency_staging(job_dir: str | Path) -> dict[str, Any]:
+    """Remove the expiring URL while deliberately retaining immutable bytes."""
+
+    job = Path(job_dir).expanduser().resolve()
+    url_path = job / RUNTIME_DEPENDENCY_URL_FILENAME
+    url_path.unlink(missing_ok=True)
+    result = {
+        "schema_version": RUNTIME_DEPENDENCY_CACHE_CLOSEOUT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not url_path.exists() else "blocked",
+        "signed_url_file_removed": not url_path.exists(),
+        "content_addressed_cache_object_retained": True,
+        "provider_compute_mutation_performed": False,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job / "wam_provider_runtime_dependency_cache_closeout.json", result)
+    return result
 
 
 def _staging_binding_sha256(

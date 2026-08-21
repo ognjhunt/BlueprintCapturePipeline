@@ -480,6 +480,9 @@ def build_native_task_arena_bundle(
                 "receipt_digest": runtime_source_receipt["receipt_digest"],
                 "packet_sha256": runtime_source_receipt["packet_sha256"],
                 "packet_size_bytes": runtime_source_receipt["packet_size_bytes"],
+                "packet_path": str(source_packet_path),
+                "transport": "content_addressed_external_layer.v1",
+                "embedded_in_provider_bundle": False,
                 "install_roots": runtime_source_receipt["install_roots"],
                 "runtime_dependency_wheels": runtime_source_receipt[
                     "runtime_dependency_wheels"
@@ -524,14 +527,6 @@ def build_native_task_arena_bundle(
                 archive_path=(
                     "provider_runtime/native_task_runtime_sources/"
                     "native_task_runtime_source_packet.v1.json"
-                ),
-            )
-            _write_zip_file(
-                archive,
-                source=source_packet_path,
-                archive_path=(
-                    "provider_runtime/native_task_runtime_sources/"
-                    "native_task_runtime_sources.zip"
                 ),
             )
         for relative, source in input_sources:
