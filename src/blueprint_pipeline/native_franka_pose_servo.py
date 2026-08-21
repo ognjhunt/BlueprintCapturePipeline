@@ -780,6 +780,27 @@ class NativeFrankaDifferentialIkServo:
                 "pad_centers_controlled_body_m"
             ].items()
         }
+        self._finger_body_indices: dict[str, int] = {}
+        self._pad_center_offsets_in_finger_body: dict[str, list[float]] = {}
+        if gripper_convention is not None:
+            try:
+                body_names = list(self._robot.data.body_names)
+                offsets = gripper_convention[
+                    "pad_center_offsets_in_finger_body_m"
+                ]
+                for side in ("left", "right"):
+                    body_name = f"{side}_inner_finger"
+                    offset = [float(value) for value in offsets[side]]
+                    if body_name not in body_names or len(offset) != 3 or not all(
+                        math.isfinite(value) for value in offset
+                    ):
+                        raise ValueError(side)
+                    self._finger_body_indices[side] = body_names.index(body_name)
+                    self._pad_center_offsets_in_finger_body[side] = offset
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                raise NativeFrankaPoseServoError(
+                    ["native_franka_pose_servo_live_pad_binding_invalid"]
+                ) from exc
         try:
             pink_robot = load_pink_supported_robot("franka")
             # The bundled Franka URDF may include Panda fingers, while the
@@ -1322,15 +1343,14 @@ class NativeFrankaDifferentialIkServo:
         controlled body is actually in.
         """
 
-        body_pose = self.current_body_pose_world()
+        pad_readback = self.current_gripper_pad_readback()
+        measured = pad_readback["measured"]
+        body_pose = [
+            *measured["controlled_body_position_world_m"],
+            *measured["controlled_body_quaternion_world_xyzw"],
+        ]
         fingers = {
-            f"{side}_inner_finger": [
-                body_pose[axis]
-                + rotate_vector_xyzw(
-                    body_pose[3:7], self._pad_centers_body[side]
-                )[axis]
-                for axis in range(3)
-            ]
+            f"{side}_inner_finger": measured["pad_centers_world_m"][side]
             for side in ("left", "right")
         }
         return gripper_frame_axis_readback(
@@ -1339,6 +1359,59 @@ class NativeFrankaDifferentialIkServo:
             body_quaternion_world_xyzw=body_pose[3:7],
             finger_positions_world_m=fingers,
         )
+
+    def current_gripper_pad_readback(self) -> dict[str, Any]:
+        """Measure the moving fingertip pad centers from live body poses."""
+
+        if set(self._finger_body_indices) != {"left", "right"} or set(
+            self._pad_center_offsets_in_finger_body
+        ) != {"left", "right"}:
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_live_pad_binding_invalid"]
+            )
+        poses = self._to_torch(self._robot.data.body_pose_w)
+        body_pose = self.current_body_pose_world()
+        finger_body_positions: dict[str, list[float]] = {}
+        pad_centers: dict[str, list[float]] = {}
+        for side in ("left", "right"):
+            pose = poses[0, self._finger_body_indices[side], :7]
+            finger_position = [float(value) for value in pose[:3]]
+            finger_quaternion = native_xyzw_to_contract_xyzw(pose[3:7])
+            offset_world = rotate_vector_xyzw(
+                finger_quaternion,
+                self._pad_center_offsets_in_finger_body[side],
+            )
+            finger_body_positions[side] = finger_position
+            pad_centers[side] = [
+                finger_position[axis] + offset_world[axis]
+                for axis in range(3)
+            ]
+        midpoint = [
+            (pad_centers["left"][axis] + pad_centers["right"][axis]) / 2.0
+            for axis in range(3)
+        ]
+        return {
+            "schema_version": "native_franka_gripper_pad_readback.v1",
+            "measurement_authority": (
+                "native_finger_body_pose_plus_probe_sealed_pad_center_offset"
+            ),
+            "measured": {
+                "controlled_body_position_world_m": body_pose[:3],
+                "controlled_body_quaternion_world_xyzw": body_pose[3:7],
+                "finger_body_positions_world_m": finger_body_positions,
+                "pad_center_offsets_in_finger_body_m": {
+                    side: list(
+                        self._pad_center_offsets_in_finger_body[side]
+                    )
+                    for side in ("left", "right")
+                },
+                "pad_centers_world_m": pad_centers,
+                "pad_midpoint_world_m": midpoint,
+                "pad_separation_m": math.dist(
+                    pad_centers["left"], pad_centers["right"]
+                ),
+            },
+        }
 
     def read_arm_joint_positions(self) -> list[float]:
         values = self._to_torch(self._robot.data.joint_pos)[0, :7]

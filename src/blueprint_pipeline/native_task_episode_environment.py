@@ -110,7 +110,7 @@ def build_native_task_episode_environment(
         task_readback is None
         or not callable(getattr(task_readback, "read_task_sample", None))
         or not callable(
-            getattr(servo, "current_gripper_frame_axis_readback", None)
+            getattr(servo, "current_gripper_pad_readback", None)
         )
     ):
         raise NativeTaskEpisodeEnvironmentError(
@@ -196,14 +196,14 @@ def build_native_task_episode_environment(
 
     def articulated_task_sample() -> dict[str, Any]:
         raw = task_readback.read_task_sample()
-        frame = servo.current_gripper_frame_axis_readback()
+        frame = servo.current_gripper_pad_readback()
         measured = frame.get("measured") if isinstance(frame, Mapping) else None
         if not isinstance(raw, Mapping) or not isinstance(measured, Mapping):
             raise NativeTaskEpisodeEnvironmentError(
                 ["native_task_episode_gripper_measurement_invalid"]
             )
         try:
-            separation = float(measured["finger_separation_m"])
+            separation = float(measured["pad_separation_m"])
             body_position = [
                 float(value)
                 for value in measured["controlled_body_position_world_m"]
@@ -215,13 +215,17 @@ def build_native_task_episode_environment(
                 ]
             ]
             midpoint = [
-                float(value) for value in measured["finger_midpoint_world_m"]
+                float(value) for value in measured["pad_midpoint_world_m"]
             ]
             finger_positions = {
                 str(name): [float(value) for value in position]
                 for name, position in measured[
                     "finger_body_positions_world_m"
                 ].items()
+            }
+            pad_centers = {
+                str(name): [float(value) for value in position]
+                for name, position in measured["pad_centers_world_m"].items()
             }
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise NativeTaskEpisodeEnvironmentError(
@@ -232,6 +236,9 @@ def build_native_task_episode_environment(
             for position in finger_positions.values()
             for value in position
         ]
+        pad_values = [
+            value for position in pad_centers.values() for value in position
+        ]
         if (
             not math.isfinite(separation)
             or separation < 0.0
@@ -239,7 +246,9 @@ def build_native_task_episode_environment(
             or len(body_quaternion) != 4
             or len(midpoint) != 3
             or len(finger_positions) != 2
+            or len(pad_centers) != 2
             or any(len(position) != 3 for position in finger_positions.values())
+            or any(len(position) != 3 for position in pad_centers.values())
             or not all(
                 math.isfinite(value)
                 for value in [
@@ -247,6 +256,7 @@ def build_native_task_episode_environment(
                     *body_quaternion,
                     *midpoint,
                     *finger_values,
+                    *pad_values,
                 ]
             )
         ):
@@ -259,10 +269,11 @@ def build_native_task_episode_environment(
                 "gripper_width_m": separation,
                 "gripper_controlled_body_position_world_m": body_position,
                 "gripper_controlled_body_quaternion_world_xyzw": body_quaternion,
-                "gripper_finger_midpoint_world_m": midpoint,
+                "gripper_pad_midpoint_world_m": midpoint,
                 "gripper_finger_body_positions_world_m": finger_positions,
+                "gripper_pad_centers_world_m": pad_centers,
                 "gripper_measurement_authority": (
-                    "native_inner_finger_body_world_pose_readback"
+                    "native_finger_body_pose_plus_probe_sealed_pad_center_offset"
                 ),
             }
         )
@@ -346,7 +357,7 @@ def build_native_task_episode_environment(
             "native_franka_pose_servo.measured_controlled_body_to_grasp_frame"
         ),
         "gripper_state_source": (
-            "native_inner_finger_body_world_pose_readback_each_sample"
+            "native_finger_body_pose_plus_probe_sealed_pad_offset_each_sample"
             if task_kind == "articulated_open_close"
             else None
         ),

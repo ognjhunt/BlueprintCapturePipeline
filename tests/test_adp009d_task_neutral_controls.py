@@ -88,6 +88,7 @@ class _Environment:
             "scene_collision_failure": False,
             "retreat_completed": self.joints[1] > 0.5,
             "grasp_frame_position_world_m": self.joints[:3],
+            "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
         }
 
     def read_object_sample(self):
@@ -447,6 +448,7 @@ def test_gripper_transition_holds_arm_targets_and_runs_full_dwell(
         "planner_receipt_digest": "sha256:" + "d" * 64,
         "zero_action_steps": 3,
         "scripted_positive_actions": [
+            phase("contact_open", [0.0, 0.0, 0.0], "open"),
             phase("contact_close", [0.0, 0.0, 0.0], "closed", hold=True),
             phase("open", [0.9, 0.0, 0.0], "closed"),
             phase("retreat", [0.9, 1.0, 0.0], "open"),
@@ -481,3 +483,13 @@ def test_gripper_transition_holds_arm_targets_and_runs_full_dwell(
     assert [row["isaac_action"] for row in held] == [[0.0] * 7 + [1.0]] * 2
     assert [row["action_recomputed"] for row in held] == [False, False]
     assert [row["action_hold_index"] for row in held] == [0, 1]
+    close_arrival = next(
+        row
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "contact_close"
+    )
+    assert close_arrival["arrival_target_source"] == (
+        "previous_phase_qualified_entry_pose_held_during_gripper_transition"
+    )
+    assert close_arrival["target_position_world_m"] == [0.0, 0.0, 0.0]
+    assert close_arrival["target_reached"] is True
