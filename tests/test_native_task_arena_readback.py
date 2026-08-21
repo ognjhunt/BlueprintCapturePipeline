@@ -155,6 +155,29 @@ def test_live_numeric_readback_compiles_the_exact_scorer_sample() -> None:
     assert sample["scene_collision_failure"] is False
     assert sample["retreat_completed"] is True
     assert sample["native_readback"]["caller_asserted_booleans_used"] is False
+    assert sample["native_readback"]["grasp_frame_position_source"] == (
+        "native_inner_finger_body_origin_midpoint"
+    )
+
+
+def test_measured_grasp_frame_drives_separation_and_retreat() -> None:
+    built = _built()
+    baseline = NativeArticulatedTaskArenaReadback(built).read_task_sample()
+    handle = baseline["handle_reference_position_world_m"]
+
+    sample = NativeArticulatedTaskArenaReadback(
+        built,
+        grasp_frame_pose_callback=lambda: [*handle, 0.0, 0.0, 0.0, 1.0],
+    ).read_task_sample()
+
+    assert sample["grasp_frame_position_world_m"] == pytest.approx(handle)
+    assert sample["native_readback"]["grasp_frame_to_handle_separation_m"] == (
+        pytest.approx(0.0)
+    )
+    assert sample["retreat_completed"] is False
+    assert sample["native_readback"]["grasp_frame_position_source"] == (
+        "native_franka_pose_servo.measured_pad_midpoint"
+    )
 
 
 def test_missing_force_matrix_never_defaults_to_no_collision() -> None:

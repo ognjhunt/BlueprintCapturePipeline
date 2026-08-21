@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 
 from .native_articulated_task_state import compile_native_articulated_task_sample
@@ -687,8 +688,14 @@ def read_native_task_arena_scenario_parameters(
 class NativeArticulatedTaskArenaReadback:
     """Compile task samples from the exact scene handles returned by the builder."""
 
-    def __init__(self, built: NativeTaskArenaEnvironment):
+    def __init__(
+        self,
+        built: NativeTaskArenaEnvironment,
+        *,
+        grasp_frame_pose_callback: Callable[[], Sequence[float]] | None = None,
+    ):
         self._built = built
+        self._grasp_frame_pose_callback = grasp_frame_pose_callback
         if built.plan.get("task_kind") != "articulated_open_close":
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_readback_task_kind_invalid"]
@@ -796,27 +803,54 @@ class NativeArticulatedTaskArenaReadback:
             sensor_forces[logical_sensor_id] = aggregate
             sensor_instance_readback[logical_sensor_id] = instances
 
-        grasp_frame = self._built.plan["robot"]["grasp_frame"]
-        if grasp_frame.get("kind") != "body_midpoint":
-            raise NativeTaskArenaReadbackError(
-                ["native_task_arena_grasp_frame_invalid"]
+        if self._grasp_frame_pose_callback is not None:
+            try:
+                grasp_pose = [
+                    float(value) for value in self._grasp_frame_pose_callback()
+                ]
+            except (TypeError, ValueError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_measured_grasp_frame_invalid"]
+                ) from exc
+            if (
+                len(grasp_pose) != 7
+                or not all(math.isfinite(value) for value in grasp_pose)
+                or abs(
+                    math.sqrt(sum(value * value for value in grasp_pose[3:7]))
+                    - 1.0
+                )
+                > 1.0e-5
+            ):
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_measured_grasp_frame_invalid"]
+                )
+            grasp_position = grasp_pose[:3]
+            grasp_position_source = (
+                "native_franka_pose_servo.measured_pad_midpoint"
             )
-        finger_positions = [
-            _body_position(
-                robot,
-                body_name=body_name,
-                error="native_task_arena_grasp_body_missing",
-            )[0]
-            for body_name in grasp_frame["body_names"]
-        ]
-        if len(finger_positions) != 2:
-            raise NativeTaskArenaReadbackError(
-                ["native_task_arena_grasp_frame_invalid"]
-            )
-        grasp_position = [
-            (finger_positions[0][axis] + finger_positions[1][axis]) / 2.0
-            for axis in range(3)
-        ]
+        else:
+            grasp_frame = self._built.plan["robot"]["grasp_frame"]
+            if grasp_frame.get("kind") != "body_midpoint":
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_grasp_frame_invalid"]
+                )
+            finger_positions = [
+                _body_position(
+                    robot,
+                    body_name=body_name,
+                    error="native_task_arena_grasp_body_missing",
+                )[0]
+                for body_name in grasp_frame["body_names"]
+            ]
+            if len(finger_positions) != 2:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_grasp_frame_invalid"]
+                )
+            grasp_position = [
+                (finger_positions[0][axis] + finger_positions[1][axis]) / 2.0
+                for axis in range(3)
+            ]
+            grasp_position_source = "native_inner_finger_body_origin_midpoint"
 
         articulation = self._built.plan["articulation"]
         graph_articulation = articulation.get("graph_articulation") is True
@@ -874,6 +908,9 @@ class NativeArticulatedTaskArenaReadback:
         )
         sample["native_readback"]["contact_sensor_instance_readback"] = (
             sensor_instance_readback
+        )
+        sample["native_readback"]["grasp_frame_position_source"] = (
+            grasp_position_source
         )
         return sample
 

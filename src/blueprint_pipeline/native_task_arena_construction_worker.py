@@ -1501,6 +1501,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         servo = NativeFrankaDifferentialIkServo(
             env=env, robot=robot, gripper_convention=gripper
         )
+        if task_kind == "articulated_open_close":
+            # Subsequent task-path and reset samples must share the servo's
+            # measured physical-pad grasp frame.  The pre-servo initial sample
+            # remains explicitly labelled as the body-origin fallback.
+            readback = NativeArticulatedTaskArenaReadback(
+                built,
+                grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
+            )
         result["franka_pose_binding"] = servo.binding
         result["arm_actuator_readback"] = read_native_arm_actuator_readback(
             robot, joint_ids=servo.binding["arm_joint_ids"]

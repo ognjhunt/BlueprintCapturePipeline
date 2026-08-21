@@ -476,6 +476,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         servo = NativeFrankaDifferentialIkServo(
             env=env, robot=robot, gripper_convention=gripper
         )
+        if task_kind == "articulated_open_close":
+            # The task sampler's separation and retreat verdicts must use the
+            # same measured physical-pad midpoint that the servo controls.
+            # Keeping the earlier inner-finger body-origin midpoint here made
+            # one sealed sample report two different gripper positions.
+            readback = NativeArticulatedTaskArenaReadback(
+                built,
+                grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
+            )
         # The same sealed-reset measurement the construction worker retains:
         # which frame the controlled body is actually in, read back from the
         # finger bodies rather than assumed from a convention.  Taken here,
