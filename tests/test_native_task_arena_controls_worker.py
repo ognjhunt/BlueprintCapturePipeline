@@ -11,10 +11,86 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _RigidScoringEnvironment,
     _canonical_digest,
     _construction_global_ik_joint_targets,
+    _control_plan_global_ik_joint_targets,
     _input_binding_mismatches,
     _load_and_verify_manifest,
     _verified_runtime_inputs,
 )
+
+
+def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -> None:
+    class _Servo:
+        def __init__(self):
+            self.calls = []
+
+        def read_arm_joint_positions(self):
+            return [0.0] * 7
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            self.calls.append(kwargs)
+            joints = [float(kwargs["target_position_world_m"][0])] * 7
+            return {
+                "solved": True,
+                "selected": {
+                    "solved": True,
+                    "joint_positions_rad": joints,
+                },
+                "attempts": [],
+            }
+
+    servo = _Servo()
+    bound = [
+        {
+            "phase_id": "approach",
+            "target_position_world_m": [1.0, 0.0, 0.0],
+            "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "joint_positions_rad": [0.1] * 7,
+        }
+    ]
+    targets, receipt = _control_plan_global_ik_joint_targets(
+        servo=servo,
+        control_plan={
+            "scripted_positive_actions": [
+                {
+                    "phase_id": "prealign",
+                    "mode": "ik_pose",
+                    "position_only_arrival": True,
+                },
+                {
+                    "phase_id": "approach",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [1.0, 0.0, 0.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                {
+                    "phase_id": "contact_open",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [2.0, 0.0, 0.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                {
+                    "phase_id": "contact_close",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [2.0, 0.0, 0.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+            ]
+        },
+        bound_targets=bound,
+        reference_seeds=[[0.5] * 7],
+    )
+
+    assert len(servo.calls) == 1
+    assert servo.calls[0]["preferred_seeds"][0] == [0.1] * 7
+    assert [row["phase_id"] for row in targets] == ["approach", "contact_open"]
+    assert targets[-1]["joint_positions_rad"] == [2.0] * 7
+    assert receipt["status"] == "all_unique_poses_solved_or_bound"
+    assert [row.get("status") for row in receipt["phases"]] == [
+        "skipped_position_only_arrival",
+        "reused_bound_pose_solution",
+        None,
+        "reused_bound_pose_solution",
+    ]
 
 
 def test_controls_bind_construction_global_ik_branch_to_same_pose_phase() -> None:
