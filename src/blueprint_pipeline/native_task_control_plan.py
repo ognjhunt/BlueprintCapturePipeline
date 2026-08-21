@@ -532,6 +532,53 @@ def materialize_native_graph_articulated_control_plan(
             "_unauthored_identity"
         )
         affordance = {}
+    observed_phases = {
+        str(row.get("phase_id") or ""): row
+        for row in phase_results or []
+        if isinstance(row, Mapping)
+    }
+
+    def measured_construction_phase_id(phase_id: str) -> str | None:
+        if phase_id in {"prealign", "approach", "retreat"}:
+            return phase_id
+        if phase_id == "contact_open":
+            return "contact_sweep_clearance_00"
+        if phase_id.startswith("joint_path_"):
+            return "contact_sweep_clearance_" + phase_id.removeprefix(
+                "joint_path_"
+            )
+        return None
+
+    def motion_step_budget(phase_id: str) -> tuple[int, str | None, int | None]:
+        authored = int(affordance["motion_maximum_steps"])
+        construction_phase_id = measured_construction_phase_id(phase_id)
+        observed = observed_phases.get(construction_phase_id or "")
+        observed_steps = (
+            int(observed.get("steps"))
+            if isinstance(observed, Mapping)
+            and observed.get("target_reached") is True
+            and isinstance(observed.get("steps"), int)
+            and not isinstance(observed.get("steps"), bool)
+            and int(observed.get("steps")) > 0
+            else None
+        )
+        if observed_steps is None:
+            return authored, construction_phase_id, None
+        # Construction measured the same TCP targets without contact. Controls
+        # may need longer under door load, so retain 3x the observed duration,
+        # five setup ticks, and a 25-tick floor, capped by the already-authored
+        # fail-safe maximum. r40's 93-step path then receives a 326-step total
+        # controls budget rather than the impossible 576-step restatement.
+        derived = min(
+            authored,
+            max(
+                int(affordance["motion_minimum_steps"]),
+                25,
+                observed_steps * 3 + 5,
+            ),
+        )
+        return derived, construction_phase_id, observed_steps
+
     actions: list[dict[str, Any]] = []
     if affordance:
         for index, phase in enumerate(exact_phases):
@@ -553,9 +600,19 @@ def materialize_native_graph_articulated_control_plan(
                 errors.append(f"native_articulated_graph_control_phase_invalid:{index}")
                 continue
             dwell = phase.get("phase_id") in {"contact_close", "release"}
+            phase_id = str(phase.get("phase_id") or "")
+            derived_maximum, construction_phase_id, observed_steps = (
+                motion_step_budget(phase_id)
+                if not dwell
+                else (
+                    int(affordance["gripper_dwell_maximum_steps"]),
+                    None,
+                    None,
+                )
+            )
             actions.append(
                 {
-                    "phase_id": str(phase.get("phase_id") or ""),
+                    "phase_id": phase_id,
                     "mode": "ik_pose",
                     "target_position_world_m": position,
                     "target_quaternion_world_xyzw": orientation,
@@ -567,12 +624,15 @@ def materialize_native_graph_articulated_control_plan(
                             else "motion_minimum_steps"
                         ]
                     ),
-                    "maximum_steps": int(
-                        affordance[
-                            "gripper_dwell_maximum_steps"
-                            if dwell
-                            else "motion_maximum_steps"
-                        ]
+                    "maximum_steps": derived_maximum,
+                    "construction_phase_id": construction_phase_id,
+                    "construction_observed_steps": observed_steps,
+                    "step_budget_derivation": (
+                        "gripper_dwell_authored"
+                        if dwell
+                        else "three_x_measured_plus_five_with_25_floor"
+                        if observed_steps is not None
+                        else "authored_compatibility_fallback"
                     ),
                     "arrival_tolerance_m": float(affordance["arrival_tolerance_m"]),
                     "arrival_orientation_tolerance_rad": float(
@@ -645,7 +705,8 @@ def materialize_native_graph_articulated_control_plan(
         "dependent_joint_ids": phase_plan["joint_ids_by_role"]["dependent"],
         "passive_joint_ids": phase_plan["joint_ids_by_role"]["passive"],
         "locked_joint_ids": phase_plan["joint_ids_by_role"]["locked"],
-        "positive_trajectory_reexecutes_exact_qualified_phase_targets_and_budgets": True,
+        "positive_trajectory_reexecutes_exact_qualified_phase_targets": True,
+        "positive_trajectory_budgets_derived_from_measured_construction": True,
         "candidate_policy_queried": False,
         "plan_digest": "",
     }
