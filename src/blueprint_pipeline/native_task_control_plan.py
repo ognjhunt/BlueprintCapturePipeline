@@ -65,6 +65,16 @@ ROBOTOIQ_2F85_PREALIGN_RETRACTION_M = 0.05
 ROBOTOIQ_2F85_PREALIGN_RETRACTION_SOURCE = (
     "Blueprint:c10_c11:panda_link5_vs_Z4P5JBBVAJJWSPTUK4888888"
 )
+# c4 measured the live pad midpoint 12.9 mm outside a right-rim patch only
+# 1.23 mm thick in the radial direction.  The generic 20 mm motion tolerance
+# therefore admitted an empty-space grasp.  Require the initial open/close
+# contact phases to place the pad center within 5 mm of the source-derived
+# patch target; subsequent articulated path phases retain the task's authored
+# motion tolerance and the deterministic scorer remains the success authority.
+ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M = 0.005
+ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_SOURCE = (
+    "Blueprint:c4_live_pad_midpoint_vs_source_rim_patch_radial_overlap"
+)
 
 
 class NativeTaskControlPlanError(ValueError):
@@ -744,6 +754,16 @@ def materialize_native_graph_articulated_control_plan(
                     None,
                 )
             )
+            exact_contact_arrival = phase_id in {
+                "contact_open",
+                "contact_close",
+            }
+            arrival_tolerance_m = min(
+                float(affordance["arrival_tolerance_m"]),
+                ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M,
+            ) if exact_contact_arrival else float(
+                affordance["arrival_tolerance_m"]
+            )
             actions.append(
                 {
                     "phase_id": phase_id,
@@ -793,7 +813,12 @@ def materialize_native_graph_articulated_control_plan(
                         if observed_steps is not None
                         else "authored_compatibility_fallback"
                     ),
-                    "arrival_tolerance_m": float(affordance["arrival_tolerance_m"]),
+                    "arrival_tolerance_m": arrival_tolerance_m,
+                    "arrival_tolerance_source": (
+                        ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_SOURCE
+                        if exact_contact_arrival
+                        else "interaction_affordance.arrival_tolerance_m"
+                    ),
                     "arrival_orientation_tolerance_rad": (
                         None
                         if phase.get("arrival_orientation_tolerance_rad")
@@ -919,6 +944,8 @@ def materialize_native_task_control_plan(
 
 __all__ = [
     "NativeTaskControlPlanError",
+    "ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M",
+    "ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_SOURCE",
     "SCHEMA_VERSION",
     "SUPPORTED_TASK_KINDS",
     "materialize_native_graph_articulated_control_plan",
