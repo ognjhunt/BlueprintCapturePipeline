@@ -7,7 +7,10 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_stance_variant import (
+    DROID_ARENA_DEFAULT_RESET,
+    DROID_ARENA_DEFAULT_RESET_SOURCE,
     FRANKA_ROBOTIQ_READY_RESET,
+    FRANKA_ROBOTIQ_READY_RESET_SOURCE,
     NativeTaskArenaStanceVariantError,
     RETREAT_STRATEGY_ID,
     materialize_native_task_arena_stance_variant_request,
@@ -139,6 +142,7 @@ def test_stance_keeps_front_base_while_tool_approaches_free_edge(tmp_path) -> No
     assert stance["maximum_door_sweep_bearing_deviation_rad"] < math.pi / 4.0
     assert stance["native_ik_qualified"] is False
     assert stance["retreat_strategy_id"] == RETREAT_STRATEGY_ID
+    assert stance["reset_source"] == FRANKA_ROBOTIQ_READY_RESET_SOURCE
     assert stance["authored_retreat_enters_base_dead_zone"] is True
     closed = stance["closed_contact_world_m"]
     expected_front_staging = [closed[0], closed[1] - 0.12, closed[2]]
@@ -242,6 +246,12 @@ def test_front_entry_patch_places_base_on_outward_approach_axis(tmp_path) -> Non
     )
     assert stance["derivation"] == (
         "door_contact_plus_front_entry_approach_standoff"
+    )
+    assert result["robot_joint_reset_positions_rad"] == DROID_ARENA_DEFAULT_RESET
+    assert stance["reset_source"] == DROID_ARENA_DEFAULT_RESET_SOURCE
+    assert result["robot_joint_reset_positions_rad"]["panda_joint7"] == 0.0
+    assert result["robot_joint_reset_positions_rad"]["panda_joint6"] == pytest.approx(
+        3.0 * math.pi / 5.0
     )
 
 
