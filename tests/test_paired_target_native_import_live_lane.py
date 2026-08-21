@@ -55,6 +55,8 @@ def lane(tmp_path: Path) -> dict:
                 "implementation_commit": COMMIT,
                 "bundle_path": str(bundle),
                 "bundle_sha256": digest,
+                "execution_candidate_digest": "sha256:" + "d" * 64,
+                "provider_zero_gpu_collision_qualification_completed": True,
             }
         ),
         encoding="utf-8",

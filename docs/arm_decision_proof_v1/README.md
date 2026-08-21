@@ -126,6 +126,9 @@ be completed safely today.
 Exact public scenes, released editing code, fixtures, OpenUSD scenes, and
 SimReady candidates must exercise:
 
+- the final-packet native execution-admission sequence in
+  [`NATIVE_TASK_EXECUTION_ADMISSION.md`](NATIVE_TASK_EXECUTION_ADMISSION.md);
+
 - request and testbed compilation;
 - robot, policy, runtime, and proof adapter seams;
 - scenario condition IDs and deterministic matrix generation;

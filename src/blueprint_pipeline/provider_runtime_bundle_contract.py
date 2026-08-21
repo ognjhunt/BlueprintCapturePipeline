@@ -244,6 +244,11 @@ def provider_runtime_contract_blockers(
                 "all_replacements_import_qualified",
                 "candidate_policy_queried",
                 "asset_frame_registration_digest",
+                "native_task_execution_candidate.v1",
+                "native_gpu_physics_qualified",
+                "simulation_steps",
+                "SimulationContext",
+                "enable_gpu_dynamics",
             )
         )
         runner_blocker = "provider_runner_missing_paired_target_native_import_contract"

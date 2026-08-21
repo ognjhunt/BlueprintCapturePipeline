@@ -1272,6 +1272,9 @@ def run_paired_target_native_import_vast(
         execution.get("status") != "completed"
         or execution.get("native_isaac_executed") is not True
         or execution.get("all_replacements_import_qualified") is not True
+        or execution.get("native_gpu_physics_qualified") is not True
+        or execution.get("execution_candidate_digest")
+        != bundle.get("execution_candidate_digest")
         or execution.get("replacement_count") != bundle.get("replacement_count")
         or execution.get("request_digest") != bundle.get("request_digest")
         or execution.get("candidate_policy_queried") is not False
