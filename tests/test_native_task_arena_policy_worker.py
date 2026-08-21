@@ -151,6 +151,18 @@ def test_each_policy_admission_relation_reports_which_one_failed(
         "control_pair_cell_admitted_for_policy_execution"
     }
 
+    broken = {key: dict(item) for key, item in inputs.items()}
+    broken["spec"]["prompt"] = "Open a different appliance."
+    assert set(_admission_binding_mismatches(**broken)) == {
+        "execution_spec_prompt_vs_task_spec"
+    }
+
+    broken = {key: dict(item) for key, item in inputs.items()}
+    broken["spec"]["max_policy_queries"] -= 1
+    assert set(_admission_binding_mismatches(**broken)) == {
+        "execution_spec_query_budget_vs_task_spec"
+    }
+
 
 def test_policy_admission_refuses_two_absent_digests() -> None:
     """Absent digests are refusals, not agreements.
@@ -176,4 +188,6 @@ def test_policy_admission_refuses_two_absent_digests() -> None:
         "construction_gate_qualified",
         "controls_qualified",
         "control_pair_cell_admitted_for_policy_execution",
+        "execution_spec_prompt_vs_task_spec",
+        "execution_spec_query_budget_vs_task_spec",
     }
