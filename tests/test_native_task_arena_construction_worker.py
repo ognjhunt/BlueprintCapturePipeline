@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_construction_worker import (
     DEPENDENCY_IMPORTS,
     _initial_contact_blocked,
     _load_and_verify_manifest,
+    _pad_centers_from_finger_body_offsets,
     _pose_arrival_readback,
     _requested_arm_reset,
     _retain_task_path_samples,
@@ -18,6 +20,34 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
+
+
+def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
+    import numpy as np
+    import pytest
+
+    robot = SimpleNamespace(
+        data=SimpleNamespace(
+            body_names=["left_inner_finger", "right_inner_finger"],
+            body_pose_w=np.asarray(
+                [
+                    [
+                        [0.0, 0.04, 0.0, 0.0, 0.0, 0.0, 1.0],
+                        [0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    ]
+                ]
+            ),
+        )
+    )
+
+    centers = _pad_centers_from_finger_body_offsets(
+        robot=robot,
+        offsets_body_m={"left": [0.0, 0.01, 0.0], "right": [0.0, -0.01, 0.0]},
+        torch=SimpleNamespace(as_tensor=np.asarray),
+    )
+
+    assert centers["left"] == pytest.approx([0.0, 0.05, 0.0])
+    assert centers["right"] == pytest.approx([0.0, -0.05, 0.0])
 
 
 def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
