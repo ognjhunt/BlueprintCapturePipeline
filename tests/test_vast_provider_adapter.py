@@ -5520,7 +5520,7 @@ def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
     assert '--http1.1' in script and '--retry-all-errors' in script
     assert '--continue-at -' in script
     assert '--retry-max-time 420' in script
-    assert '--speed-limit 4M --speed-time 60' in script
+    assert '--speed-limit 4194304 --speed-time 60' in script
     assert 'chmod 700 /root/.ssh' in script
     assert 'chmod 600 /root/.ssh/authorized_keys' in script
     assert '-fL "$blueprint_download_src"' in script
