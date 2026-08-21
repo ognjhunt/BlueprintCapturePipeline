@@ -51,6 +51,7 @@ def build_native_task_episode_environment(
     servo: Any,
     task_readback: Any | None,
     to_tensor: Any,
+    scripted_pose_joint_targets: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[IsaacEpisodeAdapter, dict[str, Any]]:
     """Create the shared control/policy adapter from native Arena readbacks."""
 
@@ -133,25 +134,92 @@ def build_native_task_episode_environment(
             ["native_task_episode_controlled_body_pose_missing"]
         )
 
+    joint_target_rows: list[dict[str, Any]] = []
+    joint_targets_by_pose: dict[
+        tuple[tuple[float, ...], tuple[float, ...]], list[float]
+    ] = {}
+    for index, raw in enumerate(scripted_pose_joint_targets or []):
+        try:
+            phase_id = str(raw["phase_id"])
+            position = [float(value) for value in raw["target_position_world_m"]]
+            quaternion = [
+                float(value) for value in raw["target_quaternion_world_xyzw"]
+            ]
+            joints = [float(value) for value in raw["joint_positions_rad"]]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                [f"native_task_episode_scripted_joint_target_invalid:{index}"]
+            ) from exc
+        if (
+            not phase_id
+            or len(position) != 3
+            or len(joints) != 7
+            or len(quaternion) != 4
+            or not all(
+                math.isfinite(value)
+                for value in [
+                    *position,
+                    *joints,
+                    *quaternion,
+                ]
+            )
+        ):
+            raise NativeTaskEpisodeEnvironmentError(
+                [f"native_task_episode_scripted_joint_target_invalid:{index}"]
+            )
+        key = (tuple(position), tuple(quaternion))
+        if key in joint_targets_by_pose:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_scripted_joint_target_duplicate"]
+            )
+        joint_targets_by_pose[key] = joints
+        joint_target_rows.append(
+            {
+                "phase_id": phase_id,
+                "target_position_world_m": position,
+                "target_quaternion_world_xyzw": quaternion,
+                "joint_positions_rad": joints,
+            }
+        )
+    if joint_target_rows and not callable(
+        getattr(servo, "action_for_joint_target", None)
+    ):
+        raise NativeTaskEpisodeEnvironmentError(
+            ["native_task_episode_joint_target_servo_invalid"]
+        )
+
     def reset() -> None:
         env.reset(seed=seed)
 
     def scripted_pose_action(**kwargs: Any) -> list[float]:
         quaternion = kwargs.get("target_quaternion_world_xyzw")
-        action, _diagnostic = servo.action_for_grasp_target(
-            target_position_world_m=kwargs["target_position_world_m"],
-            target_grasp_frame_quaternion_world_xyzw=(
-                reset_orientation if quaternion is None else quaternion
-            ),
-            gripper_command=kwargs["gripper_command"],
-            max_joint_delta_rad=kwargs["max_joint_delta_rad"],
-            max_joint_setpoint_lead_rad=kwargs["max_joint_setpoint_lead_rad"],
+        resolved_quaternion = reset_orientation if quaternion is None else quaternion
+        pose_key = (
+            tuple(float(value) for value in kwargs["target_position_world_m"]),
+            tuple(float(value) for value in resolved_quaternion),
+        )
+        joint_target = joint_targets_by_pose.get(pose_key)
+        common = {
+            "gripper_command": kwargs["gripper_command"],
+            "max_joint_delta_rad": kwargs["max_joint_delta_rad"],
+            "max_joint_setpoint_lead_rad": kwargs["max_joint_setpoint_lead_rad"],
             # Controls replay the dynamics construction qualified, so the
             # feedforward has to be the same on both sides.
-            velocity_feedforward_scale=kwargs.get(
+            "velocity_feedforward_scale": kwargs.get(
                 "velocity_feedforward_scale", DEFAULT_VELOCITY_FEEDFORWARD_SCALE
             ),
-        )
+        }
+        if joint_target is not None:
+            action, _diagnostic = servo.action_for_joint_target(
+                target_joint_positions_rad=joint_target,
+                **common,
+            )
+        else:
+            action, _diagnostic = servo.action_for_grasp_target(
+                target_position_world_m=kwargs["target_position_world_m"],
+                target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                **common,
+            )
         return [float(value) for value in action]
 
     adapter = IsaacEpisodeAdapter(
@@ -188,7 +256,12 @@ def build_native_task_episode_environment(
             if task_kind == "articulated_open_close"
             else "native_rigid_body_readback"
         ),
-        "scripted_pose_source": "native_franka_differential_ik_servo",
+        "scripted_pose_source": (
+            "construction_global_ik_joint_target_with_native_pose_fallback"
+            if joint_target_rows
+            else "native_franka_differential_ik_servo"
+        ),
+        "scripted_pose_joint_targets": joint_target_rows,
         "joint_wrench_source": "IsaacLab JointWrenchSensor force+torque",
         "joint_wrench_convention": "incoming_joint_frame",
         "controlled_body_orientation_source": "native_body_pose_readback",

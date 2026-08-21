@@ -123,6 +123,119 @@ def _bound_digest(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("sha256:") and len(value) > 7
 
 
+def _construction_global_ik_joint_targets(
+    *, construction: Mapping[str, Any], control_plan: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Bind the joint branches construction actually selected to controls.
+
+    PINK is a local differential IK solver.  The construction worker therefore
+    runs a bounded multi-start preflight and replays a selected joint target
+    when one exists.  Controls must use the same branch; starting local IK over
+    from the position-only prealignment can converge against different joint
+    limits even though both workers consume the same Cartesian phase plan.
+    """
+
+    preflight = construction.get("pink_global_ik_preflight")
+    if preflight is None:
+        return []
+    if (
+        not isinstance(preflight, Mapping)
+        or preflight.get("schema_version")
+        != "native_task_pink_global_ik_preflight.v1"
+        or not isinstance(preflight.get("phases"), list)
+    ):
+        raise RuntimeError("native_task_controls_global_ik_preflight_invalid")
+    actions = control_plan.get("scripted_positive_actions")
+    phase_results = construction.get("phase_results")
+    if not isinstance(actions, list) or not isinstance(phase_results, list):
+        raise RuntimeError("native_task_controls_global_ik_control_plan_invalid")
+    actions_by_phase: dict[str, Mapping[str, Any]] = {}
+    for raw in actions:
+        if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
+            continue
+        phase_id = str(raw.get("phase_id") or "")
+        if not phase_id or phase_id in actions_by_phase:
+            raise RuntimeError("native_task_controls_global_ik_control_plan_invalid")
+        actions_by_phase[phase_id] = raw
+    results_by_phase: dict[str, Mapping[str, Any]] = {}
+    for raw in phase_results:
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("native_task_controls_global_ik_preflight_invalid")
+        phase_id = str(raw.get("phase_id") or "")
+        if not phase_id or phase_id in results_by_phase:
+            raise RuntimeError("native_task_controls_global_ik_preflight_invalid")
+        results_by_phase[phase_id] = raw
+
+    rows: list[dict[str, Any]] = []
+    seen_phases: set[str] = set()
+    for phase in preflight["phases"]:
+        if not isinstance(phase, Mapping):
+            raise RuntimeError("native_task_controls_global_ik_preflight_invalid")
+        selected = phase.get("selected")
+        if selected is None:
+            continue
+        phase_id = str(phase.get("phase_id") or "")
+        action = actions_by_phase.get(phase_id)
+        # Controls deliberately rename and offset its contact trajectory.  A
+        # construction seed is reusable only when the control carries the
+        # same phase identity and exact measured target pose.  Unmatched
+        # construction phases remain local-IK controls; they are not errors.
+        if action is None:
+            continue
+        phase_result = results_by_phase.get(phase_id)
+        if (
+            not phase_id
+            or phase_id in seen_phases
+            or not isinstance(selected, Mapping)
+            or selected.get("solved") is not True
+            or not isinstance(phase_result, Mapping)
+        ):
+            raise RuntimeError("native_task_controls_global_ik_binding_invalid")
+        try:
+            position = [
+                float(value) for value in action["target_position_world_m"]
+            ]
+            quaternion = [
+                float(value) for value in action["target_quaternion_world_xyzw"]
+            ]
+            joints = [
+                float(value) for value in selected["joint_positions_rad"]
+            ]
+            construction_position = [
+                float(value) for value in phase_result["target_position_world_m"]
+            ]
+            construction_quaternion = [
+                float(value)
+                for value in phase_result["target_orientation_world_xyzw"]
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "native_task_controls_global_ik_binding_invalid"
+            ) from exc
+        if (
+            len(position) != 3
+            or len(joints) != 7
+            or len(quaternion) != 4
+            or position != construction_position
+            or quaternion != construction_quaternion
+            or not all(
+                math.isfinite(value)
+                for value in [*position, *joints, *quaternion]
+            )
+        ):
+            raise RuntimeError("native_task_controls_global_ik_binding_invalid")
+        rows.append(
+            {
+                "phase_id": phase_id,
+                "target_position_world_m": position,
+                "target_quaternion_world_xyzw": quaternion,
+                "joint_positions_rad": joints,
+            }
+        )
+        seen_phases.add(phase_id)
+    return rows
+
+
 def _input_binding_mismatches(
     *,
     manifest: Mapping[str, Any],
@@ -492,6 +605,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["gripper_frame_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
+        scripted_pose_joint_targets = _construction_global_ik_joint_targets(
+            construction=construction,
+            control_plan=control_plan,
+        )
+        result["construction_global_ik_seed_binding"] = {
+            "schema_version": "native_task_controls_global_ik_seed_binding.v1",
+            "status": "bound" if scripted_pose_joint_targets else "not_available",
+            "target_count": len(scripted_pose_joint_targets),
+            "targets": scripted_pose_joint_targets,
+            "construction_result_digest": construction["result_digest"],
+            "provider_mutation_performed": False,
+            "claim_boundary": (
+                "replays_only_joint_branches_selected_by_the_bound_construction_"
+                "receipt;native_controls_remain_the_arrival_contact_and_task_"
+                "outcome_authority"
+            ),
+        }
         episode_environment, environment_receipt = (
             build_native_task_episode_environment(
                 built=built,
@@ -499,6 +629,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 servo=servo,
                 task_readback=readback,
                 to_tensor=_to_tensor,
+                scripted_pose_joint_targets=scripted_pose_joint_targets,
             )
         )
         if graph_rigid:
