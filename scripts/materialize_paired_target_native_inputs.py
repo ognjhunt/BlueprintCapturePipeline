@@ -21,6 +21,10 @@ from blueprint_pipeline.native_task_arena_packet import (
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     materialize_native_task_policy_execution_spec,
 )
+from blueprint_pipeline.native_task_policy_cadence_amendment import (
+    materialize_native_task_policy_cadence_amendment,
+    materialize_native_task_policy_cadence_amendment_request,
+)
 from blueprint_pipeline.native_task_arena_stance_variant import (
     materialize_native_task_arena_stance_variant_request,
 )
@@ -295,6 +299,28 @@ STEPS: dict[str, Step] = {
         {
             "request": Param("--request", required=True, json_file=True),
             "output_path": Param("--output", required=True),
+        },
+    ),
+    "policy-cadence-amendment-request": Step(
+        "Bind one exact 20-to-15 Hz policy-cadence amendment request.",
+        materialize_native_task_policy_cadence_amendment_request,
+        {
+            "task_freeze_path": Param("--task-freeze", required=True),
+            "packet_request_path": Param("--packet-request", required=True),
+            "authorized_by": Param("--authorized-by", required=True),
+            "authorized_at": Param("--authorized-at", required=True),
+            "output_path": Param("--output", required=True),
+        },
+    ),
+    "policy-cadence-amendment": Step(
+        "Materialize the amended freeze and complete 15 Hz Arena packet.",
+        materialize_native_task_policy_cadence_amendment,
+        {
+            "amendment_request_path": Param("--amendment-request", required=True),
+            "task_freeze_path": Param("--task-freeze", required=True),
+            "packet_request_path": Param("--packet-request", required=True),
+            "evidence_root": Param("--evidence-root", required=True),
+            "output_dir": Param("--output-dir", required=True),
         },
     ),
 }

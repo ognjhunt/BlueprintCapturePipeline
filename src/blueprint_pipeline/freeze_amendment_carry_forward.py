@@ -140,6 +140,17 @@ def _changed_paths(
     return [] if superseded == amended else [prefix or "."]
 
 
+def changed_document_paths(superseded: Any, amended: Any) -> list[str]:
+    """Return stable leaf paths changed between two JSON-compatible values.
+
+    Amendment-specific consumers use this public wrapper so they can rederive
+    the changed-field set from the actual documents instead of trusting a
+    carry-forward receipt's self-description.
+    """
+
+    return _changed_paths(superseded, amended)
+
+
 def _consumes(changed_path: str, consumed_field: str) -> bool:
     """Does a changed path fall inside a consumed field?
 
@@ -407,6 +418,7 @@ __all__ = [
     "REQUIRES_REDERIVATION",
     "SCHEMA_VERSION",
     "FreezeAmendmentCarryForwardError",
+    "changed_document_paths",
     "evaluate_freeze_amendment_carry_forward",
     "main",
     "validate_freeze_amendment_carry_forward",
