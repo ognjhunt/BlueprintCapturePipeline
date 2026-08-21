@@ -145,6 +145,26 @@ def _admission_binding_mismatches(
     mismatched.extend(
         relation for relation, value in qualifications if value is not True
     )
+    task_spec = scene_plan.get("task_spec") or {}
+    expected_prompt = str(task_spec.get("prompt") or "")
+    if not expected_prompt or spec.get("prompt") != expected_prompt:
+        mismatched.append("execution_spec_prompt_vs_task_spec")
+    try:
+        from blueprint_pipeline.adp009d_policy_episode import (
+            maximum_policy_queries_for_task_spec,
+        )
+
+        expected_queries = maximum_policy_queries_for_task_spec(
+            task_spec,
+            open_loop_horizon=int(spec.get("open_loop_horizon")),
+        )
+    except (TypeError, ValueError):
+        expected_queries = None
+    if (
+        expected_queries is None
+        or spec.get("max_policy_queries") != expected_queries
+    ):
+        mismatched.append("execution_spec_query_budget_vs_task_spec")
     return mismatched
 
 

@@ -205,6 +205,33 @@ def _sample_with_index(
     return sample
 
 
+def maximum_policy_queries_for_task_spec(
+    task_spec: Mapping[str, Any], *, open_loop_horizon: int
+) -> int:
+    """Return the shared full-step query budget for one frozen task.
+
+    Both candidates execute the same number of actions from each returned
+    chunk. Taking the integer number of complete chunks that fit inside the
+    task's action ceiling gives them the same maximum interaction time without
+    permitting either policy to overrun the preregistered episode.
+    """
+
+    raw_steps = task_spec.get("maximum_action_steps")
+    if (
+        isinstance(raw_steps, bool)
+        or not isinstance(raw_steps, int)
+        or raw_steps <= 0
+        or isinstance(open_loop_horizon, bool)
+        or not isinstance(open_loop_horizon, int)
+        or open_loop_horizon <= 0
+    ):
+        raise PolicyEpisodeError(["policy_episode_action_budget_invalid"])
+    queries = raw_steps // open_loop_horizon
+    if queries <= 0:
+        raise PolicyEpisodeError(["policy_episode_action_budget_invalid"])
+    return queries
+
+
 def _resolved_task_spec(
     *,
     task_spec: Mapping[str, Any] | None,
@@ -1067,5 +1094,6 @@ __all__ = [
     "EpisodeEnvironment",
     "PolicyEpisodeError",
     "TaskScoringError",
+    "maximum_policy_queries_for_task_spec",
     "run_policy_episode",
 ]

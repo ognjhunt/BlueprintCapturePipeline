@@ -374,6 +374,7 @@ def _articulated_packet(root: Path) -> tuple[Path, dict]:
         "task_spec": {
             "schema_version": "adp_task_spec.v1",
             "task_kind": "articulated_open_close",
+            "prompt": "Open the articulated fixture.",
             "settle_window_samples": 40,
             "maximum_action_steps": 450,
         },
@@ -531,7 +532,7 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
             "openpi_revision": OPENPI_SOURCE_REVISION,
         },
         "policy_identity_receipt": {"identity_verified": True},
-        "max_policy_queries": 4,
+        "max_policy_queries": 56,
         "open_loop_horizon": 8,
         "overview_camera_policy_input": False,
         "policy_may_grade_itself": False,
@@ -683,6 +684,48 @@ def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
     with pytest.raises(ValueError, match="output_exists"):
         materialize_native_task_policy_execution_spec(
             request=request, output_path=output
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        (
+            "prompt",
+            "Open a different appliance.",
+            "native_task_policy_prompt_task_spec_mismatch",
+        ),
+        (
+            "max_policy_queries",
+            55,
+            "native_task_policy_shared_query_budget_mismatch",
+        ),
+    ),
+)
+def test_policy_bundle_binds_prompt_and_shared_query_budget_to_task(
+    tmp_path: Path,
+    field: str,
+    value,
+    error: str,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    spec = _policy_spec(scene, construction, controls)
+    spec[field] = value
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+
+    with pytest.raises(ValueError, match=error):
+        build_native_task_arena_policy_bundle(
+            job_dir=tmp_path / f"blocked-{field}",
+            packet_dir=packet,
+            construction_result_path=construction,
+            control_result_path=controls,
+            policy_execution_spec=spec,
+            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+            implementation_commit="d" * 40,
         )
 
 

@@ -15,6 +15,7 @@ from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
@@ -107,6 +108,10 @@ def validate_native_task_policy_execution_spec(
                 )
         except (TypeError, ValueError):
             errors.append("native_task_policy_spec_or_identity_invalid")
+        if payload["policy_spec"].get("open_loop_horizon") != payload.get(
+            "open_loop_horizon"
+        ):
+            errors.append("native_task_policy_open_loop_horizon_mismatch")
     for field in ("max_policy_queries", "open_loop_horizon"):
         raw = payload.get(field)
         if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
@@ -177,6 +182,19 @@ def build_native_task_arena_policy_bundle(
     spec = validate_native_task_policy_execution_spec(policy_execution_spec)
     pair = controls.get("control_pair") or {}
     errors: list[str] = []
+    task_spec = scene_plan.get("task_spec") or {}
+    try:
+        expected_policy_queries = maximum_policy_queries_for_task_spec(
+            task_spec,
+            open_loop_horizon=int(spec["open_loop_horizon"]),
+        )
+    except (TypeError, ValueError):
+        expected_policy_queries = None
+        errors.append("native_task_policy_shared_query_budget_invalid")
+    if spec.get("prompt") != task_spec.get("prompt"):
+        errors.append("native_task_policy_prompt_task_spec_mismatch")
+    if spec.get("max_policy_queries") != expected_policy_queries:
+        errors.append("native_task_policy_shared_query_budget_mismatch")
     if (
         construction.get("schema_version")
         != "native_task_arena_construction_result.v1"
@@ -203,7 +221,7 @@ def build_native_task_arena_policy_bundle(
         or spec.get("cell_id") != (scene_plan.get("scenario") or {}).get("cell_id")
         or pair.get("cell_id") != spec.get("cell_id")
         or pair.get("task_spec_digest")
-        != canonical_digest(scene_plan.get("task_spec") or {})
+        != canonical_digest(task_spec)
     ):
         errors.append("native_task_policy_task_cell_binding_mismatch")
     if errors:
