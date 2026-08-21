@@ -22,6 +22,7 @@ from blueprint_pipeline.native_task_control_plan import (
     NativeTaskControlPlanError,
     ROBOTOIQ_2F85_BITE_BRACKET_OFFSET_M,
     ROBOTOIQ_2F85_BITE_DEPTH_M,
+    ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M,
     ROBOTOIQ_2F85_MINIMUM_BITE_DEPTH_M,
     ROBOTOIQ_2F85_PREALIGN_RETRACTION_M,
     materialize_native_task_control_plan,
@@ -410,6 +411,15 @@ def test_measured_outward_standoff_replaces_generic_inward_bite() -> None:
     )
     assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.01)
     assert actions["contact_open"]["contact_bite_depth_m"] == pytest.approx(0.0)
+    assert actions["contact_open"]["arrival_tolerance_m"] == pytest.approx(
+        ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M
+    )
+    assert actions["contact_close"]["arrival_tolerance_m"] == pytest.approx(
+        ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M
+    )
+    assert actions["joint_path_01"]["arrival_tolerance_m"] == pytest.approx(
+        affordance["arrival_tolerance_m"]
+    )
     assert control["positive_trajectory_executes_bite_adjusted_contact_targets"] is False
     assert control["contact_standoff_source"] == (
         "native_droid_grasp_swept_volume"
