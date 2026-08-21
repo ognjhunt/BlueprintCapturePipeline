@@ -535,6 +535,7 @@ def build_native_task_arena_live_profile(
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 2.0,
     hard_ttl_seconds: int = 7_200,
+    preferred_geolocation_regex: str = "",
 ) -> dict[str, Any]:
     """Derive a live profile from the packet receipt the link will run."""
 
@@ -604,6 +605,15 @@ def build_native_task_arena_live_profile(
         revision=revision,
         max_spend_usd=max_spend_usd,
         extra_paths=extra,
+        runtime_environment=(
+            {
+                "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": (
+                    preferred_geolocation_regex
+                )
+            }
+            if preferred_geolocation_regex
+            else None
+        ),
     )
 
 
@@ -632,6 +642,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         target.add_argument("--max-hourly-rate-usd", type=float, default=1.0)
         target.add_argument("--max-spend-usd", type=float, default=2.0)
         target.add_argument("--hard-ttl-seconds", type=int, default=7_200)
+        target.add_argument(
+            "--preferred-geolocation-regex",
+            default="",
+            help=(
+                "Digest-bind a Vast geolocation preference into this launch "
+                "profile. It is a preference, not an allowlist."
+            ),
+        )
         target.add_argument("--output", required=True)
         if "construction_result" in entry.predecessors:
             target.add_argument("--construction-result", required=True)
@@ -667,6 +685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
+            preferred_geolocation_regex=args.preferred_geolocation_regex,
         )
     except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
         print(

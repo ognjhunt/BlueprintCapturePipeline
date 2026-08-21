@@ -658,6 +658,23 @@ def test_the_shared_controls_are_present(lane, link: str) -> None:
     ]
 
 
+def test_vast_geolocation_preference_is_digest_bound_to_the_profile(lane) -> None:
+    profile = _build(
+        lane,
+        "controls",
+        preferred_geolocation_regex="virginia|california|oregon|texas",
+    )
+
+    assert profile["runtime_environment"] == {
+        "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": (
+            "virginia|california|oregon|texas"
+        )
+    }
+    assert profile["profile_digest"] == canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+
 @pytest.mark.parametrize(
     "link,omitted",
     [
