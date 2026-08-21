@@ -198,6 +198,53 @@ def test_stance_keeps_front_base_while_tool_approaches_free_edge(tmp_path) -> No
     assert overview["frame_from_camera_matrix"][7] < 9.456664
 
 
+def test_front_entry_patch_places_base_on_outward_approach_axis(tmp_path) -> None:
+    request = _request()
+    affordance = request["task_spec"]["interaction_affordance"]
+    affordance.update(
+        {
+            "approach_unit_asset_root": [0.0, -1.0, 0.0],
+            "gripper_orientation_contact_xyzw": [
+                0.0,
+                -math.sqrt(0.5),
+                -math.sqrt(0.5),
+                0.0,
+            ],
+            "contact_outward_standoff_m": 0.01,
+            "grasp_swept_volume_receipt_digest": "sha256:" + "f" * 64,
+        }
+    )
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    request["task_state_binding"]["interaction_affordance_digest"] = affordance[
+        "affordance_digest"
+    ]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    source = tmp_path / "front-entry.json"
+    source.write_text(json.dumps(request), encoding="utf-8")
+
+    result = materialize_native_task_arena_stance_variant_request(
+        base_request_path=source,
+        output_path=tmp_path / "front-entry-stance.json",
+    )
+
+    assert result["robot_base_pose_world"]["position_world_m"] == pytest.approx(
+        [3.7634863, 8.906664, 0.090782]
+    )
+    stance = result["stance_variant"]
+    assert stance["approach_outward_world"] == pytest.approx([0.0, -1.0, 0.0])
+    assert stance["base_outward_world"] == pytest.approx([0.0, -1.0, 0.0])
+    assert stance["base_outward_source"] == (
+        "measured_front_entry_approach_outward_axis"
+    )
+    assert stance["derivation"] == (
+        "door_contact_plus_front_entry_approach_standoff"
+    )
+
+
 def test_stance_variant_reapplication_preserves_original_retreat_geometry(
     tmp_path,
 ) -> None:

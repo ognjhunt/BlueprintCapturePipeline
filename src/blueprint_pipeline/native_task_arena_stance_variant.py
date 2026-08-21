@@ -198,13 +198,26 @@ def materialize_native_task_arena_stance_variant_request(
             _multiply_xyzw(root_orientation, first_contact_orientation),
             gripper_orientation_contact,
         )
-        # +Y is the authored jaw axis. The affordance producer signs it toward
-        # the robot/front side of the panel. Keep the fixed base on that proven
-        # front side while the tool itself stages outside the free edge along
-        # its independent radial approach axis.
-        base_outward_world = _normalize(
-            _rotate_xyzw(gripper_world_orientation, [0.0, 1.0, 0.0])
+        front_entry_patch = (
+            float(affordance.get("contact_outward_standoff_m", 0.0)) > 0.0
+            and bool(affordance.get("grasp_swept_volume_receipt_digest"))
         )
+        if front_entry_patch:
+            # The source-derived rim patch closes vertically, so its +Y jaw
+            # axis is world-up and cannot identify the appliance front. The
+            # measured swept-volume contract instead places the fixed base on
+            # the exact outward side of the horizontal approach axis.
+            base_outward_world = list(approach_world)
+            base_outward_source = "measured_front_entry_approach_outward_axis"
+            stance_derivation = "door_contact_plus_front_entry_approach_standoff"
+        else:
+            # Legacy side-entry pinch: +Y is the authored jaw axis, signed
+            # toward the robot/front side of the panel.
+            base_outward_world = _normalize(
+                _rotate_xyzw(gripper_world_orientation, [0.0, 1.0, 0.0])
+            )
+            base_outward_source = "authored_gripper_positive_jaw_axis"
+            stance_derivation = "door_contact_plus_gripper_jaw_front_standoff"
     except (KeyError, TypeError, ValueError) as exc:
         raise NativeTaskArenaStanceVariantError(
             "native_task_arena_stance_affordance_invalid"
@@ -217,7 +230,18 @@ def materialize_native_task_arena_stance_variant_request(
         raise NativeTaskArenaStanceVariantError(
             "native_task_arena_stance_base_normal_not_horizontal"
         )
-    if abs(sum(a * b for a, b in zip(approach_world, base_outward_world, strict=True))) > 0.05:
+    if (
+        not front_entry_patch
+        and abs(
+            sum(
+                a * b
+                for a, b in zip(
+                    approach_world, base_outward_world, strict=True
+                )
+            )
+        )
+        > 0.05
+    ):
         raise NativeTaskArenaStanceVariantError(
             "native_task_arena_stance_base_and_tool_axes_not_independent"
         )
@@ -381,12 +405,12 @@ def materialize_native_task_arena_stance_variant_request(
     request["cameras"] = [by_role[role] for role in ("external", "wrist", "overview")]
     request["stance_variant"] = {
         "base_request_digest": request["request_digest"],
-        "derivation": "door_contact_plus_gripper_jaw_front_standoff",
+        "derivation": stance_derivation,
         "door_standoff_m": standoff,
         "closed_contact_world_m": closed,
         "approach_outward_world": approach_world,
         "base_outward_world": base_outward_world,
-        "base_outward_source": "authored_gripper_positive_jaw_axis",
+        "base_outward_source": base_outward_source,
         "resolved_base_position_world_m": base,
         "resolved_base_yaw_world_rad": yaw,
         "maximum_door_sweep_bearing_deviation_rad": maximum_deviation,
