@@ -54,6 +54,14 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append(
             f"bundle_commit_not_source_commit:{receipt.get('implementation_commit')}"
         )
+    if (
+        receipt.get("provider_zero_gpu_collision_qualification_completed")
+        is not True
+        or not str(receipt.get("execution_candidate_digest") or "").startswith(
+            "sha256:"
+        )
+    ):
+        blockers.append("native_task_execution_candidate_missing")
 
     authority_path = context.extra_paths.get("attempt_authority")
     if authority_path is None or not authority_path.is_file():

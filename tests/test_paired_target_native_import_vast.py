@@ -26,7 +26,22 @@ COMMIT = "a" * 40
 
 def _source_request(tmp_path: Path) -> Path:
     asset = tmp_path / "asset.usda"
-    asset.write_text("#usda 1.0\n", encoding="utf-8")
+    asset.write_text(
+        '''#usda 1.0
+(defaultPrim="Asset")
+def Xform "Asset"
+{
+    def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        def Cube "collider" (prepend apiSchemas = ["PhysicsCollisionAPI"])
+        {
+            double size = 0.1
+        }
+    }
+}
+''',
+        encoding="utf-8",
+    )
     import hashlib
 
     sha = "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest()
@@ -590,6 +605,10 @@ def test_live_run_requires_qualified_runtime_watchdog_cleanup_and_zero(
             "replacement_count": 1,
             "native_isaac_executed": True,
             "all_replacements_import_qualified": True,
+            "native_gpu_physics_qualified": True,
+            "execution_candidate_digest": bundle[
+                "execution_candidate_digest"
+            ],
             "candidate_policy_queried": False,
             "physical_equivalence_claimed": False,
             "blockers": [],

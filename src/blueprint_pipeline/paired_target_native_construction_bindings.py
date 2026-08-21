@@ -20,9 +20,14 @@ from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
+from .native_task_execution_admission import (
+    CANDIDATE_SCHEMA_VERSION,
+    validate_native_task_execution_candidate,
+)
 
 
-SCHEMA_VERSION = "paired_target_native_construction_bindings.v1"
+SCHEMA_VERSION = "paired_target_native_construction_bindings.v2"
+LEGACY_SCHEMA_VERSION = "paired_target_native_construction_bindings.v1"
 MANIPULATION_PREFLIGHT_SCHEMA = "paired_target_native_manipulation_preflight.v1"
 PAIRED_PREFLIGHT_SCHEMA = "paired_target_native_preflight.v1"
 NATIVE_IMPORT_SCHEMA = "paired_target_native_import_runtime_result.v1"
@@ -276,7 +281,8 @@ def validate_paired_target_native_construction_bindings(
             ["paired_target_construction_invalid"]
         ) from exc
     errors: list[str] = []
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    schema = payload.get("schema_version")
+    if schema not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
         errors.append("paired_target_construction_schema_invalid")
     if payload.get("status") != "paired_targets_admitted_for_native_construction":
         errors.append("paired_target_construction_status_invalid")
@@ -353,6 +359,15 @@ def validate_paired_target_native_construction_bindings(
                 )
         if row.get("native_simulator_import_qualified") is not True:
             errors.append(f"paired_target_construction_import_missing:{index}")
+        if schema == SCHEMA_VERSION:
+            if not _digest(row.get("native_execution_candidate_digest")):
+                errors.append(
+                    f"paired_target_construction_execution_candidate_invalid:{index}"
+                )
+            if row.get("native_gpu_physics_qualified") is not True:
+                errors.append(
+                    f"paired_target_construction_native_gpu_physics_missing:{index}"
+                )
         evidence = row.get("evidence_receipts")
         if not isinstance(evidence, Mapping):
             errors.append(f"paired_target_construction_evidence_missing:{index}")
@@ -363,6 +378,15 @@ def validate_paired_target_native_construction_bindings(
                 "registered_usd": row.get("replacement_asset_sha256"),
                 "native_import_probe": row.get(
                     "native_import_probe_result_digest"
+                ),
+                **(
+                    {
+                        "native_execution_candidate": row.get(
+                            "native_execution_candidate_digest"
+                        )
+                    }
+                    if schema == SCHEMA_VERSION
+                    else {}
                 ),
             }
             for role, digest in expected.items():
@@ -432,6 +456,22 @@ def validate_materialized_paired_target_native_construction_bindings(
             "collision_scene"
         ):
             errors.append("paired_target_construction_source_collision_mismatch")
+        if payload.get("schema_version") == SCHEMA_VERSION:
+            _, candidate = _read_bound_record(
+                payload.get("native_execution_candidate"),
+                role="native_execution_candidate",
+                expected_schema=CANDIDATE_SCHEMA_VERSION,
+                digest_field="candidate_digest",
+            )
+            validate_native_task_execution_candidate(candidate, reopen_files=False)
+            if any(
+                row.get("native_execution_candidate_digest")
+                != candidate.get("candidate_digest")
+                for row in payload["bindings"]
+            ):
+                errors.append(
+                    "paired_target_construction_execution_candidate_mismatch"
+                )
         batch_record = payload.get("source_collider_batch_removal") or {}
         batch_path, batch, _removed_path, collision_record = (
             _read_source_collider_batch_removal(
@@ -554,8 +594,43 @@ def materialize_paired_target_native_construction_bindings(
         raise PairedTargetNativeConstructionBindingsError(
             ["paired_target_construction_source_mismatch"]
         )
+    execution_admission_capable = (
+        native_import.get("native_gpu_physics_qualified") is True
+        and _digest(native_import.get("execution_candidate_digest"))
+    )
+    native_import_path = Path(
+        str(manipulation["native_import_result"]["path"])
+    ).expanduser().resolve()
+    candidate_path = native_import_path.parent / (
+        "native_task_execution_candidate.v1.json"
+    )
+    execution_candidate: dict[str, Any] | None = None
+    if execution_admission_capable:
+        try:
+            execution_candidate = json.loads(
+                candidate_path.read_text(encoding="utf-8")
+            )
+            execution_candidate = validate_native_task_execution_candidate(
+                execution_candidate, reopen_files=False
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise PairedTargetNativeConstructionBindingsError(
+                ["paired_target_construction_execution_candidate_invalid"]
+            ) from exc
+        if (
+            execution_candidate.get("candidate_digest")
+            != native_import.get("execution_candidate_digest")
+            or execution_candidate.get("scene_id") != manipulation.get("scene_id")
+        ):
+            raise PairedTargetNativeConstructionBindingsError(
+                ["paired_target_construction_execution_candidate_invalid"]
+            )
     preflight_by_task = {row["task_id"]: row for row in preflight["tasks"]}
     import_by_task = {row["task_id"]: row for row in native_import["replacements"]}
+    candidate_by_task = {
+        row["task_id"]: row
+        for row in (execution_candidate or {}).get("assets", [])
+    }
     if (
         manipulation.get("replacement_object_count")
         != len(manipulation.get("tasks") or [])
@@ -579,12 +654,25 @@ def materialize_paired_target_native_construction_bindings(
         asset_id = str(task.get("asset_id") or "")
         parent = preflight_by_task.get(task_id)
         imported = import_by_task.get(task_id)
+        candidate_asset = candidate_by_task.get(task_id)
         if (
             not isinstance(parent, Mapping)
             or not isinstance(imported, Mapping)
             or parent.get("asset_id") != asset_id
             or imported.get("asset_id") != asset_id
             or imported.get("native_simulator_import_qualified") is not True
+            or (
+                execution_admission_capable
+                and (
+                    imported.get("native_gpu_physics_qualified") is not True
+                    or not isinstance(candidate_asset, Mapping)
+                    or candidate_asset.get("asset_id") != asset_id
+                    or imported.get("collision_intent_digest")
+                    != (candidate_asset.get("collision_intent") or {}).get(
+                        "intent_digest"
+                    )
+                )
+            )
             or imported.get("blockers") != []
         ):
             raise PairedTargetNativeConstructionBindingsError(
@@ -645,6 +733,16 @@ def materialize_paired_target_native_construction_bindings(
             != canonical_digest(probe, digest_field="result_digest")
             or probe.get("asset_id") != asset_id
             or probe.get("native_simulator_import_qualified") is not True
+            or (
+                execution_admission_capable
+                and (
+                    probe.get("native_gpu_physics_qualified") is not True
+                    or probe.get("execution_candidate_digest")
+                    != (execution_candidate or {}).get("candidate_digest")
+                    or probe.get("collision_intent_digest")
+                    != imported.get("collision_intent_digest")
+                )
+            )
             or probe.get("candidate_policy_queried") is not False
         ):
             raise PairedTargetNativeConstructionBindingsError(
@@ -659,6 +757,16 @@ def materialize_paired_target_native_construction_bindings(
                 "replacement_asset_sha256": usd_record["sha256"],
                 "native_import_probe_result_digest": imported["probe_result_digest"],
                 "native_simulator_import_qualified": True,
+                **(
+                    {
+                        "native_execution_candidate_digest": execution_candidate[
+                            "candidate_digest"
+                        ],
+                        "native_gpu_physics_qualified": True,
+                    }
+                    if execution_candidate is not None
+                    else {}
+                ),
                 "evidence_receipts": {
                     "task_freeze": _file_record(
                         task_freeze_path,
@@ -676,6 +784,19 @@ def materialize_paired_target_native_construction_bindings(
                         schema_version=str(probe.get("schema_version") or ""),
                         canonical_digest_value=probe["result_digest"],
                     ),
+                    **(
+                        {
+                            "native_execution_candidate": _file_record(
+                                candidate_path,
+                                schema_version=CANDIDATE_SCHEMA_VERSION,
+                                canonical_digest_value=execution_candidate[
+                                    "candidate_digest"
+                                ],
+                            )
+                        }
+                        if execution_candidate is not None
+                        else {}
+                    ),
                 },
             }
         )
@@ -688,7 +809,11 @@ def materialize_paired_target_native_construction_bindings(
             ["paired_target_construction_task_set_mismatch"]
         )
     payload: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": (
+            SCHEMA_VERSION
+            if execution_candidate is not None
+            else LEGACY_SCHEMA_VERSION
+        ),
         "status": "paired_targets_admitted_for_native_construction",
         "scene_id": manipulation["scene_id"],
         "task_freeze_set_digest": manipulation["task_freeze_set_digest"],
@@ -702,6 +827,24 @@ def materialize_paired_target_native_construction_bindings(
         ),
         "paired_target_preflight": manipulation["paired_target_preflight"],
         "native_import_result": manipulation["native_import_result"],
+        **(
+            {
+                "native_execution_candidate": _file_record(
+                    candidate_path,
+                    schema_version=CANDIDATE_SCHEMA_VERSION,
+                    canonical_digest_value=execution_candidate[
+                        "candidate_digest"
+                    ],
+                )
+                | {
+                    "candidate_digest": execution_candidate[
+                        "candidate_digest"
+                    ]
+                }
+            }
+            if execution_candidate is not None
+            else {}
+        ),
         "manipulation_preflight": _file_record(
             source,
             schema_version=MANIPULATION_PREFLIGHT_SCHEMA,

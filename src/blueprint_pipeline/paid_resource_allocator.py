@@ -196,6 +196,11 @@ from .native_task_arena_paid_authority import (
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
+from .native_task_execution_admission import (
+    NativeTaskExecutionAdmissionError,
+    native_task_execution_admission_required,
+    require_native_task_execution_admission,
+)
 from .adp009d_gated_backbone import probe_gated_backbone_access
 from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
@@ -4975,6 +4980,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             prepared_bundle = None
             native_authority = None
+            if args.native_task_arena_packet:
+                try:
+                    if native_task_execution_admission_required(
+                        args.native_task_arena_packet
+                    ):
+                        require_native_task_execution_admission(
+                            args.native_task_arena_packet
+                        )
+                except NativeTaskExecutionAdmissionError as exc:
+                    blockers.extend(exc.errors)
             if not blockers:
                 try:
                     source_packet = verify_native_task_runtime_source_packet(

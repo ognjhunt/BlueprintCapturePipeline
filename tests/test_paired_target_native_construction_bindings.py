@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paired_target_native_construction_bindings import (
     PairedTargetNativeConstructionBindingsError,
@@ -105,12 +106,13 @@ def _source_collider_batch(root: Path, *, count: int) -> Path:
     )
 
 
-def _fixture(root: Path, *, count: int) -> Path:
+def _fixture(root: Path, *, count: int, native_execution: bool = False) -> Path:
     batch = _source_collider_batch(root, count=count)
     source_collision = root / "collision.usda"
     preflight_tasks = []
     manipulation_tasks = []
     import_rows = []
+    candidate_assets = []
     for index in range(count):
         task_id = f"task_{index}"
         asset_id = f"asset_{index}"
@@ -154,6 +156,33 @@ def _fixture(root: Path, *, count: int) -> Path:
             },
             digest_field="result_digest",
         )
+        intent = {
+            "schema_version": "native_task_collision_intent.v1",
+            "asset_sha256": usd_record["sha256"],
+            "dynamic_collision_prim_count": 1,
+            "dynamic_mesh_colliders": [],
+            "dynamic_primitive_colliders": [
+                {
+                    "prim_path": f"/asset_{index}/collider",
+                    "rigid_body_prim_path": f"/asset_{index}",
+                }
+            ],
+            "maximum_convex_hull_aspect_ratio": 100.0,
+            "intent_digest": "",
+        }
+        intent["intent_digest"] = canonical_digest(
+            intent, digest_field="intent_digest"
+        )
+        candidate_assets.append(
+            {
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "registered_asset": usd_record,
+                "registered_static_qualification_digest": "sha256:" + "c" * 64,
+                "collision_intent": intent,
+                "provider_zero_qualification_completed": True,
+            }
+        )
         preflight_tasks.append(
             {
                 "task_id": task_id,
@@ -185,6 +214,51 @@ def _fixture(root: Path, *, count: int) -> Path:
                 "probe_result_digest": probe_record["result_digest"],
             }
         )
+    candidate = {
+        "schema_version": "native_task_execution_candidate.v1",
+        "status": "prepared_for_exact_runtime_gpu_cook",
+        "scene_id": "scene_fixture",
+        "runtime_image": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:" + "d" * 64,
+        "asset_count": count,
+        "assets": candidate_assets,
+        "provider_mutation_performed": False,
+        "paid_resource_allocated": False,
+        "native_gpu_cooking_readback_still_required": True,
+        "construction_authorized": False,
+        "physical_equivalence_claimed": False,
+        "candidate_digest": "",
+    }
+    candidate["candidate_digest"] = canonical_digest(
+        candidate, digest_field="candidate_digest"
+    )
+    if native_execution:
+        write_json(
+            root / "native" / "native_task_execution_candidate.v1.json",
+            candidate,
+        )
+        for index, row in enumerate(import_rows):
+            probe_path = root / "native" / "probes" / f"{index}.json"
+            probe = json.loads(probe_path.read_text(encoding="utf-8"))
+            intent = candidate_assets[index]["collision_intent"]
+            probe.update(
+                {
+                    "execution_candidate_digest": candidate["candidate_digest"],
+                    "collision_intent_digest": intent["intent_digest"],
+                    "native_gpu_physics_qualified": True,
+                }
+            )
+            probe["result_digest"] = canonical_digest(
+                probe, digest_field="result_digest"
+            )
+            write_json(probe_path, probe)
+            row.update(
+                {
+                    "probe_result_sha256": _sha(probe_path),
+                    "probe_result_digest": probe["result_digest"],
+                    "collision_intent_digest": intent["intent_digest"],
+                    "native_gpu_physics_qualified": True,
+                }
+            )
     paired_record = _write(
         root / "paired.json",
         {
@@ -209,6 +283,16 @@ def _fixture(root: Path, *, count: int) -> Path:
             "scene_id": "scene_fixture",
             "replacement_count": count,
             "all_replacements_import_qualified": True,
+            **(
+                {
+                    "native_gpu_physics_qualified": True,
+                    "execution_candidate_digest": candidate[
+                        "candidate_digest"
+                    ],
+                }
+                if native_execution
+                else {}
+            ),
             "candidate_policy_queried": False,
             "replacements": import_rows,
             "result_digest": "",
@@ -289,6 +373,27 @@ def test_rejects_tampered_native_import_probe(tmp_path: Path) -> None:
             source_collider_batch_removal_path=_batch_for(source),
             output_path=tmp_path / "binding.json",
         )
+
+
+def test_new_bindings_require_native_gpu_execution_candidate(tmp_path: Path) -> None:
+    source = _fixture(
+        tmp_path / "evidence",
+        count=1,
+        native_execution=True,
+    )
+    output = tmp_path / "binding.json"
+
+    result = materialize_paired_target_native_construction_bindings(
+        manipulation_preflight_path=source,
+        source_collider_batch_removal_path=_batch_for(source),
+        output_path=output,
+    )
+
+    assert result["schema_version"] == "paired_target_native_construction_bindings.v2"
+    assert result["bindings"][0]["native_gpu_physics_qualified"] is True
+    assert result["native_execution_candidate"]["canonical_digest"].startswith(
+        "sha256:"
+    )
 
 
 def test_rejects_qualified_boundary_claim_tamper(tmp_path: Path) -> None:

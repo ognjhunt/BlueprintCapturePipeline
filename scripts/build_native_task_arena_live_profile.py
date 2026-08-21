@@ -52,6 +52,11 @@ from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
     validate_native_task_arena_runtime_plan,
 )
+from blueprint_pipeline.native_task_execution_admission import (
+    NativeTaskExecutionAdmissionError,
+    native_task_execution_admission_required,
+    require_native_task_execution_admission,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -69,6 +74,7 @@ MAX_TTL_SECONDS = 14_400
 PACKET_RECEIPT_NAME = "native_task_arena_packet_receipt.v1.json"
 PACKET_REQUEST_NAME = "native_task_arena_packet_request.v1.json"
 SCENE_PLAN_NAME = "native_task_arena_scene_plan.v1.json"
+EXECUTION_ADMISSION_NAME = "native_task_execution_admission.v1.json"
 
 
 @dataclass(frozen=True)
@@ -228,6 +234,14 @@ def _lane_blockers(
                 != canonical_digest(runtime_source, digest_field="receipt_digest")
             ):
                 raise ValueError("native_task_arena_predecessor_receipt_invalid")
+            if native_task_execution_admission_required(
+                context.extra_paths["packet_dir"]
+            ):
+                require_native_task_execution_admission(
+                    context.extra_paths["packet_dir"],
+                    expected_scene_id=expected_scene_id,
+                    expected_task_id=expected_task_id,
+                )
             loader = BUNDLE_LOADERS[link.probe_kind]
             prepared_bundle = loader(
                 context.receipt_path,
@@ -246,7 +260,13 @@ def _lane_blockers(
                 != scene_plan.get("plan_digest")
             ):
                 found.append("native_task_arena_bundle_identity_mismatch")
-        except (KeyError, OSError, ValueError, json.JSONDecodeError):
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            NativeTaskExecutionAdmissionError,
+        ):
             found.append("native_task_arena_provider_bundle_invalid")
 
         bound_inputs = _bound_runtime_input_digests(prepared_bundle or {})
@@ -453,6 +473,17 @@ def _immutable_inputs(link: ArenaLink):
                 "digest": file_digest(context.extra_paths["attempt_authority"]),
             },
         ]
+        execution_admission = (
+            context.extra_paths["packet_dir"] / EXECUTION_ADMISSION_NAME
+        )
+        if execution_admission.is_file():
+            rows.append(
+                {
+                    "name": "native_task_execution_admission",
+                    "path": str(execution_admission),
+                    "digest": file_digest(execution_admission),
+                }
+            )
         # Each predecessor result is pinned by digest: this link's verdict is
         # only about the packet it actually consumed.
         for name in link.predecessors:
