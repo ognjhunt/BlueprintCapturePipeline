@@ -236,6 +236,127 @@ def _construction_global_ik_joint_targets(
     return rows
 
 
+def _control_plan_global_ik_joint_targets(
+    *,
+    servo: Any,
+    control_plan: Mapping[str, Any],
+    bound_targets: Sequence[Mapping[str, Any]],
+    reference_seeds: Sequence[Sequence[float]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Solve exact controls poses that have no construction-selected branch."""
+
+    actions = control_plan.get("scripted_positive_actions")
+    if (
+        not isinstance(actions, list)
+        or not callable(getattr(servo, "solve_grasp_target_multistart", None))
+        or not callable(getattr(servo, "read_arm_joint_positions", None))
+    ):
+        raise RuntimeError("native_task_controls_multistart_input_invalid")
+    targets = [dict(row) for row in bound_targets]
+    by_pose: dict[tuple[tuple[float, ...], tuple[float, ...]], dict[str, Any]] = {}
+    for row in targets:
+        try:
+            key = (
+                tuple(float(value) for value in row["target_position_world_m"]),
+                tuple(
+                    float(value)
+                    for value in row["target_quaternion_world_xyzw"]
+                ),
+            )
+            joints = [float(value) for value in row["joint_positions_rad"]]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "native_task_controls_multistart_input_invalid"
+            ) from exc
+        if len(key[0]) != 3 or len(key[1]) != 4 or len(joints) != 7 or key in by_pose:
+            raise RuntimeError("native_task_controls_multistart_input_invalid")
+        by_pose[key] = row
+
+    reference = [float(value) for value in servo.read_arm_joint_positions()]
+    phases: list[dict[str, Any]] = []
+    for raw in actions:
+        if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
+            continue
+        phase_id = str(raw.get("phase_id") or "")
+        if raw.get("position_only_arrival") is True:
+            phases.append(
+                {
+                    "phase_id": phase_id,
+                    "status": "skipped_position_only_arrival",
+                }
+            )
+            continue
+        try:
+            position = [float(value) for value in raw["target_position_world_m"]]
+            quaternion = [
+                float(value) for value in raw["target_quaternion_world_xyzw"]
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "native_task_controls_multistart_input_invalid"
+            ) from exc
+        key = (tuple(position), tuple(quaternion))
+        existing = by_pose.get(key)
+        if existing is not None:
+            reference = [float(value) for value in existing["joint_positions_rad"]]
+            phases.append(
+                {
+                    "phase_id": phase_id,
+                    "status": "reused_bound_pose_solution",
+                    "source_phase_id": existing["phase_id"],
+                }
+            )
+            continue
+        solved = servo.solve_grasp_target_multistart(
+            target_position_world_m=position,
+            target_grasp_frame_quaternion_world_xyzw=quaternion,
+            preferred_seeds=[reference, *reference_seeds],
+            reference_joint_positions_rad=reference,
+        )
+        if not isinstance(solved, Mapping):
+            raise RuntimeError("native_task_controls_multistart_result_invalid")
+        selected = solved.get("selected")
+        phases.append({"phase_id": phase_id, **dict(solved)})
+        if not isinstance(selected, Mapping):
+            continue
+        joints = [float(value) for value in selected["joint_positions_rad"]]
+        row = {
+            "phase_id": phase_id,
+            "target_position_world_m": position,
+            "target_quaternion_world_xyzw": quaternion,
+            "joint_positions_rad": joints,
+        }
+        targets.append(row)
+        by_pose[key] = row
+        reference = joints
+    receipt = {
+        "schema_version": "native_task_controls_global_ik_preflight.v1",
+        "status": (
+            "all_unique_poses_solved_or_bound"
+            if all(
+                phase.get("status")
+                in {
+                    "skipped_position_only_arrival",
+                    "reused_bound_pose_solution",
+                }
+                or phase.get("selected") is not None
+                for phase in phases
+            )
+            else "partial"
+        ),
+        "phase_count": len(phases),
+        "joint_target_count": len(targets),
+        "phases": phases,
+        "provider_mutation_performed": False,
+        "physics_steps_performed": 0,
+        "claim_boundary": (
+            "off_sim_multistart_pose_ik_only;native_controls_remain_the_"
+            "arrival_contact_dynamics_and_task_outcome_authority"
+        ),
+    }
+    return targets, receipt
+
+
 def _input_binding_mismatches(
     *,
     manifest: Mapping[str, Any],
@@ -517,6 +638,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,
+            PINK_GLOBAL_REFERENCE_SEEDS,
         )
         from blueprint_pipeline.native_task_arena_readback import (
             NativeArticulatedTaskArenaReadback,
@@ -605,15 +727,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["gripper_frame_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
-        scripted_pose_joint_targets = _construction_global_ik_joint_targets(
+        construction_joint_targets = _construction_global_ik_joint_targets(
             construction=construction,
             control_plan=control_plan,
         )
         result["construction_global_ik_seed_binding"] = {
             "schema_version": "native_task_controls_global_ik_seed_binding.v1",
-            "status": "bound" if scripted_pose_joint_targets else "not_available",
-            "target_count": len(scripted_pose_joint_targets),
-            "targets": scripted_pose_joint_targets,
+            "status": "bound" if construction_joint_targets else "not_available",
+            "target_count": len(construction_joint_targets),
+            "targets": construction_joint_targets,
             "construction_result_digest": construction["result_digest"],
             "provider_mutation_performed": False,
             "claim_boundary": (
@@ -622,6 +744,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "outcome_authority"
             ),
         }
+        _announce("controls_global_ik_preflight")
+        scripted_pose_joint_targets, controls_global_ik = (
+            _control_plan_global_ik_joint_targets(
+                servo=servo,
+                control_plan=control_plan,
+                bound_targets=construction_joint_targets,
+                reference_seeds=PINK_GLOBAL_REFERENCE_SEEDS,
+            )
+        )
+        result["controls_global_ik_preflight"] = controls_global_ik
+        _announce(
+            "controls_global_ik_preflight",
+            (
+                "completed"
+                if controls_global_ik["status"]
+                == "all_unique_poses_solved_or_bound"
+                else "blocked"
+            ),
+        )
         episode_environment, environment_receipt = (
             build_native_task_episode_environment(
                 built=built,
