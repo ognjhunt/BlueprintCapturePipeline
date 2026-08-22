@@ -135,6 +135,90 @@ def test_remote_dispatcher_requires_existing_cache_and_uploads_small_result() ->
     assert "BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK" in script
 
 
+def test_warm_dispatch_streams_script_over_pinned_ssh_without_url_in_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        warm_vast,
+        "enroll_vast_ssh_host_key",
+        lambda *_args, **_kwargs: {
+            "status": "enrolled",
+            "known_hosts_file": str(tmp_path / "vast_ssh_known_hosts"),
+        },
+    )
+
+    def fake_ssh(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "blockers": [], "stdout": "4321\n"}
+
+    monkeypatch.setattr(warm_vast, "_run_pinned_ssh", fake_ssh)
+    signed_url = "https://objects.example/private?signature=secret"
+    script = warm_vast._remote_attempt_script(
+        bundle_url=signed_url,
+        output_put_url="https://objects.example/output?signature=other",
+        bundle_sha256="sha256:" + "b" * 64,
+        runtime_dependency_sha256="sha256:" + "e" * 64,
+        runtime_dependency_size_bytes=4_400_000_000,
+        attempt_key="b" * 16,
+    )
+
+    result = warm_vast._dispatch_warm_script_over_ssh(
+        job=tmp_path,
+        session={"ssh_host": "ssh.example", "ssh_port": 12345},
+        remote_script=script,
+        attempt_key="b" * 16,
+    )
+
+    assert result["status"] == "completed"
+    assert result["remote_pid"] == 4321
+    assert result["transport"] == "strict_pinned_ssh_stdin.v1"
+    assert observed["stdin"] == script.encode("utf-8")
+    assert signed_url not in " ".join(observed["remote_argv"])
+    assert "StrictHostKeyChecking=no" not in " ".join(observed["remote_argv"])
+
+
+def test_failed_warm_dispatch_fails_before_output_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared, _receipt = _prepared(tmp_path)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    for name in (
+        "provider_bundle_url.txt",
+        "provider_output_put_url.txt",
+        "provider_output_get_url.txt",
+    ):
+        (staging / name).write_text("https://objects.example/value\n")
+    monkeypatch.setattr(
+        warm_vast,
+        "_dispatch_warm_script_over_ssh",
+        lambda **_kwargs: {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_dispatch_pid_unproven"],
+        },
+    )
+    monkeypatch.setattr(
+        warm_vast,
+        "_download_when_ready",
+        lambda **_kwargs: pytest.fail("output polling must not start"),
+    )
+
+    result = warm_vast._execute_staged_warm_attempt(
+        job=tmp_path / "job",
+        staging_dir=staging,
+        prepared_bundle=prepared,
+        session=_session(prepared),
+        instance_id=123,
+        api_key="secret",
+    )
+
+    assert result["elapsed"] == 0.0
+    assert result["blockers"] == [
+        "native_task_arena_warm_dispatch_pid_unproven"
+    ]
+
+
 def test_close_accepts_provider_404_as_observed_absence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -224,18 +308,21 @@ def test_warm_execution_reuses_instance_without_allocating(
 
     dispatches: list[str] = []
 
-    def fake_execute(*, command, output_log_path, **_kwargs):
-        dispatches.append(command)
-        path = Path(output_log_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.name == "warm_runtime.log":
-            path.write_text(
-                "BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:sha256:test\n"
-                "BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK\n"
-            )
-        else:
-            path.write_text("1234\n")
-        return {"http_status_code": 200, "output_log_path": str(path)}
+    def fake_dispatch(**_kwargs):
+        dispatches.append("dispatch")
+        return {
+            "status": "completed",
+            "remote_pid": 1234,
+            "host_key_enrollment": {"known_hosts_file": "/private/pin"},
+        }
+
+    def fake_log(**_kwargs):
+        dispatches.append("log")
+        text = (
+            "BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:sha256:test\n"
+            "BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK\n"
+        )
+        return {"status": "completed"}, text
 
     def fake_download(*, destination, **_kwargs):
         with zipfile.ZipFile(destination, "w") as archive:
@@ -252,7 +339,8 @@ def test_warm_execution_reuses_instance_without_allocating(
         return True
 
     monkeypatch.setattr(warm_vast, "stage_wam_provider_bundle_object_store", fake_stage)
-    monkeypatch.setattr(warm_vast, "_execute_and_fetch", fake_execute)
+    monkeypatch.setattr(warm_vast, "_dispatch_warm_script_over_ssh", fake_dispatch)
+    monkeypatch.setattr(warm_vast, "_fetch_warm_runtime_log_over_ssh", fake_log)
     monkeypatch.setattr(warm_vast, "_download_when_ready", fake_download)
     monkeypatch.setattr(
         warm_vast,
