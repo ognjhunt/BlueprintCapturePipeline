@@ -317,6 +317,11 @@ def build_native_task_episode_environment(
             action, _diagnostic = servo.action_for_grasp_target(
                 target_position_world_m=kwargs["target_position_world_m"],
                 target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                preferred_posture_joint_positions_rad=(
+                    None
+                    if joint_target is None
+                    else joint_target["joint_positions_rad"]
+                ),
                 **common,
             )
         return [float(value) for value in action]
@@ -356,7 +361,8 @@ def build_native_task_episode_environment(
             else "native_rigid_body_readback"
         ),
         "scripted_pose_source": (
-            "global_ik_free_space_with_native_cartesian_contact_servo"
+            "global_ik_free_space_with_native_cartesian_contact_servo_and_"
+            "selected_posture_reference"
             if any(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
@@ -366,6 +372,11 @@ def build_native_task_episode_environment(
             else "native_franka_differential_ik_servo"
         ),
         "cartesian_contact_phase_ids": sorted(
+            row["phase_id"]
+            for row in joint_target_rows
+            if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+        ),
+        "cartesian_contact_posture_reference_phase_ids": sorted(
             row["phase_id"]
             for row in joint_target_rows
             if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
