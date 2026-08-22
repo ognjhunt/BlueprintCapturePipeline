@@ -680,3 +680,47 @@ def test_a_solve_is_accepted_on_the_frame_the_arrival_gate_measures() -> None:
     )
     assert result["grasp_frame_position_error_m"] > 0.005
     assert result["solved"] is False
+
+
+def test_a_settled_joint_is_charged_only_for_the_torque_it_is_using() -> None:
+    """C36's flat gain sweep: every cell was held by the same 6 N-m.
+
+    An implicit PD joint spends one budget on both terms, so reserving half of
+    it for damping at all times makes the achievable holding torque
+    ``stiffness * (0.5 * effort / stiffness)`` -- half the effort limit, and
+    independent of stiffness. That is why sweeping wrist stiffness over a
+    tenfold range moved the fingertip 0.3 mm. A settled joint is not paying the
+    damping term and should get the rest of its budget back; a slewing one
+    still pays.
+    """
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        ACTUATOR_FEASIBLE_LEAD_FRACTION,
+        NativeFrankaDifferentialIkServo,
+    )
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_stiffness = [400.0]
+    servo._joint_effort_limit = [12.0]
+    servo._joint_damping = [80.0]
+    static = [ACTUATOR_FEASIBLE_LEAD_FRACTION * 12.0 / 400.0]
+    servo._actuator_feasible_lead_rad = list(static)
+
+    # Settled: the damping term costs nothing, so the whole 12 N-m is available
+    # and the lead doubles from the reserved 0.015 rad to 0.03 rad.
+    settled = servo.actuator_feasible_lead_rad([0.0])
+    assert settled == pytest.approx([12.0 / 400.0])
+    assert settled[0] == pytest.approx(2.0 * static[0])
+
+    # Slewing at 0.075 rad/s the damping term costs 6 N-m, leaving exactly the
+    # static reservation -- the old behaviour, at the velocity it assumed.
+    assert servo.actuator_feasible_lead_rad([0.075]) == pytest.approx(static)
+
+    # Faster still, and the floor holds: this may return unspent budget, never
+    # take more away than the reservation already did.
+    assert servo.actuator_feasible_lead_rad([5.0]) == pytest.approx(static)
+
+    # No velocity readback, or a malformed one, is no worse than before.
+    assert servo.actuator_feasible_lead_rad(None) == pytest.approx(static)
+    assert servo.actuator_feasible_lead_rad([float("nan")]) == pytest.approx(static)
+    assert servo.actuator_feasible_lead_rad([0.0, 0.0]) == pytest.approx(static)
