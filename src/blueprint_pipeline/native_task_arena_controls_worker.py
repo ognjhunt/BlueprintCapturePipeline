@@ -1260,7 +1260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         }
         _announce("controls_global_ik_preflight")
-        effective_control_plan, scripted_pose_joint_targets, jaw_selection = (
+        selected_control_plan, scripted_pose_joint_targets, jaw_selection = (
             _select_parallel_jaw_control_plan(
                 servo=servo,
                 control_plan=normalized_control_plan,
@@ -1268,17 +1268,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reference_seeds=PINK_GLOBAL_REFERENCE_SEEDS,
             )
         )
+        actuator_feasible_step_vector = (
+            servo.actuator_feasible_joint_step_rad()
+            if callable(
+                getattr(servo, "actuator_feasible_joint_step_rad", None)
+            )
+            else None
+        )
         effective_control_plan, branch_replay = _with_contact_entry_branch_replay(
-            control_plan=effective_control_plan,
+            control_plan=selected_control_plan,
             scripted_pose_joint_targets=scripted_pose_joint_targets,
             task_spec=scene_plan["task_spec"],
-            actuator_feasible_step_rad=(
-                servo.actuator_feasible_joint_step_rad()
-                if callable(
-                    getattr(servo, "actuator_feasible_joint_step_rad", None)
-                )
-                else None
-            ),
+            actuator_feasible_step_rad=actuator_feasible_step_vector,
         )
         result["contact_entry_branch_replay"] = branch_replay
         controls_global_ik = jaw_selection["selected_global_ik_preflight"]
@@ -1429,6 +1430,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         result["contact_posture_measured_calibration"] = calibration
 
+        _announce("contact_target_reachability_probe")
+        try:
+            from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                probe_target_reachability,
+            )
+
+            reach_probe = (
+                probe_target_reachability(
+                    environment=episode_environment,
+                    solve=_solve_contact,
+                    base_target_position_world_m=contact_row[
+                        "target_position_world_m"
+                    ],
+                    seed_joint_positions_rad=seed_posture,
+                    gripper_open_command=float(gripper["open_command"]),
+                    max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
+                    max_joint_setpoint_lead_rad=float(
+                        contact_row["max_joint_setpoint_lead_rad"]
+                    ),
+                )
+                if seed_posture is not None
+                else {
+                    "schema_version": (
+                        "native_task_arena_target_reachability_probe.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": "contact_posture_unsolved",
+                    "cells": [],
+                }
+            )
+        except BaseException as exc:  # noqa: BLE001 - a diagnostic never fails a run
+            reach_probe = {
+                "schema_version": (
+                    "native_task_arena_target_reachability_probe.v1"
+                ),
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "cells": [],
+            }
+        result["contact_target_reachability_probe"] = reach_probe
+
         # Adopt the calibrated posture only when physics says it is closer than
         # the one the model produced; otherwise the run keeps what it had.
         best = (calibration or {}).get("best") or {}
@@ -1448,7 +1490,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 for row in scripted_pose_joint_targets
             ]
-            result["contact_posture_calibration_adopted"] = True
+            # C37 sealed the trap this closes: the episode executes the plan
+            # compiled BEFORE calibration, so rewriting the posture list alone
+            # adopted nothing -- contact entry replayed the model's branch and
+            # missed by 70-114 mm while the calibrated posture measured 13 mm.
+            # Adoption is only real when the plan is recompiled through the
+            # same replay generator, and only claimed when that replay
+            # actually applied.
+            result["contact_entry_branch_replay_pre_calibration"] = result[
+                "contact_entry_branch_replay"
+            ]
+            recompiled_plan, recompiled_replay = _with_contact_entry_branch_replay(
+                control_plan=selected_control_plan,
+                scripted_pose_joint_targets=scripted_pose_joint_targets,
+                task_spec=scene_plan["task_spec"],
+                actuator_feasible_step_rad=actuator_feasible_step_vector,
+            )
+            if recompiled_replay.get("status") == "applied":
+                effective_control_plan = recompiled_plan
+                result["contact_entry_branch_replay"] = recompiled_replay
+                result["control_plan_digest"] = recompiled_plan["plan_digest"]
+                result["contact_posture_calibration_adopted"] = True
+            else:
+                result["contact_posture_calibration_adopted"] = False
+                result["contact_posture_calibration_adoption_blocker"] = str(
+                    recompiled_replay.get("reason")
+                )
         else:
             result["contact_posture_calibration_adopted"] = False
         _announce(

@@ -417,3 +417,106 @@ def test_the_sweep_reads_every_seed_the_multistart_already_sealed() -> None:
         phase_id="contact_open",
     )
     assert len(fallback) == 1
+
+
+class _WallEnvironment(_SweepEnvironment):
+    """The pad midpoint can go anywhere except through a wall in X.
+
+    C37's shape: the measured point stops dead at a surface while the target
+    keeps moving past it.  Everything the arm can reach, it reaches.
+    """
+
+    WALL_X = 0.30
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.commanded = [0.0, 0.0, 0.0]
+
+    def solve(self, target_position_world_m, seed_joint_positions_rad):
+        del seed_joint_positions_rad
+        self.commanded = [float(v) for v in target_position_world_m]
+        return [0.0] * 7
+
+    def read_task_sample(self):
+        blocked = self.commanded[0] < self.WALL_X
+        return {
+            "grasp_frame_position_world_m": [
+                max(self.commanded[0], self.WALL_X),
+                self.commanded[1],
+                self.commanded[2],
+            ],
+            "task_contact_active": blocked,
+        }
+
+    def read_object_sample(self):
+        raise RuntimeError("isaac_episode_rigid_task_object_missing")
+
+
+class _GhostFrameEnvironment(_WallEnvironment):
+    """The measured point never follows the target at all."""
+
+    def read_task_sample(self):
+        return {"grasp_frame_position_world_m": [0.30, 0.0, 0.0], "task_contact_active": False}
+
+
+def _probe(environment, **overrides):
+    from blueprint_pipeline.native_task_arena_actuator_sweep import (
+        probe_target_reachability,
+    )
+
+    kwargs = dict(
+        environment=environment,
+        solve=environment.solve,
+        base_target_position_world_m=[0.29, 0.0, 0.0],
+        seed_joint_positions_rad=[0.0] * 7,
+        gripper_open_command=0.0,
+        max_joint_delta_rad=0.05,
+        max_joint_setpoint_lead_rad=0.2,
+        settle_steps=3,
+    )
+    kwargs.update(overrides)
+    return probe_target_reachability(**kwargs)
+
+
+def test_the_probe_separates_an_obstruction_from_a_frame_problem() -> None:
+    """An obstruction moves some axes and stalls others; a ghost moves none."""
+
+    wall = _probe(_WallEnvironment())
+
+    assert wall["status"] == "measured"
+    following = wall["axis_following"]
+    # Y and Z follow the target one-for-one...
+    assert following["y"]["measured_span_m"] == pytest.approx(
+        following["y"]["requested_span_m"], abs=1e-9
+    )
+    assert following["z"]["measured_span_m"] == pytest.approx(
+        following["z"]["requested_span_m"], abs=1e-9
+    )
+    # ...while X is clipped at the wall, so it spans strictly less than asked.
+    assert following["x"]["measured_span_m"] < following["x"]["requested_span_m"]
+    # And the blocked cells are exactly the ones reporting contact.
+    blocked = [c for c in wall["cells"] if c["requested_target_position_world_m"][0] < 0.30]
+    assert blocked and all(c["contact_steps"] > 0 for c in blocked)
+    clear = [c for c in wall["cells"] if c["requested_target_position_world_m"][0] > 0.30]
+    assert clear and all(c["contact_steps"] == 0 for c in clear)
+
+    ghost = _probe(_GhostFrameEnvironment())
+    # Nothing follows: that is a frame problem, not an obstruction.
+    for name in ("x", "y", "z"):
+        assert ghost["axis_following"][name]["measured_span_m"] == pytest.approx(0.0)
+        assert ghost["axis_following"][name]["requested_span_m"] >= 0.0
+
+
+def test_the_probe_records_targets_the_solver_cannot_reach() -> None:
+    class _PickySolver(_WallEnvironment):
+        def solve(self, target_position_world_m, seed_joint_positions_rad):
+            if target_position_world_m[0] > 0.32:
+                return None
+            return super().solve(target_position_world_m, seed_joint_positions_rad)
+
+    report = _probe(_PickySolver())
+
+    unsolved = [c for c in report["cells"] if c["status"] == "unsolved"]
+    assert unsolved
+    assert all("measured_grasp_frame_position_world_m" not in c for c in unsolved)
+    assert report["status"] == "measured"

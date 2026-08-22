@@ -67,8 +67,8 @@ def _finite_vector(values: Any, *, length: int | None = None) -> list[float] | N
     return vector
 
 
-def _grasp_frame_position(environment: Any) -> list[float] | None:
-    """Read the measured fingertip from whichever sampler this task has.
+def _grasp_frame_sample(environment: Any) -> Mapping[str, Any] | None:
+    """Read the measured gripper sample from whichever sampler this task has.
 
     An articulated cell carries no rigid task object, so asking for the rigid
     sample raises rather than returning nothing -- which is how C35's sweep
@@ -90,8 +90,15 @@ def _grasp_frame_position(environment: Any) -> list[float] | None:
                 sample.get("grasp_frame_position_world_m"), length=3
             )
             if position is not None:
-                return position
+                return sample
     return None
+
+
+def _grasp_frame_position(environment: Any) -> list[float] | None:
+    sample = _grasp_frame_sample(environment)
+    if sample is None:
+        return None
+    return _finite_vector(sample.get("grasp_frame_position_world_m"), length=3)
 
 
 def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[dict[str, Any]]:
@@ -288,7 +295,10 @@ __all__ = [
     "ActuatorSweepError",
     "CALIBRATION_SCHEMA_VERSION",
     "DEFAULT_CALIBRATION_ITERATIONS",
+    "DEFAULT_REACHABILITY_OFFSETS_M",
+    "REACHABILITY_SCHEMA_VERSION",
     "calibrate_posture_to_measured_target",
+    "probe_target_reachability",
     "DEFAULT_CELL_SETTLE_STEPS",
     "DEFAULT_WRIST_GAIN_CANDIDATES",
     "SWEEP_SCHEMA_VERSION",
@@ -415,4 +425,178 @@ def calibrate_posture_to_measured_target(
 _CALIBRATION_CLAIM_BOUNDARY = (
     "solves_for_a_posture_whose_measured_fingertip_reaches_the_sealed_target;"
     "changes_no_gate_and_asserts_no_task_outcome"
+)
+
+
+REACHABILITY_SCHEMA_VERSION = "native_task_arena_target_reachability_probe.v1"
+
+#: Offsets probed around the sealed contact target, in metres.  A cross rather
+#: than a full grid: the question is which directions the measured pad midpoint
+#: can actually follow, and a cross answers that per axis at a fraction of the
+#: cells.
+DEFAULT_REACHABILITY_OFFSETS_M: tuple[tuple[float, float, float], ...] = (
+    (0.0, 0.0, 0.0),
+    (0.02, 0.0, 0.0),
+    (-0.02, 0.0, 0.0),
+    (0.04, 0.0, 0.0),
+    (-0.04, 0.0, 0.0),
+    (0.0, -0.02, 0.0),
+    (0.0, -0.04, 0.0),
+    (0.0, 0.0, 0.02),
+    (0.0, 0.0, -0.02),
+)
+
+
+def probe_target_reachability(
+    *,
+    environment: Any,
+    solve: Any,
+    base_target_position_world_m: Sequence[float],
+    seed_joint_positions_rad: Sequence[float],
+    gripper_open_command: float,
+    max_joint_delta_rad: float,
+    max_joint_setpoint_lead_rad: float,
+    offsets_m: Sequence[Sequence[float]] = DEFAULT_REACHABILITY_OFFSETS_M,
+    settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+) -> dict[str, Any]:
+    """Map where the measured pad midpoint can actually be placed.
+
+    C37 shifted the solver's target 39 mm across four solved postures and the
+    measured fingertip did not move by 0.05 mm, while contact with the door
+    prim was active on 43% of samples.  Two very different stories fit that:
+    the door is blocking the pose, or the solver's frame and the measured
+    frame are different points and the target is chasing a ghost.
+
+    Commanding a small cross of offsets separates them.  If the measured point
+    follows the target away from the obstruction and stalls only toward it,
+    the geometry is the constraint.  If it never follows, the constraint is in
+    the frames.  Each cell records where the target asked for, where the pad
+    midpoint actually went, and whether the arm was in contact while it did.
+
+    Measurement only: no gate, no task outcome, and the arm is left reset.
+    """
+
+    base = _finite_vector(base_target_position_world_m, length=3)
+    seed = _finite_vector(seed_joint_positions_rad, length=7)
+    if base is None or seed is None:
+        raise ActuatorSweepError(["reachability_probe_inputs_invalid"])
+    bounded = getattr(environment, "bounded_joint_action", None)
+    if not callable(bounded) or not callable(solve):
+        return {
+            "schema_version": REACHABILITY_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "runtime_missing_solver_or_bounded_action",
+            "cells": [],
+            "claim_boundary": _REACHABILITY_CLAIM_BOUNDARY,
+        }
+
+    cells: list[dict[str, Any]] = []
+    for offset in offsets_m:
+        delta = _finite_vector(offset, length=3)
+        if delta is None:
+            continue
+        target = [base[axis] + delta[axis] for axis in range(3)]
+        solved = solve(target, list(seed))
+        joints = _finite_vector(solved, length=7)
+        if joints is None:
+            cells.append(
+                {
+                    "offset_m": delta,
+                    "requested_target_position_world_m": target,
+                    "status": "unsolved",
+                }
+            )
+            continue
+        environment.reset()
+        contact_steps = 0
+        for _ in range(max(1, int(settle_steps))):
+            environment.step(
+                [
+                    float(value)
+                    for value in bounded(
+                        target_joint_positions_rad=joints,
+                        gripper_command=float(gripper_open_command),
+                        max_joint_delta_rad=float(max_joint_delta_rad),
+                        max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+                    )
+                ]
+            )
+            reader = getattr(environment, "read_task_sample", None)
+            if callable(reader):
+                try:
+                    if (reader() or {}).get("task_contact_active"):
+                        contact_steps += 1
+                except Exception:  # noqa: BLE001 - contact state is optional here
+                    pass
+        # C37's calibration could not distinguish "the arm never realized
+        # this posture" from "the arm realized it and the fingertip did not
+        # move" because it recorded no per-cell joint tracking.  Record it.
+        tracking = None
+        joints_reader = getattr(environment, "read_arm_joint_positions", None)
+        if callable(joints_reader):
+            measured_joints = _finite_vector(joints_reader(), length=7)
+            if measured_joints is not None:
+                tracking = max(
+                    abs(commanded - reached)
+                    for commanded, reached in zip(joints, measured_joints)
+                )
+        sample = _grasp_frame_sample(environment)
+        measured = (
+            _finite_vector(sample.get("grasp_frame_position_world_m"), length=3)
+            if sample is not None
+            else None
+        )
+        cells.append(
+            {
+                "offset_m": delta,
+                "requested_target_position_world_m": target,
+                "status": "measured" if measured is not None else "unmeasurable",
+                "joint_positions_rad": joints,
+                "joint_tracking_error_rad": tracking,
+                "measured_grasp_frame_position_world_m": measured,
+                "measured_grasp_frame_orientation_world_xyzw": _finite_vector(
+                    (sample or {}).get("grasp_frame_orientation_world_xyzw"),
+                    length=4,
+                ),
+                "measured_gripper_pad_centers_world_m": (sample or {}).get(
+                    "gripper_pad_centers_world_m"
+                ),
+                "measured_gripper_width_m": (sample or {}).get("gripper_width_m"),
+                "measured_distance_to_requested_m": (
+                    math.dist(measured, target) if measured is not None else None
+                ),
+                "contact_steps": contact_steps,
+                "settle_steps": int(settle_steps),
+            }
+        )
+    environment.reset()
+
+    # Does the measured point follow the target at all?  Compare the spread of
+    # what was asked for against the spread of what was reached, per axis: a
+    # frame problem moves nothing, an obstruction moves some axes and not
+    # others.
+    reached = [
+        cell for cell in cells if cell.get("measured_grasp_frame_position_world_m")
+    ]
+    follow: dict[str, Any] = {}
+    for axis, name in enumerate(("x", "y", "z")):
+        asked = [cell["requested_target_position_world_m"][axis] for cell in reached]
+        got = [cell["measured_grasp_frame_position_world_m"][axis] for cell in reached]
+        follow[name] = {
+            "requested_span_m": (max(asked) - min(asked)) if asked else 0.0,
+            "measured_span_m": (max(got) - min(got)) if got else 0.0,
+        }
+    return {
+        "schema_version": REACHABILITY_SCHEMA_VERSION,
+        "status": "measured" if reached else "unavailable",
+        "cell_count": len(cells),
+        "cells": cells,
+        "axis_following": follow,
+        "claim_boundary": _REACHABILITY_CLAIM_BOUNDARY,
+    }
+
+
+_REACHABILITY_CLAIM_BOUNDARY = (
+    "maps_where_the_measured_pad_midpoint_can_be_placed;asserts_no_task_"
+    "outcome_and_gates_nothing"
 )

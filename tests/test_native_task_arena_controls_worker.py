@@ -1062,3 +1062,61 @@ def test_a_budget_limited_replay_seals_that_it_was_rushed() -> None:
     assert receipt["status"] == "applied"
     assert receipt["budget_limited"] is True
     assert receipt["per_row_joint_step_rad"] > receipt["actuator_feasible_step_rad"]
+
+
+def test_adopting_a_calibrated_posture_requires_recompiling_the_plan() -> None:
+    """C37's sealed trap: the episode executes the plan, not the posture list.
+
+    The run adopted the calibration's best posture into the posture list after
+    the plan -- replay rows included -- had already been compiled, so contact
+    entry replayed the model's branch and missed by 70-114 mm while the
+    calibrated posture itself measured 13 mm.  Adoption is only real when the
+    replay generator is re-run over the updated postures: the recompiled rows
+    must end at the adopted posture and the plan digest must change with them.
+    """
+
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+        _with_contact_entry_branch_replay,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    targets = _branch_replay_targets(plan)
+
+    compiled, first_receipt = _with_contact_entry_branch_replay(
+        control_plan=plan, scripted_pose_joint_targets=targets, task_spec=task
+    )
+    assert first_receipt["status"] == "applied"
+
+    adopted = [0.35, -0.25, 0.12, 0.44, -0.55, 0.22, 0.01]
+    updated_targets = [
+        (
+            {**row, "joint_positions_rad": list(adopted)}
+            if row["phase_id"] == "contact_open"
+            else row
+        )
+        for row in targets
+    ]
+    recompiled, receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=updated_targets,
+        task_spec=task,
+    )
+
+    assert receipt["status"] == "applied"
+    replay_rows = [
+        row
+        for row in recompiled["scripted_positive_actions"]
+        if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    # The recompiled entry path lands on the adopted posture, not the model's.
+    assert replay_rows[-1]["arm_joint_positions"] == pytest.approx(adopted)
+    stale_rows = [
+        row
+        for row in compiled["scripted_positive_actions"]
+        if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    assert stale_rows[-1]["arm_joint_positions"] != pytest.approx(adopted)
+    # And what ran is distinguishable from what would have run.
+    assert recompiled["plan_digest"] != compiled["plan_digest"]
