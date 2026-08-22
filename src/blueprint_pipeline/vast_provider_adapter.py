@@ -3766,9 +3766,22 @@ def _probe_shell_script(
         "PY\n"
         "return $?; "
         "fi; "
-        f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
-        "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; fi; "
-        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0; '
+        # When curl exists it is the ONLY tier: it resumes (--continue-at -)
+        # and carries the slow-transfer guard, so extra passes make forward
+        # progress on a marginal link instead of starting over.  Falling
+        # through to the unguarded tiers is worse than failing: a live run's
+        # wget -O truncated a 3.32 GB resumable partial back to zero and
+        # crawled at ~60 KB/s toward a 26-hour ETA inside a one-hour watchdog.
+        # wget/python remain solely for images that ship no curl at all, and
+        # wget gains -c so even that path never truncates a partial.
+        f'if command -v curl >/dev/null 2>&1; then '
+        'blueprint_download_pass=1; '
+        'while [ "$blueprint_download_pass" -le 3 ]; do '
+        f'curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
+        "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_RETRY:curl:$blueprint_download_pass; "
+        "blueprint_download_pass=$((blueprint_download_pass + 1)); done; "
+        "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; return 28; fi; "
+        'if command -v wget >/dev/null 2>&1; then wget -c -O "$blueprint_download_dst" "$blueprint_download_src" && return 0; '
         "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:wget; fi; "
         'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
         'if [ -n "$blueprint_download_py" ]; then '
