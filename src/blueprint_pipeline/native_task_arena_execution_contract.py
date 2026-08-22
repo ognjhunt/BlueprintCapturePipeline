@@ -66,6 +66,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "rigid_frame_transforms.py",
     "native_task_arena_actuator_sweep.py",
     "native_task_arena_branch_continuity.py",
+    "native_franka_global_seed_search.py",
     "native_task_arena_grasp_roll.py",
     "native_task_arena_construction_worker.py",
     "native_task_arena_import_scope.py",
