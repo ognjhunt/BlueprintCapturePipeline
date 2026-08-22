@@ -341,20 +341,19 @@ def native_xyzw_to_contract_xyzw(value: Sequence[float]) -> list[float]:
     return [item / norm for item in quaternion]
 
 
-def position_nullspace_posture_bias(
+def pose_nullspace_posture_bias(
     *,
     joint_positions: Any,
     preferred_joint_positions: Any,
     task_jacobian: Any,
     gain: float,
 ) -> Any:
-    """Project a preferred posture update away from fingertip translation.
+    """Project a preferred posture update away from the full fingertip pose.
 
-    This is the posture-target sibling of Isaac Lab's current joint-limit
-    avoidance term: both use ``I - pinv(J_position) @ J_position``.  Keeping the
-    projection limited to the linear rows lets the redundant Franka joints
-    change wrist orientation as needed without stealing convergence from the
-    measured fingertip position.
+    The scripted contact phases command both position and orientation.  Their
+    secondary posture motion must therefore lie in the null space of the full
+    six-dimensional task Jacobian.  Projecting through only the linear rows can
+    preserve XYZ while rotating the gripper away from the handle.
     """
 
     import torch
@@ -372,14 +371,13 @@ def position_nullspace_posture_bias(
         or preferred_joint_positions.shape != joint_positions.shape
         or task_jacobian.ndim != 3
         or task_jacobian.shape[0] != joint_positions.shape[0]
-        or task_jacobian.shape[1] < 3
+        or task_jacobian.shape[1] != 6
         or task_jacobian.shape[2] != joint_positions.shape[1]
     ):
         raise NativeFrankaPoseServoError(
             ["native_franka_pose_servo_posture_nullspace_invalid"]
         )
-    position_jacobian = task_jacobian[:, :3, :]
-    position_pseudoinverse = torch.linalg.pinv(position_jacobian)
+    task_pseudoinverse = torch.linalg.pinv(task_jacobian)
     joint_count = task_jacobian.shape[2]
     identity = torch.eye(
         joint_count,
@@ -387,7 +385,7 @@ def position_nullspace_posture_bias(
         dtype=task_jacobian.dtype,
     ).expand(task_jacobian.shape[0], -1, -1)
     nullspace_projection = identity - torch.bmm(
-        position_pseudoinverse, position_jacobian
+        task_pseudoinverse, task_jacobian
     )
     posture_delta = resolved_gain * (
         preferred_joint_positions - joint_positions
@@ -397,7 +395,7 @@ def position_nullspace_posture_bias(
     ).squeeze(-1)
 
 
-def position_nullspace_joint_limit_avoidance(
+def pose_nullspace_joint_limit_avoidance(
     *,
     joint_positions: Any,
     lower_joint_limits: Any,
@@ -406,13 +404,11 @@ def position_nullspace_joint_limit_avoidance(
     gain: float,
     margin: float,
 ) -> Any:
-    """Backport Isaac Lab's current position-safe joint-limit avoidance.
+    """Move away from joint limits without changing the commanded grasp pose.
 
-    The Arena image pins an Isaac Lab revision from before this controller
-    feature existed.  Keep the implementation byte-for-byte equivalent in
-    shape to current Isaac Lab: activate only near a limit, seek the joint
-    range center, and project through the linear task nullspace so the
-    fingertip position remains authoritative.
+    Activate only near a limit, seek the joint-range center, and project the
+    correction through the full task nullspace.  This follows Isaac Lab PINK's
+    higher-priority task projection: all six pose rows remain authoritative.
     """
 
     import torch
@@ -434,7 +430,7 @@ def position_nullspace_joint_limit_avoidance(
         or upper_joint_limits.shape != joint_positions.shape
         or task_jacobian.ndim != 3
         or task_jacobian.shape[0] != joint_positions.shape[0]
-        or task_jacobian.shape[1] < 3
+        or task_jacobian.shape[1] != 6
         or task_jacobian.shape[2] != joint_positions.shape[1]
     ):
         raise NativeFrankaPoseServoError(
@@ -451,8 +447,7 @@ def position_nullspace_joint_limit_avoidance(
     center_delta = (
         -resolved_gain * activation * (joint_positions - midpoint)
     )
-    position_jacobian = task_jacobian[:, :3, :]
-    position_pseudoinverse = torch.linalg.pinv(position_jacobian)
+    task_pseudoinverse = torch.linalg.pinv(task_jacobian)
     joint_count = task_jacobian.shape[2]
     identity = torch.eye(
         joint_count,
@@ -460,7 +455,7 @@ def position_nullspace_joint_limit_avoidance(
         dtype=task_jacobian.dtype,
     ).expand(task_jacobian.shape[0], -1, -1)
     nullspace_projection = identity - torch.bmm(
-        position_pseudoinverse, position_jacobian
+        task_pseudoinverse, task_jacobian
     )
     return torch.bmm(
         nullspace_projection, center_delta.unsqueeze(-1)
@@ -1803,7 +1798,7 @@ class NativeFrankaDifferentialIkServo:
             device=current.device,
             dtype=current.dtype,
         )
-        joint_limit_bias = position_nullspace_joint_limit_avoidance(
+        joint_limit_bias = pose_nullspace_joint_limit_avoidance(
             joint_positions=current,
             lower_joint_limits=lower_limits,
             upper_joint_limits=upper_limits,
@@ -1824,7 +1819,7 @@ class NativeFrankaDifferentialIkServo:
                 raise NativeFrankaPoseServoError(
                     ["native_franka_pose_servo_posture_nullspace_invalid"]
                 ) from exc
-            posture_bias = position_nullspace_posture_bias(
+            posture_bias = pose_nullspace_posture_bias(
                 joint_positions=current,
                 preferred_joint_positions=preferred_posture,
                 task_jacobian=jacobian_root,
@@ -1905,17 +1900,17 @@ class NativeFrankaDifferentialIkServo:
                 if preferred_posture_joint_positions_rad is None
                 else [float(value) for value in preferred_posture_joint_positions_rad]
             ),
-            "position_nullspace_posture_bias_rad": [
+            "pose_nullspace_posture_bias_rad": [
                 float(value) for value in posture_bias[0]
             ],
-            "position_nullspace_posture_gain": PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
-            "position_nullspace_joint_limit_avoidance_rad": [
+            "pose_nullspace_posture_gain": PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
+            "pose_nullspace_joint_limit_avoidance_rad": [
                 float(value) for value in joint_limit_bias[0]
             ],
-            "position_nullspace_joint_limit_avoidance_gain": (
+            "pose_nullspace_joint_limit_avoidance_gain": (
                 PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN
             ),
-            "position_nullspace_joint_limit_avoidance_margin_rad": (
+            "pose_nullspace_joint_limit_avoidance_margin_rad": (
                 PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD
             ),
             "desired_joint_positions_clipped_to_limits_rad": (
