@@ -261,6 +261,43 @@ def test_multistart_prefers_continuous_solved_configuration() -> None:
     assert result["selected"]["joint_positions_rad"] == pytest.approx(
         [0.2] * 7
     )
+    assert result["selected"]["joint_space_reference_distance_rad"] == pytest.approx(
+        (7 * 0.2**2) ** 0.5
+    )
+
+
+def test_multistart_preserves_closest_whole_arm_branch_before_maximum_delta() -> None:
+    """A tiny max-joint advantage must not select much larger total motion."""
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-2.0] * 7
+    servo._joint_position_upper = [2.0] * 7
+    servo.solve_grasp_target_from_joint_seed = lambda **kwargs: {
+        "solved": True,
+        "joint_positions_rad": list(kwargs["seed_joint_positions_rad"]),
+        "position_error_m": 0.001,
+        "orientation_error_rad": 0.01,
+        "iterations": 4,
+    }
+
+    result = servo.solve_grasp_target_multistart(
+        target_position_world_m=[0.5, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[
+            [0.90] * 7,
+            [0.91, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ],
+        reference_joint_positions_rad=[0.0] * 7,
+        seed_count=2,
+    )
+
+    assert result["attempts"][0]["maximum_reference_joint_delta_rad"] < result[
+        "attempts"
+    ][1]["maximum_reference_joint_delta_rad"]
+    assert result["selected"]["seed_index"] == 1
+    assert result["selected"]["joint_space_reference_distance_rad"] == pytest.approx(
+        0.91
+    )
 
 
 def test_global_pink_iteration_clamps_integrated_float_overshoot() -> None:
