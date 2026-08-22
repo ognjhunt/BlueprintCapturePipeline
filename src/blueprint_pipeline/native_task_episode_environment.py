@@ -18,6 +18,15 @@ from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 
 SCHEMA_VERSION = "native_task_episode_environment.v2"
 
+# A globally solved endpoint proves that the pose is reachable, but replaying
+# that endpoint as a bounded joint-space setpoint does not preserve the path of
+# the fingertips.  In C9 the contact endpoint was valid while the interpolated
+# joint path swept the measured pad midpoint 94 mm sideways into the door.
+# Contact-seeking motion must therefore remain on the live Cartesian servo;
+# free-space poses can still reuse the globally selected branch that makes
+# their arrival deterministic.
+CARTESIAN_CONTACT_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+
 
 class NativeTaskEpisodeEnvironmentError(ValueError):
     """Stable failures while binding one native construction to episodes."""
@@ -139,7 +148,7 @@ def build_native_task_episode_environment(
 
     joint_target_rows: list[dict[str, Any]] = []
     joint_targets_by_pose: dict[
-        tuple[tuple[float, ...], tuple[float, ...]], list[float]
+        tuple[tuple[float, ...], tuple[float, ...]], dict[str, Any]
     ] = {}
     for index, raw in enumerate(scripted_pose_joint_targets or []):
         try:
@@ -175,15 +184,14 @@ def build_native_task_episode_environment(
             raise NativeTaskEpisodeEnvironmentError(
                 ["native_task_episode_scripted_joint_target_duplicate"]
             )
-        joint_targets_by_pose[key] = joints
-        joint_target_rows.append(
-            {
-                "phase_id": phase_id,
-                "target_position_world_m": position,
-                "target_quaternion_world_xyzw": quaternion,
-                "joint_positions_rad": joints,
-            }
-        )
+        row = {
+            "phase_id": phase_id,
+            "target_position_world_m": position,
+            "target_quaternion_world_xyzw": quaternion,
+            "joint_positions_rad": joints,
+        }
+        joint_targets_by_pose[key] = row
+        joint_target_rows.append(row)
     if joint_target_rows and not callable(
         getattr(servo, "action_for_joint_target", None)
     ):
@@ -297,9 +305,12 @@ def build_native_task_episode_environment(
                 "velocity_feedforward_scale", DEFAULT_VELOCITY_FEEDFORWARD_SCALE
             ),
         }
-        if joint_target is not None:
+        if (
+            joint_target is not None
+            and joint_target["phase_id"] not in CARTESIAN_CONTACT_PHASE_IDS
+        ):
             action, _diagnostic = servo.action_for_joint_target(
-                target_joint_positions_rad=joint_target,
+                target_joint_positions_rad=joint_target["joint_positions_rad"],
                 **common,
             )
         else:
@@ -345,9 +356,19 @@ def build_native_task_episode_environment(
             else "native_rigid_body_readback"
         ),
         "scripted_pose_source": (
-            "construction_global_ik_joint_target_with_native_pose_fallback"
+            "global_ik_free_space_with_native_cartesian_contact_servo"
+            if any(
+                row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+                for row in joint_target_rows
+            )
+            else "construction_global_ik_joint_target_with_native_pose_fallback"
             if joint_target_rows
             else "native_franka_differential_ik_servo"
+        ),
+        "cartesian_contact_phase_ids": sorted(
+            row["phase_id"]
+            for row in joint_target_rows
+            if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
         ),
         "scripted_pose_joint_targets": joint_target_rows,
         "joint_wrench_source": "IsaacLab JointWrenchSensor force+torque",
