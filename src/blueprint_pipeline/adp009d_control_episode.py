@@ -180,9 +180,119 @@ BLOCKER_MEDIA_INCOMPLETE = "control_episode_media_incomplete"
 # -- only the command is biased -- and every attempt seals its own arrival
 # row, so a run either passes honestly or pins whether the miss is a
 # constant offset (compensation converges) or a saturation (it does not).
-TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS = 3
+TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS = 8
 TASK_CONTROL_RECOVERY_RETREAT_MAXIMUM_STEPS = 24
-TASK_CONTROL_RECOVERY_STRATEGY = "retreat_then_measured_miss_compensation"
+
+# C28 sealed why a single strategy repeated blindly is the wrong budget: its
+# three measured-miss attempts diverged 15.4 -> 28.5 -> 38.6 mm.  Repeating a
+# diverging strategy only produces a worse number, while stopping a
+# *converging* one at a fixed count throws away a run that was about to land.
+# So the count is not the control -- the trend is.  After each failed attempt
+# the executor reads its own sealed error against the previous attempt and
+# either repeats a strategy that improved, or escalates to the next rung.
+# Each rung is a distinct physical hypothesis, ordered cheapest-first:
+#   * measured_miss_compensation -- the miss is a constant offset.
+#   * damped_half_miss_compensation -- compensation overshoots or oscillates.
+#   * clean_entry_pose_reentry -- the miss was path-dependent, so re-approach
+#     from the qualified entry pose with no bias at all.
+#   * extended_standoff_reentry -- the servo passes through a degenerate
+#     direction near the target, so re-enter along a longer straight line.
+# The arrival gate is identical on every rung: measured fingertip against the
+# original sealed target.  Only the command and the re-entry pose vary.
+TASK_CONTROL_RECOVERY_LADDER = (
+    "measured_miss_compensation",
+    "damped_half_miss_compensation",
+    "clean_entry_pose_reentry",
+    "extended_standoff_reentry",
+)
+TASK_CONTROL_RECOVERY_EXTENDED_STANDOFF_SCALE = 2.0
+
+
+def recovery_ladder_for_plan(plan: Mapping[str, Any]) -> tuple[str, ...]:
+    """The rungs this run will try, in order.
+
+    The ordering is a *hypothesis ranking*, and the best-informed ranker is
+    whoever just read the previous run's sealed telemetry -- an operator or an
+    agent -- not a constant frozen at some earlier commit.  A plan may
+    therefore carry its own ``recovery_strategy_ladder`` and reorder or narrow
+    the rungs per launch, with no code change and no deploy.
+
+    What a plan may NOT do is invent a rung: every entry must name a strategy
+    this executor implements, so a sealed plan can never promise physics the
+    run cannot perform.  Anything unknown, empty, or malformed falls back to
+    the default ladder rather than silently disabling recovery.
+    """
+
+    declared = plan.get("recovery_strategy_ladder")
+    if not isinstance(declared, Sequence) or isinstance(declared, (str, bytes)):
+        return TASK_CONTROL_RECOVERY_LADDER
+    ladder = tuple(
+        str(value)
+        for value in declared
+        if str(value) in TASK_CONTROL_RECOVERY_LADDER
+    )
+    if not ladder or len(ladder) != len(set(ladder)) or len(ladder) != len(declared):
+        return TASK_CONTROL_RECOVERY_LADDER
+    return ladder
+
+
+def _next_recovery_strategy(
+    attempt_history: Sequence[Mapping[str, Any]],
+    *,
+    ladder: Sequence[str] = TASK_CONTROL_RECOVERY_LADDER,
+    arrival_tolerance_m: float = 0.0,
+    remaining_attempts: int = 0,
+) -> str | None:
+    """Keep a strategy that will land in time; escalate one that will not.
+
+    A sign check is not enough, and C29 proved both halves of that.  Its
+    branch-replay entry turned C28's divergence (15.4 -> 28.5 -> 38.6 mm) into
+    convergence (15.5 -> 13.6 -> 12.9 mm), so "is it improving?" now says
+    repeat -- but the improvement was also *decelerating* (1.84 mm, then
+    0.69 mm), and at that rate it needed roughly eleven more attempts to
+    reach a 5 mm gate with five left.  Repeating it would have burned the
+    whole budget on a strategy that could not finish.
+
+    So the test is a projection rather than a sign: at the rate this strategy
+    is actually closing the gap, does it land inside the attempts that remain?
+    If yes, keep going -- that is a run about to succeed, and stopping it only
+    to resume the same trend on a fresh GPU is pure waste.  If no, spend the
+    remaining attempts on a different hypothesis instead.
+
+    ``attempt_history`` is this phase's failed attempts in order, each with
+    the strategy that produced it (``None`` for the nominal attempt) and its
+    measured terminal error.  Returns the strategy for the next attempt, or
+    ``None`` when the ladder is exhausted.
+    """
+
+    rungs = tuple(ladder) or TASK_CONTROL_RECOVERY_LADDER
+    if not attempt_history:
+        return rungs[0]
+    last = attempt_history[-1]
+    strategy = last.get("strategy")
+    if strategy is None:
+        return rungs[0]
+    if strategy not in rungs:
+        return None
+    previous = attempt_history[-2] if len(attempt_history) > 1 else None
+    if previous is not None:
+        try:
+            last_error = float(last["error_m"])
+            improvement = float(previous["error_m"]) - last_error
+            excess = last_error - float(arrival_tolerance_m)
+        except (KeyError, TypeError, ValueError):
+            improvement = 0.0
+            excess = 0.0
+        if improvement > 0.0 and excess > 0.0:
+            projected_attempts = excess / improvement
+            if projected_attempts <= max(0, int(remaining_attempts)):
+                return strategy
+        elif improvement > 0.0:
+            return strategy
+    rung = rungs.index(strategy)
+    if rung + 1 >= len(rungs):
+        return None
+    return rungs[rung + 1]
 
 
 class ControlEpisodeError(ValueError):
@@ -1803,6 +1913,9 @@ def _run_task_control_episode(
     row_index = 0
     attempt_number = 1
     commanded_position_bias = [0.0, 0.0, 0.0]
+    current_strategy: str | None = None
+    attempt_history: list[dict[str, Any]] = []
+    recovery_ladder = recovery_ladder_for_plan(plan)
     while row_index < len(trajectory):
         row = trajectory[row_index]
         pose_mode = row.get("mode") == "ik_pose"
@@ -2044,25 +2157,35 @@ def _run_task_control_episode(
                 "target_reached": termination_reason == "stable_arrival",
             }
             arrival["attempt"] = attempt_number
-            arrival["recovery_strategy"] = (
-                None if attempt_number == 1 else TASK_CONTROL_RECOVERY_STRATEGY
-            )
+            arrival["recovery_strategy"] = current_strategy
             arrival["commanded_position_bias_m"] = [
                 float(value) for value in commanded_position_bias
             ]
             phase_arrivals.append(arrival)
             if not arrival["target_reached"]:
+                attempt_history.append(
+                    {"strategy": current_strategy, "error_m": terminal_error}
+                )
+                next_strategy = _next_recovery_strategy(
+                    attempt_history,
+                    ladder=recovery_ladder,
+                    arrival_tolerance_m=float(row["arrival_tolerance_m"]),
+                    remaining_attempts=(
+                        TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS - attempt_number
+                    ),
+                )
                 if (
                     attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
                     and not hold_arm_during_gripper_transition
                     # A position bias cannot repair an orientation-only miss;
                     # retry only when the position gate itself failed.
                     and terminal_error > float(row["arrival_tolerance_m"])
+                    and next_strategy is not None
                 ):
                     # Bounded retreat toward the phase's already-achieved
                     # entry pose so a limit-saturated arm regains room, then
-                    # re-enter with the command biased by the measured miss.
-                    # Every retreat step is recorded in the same traces.
+                    # re-enter under the strategy the trend selected.  Every
+                    # retreat step is recorded in the same traces.
                     retreat_position = start_sample.get(
                         "grasp_frame_position_world_m"
                     )
@@ -2073,8 +2196,20 @@ def _run_task_control_episode(
                     if isinstance(
                         retreat_position, Sequence
                     ) and not isinstance(retreat_position, (str, bytes)):
+                        standoff_scale = (
+                            TASK_CONTROL_RECOVERY_EXTENDED_STANDOFF_SCALE
+                            if next_strategy == "extended_standoff_reentry"
+                            else 1.0
+                        )
+                        # scale 1.0 is exactly the qualified entry pose; a
+                        # larger scale backs further out along the same line
+                        # so re-entry travels a longer straight approach.
                         retreat_target = [
-                            float(value) for value in retreat_position
+                            float(target)
+                            + standoff_scale * (float(entry) - float(target))
+                            for target, entry in zip(
+                                arrival_target_position, retreat_position
+                            )
                         ]
                         for _ in range(
                             TASK_CONTROL_RECOVERY_RETREAT_MAXIMUM_STEPS
@@ -2140,14 +2275,32 @@ def _run_task_control_episode(
                                 <= 4.0 * float(row["arrival_tolerance_m"])
                             ):
                                 break
-                    commanded_position_bias = [
-                        float(bias) + (float(target) - float(value))
-                        for bias, target, value in zip(
-                            commanded_position_bias,
-                            arrival_target_position,
-                            measured,
+                    measured_miss = [
+                        float(target) - float(value)
+                        for target, value in zip(
+                            arrival_target_position, measured
                         )
                     ]
+                    if next_strategy == "measured_miss_compensation":
+                        commanded_position_bias = [
+                            float(bias) + miss
+                            for bias, miss in zip(
+                                commanded_position_bias, measured_miss
+                            )
+                        ]
+                    elif next_strategy == "damped_half_miss_compensation":
+                        commanded_position_bias = [
+                            float(bias) + 0.5 * miss
+                            for bias, miss in zip(
+                                commanded_position_bias, measured_miss
+                            )
+                        ]
+                    else:
+                        # Both re-entry rungs test the unbiased command from a
+                        # cleaner starting pose, so an accumulated bias would
+                        # confound exactly what they are meant to isolate.
+                        commanded_position_bias = [0.0, 0.0, 0.0]
+                    current_strategy = next_strategy
                     attempt_number += 1
                     continue
                 phase_execution_blocker = (
@@ -2156,11 +2309,14 @@ def _run_task_control_episode(
                     f"{terminal_orientation_error}:stability_steps="
                     f"{stable_steps}/{row['arrival_stability_steps']}"
                     f":attempts={attempt_number}"
+                    f":strategies_exhausted={next_strategy is None}"
                 )
                 break
         row_index += 1
         attempt_number = 1
         commanded_position_bias = [0.0, 0.0, 0.0]
+        current_strategy = None
+        attempt_history = []
     terminal = _persist_observation(
         environment,
         output_dir=output,
