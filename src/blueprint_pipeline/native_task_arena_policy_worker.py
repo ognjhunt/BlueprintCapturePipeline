@@ -74,6 +74,14 @@ def _inputs(runtime: Path, manifest: Mapping[str, Any]) -> dict[str, Path]:
         "native_task_arena_control_result.v1.json",
         "native_task_arena_policy_execution_spec.v1.json",
     }
+    # The pi05 bundle freezes the exact checkpoint inventory that its server
+    # will materialize.  The bundle verifier already requires this fourth
+    # input, so dropping it here makes every otherwise-valid pi05 provider run
+    # fail before Isaac or the policy server starts.  GR00T has no equivalent
+    # inventory input; keep its three-file contract exact rather than allowing
+    # arbitrary extras for both candidates.
+    if manifest.get("policy_candidate_id") == "pi05_droid":
+        required.add("openpi_polaris_checkpoint_inventory.json")
     if set(verified) != required:
         raise RuntimeError("native_task_policy_inputs_incomplete")
     return verified

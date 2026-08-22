@@ -98,6 +98,55 @@ def test_real_producers_satisfy_every_policy_admission_relation(tmp_path) -> Non
     assert _admission_binding_mismatches(**_bundled_policy_inputs(tmp_path)) == []
 
 
+def test_pi05_worker_accepts_the_checkpoint_inventory_required_by_its_bundle(
+    tmp_path,
+) -> None:
+    """The provider worker and bundle verifier must require the same inputs."""
+
+    import json
+    import zipfile
+
+    from blueprint_pipeline.native_task_arena_policy_bundle import (
+        build_native_task_arena_policy_bundle,
+    )
+    from blueprint_pipeline.native_task_arena_policy_worker import _inputs
+    from tests.test_native_task_arena_bundle import (
+        _articulated_packet,
+        _policy_spec,
+        _qualified_construction,
+        _qualified_controls,
+        _runtime_source_packet,
+    )
+
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    bundle = build_native_task_arena_policy_bundle(
+        job_dir=tmp_path / "pi05-policy-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        control_result_path=controls,
+        policy_execution_spec=_policy_spec(scene, construction, controls),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+    )
+    extracted = tmp_path / "pi05-extracted"
+    with zipfile.ZipFile(bundle["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    runtime = extracted / "provider_runtime"
+    manifest = json.loads(
+        (runtime / "adp_arena_provider_manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert set(_inputs(runtime, manifest)) == {
+        "native_task_arena_construction_result.v1.json",
+        "native_task_arena_control_result.v1.json",
+        "native_task_arena_policy_execution_spec.v1.json",
+        "openpi_polaris_checkpoint_inventory.json",
+    }
+
+
 def test_each_policy_admission_relation_reports_which_one_failed(
     tmp_path,
 ) -> None:
