@@ -66,7 +66,7 @@ def validate_native_task_arena_warm_session(
     prepared_bundle: Mapping[str, Any],
     observed_now_epoch: float | None = None,
 ) -> dict[str, Any]:
-    """Verify that a controls bundle is compatible with a still-owned session."""
+    """Verify that one Arena bundle is compatible with a still-owned session."""
 
     value = dict(session)
     runtime_source = prepared_bundle.get("runtime_source_packet") or {}
@@ -95,7 +95,8 @@ def validate_native_task_arena_warm_session(
         errors.append("watchdog_deadline_invalid")
     elif float(deadline) - now < MINIMUM_REMAINING_SESSION_SECONDS:
         errors.append("watchdog_window_too_short")
-    if prepared_bundle.get("execution_mode") != "controls":
+    execution_mode = prepared_bundle.get("execution_mode")
+    if execution_mode not in {"controls", "policy"}:
         errors.append("bundle_mode_invalid")
     if value.get("container_image") != prepared_bundle.get("container_image"):
         errors.append("container_image_mismatch")
@@ -167,7 +168,7 @@ def materialize_native_task_arena_warm_attempt_authority(
         "bundle_receipt": _record(receipt_path),
         "bundle_sha256": prepared_bundle.get("bundle_sha256"),
         "bundle_input_digest": prepared_bundle.get("input_digest"),
-        "execution_mode": "controls",
+        "execution_mode": prepared_bundle.get("execution_mode"),
         "blueprint_commit": prepared_bundle.get("implementation_commit"),
         "container_image": prepared_bundle.get("container_image"),
         "runtime_dependency_packet_sha256": (
@@ -220,7 +221,7 @@ def validate_native_task_arena_warm_attempt_authority(
         "watchdog_deadline_epoch": session.get("watchdog_deadline_epoch"),
         "bundle_sha256": prepared_bundle.get("bundle_sha256"),
         "bundle_input_digest": prepared_bundle.get("input_digest"),
-        "execution_mode": "controls",
+        "execution_mode": prepared_bundle.get("execution_mode"),
         "blueprint_commit": prepared_bundle.get("implementation_commit"),
         "container_image": prepared_bundle.get("container_image"),
         "runtime_dependency_packet_sha256": (

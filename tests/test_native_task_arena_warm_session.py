@@ -39,6 +39,19 @@ def _prepared(tmp_path: Path) -> tuple[dict, Path]:
     return prepared, receipt
 
 
+def _prepared_policy(tmp_path: Path, candidate_id: str = "pi05_droid") -> tuple[dict, Path]:
+    prepared, receipt = _prepared(tmp_path)
+    prepared.update(
+        {
+            "execution_mode": "policy",
+            "policy_candidate_id": candidate_id,
+            "expected_output_filename": "native_task_arena_policy_result.v1.json",
+        }
+    )
+    write_json(receipt, prepared)
+    return prepared, receipt
+
+
 def _session(prepared: dict) -> dict:
     session = {
         "schema_version": authority.SESSION_SCHEMA_VERSION,
@@ -110,13 +123,84 @@ def test_warm_session_refuses_wrong_dependency_or_expiring_watchdog(
         authority.validate_native_task_arena_warm_session(
             session, prepared_bundle=prepared, observed_now_epoch=NOW
         )
-
     prepared["runtime_source_packet"]["packet_sha256"] = "sha256:" + "e" * 64
     with pytest.raises(ValueError, match="watchdog_window_too_short"):
         authority.validate_native_task_arena_warm_session(
             session, prepared_bundle=prepared, observed_now_epoch=NOW + 3000
         )
 
+
+def test_warm_policy_authority_binds_exact_execution_mode(
+    tmp_path: Path,
+) -> None:
+    prepared, receipt = _prepared_policy(tmp_path)
+    session = _session(prepared)
+    session_path = tmp_path / "warm-policy-session.json"
+    write_json(session_path, session)
+
+    issued = authority.materialize_native_task_arena_warm_attempt_authority(
+        warm_session_path=session_path,
+        bundle_receipt_path=receipt,
+        prepared_bundle=prepared,
+        authorization_reference="current production goal",
+        authorized_by="user",
+        authorized_on="2026-08-22",
+        output_path=tmp_path / "warm-policy-authority.json",
+        observed_now_epoch=NOW,
+    )
+
+    assert issued["execution_mode"] == "policy"
+    assert authority.validate_native_task_arena_warm_attempt_authority(
+        issued,
+        warm_session=session,
+        prepared_bundle=prepared,
+        observed_now_epoch=NOW,
+    )["authorization_digest"] == issued["authorization_digest"]
+
+
+def test_warm_pi05_policy_has_zero_allocation_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared, receipt = _prepared_policy(tmp_path)
+    session = _session(prepared)
+    session_path = tmp_path / "warm-policy-session.json"
+    write_json(session_path, session)
+    issued = authority.materialize_native_task_arena_warm_attempt_authority(
+        warm_session_path=session_path,
+        bundle_receipt_path=receipt,
+        prepared_bundle=prepared,
+        authorization_reference="current production goal",
+        authorized_by="user",
+        authorized_on="2026-08-22",
+        output_path=tmp_path / "warm-policy-authority.json",
+        observed_now_epoch=NOW,
+    )
+    monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
+
+    result = warm_vast.run_native_task_arena_warm_policy_vast(
+        job_dir=tmp_path / "warm-policy-job",
+        prepared_bundle=prepared,
+        warm_session=session,
+        warm_attempt_authority=issued,
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["provider_allocations_performed"] == 0
+
+
+def test_warm_policy_refuses_groot_without_secret_transport(tmp_path: Path) -> None:
+    prepared, _receipt = _prepared_policy(tmp_path, "groot_n17_droid")
+    with pytest.raises(ValueError, match="warm_policy_bundle_invalid"):
+        warm_vast.run_native_task_arena_warm_policy_vast(
+            job_dir=tmp_path / "warm-groot-job",
+            prepared_bundle=prepared,
+            warm_session=_session(prepared),
+            warm_attempt_authority=None,
+            paid_resource_admission_grant=None,
+            execute=False,
+        )
 
 def test_remote_dispatcher_requires_existing_cache_and_uploads_small_result() -> None:
     script = warm_vast._remote_attempt_script(
@@ -277,6 +361,8 @@ def test_failed_warm_dispatch_fails_before_output_poll(
         session=_session(prepared),
         instance_id=123,
         api_key="secret",
+        result_filename="native_task_arena_control_result.v1.json",
+        blocker_prefix="native_task_arena_warm_controls",
     )
 
     assert result["elapsed"] == 0.0
