@@ -410,6 +410,10 @@ def test_global_pink_iteration_clamps_integrated_float_overshoot() -> None:
         [0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     )
+    # A zero tool offset: the grasp frame coincides with the hand, so this
+    # test measures the iteration clamp and nothing else.
+    servo._pink_hand_pose_at_binding_base = [0.0] * 3 + [0.0, 0.0, 0.0, 1.0]
+    servo._pink_grasp_pose_at_binding_base = [0.0] * 3 + [0.0, 0.0, 0.0, 1.0]
     servo._pink_setpoint = lambda **_kwargs: object()
     servo._pink_state_from_joint_positions = lambda joints: list(joints)
     servo._joint_positions_from_pink_state = lambda desired: list(desired)
@@ -585,3 +589,94 @@ def test_quaternion_boundary_rejects_zero_or_wrong_length(value) -> None:
         match="native_franka_pose_servo_quaternion_invalid",
     ):
         native_xyzw_to_contract_xyzw(value)
+
+
+def test_a_solve_is_accepted_on_the_frame_the_arrival_gate_measures() -> None:
+    """C32-C37's recurring 11-15 mm miss was the acceptance envelope.
+
+    The solve converts a grasp-frame target into a controlled-body target and
+    used to score its candidates *at the body*.  The arrival gate measures the
+    grasp frame, roughly 0.21 m down the tool, so an accepted body-orientation
+    residual of 0.08 rad reached the gate as ~17 mm of position error while the
+    solver reported millimetres.  A candidate that is perfect at the body and
+    wrong at the grasp frame must now be refused.
+    """
+
+    import math
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    tool_offset_m = 0.21
+    # 0.062 rad of yaw: comfortably inside the old 0.08 rad acceptance, and
+    # exactly the 13 mm of grasp-frame error the paid runs kept measuring.
+    yaw_rad = 0.062
+
+    yaw_quaternion = np.array(
+        [0.0, 0.0, math.sin(yaw_rad / 2.0), math.cos(yaw_rad / 2.0)]
+    )
+
+    class _Rotation:
+        @staticmethod
+        def from_matrix(_matrix):
+            return SimpleNamespace(as_quat=lambda: yaw_quaternion)
+
+    class _Configuration:
+        def get_transform_frame_to_world(self, _frame):
+            # The body lands exactly on its target; only its yaw is off.
+            return SimpleNamespace(
+                translation=np.array([0.0, 0.0, 0.0]), rotation=np.eye(3)
+            )
+
+    class _Controller:
+        def __init__(self):
+            self._configuration = _Configuration()
+
+        def reset(self, _state, _setpoint, _time):
+            return True
+
+        def forward(self, _state, _setpoint, _time):
+            return [0.0] * 7
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-3.0] * 7
+    servo._joint_position_upper = [3.0] * 7
+    servo._pink_time_seconds = 0.0
+    servo._pink_controller = _Controller()
+    servo._Rotation = _Rotation
+    servo._pink_hand_target_for_grasp_world = lambda **_kwargs: (
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    )
+    servo._pink_setpoint = lambda **_kwargs: object()
+    servo._pink_state_from_joint_positions = lambda joints: list(joints)
+    servo._joint_positions_from_pink_state = lambda desired: list(desired)
+    servo._reset_pink_controller = lambda: None
+    # The grasp frame sits `tool_offset_m` down the tool from the body.
+    servo._pink_hand_pose_at_binding_base = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    servo._pink_grasp_pose_at_binding_base = [
+        tool_offset_m, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+
+    result = servo.solve_grasp_target_from_joint_seed(
+        target_position_world_m=[0.0, 0.0, 0.0],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        seed_joint_positions_rad=[0.0] * 7,
+        maximum_iterations=2,
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+    )
+
+    # The body is exactly on target, so the old scoring would have accepted.
+    assert result["controlled_body_position_error_m"] == pytest.approx(0.0, abs=1e-9)
+    assert result["controlled_body_orientation_error_rad"] == pytest.approx(
+        yaw_rad, abs=1e-6
+    )
+    # The grasp frame the gate measures is a lever-arm away, and refused.
+    assert result["scored_frame"] == "grasp_frame"
+    assert result["grasp_frame_position_error_m"] == pytest.approx(
+        2.0 * tool_offset_m * math.sin(yaw_rad / 2.0), rel=1e-6
+    )
+    assert result["grasp_frame_position_error_m"] > 0.005
+    assert result["solved"] is False
