@@ -294,10 +294,15 @@ def test_factory_keeps_globally_solved_contact_pose_on_cartesian_servo(
     assert action == [0.0] * 8
     assert servo.calls[-1]["target_position_world_m"] == [1.0, 2.0, 3.0]
     assert "target_joint_positions_rad" not in servo.calls[-1]
+    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [0.2] * 7
     assert receipt["scripted_pose_source"] == (
-        "global_ik_free_space_with_native_cartesian_contact_servo"
+        "global_ik_free_space_with_native_cartesian_contact_servo_and_"
+        "selected_posture_reference"
     )
     assert receipt["cartesian_contact_phase_ids"] == ["contact_open"]
+    assert receipt["cartesian_contact_posture_reference_phase_ids"] == [
+        "contact_open"
+    ]
 
 
 def test_factory_rejects_malformed_construction_joint_target() -> None:

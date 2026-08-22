@@ -977,11 +977,18 @@ class NativeFrankaDifferentialIkServo:
             )
 
     def _pink_desired_joint_positions(
-        self, *, target_position_base: Sequence[float], target_quaternion_base_xyzw: Sequence[float]
+        self,
+        *,
+        target_position_base: Sequence[float],
+        target_quaternion_base_xyzw: Sequence[float],
+        preferred_posture_joint_positions_rad: Sequence[float] | None = None,
     ) -> list[float]:
         setpoint = self._pink_setpoint(
             target_position_base=target_position_base,
             target_quaternion_base_xyzw=target_quaternion_base_xyzw,
+            preferred_posture_joint_positions_rad=(
+                preferred_posture_joint_positions_rad
+            ),
         )
         desired = self._pink_controller.forward(
             self._pink_estimated_state(), setpoint, self._pink_time_seconds
@@ -994,6 +1001,7 @@ class NativeFrankaDifferentialIkServo:
         *,
         target_position_base: Sequence[float],
         target_quaternion_base_xyzw: Sequence[float],
+        preferred_posture_joint_positions_rad: Sequence[float] | None = None,
     ) -> Any:
         target_quaternion_base_wxyz = contract_xyzw_to_pink_wxyz(
             target_quaternion_base_xyzw
@@ -1009,7 +1017,21 @@ class NativeFrankaDifferentialIkServo:
             self._np.asarray([target_quaternion_base_wxyz], dtype=self._np.float32),
             dtype=self._wp.float32,
         )
+        posture_joints = None
+        if preferred_posture_joint_positions_rad is not None:
+            # Pink updates its PostureTask only when the setpoint carries joint
+            # positions.  A site-only setpoint leaves the posture target at the
+            # controller reset configuration, which can pin the live Cartesian
+            # servo to a joint-limit branch even after multistart found a valid
+            # endpoint.  Keep the site target authoritative for the fingertip
+            # path and use the solved joints only as the redundant-arm posture
+            # preference.
+            posture_state = self._pink_state_from_joint_positions(
+                preferred_posture_joint_positions_rad
+            )
+            posture_joints = posture_state.joints
         return self._mg.RobotState(
+            joints=posture_joints,
             sites=self._mg.SpatialState.from_name(
                 spatial_space=["panda_hand"],
                 positions=(["panda_hand"], position),
@@ -1536,6 +1558,7 @@ class NativeFrankaDifferentialIkServo:
         # number defined elsewhere, and #797 designed 0.0 as the A/B baseline.
         max_joint_delta_rad: float,
         max_joint_setpoint_lead_rad: float,
+        preferred_posture_joint_positions_rad: Sequence[float] | None = None,
         velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     ) -> tuple[list[float], dict[str, Any]]:
         self._last_gripper_command = float(gripper_command)
@@ -1611,6 +1634,9 @@ class NativeFrankaDifferentialIkServo:
         desired_values = self._pink_desired_joint_positions(
             target_position_base=target_pink_hand_position_root,
             target_quaternion_base_xyzw=target_pink_hand_quaternion_root,
+            preferred_posture_joint_positions_rad=(
+                preferred_posture_joint_positions_rad
+            ),
         )
         current_values = [float(value) for value in current[0]]
         desired_within_joint_limits = clip_joint_positions_to_limits(
@@ -1679,6 +1705,14 @@ class NativeFrankaDifferentialIkServo:
             "pink_position_cost": PINK_POSITION_COST,
             "pink_orientation_cost": PINK_ORIENTATION_COST,
             "pink_posture_cost": PINK_POSTURE_COST,
+            "pink_preferred_posture_joint_positions_rad": (
+                None
+                if preferred_posture_joint_positions_rad is None
+                else [
+                    float(value)
+                    for value in preferred_posture_joint_positions_rad
+                ]
+            ),
             "pink_integration_dt_seconds": PINK_INTEGRATION_DT_SECONDS,
             "pink_target_hand_position_root_m": (
                 target_pink_hand_position_root

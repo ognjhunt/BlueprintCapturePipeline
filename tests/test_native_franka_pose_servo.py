@@ -406,6 +406,46 @@ def test_pose_servo_uses_pink_limits_and_posture_not_plain_dls() -> None:
     assert "_reset_pink_controller" not in reset_source
 
 
+def test_pink_setpoint_combines_cartesian_target_and_preferred_posture() -> None:
+    class _RobotState:
+        def __init__(self, **kwargs):
+            self.joints = kwargs.get("joints")
+            self.sites = kwargs.get("sites")
+
+    class _SpatialState:
+        @staticmethod
+        def from_name(**kwargs):
+            return kwargs
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._np = np
+    servo._wp = SimpleNamespace(
+        float32="float32",
+        from_numpy=lambda value, **_kwargs: value,
+    )
+    servo._mg = SimpleNamespace(RobotState=_RobotState, SpatialState=_SpatialState)
+    posture = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7]
+    posture_joints = object()
+    servo._pink_state_from_joint_positions = lambda values: SimpleNamespace(
+        joints=(posture_joints if list(values) == posture else None)
+    )
+
+    setpoint = servo._pink_setpoint(
+        target_position_base=[0.4, 0.1, 0.2],
+        target_quaternion_base_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_posture_joint_positions_rad=posture,
+    )
+
+    assert setpoint.joints is posture_joints
+    assert setpoint.sites["spatial_space"] == ["panda_hand"]
+    assert setpoint.sites["positions"][1].tolist()[0] == pytest.approx(
+        [0.4, 0.1, 0.2]
+    )
+    assert setpoint.sites["orientations"][1].tolist()[0] == pytest.approx(
+        [1.0, 0.0, 0.0, 0.0]
+    )
+
+
 @pytest.mark.parametrize("value", ([0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]))
 def test_quaternion_boundary_rejects_zero_or_wrong_length(value) -> None:
     with pytest.raises(
