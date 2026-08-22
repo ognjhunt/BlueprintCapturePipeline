@@ -268,10 +268,10 @@ def test_warm_dispatch_streams_script_over_pinned_ssh_without_url_in_command(
 def test_warm_log_fetch_reads_dispatch_namespace_not_workload_namespace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    observed: dict[str, object] = {}
+    calls: list[dict[str, object]] = []
 
     def fake_ssh(**kwargs):
-        observed.update(kwargs)
+        calls.append(kwargs)
         return {"status": "completed", "stdout": "sealed-log\n"}
 
     monkeypatch.setattr(warm_vast, "_run_pinned_ssh", fake_ssh)
@@ -282,17 +282,23 @@ def test_warm_log_fetch_reads_dispatch_namespace_not_workload_namespace(
         attempt_key="b" * 16,
     )
 
+    remote_log_path = (
+        "/workspace/native_task_arena_warm_dispatches/" + "b" * 16 + "/run.log"
+    )
     assert result["status"] == "completed"
     assert text == "sealed-log\n"
-    assert observed["remote_argv"] == [
+    assert calls[0]["remote_argv"] == [
         "tail",
         "-n",
         "500",
         "--",
-        "/workspace/native_task_arena_warm_dispatches/"
-        + "b" * 16
-        + "/run.log",
+        remote_log_path,
     ]
+    # The marker scrape reads the same dispatch-namespace log, never the
+    # workload namespace, and non-marker output is not prepended.
+    assert len(calls) == 2
+    assert calls[1]["remote_argv"][0] == "sh"
+    assert remote_log_path in calls[1]["remote_argv"][2]
 
 
 def test_pinned_ssh_uses_service_bound_identity_file(
@@ -531,3 +537,42 @@ def test_warm_execution_reuses_instance_without_allocating(
     assert teardown["continuing_spend_from_this_run"] is False
     assert teardown["vast_instance_ids"] == [123]
     assert len(dispatches) == 2
+
+
+def test_warm_marker_scrape_survives_a_chatty_tail(tmp_path, monkeypatch) -> None:
+    """C28's real dependency-cache hit was declared unproven.
+
+    The warm markers print at the very start of the run and a chatty Isaac
+    controls episode pushes them past the bounded 500-line tail, so the
+    marker-presence gates judged the tail window instead of the run.  The
+    fetch now scrapes the bounded marker lines from the whole log and
+    prepends them to the returned text.
+    """
+
+    from blueprint_pipeline import native_task_arena_warm_vast as module
+
+    def fake_ssh(*, session, known_hosts_file, remote_argv, timeout_seconds):
+        if remote_argv[0] == "tail":
+            return {"stdout": "isaac render spew\n" * 5}
+        assert remote_argv[0] == "sh"
+        assert "BLUEPRINT_ARENA_WARM_" in remote_argv[2]
+        return {
+            "stdout": (
+                "BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:sha256:abc\n"
+                "BLUEPRINT_ARENA_WARM_OUTPUT_ZIP_WRITTEN:123\n"
+            )
+        }
+
+    monkeypatch.setattr(module, "_run_pinned_ssh", fake_ssh)
+
+    _result, text = module._fetch_warm_runtime_log_over_ssh(
+        job=tmp_path,
+        session={},
+        dispatch={},
+        attempt_key="attempt-key",
+    )
+
+    assert "BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:" in text
+    assert "isaac render spew" in text
+    saved = (tmp_path / "warm_runtime.log").read_text(encoding="utf-8")
+    assert saved.startswith("BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:")
