@@ -560,7 +560,6 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
 def _groot_policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
     spec = _policy_spec(scene, construction, controls)
     groot = GrootN17DroidPolicySpec()
-    identity = groot.identity()
     spec.update(
         {
             "candidate_id": "groot_n17_droid",
@@ -577,13 +576,10 @@ def _groot_policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
                 "open_loop_horizon": groot.open_loop_horizon,
             },
             "policy_identity_receipt": {
-                "status": "verified",
-                "model_id": identity["model_id"],
-                "embodiment_tag": identity["embodiment_tag"],
-                "groot_source_revision": identity["groot_source_revision"],
-                "checkpoint_revision": identity["checkpoint_revision"],
-                "checkpoint_files_sha256": "4" * 64,
-                "environment_lock_sha256": "5" * 64,
+                "status": "runtime_measurement_required",
+                "relative_path": (
+                    "adp009d_groot_worker_identity.groot_n17_droid.json"
+                ),
             },
         }
     )
@@ -718,6 +714,31 @@ def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
     with pytest.raises(ValueError, match="output_exists"):
         materialize_native_task_policy_execution_spec(
             request=request, output_path=output
+        )
+
+
+def test_groot_execution_spec_refuses_predeclared_verified_runtime_identity(
+    tmp_path: Path,
+) -> None:
+    """Checkpoint bytes do not exist on the worker when the spec is sealed."""
+
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    request = _groot_policy_spec(scene, construction, controls)
+    request["policy_identity_receipt"] = {
+        "status": "verified",
+        "checkpoint_files_sha256": "4" * 64,
+        "environment_lock_sha256": "5" * 64,
+    }
+    request.pop("execution_spec_digest")
+
+    with pytest.raises(
+        ValueError, match="native_task_policy_spec_or_identity_invalid"
+    ):
+        materialize_native_task_policy_execution_spec(
+            request=request,
+            output_path=tmp_path / "dishonest-groot-execution-spec.json",
         )
 
 

@@ -25,6 +25,13 @@ RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
 RESULT_FILENAME = "native_task_arena_policy_result.v1.json"
 EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
 PROBE_KIND = "native-task-arena-policy"
+GROOT_RUNTIME_IDENTITY_FILENAME = (
+    "adp009d_groot_worker_identity.groot_n17_droid.json"
+)
+GROOT_RUNTIME_IDENTITY_DECLARATION = {
+    "status": "runtime_measurement_required",
+    "relative_path": GROOT_RUNTIME_IDENTITY_FILENAME,
+}
 OPENPI_CHECKPOINT_INVENTORY_PATH = (
     Path(__file__).resolve().parents[2]
     / "docs/experiments/policy_ranking_thesis_20260726/"
@@ -149,15 +156,22 @@ def validate_native_task_policy_execution_spec(
             elif candidate == "groot_n17_droid":
                 from .groot_n17_droid_policy_runtime import (
                     GrootN17DroidPolicySpec,
-                    validate_worker_identity_receipt,
                 )
 
                 policy_spec = GrootN17DroidPolicySpec(**payload["policy_spec"])
                 policy_spec.validate()
-                validate_worker_identity_receipt(
-                    payload.get("policy_identity_receipt") or {},
-                    expected=policy_spec,
-                )
+                # NVIDIA's PolicyClient pings the server but does not attest
+                # which checkpoint bytes the server loaded.  Provisioning
+                # measures those bytes only after this immutable spec has been
+                # built, so a pre-filled "verified" receipt here would be a
+                # declaration masquerading as an observation.  Require the
+                # spec to declare the runtime measurement and let the episode
+                # worker consume the resulting receipt.
+                if (
+                    payload.get("policy_identity_receipt")
+                    != GROOT_RUNTIME_IDENTITY_DECLARATION
+                ):
+                    raise ValueError("groot_runtime_identity_declaration_invalid")
         except (TypeError, ValueError):
             errors.append("native_task_policy_spec_or_identity_invalid")
         if payload["policy_spec"].get("open_loop_horizon") != payload.get(
@@ -396,6 +410,8 @@ def load_verified_native_task_arena_policy_bundle(
 
 __all__ = [
     "EXECUTION_SPEC_SCHEMA_VERSION",
+    "GROOT_RUNTIME_IDENTITY_DECLARATION",
+    "GROOT_RUNTIME_IDENTITY_FILENAME",
     "PROBE_KIND",
     "RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",

@@ -30,6 +30,71 @@ def test_persist_survives_values_json_cannot_encode() -> None:
     assert written["result_digest"].startswith("sha256:")
 
 
+def test_groot_episode_consumes_runtime_measured_worker_identity(tmp_path) -> None:
+    """The immutable request may not impersonate a later runtime measurement."""
+
+    import json
+
+    from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+        GrootN17DroidPolicySpec,
+    )
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        GROOT_RUNTIME_IDENTITY_FILENAME,
+        _runtime_groot_worker_identity,
+    )
+
+    policy_spec = GrootN17DroidPolicySpec()
+    receipt = {
+        "status": "verified",
+        "model_id": policy_spec.model_id,
+        "embodiment_tag": policy_spec.embodiment_tag,
+        "groot_source_revision": policy_spec.groot_source_revision,
+        "checkpoint_revision": policy_spec.checkpoint_revision,
+        "checkpoint_files_sha256": "4" * 64,
+        "environment_lock_sha256": "5" * 64,
+    }
+    path = tmp_path / GROOT_RUNTIME_IDENTITY_FILENAME
+    path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+    observed, evidence = _runtime_groot_worker_identity(
+        output_root=tmp_path,
+        spec={
+            "policy_spec": {
+                "model_id": policy_spec.model_id,
+                "embodiment_tag": policy_spec.embodiment_tag,
+                "groot_source_revision": policy_spec.groot_source_revision,
+                "checkpoint_revision": policy_spec.checkpoint_revision,
+                "open_loop_horizon": policy_spec.open_loop_horizon,
+            }
+        },
+    )
+
+    assert observed == receipt
+    assert evidence["source"] == "runtime_provisioning_measurement"
+    assert evidence["relative_path"] == GROOT_RUNTIME_IDENTITY_FILENAME
+    assert evidence["file_sha256"].startswith("sha256:")
+    assert evidence["receipt_digest"].startswith("sha256:")
+
+
+def test_groot_episode_refuses_missing_runtime_identity(tmp_path) -> None:
+    from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+        GrootN17DroidPolicySpec,
+    )
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _runtime_groot_worker_identity,
+    )
+    import pytest
+
+    policy_spec = GrootN17DroidPolicySpec()
+    with pytest.raises(
+        RuntimeError, match="groot_runtime_worker_identity_receipt_missing"
+    ):
+        _runtime_groot_worker_identity(
+            output_root=tmp_path,
+            spec={"policy_spec": policy_spec.__dict__},
+        )
+
+
 def _bundled_policy_inputs(tmp_path) -> dict[str, dict]:
     """Read back exactly what the policy worker reads on the provider.
 
