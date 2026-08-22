@@ -45,9 +45,85 @@ DEFAULT_MAX_ITERATIONS = 60
 #: a handful of good basins is the whole point -- this is not a replacement
 #: search.
 DEFAULT_SEED_LIMIT = 3
+#: Global configurations evaluated before the local tracker refines anything.
+#: This is deliberately above one hundred: evaluating FK and a 6x7 Jacobian is
+#: cheap compared with one PhysX episode, and a seven-DOF arm should not choose
+#: its kinematic branch from sixteen hand-authored postures.
+DEFAULT_DIVERSE_SEED_COUNT = 128
 #: Two configurations closer than this in joint space are the same basin, and
 #: seeding both wastes a slot that a genuinely different branch could use.
 DISTINCT_CONFIGURATION_RADIUS_RAD = 0.35
+
+
+def _radical_inverse(index: int, base: int) -> float:
+    value = 0.0
+    scale = 1.0 / float(base)
+    while index:
+        index, digit = divmod(index, base)
+        value += digit * scale
+        scale /= float(base)
+    return value
+
+
+def diverse_joint_seeds(
+    *,
+    seeds: Sequence[Sequence[float]],
+    lower_joint_position_limits_rad: Sequence[float],
+    upper_joint_position_limits_rad: Sequence[float],
+    count: int = DEFAULT_DIVERSE_SEED_COUNT,
+) -> list[list[float]]:
+    """Preserve caller seeds, then fill the joint box with a Halton design.
+
+    A deterministic low-discrepancy design covers the whole seven-dimensional
+    limit box without a random seed or a scene-specific posture.  Generated
+    points stay five percent inside each limit because starting exactly on a
+    stop is both physically unhelpful and numerically ambiguous.
+    """
+
+    lower = [float(value) for value in lower_joint_position_limits_rad]
+    upper = [float(value) for value in upper_joint_position_limits_rad]
+    target_count = max(1, int(count))
+    if (
+        not lower
+        or len(lower) != len(upper)
+        or len(lower) > 10
+        or any(
+            not math.isfinite(low)
+            or not math.isfinite(high)
+            or low >= high
+            for low, high in zip(lower, upper, strict=True)
+        )
+    ):
+        return []
+
+    result: list[list[float]] = []
+    for raw in seeds:
+        try:
+            row = [float(value) for value in raw]
+        except (TypeError, ValueError):
+            continue
+        if len(row) != len(lower) or not all(math.isfinite(value) for value in row):
+            continue
+        row = [
+            min(high, max(low, value))
+            for value, low, high in zip(row, lower, upper, strict=True)
+        ]
+        if not any(math.dist(row, prior) <= 1.0e-9 for prior in result):
+            result.append(row)
+        if len(result) >= target_count:
+            return result
+
+    primes = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29)
+    index = 1
+    while len(result) < target_count:
+        row = []
+        for axis, (low, high) in enumerate(zip(lower, upper, strict=True)):
+            unit = 0.05 + 0.90 * _radical_inverse(index, primes[axis])
+            row.append(low + unit * (high - low))
+        if not any(math.dist(row, prior) <= 1.0e-9 for prior in result):
+            result.append(row)
+        index += 1
+    return result
 
 
 def _quaternion_error_vector(
@@ -207,9 +283,11 @@ def high_margin_joint_seeds(
 
 
 __all__ = [
+    "DEFAULT_DIVERSE_SEED_COUNT",
     "DEFAULT_MAX_ITERATIONS",
     "DISTINCT_CONFIGURATION_RADIUS_RAD",
     "DEFAULT_SEED_LIMIT",
     "GLOBAL_SEED_SEARCH_SCHEMA_VERSION",
+    "diverse_joint_seeds",
     "high_margin_joint_seeds",
 ]

@@ -268,6 +268,18 @@ class _SolvedJointCartesianEnvironment(_CartesianEnvironment):
         self.cartesian_targets.append(list(kwargs["target_position_world_m"]))
         return super().scripted_action_for_pose(**kwargs)
 
+    def predict_grasp_frame_pose_world(
+        self, joint_positions_rad, *, gripper_command=None
+    ):
+        assert gripper_command is not None
+        return [
+            *[float(value) for value in joint_positions_rad[:3]],
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+
 
 @pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
 def test_same_control_contract_passes_original_and_second_scene_fixtures(
@@ -474,6 +486,17 @@ def test_task_neutral_control_dispatches_solved_vector_through_bounded_seam(
         row for row in positive["action_trace"] if row["phase_id"] == "open"
     ]
     assert all(row["isaac_action"][:7] == solved for row in open_actions)
+    arrival = next(
+        row for row in positive["phase_arrivals"] if row["phase_id"] == "open"
+    )
+    assert arrival["selected_joint_positions_rad"] == solved
+    assert arrival["terminal_commanded_joint_positions_rad"] == solved
+    assert arrival["terminal_reached_joint_positions_rad"] == solved
+    assert arrival["selected_to_commanded_joint_l2_rad"] == pytest.approx(0.0)
+    assert arrival["commanded_to_reached_joint_l2_rad"] == pytest.approx(0.0)
+    assert arrival["terminal_fk_grasp_frame_position_world_m"] == [0.9, 0.0, 0.0]
+    assert arrival["terminal_fk_to_measured_tcp_error_m"] == pytest.approx(0.0)
+    assert arrival["terminal_fk_status"] == "measured"
 
 
 def test_task_neutral_control_refuses_missing_solved_joint_dispatch(

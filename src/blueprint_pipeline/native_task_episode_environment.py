@@ -393,6 +393,13 @@ def build_native_task_episode_environment(
             else None
         ),
         grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
+        grasp_frame_fk_callback=(
+            servo.predicted_grasp_frame_pose_world
+            if callable(
+                getattr(servo, "predicted_grasp_frame_pose_world", None)
+            )
+            else None
+        ),
         camera_scene_names=camera_scene_names,
         joint_wrench_sensor=joint_wrench_sensor,
     )

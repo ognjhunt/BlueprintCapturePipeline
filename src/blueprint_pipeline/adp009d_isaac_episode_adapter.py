@@ -571,6 +571,7 @@ class IsaacEpisodeAdapter:
         | None = None,
         task_sample_callback: Callable[[], Mapping[str, Any]] | None = None,
         grasp_frame_pose_callback: Callable[[], Sequence[float]] | None = None,
+        grasp_frame_fk_callback: Callable[..., Sequence[float] | None] | None = None,
         camera_scene_names: Mapping[str, str] | None = None,
         contact_sensor: Any | None = None,
         joint_wrench_sensor: Any | None = None,
@@ -604,6 +605,7 @@ class IsaacEpisodeAdapter:
         self._camera_pose_callback = camera_pose_callback
         self._task_sample_callback = task_sample_callback
         self._grasp_frame_pose_callback = grasp_frame_pose_callback
+        self._grasp_frame_fk_callback = grasp_frame_fk_callback
         self._camera_scene_names = dict(
             DEFAULT_CAMERA_SCENE_NAMES
             if camera_scene_names is None
@@ -756,6 +758,24 @@ class IsaacEpisodeAdapter:
     def read_arm_joint_positions(self) -> list[float]:
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
         return [float(value) for value in joints]
+
+    def predict_grasp_frame_pose_world(
+        self,
+        joint_positions_rad: Sequence[float],
+        *,
+        gripper_command: float | None = None,
+    ) -> list[float] | None:
+        if self._grasp_frame_fk_callback is None:
+            return None
+        predicted = self._grasp_frame_fk_callback(
+            joint_positions_rad, gripper_command=gripper_command
+        )
+        if predicted is None:
+            return None
+        pose = [float(value) for value in predicted]
+        if len(pose) != 7 or not all(math.isfinite(value) for value in pose):
+            raise IsaacEpisodeAdapterError(["isaac_episode_grasp_frame_fk_invalid"])
+        return pose
 
     def _arm_vector(self, attribute: str) -> list[float]:
         raw = getattr(self._robot.data, attribute, None)

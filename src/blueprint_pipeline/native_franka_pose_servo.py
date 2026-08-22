@@ -1810,6 +1810,52 @@ class NativeFrankaDifferentialIkServo:
 
         return frame_pose, frame_jacobian
 
+    def predicted_grasp_frame_pose_world(
+        self,
+        joint_positions_rad: Sequence[float],
+        *,
+        gripper_command: float | None = None,
+    ) -> list[float] | None:
+        """Run the solver model's FK at reached joints and return its TCP.
+
+        This is intentionally separate from ``current_grasp_frame_pose_world``:
+        the latter reads PhysX, while this method predicts the same grasp frame
+        from Pinocchio.  Recording both at the same reached joint vector closes
+        the selected -> commanded -> reached -> FK -> measured chain.
+        """
+
+        probes = self._pinocchio_frame_probes()
+        if probes is None:
+            return None
+        try:
+            joints = [float(value) for value in joint_positions_rad]
+            if len(joints) != len(self.binding["arm_joint_names"]) or not all(
+                math.isfinite(value) for value in joints
+            ):
+                return None
+            hand_position_base, hand_quaternion_base = probes[0](joints)
+            offset_base = rotate_vector_xyzw(
+                hand_quaternion_base,
+                self._grasp_position_for_command(gripper_command),
+            )
+            grasp_position_base = [
+                float(hand_position_base[index]) + float(offset_base[index])
+                for index in range(3)
+            ]
+            grasp_quaternion_base = quaternion_multiply_xyzw(
+                hand_quaternion_base, self._body_to_grasp_quaternion
+            )
+            position_world, quaternion_world = pose_base_to_world(
+                position_base=grasp_position_base,
+                quaternion_base_xyzw=grasp_quaternion_base,
+                base_position_world=self._base_pose[:3],
+                base_quaternion_world_xyzw=self._base_pose[3:7],
+            )
+            result = [*position_world, *quaternion_world]
+        except Exception:  # noqa: BLE001 - observability cannot steer the arm
+            return None
+        return result if len(result) == 7 and all(math.isfinite(v) for v in result) else None
+
     def global_margin_seeds(
         self,
         *,
@@ -1831,7 +1877,9 @@ class NativeFrankaDifferentialIkServo:
         """
 
         from blueprint_pipeline.native_franka_global_seed_search import (
+            DEFAULT_DIVERSE_SEED_COUNT,
             GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
+            diverse_joint_seeds,
             high_margin_joint_seeds,
         )
 
@@ -1846,10 +1894,16 @@ class NativeFrankaDifferentialIkServo:
                 "seeds": [],
             }
         frame_pose, frame_jacobian = probes
+        diverse_seeds = diverse_joint_seeds(
+            seeds=seeds,
+            lower_joint_position_limits_rad=lower,
+            upper_joint_position_limits_rad=upper,
+            count=DEFAULT_DIVERSE_SEED_COUNT,
+        )
         return high_margin_joint_seeds(
             frame_pose=frame_pose,
             frame_jacobian=frame_jacobian,
-            seeds=seeds,
+            seeds=diverse_seeds,
             target_position_m=target_position_base_m,
             target_quaternion_xyzw=target_quaternion_base_xyzw,
             lower_joint_position_limits_rad=lower,

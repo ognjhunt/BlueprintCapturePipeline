@@ -1400,6 +1400,12 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
                 "offset_m": [0.0, -0.04, 0.0],
                 "joint_positions_rad": known_joints,
                 "measured_distance_to_requested_m": 0.0042,
+                "measured_grasp_frame_orientation_world_xyzw": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
                 "contact_steps": 0,
             },
             {
@@ -1407,6 +1413,12 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
                 "offset_m": [0.0, -0.02, 0.0],
                 "joint_positions_rad": [0.2] * 7,
                 "measured_distance_to_requested_m": 0.008,
+                "measured_grasp_frame_orientation_world_xyzw": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
                 "contact_steps": 0,
             },
         ],
@@ -1436,6 +1448,7 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
         [0.07, 0.08, 0.09]
     )
     assert contact["hold_solved_arm_joint_positions_rad"] is None
+    assert receipt["replaced_branch_replay_rows"] == 0
     assert derived["plan_digest"] == canonical_digest(
         derived, digest_field="plan_digest"
     )
@@ -1456,6 +1469,12 @@ def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
                     "offset_m": [0.0, -0.02, 0.0],
                     "joint_positions_rad": [0.2] * 7,
                     "measured_distance_to_requested_m": 0.008,
+                    "measured_grasp_frame_orientation_world_xyzw": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                    ],
                     "contact_steps": 0,
                 }
             ]
@@ -1465,3 +1484,83 @@ def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
     assert receipt["status"] == "not_applied"
     assert receipt["reason"] == "no_noncontact_probe_cell_inside_arrival_gate"
     assert derived == plan
+
+
+def test_measured_anchor_replaces_the_old_contact_replay() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+        _with_contact_entry_branch_replay,
+        _with_measured_contact_frontier,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    targets = [
+        {
+            "phase_id": row["phase_id"],
+            "target_position_world_m": row["target_position_world_m"],
+            "target_quaternion_world_xyzw": row["target_quaternion_world_xyzw"],
+            "joint_positions_rad": [0.0] * 7
+            if row["phase_id"] == "approach"
+            else [0.4] * 7,
+        }
+        for row in plan["scripted_positive_actions"]
+        if row["phase_id"] in {"approach", "contact_open"}
+    ]
+    replayed, replay_receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=targets,
+        task_spec=task,
+    )
+    assert replay_receipt["status"] == "applied"
+    old_rows = [
+        row
+        for row in replayed["scripted_positive_actions"]
+        if row["phase_id"] == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    assert len(old_rows) > 1
+
+    derived, receipt = _with_measured_contact_frontier(
+        control_plan=replayed,
+        reachability_probe={
+            "cells": [
+                {
+                    "status": "measured",
+                    "offset_m": [0.0, -0.04, 0.0],
+                    "joint_positions_rad": [0.2] * 7,
+                    "measured_distance_to_requested_m": 0.004,
+                    "measured_grasp_frame_orientation_world_xyzw": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                    ],
+                    "contact_steps": 0,
+                }
+            ]
+        },
+    )
+    new_rows = [
+        row
+        for row in derived["scripted_positive_actions"]
+        if row["phase_id"] == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    assert len(new_rows) == 1
+    assert new_rows[0]["mode"] == "ik_pose"
+    assert new_rows[0]["hold_solved_arm_joint_positions_rad"] == [0.2] * 7
+    assert receipt["replaced_branch_replay_rows"] == len(old_rows)
+
+
+def test_contact_anchor_is_derived_from_the_approach_line() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _contact_approach_anchor_offset,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    rows = {row["phase_id"]: row for row in plan["scripted_positive_actions"]}
+    rows["approach"]["target_position_world_m"] = [0.5, -0.02, 0.4]
+    rows["contact_open"]["target_position_world_m"] = [0.5, 0.1, 0.4]
+
+    assert _contact_approach_anchor_offset(plan) == pytest.approx(
+        [0.0, -0.04, 0.0]
+    )
