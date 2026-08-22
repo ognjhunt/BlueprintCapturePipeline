@@ -728,26 +728,25 @@ def _with_contact_entry_branch_replay(
     if reclaimed:
         contact_row["maximum_steps"] = confirm_steps
 
-    rows: list[dict[str, Any]] = []
-    for step in range(1, interp_rows + 1):
-        fraction = step / interp_rows
-        rows.append(
-            {
-                "phase_id": CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
-                "arm_joint_positions": [
-                    s + fraction * (e - s) for s, e in zip(start, end)
-                ],
-                "gripper_state": "open",
-            }
-        )
-    rows.extend(
+    # Every row commands the SAME solved posture.  The servo's slew and
+    # per-joint feasible-lead bounds turn that into a ramp at exactly the rate
+    # the slowest joint can follow, which is strictly better than an open-loop
+    # interpolation: C33 hand-rolled the ramp, ran ahead of a lagging wrist,
+    # and spent 37% of its rows saturated.  A closed-loop command cannot
+    # outrun the joint, so the row count only has to be generous enough for
+    # the traverse rather than exactly right.
+    rows: list[dict[str, Any]] = [
         {
             "phase_id": CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
             "arm_joint_positions": [float(value) for value in end],
             "gripper_state": "open",
+            "max_joint_delta_rad": feasible_step,
+            "max_joint_setpoint_lead_rad": max(
+                feasible_step, float(contact_row.get("max_joint_setpoint_lead_rad") or 0.0)
+            ),
         }
-        for _ in range(CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS)
-    )
+        for _ in range(interp_rows + settle_rows)
+    ]
     actions[contact_index:contact_index] = rows
     plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
     receipt.update(

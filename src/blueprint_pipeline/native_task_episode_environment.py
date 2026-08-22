@@ -304,6 +304,26 @@ def build_native_task_episode_environment(
         )
         return sample
 
+    def bounded_joint_action(**kwargs: Any) -> list[float]:
+        """Command a solved joint posture under the servo's actuator bounds.
+
+        Plan rows carrying raw joint positions bypass the servo entirely, so
+        nothing held them to what the actuator can pull.  C33 measured the
+        cost: its 118-row entry ramp ran the command ahead of a lagging wrist,
+        spent 37% of those rows saturated, and ended further from the handle
+        than the shorter ramp before it.  Routing the same targets through the
+        servo applies the slew and per-joint feasible-lead bounds, so the
+        command can never outrun the joint that has to follow it.
+        """
+
+        action, _diagnostic = servo.action_for_joint_target(
+            target_joint_positions_rad=kwargs["target_joint_positions_rad"],
+            gripper_command=kwargs["gripper_command"],
+            max_joint_delta_rad=kwargs["max_joint_delta_rad"],
+            max_joint_setpoint_lead_rad=kwargs["max_joint_setpoint_lead_rad"],
+        )
+        return [float(value) for value in action]
+
     def scripted_pose_action(**kwargs: Any) -> list[float]:
         quaternion = kwargs.get("target_quaternion_world_xyzw")
         resolved_quaternion = reset_orientation if quaternion is None else quaternion
@@ -366,6 +386,7 @@ def build_native_task_episode_environment(
         scripted_pose_controller_reset_callback=servo.reset_command_state,
         simulation_step_seconds=1.0 / control_frequency_hz,
         scripted_pose_action_callback=scripted_pose_action,
+        bounded_joint_action_callback=bounded_joint_action,
         task_sample_callback=(
             articulated_task_sample
             if task_kind == "articulated_open_close"
