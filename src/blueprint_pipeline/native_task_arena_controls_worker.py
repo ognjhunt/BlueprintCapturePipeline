@@ -51,6 +51,12 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 # contact scoring, and collision predicates are unchanged: if the solved
 # branch does not put the measured fingertip at the handle, the phase still
 # fails honestly.
+# Phases that execute the posture their preflight solved, instead of letting
+# the Cartesian controller re-derive one.  Contact is where the tolerance is
+# tight enough that re-deriving loses: elsewhere a 20 mm departure still lands
+# inside a 20 mm gate.
+HOLD_SOLVED_VECTOR_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
 CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
@@ -739,6 +745,65 @@ def _with_selected_grasp_roll(
         holding_phase_ids=DEFAULT_GRASP_HOLDING_PHASE_IDS,
     )
     return derived, {**selection, **applied}
+
+
+def _with_held_solved_contact_vectors(
+    *,
+    control_plan: Mapping[str, Any],
+    scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Give the contact phases the posture their own preflight solved.
+
+    C42 and C43 measured the Cartesian controller re-deriving a posture from
+    scratch and walking 0.19 to 0.53 rad away from the solved vector, onto one
+    whose own forward kinematics sat 20 mm outside the arrival gate while the
+    solved vector's sat 4.8 mm inside it.  Tracking was never the problem: the
+    arm reached what it was told within 0.008 rad.  It was told the wrong
+    thing, and the good answer was computed and discarded -- the same shape as
+    the grasp roll that was sealed in a receipt and never commanded.
+
+    The arrival gate is untouched.  It still measures the real fingertip
+    against the sealed target, so a solved vector that does not put it there
+    fails exactly as honestly as before.
+    """
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    actions = plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        return plan, {
+            "schema_version": "native_task_controls_held_solved_vectors.v1",
+            "status": "not_applied",
+            "reason": "scripted_positive_actions_invalid",
+        }
+    held_by_phase: dict[str, list[float]] = {}
+    for row in scripted_pose_joint_targets:
+        phase_id = str(row.get("phase_id") or "")
+        joints = row.get("joint_positions_rad")
+        if phase_id in HOLD_SOLVED_VECTOR_PHASE_IDS and isinstance(joints, list):
+            if len(joints) == 7:
+                held_by_phase[phase_id] = [float(value) for value in joints]
+    applied: list[str] = []
+    for raw in actions:
+        if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
+            continue
+        held = held_by_phase.get(str(raw.get("phase_id") or ""))
+        if held is None:
+            continue
+        raw["hold_solved_arm_joint_positions_rad"] = list(held)
+        applied.append(str(raw.get("phase_id") or ""))
+    if applied:
+        plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    return plan, {
+        "schema_version": "native_task_controls_held_solved_vectors.v1",
+        "status": "applied" if applied else "not_applied",
+        "held_phase_ids": sorted(set(applied)),
+        "source_control_plan_digest": control_plan.get("plan_digest"),
+        "derived_control_plan_digest": plan.get("plan_digest"),
+        "claim_boundary": (
+            "commands_the_posture_the_preflight_solved_for_the_same_pose;"
+            "the_native_arrival_and_contact_gates_are_unchanged"
+        ),
+    }
 
 
 def _with_contact_entry_branch_replay(
@@ -1459,6 +1524,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             else None
         )
+        selected_control_plan, held_vectors = _with_held_solved_contact_vectors(
+            control_plan=selected_control_plan,
+            scripted_pose_joint_targets=scripted_pose_joint_targets,
+        )
+        result["held_solved_contact_vectors"] = held_vectors
         effective_control_plan, branch_replay = _with_contact_entry_branch_replay(
             control_plan=selected_control_plan,
             scripted_pose_joint_targets=scripted_pose_joint_targets,
