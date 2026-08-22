@@ -795,3 +795,115 @@ def test_the_arm_reports_the_joint_limits_it_is_actually_held_to() -> None:
     # Ragged limits are refused rather than half-reported.
     servo._joint_position_upper = [2.8]
     assert servo.joint_position_limits_rad() is None
+
+
+def test_global_seeds_are_prepended_refined_and_recorded() -> None:
+    """The search's answer has to reach the solver, not just a receipt.
+
+    The algorithm having found a high-margin configuration proves nothing on
+    its own: this lane has already shipped one rolled pose that was sealed in
+    a receipt and never commanded.  What matters is that the configuration is
+    prepended to the seeds the multistart actually solves from, that the
+    solver's own refinement and scoring still decide the outcome, and that the
+    search is recorded beside what the solver did with it.
+    """
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    roomy = [1.1, 0.9, -1.4, -1.9, 2.3, 2.3, -2.1]
+    solved_from: list[list[float]] = []
+
+    class _Servo(NativeFrankaDifferentialIkServo):
+        def __init__(self, search):
+            self._joint_position_lower = [-2.9, -1.7, -2.9, -3.0, -2.9, -0.01, -2.9]
+            self._joint_position_upper = [2.9, 1.7, 2.9, -0.07, 2.9, 3.7, 2.9]
+            self._search = search
+
+        def _pink_hand_target_for_grasp_world(self, **_kwargs):
+            return [0.4, 0.0, 0.4], [0.0, 0.0, 0.0, 1.0]
+
+        def global_margin_seeds(self, **_kwargs):
+            return self._search
+
+        def solve_grasp_target_from_joint_seed(
+            self, *, seed_joint_positions_rad, **_kwargs
+        ):
+            solved_from.append(list(seed_joint_positions_rad))
+            # The solver still decides: the roomy seed refines to real margin.
+            roomy_seed = all(
+                abs(a - b) < 1e-9 for a, b in zip(seed_joint_positions_rad, roomy)
+            )
+            return {
+                "solved": True,
+                "joint_positions_rad": list(seed_joint_positions_rad),
+                "position_error_m": 0.001,
+                "orientation_error_rad": 0.01,
+                "iterations": 3,
+            } | ({"minimum_joint_limit_margin_rad": 0.45} if roomy_seed else {})
+
+    search = {"status": "searched", "seeds": [roomy], "best_margin_rad": 0.45}
+    servo = _Servo(search)
+    result = servo.solve_grasp_target_multistart(
+        target_position_world_m=[0.4, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[0.0] * 7],
+        reference_joint_positions_rad=[0.0] * 7,
+    )
+
+    # The searched configuration is the first thing the solver tries...
+    assert solved_from and solved_from[0] == pytest.approx(roomy)
+    # ...and it is not the only thing: the solver's own seeds still run.
+    assert len(solved_from) > 1
+    # The search is recorded beside what the solver did with it.
+    assert result["global_margin_seed_search"]["status"] == "searched"
+    assert result["global_margin_seed_search"]["best_margin_rad"] == 0.45
+
+
+def test_a_failed_seed_search_never_fails_the_solve() -> None:
+    """The seeds are additions to a list that already works."""
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    solved_from: list[list[float]] = []
+
+    class _Servo(NativeFrankaDifferentialIkServo):
+        def __init__(self):
+            self._joint_position_lower = [-2.9] * 7
+            self._joint_position_upper = [2.9] * 7
+
+        def _pink_hand_target_for_grasp_world(self, **_kwargs):
+            return [0.4, 0.0, 0.4], [0.0, 0.0, 0.0, 1.0]
+
+        def global_margin_seeds(self, **_kwargs):
+            raise RuntimeError("pinocchio exploded")
+
+        def solve_grasp_target_from_joint_seed(
+            self, *, seed_joint_positions_rad, **_kwargs
+        ):
+            solved_from.append(list(seed_joint_positions_rad))
+            return {
+                "solved": True,
+                "joint_positions_rad": list(seed_joint_positions_rad),
+                "minimum_joint_limit_margin_rad": 0.2,
+                "position_error_m": 0.001,
+                "orientation_error_rad": 0.01,
+                "iterations": 3,
+            }
+
+    result = _Servo().solve_grasp_target_multistart(
+        target_position_world_m=[0.4, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[0.0] * 7],
+        reference_joint_positions_rad=[0.0] * 7,
+    )
+
+    # The solve proceeds on the solver's own seeds, and says why it had no others.
+    assert solved_from
+    assert result["selected"] is not None
+    search = result["global_margin_seed_search"]
+    assert search["status"] == "unavailable"
+    assert "pinocchio exploded" in search["reason"]
