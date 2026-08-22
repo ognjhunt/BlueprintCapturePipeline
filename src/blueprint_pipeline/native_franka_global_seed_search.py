@@ -10,7 +10,9 @@ found sat 0.014 to 0.024 rad from a joint stop, and the arm spent a third of
 the contact phase against ``panda_joint5``'s hard limit.  Off-sim, from the
 *same* sixteen seeds and the *same* joint limits -- verified equal to four
 decimals against the live receipt -- a damped-least-squares search finds a
-configuration with 0.62 rad of margin that reaches the same pose.  It needs
+configuration with 0.4514 rad of margin that reaches the same pose -- the
+number this module actually produced against C45's sealed scene, not the
+0.62 rad an earlier prototype reported under looser tolerances.  It needs
 twenty iterations, not more; the live solver has 192 and still does not find
 it, because that configuration is 2.66 rad away in joint space and a posture
 cost is precisely what stops a tracker from travelling that far.
@@ -43,6 +45,9 @@ DEFAULT_MAX_ITERATIONS = 60
 #: a handful of good basins is the whole point -- this is not a replacement
 #: search.
 DEFAULT_SEED_LIMIT = 3
+#: Two configurations closer than this in joint space are the same basin, and
+#: seeding both wastes a slot that a genuinely different branch could use.
+DISTINCT_CONFIGURATION_RADIUS_RAD = 0.35
 
 
 def _quaternion_error_vector(
@@ -170,7 +175,21 @@ def high_margin_joint_seeds(
             found.append((margin, q.tolist(), position_error, orientation_error))
 
     found.sort(key=lambda row: -row[0])
-    kept = found[: max(1, int(seed_limit))]
+    # Highest-margin is not the same as diverse: a descent from several seeds
+    # can land in one basin, and three near-duplicates of the same
+    # configuration cover no more of the solution space than one.  Keep only
+    # configurations that are genuinely distinct in joint space.
+    kept: list[tuple[float, list[float], float, float]] = []
+    for row in found:
+        if len(kept) >= max(1, int(seed_limit)):
+            break
+        if any(
+            float(np.linalg.norm(np.array(row[1]) - np.array(other[1])))
+            < DISTINCT_CONFIGURATION_RADIUS_RAD
+            for other in kept
+        ):
+            continue
+        kept.append(row)
     return {
         "schema_version": GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
         "status": "searched" if kept else "no_configuration_converged",
@@ -189,6 +208,7 @@ def high_margin_joint_seeds(
 
 __all__ = [
     "DEFAULT_MAX_ITERATIONS",
+    "DISTINCT_CONFIGURATION_RADIUS_RAD",
     "DEFAULT_SEED_LIMIT",
     "GLOBAL_SEED_SEARCH_SCHEMA_VERSION",
     "high_margin_joint_seeds",

@@ -149,3 +149,42 @@ def test_invalid_limits_are_refused() -> None:
     )
     assert report["status"] == "unavailable"
     assert report["reason"] == "joint_limits_invalid"
+
+
+def test_returned_seeds_are_distinct_basins_not_near_duplicates() -> None:
+    """Highest-margin is not the same as diverse.
+
+    Descents from several seeds can land in one basin, and three
+    near-duplicates of the same configuration cover no more of the solution
+    space than one does -- they just spend the slots a genuinely different
+    branch could have used.
+    """
+
+    import math
+
+    lengths = [1.0, 1.0, 0.5]
+    frame_pose, frame_jacobian = _planar_arm(lengths)
+    target, quaternion = frame_pose([0.5, -0.35, 0.25])
+
+    report = high_margin_joint_seeds(
+        frame_pose=frame_pose,
+        frame_jacobian=frame_jacobian,
+        # Six seeds, several clustered so they converge together.
+        seeds=[
+            [0.50, -0.35, 0.25], [0.51, -0.34, 0.26], [0.49, -0.36, 0.24],
+            [-1.2, 1.4, -0.6], [1.6, -1.5, 0.9], [0.0, 0.0, 0.0],
+        ],
+        target_position_m=target,
+        target_quaternion_xyzw=quaternion,
+        lower_joint_position_limits_rad=[-2.9] * 3,
+        upper_joint_position_limits_rad=[2.9] * 3,
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.05,
+    )
+
+    seeds = report["seeds"]
+    assert len(seeds) >= 1
+    for i in range(len(seeds)):
+        for j in range(i + 1, len(seeds)):
+            distance = math.dist(seeds[i], seeds[j])
+            assert distance >= 0.35, f"seeds {i} and {j} are the same basin"
