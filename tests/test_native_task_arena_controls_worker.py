@@ -964,7 +964,9 @@ def test_contact_entry_branch_replay_respects_task_budget() -> None:
     )
 
     task = _branch_replay_task()
-    task["maximum_action_steps"] = 64
+    # Below even a minimal replay once the confirm-only contact budget is
+    # reclaimed, so there is genuinely nowhere to put the rows.
+    task["maximum_action_steps"] = 56
     plan = _branch_replay_plan(task)
     targets = _branch_replay_targets(plan)
 
@@ -977,3 +979,71 @@ def test_contact_entry_branch_replay_respects_task_budget() -> None:
     assert receipt["status"] == "not_applied"
     assert receipt["reason"] == "task_step_budget_insufficient"
     assert rewritten["scripted_positive_actions"] == plan["scripted_positive_actions"]
+
+
+def test_branch_replay_row_size_follows_the_slowest_actuator() -> None:
+    """Replay rows bypass the servo, so they must be sized to the hardware.
+
+    C30's replay drove straight into saturation by its eleventh row: these
+    are commanded joint targets, so nothing bounds them, and 0.05 rad per
+    15 Hz step is 0.75 rad/s against a wrist that clips above 0.15.
+    """
+
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+        _with_contact_entry_branch_replay,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    targets = _branch_replay_targets(plan)
+    # Shoulders may step 0.036 rad; the wrist only 0.005.
+    feasible = [0.036] * 4 + [0.005] * 3
+
+    rewritten, receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=targets,
+        task_spec=task,
+        actuator_feasible_step_rad=feasible,
+    )
+
+    assert receipt["status"] == "applied"
+    assert receipt["actuator_feasible_step_rad"] == pytest.approx(0.005)
+    rows = [
+        row["arm_joint_positions"]
+        for row in rewritten["scripted_positive_actions"]
+        if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    previous = targets[0]["joint_positions_rad"]
+    for row in rows:
+        assert max(abs(a - b) for a, b in zip(row, previous)) <= 0.005 + 1e-9
+        previous = row
+    assert previous == pytest.approx(targets[1]["joint_positions_rad"])
+    # The Cartesian phase behind a replayed entry only confirms arrival, and
+    # that reclaimed budget is what pays for the extra rows.
+    assert receipt["contact_phase_steps_reclaimed"] > 0
+    assert receipt["budget_limited"] is False
+
+
+def test_a_budget_limited_replay_seals_that_it_was_rushed() -> None:
+    """A rushed replay will clip, so the receipt must say so."""
+
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_entry_branch_replay,
+    )
+
+    task = _branch_replay_task()
+    task["maximum_action_steps"] = 90
+    plan = _branch_replay_plan(task)
+    targets = _branch_replay_targets(plan)
+
+    _rewritten, receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=targets,
+        task_spec=task,
+        actuator_feasible_step_rad=[0.001] * 7,
+    )
+
+    assert receipt["status"] == "applied"
+    assert receipt["budget_limited"] is True
+    assert receipt["per_row_joint_step_rad"] > receipt["actuator_feasible_step_rad"]

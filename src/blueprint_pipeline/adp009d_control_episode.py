@@ -2303,10 +2303,24 @@ def _run_task_control_episode(
                     current_strategy = next_strategy
                     attempt_number += 1
                     continue
+                # Report the phase's best attempt, not its last.  C32 ended
+                # claiming 15.39 mm after its own first attempt had reached
+                # 11.63 mm: later rungs made it worse, and the run threw the
+                # better result away.  The blocker is the evidence a human or
+                # an agent reads to choose the next hypothesis, so it has to
+                # carry what this phase actually achieved.
+                best = min(
+                    attempt_history, key=lambda row_: float(row_["error_m"])
+                )
+                best_attempt = attempt_history.index(best) + 1
                 phase_execution_blocker = (
                     f"{BLOCKER_PHASE_NOT_REACHED}:{row['phase_id']}:"
-                    f"error_m={terminal_error:.6f}:orientation_error_rad="
-                    f"{terminal_orientation_error}:stability_steps="
+                    f"error_m={float(best['error_m']):.6f}"
+                    f":best_attempt={best_attempt}"
+                    f":best_strategy={best.get('strategy')}"
+                    f":final_error_m={terminal_error:.6f}"
+                    f":orientation_error_rad={terminal_orientation_error}"
+                    f":stability_steps="
                     f"{stable_steps}/{row['arrival_stability_steps']}"
                     f":attempts={attempt_number}"
                     f":strategies_exhausted={next_strategy is None}"

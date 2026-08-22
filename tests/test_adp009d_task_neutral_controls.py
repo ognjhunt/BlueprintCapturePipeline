@@ -692,6 +692,8 @@ def test_pose_phase_recovery_escalates_the_ladder_then_fails_sealed(
     assert blocker.startswith("scripted_control_phase_not_reached:open:")
     assert ":attempts=5" in blocker
     assert ":strategies_exhausted=True" in blocker
+    # A stuck arm never improves, so best and final coincide here.
+    assert ":best_attempt=1" in blocker
 
 
 class _ConvergingCartesianEnvironment(_CartesianEnvironment):
@@ -913,3 +915,87 @@ def test_a_plan_may_reorder_the_ladder_but_never_invent_a_rung() -> None:
         )
         is None
     )
+
+
+class _BestFirstThenWorseEnvironment(_CartesianEnvironment):
+    """Attempt 1 is the closest; every later attempt drifts further.
+
+    This is C32: contact_open reached 11.63 mm on its first attempt, then
+    13.68, 13.30, 15.43 and 15.39 as the ladder escalated -- and the run
+    reported 15.39, discarding the best result it had produced.
+    """
+
+    TARGET_X = 0.9
+    ERRORS_M = (0.01163, 0.01368, 0.01330, 0.01543, 0.01539)
+
+    def __init__(self, task_kind: str) -> None:
+        super().__init__(task_kind)
+        self._phase_commands: list[tuple[float, ...]] = []
+
+    def scripted_action_for_pose(
+        self,
+        *,
+        target_position_world_m,
+        target_quaternion_world_xyzw,
+        gripper_command,
+        max_joint_delta_rad,
+        max_joint_setpoint_lead_rad,
+    ):
+        del target_quaternion_world_xyzw
+        del max_joint_delta_rad, max_joint_setpoint_lead_rad
+        command = tuple(float(value) for value in target_position_world_m)
+        # Retreats aim back at the entry pose near the origin and are tracked
+        # normally; anything out at the phase target is a fresh attempt at it.
+        if command[0] < 0.5:
+            reached = list(command)
+        else:
+            if command not in self._phase_commands:
+                self._phase_commands.append(command)
+            index = min(
+                len(self._phase_commands) - 1, len(self.ERRORS_M) - 1
+            )
+            # The arm settles where physics puts it, not where it was aimed:
+            # biasing the command does not move the endpoint.  That is what
+            # C32 measured, and it is why compensation could not converge.
+            reached = [self.TARGET_X + self.ERRORS_M[index], 0.0, 0.0]
+        return [*reached, 0.0, 0.0, 0.0, 0.0, gripper_command]
+
+
+def test_a_phase_reports_its_best_attempt_not_its_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocker must carry what the phase achieved, not where it ended."""
+
+    _patched_media(monkeypatch)
+    task = _task("articulated_open_close")
+    task["maximum_action_steps"] = 400
+    plan = _recovery_plan(task)
+    environment = _BestFirstThenWorseEnvironment("articulated_open_close")
+
+    run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    blocker = positive["phase_execution_blocker"]
+    errors = [
+        row["terminal_position_error_m"]
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "open"
+    ]
+    best = min(errors)
+
+    assert f"error_m={best:.6f}" in blocker
+    assert best < errors[-1], "the fixture must actually end worse than its best"
+    assert f":final_error_m={errors[-1]:.6f}" in blocker
+    assert ":best_attempt=1" in blocker
