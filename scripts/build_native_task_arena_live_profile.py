@@ -47,6 +47,11 @@ from blueprint_pipeline.native_task_arena_policy_bundle import (
 from blueprint_pipeline.native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
 )
+from blueprint_pipeline.native_task_arena_warm_authority import (
+    AUTHORITY_SCHEMA_VERSION as WARM_AUTHORITY_SCHEMA_VERSION,
+    validate_native_task_arena_warm_attempt_authority,
+    validate_native_task_arena_warm_session,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
@@ -370,19 +375,40 @@ def _lane_blockers(
                 authority = json.loads(authority_path.read_text(encoding="utf-8"))
                 if not isinstance(authority, Mapping) or prepared_bundle is None:
                     raise ValueError("native_task_arena_attempt_authority_invalid")
-                retain_warm_session = bool(authority.get("retain_warm_session"))
-                if retain_warm_session and link.probe_kind != CONTROLS_PROBE_KIND:
-                    raise ValueError(
-                        "native_task_arena_warm_session_requires_controls"
+                if authority.get("schema_version") == WARM_AUTHORITY_SCHEMA_VERSION:
+                    warm_path = context.extra_paths.get("warm_session")
+                    if link.probe_kind != CONTROLS_PROBE_KIND or warm_path is None:
+                        raise ValueError("native_task_arena_warm_attach_invalid")
+                    warm_session = _read_mapping(
+                        warm_path,
+                        error="native_task_arena_warm_session_invalid",
                     )
-                validate_native_task_arena_paid_attempt_authority(
-                    authority,
-                    prepared_bundle=prepared_bundle,
-                    max_hourly_rate_usd=context.max_hourly_rate_usd,
-                    hard_cap_usd=context.max_spend_usd,
-                    hard_ttl_seconds=context.hard_ttl_seconds,
-                    retain_warm_session=retain_warm_session,
-                )
+                    validate_native_task_arena_warm_session(
+                        warm_session, prepared_bundle=prepared_bundle
+                    )
+                    validate_native_task_arena_warm_attempt_authority(
+                        authority,
+                        warm_session=warm_session,
+                        prepared_bundle=prepared_bundle,
+                    )
+                else:
+                    if context.extra_paths.get("warm_session") is not None:
+                        raise ValueError(
+                            "native_task_arena_warm_session_without_warm_authority"
+                        )
+                    retain_warm_session = bool(authority.get("retain_warm_session"))
+                    if retain_warm_session and link.probe_kind != CONTROLS_PROBE_KIND:
+                        raise ValueError(
+                            "native_task_arena_warm_session_requires_controls"
+                        )
+                    validate_native_task_arena_paid_attempt_authority(
+                        authority,
+                        prepared_bundle=prepared_bundle,
+                        max_hourly_rate_usd=context.max_hourly_rate_usd,
+                        hard_cap_usd=context.max_spend_usd,
+                        hard_ttl_seconds=context.hard_ttl_seconds,
+                        retain_warm_session=retain_warm_session,
+                    )
             except (OSError, ValueError, json.JSONDecodeError):
                 found.append("native_task_arena_attempt_authority_invalid")
         for value in context.extra_paths.get("allowed_active_instance_ids", ()) or ():
@@ -443,6 +469,17 @@ def _lane_argv(link: ArenaLink, *, authorize_gated_backbone: bool = False):
         )
         if authority.get("retain_warm_session") is True:
             built += ["--native-task-arena-retain-warm-session"]
+        if authority.get("schema_version") == WARM_AUTHORITY_SCHEMA_VERSION:
+            warm_session = _read_mapping(
+                context.extra_paths["warm_session"],
+                error="native_task_arena_warm_session_invalid",
+            )
+            built += [
+                "--native-task-arena-warm-session",
+                str(context.extra_paths["warm_session"]),
+                "--adp-allowed-active-vast-instance-id",
+                str(int(warm_session["instance_id"])),
+            ]
         return built
 
     return argv
@@ -496,6 +533,15 @@ def _immutable_inputs(link: ArenaLink):
                     "digest": file_digest(execution_admission),
                 }
             )
+        warm_session = context.extra_paths.get("warm_session")
+        if warm_session is not None:
+            rows.append(
+                {
+                    "name": "native_task_arena_warm_session",
+                    "path": str(warm_session),
+                    "digest": file_digest(warm_session),
+                }
+            )
         # Each predecessor result is pinned by digest: this link's verdict is
         # only about the packet it actually consumed.
         for name in link.predecessors:
@@ -514,6 +560,7 @@ def _spec(
     expected_scene_id: str = "contract_probe_scene",
     expected_task_id: str = "contract_probe_task",
     with_avoidlist: bool = False,
+    with_warm_session: bool = False,
     authorize_gated_backbone: bool = False,
 ) -> LaneLiveProfileSpec:
     if isinstance(link, str):
@@ -553,6 +600,7 @@ def _spec(
             "runtime_source_packet",
             "attempt_authority",
             *(("machine_avoidlist",) if with_avoidlist else ()),
+            *(("warm_session",) if with_warm_session else ()),
             *link.predecessors,
         ),
     )
@@ -574,6 +622,7 @@ def build_native_task_arena_live_profile(
     policy_execution_spec_path: str | Path | None = None,
     authorize_gated_backbone: bool = False,
     machine_avoidlist_path: str | Path | None = None,
+    warm_session_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 2.0,
@@ -594,6 +643,7 @@ def build_native_task_arena_live_profile(
         "control_result": control_result_path,
         "policy_execution_spec": policy_execution_spec_path,
         "machine_avoidlist": machine_avoidlist_path,
+        "warm_session": warm_session_path,
     }
     missing = [name for name in entry.predecessors if supplied.get(name) is None]
     if missing:
@@ -629,6 +679,7 @@ def build_native_task_arena_live_profile(
                 "runtime_source_packet",
                 "attempt_authority",
                 "machine_avoidlist",
+                "warm_session",
             }
         )
     }
@@ -638,6 +689,7 @@ def build_native_task_arena_live_profile(
             expected_scene_id=scene_id,
             expected_task_id=task_id,
             with_avoidlist=machine_avoidlist_path is not None,
+            with_warm_session=warm_session_path is not None,
             authorize_gated_backbone=authorize_gated_backbone,
         ),
         bundle_receipt_path=bundle_receipt_path,
@@ -678,6 +730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             help="Local digest-bound content-addressed publication receipt for this run spec.",
         )
         target.add_argument("--machine-avoidlist")
+        target.add_argument("--warm-session")
         target.add_argument(
             "--revision",
             help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
@@ -724,6 +777,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args, "authorize_gated_backbone", False
             ),
             machine_avoidlist_path=args.machine_avoidlist,
+            warm_session_path=args.warm_session,
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,

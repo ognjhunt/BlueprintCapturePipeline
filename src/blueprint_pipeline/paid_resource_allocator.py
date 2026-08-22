@@ -193,6 +193,12 @@ from .native_task_arena_vast import (
 from .native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
 )
+from .native_task_arena_warm_authority import (
+    AUTHORITY_SCHEMA_VERSION as NATIVE_TASK_ARENA_WARM_AUTHORITY_SCHEMA_VERSION,
+    validate_native_task_arena_warm_attempt_authority,
+    validate_native_task_arena_warm_session,
+)
+from .native_task_arena_warm_vast import run_native_task_arena_warm_controls_vast
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -1665,6 +1671,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Keep a healthy controls instance under its independent hard-TTL "
             "watchdog so later digest-bound Arena bundles can reuse the runtime cache."
+        ),
+    )
+    gpu.add_argument(
+        "--native-task-arena-warm-session",
+        help=(
+            "Sealed retained-worker receipt. With a warm-attempt authority, "
+            "attach the controls bundle without allocating another GPU."
         ),
     )
     gpu.add_argument("--adp009d-sage-collision")
@@ -4914,6 +4927,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             controls_requested = args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
             policy_requested = args.probe_kind == NATIVE_TASK_ARENA_POLICY_PROBE_KIND
+            warm_attach_requested = bool(args.native_task_arena_warm_session)
             missing = [
                 name
                 for name in (
@@ -4931,6 +4945,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing.append("native_task_arena_control_result")
             if policy_requested and not args.native_task_arena_policy_execution_spec:
                 missing.append("native_task_arena_policy_execution_spec")
+            if warm_attach_requested and not controls_requested:
+                missing.append("native_task_arena_warm_attach_requires_controls")
+            if warm_attach_requested and args.native_task_arena_retain_warm_session:
+                missing.append("native_task_arena_warm_modes_conflict")
+            if warm_attach_requested and not args.native_task_arena_attempt_authority:
+                missing.append("native_task_arena_warm_attempt_authority_missing")
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
             if args.execute and not args.native_task_arena_bundle_receipt:
@@ -4988,6 +5008,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             prepared_bundle = None
             native_authority = None
+            native_warm_session = None
             if args.native_task_arena_packet:
                 try:
                     if native_task_execution_admission_required(
@@ -5077,6 +5098,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                     elif prepared_bundle is None:
                         blockers.append("native_task_arena_authority_requires_bundle")
+                    elif warm_attach_requested:
+                        native_warm_session = _load(
+                            Path(args.native_task_arena_warm_session)
+                            .expanduser()
+                            .resolve()
+                        )
+                        if (
+                            native_authority.get("schema_version")
+                            != NATIVE_TASK_ARENA_WARM_AUTHORITY_SCHEMA_VERSION
+                        ):
+                            raise ValueError(
+                                "native_task_arena_warm_authority_schema_invalid"
+                            )
+                        validate_native_task_arena_warm_session(
+                            native_warm_session,
+                            prepared_bundle=prepared_bundle,
+                        )
+                        validate_native_task_arena_warm_attempt_authority(
+                            native_authority,
+                            warm_session=native_warm_session,
+                            prepared_bundle=prepared_bundle,
+                        )
+                        if int(native_warm_session["instance_id"]) not in set(
+                            args.adp_allowed_active_vast_instance_id
+                        ):
+                            raise ValueError(
+                                "native_task_arena_warm_instance_not_allowlisted"
+                            )
                     else:
                         validate_native_task_arena_paid_attempt_authority(
                             native_authority,
@@ -5134,6 +5183,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "retain_warm_session": bool(
                     args.native_task_arena_retain_warm_session
+                ),
+                "execution_transport": (
+                    "retained_warm_instance"
+                    if warm_attach_requested
+                    else "new_provider_allocation"
+                ),
+                "warm_session_digest": (
+                    native_warm_session.get("session_digest")
+                    if native_warm_session
+                    else None
                 ),
                 "candidate_policy_queried": policy_requested,
                 "policy_candidate_id": (
@@ -5223,6 +5282,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
+                if warm_attach_requested:
+                    result = run_native_task_arena_warm_controls_vast(
+                        job_dir=args.adp_job_dir,
+                        prepared_bundle=prepared_bundle,
+                        warm_session=native_warm_session,
+                        warm_attempt_authority=native_authority,
+                        paid_resource_admission_grant=grant,
+                        execute=args.execute,
+                    )
+                    write_json(Path(args.adapter_output), result)
+                    success = result.get("status") in {
+                        "dry_run_ready",
+                        "completed",
+                    }
+                    print(json.dumps({"success": success}, sort_keys=True))
+                    return 0 if success else 2
                 run_native = (
                     run_native_task_arena_runtime_preflight_vast
                     if preflight_requested

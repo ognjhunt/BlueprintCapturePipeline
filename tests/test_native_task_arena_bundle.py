@@ -2213,6 +2213,124 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
     assert admission["candidate_policy_queried"] is False
 
 
+def test_canonical_allocator_attaches_controls_without_new_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    source_packet = _runtime_source_packet(tmp_path)
+    frozen_bundle = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "frozen-controls-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        runtime_source_packet_receipt=source_packet,
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    warm_session = {
+        "schema_version": "native_task_arena_warm_session.v1",
+        "session_digest": "sha256:" + "7" * 64,
+        "instance_id": 123,
+    }
+    warm_session_path = tmp_path / "warm-session.json"
+    write_json(warm_session_path, warm_session)
+    warm_authority = {
+        "schema_version": "native_task_arena_warm_attempt_authority.v1",
+        "authorization_digest": "sha256:" + "8" * 64,
+    }
+    warm_authority_path = tmp_path / "warm-authority.json"
+    write_json(warm_authority_path, warm_authority)
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_session",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_attempt_authority",
+        lambda value, **_kwargs: value,
+    )
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "provider_allocations_performed": 0}
+
+    monkeypatch.setattr(
+        allocator, "run_native_task_arena_warm_controls_vast", fake_run
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        CONTROLS_PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "controls-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "controls-adapter.json"),
+        "--pod-name",
+        "native-task-arena-warm-controls",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-construction-result",
+        str(construction),
+        "--native-task-arena-runtime-source-packet",
+        str(source_packet),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-controls-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--native-task-arena-attempt-authority",
+        str(warm_authority_path),
+        "--native-task-arena-warm-session",
+        str(warm_session_path),
+        "--adp-allowed-active-vast-instance-id",
+        "123",
+        "--adp-job-dir",
+        str(tmp_path / "controls-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["execute"] is True
+    assert observed["prepared_bundle"]["bundle_sha256"] == frozen_bundle[
+        "bundle_sha256"
+    ]
+    assert observed["warm_session"] == warm_session
+    assert observed["warm_attempt_authority"] == warm_authority
+    assert "machine_avoidlist_path" not in observed
+    admission = json.loads((tmp_path / "controls-admission.json").read_text())
+    assert admission["allocation_binding"]["execution_transport"] == (
+        "retained_warm_instance"
+    )
+    assert admission["allocation_binding"]["warm_session_digest"] == (
+        warm_session["session_digest"]
+    )
+
+
 def _repack_scene(packet: Path, scene: dict) -> None:
     """Rewrite a packet's scene plan and rebind its receipt to the new bytes."""
 
