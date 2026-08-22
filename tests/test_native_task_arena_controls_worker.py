@@ -14,6 +14,10 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _control_plan_global_ik_joint_targets,
     _input_binding_mismatches,
     _load_and_verify_manifest,
+    _normalized_control_plan_for_execution,
+    _parallel_jaw_equivalent_control_plan,
+    _parallel_jaw_equivalent_quaternion_xyzw,
+    _select_parallel_jaw_control_plan,
     _verified_runtime_inputs,
 )
 
@@ -95,6 +99,95 @@ def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -
         None,
         "reused_bound_pose_solution",
     ]
+
+
+def test_parallel_jaw_equivalent_preserves_approach_and_reverses_jaw() -> None:
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+
+    equivalent = _parallel_jaw_equivalent_quaternion_xyzw(nominal)
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_open",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+            }
+        ],
+        "plan_digest": "sha256:" + "a" * 64,
+    }
+    derived = _parallel_jaw_equivalent_control_plan(plan)
+    evidence = derived["runtime_control_variant_equivalence"]
+
+    assert equivalent == pytest.approx([0.0, 2**-0.5, 2**-0.5, 0.0])
+    assert evidence["approach_axis_dot"] == pytest.approx(1.0)
+    assert evidence["jaw_axis_dot"] == pytest.approx(-1.0)
+    assert derived["scripted_positive_actions"][0][
+        "target_position_world_m"
+    ] == [1.0, 2.0, 3.0]
+    assert derived["plan_digest"] == _canonical_digest(
+        derived, field="plan_digest"
+    )
+
+
+def test_controls_selects_fully_solved_parallel_jaw_branch_with_more_margin() -> None:
+    class _Servo:
+        def read_arm_joint_positions(self):
+            return [0.0] * 7
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            quaternion = kwargs["target_grasp_frame_quaternion_world_xyzw"]
+            equivalent = quaternion[1] > 0.5
+            margin = 0.2 if equivalent else 0.002
+            return {
+                "solved": True,
+                "selected": {
+                    "solved": True,
+                    "joint_positions_rad": [margin] * 7,
+                    "minimum_joint_limit_margin_rad": margin,
+                },
+                "attempts": [],
+            }
+
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_open",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
+            },
+            {
+                "phase_id": "contact_close",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
+            },
+        ],
+        "plan_digest": "sha256:" + "a" * 64,
+    }
+
+    selected_plan, targets, receipt = _select_parallel_jaw_control_plan(
+        servo=_Servo(),
+        control_plan=plan,
+        construction_bound_targets=[],
+        reference_seeds=[[0.5] * 7],
+    )
+
+    assert receipt["selected_variant_id"] == "parallel_jaw_equivalent"
+    assert receipt[
+        "selected_contact_open_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.2)
+    assert selected_plan["runtime_control_variant"].startswith("parallel_jaw")
+    assert targets[0]["joint_positions_rad"] == pytest.approx([0.2] * 7)
+    assert receipt["physics_steps_performed"] == 0
 
 
 def test_controls_bind_construction_global_ik_branch_to_same_pose_phase() -> None:
@@ -451,6 +544,42 @@ def test_real_producers_satisfy_every_controls_input_binding_relation(
 
     assert _input_binding_mismatches(**inputs) == []
     assert inputs["scene_plan"]["task_kind"] == task_kind
+
+
+def test_parallel_jaw_variant_is_accepted_by_real_control_plan_validator(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+
+    inputs = _bundled_controls_inputs(tmp_path, "rigid_pick_place")
+    normalized = _normalized_control_plan_for_execution(
+        control_plan=inputs["control_plan"],
+        task_spec=inputs["scene_plan"]["task_spec"],
+    )
+    derived = _parallel_jaw_equivalent_control_plan(normalized)
+
+    checked = validate_task_control_plan(
+        derived,
+        task_spec=inputs["scene_plan"]["task_spec"],
+    )
+
+    assert checked["plan_digest"] == derived["plan_digest"]
+    assert checked["plan_digest"] == _canonical_digest(
+        checked, field="plan_digest"
+    )
+    assert checked["runtime_normalized_source_plan_digest"] == inputs[
+        "control_plan"
+    ]["plan_digest"]
+    assert checked["runtime_control_variant"].startswith("parallel_jaw")
+    assert checked["scripted_positive_actions"][0][
+        "target_quaternion_world_xyzw"
+    ] == pytest.approx(
+        derived["scripted_positive_actions"][0][
+            "target_quaternion_world_xyzw"
+        ]
+    )
 
 
 def test_each_controls_binding_relation_reports_which_one_failed(

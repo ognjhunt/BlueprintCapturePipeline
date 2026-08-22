@@ -377,6 +377,256 @@ def _control_plan_global_ik_joint_targets(
     return targets, receipt
 
 
+def _parallel_jaw_equivalent_quaternion_xyzw(
+    quaternion_xyzw: Sequence[float],
+) -> list[float]:
+    """Swap interchangeable fingers without changing the approach direction.
+
+    A parallel jaw is physically a line, not an arrow. Post-multiplying the
+    commanded grasp orientation by a half turn about its local +Z approach
+    axis preserves that approach axis and reverses local +X/+Y. The two
+    commands therefore ask for the same fingertip centre and jaw line while
+    exposing the other Franka wrist branch to the joint-limited solver.
+    """
+
+    try:
+        x, y, z, w = [float(value) for value in quaternion_xyzw]
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "native_task_controls_parallel_jaw_quaternion_invalid"
+        ) from exc
+    if not all(math.isfinite(value) for value in (x, y, z, w)):
+        raise RuntimeError("native_task_controls_parallel_jaw_quaternion_invalid")
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if not math.isfinite(norm) or norm <= 1.0e-12:
+        raise RuntimeError("native_task_controls_parallel_jaw_quaternion_invalid")
+    # Hamilton product q * [0, 0, 1, 0], with quaternions encoded xyzw.
+    rotated = [y / norm, -x / norm, w / norm, -z / norm]
+    # q and -q encode the same orientation. Canonicalise the sign so the
+    # runtime-derived plan has one deterministic digest.
+    for value in rotated:
+        if abs(value) <= 1.0e-15:
+            continue
+        if value < 0.0:
+            rotated = [-component for component in rotated]
+        break
+    return [0.0 if abs(value) <= 1.0e-15 else value for value in rotated]
+
+
+def _quaternion_axis_world_xyzw(
+    quaternion_xyzw: Sequence[float], axis_body: Sequence[float]
+) -> list[float]:
+    """Rotate one body-frame direction into world for an evidence receipt."""
+
+    x, y, z, w = [float(value) for value in quaternion_xyzw]
+    ax, ay, az = [float(value) for value in axis_body]
+    # R(q) @ axis, expanded to avoid importing a simulator/math package in
+    # the CPU-only bundle tests.
+    return [
+        (1.0 - 2.0 * (y * y + z * z)) * ax
+        + 2.0 * (x * y - z * w) * ay
+        + 2.0 * (x * z + y * w) * az,
+        2.0 * (x * y + z * w) * ax
+        + (1.0 - 2.0 * (x * x + z * z)) * ay
+        + 2.0 * (y * z - x * w) * az,
+        2.0 * (x * z - y * w) * ax
+        + 2.0 * (y * z + x * w) * ay
+        + (1.0 - 2.0 * (x * x + y * y)) * az,
+    ]
+
+
+def _parallel_jaw_equivalent_control_plan(
+    control_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive and digest the finger-swapped equivalent of one sealed plan."""
+
+    try:
+        derived = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("native_task_controls_parallel_jaw_plan_invalid") from exc
+    actions = derived.get("scripted_positive_actions")
+    if not isinstance(actions, list) or not actions:
+        raise RuntimeError("native_task_controls_parallel_jaw_plan_invalid")
+    transformed = 0
+    example: dict[str, Any] | None = None
+    for action in actions:
+        if not isinstance(action, dict) or action.get("mode") != "ik_pose":
+            continue
+        original = action.get("target_quaternion_world_xyzw")
+        if original is None:
+            continue
+        equivalent = _parallel_jaw_equivalent_quaternion_xyzw(original)
+        action["target_quaternion_world_xyzw"] = equivalent
+        transformed += 1
+        if example is None:
+            original_axis = _quaternion_axis_world_xyzw(original, [0.0, 1.0, 0.0])
+            equivalent_axis = _quaternion_axis_world_xyzw(
+                equivalent, [0.0, 1.0, 0.0]
+            )
+            original_approach = _quaternion_axis_world_xyzw(
+                original, [0.0, 0.0, 1.0]
+            )
+            equivalent_approach = _quaternion_axis_world_xyzw(
+                equivalent, [0.0, 0.0, 1.0]
+            )
+            example = {
+                "original_quaternion_world_xyzw": list(original),
+                "equivalent_quaternion_world_xyzw": equivalent,
+                "approach_axis_dot": sum(
+                    left * right
+                    for left, right in zip(
+                        original_approach, equivalent_approach, strict=True
+                    )
+                ),
+                "jaw_axis_dot": sum(
+                    left * right
+                    for left, right in zip(
+                        original_axis, equivalent_axis, strict=True
+                    )
+                ),
+            }
+    if transformed < 1 or example is None:
+        raise RuntimeError("native_task_controls_parallel_jaw_plan_invalid")
+    source_digest = str(control_plan.get("plan_digest") or "")
+    derived["runtime_control_variant"] = (
+        "parallel_jaw_half_turn_about_local_approach_axis"
+    )
+    derived["runtime_control_variant_source_plan_digest"] = source_digest
+    derived["runtime_control_variant_equivalence"] = {
+        "schema_version": "native_task_parallel_jaw_equivalence.v1",
+        "transformed_pose_count": transformed,
+        "finger_identity_interchangeable": True,
+        "jaw_axis_sign_is_a_label_not_a_measurement": True,
+        "position_targets_unchanged": True,
+        "local_half_turn_axis": "+z_approach",
+        **example,
+    }
+    derived["plan_digest"] = _canonical_digest(derived, field="plan_digest")
+    return derived
+
+
+def _normalized_control_plan_for_execution(
+    *, control_plan: Mapping[str, Any], task_spec: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Bind validator-normalized executable bytes to the sealed input plan."""
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+
+    normalized = validate_task_control_plan(control_plan, task_spec=task_spec)
+    source_digest = str(control_plan.get("plan_digest") or "")
+    normalized["runtime_normalized_source_plan_digest"] = source_digest
+    normalized["runtime_normalization"] = {
+        "schema_version": "native_task_control_plan_normalization.v1",
+        "source_plan_digest": source_digest,
+        "normalizer": (
+            "blueprint_pipeline.adp009d_control_episode."
+            "validate_task_control_plan"
+        ),
+        "claim_boundary": (
+            "type_and_field_normalization_only;does_not_assert_pose_arrival_"
+            "contact_or_task_success"
+        ),
+    }
+    normalized["plan_digest"] = _canonical_digest(normalized, field="plan_digest")
+    return normalized
+
+
+def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
+    phases = global_ik.get("phases")
+    if not isinstance(phases, list):
+        return None
+    for phase in phases:
+        if not isinstance(phase, Mapping) or phase.get("phase_id") != "contact_open":
+            continue
+        selected = phase.get("selected")
+        if not isinstance(selected, Mapping):
+            return None
+        try:
+            margin = float(selected["minimum_joint_limit_margin_rad"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return margin if math.isfinite(margin) else None
+    return None
+
+
+def _select_parallel_jaw_control_plan(
+    *,
+    servo: Any,
+    control_plan: Mapping[str, Any],
+    construction_bound_targets: Sequence[Mapping[str, Any]],
+    reference_seeds: Sequence[Sequence[float]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Solve both equivalent jaw signs and select once, before physics moves."""
+
+    nominal = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    equivalent = _parallel_jaw_equivalent_control_plan(control_plan)
+    variants = []
+    solved_payloads = []
+    for variant_id, plan, bound_targets in (
+        ("normalized_nominal", nominal, construction_bound_targets),
+        ("parallel_jaw_equivalent", equivalent, []),
+    ):
+        targets, preflight = _control_plan_global_ik_joint_targets(
+            servo=servo,
+            control_plan=plan,
+            bound_targets=bound_targets,
+            reference_seeds=reference_seeds,
+        )
+        margin = _contact_open_joint_margin(preflight)
+        admissible = (
+            preflight.get("status") == "all_unique_poses_solved_or_bound"
+            and margin is not None
+            and margin >= 0.0
+        )
+        row = {
+            "variant_id": variant_id,
+            "control_plan_digest": plan.get("plan_digest"),
+            "all_unique_poses_solved_or_bound": preflight.get("status")
+            == "all_unique_poses_solved_or_bound",
+            "contact_open_minimum_joint_limit_margin_rad": margin,
+            "admissible": admissible,
+            "global_ik_preflight": preflight,
+        }
+        variants.append(row)
+        if admissible:
+            solved_payloads.append((margin, variant_id, plan, targets, preflight))
+    if not solved_payloads:
+        raise RuntimeError(
+            "native_task_controls_no_parallel_jaw_variant_with_contact_margin"
+        )
+    # Prefer joint-limit room; retain the normalized nominal on an exact tie.
+    selected = max(
+        solved_payloads,
+        key=lambda row: (row[0], row[1] == "normalized_nominal"),
+    )
+    margin, variant_id, plan, targets, preflight = selected
+    receipt = {
+        "schema_version": "native_task_controls_parallel_jaw_selection.v1",
+        "status": "selected_before_physics_motion",
+        "source_control_plan_digest": control_plan.get("plan_digest"),
+        "sealed_input_control_plan_digest": control_plan.get(
+            "runtime_normalized_source_plan_digest"
+        ),
+        "selected_variant_id": variant_id,
+        "selected_control_plan_digest": plan.get("plan_digest"),
+        "selected_contact_open_minimum_joint_limit_margin_rad": margin,
+        "selection_rule": (
+            "all_phases_solved_then_maximise_contact_open_joint_limit_margin_"
+            "then_prefer_normalized_nominal"
+        ),
+        "variants": variants,
+        "provider_mutation_performed": False,
+        "physics_steps_performed": 0,
+        "claim_boundary": (
+            "off_sim_multistart_branch_selection_only;native_controls_remain_"
+            "the_arrival_contact_dynamics_and_task_outcome_authority"
+        ),
+    }
+    return plan, targets, {**receipt, "selected_global_ik_preflight": preflight}
+
+
 def _input_binding_mismatches(
     *,
     manifest: Mapping[str, Any],
@@ -618,6 +868,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["packet_receipt_digest"] = packet_receipt["receipt_digest"]
         result["scene_plan_digest"] = scene_plan["plan_digest"]
         result["construction_result_digest"] = construction["result_digest"]
+        result["input_control_plan_digest"] = control_plan["plan_digest"]
         result["control_plan_digest"] = control_plan["plan_digest"]
         result["phase_reached"] = "inputs_verified"
         _announce("input_verification", "completed")
@@ -747,9 +998,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["gripper_frame_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
+        normalized_control_plan = _normalized_control_plan_for_execution(
+            control_plan=control_plan,
+            task_spec=scene_plan["task_spec"],
+        )
+        result["normalized_control_plan_digest"] = normalized_control_plan[
+            "plan_digest"
+        ]
         construction_joint_targets = _construction_global_ik_joint_targets(
             construction=construction,
-            control_plan=control_plan,
+            control_plan=normalized_control_plan,
         )
         result["construction_global_ik_seed_binding"] = {
             "schema_version": "native_task_controls_global_ik_seed_binding.v1",
@@ -765,15 +1023,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         }
         _announce("controls_global_ik_preflight")
-        scripted_pose_joint_targets, controls_global_ik = (
-            _control_plan_global_ik_joint_targets(
+        effective_control_plan, scripted_pose_joint_targets, jaw_selection = (
+            _select_parallel_jaw_control_plan(
                 servo=servo,
-                control_plan=control_plan,
-                bound_targets=construction_joint_targets,
+                control_plan=normalized_control_plan,
+                construction_bound_targets=construction_joint_targets,
                 reference_seeds=PINK_GLOBAL_REFERENCE_SEEDS,
             )
         )
+        controls_global_ik = jaw_selection["selected_global_ik_preflight"]
+        result["control_plan_variant_selection"] = jaw_selection
         result["controls_global_ik_preflight"] = controls_global_ik
+        result["control_plan_digest"] = effective_control_plan["plan_digest"]
         _announce(
             "controls_global_ik_preflight",
             (
@@ -810,7 +1071,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pair = run_task_neutral_controls(
             environment=episode_environment,
             task_spec=scene_plan["task_spec"],
-            control_plan=control_plan,
+            control_plan=effective_control_plan,
             gripper_open_command=float(gripper["open_command"]),
             gripper_closed_command=float(gripper["closed_command"]),
             output_dir=output_root / "controls",
