@@ -271,9 +271,133 @@ _CLAIM_BOUNDARY = (
 
 __all__ = [
     "ActuatorSweepError",
+    "CALIBRATION_SCHEMA_VERSION",
+    "DEFAULT_CALIBRATION_ITERATIONS",
+    "calibrate_posture_to_measured_target",
     "DEFAULT_CELL_SETTLE_STEPS",
     "DEFAULT_WRIST_GAIN_CANDIDATES",
     "SWEEP_SCHEMA_VERSION",
     "candidate_postures",
     "run_actuator_posture_sweep",
 ]
+
+
+CALIBRATION_SCHEMA_VERSION = "native_task_arena_measured_posture_calibration.v1"
+DEFAULT_CALIBRATION_ITERATIONS = 4
+
+
+def calibrate_posture_to_measured_target(
+    *,
+    environment: Any,
+    solve: Any,
+    target_position_world_m: Sequence[float],
+    seed_joint_positions_rad: Sequence[float],
+    gripper_open_command: float,
+    max_joint_delta_rad: float,
+    max_joint_setpoint_lead_rad: float,
+    arrival_tolerance_m: float,
+    settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+    max_iterations: int = DEFAULT_CALIBRATION_ITERATIONS,
+) -> dict[str, Any]:
+    """Solve for the posture whose *measured* fingertip lands on the target.
+
+    C36 measured the defect that thirty-four runs of controller work could not
+    remove: at the solved contact posture, with joint tracking at 0.007 rad and
+    across a tenfold stiffness range, the fingertip sat a constant +13.0 mm off
+    in a single axis.  Gain-independent, tracking-independent and one-axis is
+    the signature of a kinematic constant -- the solver's model of where the
+    fingertip is disagrees with where PhysX measures it, so every controller
+    was faithfully driving to the wrong point.
+
+    Rather than model that offset, measure it.  Solve, command, read the real
+    fingertip, and fold the residual back into the *solver's* target; repeat.
+    The fixed point is a posture whose measured frame is at the sealed target,
+    which is the thing the gate has always been asking for.
+
+    Nothing here touches a gate.  The arrival test still measures the real
+    fingertip against the original sealed target: this only stops handing that
+    test a posture the model already had wrong.
+    """
+
+    target = _finite_vector(target_position_world_m, length=3)
+    seed = _finite_vector(seed_joint_positions_rad, length=7)
+    if target is None or seed is None:
+        raise ActuatorSweepError(["posture_calibration_inputs_invalid"])
+    bounded = getattr(environment, "bounded_joint_action", None)
+    if not callable(bounded) or not callable(solve):
+        return {
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "runtime_missing_solver_or_bounded_action",
+            "iterations": [],
+            "claim_boundary": _CALIBRATION_CLAIM_BOUNDARY,
+        }
+
+    solver_target = list(target)
+    iterations: list[dict[str, Any]] = []
+    best: dict[str, Any] | None = None
+    joints = list(seed)
+    for index in range(max(1, int(max_iterations))):
+        solved = solve(solver_target, joints)
+        candidate = _finite_vector(solved, length=7)
+        if candidate is None:
+            iterations.append({"iteration": index, "status": "solver_returned_no_pose"})
+            break
+        joints = candidate
+        environment.reset()
+        for _ in range(max(1, int(settle_steps))):
+            environment.step(
+                [
+                    float(value)
+                    for value in bounded(
+                        target_joint_positions_rad=joints,
+                        gripper_command=float(gripper_open_command),
+                        max_joint_delta_rad=float(max_joint_delta_rad),
+                        max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+                    )
+                ]
+            )
+        measured = _grasp_frame_position(environment)
+        if measured is None:
+            iterations.append({"iteration": index, "status": "fingertip_unmeasurable"})
+            break
+        residual = [measured[axis] - target[axis] for axis in range(3)]
+        distance = math.dist(measured, target)
+        row = {
+            "iteration": index,
+            "status": "measured",
+            "solver_target_position_world_m": list(solver_target),
+            "joint_positions_rad": list(joints),
+            "measured_grasp_frame_position_world_m": list(measured),
+            "measured_residual_m": residual,
+            "measured_distance_to_target_m": distance,
+        }
+        iterations.append(row)
+        if best is None or distance < best["measured_distance_to_target_m"]:
+            best = row
+        if distance <= float(arrival_tolerance_m):
+            break
+        # Fold the measured residual back into the solver's target, so the next
+        # solve aims off by exactly what physics said the model was wrong by.
+        solver_target = [
+            solver_target[axis] - residual[axis] for axis in range(3)
+        ]
+    environment.reset()
+    return {
+        "schema_version": CALIBRATION_SCHEMA_VERSION,
+        "status": "measured" if best is not None else "unavailable",
+        "iteration_count": len(iterations),
+        "iterations": iterations,
+        "best": best,
+        "converged": bool(
+            best is not None
+            and best["measured_distance_to_target_m"] <= float(arrival_tolerance_m)
+        ),
+        "claim_boundary": _CALIBRATION_CLAIM_BOUNDARY,
+    }
+
+
+_CALIBRATION_CLAIM_BOUNDARY = (
+    "solves_for_a_posture_whose_measured_fingertip_reaches_the_sealed_target;"
+    "changes_no_gate_and_asserts_no_task_outcome"
+)

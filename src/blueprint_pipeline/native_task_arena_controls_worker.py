@@ -1358,6 +1358,99 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "cells": [],
             }
         result["contact_posture_actuator_sweep"] = sweep
+
+        # C36 localized the defect to a kinematic constant: at the solved
+        # contact posture, across a tenfold stiffness range and with joint
+        # tracking at 0.007 rad, the measured fingertip sat +13.0 mm off in a
+        # single axis.  The solver hits its own target; its model of where the
+        # fingertip is disagrees with PhysX.  So solve for the posture whose
+        # *measured* fingertip reaches the sealed target, by folding each
+        # measured residual back into the solver's target.  The arrival gate is
+        # untouched -- this stops handing it a posture the model had wrong.
+        try:
+            from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                calibrate_posture_to_measured_target,
+            )
+
+            contact_quaternion = contact_row["target_quaternion_world_xyzw"]
+            contact_tolerance = float(contact_row["arrival_tolerance_m"])
+            contact_orientation_tolerance = float(
+                contact_row.get("arrival_orientation_tolerance_rad") or 0.08
+            )
+
+            def _solve_contact(target_position, seed_joints):
+                solved = servo.solve_grasp_target_multistart(
+                    target_position_world_m=list(target_position),
+                    target_grasp_frame_quaternion_world_xyzw=contact_quaternion,
+                    preferred_seeds=[list(seed_joints)],
+                    reference_joint_positions_rad=list(seed_joints),
+                    position_tolerance_m=contact_tolerance,
+                    orientation_tolerance_rad=contact_orientation_tolerance,
+                    preferred_minimum_joint_limit_margin_rad=0.05,
+                    required_minimum_joint_limit_margin_rad=(
+                        CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
+                    ),
+                )
+                selected = (solved or {}).get("selected")
+                if not isinstance(selected, Mapping):
+                    return None
+                return selected.get("joint_positions_rad")
+
+            seed_posture = next(
+                (
+                    row["joint_positions_rad"]
+                    for row in scripted_pose_joint_targets
+                    if str(row.get("phase_id") or "") == "contact_open"
+                ),
+                None,
+            )
+            calibration = (
+                calibrate_posture_to_measured_target(
+                    environment=episode_environment,
+                    solve=_solve_contact,
+                    target_position_world_m=contact_row["target_position_world_m"],
+                    seed_joint_positions_rad=seed_posture,
+                    gripper_open_command=float(gripper["open_command"]),
+                    max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
+                    max_joint_setpoint_lead_rad=float(
+                        contact_row["max_joint_setpoint_lead_rad"]
+                    ),
+                    arrival_tolerance_m=contact_tolerance,
+                )
+                if seed_posture is not None
+                else {"status": "unavailable", "reason": "contact_posture_unsolved"}
+            )
+        except BaseException as exc:  # noqa: BLE001 - a diagnostic never fails a run
+            calibration = {
+                "schema_version": "native_task_arena_measured_posture_calibration.v1",
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "iterations": [],
+            }
+        result["contact_posture_measured_calibration"] = calibration
+
+        # Adopt the calibrated posture only when physics says it is closer than
+        # the one the model produced; otherwise the run keeps what it had.
+        best = (calibration or {}).get("best") or {}
+        first = ((calibration or {}).get("iterations") or [{}])[0]
+        if (
+            isinstance(best.get("joint_positions_rad"), list)
+            and isinstance(best.get("measured_distance_to_target_m"), float)
+            and isinstance(first.get("measured_distance_to_target_m"), float)
+            and best["measured_distance_to_target_m"]
+            < first["measured_distance_to_target_m"]
+        ):
+            scripted_pose_joint_targets = [
+                (
+                    {**row, "joint_positions_rad": list(best["joint_positions_rad"])}
+                    if str(row.get("phase_id") or "") == "contact_open"
+                    else row
+                )
+                for row in scripted_pose_joint_targets
+            ]
+            result["contact_posture_calibration_adopted"] = True
+        else:
+            result["contact_posture_calibration_adopted"] = False
         _announce(
             "contact_posture_actuator_sweep",
             "completed" if sweep.get("status") == "measured" else "blocked",
