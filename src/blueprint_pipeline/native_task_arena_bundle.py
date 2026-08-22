@@ -259,6 +259,7 @@ def _entrypoint(
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${{BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}}"
+export RUNTIME_DIR OUT_DIR
 mkdir -p "$OUT_DIR"
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:started"
 SOURCE_RECEIPT="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json"
