@@ -1712,6 +1712,29 @@ class NativeFrankaDifferentialIkServo:
                 best[field] = None
         return best
 
+    def joint_position_limits_rad(self) -> dict[str, list[float]] | None:
+        """The joint limits this robot is actually held to.
+
+        Read at binding from the simulator and, until now, never written down.
+        Off-sim analysis therefore had to guess them from a stock description,
+        and guessed wrong: against the stock Franka model a 30 degree grasp
+        roll appeared to buy 0.62 rad of joint-limit margin, while the live
+        solver measured 0.024 rad for the same roll -- a factor of twenty-five,
+        and the difference between a fix and a wasted run.  Sealing them makes
+        every off-sim margin claim checkable against the arm that will execute
+        it.
+        """
+
+        lower = getattr(self, "_joint_position_lower", None)
+        upper = getattr(self, "_joint_position_upper", None)
+        if not lower or not upper or len(lower) != len(upper):
+            return None
+        return {
+            "lower_rad": [float(value) for value in lower],
+            "upper_rad": [float(value) for value in upper],
+            "source": "simulator_soft_joint_position_limits_at_binding",
+        }
+
     def grasp_approach_axis_body(self) -> list[float] | None:
         """The gripper's approach direction in its own grasp frame.
 

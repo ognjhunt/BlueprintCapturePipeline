@@ -1425,6 +1425,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "outcome_authority"
             ),
         }
+        # Seal what the arm is actually held to, so an off-sim margin claim can
+        # be checked against the robot that will execute it rather than against
+        # a stock description of a robot that will not.
+        limits_reader = getattr(servo, "joint_position_limits_rad", None)
+        result["arm_joint_position_limits"] = (
+            limits_reader() if callable(limits_reader) else None
+        )
+
         _announce("contact_grasp_roll_selection")
         normalized_control_plan, grasp_roll = _with_selected_grasp_roll(
             servo=servo, control_plan=normalized_control_plan

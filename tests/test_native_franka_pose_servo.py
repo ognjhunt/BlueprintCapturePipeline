@@ -765,3 +765,33 @@ def test_a_settled_joint_is_charged_only_for_the_torque_it_is_using() -> None:
     assert servo.actuator_feasible_lead_rad(None) == pytest.approx(static)
     assert servo.actuator_feasible_lead_rad([float("nan")]) == pytest.approx(static)
     assert servo.actuator_feasible_lead_rad([0.0, 0.0]) == pytest.approx(static)
+
+
+def test_the_arm_reports_the_joint_limits_it_is_actually_held_to() -> None:
+    """Off-sim margin claims were being checked against the wrong robot.
+
+    The simulator's soft joint limits were read at binding and never written
+    down, so analysis fell back to a stock Franka description: against it a
+    30 degree grasp roll appeared to buy 0.62 rad of joint-limit margin, while
+    the live solver measured 0.024 rad for the same roll.  A factor of
+    twenty-five, and the difference between a fix and a wasted run.
+    """
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    assert servo.joint_position_limits_rad() is None
+
+    servo._joint_position_lower = [-2.8, -1.7, -2.8, -3.0, -2.8, -0.01, -2.8]
+    servo._joint_position_upper = [2.8, 1.7, 2.8, -0.07, 2.8, 3.7, 2.8]
+
+    limits = servo.joint_position_limits_rad()
+
+    assert limits["lower_rad"][4] == pytest.approx(-2.8)
+    assert limits["upper_rad"][4] == pytest.approx(2.8)
+    assert limits["source"] == "simulator_soft_joint_position_limits_at_binding"
+    # Ragged limits are refused rather than half-reported.
+    servo._joint_position_upper = [2.8]
+    assert servo.joint_position_limits_rad() is None
