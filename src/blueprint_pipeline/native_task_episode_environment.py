@@ -125,8 +125,12 @@ def build_native_task_episode_environment(
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_task_readback_missing"]
         )
-    if not callable(getattr(servo, "action_for_grasp_target", None)) or not callable(
-        getattr(servo, "reset_command_state", None)
+    if (
+        not callable(getattr(servo, "action_for_grasp_target", None))
+        or not callable(
+            getattr(servo, "action_for_grasp_target_physx_dls", None)
+        )
+        or not callable(getattr(servo, "reset_command_state", None))
     ):
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_pose_servo_invalid"]
@@ -305,10 +309,15 @@ def build_native_task_episode_environment(
                 "velocity_feedforward_scale", DEFAULT_VELOCITY_FEEDFORWARD_SCALE
             ),
         }
-        if (
-            joint_target is not None
-            and joint_target["phase_id"] not in CARTESIAN_CONTACT_PHASE_IDS
-        ):
+        if joint_target is not None and joint_target[
+            "phase_id"
+        ] in CARTESIAN_CONTACT_PHASE_IDS:
+            action, _diagnostic = servo.action_for_grasp_target_physx_dls(
+                target_position_world_m=kwargs["target_position_world_m"],
+                target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                **common,
+            )
+        elif joint_target is not None:
             action, _diagnostic = servo.action_for_joint_target(
                 target_joint_positions_rad=joint_target["joint_positions_rad"],
                 **common,
@@ -317,11 +326,6 @@ def build_native_task_episode_environment(
             action, _diagnostic = servo.action_for_grasp_target(
                 target_position_world_m=kwargs["target_position_world_m"],
                 target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
-                preferred_posture_joint_positions_rad=(
-                    None
-                    if joint_target is None
-                    else joint_target["joint_positions_rad"]
-                ),
                 **common,
             )
         return [float(value) for value in action]
@@ -361,8 +365,7 @@ def build_native_task_episode_environment(
             else "native_rigid_body_readback"
         ),
         "scripted_pose_source": (
-            "global_ik_free_space_with_native_cartesian_contact_servo_and_"
-            "selected_posture_reference"
+            "global_ik_free_space_with_live_physx_jacobian_contact_servo"
             if any(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
@@ -376,7 +379,7 @@ def build_native_task_episode_environment(
             for row in joint_target_rows
             if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
         ),
-        "cartesian_contact_posture_reference_phase_ids": sorted(
+        "cartesian_contact_physx_dls_phase_ids": sorted(
             row["phase_id"]
             for row in joint_target_rows
             if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
