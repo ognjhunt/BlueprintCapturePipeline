@@ -15,6 +15,9 @@ from typing import Any
 
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
 RESULT_FILENAME = "native_task_arena_policy_result.v1.json"
+GROOT_RUNTIME_IDENTITY_FILENAME = (
+    "adp009d_groot_worker_identity.groot_n17_droid.json"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -176,7 +179,48 @@ def _admission_binding_mismatches(
     return mismatched
 
 
-def _policy_client(spec: Mapping[str, Any]) -> Any:
+def _runtime_groot_worker_identity(
+    *, output_root: Path, spec: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read the identity measured from the checkpoint that serves this run."""
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+        GrootN17DroidPolicySpec,
+        validate_worker_identity_receipt,
+    )
+
+    path = output_root / GROOT_RUNTIME_IDENTITY_FILENAME
+    if not path.is_file():
+        raise RuntimeError("groot_runtime_worker_identity_receipt_missing")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("groot_runtime_worker_identity_receipt_invalid") from exc
+    if not isinstance(value, Mapping):
+        raise RuntimeError("groot_runtime_worker_identity_receipt_invalid")
+    try:
+        validated = validate_worker_identity_receipt(
+            value,
+            expected=GrootN17DroidPolicySpec(**spec["policy_spec"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("groot_runtime_worker_identity_receipt_invalid") from exc
+    evidence = {
+        "source": "runtime_provisioning_measurement",
+        "relative_path": GROOT_RUNTIME_IDENTITY_FILENAME,
+        "file_sha256": _sha256(path),
+        "receipt_digest": canonical_digest(validated),
+        "receipt": validated,
+    }
+    return validated, evidence
+
+
+def _policy_client(
+    spec: Mapping[str, Any],
+    *,
+    groot_worker_identity_receipt: Mapping[str, Any] | None = None,
+) -> Any:
     endpoint = spec["policy_endpoint"]
     secret = os.environ.get(str(endpoint["credential_env"]))
     if spec["candidate_id"] == "pi05_droid":
@@ -196,9 +240,11 @@ def _policy_client(spec: Mapping[str, Any]) -> Any:
         GrootN17DroidPolicySpec,
     )
 
+    if groot_worker_identity_receipt is None:
+        raise RuntimeError("groot_runtime_worker_identity_receipt_missing")
     return GrootN17DroidPolicyClient(
         spec=GrootN17DroidPolicySpec(**spec["policy_spec"]),
-        worker_identity_receipt=spec["policy_identity_receipt"],
+        worker_identity_receipt=groot_worker_identity_receipt,
         host=str(endpoint["host"]),
         port=int(endpoint["port"]),
         api_token=secret,
@@ -375,7 +421,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             to_tensor=_to_tensor,
         )
         result["episode_environment"] = environment_receipt
-        policy = _policy_client(spec)
+        groot_worker_identity_receipt = None
+        if spec["candidate_id"] == "groot_n17_droid":
+            (
+                groot_worker_identity_receipt,
+                result["policy_runtime_identity"],
+            ) = _runtime_groot_worker_identity(output_root=output_root, spec=spec)
+        policy = _policy_client(
+            spec,
+            groot_worker_identity_receipt=groot_worker_identity_receipt,
+        )
         result["phase_reached"] = "policy_client_verified"
         episode_id = f"{scene_plan['task_id']}--{spec['cell_id']}--{spec['candidate_id']}"
         episode = run_policy_episode(
