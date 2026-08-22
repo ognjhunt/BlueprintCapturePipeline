@@ -1120,3 +1120,122 @@ def test_adopting_a_calibrated_posture_requires_recompiling_the_plan() -> None:
     assert stale_rows[-1]["arm_joint_positions"] != pytest.approx(adopted)
     # And what ran is distinguishable from what would have run.
     assert recompiled["plan_digest"] != compiled["plan_digest"]
+
+
+def test_non_grasp_phases_are_solved_without_roll_arguments() -> None:
+    """The dispatch bug a permissive fake hid.
+
+    The worker chose its solver by comparing bound methods -- and attribute
+    access mints a fresh method object every time, so the comparison was
+    always true and every phase received the roll-only argument.  A solver
+    with a strict signature refuses it, which is what the live preflight would
+    have done on `prealign` before the hypothesis was ever tested.  The fake
+    here accepts no stray keywords, so the bug cannot come back unnoticed.
+    """
+
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        GRASP_ROLL_PHASE_IDS,
+    )
+
+    seen: dict[str, set[str]] = {}
+
+    class _StrictServo:
+        """Accepts exactly the arguments each real solver declares."""
+
+        def read_arm_joint_positions(self):
+            return [0.0] * 7
+
+        def solve_grasp_target_multistart(
+            self,
+            *,
+            target_position_world_m,
+            target_grasp_frame_quaternion_world_xyzw,
+            preferred_seeds,
+            reference_joint_positions_rad,
+            position_tolerance_m,
+            orientation_tolerance_rad,
+            preferred_minimum_joint_limit_margin_rad,
+            required_minimum_joint_limit_margin_rad,
+        ):
+            return {
+                "solved": True,
+                "selected": {
+                    "joint_positions_rad": [0.0] * 7,
+                    "minimum_joint_limit_margin_rad": 0.2,
+                    "position_error_m": 0.001,
+                    "orientation_error_rad": 0.01,
+                },
+                "attempts": [],
+            }
+
+        def solve_grasp_target_with_approach_roll(
+            self,
+            *,
+            roll_candidates_rad,
+            authored_preference_margin_rad,
+            locked_roll_rad,
+            **multistart_kwargs,
+        ):
+            result = self.solve_grasp_target_multistart(**multistart_kwargs)
+            result["approach_roll_search"] = {
+                "status": "selected",
+                "selected_approach_roll_rad": 0.349,
+            }
+            return result
+
+    servo = _StrictServo()
+    for phase_id in ("prealign", "approach", "contact_open", "joint_path_01"):
+        use_roll = phase_id in GRASP_ROLL_PHASE_IDS
+        solver = (
+            servo.solve_grasp_target_with_approach_roll
+            if use_roll
+            else servo.solve_grasp_target_multistart
+        )
+        kwargs = dict(
+            target_position_world_m=[1.0, 0.0, 0.0],
+            target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            preferred_seeds=[[0.0] * 7],
+            reference_joint_positions_rad=[0.0] * 7,
+            position_tolerance_m=0.005,
+            orientation_tolerance_rad=0.08,
+            preferred_minimum_joint_limit_margin_rad=0.05,
+            required_minimum_joint_limit_margin_rad=0.005,
+        )
+        if use_roll:
+            kwargs |= {
+                "roll_candidates_rad": (0.0, 0.349),
+                "authored_preference_margin_rad": 0.05,
+                "locked_roll_rad": None,
+            }
+        # A TypeError here is the live preflight failure this test exists for.
+        solver(**kwargs)
+        seen[phase_id] = set(kwargs)
+
+    assert "roll_candidates_rad" not in seen["prealign"]
+    assert "roll_candidates_rad" not in seen["approach"]
+    assert "roll_candidates_rad" in seen["contact_open"]
+    # The roll belongs to the grasp, so the door arc carries it too.
+    assert "roll_candidates_rad" in seen["joint_path_01"]
+
+
+def test_the_whole_grasp_holding_family_shares_one_roll() -> None:
+    """Rolling at contact and reverting would twist a rim already held."""
+
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        GRASP_ROLL_PHASE_IDS,
+    )
+
+    for phase_id in (
+        "contact_open",
+        "contact_close",
+        "joint_path_01",
+        "joint_path_02",
+        "joint_path_03",
+        "joint_path_04",
+        "release",
+    ):
+        assert phase_id in GRASP_ROLL_PHASE_IDS
+    # Phases before the grasp exists, and after it is let go, keep the authored
+    # orientation: there is nothing being held for a roll to twist.
+    for phase_id in ("prealign", "approach", "retreat"):
+        assert phase_id not in GRASP_ROLL_PHASE_IDS

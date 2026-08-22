@@ -59,7 +59,24 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 CONTACT_APPROACH_ROLL_CANDIDATES_RAD = (
     0.0, 0.175, -0.175, 0.349, -0.349, 0.524, -0.524,
 )
-CONTACT_APPROACH_ROLL_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+# The roll is a property of the grasp, not of one phase.  Rolling only at
+# contact and reverting afterwards would twist the gripper against a rim it is
+# already holding, so every phase that holds the grasp shares one roll: the
+# search runs at contact entry and the rest inherit it.
+GRASP_ROLL_PHASE_IDS = (
+    "contact_open",
+    "contact_close",
+    "joint_path_01",
+    "joint_path_02",
+    "joint_path_03",
+    "joint_path_04",
+    "release",
+)
+# Margin the authored orientation must clear to be kept unchanged.  Above it,
+# the authored grasp wins and no roll is applied; only when the authored angle
+# cannot be held does the search deviate, and then by the smallest roll that
+# clears the floor rather than by the largest margin available.
+GRASP_ROLL_SUFFICIENT_MARGIN_RAD = 0.05
 
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
@@ -319,6 +336,9 @@ def _control_plan_global_ik_joint_targets(
 
     reference = [float(value) for value in servo.read_arm_joint_positions()]
     start_joint_positions = list(reference)
+    # One object-relative grasp transform, chosen once and held by every phase
+    # that carries the grasp.
+    selected_grasp_roll_rad: float | None = None
     phases: list[dict[str, Any]] = []
     for raw in actions:
         if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
@@ -375,17 +395,27 @@ def _control_plan_global_ik_joint_targets(
         # 85 mm opening, and off-sim it buys 0.62 rad at 0.92 mm of position
         # error.  Contact phases search it; every other phase is untouched, and
         # the authored orientation is always a candidate.
+        # Decide with a boolean, never by comparing bound methods: attribute
+        # access mints a fresh method object every time, so `solver is not
+        # servo.solve_grasp_target_multistart` is always true and would hand
+        # the roll-only argument to a solver that does not accept it.
+        use_roll_search = phase_id in GRASP_ROLL_PHASE_IDS and callable(
+            getattr(servo, "solve_grasp_target_with_approach_roll", None)
+        )
         solver = (
             servo.solve_grasp_target_with_approach_roll
-            if phase_id in CONTACT_APPROACH_ROLL_PHASE_IDS
-            and callable(
-                getattr(servo, "solve_grasp_target_with_approach_roll", None)
-            )
+            if use_roll_search
             else servo.solve_grasp_target_multistart
         )
         roll_kwargs = (
-            {"roll_candidates_rad": CONTACT_APPROACH_ROLL_CANDIDATES_RAD}
-            if solver is not servo.solve_grasp_target_multistart
+            {
+                "roll_candidates_rad": CONTACT_APPROACH_ROLL_CANDIDATES_RAD,
+                "authored_preference_margin_rad": (
+                    GRASP_ROLL_SUFFICIENT_MARGIN_RAD
+                ),
+                "locked_roll_rad": selected_grasp_roll_rad,
+            }
+            if use_roll_search
             else {}
         )
         solved = solver(
@@ -409,6 +439,15 @@ def _control_plan_global_ik_joint_targets(
         )
         if not isinstance(solved, Mapping):
             raise RuntimeError("native_task_controls_multistart_result_invalid")
+        roll_search = solved.get("approach_roll_search")
+        if (
+            selected_grasp_roll_rad is None
+            and isinstance(roll_search, Mapping)
+            and roll_search.get("status") == "selected"
+        ):
+            selected_grasp_roll_rad = float(
+                roll_search.get("selected_approach_roll_rad") or 0.0
+            )
         selected = solved.get("selected")
         phases.append(
             {

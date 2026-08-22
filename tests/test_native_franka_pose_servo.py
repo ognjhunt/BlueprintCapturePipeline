@@ -858,3 +858,108 @@ def test_a_scene_that_never_needed_a_roll_keeps_what_it_had() -> None:
     )
 
     assert result["approach_roll_search"]["selected_approach_roll_rad"] == 0.0
+
+
+def test_the_authored_grasp_is_kept_when_it_can_actually_be_held() -> None:
+    """Roll is a candidate generator, not an optimisation target.
+
+    Nothing in the roll search checks pad overlap, closure direction, or
+    approach collision -- so the further it strays from the authored contact
+    geometry, the more of that geometry it puts at risk.  It must therefore
+    take the smallest deviation that clears the margin floor, and prefer the
+    authored orientation outright whenever that orientation is holdable.
+    """
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    authored = [0.0, 0.0, 0.0, 1.0]
+
+    def _servo(margin_for):
+        class _S(NativeFrankaDifferentialIkServo):
+            def __init__(self):
+                self._pink_hand_pose_at_binding_base = [0.0] * 3 + [0.0, 0.0, 0.0, 1.0]
+                self._pink_grasp_pose_at_binding_base = [0.13, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+            def solve_grasp_target_multistart(self, **kwargs):
+                q = kwargs["target_grasp_frame_quaternion_world_xyzw"]
+                dev = sum(abs(a - b) for a, b in zip(q, authored))
+                return {
+                    "solved": True,
+                    "selected": {
+                        "joint_positions_rad": [0.0] * 7,
+                        "minimum_joint_limit_margin_rad": margin_for(dev),
+                        "position_error_m": 0.001,
+                    },
+                }
+
+        return _S()
+
+    common = dict(
+        target_position_world_m=[1.0, 0.0, 0.0],
+        target_grasp_frame_quaternion_world_xyzw=authored,
+        roll_candidates_rad=(0.175, -0.175, 0.349, -0.349, 0.524),
+        authored_preference_margin_rad=0.05,
+    )
+
+    # The authored orientation is holdable: keep it, ignore bigger margins.
+    healthy = _servo(lambda dev: 0.9 if dev < 1e-9 else 0.9 + dev)
+    kept = healthy.solve_grasp_target_with_approach_roll(**common)
+    assert kept["approach_roll_search"]["selected_approach_roll_rad"] == 0.0
+
+    # The authored orientation cannot be held: take the SMALLEST roll that
+    # clears the floor, not the one with the most margin.
+    pinned = _servo(lambda dev: 0.0 if dev < 0.1 else 0.06 + dev)
+    rolled = pinned.solve_grasp_target_with_approach_roll(**common)
+    search = rolled["approach_roll_search"]
+    assert search["selected_minimum_joint_limit_margin_rad"] >= 0.05
+    chosen = abs(search["selected_approach_roll_rad"])
+    clearing = [
+        abs(row["approach_roll_rad"])
+        for row in search["attempts"]
+        if (row["minimum_joint_limit_margin_rad"] or 0.0) >= 0.05
+    ]
+    assert chosen == pytest.approx(min(clearing))
+    # And the receipt states plainly what this search does not check.
+    assert "does_not_check_pad_overlap" in search["claim_boundary"]
+
+
+def test_a_locked_roll_is_the_only_candidate_considered() -> None:
+    """Every phase holding the grasp shares one object-relative transform."""
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    tried: list[float] = []
+
+    class _S(NativeFrankaDifferentialIkServo):
+        def __init__(self):
+            self._pink_hand_pose_at_binding_base = [0.0] * 3 + [0.0, 0.0, 0.0, 1.0]
+            self._pink_grasp_pose_at_binding_base = [0.13, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            tried.append(kwargs["target_grasp_frame_quaternion_world_xyzw"][0])
+            return {
+                "solved": True,
+                "selected": {
+                    "joint_positions_rad": [0.0] * 7,
+                    "minimum_joint_limit_margin_rad": 0.3,
+                    "position_error_m": 0.001,
+                },
+            }
+
+    servo = _S()
+    result = servo.solve_grasp_target_with_approach_roll(
+        target_position_world_m=[1.0, 0.0, 0.0],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        roll_candidates_rad=(0.175, -0.175, 0.349),
+        authored_preference_margin_rad=0.05,
+        locked_roll_rad=0.349,
+    )
+
+    assert len(tried) == 1
+    search = result["approach_roll_search"]
+    assert search["selected_approach_roll_rad"] == pytest.approx(0.349)
+    assert search["locked_roll_rad"] == pytest.approx(0.349)
