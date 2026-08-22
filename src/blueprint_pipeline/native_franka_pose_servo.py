@@ -1296,6 +1296,16 @@ class NativeFrankaDifferentialIkServo:
                     "seed_index": index,
                     "seed_joint_positions_rad": seed,
                     "minimum_joint_limit_margin_rad": min(margins),
+                    "joint_space_reference_distance_rad": math.sqrt(
+                        sum(
+                            (value - prior) ** 2
+                            for value, prior in zip(
+                                attempt["joint_positions_rad"],
+                                reference,
+                                strict=True,
+                            )
+                        )
+                    ),
                     "maximum_reference_joint_delta_rad": max(
                         abs(value - prior)
                         for value, prior in zip(
@@ -1314,6 +1324,14 @@ class NativeFrankaDifferentialIkServo:
                 key=lambda row: (
                     row["minimum_joint_limit_margin_rad"]
                     < PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD,
+                    # Differential IK is local. Preserve the closest whole-arm
+                    # branch, not merely the candidate with the smallest
+                    # single-joint maximum. C18's maximum-delta comparison
+                    # preferred one endpoint by 0.0015 rad even though its
+                    # Euclidean joint travel was 19% larger; the live Cartesian
+                    # servo then converged to the intervening constrained
+                    # optimum and stopped 13.2 mm short of contact.
+                    row["joint_space_reference_distance_rad"],
                     row["maximum_reference_joint_delta_rad"],
                     -row["minimum_joint_limit_margin_rad"],
                     row["position_error_m"] + row["orientation_error_rad"],
