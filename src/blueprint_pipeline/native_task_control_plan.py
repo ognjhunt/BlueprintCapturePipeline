@@ -596,21 +596,46 @@ def materialize_native_graph_articulated_control_plan(
             return "release_clearance"
         return None
 
-    def motion_step_budget(phase_id: str) -> tuple[int, str | None, int | None]:
+    def motion_step_budget(
+        phase_id: str,
+    ) -> tuple[int, str | None, int | None, tuple[str, ...]]:
         authored = int(affordance["motion_maximum_steps"])
         construction_phase_id = measured_construction_phase_id(phase_id)
-        observed = observed_phases.get(construction_phase_id or "")
-        observed_steps = (
-            int(observed.get("steps"))
-            if isinstance(observed, Mapping)
-            and observed.get("target_reached") is True
-            and isinstance(observed.get("steps"), int)
-            and not isinstance(observed.get("steps"), bool)
-            and int(observed.get("steps")) > 0
-            else None
+        budget_candidates = tuple(
+            dict.fromkeys(
+                phase_id
+                for phase_id in (
+                    construction_phase_id,
+                    # The exact contact entry travels the same 12 cm as the
+                    # construction approach, while its mapped clearance probe
+                    # measures only the final short clearance segment. C11
+                    # spent 27 ticks on approach, then exhausted a budget
+                    # derived from the 5-tick clearance probe after 25 ticks.
+                    # Use the slower measured comparable segment; keep the
+                    # packet's authored fail-safe cap below.
+                    "approach" if phase_id == "contact_open" else None,
+                )
+                if phase_id
+            )
+        )
+        measured_candidates: list[tuple[int, str]] = []
+        for candidate_phase_id in budget_candidates:
+            observed = observed_phases.get(candidate_phase_id)
+            if (
+                isinstance(observed, Mapping)
+                and observed.get("target_reached") is True
+                and isinstance(observed.get("steps"), int)
+                and not isinstance(observed.get("steps"), bool)
+                and int(observed.get("steps")) > 0
+            ):
+                measured_candidates.append(
+                    (int(observed["steps"]), candidate_phase_id)
+                )
+        observed_steps, construction_phase_id = max(
+            measured_candidates, default=(None, construction_phase_id)
         )
         if observed_steps is None:
-            return authored, construction_phase_id, None
+            return authored, construction_phase_id, None, budget_candidates
         # Construction measured the same TCP targets without contact. Controls
         # may need longer under door load, so retain 3x the observed duration,
         # five setup ticks, and a 25-tick floor, capped by the already-authored
@@ -624,7 +649,7 @@ def materialize_native_graph_articulated_control_plan(
                 observed_steps * 3 + 5,
             ),
         )
-        return derived, construction_phase_id, observed_steps
+        return derived, construction_phase_id, observed_steps, budget_candidates
 
     actions: list[dict[str, Any]] = []
     if affordance:
@@ -745,13 +770,19 @@ def materialize_native_graph_articulated_control_plan(
                     contact_standoff = -bite_depth
                     contact_standoff_source = ROBOTOIQ_2F85_BITE_SOURCE
                 bite_direction_source_phase_id = clearance_phase_id
-            derived_maximum, construction_phase_id, observed_steps = (
+            (
+                derived_maximum,
+                construction_phase_id,
+                observed_steps,
+                construction_budget_candidate_phase_ids,
+            ) = (
                 motion_step_budget(phase_id)
                 if not dwell
                 else (
                     int(affordance["gripper_dwell_maximum_steps"]),
                     None,
                     None,
+                    (),
                 )
             )
             exact_contact_arrival = phase_id in {
@@ -787,6 +818,9 @@ def materialize_native_graph_articulated_control_plan(
                     ),
                     "construction_phase_id": construction_phase_id,
                     "construction_observed_steps": observed_steps,
+                    "construction_budget_candidate_phase_ids": list(
+                        construction_budget_candidate_phase_ids
+                    ),
                     "target_position_source_phase_id": phase_id,
                     "contact_standoff_m": contact_standoff,
                     "contact_standoff_source": contact_standoff_source,
@@ -809,7 +843,12 @@ def materialize_native_graph_articulated_control_plan(
                     "step_budget_derivation": (
                         "fixed_gripper_dwell_authored"
                         if dwell
-                        else "three_x_measured_plus_five_with_25_floor"
+                        else (
+                            "three_x_slowest_comparable_construction_segment_"
+                            "plus_five_with_25_floor"
+                            if phase_id == "contact_open"
+                            else "three_x_measured_plus_five_with_25_floor"
+                        )
                         if observed_steps is not None
                         else "authored_compatibility_fallback"
                     ),
