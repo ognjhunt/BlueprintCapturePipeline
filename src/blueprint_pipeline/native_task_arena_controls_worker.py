@@ -35,6 +35,22 @@ POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
 CONTROLS_APPROACH_PREFERRED_JOINT_MARGIN_RAD = 0.04
 CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 
+# C28 sealed the decisive contact-entry evidence: three measured-miss-biased
+# Cartesian attempts diverged 15.4 -> 28.5 -> 38.6 mm while the wrist swung
+# up to 0.264 rad -- the live servo approaches the contact pose through a
+# degenerate direction-space where no Cartesian correction can land, even
+# though the multistart preflight holds an exact interior-margin solution for
+# that pose on the branch it selected for approach->contact continuity.  The
+# entry into contact_open is therefore replayed as a bounded joint micro-path
+# between the two solved same-branch postures.  The contact_open arrival gate,
+# contact scoring, and collision predicates are unchanged: if the solved
+# branch does not put the measured fingertip at the handle, the phase still
+# fails honestly.
+CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
+CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
+CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
+CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS = 55
+
 
 def _announce(phase: str, status: str = "started") -> None:
     print(
@@ -556,6 +572,153 @@ def _normalized_control_plan_for_execution(
     return normalized
 
 
+def _with_contact_entry_branch_replay(
+    *,
+    control_plan: Mapping[str, Any],
+    scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
+    task_spec: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Enter contact_open on the solved branch instead of servoing onto it.
+
+    Inserts a bounded joint micro-path (at most 0.05 rad per joint per row,
+    plus settle copies) between the solved approach posture and the solved
+    contact posture, immediately before the unchanged contact_open row.  The
+    two postures come from the same multistart preflight that selected the
+    branch for approach->contact continuity and interior joint-limit margin,
+    so the interpolation stays on that branch.  Fails open to the previous
+    behavior -- with a typed receipt -- when either posture is unsolved or
+    the plan's step budget cannot absorb the rows.
+    """
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    receipt: dict[str, Any] = {
+        "schema_version": "native_task_controls_contact_entry_branch_replay.v1",
+        "status": "not_applied",
+        "reason": None,
+        "source_control_plan_digest": plan.get("plan_digest"),
+        "claim_boundary": (
+            "bounded_same_branch_joint_micro_path_before_unchanged_contact_"
+            "arrival_gate;native_controls_remain_the_arrival_contact_"
+            "dynamics_and_task_outcome_authority"
+        ),
+    }
+    actions = plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        receipt["reason"] = "scripted_positive_actions_invalid"
+        return plan, receipt
+
+    def _pose_key(row: Mapping[str, Any]) -> tuple | None:
+        try:
+            return (
+                tuple(float(value) for value in row["target_position_world_m"]),
+                tuple(
+                    float(value)
+                    for value in row["target_quaternion_world_xyzw"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    joints_by_pose: dict[tuple, list[float]] = {}
+    for row in scripted_pose_joint_targets:
+        key = _pose_key(row)
+        try:
+            joints = [float(value) for value in row["joint_positions_rad"]]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if key is not None and len(joints) == 7:
+            joints_by_pose[key] = joints
+
+    contact_index: int | None = None
+    approach_key = None
+    contact_key = None
+    for index, raw in enumerate(actions):
+        if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
+            continue
+        phase_id = str(raw.get("phase_id") or "")
+        if phase_id == "approach":
+            approach_key = _pose_key(raw)
+        elif phase_id == "contact_open":
+            contact_index = index
+            contact_key = _pose_key(raw)
+    if contact_index is None or approach_key is None or contact_key is None:
+        receipt["reason"] = "approach_or_contact_phase_missing"
+        return plan, receipt
+    start = joints_by_pose.get(approach_key)
+    end = joints_by_pose.get(contact_key)
+    if start is None or end is None:
+        receipt["reason"] = "approach_or_contact_solution_unsolved"
+        return plan, receipt
+
+    max_delta = max(abs(e - s) for s, e in zip(start, end))
+    interp_rows = max(
+        4, math.ceil(max_delta / CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD)
+    )
+    interp_rows = min(
+        interp_rows,
+        CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS
+        - CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS,
+    )
+    total_rows = interp_rows + CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS
+
+    # The validator enforces the task budget; refusing here keeps a budget
+    # overflow from surfacing as a paid mid-run refusal.
+    maximum_action_steps = task_spec.get("maximum_action_steps")
+    if isinstance(maximum_action_steps, int) and not isinstance(
+        maximum_action_steps, bool
+    ):
+        planned_steps = 0
+        for raw in actions:
+            if isinstance(raw, Mapping) and raw.get("mode") == "ik_pose":
+                try:
+                    planned_steps += int(raw["maximum_steps"])
+                except (KeyError, TypeError, ValueError):
+                    receipt["reason"] = "plan_step_budget_unreadable"
+                    return plan, receipt
+            else:
+                planned_steps += 1
+        settle = int(task_spec.get("settle_window_samples") or 0)
+        if planned_steps + total_rows + settle > maximum_action_steps:
+            receipt["reason"] = "task_step_budget_insufficient"
+            receipt["rows_required"] = total_rows
+            return plan, receipt
+
+    rows: list[dict[str, Any]] = []
+    for step in range(1, interp_rows + 1):
+        fraction = step / interp_rows
+        rows.append(
+            {
+                "phase_id": CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+                "arm_joint_positions": [
+                    s + fraction * (e - s) for s, e in zip(start, end)
+                ],
+                "gripper_state": "open",
+            }
+        )
+    rows.extend(
+        {
+            "phase_id": CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+            "arm_joint_positions": [float(value) for value in end],
+            "gripper_state": "open",
+        }
+        for _ in range(CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS)
+    )
+    actions[contact_index:contact_index] = rows
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    receipt.update(
+        {
+            "status": "applied",
+            "reason": None,
+            "interpolation_rows": interp_rows,
+            "settle_rows": CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS,
+            "maximum_joint_delta_rad": max_delta,
+            "per_row_joint_step_rad": max_delta / interp_rows,
+            "rewritten_control_plan_digest": plan["plan_digest"],
+        }
+    )
+    return plan, receipt
+
+
 def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
     phases = global_ik.get("phases")
     if not isinstance(phases, list):
@@ -1054,6 +1217,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reference_seeds=PINK_GLOBAL_REFERENCE_SEEDS,
             )
         )
+        effective_control_plan, branch_replay = _with_contact_entry_branch_replay(
+            control_plan=effective_control_plan,
+            scripted_pose_joint_targets=scripted_pose_joint_targets,
+            task_spec=scene_plan["task_spec"],
+        )
+        result["contact_entry_branch_replay"] = branch_replay
         controls_global_ik = jaw_selection["selected_global_ik_preflight"]
         result["control_plan_variant_selection"] = jaw_selection
         result["controls_global_ik_preflight"] = controls_global_ik

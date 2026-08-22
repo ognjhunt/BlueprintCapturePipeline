@@ -792,3 +792,188 @@ def test_persisted_controls_digest_describes_the_bytes_on_disk() -> None:
     assert written["result_digest"] == _canonical_digest(
         written, field="result_digest"
     )
+
+
+def _branch_replay_task() -> dict:
+    return {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "articulated_open_close",
+        "task_id": "washer_door_open_test",
+        "target_joint_id": "door_hinge",
+        "joint_reset_positions_rad": {"door_hinge": 0.0},
+        "target_success_interval_rad": [0.7, 0.95],
+        "joint_hard_limits_rad": {"door_hinge": [0.0, 1.2]},
+        "settle_window_samples": 3,
+        "maximum_settled_target_speed_rad_s": 0.05,
+        "non_task_joint_motion_tolerance_rad": 0.001,
+        "movement_epsilon_rad": 0.0001,
+        "reset_tolerance_rad": 0.0001,
+        "maximum_action_steps": 200,
+    }
+
+
+def _branch_replay_plan(task: dict) -> dict:
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    def pose(phase_id, position, gripper_state, *, hold=False):
+        return {
+            "phase_id": phase_id,
+            "mode": "ik_pose",
+            "target_position_world_m": position,
+            "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "gripper_state": gripper_state,
+            "minimum_steps": 1,
+            "maximum_steps": 12,
+            "arrival_tolerance_m": 0.005,
+            "arrival_stability_steps": 2,
+            "arrival_orientation_tolerance_rad": 0.08,
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.2,
+            "hold_arm_joint_positions_during_gripper_transition": hold,
+        }
+
+    contact_position = [0.5, 0.1, 0.4]
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "branch-replay-test",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "f" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            pose("prealign", [0.4, 0.0, 0.5], "open"),
+            pose("approach", [0.45, 0.05, 0.45], "open"),
+            pose("contact_open", contact_position, "open"),
+            pose("contact_close", contact_position, "closed", hold=True),
+            pose("retreat", [0.4, 0.0, 0.5], "open"),
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def _branch_replay_targets(plan: dict) -> list[dict]:
+    rows = {row["phase_id"]: row for row in plan["scripted_positive_actions"]}
+    return [
+        {
+            "phase_id": "approach",
+            "target_position_world_m": rows["approach"]["target_position_world_m"],
+            "target_quaternion_world_xyzw": rows["approach"][
+                "target_quaternion_world_xyzw"
+            ],
+            "joint_positions_rad": [0.0] * 7,
+        },
+        {
+            "phase_id": "contact_open",
+            "target_position_world_m": rows["contact_open"][
+                "target_position_world_m"
+            ],
+            "target_quaternion_world_xyzw": rows["contact_open"][
+                "target_quaternion_world_xyzw"
+            ],
+            "joint_positions_rad": [0.3, -0.2, 0.1, 0.4, -0.5, 0.2, 0.05],
+        },
+    ]
+
+
+def test_contact_entry_branch_replay_inserts_bounded_joint_path() -> None:
+    """C28's sealed divergence: Cartesian servoing cannot land contact entry.
+
+    Three measured-miss-biased attempts moved 15.4 -> 28.5 -> 38.6 mm away
+    with the wrist swinging 0.264 rad, while the preflight held an exact
+    interior-margin solution for the same pose.  The entry must replay the
+    solved same-branch joint path; the contact_open arrival gate is unchanged.
+    """
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+        CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS,
+        _with_contact_entry_branch_replay,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    targets = _branch_replay_targets(plan)
+
+    rewritten, receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=targets,
+        task_spec=task,
+    )
+
+    assert receipt["status"] == "applied"
+    actions = rewritten["scripted_positive_actions"]
+    replay_rows = [
+        row
+        for row in actions
+        if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    # maximum joint delta 0.5 rad at 0.05 rad per row -> 10 interpolation rows.
+    assert receipt["interpolation_rows"] == 10
+    assert len(replay_rows) == 10 + CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS
+    assert all(row["gripper_state"] == "open" for row in replay_rows)
+    # Bounded per-row joint motion, starting from the approach solution.
+    previous = [0.0] * 7
+    for row in replay_rows:
+        deltas = [
+            abs(a - b) for a, b in zip(row["arm_joint_positions"], previous)
+        ]
+        assert max(deltas) <= 0.05 + 1e-9
+        previous = row["arm_joint_positions"]
+    assert previous == pytest.approx([0.3, -0.2, 0.1, 0.4, -0.5, 0.2, 0.05])
+    # The rows sit immediately before the unchanged contact_open gate, and
+    # contact_close still directly follows contact_open.
+    phase_ids = [row["phase_id"] for row in actions]
+    contact_index = phase_ids.index("contact_open")
+    assert phase_ids[contact_index - 1] == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    assert phase_ids[contact_index + 1] == "contact_close"
+    # The rewritten plan re-digests and still satisfies the fail-closed
+    # validator, including the gripper-transition predecessor rule.
+    validated = validate_task_control_plan(rewritten, task_spec=task)
+    assert validated["plan_digest"] == rewritten["plan_digest"]
+
+
+def test_contact_entry_branch_replay_fails_open_without_solutions() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_entry_branch_replay,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    targets = [row for row in _branch_replay_targets(plan) if row["phase_id"] != "contact_open"]
+
+    rewritten, receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=targets,
+        task_spec=task,
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "approach_or_contact_solution_unsolved"
+    assert rewritten["plan_digest"] == plan["plan_digest"]
+    assert rewritten["scripted_positive_actions"] == plan["scripted_positive_actions"]
+
+
+def test_contact_entry_branch_replay_respects_task_budget() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_entry_branch_replay,
+    )
+
+    task = _branch_replay_task()
+    task["maximum_action_steps"] = 64
+    plan = _branch_replay_plan(task)
+    targets = _branch_replay_targets(plan)
+
+    rewritten, receipt = _with_contact_entry_branch_replay(
+        control_plan=plan,
+        scripted_pose_joint_targets=targets,
+        task_spec=task,
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "task_step_budget_insufficient"
+    assert rewritten["scripted_positive_actions"] == plan["scripted_positive_actions"]
