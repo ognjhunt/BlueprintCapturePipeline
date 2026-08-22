@@ -67,6 +67,8 @@ def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -
                     "mode": "ik_pose",
                     "target_position_world_m": [2.0, 0.0, 0.0],
                     "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "arrival_tolerance_m": 0.005,
+                    "arrival_orientation_tolerance_rad": 0.08,
                 },
                 {
                     "phase_id": "contact_close",
@@ -82,6 +84,8 @@ def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -
 
     assert len(servo.calls) == 1
     assert servo.calls[0]["preferred_seeds"][0] == [0.1] * 7
+    assert servo.calls[0]["position_tolerance_m"] == pytest.approx(0.005)
+    assert servo.calls[0]["orientation_tolerance_rad"] == pytest.approx(0.08)
     assert [row["phase_id"] for row in targets] == ["approach", "contact_open"]
     assert targets[-1]["joint_positions_rad"] == [2.0] * 7
     assert receipt["status"] == "all_unique_poses_solved_or_bound"

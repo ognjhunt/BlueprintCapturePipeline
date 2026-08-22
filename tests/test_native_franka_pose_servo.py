@@ -228,8 +228,10 @@ def test_multistart_prefers_continuous_solved_configuration() -> None:
     servo = object.__new__(NativeFrankaDifferentialIkServo)
     servo._joint_position_lower = [-2.0] * 7
     servo._joint_position_upper = [2.0] * 7
+    calls = []
 
     def solve(**kwargs):
+        calls.append(kwargs)
         joints = list(kwargs["seed_joint_positions_rad"])
         return {
             "solved": True,
@@ -246,9 +248,15 @@ def test_multistart_prefers_continuous_solved_configuration() -> None:
         preferred_seeds=[[1.0] * 7, [0.2] * 7],
         reference_joint_positions_rad=[0.0] * 7,
         seed_count=2,
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
     )
 
     assert result["solved"] is True
+    assert all(call["position_tolerance_m"] == 0.005 for call in calls)
+    assert all(call["orientation_tolerance_rad"] == 0.08 for call in calls)
+    assert result["position_tolerance_m"] == 0.005
+    assert result["orientation_tolerance_rad"] == 0.08
     assert result["selected"]["seed_index"] == 1
     assert result["selected"]["joint_positions_rad"] == pytest.approx(
         [0.2] * 7

@@ -1229,6 +1229,8 @@ class NativeFrankaDifferentialIkServo:
         preferred_seeds: Sequence[Sequence[float]],
         reference_joint_positions_rad: Sequence[float],
         seed_count: int = PINK_GLOBAL_SEED_COUNT,
+        position_tolerance_m: float = PINK_GLOBAL_POSITION_TOLERANCE_M,
+        orientation_tolerance_rad: float = PINK_GLOBAL_ORIENTATION_TOLERANCE_RAD,
     ) -> dict[str, Any]:
         seeds = deterministic_pink_joint_seeds(
             lower_joint_position_limits_rad=self._joint_position_lower,
@@ -1246,6 +1248,8 @@ class NativeFrankaDifferentialIkServo:
                         target_grasp_frame_quaternion_world_xyzw
                     ),
                     seed_joint_positions_rad=seed,
+                    position_tolerance_m=position_tolerance_m,
+                    orientation_tolerance_rad=orientation_tolerance_rad,
                 )
             except NativeFrankaPoseServoError as exc:
                 attempt = {
@@ -1303,10 +1307,8 @@ class NativeFrankaDifferentialIkServo:
             "attempts": attempts,
             "seed_count": len(seeds),
             "solver": "isaacsim.robot_motion.pink.PinkIKController_multistart",
-            "position_tolerance_m": PINK_GLOBAL_POSITION_TOLERANCE_M,
-            "orientation_tolerance_rad": (
-                PINK_GLOBAL_ORIENTATION_TOLERANCE_RAD
-            ),
+            "position_tolerance_m": float(position_tolerance_m),
+            "orientation_tolerance_rad": float(orientation_tolerance_rad),
             "preferred_minimum_joint_limit_margin_rad": (
                 PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD
             ),
