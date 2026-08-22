@@ -1712,193 +1712,30 @@ class NativeFrankaDifferentialIkServo:
                 best[field] = None
         return best
 
-    def solve_grasp_target_with_approach_roll(
-        self,
-        *,
-        target_position_world_m,
-        target_grasp_frame_quaternion_world_xyzw,
-        roll_candidates_rad,
-        authored_preference_margin_rad: float = 0.0,
-        locked_roll_rad: float | None = None,
-        **multistart_kwargs,
-    ) -> dict[str, Any]:
-        """Solve the grasp, letting the gripper roll about its approach axis.
+    def grasp_approach_axis_body(self) -> list[float] | None:
+        """The gripper's approach direction in its own grasp frame.
 
-        C43 measured the arm at contact with panda_joint5 on its hard stop for
-        a third of the phase and panda_joint6 at full effort, and off-sim IK
-        confirms why: at the authored contact orientation the best achievable
-        joint-limit margin is 0.0000 rad, while the same position with the
-        orientation free admits 0.8916 rad.  The position was never the
-        problem.  The authored orientation happens to sit exactly on a
-        joint-limit singularity, which is why forty-three runs of controller
-        work could not move a joint that was already at its end stop.
-
-        Roll about the gripper's own approach axis is a real degree of freedom
-        for a parallel jaw straddling a thin rim: the pads still close across
-        the rim, the contact line merely tilts, and an 85 mm opening on a
-        1.23 mm rim has the clearance to spare.  Off-sim, +30 deg buys
-        0.6220 rad of margin at 0.92 mm of position error.
-
-        The roll is searched, not assumed: every candidate is solved and the
-        one with the healthiest margin wins, with the authored orientation
-        always among the candidates so a scene that never needed this keeps
-        exactly what it had.  The chosen roll is sealed.
+        Taken from the sealed body-to-grasp offset measured at binding, so a
+        roll about this axis is a roll about the direction the jaws actually
+        reach along, whatever way the grasp happens to point.
         """
 
-        quaternion = [
-            float(value) for value in target_grasp_frame_quaternion_world_xyzw
+        binding_hand = getattr(self, "_pink_hand_pose_at_binding_base", None)
+        binding_grasp = getattr(self, "_pink_grasp_pose_at_binding_base", None)
+        if not binding_hand or not binding_grasp:
+            return None
+        offset = [
+            float(binding_grasp[index]) - float(binding_hand[index])
+            for index in range(3)
         ]
-        # A roll already chosen for this grasp is the only candidate: the whole
-        # grasp-holding family must share one object-relative transform, or the
-        # gripper twists against a rim it is already holding.
-        if locked_roll_rad is not None:
-            rolls = [float(locked_roll_rad)]
-        else:
-            rolls = [float(value) for value in roll_candidates_rad]
-            if 0.0 not in rolls:
-                rolls = [0.0, *rolls]
-            # Search outward from the authored orientation so the smallest
-            # deviation that works is the one found first.
-            rolls.sort(key=abs)
-        axis = self._approach_axis_world(quaternion)
-        best: dict[str, Any] | None = None
-        attempts: list[dict[str, Any]] = []
-        for roll in rolls:
-            rolled = (
-                quaternion
-                if roll == 0.0 and axis is None
-                else self._roll_quaternion_about_axis(quaternion, axis, roll)
-            )
-            if rolled is None:
-                continue
-            solved = self.solve_grasp_target_multistart(
-                target_position_world_m=target_position_world_m,
-                target_grasp_frame_quaternion_world_xyzw=rolled,
-                **multistart_kwargs,
-            )
-            selected = solved.get("selected") if isinstance(solved, Mapping) else None
-            margin = (
-                float(selected.get("minimum_joint_limit_margin_rad") or 0.0)
-                if isinstance(selected, Mapping)
-                else None
-            )
-            attempts.append(
-                {
-                    "approach_roll_rad": roll,
-                    "solved": selected is not None,
-                    "minimum_joint_limit_margin_rad": margin,
-                    "position_error_m": (
-                        selected.get("position_error_m")
-                        if isinstance(selected, Mapping)
-                        else None
-                    ),
-                }
-            )
-            if selected is None:
-                continue
-            # Prefer the authored grasp whenever it can actually be held, and
-            # otherwise the smallest deviation that clears the floor -- not the
-            # largest margin on offer.  Roll is a candidate generator here, not
-            # an optimisation target: the further it strays from the authored
-            # contact geometry, the more of that geometry it puts at risk, and
-            # nothing in this search checks pad overlap, closure direction, or
-            # approach collision.  Those remain the construction stage's job
-            # and the native contact gate's.
-            floor = float(authored_preference_margin_rad)
-            if margin is not None and margin >= floor and floor > 0.0:
-                if best is None or (
-                    best["_margin"] < floor or abs(roll) < abs(best["_roll"])
-                ):
-                    best = {
-                        "_margin": margin,
-                        "_roll": roll,
-                        "_quaternion": rolled,
-                        "_solved": solved,
-                    }
-                continue
-            if best is not None and best["_margin"] >= floor > 0.0:
-                continue
-            if best is None or margin > best["_margin"]:
-                best = {
-                    "_margin": margin,
-                    "_roll": roll,
-                    "_quaternion": rolled,
-                    "_solved": solved,
-                }
-        if best is None:
-            return {
-                "solved": False,
-                "selected": None,
-                "approach_roll_search": {
-                    "status": "no_roll_solved",
-                    "attempts": attempts,
-                },
-            }
-        result = dict(best["_solved"])
-        result["approach_roll_search"] = {
-            "status": "selected",
-            "selected_approach_roll_rad": best["_roll"],
-            "selected_target_quaternion_world_xyzw": best["_quaternion"],
-            "authored_target_quaternion_world_xyzw": quaternion,
-            "selected_minimum_joint_limit_margin_rad": best["_margin"],
-            "authored_preference_margin_rad": float(authored_preference_margin_rad),
-            "locked_roll_rad": (
-                None if locked_roll_rad is None else float(locked_roll_rad)
-            ),
-            "attempts": attempts,
-            "claim_boundary": (
-                "rolls_the_grasp_about_its_own_approach_axis_only;selects_the_"
-                "smallest_deviation_clearing_the_margin_floor;does_not_check_"
-                "pad_overlap_closure_direction_or_approach_collision;native_"
-                "arrival_and_contact_gates_remain_the_authority"
-            ),
-        }
-        return result
-
-    def _approach_axis_world(self, quaternion_xyzw) -> list[float] | None:
-        """The gripper's approach direction, from the sealed tool offset."""
-
-        offset = getattr(self, "_grasp_frame_offset_body_m", None)
-        if offset is None:
-            binding_hand = getattr(self, "_pink_hand_pose_at_binding_base", None)
-            binding_grasp = getattr(self, "_pink_grasp_pose_at_binding_base", None)
-            if not binding_hand or not binding_grasp:
-                return None
-            offset = [
-                float(binding_grasp[index]) - float(binding_hand[index])
-                for index in range(3)
-            ]
         norm = math.sqrt(sum(value * value for value in offset))
         if not math.isfinite(norm) or norm <= 1.0e-9:
             return None
-        local = [value / norm for value in offset]
-        return _direction_body_to_world(
-            direction_body=local,
-            body_quaternion_world_xyzw=quaternion_xyzw,
+        local = _direction_world_to_body(
+            direction_world=[value / norm for value in offset],
+            body_quaternion_world_xyzw=binding_hand[3:7],
         )
-
-    @staticmethod
-    def _roll_quaternion_about_axis(
-        quaternion_xyzw, axis_world, roll_rad: float
-    ) -> list[float] | None:
-        if axis_world is None:
-            return list(quaternion_xyzw) if roll_rad == 0.0 else None
-        half = float(roll_rad) / 2.0
-        sin_half, cos_half = math.sin(half), math.cos(half)
-        roll = [
-            axis_world[0] * sin_half,
-            axis_world[1] * sin_half,
-            axis_world[2] * sin_half,
-            cos_half,
-        ]
-        rx, ry, rz, rw = roll
-        qx, qy, qz, qw = (float(value) for value in quaternion_xyzw)
-        return [
-            rw * qx + rx * qw + ry * qz - rz * qy,
-            rw * qy - rx * qz + ry * qw + rz * qx,
-            rw * qz + rx * qy - ry * qx + rz * qw,
-            rw * qw - rx * qx - ry * qy - rz * qz,
-        ]
+        return local
 
     def solve_grasp_target_multistart(
         self,
