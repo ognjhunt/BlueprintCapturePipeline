@@ -251,18 +251,35 @@ def run_actuator_posture_sweep(
                         # and it has been inferred by subtracting two error
                         # magnitudes rather than measured as a vector.
                         "predicted_grasp_frame_position_world_m": predicted,
-                        "model_minus_measured_m": (
+                        "measured_minus_model_m": (
                             [measured[axis] - predicted[axis] for axis in range(3)]
                             if measured is not None and predicted is not None
                             else None
                         ),
-                        "model_minus_measured_distance_m": (
+                        "measured_minus_model_distance_m": (
                             math.dist(measured, predicted)
                             if measured is not None and predicted is not None
                             else None
                         ),
                         "joint_tracking_error_rad": (
                             max(abs(a - b) for a, b in zip(joints, observed))
+                            if observed is not None
+                            else None
+                        ),
+                        # C43 left one binary unsettled for want of this: the
+                        # solver moved its predicted fingertip 1.90 mm across
+                        # four postures and physics moved 0.24 mm, a slope of
+                        # -0.88 that eats every correction the calibration
+                        # makes.  Either the arm does not differentiate the
+                        # commands, or it does and the two frames disagree.
+                        # The worst single joint cannot tell those apart; the
+                        # whole vector can.
+                        "commanded_joint_positions_rad": list(joints),
+                        "measured_joint_positions_rad": (
+                            list(observed) if observed is not None else None
+                        ),
+                        "joint_tracking_residual_rad": (
+                            [a - b for a, b in zip(joints, observed)]
                             if observed is not None
                             else None
                         ),

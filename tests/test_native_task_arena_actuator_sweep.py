@@ -569,11 +569,11 @@ def test_the_sweep_measures_the_model_versus_physics_gap() -> None:
 
     assert report["status"] == "measured"
     for cell in report["cells"]:
-        gap = cell["model_minus_measured_m"]
+        gap = cell["measured_minus_model_m"]
         assert gap is not None
         # The gap is a vector with a direction, not a difference of magnitudes.
         assert gap[0] > 0.0
-        assert cell["model_minus_measured_distance_m"] == pytest.approx(
+        assert cell["measured_minus_model_distance_m"] == pytest.approx(
             abs(gap[0]), abs=1e-9
         )
         assert cell["predicted_grasp_frame_position_world_m"] == [1.0, 0.0, 0.0]
@@ -594,5 +594,35 @@ def test_a_posture_without_a_prediction_still_measures() -> None:
 
     assert report["status"] == "measured"
     for cell in report["cells"]:
-        assert cell["model_minus_measured_m"] is None
+        assert cell["measured_minus_model_m"] is None
         assert cell["measured_distance_to_target_m"] is not None
+
+
+def test_each_cell_records_the_posture_the_arm_actually_reached() -> None:
+    """C43 could not settle its own decisive binary for want of this.
+
+    The solver moved its predicted fingertip 1.90 mm across four postures
+    and physics moved 0.24 mm -- a slope of -0.88 that eats every correction
+    the calibration makes.  Either the arm is not differentiating the
+    commands, or it is and the two frames disagree about where it ended up.
+    The worst single joint cannot tell those apart; the whole vector can.
+    """
+
+    environment = _SweepEnvironment()
+
+    report = _sweep(environment)
+
+    for cell in report["cells"]:
+        commanded = cell["commanded_joint_positions_rad"]
+        reached = cell["measured_joint_positions_rad"]
+        residual = cell["joint_tracking_residual_rad"]
+        assert len(commanded) == 7
+        assert reached is not None and len(reached) == 7
+        # The residual is the vector, and its worst element is the scalar the
+        # sweep already reported -- so the two can never disagree.
+        assert residual == pytest.approx(
+            [a - b for a, b in zip(commanded, reached)]
+        )
+        assert max(abs(v) for v in residual) == pytest.approx(
+            cell["joint_tracking_error_rad"]
+        )
