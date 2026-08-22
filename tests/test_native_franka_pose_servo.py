@@ -25,7 +25,10 @@ from blueprint_pipeline.native_franka_pose_servo import (
 
 
 def test_position_nullspace_posture_bias_preserves_linear_task() -> None:
-    import torch
+    torch = pytest.importorskip(
+        "torch",
+        reason="tensor projection executes inside the Isaac GPU runtime",
+    )
 
     jacobian = torch.zeros((1, 6, 7), dtype=torch.float64)
     jacobian[0, 0, 0] = 1.0
