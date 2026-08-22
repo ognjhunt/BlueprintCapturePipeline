@@ -1289,3 +1289,179 @@ def test_an_authored_orientation_that_holds_is_left_alone() -> None:
     assert receipt["selected_roll_rad"] == 0.0
     rows = derived["scripted_positive_actions"]
     assert all(r["target_quaternion_world_xyzw"] == authored for r in rows)
+
+
+def test_a_contact_phase_commands_the_posture_its_preflight_solved() -> None:
+    """C42 and C43 measured the controller discarding the solved vector.
+
+    The Cartesian controller re-derives a posture from scratch, and it walked
+    0.19 to 0.53 rad away from the solved vector -- whose own forward
+    kinematics sat inside the arrival gate -- onto one whose kinematics were
+    already 20 mm outside it.  Tracking was never the problem: the arm reached
+    what it was told within 0.008 rad.  It was told the wrong thing.
+    """
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_held_solved_contact_vectors,
+    )
+
+    solved = [0.11, 0.22, 0.33, -0.44, 0.55, 0.66, -0.77]
+    rows = {r["phase_id"]: r for r in plan["scripted_positive_actions"]}
+    derived, receipt = _with_held_solved_contact_vectors(
+        control_plan=plan,
+        scripted_pose_joint_targets=[
+            {
+                "phase_id": "contact_open",
+                "target_position_world_m": rows["contact_open"][
+                    "target_position_world_m"
+                ],
+                "target_quaternion_world_xyzw": rows["contact_open"][
+                    "target_quaternion_world_xyzw"
+                ],
+                "joint_positions_rad": list(solved),
+            }
+        ],
+    )
+    assert receipt["status"] == "applied"
+    assert receipt["held_phase_ids"] == ["contact_open"]
+    # The plan is re-digested, so the validator accepts it.
+    assert derived["plan_digest"] != receipt["source_control_plan_digest"]
+
+    validated = validate_task_control_plan(derived, task_spec=task)
+
+    held = [
+        row
+        for row in validated["scripted_positive_actions"]
+        if row.get("hold_solved_arm_joint_positions_rad")
+    ]
+    assert held, "the solved vector must survive validation"
+    assert held[0]["hold_solved_arm_joint_positions_rad"] == pytest.approx(solved)
+    # The pose and its gate are untouched: a solved vector that does not put
+    # the real fingertip on the target still fails honestly.
+    assert held[0]["mode"] == "ik_pose"
+    assert held[0]["arrival_tolerance_m"] > 0.0
+    # Phases that did not carry one are unaffected.
+    assert any(
+        row.get("hold_solved_arm_joint_positions_rad") is None
+        for row in validated["scripted_positive_actions"]
+        if row.get("mode") == "ik_pose"
+    )
+
+
+def test_a_malformed_solved_vector_is_refused_not_ignored() -> None:
+    """Silently dropping it would restore the defect it exists to fix."""
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        ControlEpisodeError,
+        validate_task_control_plan,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    for row in plan["scripted_positive_actions"]:
+        if row.get("phase_id") == "contact_open" and row.get("mode") == "ik_pose":
+            row["hold_solved_arm_joint_positions_rad"] = [0.1, 0.2]  # not seven
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(ControlEpisodeError):
+        validate_task_control_plan(plan, task_spec=task)
+
+
+def test_measured_contact_frontier_starts_from_observed_success() -> None:
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        MEASURED_CONTACT_ENTRY_PHASE_ID,
+        MEASURED_CONTACT_FRONTIER_PHASE_PREFIX,
+        _with_measured_contact_frontier,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    for row in plan["scripted_positive_actions"]:
+        if row["phase_id"] == "contact_open":
+            row["hold_solved_arm_joint_positions_rad"] = [0.9] * 7
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    known_joints = [0.11, -0.22, 0.33, -0.44, 0.55, -0.66, 0.77]
+    probe = {
+        "status": "measured",
+        "cells": [
+            {
+                "status": "measured",
+                "offset_m": [0.0, -0.04, 0.0],
+                "joint_positions_rad": known_joints,
+                "measured_distance_to_requested_m": 0.0042,
+                "contact_steps": 0,
+            },
+            {
+                "status": "measured",
+                "offset_m": [0.0, -0.02, 0.0],
+                "joint_positions_rad": [0.2] * 7,
+                "measured_distance_to_requested_m": 0.008,
+                "contact_steps": 0,
+            },
+        ],
+    }
+
+    derived, receipt = _with_measured_contact_frontier(
+        control_plan=plan,
+        reachability_probe=probe,
+    )
+    checked = validate_task_control_plan(derived, task_spec=task)
+    rows = checked["scripted_positive_actions"]
+    entry = next(row for row in rows if row["phase_id"] == MEASURED_CONTACT_ENTRY_PHASE_ID)
+    contact = next(row for row in rows if row["phase_id"] == "contact_open")
+    frontier = [
+        row
+        for row in rows
+        if row["phase_id"].startswith(MEASURED_CONTACT_FRONTIER_PHASE_PREFIX)
+    ]
+
+    assert receipt["status"] == "applied"
+    assert receipt["probe_measured_error_m"] == pytest.approx(0.0042)
+    assert entry["hold_solved_arm_joint_positions_rad"] == pytest.approx(
+        known_joints
+    )
+    assert entry["target_position_world_m"] == pytest.approx([0.5, 0.06, 0.4])
+    assert [row["target_position_world_m"][1] for row in frontier] == pytest.approx(
+        [0.07, 0.08, 0.09]
+    )
+    assert contact["hold_solved_arm_joint_positions_rad"] is None
+    assert derived["plan_digest"] == canonical_digest(
+        derived, digest_field="plan_digest"
+    )
+
+
+def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_measured_contact_frontier,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    derived, receipt = _with_measured_contact_frontier(
+        control_plan=plan,
+        reachability_probe={
+            "cells": [
+                {
+                    "status": "measured",
+                    "offset_m": [0.0, -0.02, 0.0],
+                    "joint_positions_rad": [0.2] * 7,
+                    "measured_distance_to_requested_m": 0.008,
+                    "contact_steps": 0,
+                }
+            ]
+        },
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "no_noncontact_probe_cell_inside_arrival_gate"
+    assert derived == plan

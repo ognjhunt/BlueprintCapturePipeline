@@ -256,6 +256,25 @@ class _ControlEnvironment:
                 self.can = list(TARGET)
 
 
+class _SolvedJointDispatchEnvironment(_ControlEnvironment):
+    def __init__(self, *, expected_target: list[float]) -> None:
+        super().__init__(positive_moves_object=False)
+        self.expected_target = list(expected_target)
+        self.bounded_joint_calls: list[dict] = []
+
+    def bounded_joint_action(self, **kwargs):
+        self.bounded_joint_calls.append(dict(kwargs))
+        self.pending_target = list(self.expected_target)
+        self.pending_gripper = float(kwargs["gripper_command"])
+        return [
+            *[float(value) for value in kwargs["target_joint_positions_rad"]],
+            self.pending_gripper,
+        ]
+
+    def scripted_action_for_pose(self, **kwargs):
+        raise AssertionError("Cartesian dispatch must not replace a solved vector")
+
+
 class _TransientArrivalEnvironment(_ControlEnvironment):
     def step(self, isaac_action):
         super().step(isaac_action)
@@ -509,6 +528,71 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         assert receipt["action_trace"][0]["arm_dynamics_before"][
             "joint_effort_limit_nm"
         ] == [87.0] * 4 + [12.0] * 3
+
+
+def _single_phase_plan_with_solved_joint_hold() -> tuple[dict, list[float]]:
+    plan = materialize_control_plan(_instance())
+    phase = dict(plan["scripted_positive_phases"][0])
+    solved_joints = [0.41, -0.32, 0.23, -1.94, 0.15, 1.72, -0.61]
+    phase["hold_solved_arm_joint_positions_rad"] = list(solved_joints)
+    phase["max_joint_setpoint_lead_rad"] = 0.2
+    plan["scripted_positive_phases"] = [phase]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan, solved_joints
+
+
+def test_solved_joint_hold_reaches_bounded_dispatch_without_cartesian_resolve(
+    tmp_path: Path,
+) -> None:
+    plan, solved_joints = _single_phase_plan_with_solved_joint_hold()
+    phase = plan["scripted_positive_phases"][0]
+    environment = _SolvedJointDispatchEnvironment(
+        expected_target=phase["target_position_world_m"]
+    )
+
+    receipt = run_control_episode(
+        environment=environment,
+        plan=plan,
+        control_id=SCRIPTED_POSITIVE,
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        media_output_dir=tmp_path,
+        episode_id="solved-joint-dispatch",
+    )
+
+    assert receipt["phase_arrivals"][0]["target_reached"] is True
+    assert environment.bounded_joint_calls
+    assert all(
+        call["target_joint_positions_rad"] == solved_joints
+        for call in environment.bounded_joint_calls
+    )
+    assert all(
+        row["isaac_action"][:7] == solved_joints
+        for row in receipt["action_trace"]
+    )
+
+
+def test_solved_joint_hold_refuses_missing_bounded_dispatch_before_motion(
+    tmp_path: Path,
+) -> None:
+    plan, _solved_joints = _single_phase_plan_with_solved_joint_hold()
+    environment = _ControlEnvironment()
+
+    with pytest.raises(ControlEpisodeError) as excinfo:
+        run_control_episode(
+            environment=environment,
+            plan=plan,
+            control_id=SCRIPTED_POSITIVE,
+            gripper_open_command=1.0,
+            gripper_closed_command=0.0,
+            media_output_dir=tmp_path,
+            episode_id="missing-solved-joint-dispatch",
+        )
+
+    assert excinfo.value.errors == (
+        "control_episode_solved_joint_dispatch_unavailable:pregrasp",
+    )
+    assert environment.actions == []
 
 
 def test_failed_scripted_positive_blocks_cell_without_becoming_policy_failure(

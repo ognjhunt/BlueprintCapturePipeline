@@ -251,6 +251,24 @@ class _CartesianEnvironment(_Environment):
         return [*target_position_world_m, 0.0, 0.0, 0.0, 0.0, gripper_command]
 
 
+class _SolvedJointCartesianEnvironment(_CartesianEnvironment):
+    def __init__(self, task_kind: str):
+        super().__init__(task_kind)
+        self.bounded_calls = []
+        self.cartesian_targets = []
+
+    def bounded_joint_action(self, **kwargs):
+        self.bounded_calls.append(dict(kwargs))
+        return [
+            *[float(value) for value in kwargs["target_joint_positions_rad"]],
+            float(kwargs["gripper_command"]),
+        ]
+
+    def scripted_action_for_pose(self, **kwargs):
+        self.cartesian_targets.append(list(kwargs["target_position_world_m"]))
+        return super().scripted_action_for_pose(**kwargs)
+
+
 @pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
 def test_same_control_contract_passes_original_and_second_scene_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_kind: str
@@ -400,6 +418,103 @@ def test_cartesian_articulated_phases_use_measured_arrival_and_native_action_sea
         "retreat",
     ]
     assert all(row["target_reached"] for row in positive["phase_arrivals"])
+
+
+def test_task_neutral_control_dispatches_solved_vector_through_bounded_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    plan = _cartesian_articulated_plan(task)
+    solved = [0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    plan["scripted_positive_actions"][0][
+        "hold_solved_arm_joint_positions_rad"
+    ] = solved
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    environment = _SolvedJointCartesianEnvironment("articulated_open_close")
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    assert environment.bounded_calls
+    assert all(
+        call["target_joint_positions_rad"] == solved
+        for call in environment.bounded_calls
+    )
+    assert [0.9, 0.0, 0.0] not in environment.cartesian_targets
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    open_actions = [
+        row for row in positive["action_trace"] if row["phase_id"] == "open"
+    ]
+    assert all(row["isaac_action"][:7] == solved for row in open_actions)
+
+
+def test_task_neutral_control_refuses_missing_solved_joint_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    plan = _cartesian_articulated_plan(task)
+    plan["scripted_positive_actions"][0][
+        "hold_solved_arm_joint_positions_rad"
+    ] = [0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    with pytest.raises(ControlEpisodeError) as excinfo:
+        run_task_neutral_controls(
+            environment=_CartesianEnvironment("articulated_open_close"),
+            task_spec=task,
+            control_plan=plan,
+            gripper_open_command=0.0,
+            gripper_closed_command=1.0,
+            output_dir=tmp_path,
+        )
+
+    assert excinfo.value.errors == (
+        "task_control_solved_joint_dispatch_unavailable:open",
+    )
 
 
 def test_gripper_transition_holds_arm_targets_and_runs_full_dwell(
