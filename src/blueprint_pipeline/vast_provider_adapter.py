@@ -4003,8 +4003,34 @@ def _probe_shell_script(
                 "dependency_rc=0; "
                 'if [ -f "$dependency_receipt" ] && [ ! -f "$dependency_packet" ]; then '
                 'DEPENDENCY_URL="${BLUEPRINT_RUNTIME_DEPENDENCY_URI:-}"; '
-                'if [ -z "$DEPENDENCY_URL" ]; then dependency_rc=21; '
-                'else blueprint_download_url "$DEPENDENCY_URL" "$dependency_packet"; dependency_rc=$?; fi; '
+                "dependency_sha=\"$($RUNTIME_PY -c 'import json,re,sys; value=str(json.load(open(sys.argv[1], encoding=\"utf-8\")).get(\"packet_sha256\") or \"\"); print(value if re.fullmatch(r\"sha256:[0-9a-f]{64}\", value) else \"\")' \"$dependency_receipt\")\"; "
+                "dependency_size=\"$($RUNTIME_PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding=\"utf-8\")).get(\"packet_size_bytes\"); print(value if isinstance(value, int) and value > 0 else \"\")' \"$dependency_receipt\")\"; "
+                'if [ -z "$dependency_sha" ] || [ -z "$dependency_size" ]; then dependency_rc=22; '
+                'elif [ -z "$DEPENDENCY_URL" ]; then dependency_rc=21; '
+                "else "
+                'dependency_hex="${dependency_sha#sha256:}"; '
+                'dependency_cache_dir="$WORK_DIR/native_task_runtime_dependency_cache"; '
+                'dependency_cache_packet="$dependency_cache_dir/$dependency_hex.zip"; '
+                'dependency_cache_tmp="$dependency_cache_packet.partial"; '
+                'mkdir -p "$dependency_cache_dir"; '
+                'if [ -f "$dependency_cache_packet" ]; then '
+                'cached_sha="sha256:$(sha256sum "$dependency_cache_packet" | cut -d" " -f1)"; '
+                'cached_size="$(wc -c < "$dependency_cache_packet" | tr -d " ")"; '
+                'if [ "$cached_sha" = "$dependency_sha" ] && [ "$cached_size" = "$dependency_size" ]; then '
+                'ln -s "$dependency_cache_packet" "$dependency_packet"; dependency_rc=$?; '
+                'if [ $dependency_rc -eq 0 ]; then echo BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT:$dependency_sha; fi; '
+                'else rm -f "$dependency_cache_packet" "$dependency_cache_tmp"; fi; '
+                "fi; "
+                'if [ ! -f "$dependency_packet" ]; then '
+                'blueprint_download_url "$DEPENDENCY_URL" "$dependency_cache_tmp"; dependency_rc=$?; '
+                'if [ $dependency_rc -eq 0 ]; then '
+                'downloaded_sha="sha256:$(sha256sum "$dependency_cache_tmp" | cut -d" " -f1)"; '
+                'downloaded_size="$(wc -c < "$dependency_cache_tmp" | tr -d " ")"; '
+                'if [ "$downloaded_sha" != "$dependency_sha" ] || [ "$downloaded_size" != "$dependency_size" ]; then dependency_rc=23; rm -f "$dependency_cache_tmp"; '
+                'else mv "$dependency_cache_tmp" "$dependency_cache_packet"; '
+                'ln -s "$dependency_cache_packet" "$dependency_packet"; dependency_rc=$?; '
+                'if [ $dependency_rc -eq 0 ]; then echo BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:$dependency_sha; fi; fi; fi; '
+                "fi; fi; "
                 "fi; "
                 'if [ $dependency_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:runtime_dependency_download_failed:$dependency_rc; '
                 "else echo BLUEPRINT_VAST_RUNTIME_DEPENDENCY_READY; "

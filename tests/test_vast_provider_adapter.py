@@ -5224,6 +5224,12 @@ def test_vast_adapter_small_provider_helper_edges(
     assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in arena_script
     assert "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_READY" in arena_script
     assert "runtime_dependency_download_failed" in arena_script
+    assert "native_task_runtime_dependency_cache" in arena_script
+    assert "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT" in arena_script
+    assert "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED" in arena_script
+    assert 're.fullmatch(r"sha256:[0-9a-f]{64}", value)' in arena_script
+    assert 'downloaded_sha" != "$dependency_sha' in arena_script
+    assert 'downloaded_size" != "$dependency_size' in arena_script
     layered_env = vpa._probe_env(
         job_dir=tmp_path / "layered-arena",
         enable_isaac_smoke=True,
