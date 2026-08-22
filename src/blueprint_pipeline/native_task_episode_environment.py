@@ -15,7 +15,8 @@ from typing import Any
 from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
 from .native_franka_pose_servo import (
     DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
-    PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
+    PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
+    PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
 )
 
 
@@ -29,6 +30,14 @@ SCHEMA_VERSION = "native_task_episode_environment.v2"
 # free-space poses can still reuse the globally selected branch that makes
 # their arrival deterministic.
 CARTESIAN_CONTACT_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+# NVIDIA's shipped manipulation guidance uses differential IK for precision
+# approach and contact, while reserving joint-space interpolation for long
+# free-space transport.  C21 proved why the boundary matters: replaying the
+# global approach posture drove panda_joint5 onto its lower limit before the
+# contact controller got a chance to avoid it.
+PHYSX_DLS_PRECISION_PHASE_IDS = frozenset(
+    {"approach", *CARTESIAN_CONTACT_PHASE_IDS}
+)
 
 
 class NativeTaskEpisodeEnvironmentError(ValueError):
@@ -314,13 +323,10 @@ def build_native_task_episode_environment(
         }
         if joint_target is not None and joint_target[
             "phase_id"
-        ] in CARTESIAN_CONTACT_PHASE_IDS:
+        ] in PHYSX_DLS_PRECISION_PHASE_IDS:
             action, _diagnostic = servo.action_for_grasp_target_physx_dls(
                 target_position_world_m=kwargs["target_position_world_m"],
                 target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
-                preferred_posture_joint_positions_rad=joint_target[
-                    "joint_positions_rad"
-                ],
                 **common,
             )
         elif joint_target is not None:
@@ -371,8 +377,8 @@ def build_native_task_episode_environment(
             else "native_rigid_body_readback"
         ),
         "scripted_pose_source": (
-            "global_ik_free_space_with_live_physx_jacobian_contact_servo_"
-            "and_position_nullspace_bound_global_posture"
+            "global_ik_free_space_with_live_physx_jacobian_precision_servo_"
+            "and_position_nullspace_joint_limit_avoidance"
             if any(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
@@ -389,21 +395,30 @@ def build_native_task_episode_environment(
         "cartesian_contact_physx_dls_phase_ids": sorted(
             row["phase_id"]
             for row in joint_target_rows
-            if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+            if row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
         ),
-        "cartesian_contact_posture_source": (
-            "construction_global_ik_selected_joint_target_projected_through_"
-            "live_physx_position_jacobian_nullspace"
+        "cartesian_contact_posture_source": None,
+        "cartesian_precision_joint_limit_avoidance_source": (
+            "isaaclab_develop_differential_ik_position_nullspace_backport"
             if any(
-                row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
                 for row in joint_target_rows
             )
             else None
         ),
-        "cartesian_contact_posture_nullspace_gain": (
-            PHYSX_DLS_POSTURE_NULLSPACE_GAIN
+        "cartesian_contact_posture_nullspace_gain": None,
+        "cartesian_precision_joint_limit_avoidance_gain": (
+            PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN
             if any(
-                row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
+                for row in joint_target_rows
+            )
+            else None
+        ),
+        "cartesian_precision_joint_limit_avoidance_margin_rad": (
+            PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD
+            if any(
+                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
                 for row in joint_target_rows
             )
             else None

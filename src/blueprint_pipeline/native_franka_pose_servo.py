@@ -123,6 +123,8 @@ MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
 # the seventh DOF to escape the saturated local branch.  The gain is still
 # independently bounded by the existing per-tick slew and measured-state lead.
 PHYSX_DLS_POSTURE_NULLSPACE_GAIN = 0.20
+PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN = 0.20
+PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD = 0.30
 # Position and posture retain Isaac Sim 6.0.1's shipped Franka PINK example.
 # Orientation uses the pinned IsaacLab manipulation setting rather than the
 # demo's 0.05: r37 proved that a 100:1 position/orientation ratio reached every
@@ -392,6 +394,76 @@ def position_nullspace_posture_bias(
     )
     return torch.bmm(
         nullspace_projection, posture_delta.unsqueeze(-1)
+    ).squeeze(-1)
+
+
+def position_nullspace_joint_limit_avoidance(
+    *,
+    joint_positions: Any,
+    lower_joint_limits: Any,
+    upper_joint_limits: Any,
+    task_jacobian: Any,
+    gain: float,
+    margin: float,
+) -> Any:
+    """Backport Isaac Lab's current position-safe joint-limit avoidance.
+
+    The Arena image pins an Isaac Lab revision from before this controller
+    feature existed.  Keep the implementation byte-for-byte equivalent in
+    shape to current Isaac Lab: activate only near a limit, seek the joint
+    range center, and project through the linear task nullspace so the
+    fingertip position remains authoritative.
+    """
+
+    import torch
+
+    try:
+        resolved_gain = float(gain)
+        resolved_margin = float(margin)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_joint_limit_nullspace_invalid"]
+        ) from exc
+    if (
+        not math.isfinite(resolved_gain)
+        or resolved_gain <= 0.0
+        or not math.isfinite(resolved_margin)
+        or resolved_margin <= 0.0
+        or joint_positions.ndim != 2
+        or lower_joint_limits.shape != joint_positions.shape
+        or upper_joint_limits.shape != joint_positions.shape
+        or task_jacobian.ndim != 3
+        or task_jacobian.shape[0] != joint_positions.shape[0]
+        or task_jacobian.shape[1] < 3
+        or task_jacobian.shape[2] != joint_positions.shape[1]
+    ):
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_joint_limit_nullspace_invalid"]
+        )
+    midpoint = 0.5 * (lower_joint_limits + upper_joint_limits)
+    nearest_limit_distance = torch.minimum(
+        joint_positions - lower_joint_limits,
+        upper_joint_limits - joint_positions,
+    )
+    activation = 1.0 - (nearest_limit_distance / resolved_margin).clamp(
+        0.0, 1.0
+    )
+    center_delta = (
+        -resolved_gain * activation * (joint_positions - midpoint)
+    )
+    position_jacobian = task_jacobian[:, :3, :]
+    position_pseudoinverse = torch.linalg.pinv(position_jacobian)
+    joint_count = task_jacobian.shape[2]
+    identity = torch.eye(
+        joint_count,
+        device=task_jacobian.device,
+        dtype=task_jacobian.dtype,
+    ).expand(task_jacobian.shape[0], -1, -1)
+    nullspace_projection = identity - torch.bmm(
+        position_pseudoinverse, position_jacobian
+    )
+    return torch.bmm(
+        nullspace_projection, center_delta.unsqueeze(-1)
     ).squeeze(-1)
 
 
@@ -1721,6 +1793,25 @@ class NativeFrankaDifferentialIkServo:
             jacobian_root,
             current,
         )
+        lower_limits = self._torch.tensor(
+            [self._joint_position_lower],
+            device=current.device,
+            dtype=current.dtype,
+        )
+        upper_limits = self._torch.tensor(
+            [self._joint_position_upper],
+            device=current.device,
+            dtype=current.dtype,
+        )
+        joint_limit_bias = position_nullspace_joint_limit_avoidance(
+            joint_positions=current,
+            lower_joint_limits=lower_limits,
+            upper_joint_limits=upper_limits,
+            task_jacobian=jacobian_root,
+            gain=PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
+            margin=PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
+        )
+        desired = desired + joint_limit_bias
         posture_bias = self._torch.zeros_like(current)
         if preferred_posture_joint_positions_rad is not None:
             try:
@@ -1818,6 +1909,15 @@ class NativeFrankaDifferentialIkServo:
                 float(value) for value in posture_bias[0]
             ],
             "position_nullspace_posture_gain": PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
+            "position_nullspace_joint_limit_avoidance_rad": [
+                float(value) for value in joint_limit_bias[0]
+            ],
+            "position_nullspace_joint_limit_avoidance_gain": (
+                PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN
+            ),
+            "position_nullspace_joint_limit_avoidance_margin_rad": (
+                PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD
+            ),
             "desired_joint_positions_clipped_to_limits_rad": (
                 desired_within_joint_limits
             ),

@@ -8,6 +8,8 @@ import pytest
 from blueprint_pipeline.native_franka_pose_servo import (
     NativeFrankaDifferentialIkServo,
     NativeFrankaPoseServoError,
+    PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
+    PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
     PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
     PINK_CONFIGURATION_LIMIT_MARGIN_RAD,
     PINK_INTEGRATION_DT_SECONDS,
@@ -20,6 +22,7 @@ from blueprint_pipeline.native_franka_pose_servo import (
     native_xyzw_to_contract_xyzw,
     pink_configuration_joint_positions,
     position_nullspace_posture_bias,
+    position_nullspace_joint_limit_avoidance,
     resolve_native_franka_pose_binding,
 )
 
@@ -51,6 +54,38 @@ def test_position_nullspace_posture_bias_preserves_linear_task() -> None:
     )
     assert bias[0, :3].tolist() == pytest.approx([0.0, 0.0, 0.0])
     assert bias[0, 3:].tolist() == pytest.approx([0.08, -0.06, 0.04, -0.02])
+
+
+def test_position_nullspace_joint_limit_avoidance_preserves_linear_task() -> None:
+    torch = pytest.importorskip(
+        "torch",
+        reason="tensor projection executes inside the Isaac GPU runtime",
+    )
+    jacobian = torch.zeros((1, 6, 7), dtype=torch.float64)
+    jacobian[0, 0, 0] = 1.0
+    jacobian[0, 1, 1] = 1.0
+    jacobian[0, 2, 2] = 1.0
+    current = torch.tensor(
+        [[0.0, 0.0, 0.0, 0.0, -0.99, 0.0, 0.99]], dtype=torch.float64
+    )
+    lower = torch.full((1, 7), -1.0, dtype=torch.float64)
+    upper = torch.full((1, 7), 1.0, dtype=torch.float64)
+
+    bias = position_nullspace_joint_limit_avoidance(
+        joint_positions=current,
+        lower_joint_limits=lower,
+        upper_joint_limits=upper,
+        task_jacobian=jacobian,
+        gain=PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
+        margin=PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
+    )
+
+    assert torch.matmul(jacobian[:, :3, :], bias.unsqueeze(-1)).squeeze(-1) == (
+        pytest.approx(torch.zeros((1, 3), dtype=torch.float64))
+    )
+    assert bias[0, :4].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    assert bias[0, 4] > 0.0
+    assert bias[0, 6] < 0.0
 
 
 def test_grasp_tcp_interpolates_between_measured_gripper_endpoints() -> None:
