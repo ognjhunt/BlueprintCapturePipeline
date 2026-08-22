@@ -76,6 +76,41 @@ def pose_world_to_base(
     return _rotate(inverse, delta), list(_multiply(inverse, quaternion))
 
 
+def pose_base_to_world(
+    *,
+    position_base: Sequence[float],
+    quaternion_base_xyzw: Sequence[float],
+    base_position_world: Sequence[float],
+    base_quaternion_world_xyzw: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Express a robot-root pose back in world, the inverse of the above.
+
+    The solver reasons in the robot root frame while every measurement the
+    gates read is world.  Comparing what the model predicted against what
+    physics did needs both in one frame, and inferring the transform at the
+    reading site is how frames drift apart.
+    """
+
+    try:
+        position = [float(value) for value in position_base]
+        base_position = [float(value) for value in base_position_world]
+    except (TypeError, ValueError) as exc:
+        raise NativePoseTransformError("native_pose_position_invalid") from exc
+    if (
+        len(position) != 3
+        or len(base_position) != 3
+        or not all(math.isfinite(value) for value in (*position, *base_position))
+    ):
+        raise NativePoseTransformError("native_pose_position_invalid")
+    quaternion = _quaternion(quaternion_base_xyzw)
+    base = _quaternion(base_quaternion_world_xyzw)
+    rotated = _rotate(base, position)
+    return (
+        [rotated[index] + base_position[index] for index in range(3)],
+        list(_multiply(base, quaternion)),
+    )
+
+
 def world_to_base_rotation_row_major_xyzw(
     base_quaternion_world_xyzw: Sequence[float],
 ) -> list[float]:
@@ -92,6 +127,7 @@ def world_to_base_rotation_row_major_xyzw(
 
 __all__ = [
     "NativePoseTransformError",
+    "pose_base_to_world",
     "pose_world_to_base",
     "world_to_base_rotation_row_major_xyzw",
 ]
