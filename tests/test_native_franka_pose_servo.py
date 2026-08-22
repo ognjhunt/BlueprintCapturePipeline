@@ -24,7 +24,46 @@ from blueprint_pipeline.native_franka_pose_servo import (
     pose_nullspace_posture_bias,
     pose_nullspace_joint_limit_avoidance,
     resolve_native_franka_pose_binding,
+    shift_physx_com_jacobian_to_link_origin,
 )
+
+
+def test_physx_com_jacobian_is_shifted_to_the_controlled_link_origin() -> None:
+    torch = pytest.importorskip(
+        "torch",
+        reason="the pinned Isaac runtime consumes PhysX tensors",
+    )
+    # A unit angular velocity about +Z at a COM 0.2 m along +X has
+    # omega x c = +0.2 m/s along Y. The actor origin therefore moves at the
+    # COM velocity minus that term.
+    jacobian_com = torch.zeros((1, 6, 1), dtype=torch.float64)
+    jacobian_com[0, :3, 0] = torch.tensor([0.3, 0.4, 0.5])
+    jacobian_com[0, 5, 0] = 1.0
+
+    shifted = shift_physx_com_jacobian_to_link_origin(
+        jacobian_world=jacobian_com,
+        com_offset_from_link_world_m=torch.tensor(
+            [[0.2, 0.0, 0.0]], dtype=torch.float64
+        ),
+    )
+
+    assert shifted[0, :3, 0] == pytest.approx([0.3, 0.2, 0.5])
+    assert shifted[0, 3:, 0] == pytest.approx([0.0, 0.0, 1.0])
+    # The raw engine view is evidence and must not be mutated in place.
+    assert jacobian_com[0, :3, 0] == pytest.approx([0.3, 0.4, 0.5])
+
+
+def test_physx_com_jacobian_shift_refuses_mismatched_shapes() -> None:
+    torch = pytest.importorskip("torch")
+
+    with pytest.raises(
+        NativeFrankaPoseServoError,
+        match="native_franka_pose_servo_jacobian_reference_invalid",
+    ):
+        shift_physx_com_jacobian_to_link_origin(
+            jacobian_world=torch.zeros((1, 6, 7)),
+            com_offset_from_link_world_m=torch.zeros((2, 3)),
+        )
 
 
 def test_pose_nullspace_posture_bias_preserves_full_pose_task() -> None:
@@ -533,7 +572,9 @@ def test_pose_servo_uses_pink_for_free_space_and_physx_dls_for_contact() -> None
     assert "self._pink_time_seconds += PINK_INTEGRATION_DT_SECONDS" in source
     assert "DifferentialIKController" in source
     assert "self._physx_dls_controller.compute" in source
-    assert "robot.root_view.get_jacobians:physx_articulation" in source
+    assert "robot.root_view.get_jacobians:physx_com_referenced" in source
+    assert "self._robot.data.body_com_pose_w" in source
+    assert "shift_physx_com_jacobian_to_link_origin(" in source
     assert "pink_hand_pose_at_binding" in source
     assert "current_grasp_frame_pose_world" in source
     reset_source = inspect.getsource(

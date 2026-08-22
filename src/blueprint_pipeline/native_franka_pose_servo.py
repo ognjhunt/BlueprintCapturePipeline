@@ -1,10 +1,11 @@
 """Native joint-limited PINK pose servo shared by construction and controls.
 
 This is the task-neutral extraction of the controller first qualified by the
-ADP-009D rigid rehearsal.  It controls the measured midpoint between the two
-finger bodies, rotates PhysX's world-frame Jacobian into the robot root frame,
-and bounds both command slew and lead before emitting the same absolute 8-D
-Arena action consumed by learned policies.
+ADP-009D rigid rehearsal.  It converts the measured midpoint between the two
+finger bodies into a rigid controlled-body target, shifts PhysX's raw
+center-of-mass Jacobian to that controlled body's link origin, rotates it into
+the robot root frame, and bounds both command slew and lead before emitting the
+same absolute 8-D Arena action consumed by learned policies.
 
 Isaac imports occur only when the class is instantiated, so binding and helper
 contracts remain hermetically testable on a CPU host.
@@ -344,6 +345,55 @@ def native_xyzw_to_contract_xyzw(value: Sequence[float]) -> list[float]:
             ["native_franka_pose_servo_quaternion_invalid"]
         )
     return [item / norm for item in quaternion]
+
+
+def shift_physx_com_jacobian_to_link_origin(
+    *, jacobian_world: Any, com_offset_from_link_world_m: Any
+) -> Any:
+    """Reference PhysX's raw task Jacobian at the link actor origin.
+
+    ``ArticulationView.get_jacobians()`` maps joint velocity to spatial
+    velocity at each link's center of mass, while ``body_pose_w`` is the link
+    actor-origin pose. Differential IK requires its pose error and Jacobian to
+    describe the same point. For ``c = p_com - p_link`` the rigid-body shift is
+    ``v_link = v_com - omega x c``; angular velocity is unchanged.
+
+    This is the tensor equivalent of Isaac Lab's later
+    ``shift_jacobian_com_to_origin`` kernel, retained locally because the Arena
+    runtime is pinned to an earlier Isaac Lab revision.
+    """
+
+    import torch
+
+    if (
+        getattr(jacobian_world, "ndim", None) != 3
+        or jacobian_world.shape[1] != 6
+        or getattr(com_offset_from_link_world_m, "ndim", None) != 2
+        or com_offset_from_link_world_m.shape[0] != jacobian_world.shape[0]
+        or com_offset_from_link_world_m.shape[1] != 3
+    ):
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_jacobian_reference_invalid"]
+        )
+    omega = jacobian_world[:, 3:, :]
+    offset = com_offset_from_link_world_m.to(
+        device=jacobian_world.device,
+        dtype=jacobian_world.dtype,
+    )
+    omega_cross_offset = torch.stack(
+        (
+            omega[:, 1, :] * offset[:, 2, None]
+            - omega[:, 2, :] * offset[:, 1, None],
+            omega[:, 2, :] * offset[:, 0, None]
+            - omega[:, 0, :] * offset[:, 2, None],
+            omega[:, 0, :] * offset[:, 1, None]
+            - omega[:, 1, :] * offset[:, 0, None],
+        ),
+        dim=1,
+    )
+    shifted = jacobian_world.clone()
+    shifted[:, :3, :] = shifted[:, :3, :] - omega_cross_offset
+    return shifted
 
 
 def pose_nullspace_posture_bias(
@@ -1885,12 +1935,30 @@ class NativeFrankaDifferentialIkServo:
         return [float(value) for value in values]
 
     def _jacobians_world_and_root(self) -> tuple[Any, Any]:
-        world = self._to_torch(self._robot.root_view.get_jacobians())[
+        # PhysX returns the linear rows at the link center of mass, while
+        # ``body_pose_w`` below and DifferentialIKController's pose error use
+        # the link actor origin. Isaac Lab fixed this upstream after our pinned
+        # revision by adding ``body_link_jacobian_w``. Apply that same
+        # rigid-body reference-point shift before changing coordinates.
+        world_com = self._to_torch(self._robot.root_view.get_jacobians())[
             :,
             self.binding["jacobian_body_index"],
             :,
             self.binding["arm_joint_ids"],
         ]
+        body_index = self.binding["controlled_body_index"]
+        link_position_world = self._to_torch(self._robot.data.body_pose_w)[
+            :, body_index, :3
+        ]
+        com_position_world = self._to_torch(self._robot.data.body_com_pose_w)[
+            :, body_index, :3
+        ]
+        world = shift_physx_com_jacobian_to_link_origin(
+            jacobian_world=world_com,
+            com_offset_from_link_world_m=(
+                com_position_world - link_position_world
+            ),
+        )
         root = world.clone()
         root[:, :3, :] = self._torch.bmm(self._world_to_root, world[:, :3, :])
         root[:, 3:, :] = self._torch.bmm(self._world_to_root, world[:, 3:, :])
@@ -2128,7 +2196,11 @@ class NativeFrankaDifferentialIkServo:
             "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,
             "controller_target_quaternion_root_xyzw": quaternion_root_native,
             "ik_backend": "isaaclab.controllers.DifferentialIKController:physx_dls",
-            "jacobian_authority": "robot.root_view.get_jacobians:physx_articulation",
+            "jacobian_authority": (
+                "robot.root_view.get_jacobians:physx_com_referenced"
+                "+measured_com_to_link_origin_shift"
+            ),
+            "jacobian_reference_point": "controlled_body_link_origin",
             "jacobian_world_frobenius_norm": float(
                 self._torch.linalg.vector_norm(jacobian_world[0])
             ),
