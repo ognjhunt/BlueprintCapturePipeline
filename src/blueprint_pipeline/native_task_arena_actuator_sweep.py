@@ -110,8 +110,23 @@ def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[d
     for phase in phases:
         if not isinstance(phase, Mapping) or str(phase.get("phase_id") or "") != phase_id:
             continue
+        # The multistart seals every seed it tried under `attempts`, so the
+        # alternatives were always in the receipt -- C36 measured one posture
+        # because this looked for a key the solver does not emit and fell back
+        # to the selected branch alone.  Prefer the full attempt list, keep
+        # only the seeds that actually solved, and fall back in that order.
         rows = phase.get("solutions")
         if not isinstance(rows, list):
+            attempts = phase.get("attempts")
+            if isinstance(attempts, list):
+                rows = [
+                    row
+                    for row in attempts
+                    if isinstance(row, Mapping) and row.get("solved") is not False
+                ]
+            else:
+                rows = []
+        if not rows:
             rows = [phase.get("selected")]
         for index, row in enumerate(rows):
             if not isinstance(row, Mapping):

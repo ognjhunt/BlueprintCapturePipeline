@@ -372,3 +372,48 @@ def test_calibration_reports_a_runtime_it_cannot_drive() -> None:
 
     assert report["status"] == "unavailable"
     assert report["iterations"] == []
+
+
+def test_the_sweep_reads_every_seed_the_multistart_already_sealed() -> None:
+    """C36 measured one posture because the alternatives were under `attempts`.
+
+    The solver seals each seed it tried -- solved and unsolved -- so the
+    branches the selector passed over were in the receipt the whole time.
+    Reading the wrong key silently narrowed a sweep to a single cell.
+    """
+
+    global_ik = {
+        "phases": [
+            {
+                "phase_id": "contact_open",
+                "selected": {"joint_positions_rad": [0.1] * 7, "seed_index": 1},
+                "attempts": [
+                    {
+                        "solved": True,
+                        "seed_index": 1,
+                        "joint_positions_rad": [0.1] * 7,
+                        "minimum_joint_limit_margin_rad": 0.0020,
+                    },
+                    {
+                        "solved": True,
+                        "seed_index": 7,
+                        "joint_positions_rad": [0.2] * 7,
+                        "minimum_joint_limit_margin_rad": 0.0801,
+                    },
+                    # A seed that failed carries a seed pose, not a solution.
+                    {"solved": False, "seed_index": 9, "joint_positions_rad": [0.9] * 7},
+                ],
+            }
+        ]
+    }
+
+    postures = candidate_postures(global_ik, phase_id="contact_open")
+
+    assert [row["seed_index"] for row in postures] == [1, 7]
+    assert postures[1]["minimum_joint_limit_margin_rad"] == pytest.approx(0.0801)
+    # And a receipt carrying neither key still yields the selected branch.
+    fallback = candidate_postures(
+        {"phases": [{"phase_id": "contact_open", "selected": {"joint_positions_rad": [0.4] * 7}}]},
+        phase_id="contact_open",
+    )
+    assert len(fallback) == 1
