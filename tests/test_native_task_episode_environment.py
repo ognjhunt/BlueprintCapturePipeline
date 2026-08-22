@@ -313,11 +313,11 @@ def test_factory_uses_cartesian_servo_before_precision_contact(
     assert "target_joint_positions_rad" not in servo.calls[-1]
     assert receipt["scripted_pose_source"] == (
         "global_ik_free_space_with_live_physx_jacobian_precision_servo_"
-        "and_position_nullspace_joint_limit_avoidance"
+        "and_full_pose_nullspace_joint_limit_avoidance"
     )
     assert receipt["cartesian_contact_posture_source"] is None
     assert receipt["cartesian_precision_joint_limit_avoidance_source"] == (
-        "isaaclab_develop_differential_ik_position_nullspace_backport"
+        "isaaclab_pink_combined_task_jacobian_nullspace_projection"
     )
     assert receipt["cartesian_contact_posture_nullspace_gain"] is None
     assert receipt["cartesian_precision_joint_limit_avoidance_gain"] == pytest.approx(0.20)

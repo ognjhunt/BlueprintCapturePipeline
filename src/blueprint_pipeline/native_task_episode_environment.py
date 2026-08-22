@@ -378,7 +378,7 @@ def build_native_task_episode_environment(
         ),
         "scripted_pose_source": (
             "global_ik_free_space_with_live_physx_jacobian_precision_servo_"
-            "and_position_nullspace_joint_limit_avoidance"
+            "and_full_pose_nullspace_joint_limit_avoidance"
             if any(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
@@ -399,7 +399,7 @@ def build_native_task_episode_environment(
         ),
         "cartesian_contact_posture_source": None,
         "cartesian_precision_joint_limit_avoidance_source": (
-            "isaaclab_develop_differential_ik_position_nullspace_backport"
+            "isaaclab_pink_combined_task_jacobian_nullspace_projection"
             if any(
                 row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
                 for row in joint_target_rows
