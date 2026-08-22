@@ -2159,19 +2159,30 @@ def test_every_bundle_kind_downloads_over_http11_with_retries() -> None:
         assert "--retry-all-errors" in script, kind
 
 
-def test_a_failing_download_tool_falls_through_to_the_next_one() -> None:
-    """The chain handled a tool being absent, not a tool failing.
+def test_curl_retries_resumably_and_never_falls_through_to_unguarded_tiers() -> None:
+    """When curl exists, exhausting it must fail hard, not fall through.
 
-    ``curl ...; return $?`` ended the download on the first curl error with
-    wget and python still available and untried.
+    The prior contract fell through to wget/python on a curl failure.  A live
+    C26 run proved that trap for multi-gigabyte objects: curl gave up on a
+    marginal link after its guarded retries, then ``wget -O`` truncated the
+    3.32 GB resumable partial back to zero and crawled at ~60 KB/s toward a
+    26-hour ETA inside a one-hour watchdog.  curl is the only tier that both
+    resumes (``--continue-at -``) and enforces the slow-transfer guard, so it
+    gets three visible passes (each with the full retry budget, each resuming
+    the partial) and then a typed hard failure.  wget/python remain solely for
+    images that ship no curl, and wget carries ``-c`` so even that path never
+    truncates a partial.
     """
 
     script = _download_script("isaac")
     assert "curl" in script and '-o "$blueprint_download_dst" && return 0' in script
-    assert 'wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0' in script
-    assert "; return $?; fi; " not in script.split("blueprint_download_src")[1][:400]
-    # And the fallthrough is visible in the log rather than silent.
-    assert "BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl" in script
+    # Three resumable passes, visible in the log, then a typed hard failure.
+    assert 'while [ "$blueprint_download_pass" -le 3 ]; do' in script
+    assert "BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_RETRY:curl:$blueprint_download_pass" in script
+    assert "BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; return 28; fi;" in script
+    # The unguarded tiers stay behind the curl-absent gate and never truncate.
+    assert 'wget -c -O "$blueprint_download_dst" "$blueprint_download_src" && return 0' in script
+    assert 'wget -O "$blueprint_download_dst"' not in script
 
 
 def _liveness_rows(status: str) -> dict:
