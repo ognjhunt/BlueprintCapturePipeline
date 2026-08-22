@@ -248,6 +248,58 @@ def test_factory_replays_construction_global_ik_joint_target(
     assert receipt["scripted_pose_joint_targets"][0]["phase_id"] == "approach"
 
 
+def test_factory_keeps_globally_solved_contact_pose_on_cartesian_servo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reachable endpoint must not turn contact into a joint-space arc."""
+
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    servo = _Servo()
+    adapter, receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"),
+        gripper_convention={
+            "closed_command": 1.0,
+            "open_command": 0.0,
+            "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+        },
+        servo=servo,
+        task_readback=_Readback(),
+        to_tensor=lambda value: value,
+        scripted_pose_joint_targets=[
+            {
+                "phase_id": "approach",
+                "target_position_world_m": [1.0, 2.0, 2.9],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "joint_positions_rad": [0.1] * 7,
+            },
+            {
+                "phase_id": "contact_open",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "joint_positions_rad": [0.2] * 7,
+            },
+        ],
+    )
+
+    action = adapter.kwargs["scripted_pose_action_callback"](
+        target_position_world_m=[1.0, 2.0, 3.0],
+        target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        gripper_command=0.0,
+        max_joint_delta_rad=0.03,
+        max_joint_setpoint_lead_rad=0.2,
+    )
+
+    assert action == [0.0] * 8
+    assert servo.calls[-1]["target_position_world_m"] == [1.0, 2.0, 3.0]
+    assert "target_joint_positions_rad" not in servo.calls[-1]
+    assert receipt["scripted_pose_source"] == (
+        "global_ik_free_space_with_native_cartesian_contact_servo"
+    )
+    assert receipt["cartesian_contact_phase_ids"] == ["contact_open"]
+
+
 def test_factory_rejects_malformed_construction_joint_target() -> None:
     with pytest.raises(
         NativeTaskEpisodeEnvironmentError,
