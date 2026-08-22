@@ -326,7 +326,14 @@ def _dispatch_warm_script_over_ssh(
             "host_key_enrollment": enrollment,
             "raw_secret_values_recorded": False,
         }
-    remote_dir = f"/workspace/native_task_arena_warm_attempts/{attempt_key}"
+    # The attempted workload owns and recreates
+    # ``native_task_arena_warm_attempts/<key>``. Keeping the launcher and log
+    # inside that same directory made the first command in ``run.sh`` delete
+    # both its on-disk script and its active log. The workload survived through
+    # open file descriptors, but the sealed controller could not fetch the log
+    # that proves the cache hit and output upload. Keep dispatch evidence in a
+    # sibling namespace that the workload never mutates.
+    remote_dir = f"/workspace/native_task_arena_warm_dispatches/{attempt_key}"
     wrapper = (
         "set -euo pipefail; "
         f"mkdir -p {shlex.quote(remote_dir)}; "
@@ -377,7 +384,7 @@ def _fetch_warm_runtime_log_over_ssh(
 ) -> tuple[dict[str, Any], str]:
     enrollment = dict(dispatch.get("host_key_enrollment") or {})
     remote_log_path = (
-        f"/workspace/native_task_arena_warm_attempts/{attempt_key}/run.log"
+        f"/workspace/native_task_arena_warm_dispatches/{attempt_key}/run.log"
     )
     result = _run_pinned_ssh(
         session=session,
