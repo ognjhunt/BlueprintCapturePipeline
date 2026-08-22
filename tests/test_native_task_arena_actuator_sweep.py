@@ -285,3 +285,90 @@ def test_an_articulated_cell_is_measured_through_its_own_sampler() -> None:
         cell["measured_distance_to_target_m"] is not None for cell in report["cells"]
     )
     assert report["best_cell"] is not None
+
+
+class _ModelOffsetEnvironment(_SweepEnvironment):
+    """A solver whose model of the fingertip is off by a constant.
+
+    C36's measurement: at the solved posture, across a tenfold stiffness
+    range and with joint tracking at 0.007 rad, the fingertip sat a constant
+    +13.0 mm off in one axis.  The solver hits its own target exactly; the
+    real fingertip lands 13 mm past it, every time.
+    """
+
+    MODEL_ERROR_M = 0.013
+
+    def read_task_sample(self):
+        return {"grasp_frame_position_world_m": [self.joints[4] + self.MODEL_ERROR_M, 0.0, 0.0]}
+
+    def read_object_sample(self):
+        raise RuntimeError("isaac_episode_rigid_task_object_missing")
+
+    def solve(self, target_position_world_m, seed_joint_positions_rad):
+        del seed_joint_positions_rad
+        # A perfect solver in its own model's terms.
+        return [0.0] * 4 + [float(target_position_world_m[0]), 0.0, 0.0]
+
+
+def _calibrate(environment, **overrides):
+    from blueprint_pipeline.native_task_arena_actuator_sweep import (
+        calibrate_posture_to_measured_target,
+    )
+
+    kwargs = dict(
+        environment=environment,
+        solve=environment.solve,
+        target_position_world_m=[0.5, 0.0, 0.0],
+        seed_joint_positions_rad=[0.0] * 7,
+        gripper_open_command=0.0,
+        max_joint_delta_rad=0.05,
+        max_joint_setpoint_lead_rad=0.2,
+        arrival_tolerance_m=0.005,
+        settle_steps=80,
+    )
+    kwargs.update(overrides)
+    return calibrate_posture_to_measured_target(**kwargs)
+
+
+def test_calibration_finds_the_posture_whose_measured_tip_reaches_the_target() -> None:
+    """The gate asks where the real fingertip is, so solve for that."""
+
+    environment = _ModelOffsetEnvironment()
+
+    report = _calibrate(environment)
+
+    assert report["status"] == "measured"
+    assert report["converged"] is True
+    first, last = report["iterations"][0], report["iterations"][-1]
+    # The uncalibrated solve reproduces the measured defect exactly...
+    assert first["measured_distance_to_target_m"] == pytest.approx(0.013, abs=1e-6)
+    # ...and folding the residual back into the solver's target removes it.
+    assert last["measured_distance_to_target_m"] < 0.005
+    assert last["solver_target_position_world_m"][0] == pytest.approx(
+        0.5 - 0.013, abs=1e-6
+    )
+    assert report["best"]["measured_distance_to_target_m"] == min(
+        row["measured_distance_to_target_m"] for row in report["iterations"]
+    )
+
+
+def test_calibration_is_bounded_and_keeps_its_best_when_it_cannot_converge() -> None:
+    """An unreachable target stops rather than iterating forever."""
+
+    class _Unreachable(_ModelOffsetEnvironment):
+        def solve(self, target_position_world_m, seed_joint_positions_rad):
+            del target_position_world_m, seed_joint_positions_rad
+            return [0.0] * 7  # ignores the target entirely
+
+    report = _calibrate(_Unreachable(), max_iterations=3)
+
+    assert report["converged"] is False
+    assert report["iteration_count"] == 3
+    assert report["best"] is not None
+
+
+def test_calibration_reports_a_runtime_it_cannot_drive() -> None:
+    report = _calibrate(_ModelOffsetEnvironment(), solve=None)
+
+    assert report["status"] == "unavailable"
+    assert report["iterations"] == []
