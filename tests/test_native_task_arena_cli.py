@@ -85,6 +85,65 @@ def test_authority_cli_supplies_complete_single_attempt_contract(monkeypatch, tm
     }
 
 
+def test_warm_authority_cli_supplies_zero_allocation_contract(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load("issue_native_task_arena_warm_attempt_authority")
+    observed = {}
+    prepared = {
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "input_digest": "sha256:" + "c" * 64,
+    }
+
+    monkeypatch.setattr(
+        module,
+        "load_verified_native_task_arena_controls_bundle",
+        lambda *_args, **_kwargs: prepared,
+    )
+
+    def fake_materialize(**kwargs):
+        observed.update(kwargs)
+        return {"authorization_digest": "sha256:" + "a" * 64}
+
+    monkeypatch.setattr(
+        module, "materialize_native_task_arena_warm_attempt_authority", fake_materialize
+    )
+    output = tmp_path / "warm-authority.json"
+    result = module.main(
+        [
+            "--warm-session",
+            "warm-session.json",
+            "--bundle-receipt",
+            "bundle.json",
+            "--blueprint-commit",
+            "a" * 40,
+            "--packet-receipt-digest",
+            "sha256:" + "d" * 64,
+            "--runtime-source-packet-digest",
+            "sha256:" + "e" * 64,
+            "--authority-reference",
+            "explicit-user-goal",
+            "--authorized-by",
+            "user",
+            "--authorized-on",
+            "2026-08-21",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert observed == {
+        "warm_session_path": "warm-session.json",
+        "bundle_receipt_path": "bundle.json",
+        "prepared_bundle": prepared,
+        "authorization_reference": "explicit-user-goal",
+        "authorized_by": "user",
+        "authorized_on": "2026-08-21",
+        "output_path": str(output),
+    }
+
+
 def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_path) -> None:
     module = _load("seal_native_task_arena_provider_zero")
     observed = {}

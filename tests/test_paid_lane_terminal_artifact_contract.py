@@ -46,6 +46,7 @@ PAID_LANE_MODULES = (
     "adp_joint_agent_vast.py",
     "adp_retained_scene_render_vast.py",
     "native_task_arena_vast.py",
+    "native_task_arena_warm_vast.py",
     # Not a `*_vast*.py` transport: it is the fresh-site camera lane's own
     # runner, and #543 gave `new-site-native-camera` a builder, so the launch
     # profile now reads the terminal result it writes.

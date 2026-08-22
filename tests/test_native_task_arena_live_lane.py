@@ -16,6 +16,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_paid_authority as paid
+import blueprint_pipeline.native_task_arena_warm_authority as warm_authority
 from blueprint_pipeline.native_task_arena_bundle import (
     POLICY_RUNTIME_ROOT_MODULE_NAMES,
 )
@@ -590,6 +592,65 @@ def test_controls_profile_forwards_digest_bound_warm_retention(lane) -> None:
     argv = _build(lane, "controls")["allocator"]["argv"]
 
     assert "--native-task-arena-retain-warm-session" in argv
+
+
+def test_controls_profile_routes_small_bundle_to_retained_instance(lane) -> None:
+    bundle_receipt = lane["bundle_receipts"]["controls"]
+    bundle = json.loads(bundle_receipt.read_text(encoding="utf-8"))
+    now = time.time()
+    session = {
+        "schema_version": warm_authority.SESSION_SCHEMA_VERSION,
+        "generated_at": "fixed",
+        "status": "ready",
+        "provider": "vast",
+        "instance_id": 123,
+        "container_image": bundle["container_image"],
+        "runtime_dependency_packet_sha256": bundle["runtime_source_packet"][
+            "packet_sha256"
+        ],
+        "runtime_dependency_packet_size_bytes": bundle["runtime_source_packet"][
+            "packet_size_bytes"
+        ],
+        "runtime_dependency_cache_ready": True,
+        "ssh_host": "ssh.example",
+        "ssh_port": 12345,
+        "watchdog_pid": 456,
+        "watchdog_deadline_epoch": now + 3600,
+        "max_hourly_rate_usd": 0.8,
+        "hard_cap_usd": 2.0,
+        "continuing_spend": True,
+        "raw_secret_values_recorded": False,
+    }
+    session["session_digest"] = warm_authority._session_digest(session)
+    session_path = lane["packet"].parent / "warm-session.json"
+    write_json(session_path, session)
+    warm_authority_path = lane["packet"].parent / "warm-authority.json"
+    warm_authority.materialize_native_task_arena_warm_attempt_authority(
+        warm_session_path=session_path,
+        bundle_receipt_path=bundle_receipt,
+        prepared_bundle=bundle,
+        authorization_reference="current production goal",
+        authorized_by="user",
+        authorized_on="2026-08-21",
+        output_path=warm_authority_path,
+        observed_now_epoch=now,
+    )
+
+    profile = _build(
+        lane,
+        "controls",
+        attempt_authority_path=warm_authority_path,
+        warm_session_path=session_path,
+    )
+    argv = profile["allocator"]["argv"]
+
+    assert argv[argv.index("--native-task-arena-warm-session") + 1] == str(
+        session_path.resolve()
+    )
+    assert argv[argv.index("--adp-allowed-active-vast-instance-id") + 1] == "123"
+    assert "native_task_arena_warm_session" in {
+        row["name"] for row in profile["immutable_inputs"]
+    }
 
 
 def test_default_budget_matches_the_attempt_authority(lane) -> None:
