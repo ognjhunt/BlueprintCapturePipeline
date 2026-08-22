@@ -732,6 +732,41 @@ def test_graph_articulated_control_replays_only_qualified_exact_contact_path() -
     )
 
 
+def test_contact_entry_budget_uses_full_approach_not_short_clearance_probe() -> None:
+    """C11's 12 cm entry must not inherit a 5-tick clearance measurement."""
+
+    scene = _scene()
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["motion_maximum_steps"] = 64
+    _redigest_affordance(scene)
+    construction = _construction(scene)
+    for phase in construction["phase_results"]:
+        if phase["phase_id"] == "approach":
+            phase["steps"] = 27
+        elif phase["phase_id"] == "contact_sweep_clearance_00":
+            phase["steps"] = 5
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+
+    control = materialize_native_task_control_plan(
+        scene_plan=scene, construction_result=construction
+    )
+    actions = {row["phase_id"]: row for row in control["scripted_positive_actions"]}
+    contact = actions["contact_open"]
+
+    assert contact["construction_budget_candidate_phase_ids"] == [
+        "contact_sweep_clearance_00",
+        "approach",
+    ]
+    assert contact["construction_phase_id"] == "approach"
+    assert contact["construction_observed_steps"] == 27
+    assert contact["maximum_steps"] == 64
+    assert contact["step_budget_derivation"] == (
+        "three_x_slowest_comparable_construction_segment_plus_five_with_25_floor"
+    )
+
+
 def test_graph_articulated_control_rejects_incomplete_clearance_readback() -> None:
     scene = _scene()
     construction = _construction(scene)
