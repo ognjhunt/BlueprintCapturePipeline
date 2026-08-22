@@ -307,11 +307,31 @@ def _control_plan_global_ik_joint_targets(
                 }
             )
             continue
+        try:
+            position_tolerance_m = float(raw["arrival_tolerance_m"])
+            orientation_tolerance_rad = float(
+                raw["arrival_orientation_tolerance_rad"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "native_task_controls_multistart_tolerance_invalid"
+            ) from exc
+        if (
+            not math.isfinite(position_tolerance_m)
+            or position_tolerance_m <= 0.0
+            or not math.isfinite(orientation_tolerance_rad)
+            or orientation_tolerance_rad <= 0.0
+        ):
+            raise RuntimeError(
+                "native_task_controls_multistart_tolerance_invalid"
+            )
         solved = servo.solve_grasp_target_multistart(
             target_position_world_m=position,
             target_grasp_frame_quaternion_world_xyzw=quaternion,
             preferred_seeds=[reference, *reference_seeds],
             reference_joint_positions_rad=reference,
+            position_tolerance_m=position_tolerance_m,
+            orientation_tolerance_rad=orientation_tolerance_rad,
         )
         if not isinstance(solved, Mapping):
             raise RuntimeError("native_task_controls_multistart_result_invalid")
