@@ -122,8 +122,15 @@ def bounded_absolute_joint_setpoint(
     previous_commanded_joint_positions_rad: Sequence[float],
     max_command_slew_per_step_rad: float,
     max_setpoint_lead_rad: float,
+    max_setpoint_lead_rad_per_joint: Sequence[float] | None = None,
 ) -> list[float]:
-    """Bound one absolute joint target by command slew and measured-state lead."""
+    """Bound one absolute joint target by command slew and measured-state lead.
+
+    ``max_setpoint_lead_rad_per_joint`` additionally caps each joint by what
+    that actuator can actually pull -- ``effort_limit / stiffness`` -- so the
+    command never asks for torque the joint will simply clip.  It only ever
+    tightens the scalar lead.
+    """
 
     try:
         measured = [float(value) for value in measured_joint_positions_rad]
@@ -131,10 +138,24 @@ def bounded_absolute_joint_setpoint(
         previous = [float(value) for value in previous_commanded_joint_positions_rad]
         max_slew = float(max_command_slew_per_step_rad)
         max_lead = float(max_setpoint_lead_rad)
+        per_joint_lead = (
+            None
+            if max_setpoint_lead_rad_per_joint is None
+            else [float(value) for value in max_setpoint_lead_rad_per_joint]
+        )
     except (TypeError, ValueError) as exc:
         raise NativeFrankaActionMathError(
             ["native_franka_joint_setpoint_contract_invalid"]
         ) from exc
+    if per_joint_lead is not None and (
+        len(per_joint_lead) != len(measured)
+        or not all(
+            math.isfinite(value) and value > 0.0 for value in per_joint_lead
+        )
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_joint_setpoint_contract_invalid"]
+        )
     if (
         not measured
         or len(measured) != len(desired)
@@ -149,11 +170,18 @@ def bounded_absolute_joint_setpoint(
             ["native_franka_joint_setpoint_contract_invalid"]
         )
     command: list[float] = []
-    for measured_value, desired_value, previous_value in zip(
-        measured, desired, previous, strict=True
+    for index, (measured_value, desired_value, previous_value) in enumerate(
+        zip(measured, desired, previous, strict=True)
     ):
-        lower = max(previous_value - max_slew, measured_value - max_lead)
-        upper = min(previous_value + max_slew, measured_value + max_lead)
+        joint_lead = max_lead
+        if per_joint_lead is not None:
+            # Never loosen the caller's bound, only tighten it to feasibility,
+            # and never below one slew step or the command could not advance.
+            joint_lead = max(
+                min(joint_lead, per_joint_lead[index]), max_slew
+            )
+        lower = max(previous_value - max_slew, measured_value - joint_lead)
+        upper = min(previous_value + max_slew, measured_value + joint_lead)
         if lower > upper + 1.0e-12:
             raise NativeFrankaActionMathError(
                 ["native_franka_joint_setpoint_constraints_infeasible"]
