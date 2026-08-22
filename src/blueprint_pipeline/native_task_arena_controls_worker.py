@@ -414,6 +414,7 @@ def _control_plan_global_ik_joint_targets(
         phases=[phase for phase in phases if isinstance(phase, Mapping)],
         required_margin_rad=CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD,
         start_joint_positions_rad=start_joint_positions,
+        bounded_entry_phase_id="contact_open",
     )
     if continuity.get("status") == "selected":
         chain = continuity["selected_chain"]

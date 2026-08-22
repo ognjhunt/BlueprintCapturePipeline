@@ -242,6 +242,7 @@ def select_continuous_branch_chain(
     phases: Sequence[Mapping[str, Any]],
     required_margin_rad: float,
     start_joint_positions_rad: Sequence[float] | None = None,
+    bounded_entry_phase_id: str | None = None,
     max_combinations: int = MAX_BRANCH_COMBINATIONS,
 ) -> dict[str, Any]:
     """Pick one branch per phase so the whole path is traversable.
@@ -258,11 +259,24 @@ def select_continuous_branch_chain(
     """
 
     del max_combinations  # the search no longer enumerates, so nothing to cap
+    # Phases that inherit a bound pose carry no branch decision.  Searching
+    # over them is meaningless, and refusing because of them throws the search
+    # away -- which is exactly what C42 did: every choosing phase had branches
+    # (5, 5, 3, 7, 13, 14, 9, 9) and the run still fell back to greedy because
+    # two inheriting phases were counted as empty.
+    choosing = [phase for phase in phases if phase_offers_a_branch_choice(phase)]
+    if not choosing:
+        return {
+            "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "no_phase_offers_a_branch_choice",
+            "selected_chain": [],
+        }
     per_phase = [
         admissible_branches(phase, required_margin_rad=required_margin_rad)
-        for phase in phases
+        for phase in choosing
     ]
-    if not per_phase or any(not rows for rows in per_phase):
+    if any(not rows for rows in per_phase):
         return {
             "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
             "status": "unavailable",
@@ -281,20 +295,69 @@ def select_continuous_branch_chain(
         }
     ) or [0.0]
 
-    low, high = 0, len(candidates) - 1
-    found: tuple[list[Mapping[str, Any]], float] | None = None
-    while low <= high:
-        middle = (low + high) // 2
-        attempt = _best_chain_within_bottleneck(
-            per_phase,
-            bottleneck_rad=candidates[middle],
-            start_joints=start_joint_positions_rad,
+    # Not every hop is bounded the same way.  The transition into the phase
+    # whose entry is replayed is interpolated at a fixed step and must fit
+    # inside that phase's budget; the rest are ordinary servo moves with
+    # budgets of their own.  Minimising the *global* worst hop therefore trades
+    # the one hop that matters for hops that do not: replayed against C42's
+    # sealed branches, it chose a 0.757 rad entry where the greedy chain had
+    # 0.604.  Pin the entry pair first, cheapest entry hop outward, and only
+    # then minimise the rest.
+    entry_index = None
+    if bounded_entry_phase_id:
+        for index, phase in enumerate(choosing):
+            if str(phase.get("phase_id") or "") == str(bounded_entry_phase_id):
+                entry_index = index
+                break
+
+    def _search(pins: Mapping[int, int] | None) -> tuple[list[Mapping[str, Any]], float] | None:
+        scoped = (
+            [
+                [rows[pins[index]]] if index in pins else rows
+                for index, rows in enumerate(per_phase)
+            ]
+            if pins
+            else list(per_phase)
         )
-        if attempt is None:
-            low = middle + 1
-        else:
-            found = attempt
-            high = middle - 1
+        low, high = 0, len(candidates) - 1
+        best_found: tuple[list[Mapping[str, Any]], float] | None = None
+        while low <= high:
+            middle = (low + high) // 2
+            attempt = _best_chain_within_bottleneck(
+                scoped,
+                bottleneck_rad=candidates[middle],
+                start_joints=start_joint_positions_rad,
+            )
+            if attempt is None:
+                low = middle + 1
+            else:
+                best_found = attempt
+                high = middle - 1
+        return best_found
+
+    found: tuple[list[Mapping[str, Any]], float] | None = None
+    if entry_index is not None and entry_index > 0:
+        pairs = sorted(
+            (
+                (
+                    _pair_hop(
+                        before["joint_positions_rad"], after["joint_positions_rad"]
+                    ),
+                    before_index,
+                    after_index,
+                )
+                for before_index, before in enumerate(per_phase[entry_index - 1])
+                for after_index, after in enumerate(per_phase[entry_index])
+            )
+        )
+        for _hop, before_index, after_index in pairs:
+            found = _search(
+                {entry_index - 1: before_index, entry_index: after_index}
+            )
+            if found is not None:
+                break
+    else:
+        found = _search(None)
     if found is None:
         return {
             "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
@@ -355,7 +418,24 @@ def select_continuous_branch_chain(
         "status": "selected",
         "combinations_represented": combinations,
         "branches_per_phase": [len(rows) for rows in per_phase],
+        "chain_phase_ids": [
+            str(phase.get("phase_id") or "") for phase in choosing
+        ],
+        "inheriting_phase_ids": [
+            str(phase.get("phase_id") or "")
+            for phase in phases
+            if not phase_offers_a_branch_choice(phase)
+        ],
         "selected_chain": [dict(row) for row in chain],
+        "bounded_entry_phase_id": bounded_entry_phase_id,
+        "bounded_entry_hop_rad": (
+            _pair_hop(
+                chain[entry_index - 1]["joint_positions_rad"],
+                chain[entry_index]["joint_positions_rad"],
+            )
+            if entry_index is not None and entry_index > 0
+            else None
+        ),
         "largest_single_joint_hop_rad": largest_hop,
         "total_joint_travel_rad": total_travel,
         "greedy_largest_single_joint_hop_rad": greedy_hop,

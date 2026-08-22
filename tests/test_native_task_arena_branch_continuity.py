@@ -173,3 +173,96 @@ def test_a_chain_that_cannot_connect_is_reported_not_guessed() -> None:
     assert report["status"] == "unavailable"
     assert report["reason"] == "no_chain_connects_every_phase"
     assert report["selected_chain"] == []
+
+
+def test_phases_that_inherit_a_bound_pose_do_not_abandon_the_search() -> None:
+    """C42's regression, in the shape the paid run actually had.
+
+    Every phase that chooses a branch had them -- 5, 5, 3, 7, 13, 14, 9, 9 --
+    and the search still refused, because two phases that inherit an earlier
+    phase's bound pose were counted as phases with no admissible branch. The
+    run then fell back to the greedy chain the search exists to replace.
+    """
+
+    phases = [
+        _phase("prealign", [_row(1, [0.0] * 7), _row(2, [0.1] * 7)]),
+        _phase("contact_open", [_row(1, [0.05] * 7), _row(2, [0.6] * 7)]),
+        # Inherits contact_open's pose: no attempt list, no selection.
+        {"phase_id": "contact_close"},
+        _phase("retreat", [_row(1, [0.2] * 7)]),
+        {"phase_id": "release"},
+    ]
+
+    report = select_continuous_branch_chain(
+        phases=phases,
+        required_margin_rad=0.005,
+        start_joint_positions_rad=[0.0] * 7,
+    )
+
+    assert report["status"] == "selected"
+    # The chain covers exactly the phases that make a choice, named so the
+    # caller can apply them without positional guessing.
+    assert report["chain_phase_ids"] == ["prealign", "contact_open", "retreat"]
+    assert report["inheriting_phase_ids"] == ["contact_close", "release"]
+    assert len(report["selected_chain"]) == 3
+
+
+def test_a_lane_where_nothing_chooses_is_reported() -> None:
+    report = select_continuous_branch_chain(
+        phases=[{"phase_id": "a"}, {"phase_id": "b"}], required_margin_rad=0.005
+    )
+
+    assert report["status"] == "unavailable"
+    assert report["reason"] == "no_phase_offers_a_branch_choice"
+
+
+def test_the_bounded_entry_hop_outranks_the_global_worst_hop() -> None:
+    """Not every hop is bounded the same way.
+
+    The transition into the replayed phase is interpolated at a fixed step and
+    must fit that phase's budget; the rest are ordinary servo moves with
+    budgets of their own.  Minimising the global worst hop trades the one hop
+    that matters for hops that do not -- against C42's sealed branches it chose
+    a 0.757 rad entry where the greedy chain managed 0.604.
+    """
+
+    phases = [
+        _phase("approach", [_row(1, [0.0] * 7), _row(2, [0.5] + [0.0] * 6)]),
+        _phase("contact_open", [_row(3, [0.55] + [0.0] * 6)]),
+        # A later phase far from everything: minimising the global worst hop
+        # would reshuffle the entry pair to shave this one.
+        _phase("retreat", [_row(4, [2.0] * 7)]),
+    ]
+
+    globally = select_continuous_branch_chain(
+        phases=phases, required_margin_rad=0.005, start_joint_positions_rad=[0.0] * 7
+    )
+    entry_first = select_continuous_branch_chain(
+        phases=phases,
+        required_margin_rad=0.005,
+        start_joint_positions_rad=[0.0] * 7,
+        bounded_entry_phase_id="contact_open",
+    )
+
+    assert entry_first["status"] == "selected"
+    assert entry_first["bounded_entry_phase_id"] == "contact_open"
+    # Entry-first takes the approach branch beside contact (0.55 - 0.5).
+    assert entry_first["bounded_entry_hop_rad"] == pytest.approx(0.05, abs=1e-9)
+    entry_ids = entry_first["chain_phase_ids"]
+    chosen = entry_first["selected_chain"][entry_ids.index("approach")]
+    assert chosen["seed_index"] == 2
+    # And it is strictly better on the criterion that binds than the global rule.
+    global_ids = globally["chain_phase_ids"]
+    global_entry = max(
+        abs(a - b)
+        for a, b in zip(
+            globally["selected_chain"][global_ids.index("approach")][
+                "joint_positions_rad"
+            ],
+            globally["selected_chain"][global_ids.index("contact_open")][
+                "joint_positions_rad"
+            ],
+            strict=True,
+        )
+    )
+    assert entry_first["bounded_entry_hop_rad"] <= global_entry
