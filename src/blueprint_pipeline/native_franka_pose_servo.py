@@ -21,6 +21,7 @@ from .native_franka_action_math import (
     bounded_cartesian_pose_target,
     clip_joint_positions_to_limits,
     controlled_body_pose_for_rigid_grasp_frame_target,
+    rigid_grasp_frame_pose_for_controlled_body,
     implicit_pd_torque_terms,
     joint_velocity_feedforward_rad_s,
 )
@@ -1341,6 +1342,33 @@ class NativeFrankaDifferentialIkServo:
             ),
         )
 
+    def _pink_grasp_frame_for_hand_candidate(
+        self,
+        *,
+        candidate_body_position_base_m: Sequence[float],
+        candidate_body_quaternion_base_xyzw: Sequence[float],
+    ) -> tuple[list[float], list[float]]:
+        """Where a candidate hand pose puts the grasp frame, same offsets."""
+
+        return rigid_grasp_frame_pose_for_controlled_body(
+            current_body_position_world_m=(
+                self._pink_hand_pose_at_binding_base[:3]
+            ),
+            current_body_quaternion_world_xyzw=(
+                self._pink_hand_pose_at_binding_base[3:7]
+            ),
+            current_grasp_frame_position_world_m=(
+                self._pink_grasp_pose_at_binding_base[:3]
+            ),
+            current_grasp_frame_quaternion_world_xyzw=(
+                self._pink_grasp_pose_at_binding_base[3:7]
+            ),
+            candidate_body_position_world_m=candidate_body_position_base_m,
+            candidate_body_quaternion_world_xyzw=(
+                candidate_body_quaternion_base_xyzw
+            ),
+        )
+
     def solve_grasp_target_from_joint_seed(
         self,
         *,
@@ -1370,6 +1398,15 @@ class NativeFrankaDifferentialIkServo:
                 target_grasp_frame_quaternion_world_xyzw=(
                     target_grasp_frame_quaternion_world_xyzw
                 ),
+            )
+        )
+        # The grasp-frame target the loop scores against, recovered from the
+        # hand target through the same rigid offset that produced it, so the
+        # two frames cannot drift apart in the solver's own arithmetic.
+        grasp_target_position, grasp_target_quaternion = (
+            self._pink_grasp_frame_for_hand_candidate(
+                candidate_body_position_base_m=target_position,
+                candidate_body_quaternion_base_xyzw=target_quaternion,
             )
         )
         setpoint = self._pink_setpoint(
@@ -1435,13 +1472,33 @@ class NativeFrankaDifferentialIkServo:
                 hand_quaternion = self._Rotation.from_matrix(
                     hand.rotation
                 ).as_quat()
-                position_error = math.dist(
-                    [float(value) for value in hand.translation],
-                    target_position,
-                )
-                orientation_error = self._quaternion_error_rad(
+                hand_position = [float(value) for value in hand.translation]
+                hand_position_error = math.dist(hand_position, target_position)
+                hand_orientation_error = self._quaternion_error_rad(
                     [float(value) for value in hand_quaternion],
                     target_quaternion,
+                )
+                # Score where the *grasp frame* lands, not where the hand
+                # lands.  The solve converts a grasp-frame target into a body
+                # target and then measured its candidates at the body, so an
+                # accepted hand-orientation residual was multiplied by the
+                # ~0.21 m tool lever before the arrival gate ever saw it: a
+                # candidate certified at 5 mm / 0.08 rad could sit ~21 mm from
+                # the target the gate measures.  C32-C37's recurring 11-15 mm
+                # miss is that envelope, not a controller.
+                grasp_position, grasp_quaternion_candidate = (
+                    self._pink_grasp_frame_for_hand_candidate(
+                        candidate_body_position_base_m=hand_position,
+                        candidate_body_quaternion_base_xyzw=[
+                            float(value) for value in hand_quaternion
+                        ],
+                    )
+                )
+                position_error = math.dist(
+                    grasp_position, grasp_target_position
+                )
+                orientation_error = self._quaternion_error_rad(
+                    grasp_quaternion_candidate, grasp_target_quaternion
                 )
                 if (
                     position_error + orientation_error
@@ -1453,6 +1510,13 @@ class NativeFrankaDifferentialIkServo:
                         "joint_positions_rad": joints,
                         "position_error_m": position_error,
                         "orientation_error_rad": orientation_error,
+                        "grasp_frame_position_error_m": position_error,
+                        "grasp_frame_orientation_error_rad": orientation_error,
+                        "controlled_body_position_error_m": hand_position_error,
+                        "controlled_body_orientation_error_rad": (
+                            hand_orientation_error
+                        ),
+                        "scored_frame": "grasp_frame",
                         "iterations": iteration,
                         "iteration_feedback_clamp_count": (
                             iteration_feedback_clamp_count

@@ -561,6 +561,118 @@ def controlled_body_pose_for_rigid_grasp_frame_target(
     return target_body_position, target_body_quaternion
 
 
+def rigid_grasp_frame_pose_for_controlled_body(
+    *,
+    current_body_position_world_m: Sequence[float],
+    current_body_quaternion_world_xyzw: Sequence[float],
+    current_grasp_frame_position_world_m: Sequence[float],
+    current_grasp_frame_quaternion_world_xyzw: Sequence[float],
+    candidate_body_position_world_m: Sequence[float],
+    candidate_body_quaternion_world_xyzw: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Where a candidate body pose puts the rigidly offset grasp frame.
+
+    The forward direction of
+    :func:`controlled_body_pose_for_rigid_grasp_frame_target`, and the missing
+    half of the solver's arithmetic.  The solver converts a grasp-frame target
+    into a body target and then scores its candidates *at the body*, while the
+    arrival gate measures the grasp frame -- so an accepted body orientation
+    residual is multiplied by the tool lever before the gate ever sees it.
+    Scoring a candidate needs this direction: given the body pose a solve
+    reached, where does the grasp frame actually end up?
+    """
+
+    try:
+        body_position = [float(value) for value in current_body_position_world_m]
+        grasp_position = [
+            float(value) for value in current_grasp_frame_position_world_m
+        ]
+        candidate_position = [
+            float(value) for value in candidate_body_position_world_m
+        ]
+        body_quaternion = [
+            float(value) for value in current_body_quaternion_world_xyzw
+        ]
+        grasp_quaternion = [
+            float(value) for value in current_grasp_frame_quaternion_world_xyzw
+        ]
+        candidate_quaternion = [
+            float(value) for value in candidate_body_quaternion_world_xyzw
+        ]
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaActionMathError(
+            ["native_franka_rigid_grasp_frame_transform_invalid"]
+        ) from exc
+    vectors = (body_position, grasp_position, candidate_position)
+    quaternions = (body_quaternion, grasp_quaternion, candidate_quaternion)
+    if not (
+        all(len(vector) == 3 for vector in vectors)
+        and all(len(quaternion) == 4 for quaternion in quaternions)
+        and all(
+            math.isfinite(value)
+            for row in (*vectors, *quaternions)
+            for value in row
+        )
+    ):
+        raise NativeFrankaActionMathError(
+            ["native_franka_rigid_grasp_frame_transform_invalid"]
+        )
+
+    def normalize(quaternion: Sequence[float]) -> list[float]:
+        norm = math.sqrt(sum(value * value for value in quaternion))
+        if not math.isfinite(norm) or norm <= 1.0e-12:
+            raise NativeFrankaActionMathError(
+                ["native_franka_rigid_grasp_frame_transform_invalid"]
+            )
+        return [value / norm for value in quaternion]
+
+    def multiply(left: Sequence[float], right: Sequence[float]) -> list[float]:
+        lx, ly, lz, lw = left
+        rx, ry, rz, rw = right
+        return [
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+            lw * rw - lx * rx - ly * ry - lz * rz,
+        ]
+
+    def inverse(quaternion: Sequence[float]) -> list[float]:
+        x, y, z, w = normalize(quaternion)
+        return [-x, -y, -z, w]
+
+    def rotate(quaternion: Sequence[float], vector: Sequence[float]) -> list[float]:
+        x, y, z, w = normalize(quaternion)
+        vx, vy, vz = vector
+        tx = 2.0 * (y * vz - z * vy)
+        ty = 2.0 * (z * vx - x * vz)
+        tz = 2.0 * (x * vy - y * vx)
+        return [
+            vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx),
+        ]
+
+    body_quaternion = normalize(body_quaternion)
+    grasp_quaternion = normalize(grasp_quaternion)
+    candidate_quaternion = normalize(candidate_quaternion)
+    body_to_grasp_position = rotate(
+        inverse(body_quaternion),
+        [grasp_position[index] - body_position[index] for index in range(3)],
+    )
+    body_to_grasp_quaternion = normalize(
+        multiply(inverse(body_quaternion), grasp_quaternion)
+    )
+    candidate_offset_world = rotate(candidate_quaternion, body_to_grasp_position)
+    candidate_grasp_position = [
+        candidate_position[index] + candidate_offset_world[index]
+        for index in range(3)
+    ]
+    candidate_grasp_quaternion = normalize(
+        multiply(candidate_quaternion, body_to_grasp_quaternion)
+    )
+    return candidate_grasp_position, candidate_grasp_quaternion
+
+
 GRASP_AXIS_DEGENERACY_TOLERANCE = 1.0e-6
 
 
