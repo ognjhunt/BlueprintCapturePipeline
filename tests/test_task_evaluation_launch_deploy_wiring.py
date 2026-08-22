@@ -124,6 +124,7 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
+        "BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519",
         "VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
         "NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key",
         "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
