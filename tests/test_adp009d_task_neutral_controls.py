@@ -629,9 +629,7 @@ def test_pose_phase_recovers_from_systematic_offset_within_one_run(
     assert open_arrivals[0]["target_reached"] is False
     assert open_arrivals[0]["recovery_strategy"] is None
     assert open_arrivals[1]["target_reached"] is True
-    assert open_arrivals[1]["recovery_strategy"] == (
-        "retreat_then_measured_miss_compensation"
-    )
+    assert open_arrivals[1]["recovery_strategy"] == "measured_miss_compensation"
     # The gate still measures against the original sealed target; only the
     # command is biased, by exactly the measured miss.
     assert open_arrivals[1]["target_position_world_m"] == [0.9, 0.0, 0.0]
@@ -643,10 +641,15 @@ def test_pose_phase_recovers_from_systematic_offset_within_one_run(
     )
 
 
-def test_pose_phase_recovery_is_bounded_and_seals_every_attempt(
+def test_pose_phase_recovery_escalates_the_ladder_then_fails_sealed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A genuinely unreachable pose fails after exactly three sealed attempts."""
+    """A pose no strategy can reach escalates every rung, then fails.
+
+    A stuck arm never improves, so no strategy is allowed to repeat: the
+    executor walks the whole ladder once and stops with the exhaustion
+    sealed, rather than burning the full attempt cap on one dead strategy.
+    """
 
     _patched_media(monkeypatch)
     task = _task("articulated_open_close")
@@ -674,8 +677,239 @@ def test_pose_phase_recovery_is_bounded_and_seals_every_attempt(
         for row in positive["phase_arrivals"]
         if row["phase_id"] == "open"
     ]
-    assert [row["attempt"] for row in open_arrivals] == [1, 2, 3]
+    from blueprint_pipeline.adp009d_control_episode import (
+        TASK_CONTROL_RECOVERY_LADDER,
+    )
+
+    assert [row["attempt"] for row in open_arrivals] == [1, 2, 3, 4, 5]
     assert all(row["target_reached"] is False for row in open_arrivals)
+    # Nominal first, then each distinct rung exactly once.
+    assert [row["recovery_strategy"] for row in open_arrivals] == [
+        None,
+        *TASK_CONTROL_RECOVERY_LADDER,
+    ]
     blocker = positive["phase_execution_blocker"]
     assert blocker.startswith("scripted_control_phase_not_reached:open:")
-    assert ":attempts=3" in blocker
+    assert ":attempts=5" in blocker
+    assert ":strategies_exhausted=True" in blocker
+
+
+class _ConvergingCartesianEnvironment(_CartesianEnvironment):
+    """Each distinct command lands closer, but not close enough at first.
+
+    This is the case the old fixed cap of three destroyed: the run was
+    converging and would have landed, and the cap ended it anyway -- paying a
+    whole fresh GPU cycle to resume a trend this run had already established.
+    """
+
+    def __init__(self, task_kind: str) -> None:
+        super().__init__(task_kind)
+        self.offset = 0.04
+        self._last_command: tuple[float, ...] | None = None
+
+    def scripted_action_for_pose(
+        self,
+        *,
+        target_position_world_m,
+        target_quaternion_world_xyzw,
+        gripper_command,
+        max_joint_delta_rad,
+        max_joint_setpoint_lead_rad,
+    ):
+        del target_quaternion_world_xyzw
+        del max_joint_delta_rad, max_joint_setpoint_lead_rad
+        command = tuple(float(value) for value in target_position_world_m)
+        if self._last_command is not None and command != self._last_command:
+            self.offset *= 0.5
+        self._last_command = command
+        reached = [command[0] + self.offset, command[1], command[2]]
+        return [*reached, 0.0, 0.0, 0.0, 0.0, gripper_command]
+
+
+def test_a_converging_strategy_keeps_going_instead_of_burning_a_gpu_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Improvement earns another attempt of the same strategy, past three."""
+
+    _patched_media(monkeypatch)
+    task = _task("articulated_open_close")
+    task["maximum_action_steps"] = 400
+    plan = _recovery_plan(task)
+    # A gate the environment can actually satisfy once it has converged.
+    for row in plan["scripted_positive_actions"]:
+        row["arrival_tolerance_m"] = 0.002
+    plan["plan_digest"] = ""
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    environment = _ConvergingCartesianEnvironment("articulated_open_close")
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    open_arrivals = [
+        row for row in positive["phase_arrivals"] if row["phase_id"] == "open"
+    ]
+    # It kept going past the old three-attempt cap...
+    assert len(open_arrivals) > 3
+    # ...never escalated, because the trend said this strategy was working...
+    assert [row["recovery_strategy"] for row in open_arrivals[1:]] == [
+        "measured_miss_compensation"
+    ] * (len(open_arrivals) - 1)
+    # ...the error strictly improved every attempt...
+    errors = [row["terminal_position_error_m"] for row in open_arrivals]
+    assert all(later < earlier for earlier, later in zip(errors, errors[1:]))
+    # ...and the run landed inside the unchanged gate, in one session.
+    assert open_arrivals[-1]["target_reached"] is True
+    assert open_arrivals[-1]["target_position_world_m"] == [0.9, 0.0, 0.0]
+
+
+def test_recovery_selector_projects_whether_a_strategy_will_land_in_time() -> None:
+    """The selector is the whole policy: measured trend in, next strategy out."""
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        TASK_CONTROL_RECOVERY_LADDER,
+        _next_recovery_strategy,
+    )
+
+    first, second, third, fourth = TASK_CONTROL_RECOVERY_LADDER
+
+    def choose(history, *, tolerance=0.005, remaining=5):
+        return _next_recovery_strategy(
+            history,
+            arrival_tolerance_m=tolerance,
+            remaining_attempts=remaining,
+        )
+
+    # The nominal attempt always escalates onto the first rung.
+    assert choose([]) == first
+    assert choose([{"strategy": None, "error_m": 0.02}]) == first
+
+    # C28's real numbers: diverging, so escalate rather than repeat.
+    assert (
+        choose(
+            [
+                {"strategy": None, "error_m": 0.015422},
+                {"strategy": first, "error_m": 0.028500},
+            ]
+        )
+        == second
+    )
+
+    # C29's real numbers, attempt 2: improving 1.84 mm against an 8.63 mm
+    # excess needs ~5 more attempts and 6 remain, so keep going.
+    assert (
+        choose(
+            [
+                {"strategy": None, "error_m": 0.015470},
+                {"strategy": first, "error_m": 0.013630},
+            ],
+            remaining=6,
+        )
+        == first
+    )
+
+    # C29 attempt 3: still improving, but only 0.69 mm against a 7.94 mm
+    # excess -- about eleven more attempts, with five left.  A sign check
+    # would have repeated this and burned the budget; the projection escalates.
+    assert (
+        choose(
+            [
+                {"strategy": first, "error_m": 0.013630},
+                {"strategy": first, "error_m": 0.012940},
+            ],
+            remaining=5,
+        )
+        == second
+    )
+
+    # A stalled strategy -- no worse, but no better -- also escalates.
+    assert (
+        choose(
+            [
+                {"strategy": second, "error_m": 0.02},
+                {"strategy": third, "error_m": 0.02},
+            ]
+        )
+        == fourth
+    )
+
+    # The ladder ends rather than looping forever.
+    assert (
+        choose(
+            [
+                {"strategy": third, "error_m": 0.02},
+                {"strategy": fourth, "error_m": 0.02},
+            ]
+        )
+        is None
+    )
+
+
+def test_a_plan_may_reorder_the_ladder_but_never_invent_a_rung() -> None:
+    """The hypothesis ranking is per-run data, not a frozen constant.
+
+    Whoever just read the previous run's telemetry -- an operator or an agent
+    -- ranks the rungs for the next launch, with no code change.  A plan can
+    reorder or narrow them; it cannot promise physics this executor has no
+    implementation for.
+    """
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        TASK_CONTROL_RECOVERY_LADDER,
+        _next_recovery_strategy,
+        recovery_ladder_for_plan,
+    )
+
+    first, second, third, _fourth = TASK_CONTROL_RECOVERY_LADDER
+
+    # Absent, malformed, unknown, or duplicated entries fall back whole --
+    # never to a silently disabled recovery.
+    assert recovery_ladder_for_plan({}) == TASK_CONTROL_RECOVERY_LADDER
+    assert recovery_ladder_for_plan(
+        {"recovery_strategy_ladder": "not_a_list"}
+    ) == TASK_CONTROL_RECOVERY_LADDER
+    assert recovery_ladder_for_plan(
+        {"recovery_strategy_ladder": []}
+    ) == TASK_CONTROL_RECOVERY_LADDER
+    assert recovery_ladder_for_plan(
+        {"recovery_strategy_ladder": [first, "teleport_the_gripper"]}
+    ) == TASK_CONTROL_RECOVERY_LADDER
+    assert recovery_ladder_for_plan(
+        {"recovery_strategy_ladder": [first, first]}
+    ) == TASK_CONTROL_RECOVERY_LADDER
+
+    # A reordered, narrowed ladder is honoured, and drives escalation order.
+    reordered = recovery_ladder_for_plan(
+        {"recovery_strategy_ladder": [third, first]}
+    )
+    assert reordered == (third, first)
+    assert _next_recovery_strategy([], ladder=reordered) == third
+    assert (
+        _next_recovery_strategy(
+            [
+                {"strategy": None, "error_m": 0.02},
+                {"strategy": third, "error_m": 0.02},
+            ],
+            ladder=reordered,
+        )
+        == first
+    )
+    # A rung the run did not carry is not reachable by escalation.
+    assert (
+        _next_recovery_strategy(
+            [{"strategy": second, "error_m": 0.02}], ladder=reordered
+        )
+        is None
+    )
