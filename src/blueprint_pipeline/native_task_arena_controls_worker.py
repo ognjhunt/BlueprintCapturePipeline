@@ -1317,6 +1317,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
 
+        # Measure the gain x posture surface before the controls run.  Thirty-
+        # four runs varied the controller one hypothesis at a time while the
+        # binding constraint sat in the actuator configuration, so this trades
+        # seconds of simulator time for the sweep those runs should have been.
+        # Diagnostic only: it restores the gains, gates nothing, and a runtime
+        # that cannot retune reports that rather than failing the controls.
+        _announce("contact_posture_actuator_sweep")
+        try:
+            from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                candidate_postures,
+                run_actuator_posture_sweep,
+            )
+
+            contact_row = next(
+                row
+                for row in effective_control_plan["scripted_positive_actions"]
+                if isinstance(row, Mapping)
+                and str(row.get("phase_id") or "") == "contact_open"
+            )
+            sweep = run_actuator_posture_sweep(
+                environment=episode_environment,
+                robot=robot,
+                arm_joint_ids=list(range(7)),
+                target_position_world_m=contact_row["target_position_world_m"],
+                postures=candidate_postures(
+                    controls_global_ik, phase_id="contact_open"
+                ),
+                gripper_open_command=float(gripper["open_command"]),
+                max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
+                max_joint_setpoint_lead_rad=float(
+                    contact_row["max_joint_setpoint_lead_rad"]
+                ),
+            )
+        except BaseException as exc:  # noqa: BLE001 - a diagnostic never fails a run
+            sweep = {
+                "schema_version": "native_task_arena_actuator_posture_sweep.v1",
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "cells": [],
+            }
+        result["contact_posture_actuator_sweep"] = sweep
+        _announce(
+            "contact_posture_actuator_sweep",
+            "completed" if sweep.get("status") == "measured" else "blocked",
+        )
+
         _announce("required_controls")
         pair = run_task_neutral_controls(
             environment=episode_environment,
