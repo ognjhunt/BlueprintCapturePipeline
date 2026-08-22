@@ -172,6 +172,18 @@ BLOCKER_POSITIVE_FAILED = "deterministic_scripted_positive_failed"
 BLOCKER_PHASE_NOT_REACHED = "scripted_control_phase_not_reached"
 BLOCKER_MEDIA_INCOMPLETE = "control_episode_media_incomplete"
 
+# Paid runs C20c and C25 each burned a full GPU cycle to learn only that the
+# live arm parks ~14-15 mm from the commanded contact pose.  A failed pose
+# phase therefore retries inside the same episode: retreat toward the phase's
+# already-achieved entry pose, then re-command the pose biased by the measured
+# miss.  The arrival gate always measures against the original sealed target
+# -- only the command is biased -- and every attempt seals its own arrival
+# row, so a run either passes honestly or pins whether the miss is a
+# constant offset (compensation converges) or a saturation (it does not).
+TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS = 3
+TASK_CONTROL_RECOVERY_RETREAT_MAXIMUM_STEPS = 24
+TASK_CONTROL_RECOVERY_STRATEGY = "retreat_then_measured_miss_compensation"
+
 
 class ControlEpisodeError(ValueError):
     """Stable fail-closed control-contract errors."""
@@ -1788,7 +1800,11 @@ def _run_task_control_episode(
             }
             for _ in range(int(task_spec["settle_window_samples"]))
         )
-    for row in trajectory:
+    row_index = 0
+    attempt_number = 1
+    commanded_position_bias = [0.0, 0.0, 0.0]
+    while row_index < len(trajectory):
+        row = trajectory[row_index]
         pose_mode = row.get("mode") == "ik_pose"
         hold_arm_during_gripper_transition = bool(
             pose_mode
@@ -1836,6 +1852,15 @@ def _run_task_control_episode(
                 "previous_phase_qualified_entry_pose_held_during_gripper_"
                 "transition"
             )
+        # The command may carry a recovery bias; the arrival gate never does.
+        commanded_position = row.get("target_position_world_m")
+        if pose_mode and not hold_arm_during_gripper_transition:
+            commanded_position = [
+                float(value) + float(bias)
+                for value, bias in zip(
+                    row["target_position_world_m"], commanded_position_bias
+                )
+            ]
         for _ in range(phase_steps):
             before = [float(value) for value in environment.read_arm_joint_positions()]
             dynamics_before = _canonical_dynamics_observation(
@@ -1860,7 +1885,7 @@ def _run_task_control_episode(
                     action = [*held_arm_joint_positions, command]
                 else:
                     action = environment.scripted_action_for_pose(
-                        target_position_world_m=row["target_position_world_m"],
+                        target_position_world_m=commanded_position,
                         target_quaternion_world_xyzw=row[
                             "target_quaternion_world_xyzw"
                         ],
@@ -2018,15 +2043,124 @@ def _run_task_control_episode(
                 "termination_reason": termination_reason,
                 "target_reached": termination_reason == "stable_arrival",
             }
+            arrival["attempt"] = attempt_number
+            arrival["recovery_strategy"] = (
+                None if attempt_number == 1 else TASK_CONTROL_RECOVERY_STRATEGY
+            )
+            arrival["commanded_position_bias_m"] = [
+                float(value) for value in commanded_position_bias
+            ]
             phase_arrivals.append(arrival)
             if not arrival["target_reached"]:
+                if (
+                    attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
+                    and not hold_arm_during_gripper_transition
+                    # A position bias cannot repair an orientation-only miss;
+                    # retry only when the position gate itself failed.
+                    and terminal_error > float(row["arrival_tolerance_m"])
+                ):
+                    # Bounded retreat toward the phase's already-achieved
+                    # entry pose so a limit-saturated arm regains room, then
+                    # re-enter with the command biased by the measured miss.
+                    # Every retreat step is recorded in the same traces.
+                    retreat_position = start_sample.get(
+                        "grasp_frame_position_world_m"
+                    )
+                    retreat_orientation = (
+                        start_sample.get("grasp_frame_orientation_world_xyzw")
+                        or row.get("target_quaternion_world_xyzw")
+                    )
+                    if isinstance(
+                        retreat_position, Sequence
+                    ) and not isinstance(retreat_position, (str, bytes)):
+                        retreat_target = [
+                            float(value) for value in retreat_position
+                        ]
+                        for _ in range(
+                            TASK_CONTROL_RECOVERY_RETREAT_MAXIMUM_STEPS
+                        ):
+                            before = [
+                                float(value)
+                                for value in environment.read_arm_joint_positions()
+                            ]
+                            dynamics_before = _canonical_dynamics_observation(
+                                environment.read_arm_dynamics_observation()
+                            )
+                            action = environment.scripted_action_for_pose(
+                                target_position_world_m=retreat_target,
+                                target_quaternion_world_xyzw=retreat_orientation,
+                                gripper_command=command,
+                                max_joint_delta_rad=float(
+                                    row["max_joint_delta_rad"]
+                                ),
+                                max_joint_setpoint_lead_rad=float(
+                                    row["max_joint_setpoint_lead_rad"]
+                                ),
+                            )
+                            action = [float(value) for value in action]
+                            environment.step(action)
+                            step_index += 1
+                            after = [
+                                float(value)
+                                for value in environment.read_arm_joint_positions()
+                            ]
+                            dynamics_after = _canonical_dynamics_observation(
+                                environment.read_arm_dynamics_observation()
+                            )
+                            actions.append(
+                                _record_action(
+                                    step_index=step_index,
+                                    phase_id=str(row["phase_id"]),
+                                    action=action,
+                                    observed_before=before,
+                                    observed_after=after,
+                                    dynamics_before=dynamics_before,
+                                    dynamics_after=dynamics_after,
+                                    action_recomputed=True,
+                                    action_hold_index=0,
+                                )
+                            )
+                            samples.append(
+                                _task_neutral_sample(
+                                    environment,
+                                    task_kind=task_kind,
+                                    step_index=step_index,
+                                )
+                            )
+                            reached_back = samples[-1].get(
+                                "grasp_frame_position_world_m"
+                            )
+                            if (
+                                isinstance(reached_back, Sequence)
+                                and not isinstance(reached_back, (str, bytes))
+                                and math.dist(
+                                    [float(value) for value in reached_back],
+                                    retreat_target,
+                                )
+                                <= 4.0 * float(row["arrival_tolerance_m"])
+                            ):
+                                break
+                    commanded_position_bias = [
+                        float(bias) + (float(target) - float(value))
+                        for bias, target, value in zip(
+                            commanded_position_bias,
+                            arrival_target_position,
+                            measured,
+                        )
+                    ]
+                    attempt_number += 1
+                    continue
                 phase_execution_blocker = (
                     f"{BLOCKER_PHASE_NOT_REACHED}:{row['phase_id']}:"
                     f"error_m={terminal_error:.6f}:orientation_error_rad="
                     f"{terminal_orientation_error}:stability_steps="
                     f"{stable_steps}/{row['arrival_stability_steps']}"
+                    f":attempts={attempt_number}"
                 )
                 break
+        row_index += 1
+        attempt_number = 1
+        commanded_position_bias = [0.0, 0.0, 0.0]
     terminal = _persist_observation(
         environment,
         output_dir=output,
