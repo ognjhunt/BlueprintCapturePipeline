@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from itertools import product
 from typing import Any
 
 
@@ -170,6 +169,74 @@ def _chain_cost(
     return largest_hop, total_travel, error
 
 
+def _pair_hop(before: Sequence[float], after: Sequence[float]) -> float:
+    return max(abs(a - b) for a, b in zip(before, after, strict=True))
+
+
+def _pair_travel(before: Sequence[float], after: Sequence[float]) -> float:
+    return sum(abs(a - b) for a, b in zip(before, after, strict=True))
+
+
+def _best_chain_within_bottleneck(
+    per_phase: Sequence[Sequence[Mapping[str, Any]]],
+    *,
+    bottleneck_rad: float,
+    start_joints: Sequence[float] | None,
+) -> tuple[list[Mapping[str, Any]], float] | None:
+    """Cheapest chain whose every inter-phase hop stays within a bottleneck.
+
+    Minimises total joint travel plus pose error by dynamic programming over
+    the phase chain, so the cost is a few hundred comparisons rather than the
+    product of the branch counts.
+    """
+
+    def _node_cost(row: Mapping[str, Any]) -> float:
+        return float(row.get("position_error_m") or 0.0) + float(
+            row.get("orientation_error_rad") or 0.0
+        )
+
+    # Seed the first phase: the run-up from wherever the arm is parked is an
+    # ordinary servo move, so it is priced but never bottleneck-limited.
+    best: list[tuple[float, list[int]]] = []
+    for index, row in enumerate(per_phase[0]):
+        cost = _node_cost(row)
+        if start_joints is not None:
+            cost += _pair_travel(start_joints, row["joint_positions_rad"])
+        best.append((cost, [index]))
+
+    for phase_index in range(1, len(per_phase)):
+        previous = per_phase[phase_index - 1]
+        current = per_phase[phase_index]
+        nxt: list[tuple[float, list[int]] | None] = [None] * len(current)
+        for here, row in enumerate(current):
+            for there, prior in enumerate(previous):
+                if best[there] is None:
+                    continue
+                hop = _pair_hop(
+                    prior["joint_positions_rad"], row["joint_positions_rad"]
+                )
+                if hop > bottleneck_rad:
+                    continue
+                cost = (
+                    best[there][0]
+                    + _pair_travel(
+                        prior["joint_positions_rad"], row["joint_positions_rad"]
+                    )
+                    + _node_cost(row)
+                )
+                if nxt[here] is None or cost < nxt[here][0]:
+                    nxt[here] = (cost, [*best[there][1], here])
+        best = [entry for entry in nxt]  # type: ignore[assignment]
+        if all(entry is None for entry in best):
+            return None
+
+    finished = [entry for entry in best if entry is not None]
+    if not finished:
+        return None
+    cost, path = min(finished, key=lambda entry: entry[0])
+    return [per_phase[i][branch] for i, branch in enumerate(path)], cost
+
+
 def select_continuous_branch_chain(
     *,
     phases: Sequence[Mapping[str, Any]],
@@ -179,93 +246,119 @@ def select_continuous_branch_chain(
 ) -> dict[str, Any]:
     """Pick one branch per phase so the whole path is traversable.
 
-    Enumerates every combination of admissible branches and keeps the chain
-    with the smallest largest single-joint hop between consecutive phases,
-    breaking ties on total joint travel and then on pose error.  Reports what
-    the greedy chain would have cost, so the receipt shows the improvement
-    rather than asserting one.
+    Searches every combination -- C41's eleven phases carry 12.9 million of
+    them -- without enumerating any.  The cost decomposes over consecutive
+    phase pairs, so the chain is a shortest-path problem, not a product: bisect
+    on the largest permitted single-joint hop and run a min-travel dynamic
+    program at each candidate.  A few hundred comparisons replace a product
+    that a brute-force enumeration had to refuse outright.
+
+    Reports what the greedy chain would have cost, so the receipt shows the
+    improvement rather than asserting one.
     """
 
-    # Phases that inherit a bound pose carry no branch decision; searching over
-    # them is meaningless and refusing because of them throws away the search.
-    choosing = [phase for phase in phases if phase_offers_a_branch_choice(phase)]
+    del max_combinations  # the search no longer enumerates, so nothing to cap
     per_phase = [
         admissible_branches(phase, required_margin_rad=required_margin_rad)
-        for phase in choosing
+        for phase in phases
     ]
     if not per_phase or any(not rows for rows in per_phase):
-        empty = [
-            str(phase.get("phase_id") or "")
-            for phase, rows in zip(choosing, per_phase, strict=True)
-            if not rows
-        ]
         return {
             "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
             "status": "unavailable",
-            "reason": (
-                "phase_without_admissible_branch:" + ",".join(empty)
-                if empty
-                else "no_phase_offers_a_branch_choice"
-            ),
+            "reason": "phase_without_admissible_branch",
             "selected_chain": [],
         }
-    combinations = 1
-    for rows in per_phase:
-        combinations *= len(rows)
-        if combinations > max_combinations:
-            return {
-                "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
-                "status": "unavailable",
-                "reason": f"branch_combinations_exceed_cap:{max_combinations}",
-                "selected_chain": [],
-            }
 
-    best_chain: tuple[Mapping[str, Any], ...] | None = None
-    best_cost: tuple[float, float, float] | None = None
-    for chain in product(*per_phase):
-        cost = _chain_cost(chain, start_joint_positions_rad)
-        if best_cost is None or cost < best_cost:
-            best_cost, best_chain = cost, chain
+    # Candidate bottlenecks are exactly the hops that can occur, so bisecting
+    # over them finds the true minimum rather than an approximation of it.
+    candidates = sorted(
+        {
+            _pair_hop(before["joint_positions_rad"], after["joint_positions_rad"])
+            for index in range(1, len(per_phase))
+            for before in per_phase[index - 1]
+            for after in per_phase[index]
+        }
+    ) or [0.0]
+
+    low, high = 0, len(candidates) - 1
+    found: tuple[list[Mapping[str, Any]], float] | None = None
+    while low <= high:
+        middle = (low + high) // 2
+        attempt = _best_chain_within_bottleneck(
+            per_phase,
+            bottleneck_rad=candidates[middle],
+            start_joints=start_joint_positions_rad,
+        )
+        if attempt is None:
+            low = middle + 1
+        else:
+            found = attempt
+            high = middle - 1
+    if found is None:
+        return {
+            "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "no_chain_connects_every_phase",
+            "selected_chain": [],
+        }
+    chain, _cost = found
+    largest_hop = max(
+        (
+            _pair_hop(
+                chain[index - 1]["joint_positions_rad"],
+                chain[index]["joint_positions_rad"],
+            )
+            for index in range(1, len(chain))
+        ),
+        default=0.0,
+    )
+    total_travel = sum(
+        _pair_travel(
+            chain[index - 1]["joint_positions_rad"],
+            chain[index]["joint_positions_rad"],
+        )
+        for index in range(1, len(chain))
+    )
+    if start_joint_positions_rad is not None and chain:
+        total_travel += _pair_travel(
+            start_joint_positions_rad, chain[0]["joint_positions_rad"]
+        )
 
     # What the previous greedy rule would have produced, for comparison only.
     greedy: list[Mapping[str, Any]] = []
     reference = list(start_joint_positions_rad or [])
     for rows in per_phase:
-        if reference:
-            pick = min(
-                rows,
-                key=lambda row: max(
-                    abs(a - b)
-                    for a, b in zip(
-                        row["joint_positions_rad"], reference, strict=True
-                    )
-                ),
-            )
-        else:
-            pick = rows[0]
+        pick = (
+            min(rows, key=lambda row: _pair_hop(row["joint_positions_rad"], reference))
+            if reference
+            else rows[0]
+        )
         greedy.append(pick)
         reference = list(pick["joint_positions_rad"])
-    greedy_cost = _chain_cost(greedy, start_joint_positions_rad)
+    greedy_hop = max(
+        (
+            _pair_hop(
+                greedy[index - 1]["joint_positions_rad"],
+                greedy[index]["joint_positions_rad"],
+            )
+            for index in range(1, len(greedy))
+        ),
+        default=0.0,
+    )
 
-    assert best_chain is not None and best_cost is not None
+    combinations = 1
+    for rows in per_phase:
+        combinations *= len(rows)
     return {
         "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
         "status": "selected",
-        "combinations_evaluated": combinations,
+        "combinations_represented": combinations,
         "branches_per_phase": [len(rows) for rows in per_phase],
-        "selected_chain": [dict(row) for row in best_chain],
-        "chain_phase_ids": [
-            str(phase.get("phase_id") or "") for phase in choosing
-        ],
-        "inherited_phase_ids": [
-            str(phase.get("phase_id") or "")
-            for phase in phases
-            if not phase_offers_a_branch_choice(phase)
-        ],
-        "largest_single_joint_hop_rad": best_cost[0],
-        "total_joint_travel_rad": best_cost[1],
-        "greedy_largest_single_joint_hop_rad": greedy_cost[0],
-        "greedy_total_joint_travel_rad": greedy_cost[1],
+        "selected_chain": [dict(row) for row in chain],
+        "largest_single_joint_hop_rad": largest_hop,
+        "total_joint_travel_rad": total_travel,
+        "greedy_largest_single_joint_hop_rad": greedy_hop,
         "claim_boundary": (
             "selects_branches_for_traversability_off_sim;native_arrival_and_"
             "contact_gates_remain_the_authority"
