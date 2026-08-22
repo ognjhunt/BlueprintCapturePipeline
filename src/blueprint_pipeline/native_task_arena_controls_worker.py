@@ -51,33 +51,6 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 # contact scoring, and collision predicates are unchanged: if the solved
 # branch does not put the measured fingertip at the handle, the phase still
 # fails honestly.
-# Rolls searched about the gripper's own approach axis at contact.  The
-# authored orientation is always included by the search itself; these bracket
-# it either way, and stay inside the tilt an 85 mm jaw can afford on a 1.23 mm
-# rim.  Off-sim against C43's sealed scene: 0 deg gives 0.0000 rad of margin,
-# +30 deg gives 0.6220 rad at 0.92 mm of position error.
-CONTACT_APPROACH_ROLL_CANDIDATES_RAD = (
-    0.0, 0.175, -0.175, 0.349, -0.349, 0.524, -0.524,
-)
-# The roll is a property of the grasp, not of one phase.  Rolling only at
-# contact and reverting afterwards would twist the gripper against a rim it is
-# already holding, so every phase that holds the grasp shares one roll: the
-# search runs at contact entry and the rest inherit it.
-GRASP_ROLL_PHASE_IDS = (
-    "contact_open",
-    "contact_close",
-    "joint_path_01",
-    "joint_path_02",
-    "joint_path_03",
-    "joint_path_04",
-    "release",
-)
-# Margin the authored orientation must clear to be kept unchanged.  Above it,
-# the authored grasp wins and no roll is applied; only when the authored angle
-# cannot be held does the search deviate, and then by the smallest roll that
-# clears the floor rather than by the largest margin available.
-GRASP_ROLL_SUFFICIENT_MARGIN_RAD = 0.05
-
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
 CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
@@ -336,9 +309,6 @@ def _control_plan_global_ik_joint_targets(
 
     reference = [float(value) for value in servo.read_arm_joint_positions()]
     start_joint_positions = list(reference)
-    # One object-relative grasp transform, chosen once and held by every phase
-    # that carries the grasp.
-    selected_grasp_roll_rad: float | None = None
     phases: list[dict[str, Any]] = []
     for raw in actions:
         if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
@@ -395,31 +365,13 @@ def _control_plan_global_ik_joint_targets(
         # 85 mm opening, and off-sim it buys 0.62 rad at 0.92 mm of position
         # error.  Contact phases search it; every other phase is untouched, and
         # the authored orientation is always a candidate.
-        # Decide with a boolean, never by comparing bound methods: attribute
-        # access mints a fresh method object every time, so `solver is not
-        # servo.solve_grasp_target_multistart` is always true and would hand
-        # the roll-only argument to a solver that does not accept it.
-        use_roll_search = phase_id in GRASP_ROLL_PHASE_IDS and callable(
-            getattr(servo, "solve_grasp_target_with_approach_roll", None)
-        )
-        solver = (
-            servo.solve_grasp_target_with_approach_roll
-            if use_roll_search
-            else servo.solve_grasp_target_multistart
-        )
-        roll_kwargs = (
-            {
-                "roll_candidates_rad": CONTACT_APPROACH_ROLL_CANDIDATES_RAD,
-                "authored_preference_margin_rad": (
-                    GRASP_ROLL_SUFFICIENT_MARGIN_RAD
-                ),
-                "locked_roll_rad": selected_grasp_roll_rad,
-            }
-            if use_roll_search
-            else {}
-        )
-        solved = solver(
-            **roll_kwargs,
+        # The grasp roll is a property of the plan, applied before this loop
+        # runs, so every phase is solved against whatever orientation the plan
+        # carries.  Rolling inside the solver instead left the rolled pose
+        # uncommanded: the live differential-IK controller drives the plan's
+        # quaternion, and a rolled pose sealed anywhere else survives only as a
+        # null-space preference that cannot move the primary pose objective.
+        solved = servo.solve_grasp_target_multistart(
             target_position_world_m=position,
             target_grasp_frame_quaternion_world_xyzw=quaternion,
             preferred_seeds=[reference, *reference_seeds],
@@ -439,15 +391,6 @@ def _control_plan_global_ik_joint_targets(
         )
         if not isinstance(solved, Mapping):
             raise RuntimeError("native_task_controls_multistart_result_invalid")
-        roll_search = solved.get("approach_roll_search")
-        if (
-            selected_grasp_roll_rad is None
-            and isinstance(roll_search, Mapping)
-            and roll_search.get("status") == "selected"
-        ):
-            selected_grasp_roll_rad = float(
-                roll_search.get("selected_approach_roll_rad") or 0.0
-            )
         selected = solved.get("selected")
         phases.append(
             {
@@ -694,6 +637,108 @@ def _normalized_control_plan_for_execution(
     }
     normalized["plan_digest"] = _canonical_digest(normalized, field="plan_digest")
     return normalized
+
+
+def _pink_global_reference_seeds():
+    """The multistart seeds, imported where used to keep the seam narrow."""
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        PINK_GLOBAL_REFERENCE_SEEDS,
+    )
+
+    return PINK_GLOBAL_REFERENCE_SEEDS
+
+
+def _with_selected_grasp_roll(
+    *, servo: Any, control_plan: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Choose one grasp roll for the whole grasp and write it into the plan.
+
+    Evaluated across every grasp-holding phase, not at contact entry alone, so
+    a roll cannot be admitted on the strength of the one phase that was
+    measured while a later phase sits below the floor.  Fails open with a typed
+    receipt: a scene whose authored orientation is already holdable keeps
+    exactly the plan it had.
+    """
+
+    from blueprint_pipeline.native_task_arena_grasp_roll import (
+        DEFAULT_GRASP_HOLDING_PHASE_IDS,
+        DEFAULT_GRASP_ROLL_CANDIDATES_RAD,
+        DEFAULT_REQUIRED_MARGIN_RAD,
+        GRASP_ROLL_SCHEMA_VERSION,
+        derive_rolled_control_plan,
+        select_grasp_roll,
+    )
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    actions = plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        return plan, {
+            "schema_version": GRASP_ROLL_SCHEMA_VERSION,
+            "status": "not_applied",
+            "reason": "scripted_positive_actions_invalid",
+        }
+    axis = getattr(servo, "grasp_approach_axis_body", None)
+    axis_body = axis() if callable(axis) else None
+    if axis_body is None:
+        return plan, {
+            "schema_version": GRASP_ROLL_SCHEMA_VERSION,
+            "status": "not_applied",
+            "reason": "grasp_approach_axis_unavailable",
+        }
+
+    seen: set[str] = set()
+    holding: list[Mapping[str, Any]] = []
+    for row in actions:
+        if not isinstance(row, Mapping) or row.get("mode") != "ik_pose":
+            continue
+        phase_id = str(row.get("phase_id") or "")
+        if phase_id in DEFAULT_GRASP_HOLDING_PHASE_IDS and phase_id not in seen:
+            seen.add(phase_id)
+            holding.append(row)
+
+    reference = [float(value) for value in servo.read_arm_joint_positions()]
+
+    def _solve(phase: Mapping[str, Any], quaternion: Sequence[float]):
+        try:
+            solved = servo.solve_grasp_target_multistart(
+                target_position_world_m=phase["target_position_world_m"],
+                target_grasp_frame_quaternion_world_xyzw=list(quaternion),
+                preferred_seeds=[reference, *_pink_global_reference_seeds()],
+                reference_joint_positions_rad=reference,
+                position_tolerance_m=float(phase["arrival_tolerance_m"]),
+                orientation_tolerance_rad=float(
+                    phase.get("arrival_orientation_tolerance_rad") or 0.08
+                ),
+                preferred_minimum_joint_limit_margin_rad=(
+                    DEFAULT_REQUIRED_MARGIN_RAD
+                ),
+                required_minimum_joint_limit_margin_rad=0.0,
+            )
+        except Exception:  # noqa: BLE001 - an unsolvable roll is not a failure
+            return None
+        return solved.get("selected") if isinstance(solved, Mapping) else None
+
+    selection = select_grasp_roll(
+        holding_phases=holding,
+        approach_axis_body=axis_body,
+        solve_phase=_solve,
+        roll_candidates_rad=DEFAULT_GRASP_ROLL_CANDIDATES_RAD,
+        required_margin_rad=DEFAULT_REQUIRED_MARGIN_RAD,
+    )
+    if selection.get("status") != "selected":
+        return plan, {**selection, "status": "not_applied"}
+    roll = float(selection["selected_roll_rad"])
+    if roll == 0.0:
+        # The authored orientation is holdable: keep the plan untouched.
+        return plan, {**selection, "status": "not_applied", "reason": "authored_roll_admissible"}
+    derived, applied = derive_rolled_control_plan(
+        control_plan=plan,
+        roll_rad=roll,
+        approach_axis_body=axis_body,
+        holding_phase_ids=DEFAULT_GRASP_HOLDING_PHASE_IDS,
+    )
+    return derived, {**selection, **applied}
 
 
 def _with_contact_entry_branch_replay(
@@ -1380,6 +1425,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "outcome_authority"
             ),
         }
+        _announce("contact_grasp_roll_selection")
+        normalized_control_plan, grasp_roll = _with_selected_grasp_roll(
+            servo=servo, control_plan=normalized_control_plan
+        )
+        result["contact_grasp_roll"] = grasp_roll
+        _announce(
+            "contact_grasp_roll_selection",
+            "completed" if grasp_roll.get("status") == "applied" else "blocked",
+        )
+
         _announce("controls_global_ik_preflight")
         selected_control_plan, scripted_pose_joint_targets, jaw_selection = (
             _select_parallel_jaw_control_plan(

@@ -1122,120 +1122,170 @@ def test_adopting_a_calibrated_posture_requires_recompiling_the_plan() -> None:
     assert recompiled["plan_digest"] != compiled["plan_digest"]
 
 
-def test_non_grasp_phases_are_solved_without_roll_arguments() -> None:
-    """The dispatch bug a permissive fake hid.
+def _roll_plan(quaternion):
+    """A plan whose grasp-holding phases all share one authored orientation."""
 
-    The worker chose its solver by comparing bound methods -- and attribute
-    access mints a fresh method object every time, so the comparison was
-    always true and every phase received the roll-only argument.  A solver
-    with a strict signature refuses it, which is what the live preflight would
-    have done on `prealign` before the hypothesis was ever tested.  The fake
-    here accepts no stray keywords, so the bug cannot come back unnoticed.
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    rows = []
+    for phase_id in (
+        "prealign", "approach", "contact_open", "contact_close",
+        "joint_path_01", "joint_path_02", "joint_path_03", "joint_path_04",
+        "release", "retreat",
+    ):
+        rows.append(
+            {
+                "phase_id": phase_id,
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 0.0, 0.5],
+                "target_quaternion_world_xyzw": list(quaternion),
+                "arrival_tolerance_m": 0.005 if "contact" in phase_id else 0.02,
+                "arrival_orientation_tolerance_rad": 0.08,
+                "maximum_steps": 40,
+                "minimum_steps": 2,
+                "arrival_stability_steps": 2,
+            }
+        )
+    plan = {"scripted_positive_actions": rows, "plan_digest": ""}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+class _RollServo:
+    """Strict signature: a stray keyword is a failure, as in production."""
+
+    def __init__(self, margin_for):
+        self._margin_for = margin_for
+        self._pink_hand_pose_at_binding_base = [0.0] * 3 + [0.0, 0.0, 0.0, 1.0]
+        self._pink_grasp_pose_at_binding_base = [0.13, 0.0, 0.0] + [0.0, 0.0, 0.0, 1.0]
+
+    def grasp_approach_axis_body(self):
+        return [1.0, 0.0, 0.0]
+
+    def read_arm_joint_positions(self):
+        return [0.0] * 7
+
+    def solve_grasp_target_multistart(
+        self,
+        *,
+        target_position_world_m,
+        target_grasp_frame_quaternion_world_xyzw,
+        preferred_seeds,
+        reference_joint_positions_rad,
+        position_tolerance_m,
+        orientation_tolerance_rad,
+        preferred_minimum_joint_limit_margin_rad,
+        required_minimum_joint_limit_margin_rad,
+    ):
+        return {
+            "solved": True,
+            "selected": {
+                "joint_positions_rad": [0.0] * 7,
+                "minimum_joint_limit_margin_rad": self._margin_for(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
+                "position_error_m": 0.001,
+                "orientation_error_rad": 0.01,
+            },
+            "attempts": [],
+        }
+
+
+def test_the_chosen_roll_reaches_the_quaternion_the_controller_drives() -> None:
+    """The defect this replaces: a rolled pose that was never commanded.
+
+    Rolling inside the solver sealed a rolled quaternion in a receipt while the
+    control-plan row kept the authored one.  The live differential-IK
+    controller drives the plan's orientation, so the roll survived only as a
+    null-space posture preference -- which by construction cannot move the
+    primary six-dimensional pose objective.  This asserts on the plan the
+    controller actually reads, by calling the real worker seam.
     """
 
     from blueprint_pipeline.native_task_arena_controls_worker import (
-        GRASP_ROLL_PHASE_IDS,
+        _with_selected_grasp_roll,
     )
 
-    seen: dict[str, set[str]] = {}
+    authored = [0.0, 0.0, 0.0, 1.0]
+    # The authored orientation cannot be held; rolling away from it can.
+    def margin_for(q):
+        deviation = sum(abs(a - b) for a, b in zip(q, authored))
+        return 0.0 if deviation < 0.05 else 0.2
 
-    class _StrictServo:
-        """Accepts exactly the arguments each real solver declares."""
+    derived, receipt = _with_selected_grasp_roll(
+        servo=_RollServo(margin_for), control_plan=_roll_plan(authored)
+    )
 
-        def read_arm_joint_positions(self):
-            return [0.0] * 7
-
-        def solve_grasp_target_multistart(
-            self,
-            *,
-            target_position_world_m,
-            target_grasp_frame_quaternion_world_xyzw,
-            preferred_seeds,
-            reference_joint_positions_rad,
-            position_tolerance_m,
-            orientation_tolerance_rad,
-            preferred_minimum_joint_limit_margin_rad,
-            required_minimum_joint_limit_margin_rad,
-        ):
-            return {
-                "solved": True,
-                "selected": {
-                    "joint_positions_rad": [0.0] * 7,
-                    "minimum_joint_limit_margin_rad": 0.2,
-                    "position_error_m": 0.001,
-                    "orientation_error_rad": 0.01,
-                },
-                "attempts": [],
-            }
-
-        def solve_grasp_target_with_approach_roll(
-            self,
-            *,
-            roll_candidates_rad,
-            authored_preference_margin_rad,
-            locked_roll_rad,
-            **multistart_kwargs,
-        ):
-            result = self.solve_grasp_target_multistart(**multistart_kwargs)
-            result["approach_roll_search"] = {
-                "status": "selected",
-                "selected_approach_roll_rad": 0.349,
-            }
-            return result
-
-    servo = _StrictServo()
-    for phase_id in ("prealign", "approach", "contact_open", "joint_path_01"):
-        use_roll = phase_id in GRASP_ROLL_PHASE_IDS
-        solver = (
-            servo.solve_grasp_target_with_approach_roll
-            if use_roll
-            else servo.solve_grasp_target_multistart
-        )
-        kwargs = dict(
-            target_position_world_m=[1.0, 0.0, 0.0],
-            target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
-            preferred_seeds=[[0.0] * 7],
-            reference_joint_positions_rad=[0.0] * 7,
-            position_tolerance_m=0.005,
-            orientation_tolerance_rad=0.08,
-            preferred_minimum_joint_limit_margin_rad=0.05,
-            required_minimum_joint_limit_margin_rad=0.005,
-        )
-        if use_roll:
-            kwargs |= {
-                "roll_candidates_rad": (0.0, 0.349),
-                "authored_preference_margin_rad": 0.05,
-                "locked_roll_rad": None,
-            }
-        # A TypeError here is the live preflight failure this test exists for.
-        solver(**kwargs)
-        seen[phase_id] = set(kwargs)
-
-    assert "roll_candidates_rad" not in seen["prealign"]
-    assert "roll_candidates_rad" not in seen["approach"]
-    assert "roll_candidates_rad" in seen["contact_open"]
-    # The roll belongs to the grasp, so the door arc carries it too.
-    assert "roll_candidates_rad" in seen["joint_path_01"]
+    assert receipt["status"] == "applied"
+    assert receipt["selected_roll_rad"] != 0.0
+    rows = {r["phase_id"]: r for r in derived["scripted_positive_actions"]}
+    # Every grasp-holding phase now carries the rolled orientation...
+    for phase_id in (
+        "contact_open", "contact_close", "joint_path_01", "joint_path_02",
+        "joint_path_03", "joint_path_04", "release",
+    ):
+        assert rows[phase_id]["target_quaternion_world_xyzw"] != authored
+        assert rows[phase_id]["authored_target_quaternion_world_xyzw"] == authored
+        assert rows[phase_id]["applied_grasp_roll_rad"] == receipt["selected_roll_rad"]
+    # ...and every phase that is not holding the grasp is untouched.
+    for phase_id in ("prealign", "approach", "retreat"):
+        assert rows[phase_id]["target_quaternion_world_xyzw"] == authored
+        assert "applied_grasp_roll_rad" not in rows[phase_id]
+    # The derived plan is a different, digest-bound plan.
+    assert derived["plan_digest"] != receipt["source_control_plan_digest"]
+    assert derived["plan_digest"] == receipt["derived_control_plan_digest"]
 
 
-def test_the_whole_grasp_holding_family_shares_one_roll() -> None:
-    """Rolling at contact and reverting would twist a rim already held."""
+def test_a_roll_is_refused_when_any_holding_phase_falls_below_the_floor() -> None:
+    """Contact entry alone is not enough to admit a roll for the family."""
 
     from blueprint_pipeline.native_task_arena_controls_worker import (
-        GRASP_ROLL_PHASE_IDS,
+        _with_selected_grasp_roll,
     )
 
-    for phase_id in (
-        "contact_open",
-        "contact_close",
-        "joint_path_01",
-        "joint_path_02",
-        "joint_path_03",
-        "joint_path_04",
-        "release",
-    ):
-        assert phase_id in GRASP_ROLL_PHASE_IDS
-    # Phases before the grasp exists, and after it is let go, keep the authored
-    # orientation: there is nothing being held for a roll to twist.
-    for phase_id in ("prealign", "approach", "retreat"):
-        assert phase_id not in GRASP_ROLL_PHASE_IDS
+    authored = [0.0, 0.0, 0.0, 1.0]
+    plan = _roll_plan(authored)
+    # Make one door-arc phase distinguishable, and starve every rolled pose
+    # there: contact would be happy, the family must not be.
+    for row in plan["scripted_positive_actions"]:
+        if row["phase_id"] == "joint_path_03":
+            row["target_position_world_m"] = [2.0, 0.0, 0.5]
+
+    def margin_for(q):
+        return 0.0 if sum(abs(a - b) for a, b in zip(q, authored)) < 0.05 else 0.2
+
+    class _StarveOnePhase(_RollServo):
+        def solve_grasp_target_multistart(self, **kwargs):
+            result = super().solve_grasp_target_multistart(**kwargs)
+            if kwargs["target_position_world_m"][0] == 2.0:
+                result["selected"]["minimum_joint_limit_margin_rad"] = 0.001
+            return result
+
+    derived, receipt = _with_selected_grasp_roll(
+        servo=_StarveOnePhase(margin_for), control_plan=plan
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert "no_roll_clears_required_margin_across_the_family" in receipt["reason"]
+    # The plan is returned unchanged rather than half-rolled.
+    rows = {r["phase_id"]: r for r in derived["scripted_positive_actions"]}
+    assert all(
+        row["target_quaternion_world_xyzw"] == authored for row in rows.values()
+    )
+
+
+def test_an_authored_orientation_that_holds_is_left_alone() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_selected_grasp_roll,
+    )
+
+    authored = [0.0, 0.0, 0.0, 1.0]
+    derived, receipt = _with_selected_grasp_roll(
+        servo=_RollServo(lambda q: 0.4), control_plan=_roll_plan(authored)
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "authored_roll_admissible"
+    assert receipt["selected_roll_rad"] == 0.0
+    rows = derived["scripted_positive_actions"]
+    assert all(r["target_quaternion_world_xyzw"] == authored for r in rows)
