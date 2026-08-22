@@ -1805,13 +1805,31 @@ def validate_task_control_plan(
         ):
             errors.append(f"task_control_scripted_action_invalid:{index}")
         else:
-            normalized_actions.append(
-                {
-                    "phase_id": phase_id,
-                    "arm_joint_positions": arm,
-                    "gripper_state": gripper_state,
-                }
-            )
+            normalized = {
+                "phase_id": phase_id,
+                "arm_joint_positions": arm,
+                "gripper_state": gripper_state,
+            }
+            # A joint row may carry the same actuator bounds a pose row does.
+            # Dropping them here would silently return the row to the
+            # unbounded command path that saturated C33's entry ramp, so they
+            # are preserved when both are present and well formed.
+            try:
+                slew = float(raw["max_joint_delta_rad"])
+                lead = float(raw["max_joint_setpoint_lead_rad"])
+            except (KeyError, TypeError, ValueError):
+                slew = lead = None
+            if (
+                slew is not None
+                and lead is not None
+                and math.isfinite(slew)
+                and math.isfinite(lead)
+                and slew > 0.0
+                and lead >= slew
+            ):
+                normalized["max_joint_delta_rad"] = slew
+                normalized["max_joint_setpoint_lead_rad"] = lead
+            normalized_actions.append(normalized)
             maximum_scripted_steps += 1
     for index, action in enumerate(normalized_actions):
         if not action.get(
@@ -2029,7 +2047,25 @@ def _run_task_control_episode(
                     if state == "open"
                     else float(gripper_closed_command)
                 )
-                action = [*row["arm_joint_positions"], command]
+                bounded = getattr(environment, "bounded_joint_action", None)
+                lead = row.get("max_joint_setpoint_lead_rad")
+                slew = row.get("max_joint_delta_rad")
+                if callable(bounded) and lead is not None and slew is not None:
+                    # Raw joint rows bypassed the servo, so nothing held them
+                    # to what the actuator can pull.  C33's entry ramp ran the
+                    # command ahead of a lagging wrist for 37% of its rows and
+                    # ended further from the handle than the shorter ramp
+                    # before it.  Same targets, now under the servo's bounds,
+                    # which is also what turns a repeated target into a ramp
+                    # at exactly the rate the joint can follow.
+                    action = bounded(
+                        target_joint_positions_rad=row["arm_joint_positions"],
+                        gripper_command=command,
+                        max_joint_delta_rad=float(slew),
+                        max_joint_setpoint_lead_rad=float(lead),
+                    )
+                else:
+                    action = [*row["arm_joint_positions"], command]
             action = [float(value) for value in action]
             environment.step(action)
             step_index += 1

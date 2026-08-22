@@ -564,6 +564,7 @@ class IsaacEpisodeAdapter:
         scripted_pose_controller_reset_callback: Callable[[], None] | None = None,
         simulation_step_seconds: float | None = None,
         scripted_pose_action_callback: Callable[..., Sequence[float]] | None = None,
+        bounded_joint_action_callback: Callable[..., Sequence[float]] | None = None,
         camera_pose_callback: Callable[
             [str], tuple[Sequence[float], Sequence[float]] | None
         ]
@@ -599,6 +600,7 @@ class IsaacEpisodeAdapter:
             else float(simulation_step_seconds)
         )
         self._scripted_pose_action_callback = scripted_pose_action_callback
+        self._bounded_joint_action_callback = bounded_joint_action_callback
         self._camera_pose_callback = camera_pose_callback
         self._task_sample_callback = task_sample_callback
         self._grasp_frame_pose_callback = grasp_frame_pose_callback
@@ -1009,6 +1011,37 @@ class IsaacEpisodeAdapter:
                 ["isaac_episode_hold_gripper_command_invalid"]
             )
         return [*self.read_arm_joint_positions(), command]
+
+    def bounded_joint_action(
+        self,
+        *,
+        target_joint_positions_rad: Sequence[float],
+        gripper_command: float,
+        max_joint_delta_rad: float,
+        max_joint_setpoint_lead_rad: float,
+    ) -> list[float]:
+        """Command a solved joint posture through the servo's bounds."""
+
+        if self._bounded_joint_action_callback is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_bounded_joint_action_callback_missing"]
+            )
+        values = self._bounded_joint_action_callback(
+            target_joint_positions_rad=[
+                float(value) for value in target_joint_positions_rad
+            ],
+            gripper_command=float(gripper_command),
+            max_joint_delta_rad=float(max_joint_delta_rad),
+            max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+        )
+        action = [float(value) for value in values]
+        if len(action) != self._action_dim or not all(
+            math.isfinite(value) for value in action
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_bounded_joint_action_invalid"]
+            )
+        return action
 
     def scripted_action_for_pose(
         self,

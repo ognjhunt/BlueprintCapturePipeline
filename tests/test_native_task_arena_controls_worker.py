@@ -912,29 +912,38 @@ def test_contact_entry_branch_replay_inserts_bounded_joint_path() -> None:
         for row in actions
         if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
     ]
-    # maximum joint delta 0.5 rad at 0.05 rad per row -> 10 interpolation rows.
     assert receipt["interpolation_rows"] == 10
     assert len(replay_rows) == 10 + CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS
     assert all(row["gripper_state"] == "open" for row in replay_rows)
-    # Bounded per-row joint motion, starting from the approach solution.
-    previous = [0.0] * 7
+    # Every row commands the same solved posture, and carries the bounds that
+    # make the servo ramp toward it at a rate the joints can follow.  The
+    # executor therefore cannot outrun a lagging joint the way an open-loop
+    # interpolation did.
     for row in replay_rows:
-        deltas = [
-            abs(a - b) for a, b in zip(row["arm_joint_positions"], previous)
-        ]
-        assert max(deltas) <= 0.05 + 1e-9
-        previous = row["arm_joint_positions"]
-    assert previous == pytest.approx([0.3, -0.2, 0.1, 0.4, -0.5, 0.2, 0.05])
+        assert row["arm_joint_positions"] == pytest.approx(
+            targets[1]["joint_positions_rad"]
+        )
+        assert row["max_joint_delta_rad"] > 0.0
+        assert row["max_joint_setpoint_lead_rad"] >= row["max_joint_delta_rad"]
     # The rows sit immediately before the unchanged contact_open gate, and
     # contact_close still directly follows contact_open.
     phase_ids = [row["phase_id"] for row in actions]
     contact_index = phase_ids.index("contact_open")
     assert phase_ids[contact_index - 1] == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
     assert phase_ids[contact_index + 1] == "contact_close"
-    # The rewritten plan re-digests and still satisfies the fail-closed
-    # validator, including the gripper-transition predecessor rule.
+    # The rewritten plan re-digests, still satisfies the fail-closed
+    # validator, and the validator preserves the bounds rather than dropping
+    # the rows back onto the unbounded command path.
     validated = validate_task_control_plan(rewritten, task_spec=task)
     assert validated["plan_digest"] == rewritten["plan_digest"]
+    validated_replay = [
+        row
+        for row in validated["scripted_positive_actions"]
+        if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    assert validated_replay
+    assert all("max_joint_delta_rad" in row for row in validated_replay)
+    assert all("max_joint_setpoint_lead_rad" in row for row in validated_replay)
 
 
 def test_contact_entry_branch_replay_fails_open_without_solutions() -> None:
@@ -1010,15 +1019,21 @@ def test_branch_replay_row_size_follows_the_slowest_actuator() -> None:
     assert receipt["status"] == "applied"
     assert receipt["actuator_feasible_step_rad"] == pytest.approx(0.005)
     rows = [
-        row["arm_joint_positions"]
+        row
         for row in rewritten["scripted_positive_actions"]
         if row.get("phase_id") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
     ]
-    previous = targets[0]["joint_positions_rad"]
-    for row in rows:
-        assert max(abs(a - b) for a, b in zip(row, previous)) <= 0.005 + 1e-9
-        previous = row
-    assert previous == pytest.approx(targets[1]["joint_positions_rad"])
+    # The slew handed to the servo is the slowest actuator's feasible step, so
+    # the ramp it produces advances no faster than that joint can follow.
+    assert all(
+        row["max_joint_delta_rad"] == pytest.approx(0.005) for row in rows
+    )
+    assert all(
+        row["arm_joint_positions"] == pytest.approx(targets[1]["joint_positions_rad"])
+        for row in rows
+    )
+    # Enough rows to cover the traverse at that rate.
+    assert len(rows) >= 0.5 / 0.005
     # The Cartesian phase behind a replayed entry only confirms arrival, and
     # that reclaimed budget is what pays for the extra rows.
     assert receipt["contact_phase_steps_reclaimed"] > 0
