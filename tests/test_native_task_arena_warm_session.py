@@ -185,7 +185,8 @@ def test_warm_execution_reuses_instance_without_allocating(
     # Rebind the session deadline to real test time after authority validation.
     monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
     monkeypatch.setattr(warm_vast, "_read_api_key", lambda: "secret-api-key")
-    monkeypatch.setattr(warm_vast, "_truthy", lambda _name: True)
+    monkeypatch.delenv(warm_vast.VAST_API_GATE_ENV, raising=False)
+    monkeypatch.delenv(warm_vast.VAST_INSTANCE_LAUNCH_GATE_ENV, raising=False)
     monkeypatch.setattr(
         warm_vast,
         "consume_native_task_arena_warm_authority_once",
@@ -282,6 +283,8 @@ def test_warm_execution_reuses_instance_without_allocating(
     assert result["provider_instance_id"] == 123
     assert result["continuing_spend_from_this_run"] is False
     assert result["warm_session_closeout"]["provider_instance_absent"] is True
+    assert warm_vast.VAST_API_GATE_ENV not in warm_vast.os.environ
+    assert warm_vast.VAST_INSTANCE_LAUNCH_GATE_ENV not in warm_vast.os.environ
     assert Path(result["artifact_manifest_path"]).is_file()
     assert Path(result["teardown_manifest_path"]).is_file()
     teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())

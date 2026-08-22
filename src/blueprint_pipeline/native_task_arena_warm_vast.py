@@ -13,7 +13,10 @@ from typing import Any
 import urllib.error
 import urllib.request
 
-from .adp_isaac_lab_arena_vast import _extract_provider_output
+from .adp_isaac_lab_arena_vast import (
+    _extract_provider_output,
+    _vast_authority_environment,
+)
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .native_task_arena_controls_bundle import RESULT_FILENAME
 from .native_task_arena_warm_authority import (
@@ -339,6 +342,39 @@ def run_native_task_arena_warm_controls_vast(
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
+    """Run through the same scoped Vast mutation gates as a cold Arena run."""
+
+    kwargs = {
+        "job_dir": job_dir,
+        "prepared_bundle": prepared_bundle,
+        "warm_session": warm_session,
+        "warm_attempt_authority": warm_attempt_authority,
+        "paid_resource_admission_grant": paid_resource_admission_grant,
+        "execute": execute,
+        "object_store_key_prefix": object_store_key_prefix,
+        "close_on_success": close_on_success,
+    }
+    if not execute:
+        return _run_native_task_arena_warm_controls_vast(**kwargs)
+    # The cold Arena path deliberately opens these process-local gates only
+    # after paid-resource admission and restores them afterwards. Warm attach
+    # has the same provider GET/execute/DELETE surface, so it must use the same
+    # scoped authority instead of depending on persistent service env flags.
+    with _vast_authority_environment():
+        return _run_native_task_arena_warm_controls_vast(**kwargs)
+
+
+def _run_native_task_arena_warm_controls_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    warm_session: Mapping[str, Any],
+    warm_attempt_authority: Mapping[str, Any] | None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
+    close_on_success: bool = True,
+) -> dict[str, Any]:
     """Run one controls bundle on an existing instance; allocate no provider."""
 
     job = Path(job_dir).expanduser().resolve()
@@ -380,6 +416,15 @@ def run_native_task_arena_warm_controls_vast(
         return result
     if authority is None or paid_resource_admission_grant is None:
         raise ValueError("native_task_arena_warm_paid_authority_missing")
+    api_key = _read_api_key()
+    if (
+        not _truthy(VAST_API_GATE_ENV)
+        or not _truthy(VAST_INSTANCE_LAUNCH_GATE_ENV)
+        or not api_key
+    ):
+        raise ValueError("native_task_arena_warm_vast_api_gate_closed")
+    # Do not burn the single-use authority on a local credential/gate defect.
+    # Consumption immediately precedes the first provider request.
     consumption = consume_native_task_arena_warm_authority_once(authority)
     if consumption.get("status") != "consumed":
         return {
@@ -389,13 +434,6 @@ def run_native_task_arena_warm_controls_vast(
             "authorization_consumption": consumption,
             "blockers": list(consumption.get("blockers") or []),
         }
-    api_key = _read_api_key()
-    if (
-        not _truthy(VAST_API_GATE_ENV)
-        or not _truthy(VAST_INSTANCE_LAUNCH_GATE_ENV)
-        or not api_key
-    ):
-        raise ValueError("native_task_arena_warm_vast_api_gate_closed")
     instance_id = int(session["instance_id"])
     status_code, instance_payload = _api_json(
         method="GET",
