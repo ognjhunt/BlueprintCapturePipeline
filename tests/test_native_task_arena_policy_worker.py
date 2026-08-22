@@ -305,3 +305,100 @@ def test_policy_admission_refuses_two_absent_digests() -> None:
         "execution_spec_prompt_vs_task_spec",
         "execution_spec_query_budget_vs_task_spec",
     }
+
+
+def test_blocked_result_before_first_observation_retains_typed_media_gap(
+    tmp_path,
+) -> None:
+    """A failure before the first observation must retain a typed media gap.
+
+    The doctrine (AGENTS.md, enforced downstream by
+    ``adp_prospective_design``) refuses completed-episode claims without media
+    and refuses pre-observation failures without an explicit typed gap.  A
+    bare blocked receipt is indistinguishable from lost media.
+    """
+
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    result = {
+        "status": "blocked",
+        "blockers": ["native_task_policy_failed_at_start:RuntimeError:boom"],
+        "phase_reached": "start",
+        "candidate_policy_queried": False,
+    }
+
+    gap = _typed_media_gap_for_blocked_result(output_root=tmp_path, result=result)
+
+    assert gap == {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "native_task_policy_failed_at_start:RuntimeError:boom",
+        },
+    }
+
+
+def test_media_gap_not_asserted_when_episode_media_exists(tmp_path) -> None:
+    """Retained frames refute 'before first observation'; assert no gap."""
+
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    frames = tmp_path / "episodes" / "e1" / "frames" / "external"
+    frames.mkdir(parents=True)
+    (frames / "000000-policy-input.png").write_bytes(b"\x89PNG")
+    result = {
+        "status": "blocked",
+        "blockers": ["native_task_policy_failed_at_policy_client_verified:X:y"],
+        "phase_reached": "policy_client_verified",
+        "candidate_policy_queried": False,
+    }
+
+    assert (
+        _typed_media_gap_for_blocked_result(output_root=tmp_path, result=result)
+        is None
+    )
+
+
+def test_media_gap_not_asserted_on_completed_result(tmp_path) -> None:
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    result = {
+        "status": "completed",
+        "blockers": [],
+        "phase_reached": "episode_complete",
+        "candidate_policy_queried": True,
+        "episode": {"schema_version": "adp009d_policy_episode.v3"},
+    }
+
+    assert (
+        _typed_media_gap_for_blocked_result(output_root=tmp_path, result=result)
+        is None
+    )
+
+
+def test_media_gap_reason_falls_back_to_phase_when_blockers_empty(
+    tmp_path,
+) -> None:
+    """The contract requires a non-empty reason string."""
+
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    result = {
+        "status": "blocked",
+        "blockers": [],
+        "phase_reached": "inputs_verified",
+        "candidate_policy_queried": False,
+    }
+
+    gap = _typed_media_gap_for_blocked_result(output_root=tmp_path, result=result)
+
+    assert gap is not None
+    assert gap["media_gap"]["reason"] == "failed_at_inputs_verified"

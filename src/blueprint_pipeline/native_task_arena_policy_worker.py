@@ -95,6 +95,37 @@ def _bound_digest(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("sha256:") and len(value) > 7
 
 
+def _typed_media_gap_for_blocked_result(
+    *, output_root: Path, result: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """A failure before the first observation must retain a typed media gap.
+
+    The doctrine refuses completed episodes without lossless media and refuses
+    pre-observation failures without an explicit typed gap; a bare blocked
+    receipt is indistinguishable from lost media.  The discriminator here is
+    observable truth rather than a phase label: whether any episode media byte
+    was retained under this run's media root.
+    """
+
+    if result.get("status") == "completed" or "episode" in result:
+        return None
+    episodes_root = output_root / "episodes"
+    if episodes_root.is_dir() and any(
+        path.is_file() for path in episodes_root.rglob("*")
+    ):
+        return None
+    reason = next(iter(result.get("blockers") or []), "")
+    if not reason:
+        reason = f"failed_at_{result.get('phase_reached') or 'unknown'}"
+    return {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": str(reason),
+        },
+    }
+
+
 def _admission_binding_mismatches(
     *,
     manifest: Mapping[str, Any],
@@ -475,6 +506,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     finally:
         result["blockers"] = sorted(set(result["blockers"]))
+        media_gap = _typed_media_gap_for_blocked_result(
+            output_root=output_root, result=result
+        )
+        if media_gap is not None:
+            result["visual_evidence"] = media_gap
         result["completed_at_unix_ns"] = time.time_ns()
         _persist(output, result)
         if simulation_app is not None:

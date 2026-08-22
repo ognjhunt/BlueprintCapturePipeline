@@ -143,6 +143,9 @@ BLOCKER_STEP_INDEX_NOT_INCREASING = "policy_episode_step_index_not_increasing"
 BLOCKER_CLIENT_RETURNED_NOTHING = "policy_episode_client_returned_no_chunk"
 BLOCKER_QUERY_BUDGET_EXHAUSTED = "policy_episode_query_budget_exhausted"
 BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
+BLOCKER_SOURCE_RESOLUTION_UNMEASURED = (
+    "policy_episode_source_resolution_unmeasured_or_mixed"
+)
 
 
 class PolicyEpisodeError(ValueError):
@@ -151,6 +154,19 @@ class PolicyEpisodeError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted({str(e) for e in errors if str(e)}))
         super().__init__(";".join(self.errors))
+
+
+def _measured_source_hw(observed: set[tuple[int, int]]) -> tuple[int, int]:
+    """The one camera size every policy-input frame was observed to have.
+
+    The receipt seals which conversion was applied; a defaulted or ambiguous
+    source size would describe a conversion that did not happen, so anything
+    but exactly one measured size refuses.
+    """
+
+    if len(observed) != 1:
+        raise PolicyEpisodeError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
+    return next(iter(observed))
 
 
 class EpisodeEnvironment(Protocol):
@@ -623,6 +639,7 @@ def run_policy_episode(
     retained_policy_frames: list[dict[str, Any]] = []
     retained_multicamera_observations: list[dict[str, Any]] = []
     retained_review_observations: list[dict[str, Any]] = []
+    observed_source_resolutions_hw: set[tuple[int, int]] = set()
     media_observation_index = 0
     multicamera_evaluation_available = callable(
         getattr(environment, "read_evaluation_camera_inputs", None)
@@ -683,6 +700,17 @@ def run_policy_episode(
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
         }
+        # The conversion receipt must report the size the cameras actually
+        # rendered, so measure it from the frames the policy receives rather
+        # than trusting the module's 1280x720 default.  One source size cannot
+        # truthfully describe two differently sized views, so a mix refuses
+        # immediately instead of sealing a conversion that did not happen.
+        for frame in camera_rgb.values():
+            shape = getattr(frame, "shape", None)
+            if shape is not None and len(shape) >= 2:
+                observed_source_resolutions_hw.add((int(shape[0]), int(shape[1])))
+        if len(observed_source_resolutions_hw) > 1:
+            raise PolicyEpisodeError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
         phase_started = time.monotonic()
         try:
             observation = build_droid_observation(
@@ -1067,7 +1095,9 @@ def run_policy_episode(
         "control_hz": DROID_CONTROL_HZ,
         "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
         "action_space": commanded_action_magnitudes["source_action_space"],
-        "observation_conversion": describe_observation_conversion(candidate_id),
+        "observation_conversion": describe_observation_conversion(
+            candidate_id, source_hw=_measured_source_hw(observed_source_resolutions_hw)
+        ),
         "destination_position_world_m": (
             [float(v) for v in destination_position_world_m]
             if destination_position_world_m is not None
