@@ -493,3 +493,189 @@ def test_gripper_transition_holds_arm_targets_and_runs_full_dwell(
     )
     assert close_arrival["target_position_world_m"] == [0.0, 0.0, 0.0]
     assert close_arrival["target_reached"] is True
+
+
+class _OffsetCartesianEnvironment(_CartesianEnvironment):
+    """The live arm lands a fixed distance from wherever it is commanded.
+
+    This replays the C20c/C25 paid-run class: the controller converges, but
+    the measured PhysX fingertip midpoint sits a systematic ~14 mm from the
+    commanded pose, so a single open-loop attempt can never satisfy the gate.
+    """
+
+    OFFSET_M = (0.014, 0.0, 0.0)
+
+    def scripted_action_for_pose(
+        self,
+        *,
+        target_position_world_m,
+        target_quaternion_world_xyzw,
+        gripper_command,
+        max_joint_delta_rad,
+        max_joint_setpoint_lead_rad,
+    ):
+        del target_quaternion_world_xyzw
+        del max_joint_delta_rad, max_joint_setpoint_lead_rad
+        reached = [
+            float(value) + offset
+            for value, offset in zip(target_position_world_m, self.OFFSET_M)
+        ]
+        return [*reached, 0.0, 0.0, 0.0, 0.0, gripper_command]
+
+
+class _StuckCartesianEnvironment(_CartesianEnvironment):
+    """The arm parks at one wrong pose no matter what is commanded."""
+
+    STUCK_AT_M = (0.4, 0.0, 0.0)
+
+    def scripted_action_for_pose(self, *, gripper_command, **_kwargs):
+        return [*self.STUCK_AT_M, 0.0, 0.0, 0.0, 0.0, gripper_command]
+
+
+def _patched_media(monkeypatch: pytest.MonkeyPatch) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    observation_index = {"value": 0}
+
+    def fake_observation(*_args, **kwargs):
+        row = {
+            "observation_index": observation_index["value"],
+            "kind": kwargs["kind"],
+            "views": {},
+        }
+        observation_index["value"] += 1
+        return row
+
+    monkeypatch.setattr(module, "_persist_observation", fake_observation)
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+
+
+def _recovery_plan(task: dict) -> dict:
+    def phase(phase_id, target, gripper_state):
+        return {
+            "phase_id": phase_id,
+            "mode": "ik_pose",
+            "target_position_world_m": target,
+            "target_quaternion_world_xyzw": None,
+            "gripper_state": gripper_state,
+            "minimum_steps": 1,
+            "maximum_steps": 2,
+            "arrival_tolerance_m": 1.0e-6,
+            "arrival_stability_steps": 1,
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.2,
+        }
+
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "articulated-open-close-recovery",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "e" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            phase("open", [0.9, 0.0, 0.0], "closed"),
+            phase("retreat", [0.9, 1.0, 0.0], "open"),
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def test_pose_phase_recovers_from_systematic_offset_within_one_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A measured 14 mm miss must trigger a biased retry, not end the run.
+
+    Paid runs C20c and C25 each burned a full GPU cycle to learn only that
+    the live arm parks ~14-15 mm from the commanded contact pose.  The
+    executor now retries the phase inside the same episode, re-commanding
+    the pose biased by the measured miss while the arrival gate still
+    measures against the original sealed target.
+    """
+
+    _patched_media(monkeypatch)
+    task = _task("articulated_open_close")
+    plan = _recovery_plan(task)
+    environment = _OffsetCartesianEnvironment("articulated_open_close")
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    open_arrivals = [
+        row
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "open"
+    ]
+    assert [row["attempt"] for row in open_arrivals] == [1, 2]
+    assert open_arrivals[0]["target_reached"] is False
+    assert open_arrivals[0]["recovery_strategy"] is None
+    assert open_arrivals[1]["target_reached"] is True
+    assert open_arrivals[1]["recovery_strategy"] == (
+        "retreat_then_measured_miss_compensation"
+    )
+    # The gate still measures against the original sealed target; only the
+    # command is biased, by exactly the measured miss.
+    assert open_arrivals[1]["target_position_world_m"] == [0.9, 0.0, 0.0]
+    bias = open_arrivals[1]["commanded_position_bias_m"]
+    assert bias[0] == pytest.approx(-0.014)
+    assert bias[1] == pytest.approx(0.0)
+    assert open_arrivals[1]["terminal_position_error_m"] == pytest.approx(
+        0.0, abs=1.0e-9
+    )
+
+
+def test_pose_phase_recovery_is_bounded_and_seals_every_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuinely unreachable pose fails after exactly three sealed attempts."""
+
+    _patched_media(monkeypatch)
+    task = _task("articulated_open_close")
+    plan = _recovery_plan(task)
+    environment = _StuckCartesianEnvironment("articulated_open_close")
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is False
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    open_arrivals = [
+        row
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "open"
+    ]
+    assert [row["attempt"] for row in open_arrivals] == [1, 2, 3]
+    assert all(row["target_reached"] is False for row in open_arrivals)
+    blocker = positive["phase_execution_blocker"]
+    assert blocker.startswith("scripted_control_phase_not_reached:open:")
+    assert ":attempts=3" in blocker
