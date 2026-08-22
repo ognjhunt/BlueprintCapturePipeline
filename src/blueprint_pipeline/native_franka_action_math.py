@@ -173,20 +173,27 @@ def bounded_absolute_joint_setpoint(
     for index, (measured_value, desired_value, previous_value) in enumerate(
         zip(measured, desired, previous, strict=True)
     ):
-        joint_lead = max_lead
-        if per_joint_lead is not None:
-            # Never loosen the caller's bound, only tighten it to feasibility,
-            # and never below one slew step or the command could not advance.
-            joint_lead = max(
-                min(joint_lead, per_joint_lead[index]), max_slew
-            )
-        lower = max(previous_value - max_slew, measured_value - joint_lead)
-        upper = min(previous_value + max_slew, measured_value + joint_lead)
+        lower = max(previous_value - max_slew, measured_value - max_lead)
+        upper = min(previous_value + max_slew, measured_value + max_lead)
         if lower > upper + 1.0e-12:
             raise NativeFrankaActionMathError(
                 ["native_franka_joint_setpoint_constraints_infeasible"]
             )
-        command.append(min(max(desired_value, lower), upper))
+        value = min(max(desired_value, lower), upper)
+        if per_joint_lead is not None:
+            # Applied as a clamp around the measured joint rather than as
+            # another window bound, because a joint that is already saturated
+            # has a previous command further out than it can pull: intersecting
+            # the two windows is then empty, and C31 died on exactly that at
+            # startup.  Pulling the command back toward the measured position
+            # can exceed one slew step, and that is the point -- it is how a
+            # saturated joint stops being commanded past its own reach.  Never
+            # below one slew step, or the command could not advance at all.
+            lead = max(per_joint_lead[index], max_slew)
+            value = min(
+                max(value, measured_value - lead), measured_value + lead
+            )
+        command.append(value)
     return command
 
 

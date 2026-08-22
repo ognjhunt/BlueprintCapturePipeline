@@ -207,3 +207,32 @@ def test_a_malformed_per_joint_lead_fails_closed() -> None:
                 max_setpoint_lead_rad=0.2,
                 max_setpoint_lead_rad_per_joint=bad,
             )
+
+
+def test_a_saturated_joint_is_pulled_back_rather_than_refusing() -> None:
+    """C31 died at startup on an empty intersection of the two windows.
+
+    A joint already in saturation carries a previous command further out
+    than it can pull, so intersecting the slew window with the feasible-lead
+    window is empty.  The lead is therefore a clamp around the measured
+    joint, not another window bound: the command is pulled back toward
+    reality -- by more than one slew step if that is what it takes -- which
+    is how a saturated joint stops being commanded past its own reach.
+    """
+
+    from blueprint_pipeline.native_franka_action_math import (
+        bounded_absolute_joint_setpoint,
+    )
+
+    command = bounded_absolute_joint_setpoint(
+        measured_joint_positions_rad=[0.0],
+        desired_joint_positions_rad=[1.0],
+        # A tenth of a radian of accumulated command -- inside the caller's
+        # scalar lead, far outside this joint's 0.015 rad reach.
+        previous_commanded_joint_positions_rad=[0.1],
+        max_command_slew_per_step_rad=0.01,
+        max_setpoint_lead_rad=0.2,
+        max_setpoint_lead_rad_per_joint=[0.015],
+    )
+
+    assert command == pytest.approx([0.015])
