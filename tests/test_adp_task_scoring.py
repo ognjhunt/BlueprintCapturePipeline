@@ -8,6 +8,7 @@ from blueprint_pipeline.adp009d_task_scoring import CAN_START_POSITION_M
 from blueprint_pipeline.adp_task_scoring import (
     OUTCOME_NEVER_MOVED,
     OUTCOME_NON_TASK_JOINT_MOVED,
+    OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION,
     OUTCOME_OPENED_AND_SETTLED,
     OUTCOME_OPENED_THEN_REBOUNDED,
     OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE,
@@ -478,4 +479,86 @@ def test_scene_neutral_rigid_task_abstains_without_support_contact_readback() ->
 
     assert report["status"] == "undetermined"
     assert report["outcome"] == "native_support_contact_readback_missing"
+    assert report["task_succeeded"] is False
+
+
+def test_solver_residual_at_a_hard_stop_is_not_a_limit_violation() -> None:
+    """C29's measured -5.7e-8 rad would have failed a successful grasp.
+
+    A joint resting against its own hard stop reports a tiny excursion past
+    it in any physics engine.  This recomputation compared that residual with
+    exact arithmetic, so the closed washer door -- merely nudged, and reported
+    violation-free by the simulator's own flag in the same trace -- failed the
+    positive control on about 34 nanometres at the handle.
+    """
+
+    from blueprint_pipeline.adp_task_scoring import (
+        JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD,
+    )
+
+    samples = [
+        _sample(0, -5.716e-08),
+        _sample(1, 0.4, speed=0.4),
+        _sample(2, 0.9, speed=0.2),
+        _sample(3, 0.9),
+        _sample(4, 0.9),
+        _sample(5, 0.9),
+    ]
+
+    report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
+
+    assert report["predicates"]["joint_hard_limits_respected"] is True
+    assert report["outcome"] == OUTCOME_OPENED_AND_SETTLED
+    assert report["task_succeeded"] is True
+    # The excursion is sealed either way, so a real violation creeping up on
+    # the allowance stays visible rather than silently absorbed.
+    measurements = report["measurements"]
+    assert measurements["joint_hard_limit_max_excursion_rad"] == pytest.approx(
+        5.716e-08
+    )
+    assert measurements["joint_hard_limit_solver_residual_rad"] == (
+        JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD
+    )
+
+
+def test_a_real_excursion_past_a_hard_stop_still_fails() -> None:
+    """The allowance is solver residual, not a loosened task gate."""
+
+    from blueprint_pipeline.adp_task_scoring import (
+        JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD,
+    )
+
+    samples = [
+        _sample(0, -10.0 * JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD),
+        _sample(1, 0.4, speed=0.4),
+        _sample(2, 0.9, speed=0.2),
+        _sample(3, 0.9),
+        _sample(4, 0.9),
+        _sample(5, 0.9),
+    ]
+
+    report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
+
+    assert report["predicates"]["joint_hard_limits_respected"] is False
+    assert report["outcome"] == OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION
+    assert report["task_succeeded"] is False
+
+
+def test_the_simulators_own_violation_flag_stays_authoritative() -> None:
+    """The native readback knows the real limits; it is never overridden."""
+
+    samples = [
+        _sample(0, 0.0),
+        _sample(1, 0.4, speed=0.4),
+        _sample(2, 0.9, speed=0.2),
+        _sample(3, 0.9),
+        _sample(4, 0.9),
+        _sample(5, 0.9),
+    ]
+    samples[2]["joint_limit_violation"] = True
+
+    report = score_task_episode_from_spec(task_spec=_articulated_spec(), samples=samples)
+
+    assert report["predicates"]["joint_hard_limits_respected"] is False
+    assert report["measurements"]["joint_hard_limit_max_excursion_rad"] == 0.0
     assert report["task_succeeded"] is False

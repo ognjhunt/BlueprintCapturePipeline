@@ -38,6 +38,15 @@ RIGID_REPORT_SCHEMA_VERSION = "adp_rigid_task_scoring.v2"
 TASK_KIND_RIGID_PICK_PLACE = "rigid_pick_place"
 TASK_KIND_ARTICULATED_OPEN_CLOSE = "articulated_open_close"
 
+# How far past a sealed hard limit a joint may read before this recomputation
+# calls it a violation.  This is a solver-residual allowance, not a task
+# tolerance: a joint resting on its own stop reports a tiny excursion in any
+# physics engine, and C29 measured -5.7e-8 rad on the closed washer door.  At
+# 1e-5 rad the allowance is ~175x that residual and still ~0.0006 degrees, far
+# below any mechanically meaningful excursion, while the simulator's own
+# per-sample violation flag remains authoritative and unqualified.
+JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD = 1.0e-5
+
 OUTCOME_NEVER_MOVED = "never_moved"
 OUTCOME_MOVED_BELOW_THRESHOLD = "moved_below_threshold"
 OUTCOME_OPENED_THEN_REBOUNDED = "opened_then_rebounded"
@@ -459,14 +468,32 @@ def score_articulated_task_episode(
         for joint_id in dependent_max_error
     )
     non_task_locked = locked_joints_stable and dependent_joints_consistent
+    # A joint resting against its own hard stop sits a solver residual past
+    # it, and this recomputation compared that residual with exact arithmetic.
+    # C29 measured the consequence: the washer door, closed and merely nudged,
+    # read -5.7e-8 rad, so `joint_hard_limits_respected` went false and the
+    # positive control failed on 57 nanoradians -- about 34 nanometres at the
+    # handle.  That would have failed a run whose grasp succeeded.  The
+    # simulator's own per-sample `joint_limit_violation` flag reported no
+    # violation in the same trace, which is the tell: the native readback
+    # knows the articulation's real limits, and only this redundant check
+    # disagreed.  So the flag stays authoritative and unchanged, and the
+    # recomputation admits a declared solver residual -- still four orders of
+    # magnitude below any mechanically meaningful excursion.  The worst
+    # observed excursion is sealed either way, so a real violation creeping
+    # up on the tolerance stays visible rather than silently absorbed.
+    hard_limit_excursion_rad = 0.0
+    for sample in normalized:
+        for joint_id, position in sample["joint_positions_rad"].items():
+            lower, upper = spec["joint_hard_limits_rad"][joint_id]
+            hard_limit_excursion_rad = max(
+                hard_limit_excursion_rad,
+                float(lower) - float(position),
+                float(position) - float(upper),
+            )
     hard_limit_violation = any(
-        sample["joint_limit_violation"]
-        or any(
-            not (spec["joint_hard_limits_rad"][joint_id][0] <= position <= spec["joint_hard_limits_rad"][joint_id][1])
-            for joint_id, position in sample["joint_positions_rad"].items()
-        )
-        for sample in normalized
-    )
+        sample["joint_limit_violation"] for sample in normalized
+    ) or hard_limit_excursion_rad > JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD
     containment_violation = any(sample["containment_violation"] for sample in normalized)
     collision_failure = any(
         sample["robot_collision_failure"] or sample["scene_collision_failure"]
@@ -542,6 +569,10 @@ def score_articulated_task_episode(
             "non_target_max_delta_rad": locked_max_delta,
             "locked_joint_max_delta": locked_max_delta,
             "dependent_joint_max_error": dependent_max_error,
+            "joint_hard_limit_max_excursion_rad": hard_limit_excursion_rad,
+            "joint_hard_limit_solver_residual_rad": (
+                JOINT_HARD_LIMIT_SOLVER_RESIDUAL_RAD
+            ),
             "released_in_settle": released_in_settle,
             "retreat_completed": retreat_completed,
         },
