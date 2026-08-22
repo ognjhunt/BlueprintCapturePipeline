@@ -765,3 +765,96 @@ def test_a_settled_joint_is_charged_only_for_the_torque_it_is_using() -> None:
     assert servo.actuator_feasible_lead_rad(None) == pytest.approx(static)
     assert servo.actuator_feasible_lead_rad([float("nan")]) == pytest.approx(static)
     assert servo.actuator_feasible_lead_rad([0.0, 0.0]) == pytest.approx(static)
+
+
+def test_the_grasp_roll_search_prefers_a_posture_the_arm_can_hold() -> None:
+    """C43's arm sat on panda_joint5's hard stop for a third of contact.
+
+    Off-sim IK says why: at the authored contact orientation the best
+    achievable joint-limit margin is 0.0000 rad, while the same position with
+    the orientation free admits 0.8916 rad.  The position was never the
+    problem.  Roll about the gripper's own approach axis is a real freedom for
+    a parallel jaw straddling a 1.23 mm rim, and the search must take the roll
+    that buys margin rather than the one that was authored.
+    """
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    authored = [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+    calls: list[float] = []
+
+    class _Servo(NativeFrankaDifferentialIkServo):
+        def __init__(self):
+            self._pink_hand_pose_at_binding_base = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+            self._pink_grasp_pose_at_binding_base = [0.13, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            # Margin rises with roll magnitude, exactly as measured off-sim:
+            # the authored orientation is the one the arm cannot hold.
+            q = kwargs["target_grasp_frame_quaternion_world_xyzw"]
+            deviation = sum(abs(a - b) for a, b in zip(q, authored))
+            calls.append(deviation)
+            return {
+                "solved": True,
+                "selected": {
+                    "joint_positions_rad": [0.1] * 7,
+                    "minimum_joint_limit_margin_rad": deviation,
+                    "position_error_m": 0.0009,
+                },
+            }
+
+    servo = _Servo()
+    result = servo.solve_grasp_target_with_approach_roll(
+        target_position_world_m=[1.0, 0.0, 0.0],
+        target_grasp_frame_quaternion_world_xyzw=authored,
+        roll_candidates_rad=(0.349, -0.349),
+    )
+
+    search = result["approach_roll_search"]
+    assert search["status"] == "selected"
+    # The authored orientation is always tried, and is not what wins here.
+    assert 0.0 in [row["approach_roll_rad"] for row in search["attempts"]]
+    assert search["selected_approach_roll_rad"] != 0.0
+    assert search["selected_minimum_joint_limit_margin_rad"] > 0.0
+    assert search["authored_target_quaternion_world_xyzw"] == authored
+    # Only the roll changed: the grasp still points down the same approach axis.
+    assert len(search["selected_target_quaternion_world_xyzw"]) == 4
+    # And the arrival gate is untouched by any of this.
+    assert "task_succeeded" not in search
+
+
+def test_a_scene_that_never_needed_a_roll_keeps_what_it_had() -> None:
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    authored = [0.0, 0.0, 0.0, 1.0]
+
+    class _Servo(NativeFrankaDifferentialIkServo):
+        def __init__(self):
+            self._pink_hand_pose_at_binding_base = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+            self._pink_grasp_pose_at_binding_base = [0.13, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            q = kwargs["target_grasp_frame_quaternion_world_xyzw"]
+            healthy = all(abs(a - b) < 1e-9 for a, b in zip(q, authored))
+            return {
+                "solved": True,
+                "selected": {
+                    "joint_positions_rad": [0.0] * 7,
+                    # The authored orientation is already the best available.
+                    "minimum_joint_limit_margin_rad": 0.5 if healthy else 0.1,
+                    "position_error_m": 0.001,
+                },
+            }
+
+    servo = _Servo()
+    result = servo.solve_grasp_target_with_approach_roll(
+        target_position_world_m=[1.0, 0.0, 0.0],
+        target_grasp_frame_quaternion_world_xyzw=authored,
+        roll_candidates_rad=(0.349, -0.349),
+    )
+
+    assert result["approach_roll_search"]["selected_approach_roll_rad"] == 0.0

@@ -51,6 +51,16 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 # contact scoring, and collision predicates are unchanged: if the solved
 # branch does not put the measured fingertip at the handle, the phase still
 # fails honestly.
+# Rolls searched about the gripper's own approach axis at contact.  The
+# authored orientation is always included by the search itself; these bracket
+# it either way, and stay inside the tilt an 85 mm jaw can afford on a 1.23 mm
+# rim.  Off-sim against C43's sealed scene: 0 deg gives 0.0000 rad of margin,
+# +30 deg gives 0.6220 rad at 0.92 mm of position error.
+CONTACT_APPROACH_ROLL_CANDIDATES_RAD = (
+    0.0, 0.175, -0.175, 0.349, -0.349, 0.524, -0.524,
+)
+CONTACT_APPROACH_ROLL_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
 CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
@@ -356,7 +366,30 @@ def _control_plan_global_ik_joint_targets(
             raise RuntimeError(
                 "native_task_controls_multistart_tolerance_invalid"
             )
-        solved = servo.solve_grasp_target_multistart(
+        # C43 measured the arm at contact with panda_joint5 on its hard stop
+        # for a third of the phase and panda_joint6 at full effort; off-sim IK
+        # confirms the authored contact orientation admits a best joint-limit
+        # margin of 0.0000 rad, while the same position with the orientation
+        # free admits 0.8916 rad.  Roll about the gripper's own approach axis
+        # is a real freedom for a parallel jaw straddling a 1.23 mm rim with an
+        # 85 mm opening, and off-sim it buys 0.62 rad at 0.92 mm of position
+        # error.  Contact phases search it; every other phase is untouched, and
+        # the authored orientation is always a candidate.
+        solver = (
+            servo.solve_grasp_target_with_approach_roll
+            if phase_id in CONTACT_APPROACH_ROLL_PHASE_IDS
+            and callable(
+                getattr(servo, "solve_grasp_target_with_approach_roll", None)
+            )
+            else servo.solve_grasp_target_multistart
+        )
+        roll_kwargs = (
+            {"roll_candidates_rad": CONTACT_APPROACH_ROLL_CANDIDATES_RAD}
+            if solver is not servo.solve_grasp_target_multistart
+            else {}
+        )
+        solved = solver(
+            **roll_kwargs,
             target_position_world_m=position,
             target_grasp_frame_quaternion_world_xyzw=quaternion,
             preferred_seeds=[reference, *reference_seeds],
