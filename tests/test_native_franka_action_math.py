@@ -121,3 +121,89 @@ def test_scene_neutral_action_math_fails_closed() -> None:
     assert excinfo.value.errors == (
         "native_franka_joint_setpoint_constraints_infeasible",
     )
+
+
+def test_setpoint_lead_is_bounded_by_what_the_actuator_can_pull() -> None:
+    """C30's root cause: commands past the actuator's stiffness-limited lead.
+
+    An implicit PD actuator produces at most ``effort_limit`` newton-metres,
+    so a setpoint further than ``effort_limit / stiffness`` ahead of the
+    measured joint asks for torque the joint clips.  The Arena DROID
+    embodiment gives panda_joint[5-7] stiffness 400 against a 12 N-m limit --
+    saturation beyond 0.03 rad -- while the plans commanded a 0.2 rad lead.
+    Joint 6 sat pinned at 12.000 N-m demanding up to 160 while drifting
+    0.241 rad off target.
+    """
+
+    from blueprint_pipeline.native_franka_action_math import (
+        bounded_absolute_joint_setpoint,
+    )
+
+    measured = [0.0] * 7
+    desired = [1.0] * 7
+    previous = [0.0] * 7
+    # Shoulder joints: 87 / 400 = 0.2175 rad.  Wrist: 12 / 400 = 0.03 rad.
+    feasible = [0.2175] * 4 + [0.03] * 3
+
+    command = bounded_absolute_joint_setpoint(
+        measured_joint_positions_rad=measured,
+        desired_joint_positions_rad=desired,
+        previous_commanded_joint_positions_rad=previous,
+        max_command_slew_per_step_rad=0.01,
+        max_setpoint_lead_rad=0.2,
+        max_setpoint_lead_rad_per_joint=feasible,
+    )
+
+    # Slew still bounds a single step, and the per-joint lead never loosens it.
+    assert command == pytest.approx([0.01] * 7)
+
+    # Once a joint stalls and the command has run ahead of it, the wrist is
+    # pinned at its feasible lead -- the point past which it would only clip --
+    # while the shoulder, with seven times the effort budget, keeps advancing.
+    stalled = bounded_absolute_joint_setpoint(
+        measured_joint_positions_rad=[0.0] * 7,
+        desired_joint_positions_rad=[1.0] * 7,
+        previous_commanded_joint_positions_rad=[0.04] * 7,
+        max_command_slew_per_step_rad=0.01,
+        max_setpoint_lead_rad=0.2,
+        max_setpoint_lead_rad_per_joint=feasible,
+    )
+    assert stalled[:4] == pytest.approx([0.05] * 4)
+    assert stalled[4:] == pytest.approx([0.03] * 3)
+
+
+def test_per_joint_lead_never_falls_below_one_slew_step() -> None:
+    """A lead under the slew would leave the command unable to advance."""
+
+    from blueprint_pipeline.native_franka_action_math import (
+        bounded_absolute_joint_setpoint,
+    )
+
+    command = bounded_absolute_joint_setpoint(
+        measured_joint_positions_rad=[0.0],
+        desired_joint_positions_rad=[1.0],
+        previous_commanded_joint_positions_rad=[0.0],
+        max_command_slew_per_step_rad=0.02,
+        max_setpoint_lead_rad=0.2,
+        max_setpoint_lead_rad_per_joint=[0.001],
+    )
+
+    assert command == pytest.approx([0.02])
+
+
+def test_a_malformed_per_joint_lead_fails_closed() -> None:
+    from blueprint_pipeline.native_franka_action_math import (
+        NativeFrankaActionMathError,
+        bounded_absolute_joint_setpoint,
+    )
+
+    for bad in ([0.03, 0.03], [0.0], [float("nan")], [-0.1]):
+        with pytest.raises(NativeFrankaActionMathError):
+            bounded_absolute_joint_setpoint(
+                measured_joint_positions_rad=[0.0],
+                desired_joint_positions_rad=[1.0],
+                previous_commanded_joint_positions_rad=[0.0],
+                max_command_slew_per_step_rad=0.01,
+                max_setpoint_lead_rad=0.2,
+                max_setpoint_lead_rad_per_joint=bad,
+            )

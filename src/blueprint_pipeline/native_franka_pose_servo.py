@@ -41,6 +41,10 @@ from .rigid_frame_transforms import (
 
 
 SCHEMA_VERSION = "native_franka_pose_servo.v1"
+# Fraction of each joint's stiffness-limited setpoint lead that the command is
+# allowed to use, leaving the remainder of the effort budget for the damping
+# term the same actuator must also pay for.
+ACTUATOR_FEASIBLE_LEAD_FRACTION = 0.5
 GRIPPER_FRAME_READBACK_SCHEMA_VERSION = "native_franka_gripper_frame_readback.v1"
 ARM_JOINT_NAMES = tuple(f"panda_joint{index}" for index in range(1, 8))
 FINGER_BODY_NAMES = ("left_inner_finger", "right_inner_finger")
@@ -838,6 +842,23 @@ class NativeFrankaDifferentialIkServo:
         # two terms that produce it.  Absence is recorded, never fatal.
         self._joint_stiffness = self._arm_gain("joint_stiffness")
         self._joint_damping = self._arm_gain("joint_damping")
+        self._joint_effort_limit = self._arm_gain("joint_effort_limits")
+        # An implicit PD actuator produces at most `effort_limit` newton-metres,
+        # so a position setpoint further than `effort_limit / stiffness` ahead
+        # of the measured joint is asking for torque the joint cannot deliver.
+        # Past that point the actuator clips, tracking stops, and the error
+        # grows -- and C30 measured exactly that: the Arena DROID embodiment
+        # gives panda_joint[5-7] stiffness 400 against a 12 N-m limit, so the
+        # wrist saturates beyond 0.03 rad, while the plans commanded a 0.2 rad
+        # lead.  Joint 6 sat pinned at 12.000 N-m demanding up to 160 while it
+        # drifted 0.241 rad off target, which is the ~15 mm the fingertip has
+        # missed the handle by in every run since C20.
+        #
+        # So the lead is bounded per joint by what that joint can actually
+        # pull.  This changes no success gate and no robot limit: it stops the
+        # controller from issuing commands the hardware was never able to
+        # execute.  Absence of either gain leaves the caller's scalar intact.
+        self._actuator_feasible_lead_rad = self._actuator_feasible_lead()
         try:
             limits = self._to_torch(robot.data.soft_joint_pos_limits)[
                 0, self.binding["arm_joint_ids"], :
@@ -995,6 +1016,32 @@ class NativeFrankaDifferentialIkServo:
             raise NativeFrankaPoseServoError(
                 ["native_franka_pose_servo_pink_initialization_failed"]
             ) from exc
+
+    def _actuator_feasible_lead(self) -> list[float] | None:
+        """The setpoint lead each joint can actually pull, in radians."""
+
+        stiffness = self._joint_stiffness
+        efforts = self._joint_effort_limit
+        if (
+            not stiffness
+            or not efforts
+            or len(stiffness) != len(efforts)
+        ):
+            return None
+        leads: list[float] = []
+        for stiff, effort in zip(stiffness, efforts, strict=True):
+            if (
+                not math.isfinite(stiff)
+                or not math.isfinite(effort)
+                or stiff <= 0.0
+                or effort <= 0.0
+            ):
+                return None
+            # Leave headroom for the damping term, which also draws on the
+            # same effort budget: C30 measured joint 7 at 1.07 rad/s against
+            # damping 80, which alone demands 85 N-m from a 12 N-m joint.
+            leads.append(ACTUATOR_FEASIBLE_LEAD_FRACTION * effort / stiff)
+        return leads
 
     def _arm_gain(self, attribute: str) -> list[float] | None:
         data = getattr(self._robot, "data", None)
@@ -1700,6 +1747,9 @@ class NativeFrankaDifferentialIkServo:
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+            max_setpoint_lead_rad_per_joint=getattr(
+                self, "_actuator_feasible_lead_rad", None
+            ),
         )
         feedforward = joint_velocity_feedforward_rad_s(
             commanded_joint_positions_rad=bounded,
@@ -1861,6 +1911,9 @@ class NativeFrankaDifferentialIkServo:
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+            max_setpoint_lead_rad_per_joint=getattr(
+                self, "_actuator_feasible_lead_rad", None
+            ),
         )
         feedforward = joint_velocity_feedforward_rad_s(
             commanded_joint_positions_rad=bounded,
@@ -2065,6 +2118,9 @@ class NativeFrankaDifferentialIkServo:
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+            max_setpoint_lead_rad_per_joint=getattr(
+                self, "_actuator_feasible_lead_rad", None
+            ),
         )
         # Declare the rate the setpoint is advancing at, so the damping term
         # stops braking the motion we just commanded.  It is zero whenever the
