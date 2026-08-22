@@ -1402,7 +1402,23 @@ class NativeFrankaDifferentialIkServo:
         seed_count: int = PINK_GLOBAL_SEED_COUNT,
         position_tolerance_m: float = PINK_GLOBAL_POSITION_TOLERANCE_M,
         orientation_tolerance_rad: float = PINK_GLOBAL_ORIENTATION_TOLERANCE_RAD,
+        preferred_minimum_joint_limit_margin_rad: float = (
+            PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD
+        ),
+        required_minimum_joint_limit_margin_rad: float = 0.0,
     ) -> dict[str, Any]:
+        preferred_margin = float(preferred_minimum_joint_limit_margin_rad)
+        required_margin = float(required_minimum_joint_limit_margin_rad)
+        if (
+            not math.isfinite(preferred_margin)
+            or not math.isfinite(required_margin)
+            or preferred_margin < 0.0
+            or required_margin < 0.0
+            or required_margin > preferred_margin
+        ):
+            raise NativeFrankaPoseServoError(
+                ["native_franka_pose_servo_global_margin_invalid"]
+            )
         seeds = deterministic_pink_joint_seeds(
             lower_joint_position_limits_rad=self._joint_position_lower,
             upper_joint_position_limits_rad=self._joint_position_upper,
@@ -1466,13 +1482,17 @@ class NativeFrankaDifferentialIkServo:
                 }
             )
             attempts.append(attempt)
-        solved = [row for row in attempts if row["solved"]]
+        solved = [
+            row
+            for row in attempts
+            if row["solved"]
+            and row["minimum_joint_limit_margin_rad"] >= required_margin
+        ]
         selected = (
             min(
                 solved,
                 key=lambda row: (
-                    row["minimum_joint_limit_margin_rad"]
-                    < PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD,
+                    row["minimum_joint_limit_margin_rad"] < preferred_margin,
                     # Differential IK is local. Preserve the closest whole-arm
                     # branch, not merely the candidate with the smallest
                     # single-joint maximum. C18's maximum-delta comparison
@@ -1499,8 +1519,9 @@ class NativeFrankaDifferentialIkServo:
             "position_tolerance_m": float(position_tolerance_m),
             "orientation_tolerance_rad": float(orientation_tolerance_rad),
             "preferred_minimum_joint_limit_margin_rad": (
-                PINK_GLOBAL_MINIMUM_JOINT_MARGIN_RAD
+                preferred_margin
             ),
+            "required_minimum_joint_limit_margin_rad": required_margin,
         }
 
     def current_body_pose_world(self) -> list[float]:

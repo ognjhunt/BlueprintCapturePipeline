@@ -24,6 +24,16 @@ from typing import Any
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
 POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
+# C25 proved that pose reachability alone is not enough for contact.  The
+# nominal jaw branch reached the 5 mm off-sim pose gate with panda_joint5 only
+# 0.00053 rad from its limit, then the live PhysX controller saturated 14.5 mm
+# from the handle.  The equivalent jaw branch carried a continuous
+# prealign->approach->contact path when approach admitted the 0.04 rad-margin
+# branch and contact required at least 0.005 rad of room.  These remain branch
+# selection constraints only; native measured arrival and contact still gate
+# the episode.
+CONTROLS_APPROACH_PREFERRED_JOINT_MARGIN_RAD = 0.04
+CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 
 
 def _announce(phase: str, status: str = "started") -> None:
@@ -328,6 +338,16 @@ def _control_plan_global_ik_joint_targets(
             reference_joint_positions_rad=reference,
             position_tolerance_m=position_tolerance_m,
             orientation_tolerance_rad=orientation_tolerance_rad,
+            preferred_minimum_joint_limit_margin_rad=(
+                CONTROLS_APPROACH_PREFERRED_JOINT_MARGIN_RAD
+                if phase_id == "approach"
+                else 0.05
+            ),
+            required_minimum_joint_limit_margin_rad=(
+                CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
+                if phase_id in {"contact_open", "contact_close"}
+                else 0.0
+            ),
         )
         if not isinstance(solved, Mapping):
             raise RuntimeError("native_task_controls_multistart_result_invalid")
