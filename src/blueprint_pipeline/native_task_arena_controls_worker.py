@@ -56,6 +56,10 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 # tight enough that re-deriving loses: elsewhere a 20 mm departure still lands
 # inside a 20 mm gate.
 HOLD_SOLVED_VECTOR_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+MEASURED_CONTACT_ENTRY_PHASE_ID = "measured_contact_entry"
+MEASURED_CONTACT_FRONTIER_PHASE_PREFIX = "measured_contact_frontier_"
+MEASURED_CONTACT_FRONTIER_FRACTIONS = (0.75, 0.5, 0.25)
+MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS = 45
 
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
@@ -804,6 +808,140 @@ def _with_held_solved_contact_vectors(
             "the_native_arrival_and_contact_gates_are_unchanged"
         ),
     }
+
+
+def _with_measured_contact_frontier(
+    *,
+    control_plan: Mapping[str, Any],
+    reachability_probe: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Enter contact from a posture already proven to work in PhysX.
+
+    The reachability probe is stronger evidence than another off-sim solve: it
+    records the commanded posture, reached joints, and measured grasp frame in
+    the same runtime as the episode.  Select the closest non-contact probe cell
+    that already clears the contact arrival gate, replay its joints, then walk
+    the remaining Cartesian offset in progressively smaller sealed phases.
+    The first failing phase becomes a measured frontier instead of one opaque
+    final-pose failure.
+    """
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    receipt: dict[str, Any] = {
+        "schema_version": "native_task_controls_measured_contact_frontier.v1",
+        "status": "not_applied",
+        "reason": None,
+        "source_control_plan_digest": plan.get("plan_digest"),
+        "claim_boundary": (
+            "starts_from_a_noncontact_pose_measured_inside_its_native_arrival_"
+            "gate_then_expands_the_success_frontier_toward_contact;task_"
+            "arrival_contact_and_outcome_gates_are_unchanged"
+        ),
+    }
+    actions = plan.get("scripted_positive_actions")
+    cells = reachability_probe.get("cells")
+    if not isinstance(actions, list) or not isinstance(cells, list):
+        receipt["reason"] = "plan_or_probe_cells_invalid"
+        return plan, receipt
+
+    contact_index = next(
+        (
+            index
+            for index, row in enumerate(actions)
+            if isinstance(row, Mapping)
+            and row.get("mode") == "ik_pose"
+            and str(row.get("phase_id") or "") == "contact_open"
+        ),
+        None,
+    )
+    if contact_index is None:
+        receipt["reason"] = "contact_open_missing"
+        return plan, receipt
+    contact = actions[contact_index]
+    try:
+        target = [float(value) for value in contact["target_position_world_m"]]
+        tolerance = float(contact["arrival_tolerance_m"])
+    except (KeyError, TypeError, ValueError):
+        receipt["reason"] = "contact_open_invalid"
+        return plan, receipt
+
+    candidates: list[tuple[float, Mapping[str, Any], list[float], list[float]]] = []
+    for cell in cells:
+        if not isinstance(cell, Mapping) or cell.get("status") != "measured":
+            continue
+        try:
+            offset = [float(value) for value in cell["offset_m"]]
+            joints = [float(value) for value in cell["joint_positions_rad"]]
+            measured_error = float(cell["measured_distance_to_requested_m"])
+            contact_steps = int(cell.get("contact_steps") or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            len(offset) != 3
+            or len(joints) != 7
+            or not all(math.isfinite(value) for value in [*offset, *joints])
+            or not math.isfinite(measured_error)
+            or measured_error > tolerance
+            or contact_steps != 0
+            or math.isclose(sum(abs(value) for value in offset), 0.0)
+        ):
+            continue
+        candidates.append((math.dist(offset, [0.0, 0.0, 0.0]), cell, offset, joints))
+    if not candidates:
+        receipt["reason"] = "no_noncontact_probe_cell_inside_arrival_gate"
+        return plan, receipt
+
+    _distance, cell, offset, joints = min(candidates, key=lambda item: item[0])
+    entry = dict(contact)
+    entry.update(
+        {
+            "phase_id": MEASURED_CONTACT_ENTRY_PHASE_ID,
+            "target_position_world_m": [
+                target[axis] + offset[axis] for axis in range(3)
+            ],
+            "hold_solved_arm_joint_positions_rad": list(joints),
+            # Replay the same settle budget that established this cell as
+            # measured-good.  A shorter dwell would no longer be a replay of
+            # the observation on which this derived plan relies.
+            "maximum_steps": max(
+                MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
+                int(contact.get("maximum_steps") or 0),
+            ),
+        }
+    )
+    frontier: list[dict[str, Any]] = []
+    for index, fraction in enumerate(MEASURED_CONTACT_FRONTIER_FRACTIONS, start=1):
+        row = dict(contact)
+        row.pop("hold_solved_arm_joint_positions_rad", None)
+        row.update(
+            {
+                "phase_id": f"{MEASURED_CONTACT_FRONTIER_PHASE_PREFIX}{index:02d}",
+                "target_position_world_m": [
+                    target[axis] + offset[axis] * fraction for axis in range(3)
+                ],
+                "maximum_steps": max(4, int(contact.get("maximum_steps") or 0)),
+            }
+        )
+        frontier.append(row)
+    contact.pop("hold_solved_arm_joint_positions_rad", None)
+    actions[contact_index:contact_index] = [entry, *frontier]
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    receipt.update(
+        {
+            "status": "applied",
+            "reason": None,
+            "probe_offset_m": offset,
+            "probe_measured_error_m": float(
+                cell["measured_distance_to_requested_m"]
+            ),
+            "probe_joint_positions_rad": joints,
+            "frontier_phase_ids": [
+                entry["phase_id"], *[row["phase_id"] for row in frontier], "contact_open"
+            ],
+            "rewritten_control_plan_digest": plan["plan_digest"],
+        }
+    )
+    return plan, receipt
 
 
 def _with_contact_entry_branch_replay(
@@ -1772,6 +1910,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
         else:
             result["contact_posture_calibration_adopted"] = False
+
+        # Start the paid episode from a point this same PhysX runtime already
+        # measured inside the gate, then advance toward contact in small
+        # increments.  This turns a final-pose miss into a measured success
+        # frontier and avoids throwing away the reachability probe's answer.
+        effective_control_plan, measured_frontier = (
+            _with_measured_contact_frontier(
+                control_plan=effective_control_plan,
+                reachability_probe=reach_probe,
+            )
+        )
+        result["measured_contact_frontier"] = measured_frontier
+        result["control_plan_digest"] = effective_control_plan["plan_digest"]
         _announce(
             "contact_posture_actuator_sweep",
             "completed" if sweep.get("status") == "measured" else "blocked",

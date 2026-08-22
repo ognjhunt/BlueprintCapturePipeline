@@ -1373,3 +1373,95 @@ def test_a_malformed_solved_vector_is_refused_not_ignored() -> None:
 
     with pytest.raises(ControlEpisodeError):
         validate_task_control_plan(plan, task_spec=task)
+
+
+def test_measured_contact_frontier_starts_from_observed_success() -> None:
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        MEASURED_CONTACT_ENTRY_PHASE_ID,
+        MEASURED_CONTACT_FRONTIER_PHASE_PREFIX,
+        _with_measured_contact_frontier,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    for row in plan["scripted_positive_actions"]:
+        if row["phase_id"] == "contact_open":
+            row["hold_solved_arm_joint_positions_rad"] = [0.9] * 7
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    known_joints = [0.11, -0.22, 0.33, -0.44, 0.55, -0.66, 0.77]
+    probe = {
+        "status": "measured",
+        "cells": [
+            {
+                "status": "measured",
+                "offset_m": [0.0, -0.04, 0.0],
+                "joint_positions_rad": known_joints,
+                "measured_distance_to_requested_m": 0.0042,
+                "contact_steps": 0,
+            },
+            {
+                "status": "measured",
+                "offset_m": [0.0, -0.02, 0.0],
+                "joint_positions_rad": [0.2] * 7,
+                "measured_distance_to_requested_m": 0.008,
+                "contact_steps": 0,
+            },
+        ],
+    }
+
+    derived, receipt = _with_measured_contact_frontier(
+        control_plan=plan,
+        reachability_probe=probe,
+    )
+    checked = validate_task_control_plan(derived, task_spec=task)
+    rows = checked["scripted_positive_actions"]
+    entry = next(row for row in rows if row["phase_id"] == MEASURED_CONTACT_ENTRY_PHASE_ID)
+    contact = next(row for row in rows if row["phase_id"] == "contact_open")
+    frontier = [
+        row
+        for row in rows
+        if row["phase_id"].startswith(MEASURED_CONTACT_FRONTIER_PHASE_PREFIX)
+    ]
+
+    assert receipt["status"] == "applied"
+    assert receipt["probe_measured_error_m"] == pytest.approx(0.0042)
+    assert entry["hold_solved_arm_joint_positions_rad"] == pytest.approx(
+        known_joints
+    )
+    assert entry["target_position_world_m"] == pytest.approx([0.5, 0.06, 0.4])
+    assert [row["target_position_world_m"][1] for row in frontier] == pytest.approx(
+        [0.07, 0.08, 0.09]
+    )
+    assert contact["hold_solved_arm_joint_positions_rad"] is None
+    assert derived["plan_digest"] == canonical_digest(
+        derived, digest_field="plan_digest"
+    )
+
+
+def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_measured_contact_frontier,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    derived, receipt = _with_measured_contact_frontier(
+        control_plan=plan,
+        reachability_probe={
+            "cells": [
+                {
+                    "status": "measured",
+                    "offset_m": [0.0, -0.02, 0.0],
+                    "joint_positions_rad": [0.2] * 7,
+                    "measured_distance_to_requested_m": 0.008,
+                    "contact_steps": 0,
+                }
+            ]
+        },
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "no_noncontact_probe_cell_inside_arrival_gate"
+    assert derived == plan

@@ -1257,7 +1257,14 @@ def run_control_episode(
                 action_recomputed = held_action is None or action_hold_index == 0
                 solved_hold = phase.get("hold_solved_arm_joint_positions_rad")
                 bounded = getattr(environment, "bounded_joint_action", None)
-                if solved_hold and callable(bounded):
+                if solved_hold is not None:
+                    if not callable(bounded):
+                        raise ControlEpisodeError(
+                            [
+                                "control_episode_solved_joint_dispatch_unavailable:"
+                                f"{phase['phase_id']}"
+                            ]
+                        )
                     # Command the posture the preflight solved for this pose
                     # rather than letting the Cartesian controller re-derive
                     # one.  The arrival gate is untouched: it still measures
@@ -2065,8 +2072,26 @@ def _run_task_control_episode(
                     if state == "open"
                     else float(gripper_closed_command)
                 )
+                solved_hold = row.get("hold_solved_arm_joint_positions_rad")
                 if held_arm_joint_positions is not None:
                     action = [*held_arm_joint_positions, command]
+                elif solved_hold is not None:
+                    bounded = getattr(environment, "bounded_joint_action", None)
+                    if not callable(bounded):
+                        raise ControlEpisodeError(
+                            [
+                                "task_control_solved_joint_dispatch_unavailable:"
+                                f"{row['phase_id']}"
+                            ]
+                        )
+                    action = bounded(
+                        target_joint_positions_rad=list(solved_hold),
+                        gripper_command=command,
+                        max_joint_delta_rad=float(row["max_joint_delta_rad"]),
+                        max_joint_setpoint_lead_rad=float(
+                            row["max_joint_setpoint_lead_rad"]
+                        ),
+                    )
                 else:
                     action = environment.scripted_action_for_pose(
                         target_position_world_m=commanded_position,
