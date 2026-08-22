@@ -81,6 +81,7 @@ def test_authority_cli_supplies_complete_single_attempt_contract(monkeypatch, tm
         "hard_ttl_seconds": 3600,
         "output_path": str(output),
         "allowed_active_instance_ids": (41, 42),
+        "retain_warm_session": False,
     }
 
 
