@@ -178,6 +178,39 @@ def test_warm_dispatch_streams_script_over_pinned_ssh_without_url_in_command(
     assert "StrictHostKeyChecking=no" not in " ".join(observed["remote_argv"])
 
 
+def test_pinned_ssh_uses_service_bound_identity_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = tmp_path / "vast_ssh_id_ed25519"
+    identity.write_text("private-key-placeholder")
+    identity.chmod(0o600)
+    known_hosts = tmp_path / "vast_ssh_known_hosts"
+    observed: dict[str, object] = {}
+    monkeypatch.setenv(warm_vast.VAST_SSH_IDENTITY_FILE_ENV, str(identity))
+    monkeypatch.setattr(
+        warm_vast,
+        "_validated_vast_known_hosts_pin",
+        lambda *_args, **_kwargs: (known_hosts, "known-hosts-digest"),
+    )
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return warm_vast.subprocess.CompletedProcess(command, 0, b"ok\n", b"")
+
+    monkeypatch.setattr(warm_vast.subprocess, "run", fake_run)
+
+    result = warm_vast._run_pinned_ssh(
+        session={"ssh_host": "ssh.example", "ssh_port": 12345},
+        known_hosts_file=known_hosts,
+        remote_argv=["true"],
+    )
+
+    assert result["status"] == "completed"
+    command = observed["command"]
+    assert command[command.index("-i") + 1] == str(identity)
+
+
 def test_failed_warm_dispatch_fails_before_output_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

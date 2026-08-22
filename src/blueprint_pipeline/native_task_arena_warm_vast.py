@@ -51,6 +51,7 @@ DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-controls"
 MINIMUM_REMOTE_TIMEOUT_SECONDS = 600
 POLL_SECONDS = 10
 DEFAULT_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
+VAST_SSH_IDENTITY_FILE_ENV = "BLUEPRINT_VAST_SSH_IDENTITY_FILE"
 MAX_REMOTE_SCRIPT_BYTES = 128 * 1024
 
 
@@ -176,7 +177,7 @@ def _run_pinned_ssh(
     known_hosts_file: str | Path,
     remote_argv: list[str],
     stdin: bytes | None = None,
-    identity_file: str | Path = DEFAULT_SSH_IDENTITY_FILE,
+    identity_file: str | Path | None = None,
     timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
     """Run one bounded command on the retained worker over strict pinned SSH."""
@@ -198,7 +199,10 @@ def _run_pinned_ssh(
             "raw_secret_values_recorded": False,
         }
     known_hosts, known_hosts_sha256 = pin
-    identity = Path(identity_file).expanduser()
+    identity = Path(
+        identity_file
+        or os.getenv(VAST_SSH_IDENTITY_FILE_ENV, DEFAULT_SSH_IDENTITY_FILE)
+    ).expanduser()
     try:
         identity_mode = identity.stat().st_mode & 0o777
     except OSError:
