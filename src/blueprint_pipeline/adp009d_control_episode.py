@@ -1255,7 +1255,29 @@ def run_control_episode(
                 action_hold_steps = int(phase["action_hold_steps"])
                 action_hold_index = phase_step_index % action_hold_steps
                 action_recomputed = held_action is None or action_hold_index == 0
-                if action_recomputed:
+                solved_hold = phase.get("hold_solved_arm_joint_positions_rad")
+                bounded = getattr(environment, "bounded_joint_action", None)
+                if solved_hold and callable(bounded):
+                    # Command the posture the preflight solved for this pose
+                    # rather than letting the Cartesian controller re-derive
+                    # one.  The arrival gate is untouched: it still measures
+                    # the real fingertip against the sealed target, so a solved
+                    # vector that does not put it there still fails honestly.
+                    if action_recomputed:
+                        held_action = [
+                            float(value)
+                            for value in bounded(
+                                target_joint_positions_rad=list(solved_hold),
+                                gripper_command=gripper_command,
+                                max_joint_delta_rad=float(
+                                    phase["max_joint_delta_rad"]
+                                ),
+                                max_joint_setpoint_lead_rad=float(
+                                    phase["max_joint_setpoint_lead_rad"]
+                                ),
+                            )
+                        ]
+                elif action_recomputed:
                     held_action = environment.scripted_action_for_pose(
                         target_position_world_m=phase["target_position_world_m"],
                         target_quaternion_world_xyzw=phase[
@@ -1695,6 +1717,27 @@ def validate_task_control_plan(
                 max_joint_setpoint_lead_rad = 0.0
             gripper_state = str(raw.get("gripper_state") or "")
             position_only_arrival = raw.get("position_only_arrival") is True
+            # A phase may carry the joint vector its own preflight solved for
+            # this pose.  C42 and C43 measured why that matters: the Cartesian
+            # controller re-derives a posture from scratch and walked 0.19 to
+            # 0.53 rad away from the solved vector, whose own forward
+            # kinematics sat inside the arrival gate, onto one whose kinematics
+            # were already 20 mm outside it.  Tracking was never the problem --
+            # the arm reached what it was told to within 0.008 rad.  It was
+            # told the wrong thing.
+            held_raw = raw.get("hold_solved_arm_joint_positions_rad")
+            try:
+                held_joints = (
+                    None
+                    if held_raw is None
+                    else [float(value) for value in held_raw]
+                )
+            except (TypeError, ValueError):
+                held_joints = []
+            held_valid = held_joints is None or (
+                len(held_joints) == 7
+                and all(math.isfinite(value) for value in held_joints)
+            )
             hold_arm_during_gripper_transition = (
                 raw.get("hold_arm_joint_positions_during_gripper_transition")
                 is True
@@ -1746,6 +1789,7 @@ def validate_task_control_plan(
                 or not math.isfinite(max_joint_delta_rad)
                 or max_joint_setpoint_lead_rad < max_joint_delta_rad
                 or not math.isfinite(max_joint_setpoint_lead_rad)
+                or not held_valid
             ):
                 errors.append(f"task_control_scripted_pose_invalid:{index}")
             else:
@@ -1755,6 +1799,7 @@ def validate_task_control_plan(
                         "mode": "ik_pose",
                         "target_position_world_m": position,
                         "target_quaternion_world_xyzw": quaternion,
+                        "hold_solved_arm_joint_positions_rad": held_joints,
                         "gripper_state": gripper_state,
                         "minimum_steps": minimum_steps,
                         "maximum_steps": maximum_steps,
