@@ -578,6 +578,20 @@ def test_each_link_routes_its_own_probe_kind(lane, link: str, probe_kind: str) -
     )
 
 
+def test_controls_profile_forwards_digest_bound_warm_retention(lane) -> None:
+    authority_path = lane["authorities"]["controls"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["retain_warm_session"] = True
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    argv = _build(lane, "controls")["allocator"]["argv"]
+
+    assert "--native-task-arena-retain-warm-session" in argv
+
+
 def test_default_budget_matches_the_attempt_authority(lane) -> None:
     profile = _build(lane, "construction")
 

@@ -1659,6 +1659,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
+    gpu.add_argument(
+        "--native-task-arena-retain-warm-session",
+        action="store_true",
+        help=(
+            "Keep a healthy controls instance under its independent hard-TTL "
+            "watchdog so later digest-bound Arena bundles can reuse the runtime cache."
+        ),
+    )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
     gpu.add_argument(
@@ -5079,6 +5087,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             allowed_active_instance_ids=(
                                 args.adp_allowed_active_vast_instance_id
                             ),
+                            retain_warm_session=bool(
+                                args.native_task_arena_retain_warm_session
+                            ),
                         )
                 except (OSError, ValueError, json.JSONDecodeError):
                     blockers.append("native_task_arena_paid_attempt_authority_invalid")
@@ -5120,6 +5131,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else "controls"
                     if controls_requested
                     else "construction_canary"
+                ),
+                "retain_warm_session": bool(
+                    args.native_task_arena_retain_warm_session
                 ),
                 "candidate_policy_queried": policy_requested,
                 "policy_candidate_id": (
@@ -5237,6 +5251,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_kwargs["authorize_gated_backbone"] = bool(
                         args.adp009d_authorize_gated_backbone
                     )
+                if args.native_task_arena_retain_warm_session:
+                    if not controls_requested:
+                        result = {
+                            "status": "blocked",
+                            "blockers": [
+                                "native_task_arena_warm_session_requires_controls"
+                            ],
+                            "provider_mutations_performed": 0,
+                        }
+                        write_json(Path(args.adapter_output), result)
+                        print(json.dumps({"success": False}, sort_keys=True))
+                        return 2
+                    run_kwargs["retain_warm_instance"] = True
                 result = run_native(**run_kwargs)
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

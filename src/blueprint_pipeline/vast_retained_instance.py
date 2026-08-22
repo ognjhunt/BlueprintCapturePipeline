@@ -14,6 +14,7 @@ from .retained_gpu_session_lifecycle import record_retained_gpu_state
 
 
 VAST_RETENTION_SCHEMA_VERSION = "vast_retained_instance_decision.v1"
+NATIVE_TASK_ARENA_WARM_RETENTION_MODE = "native_task_arena_warm_worker"
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -90,6 +91,8 @@ def retention_decision(
     startup_probe: Mapping[str, Any],
     gpu_sanity: Mapping[str, Any],
     video_smoke: Mapping[str, Any],
+    retention_mode: str = "cosmos_server",
+    warm_worker_evidence: Mapping[str, Any] | None = None,
     observed_now_epoch: float | None = None,
 ) -> dict[str, Any]:
     """Admit retention only for a healthy host with an armed hard-TTL watchdog."""
@@ -118,15 +121,34 @@ def retention_decision(
     if gpu_sanity.get("status") != "completed" or gpu_sanity.get("gpu_sanity_proven") is not True:
         blockers.append("retention_gpu_health_not_proven")
     cosmos = _cosmos_runtime_retention_evidence(video_smoke)
-    if cosmos.get("runtime_terminal") is True:
-        blockers.append("retention_not_needed_after_terminal_bundle_success")
-    elif cosmos.get("server_loaded") is not True:
-        blockers.append("retention_cosmos_server_not_proven_loaded")
+    warm = _mapping(warm_worker_evidence)
+    if retention_mode == NATIVE_TASK_ARENA_WARM_RETENTION_MODE:
+        if warm.get("provider_bundle_kind") != "native_task_arena":
+            blockers.append("retention_native_task_arena_bundle_kind_invalid")
+        if warm.get("runtime_dependency_cache_ready") is not True:
+            blockers.append("retention_native_task_arena_dependency_cache_not_ready")
+        if warm.get("instance_running") is not True:
+            blockers.append("retention_native_task_arena_instance_not_running")
+        if warm.get("workload_independent_access_recorded") is not True:
+            blockers.append("retention_native_task_arena_access_not_recorded")
+        if not isinstance(warm.get("ssh_host"), str) or not warm.get("ssh_host"):
+            blockers.append("retention_native_task_arena_ssh_host_missing")
+        ssh_port = warm.get("ssh_port")
+        if isinstance(ssh_port, bool) or not isinstance(ssh_port, int) or ssh_port <= 0:
+            blockers.append("retention_native_task_arena_ssh_port_invalid")
+    elif retention_mode == "cosmos_server":
+        if cosmos.get("runtime_terminal") is True:
+            blockers.append("retention_not_needed_after_terminal_bundle_success")
+        elif cosmos.get("server_loaded") is not True:
+            blockers.append("retention_cosmos_server_not_proven_loaded")
+    else:
+        blockers.append("retention_mode_unsupported")
     return {
         "schema_version": VAST_RETENTION_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "status": "retained_owned" if not blockers else "teardown_required",
         "requested": requested,
+        "retention_mode": retention_mode,
         "instance_ids": list(instance_ids),
         "watchdog_pid": watchdog.get("watchdog_pid"),
         "watchdog_deadline_epoch": deadline,
@@ -134,6 +156,7 @@ def retention_decision(
         "gpu_health_proven": gpu_sanity.get("gpu_sanity_proven") is True,
         "cosmos_server_loaded": cosmos.get("server_loaded") is True,
         "cosmos_runtime_status": cosmos.get("runtime_status"),
+        "warm_worker_evidence": dict(warm),
         "blockers": blockers,
         "raw_secret_values_recorded": False,
     }

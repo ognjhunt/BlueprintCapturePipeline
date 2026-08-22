@@ -49,6 +49,7 @@ from .wam_provider_object_store import (
 
 PROBE_KIND = "adp-isaac-lab-arena-native-control"
 RESULT_SCHEMA_VERSION = "adp_isaac_lab_arena_vast_run.v1"
+WARM_SESSION_SCHEMA_VERSION = "native_task_arena_warm_session.v1"
 DEFAULT_IMAGE = (
     "nvcr.io/nvidia/isaac-sim:6.0.1@"
     "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
@@ -390,8 +391,12 @@ def run_arena_native_control_vast(
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     require_independent_watchdog: bool = False,
     authorization_consumption: Mapping[str, Any] | None = None,
+    retain_warm_instance: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog."""
+
+    if retain_warm_instance and not require_independent_watchdog:
+        raise ValueError("native_task_arena_warm_session_requires_watchdog")
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
@@ -664,6 +669,7 @@ def run_arena_native_control_vast(
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 vast_launch_lock_file=vast_launch_lock_file,
                 paid_resource_admission_grant=paid_resource_admission_grant,
+                retain_native_task_arena_warm_session=retain_warm_instance,
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
@@ -724,14 +730,70 @@ def run_arena_native_control_vast(
     )
     if policy_query_blocker:
         blockers.append(policy_query_blocker)
-    if teardown.get("continuing_spend_from_this_run") is not False:
+    warm_retained = bool(
+        retain_warm_instance
+        and adapter.get("retained_owned") is True
+        and teardown.get("status") == "retained_owned"
+        and teardown.get("continuing_spend_from_this_run") is True
+    )
+    if retain_warm_instance:
+        if not warm_retained:
+            blockers.append(f"{blocker_prefix}_warm_session_not_retained")
+    elif teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append(f"{blocker_prefix}_object_store_provider_zero_not_proven")
-    if require_independent_watchdog and watchdog_close.get("status") not in {
-        "provider_terminal",
-    }:
+    accepted_watchdog_statuses = (
+        {"retained_until_hard_ttl"} if warm_retained else {"provider_terminal"}
+    )
+    if (
+        require_independent_watchdog
+        and watchdog_close.get("status") not in accepted_watchdog_statuses
+    ):
         blockers.append(f"{blocker_prefix}_independent_watchdog_not_terminal")
+    warm_session_path = attempt_root / "native_task_arena_warm_session.v1.json"
+    warm_session: dict[str, Any] | None = None
+    if warm_retained:
+        retention = dict(adapter.get("retention_decision") or {})
+        warm_evidence = dict(retention.get("warm_worker_evidence") or {})
+        instance_ids = [int(value) for value in adapter.get("vast_instance_ids") or []]
+        warm_session = {
+            "schema_version": WARM_SESSION_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "ready",
+            "provider": "vast",
+            "instance_id": instance_ids[-1] if instance_ids else None,
+            "container_image": container_image,
+            "runtime_dependency_packet_sha256": runtime_source.get("packet_sha256"),
+            "runtime_dependency_packet_size_bytes": runtime_source.get(
+                "packet_size_bytes"
+            ),
+            "runtime_dependency_cache_ready": warm_evidence.get(
+                "runtime_dependency_cache_ready"
+            ),
+            "ssh_host": warm_evidence.get("ssh_host"),
+            "ssh_port": warm_evidence.get("ssh_port"),
+            "watchdog_pid": retention.get("watchdog_pid"),
+            "watchdog_deadline_epoch": retention.get("watchdog_deadline_epoch"),
+            "watchdog_out_dir": watchdog_handoff.get("watchdog_out_dir"),
+            "watchdog_pod_name_prefix": watchdog_handoff.get("pod_name_prefix"),
+            "initial_bundle_sha256": bundle.get("bundle_sha256"),
+            "initial_attempt_root": str(attempt_root),
+            "max_hourly_rate_usd": max_hourly_rate_usd,
+            "hard_cap_usd": hard_cap_usd,
+            "hard_ttl_seconds": hard_ttl_seconds,
+            "continuing_spend": True,
+            "raw_secret_values_recorded": False,
+        }
+        warm_session["session_digest"] = "sha256:" + hashlib.sha256(
+            json.dumps(
+                warm_session,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        write_json(warm_session_path, warm_session)
     artifact_manifest_path = attempt_root / "artifact_manifest.json"
     try:
         artifact_manifest = build_task_evaluation_artifact_manifest(
@@ -784,6 +846,8 @@ def run_arena_native_control_vast(
         "retry_cap": 0,
         "authorization_consumption": authorization_consumption,
         "independent_watchdog": watchdog_close,
+        "warm_session": warm_session,
+        "warm_session_receipt_path": str(warm_session_path) if warm_session else None,
         "watchdog_receipt_path": (
             str(
                 attempt_root
@@ -810,8 +874,10 @@ def run_arena_native_control_vast(
                 provider_run / "vast_teardown_manifest.json"
             ),
             "estimated_cost_usd": adapter.get("estimated_cost_usd"),
-            "provider_zero_confirmed": teardown.get("continuing_spend_from_this_run")
-            is False,
+            "provider_zero_confirmed": (
+                teardown.get("continuing_spend_from_this_run") is False
+            ),
+            "warm_session_retained": warm_retained,
             "all_staged_objects_absent": cleanup.get("all_objects_absent") is True,
         },
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),

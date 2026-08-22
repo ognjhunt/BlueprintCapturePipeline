@@ -359,6 +359,128 @@ def test_live_transport_emits_allocator_artifact_manifest(
     }
 
 
+def test_live_transport_seals_guarded_warm_session_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+        "protocol_digest": "sha256:" + "b" * 64,
+        "runtime_source_packet": {
+            "packet_sha256": "sha256:" + "c" * 64,
+            "packet_size_bytes": 4_400_000_000,
+        },
+    }
+
+    def fake_stage(*, job_dir, **_kwargs):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.invalid/object\n")
+        return {"status": "completed"}
+
+    def fake_adapter(*, job_dir, **kwargs):
+        assert kwargs["retain_native_task_arena_warm_session"] is True
+        provider = Path(job_dir)
+        provider.mkdir(parents=True, exist_ok=True)
+        write_json(provider / "vast_provider_adapter_result.json", {"status": "completed"})
+        write_json(
+            provider / "vast_teardown_manifest.json",
+            {"status": "retained_owned", "continuing_spend_from_this_run": True},
+        )
+        with zipfile.ZipFile(provider / "vast_provider_runtime_output.zip", "w") as archive:
+            archive.writestr(
+                "adp_arena_native_canary.json",
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "candidate_policy_queried": False,
+                        "blockers": [],
+                    }
+                ),
+            )
+        return {
+            "status": "completed",
+            "blockers": [],
+            "estimated_cost_usd": 0.1,
+            "vast_instance_ids": [123],
+            "continuing_spend_from_this_run": True,
+            "provider_create_attempted": True,
+            "retained_owned": True,
+            "retention_decision": {
+                "watchdog_pid": 456,
+                "watchdog_deadline_epoch": 2_000_000_000,
+                "warm_worker_evidence": {
+                    "runtime_dependency_cache_ready": True,
+                    "ssh_host": "ssh.example",
+                    "ssh_port": 12345,
+                },
+            },
+        }
+
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        arena, "cleanup_staged_wam_provider_objects", lambda _path: {"all_objects_absent": True}
+    )
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
+    monkeypatch.setattr(
+        arena,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {
+                "status": "armed",
+                "blockers": [],
+                "watchdog_out_dir": str(tmp_path / "watchdog"),
+                "pod_name_prefix": "blueprint-native-task-controls-",
+            },
+            SimpleNamespace(
+                pod_name_prefix="blueprint-native-task-controls-",
+                started_instance_id_path=tmp_path / "started_vast_instance_id.txt",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        arena,
+        "close_independent_vast_watchdog",
+        lambda **_kwargs: {"status": "retained_until_hard_ttl"},
+    )
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=1.0,
+        hard_ttl_seconds=3600,
+        require_independent_watchdog=True,
+        retain_warm_instance=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["continuing_spend_from_this_run"] is True
+    session = result["warm_session"]
+    assert session["status"] == "ready"
+    assert session["instance_id"] == 123
+    assert session["runtime_dependency_cache_ready"] is True
+    assert session["ssh_host"] == "ssh.example"
+    assert session["ssh_port"] == 12345
+    assert session["session_digest"].startswith("sha256:")
+
+
 def test_live_transport_without_watchdog_does_not_close_a_missing_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

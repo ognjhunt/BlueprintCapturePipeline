@@ -200,6 +200,7 @@ def run_native_task_arena_controls_vast(
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
+    retain_warm_instance: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry control pair through the same capped transport."""
 
@@ -223,6 +224,7 @@ def run_native_task_arena_controls_vast(
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
             allowed_active_instance_ids=allowed_ids,
+            retain_warm_session=retain_warm_instance,
         )
         if paid_attempt_authority is not None
         else None
@@ -270,6 +272,7 @@ def run_native_task_arena_controls_vast(
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
         authorization_consumption=consumption,
+        retain_warm_instance=retain_warm_instance,
     )
 
 

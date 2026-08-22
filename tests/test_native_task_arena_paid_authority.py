@@ -142,6 +142,7 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     assert authority["prior_terminal_attempt"]["terminal_result"]["path"] == str(
         predecessor["canonical_result"]
     )
+    assert authority["retain_warm_session"] is False
     assert paid.validate_native_task_arena_paid_attempt_authority(
         authority,
         prepared_bundle=prepared,
@@ -162,6 +163,68 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
             max_hourly_rate_usd=0.6,
             hard_cap_usd=0.6,
             hard_ttl_seconds=3600,
+        )
+
+
+def test_warm_retention_intent_is_digest_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    predecessor = _predecessor(tmp_path / "predecessor")
+    receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
+    prepared["execution_mode"] = "controls"
+    write_json(receipt_path, {"execution_mode": "controls"})
+    monkeypatch.setattr(
+        paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
+    )
+    reconciled = {
+        "prior_terminal_attempts": [
+            {"result": _record(predecessor["canonical_result"])}
+        ],
+        "reconciliation": {
+            "path": str(tmp_path / "reconciliation.json"),
+            "sha256": "sha256:" + "9" * 64,
+        },
+        "actual_total_usd": 0.025,
+    }
+    monkeypatch.setattr(paid, "bind_lane_prior_spend", lambda **_kwargs: reconciled)
+    monkeypatch.setattr(
+        paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
+    )
+
+    authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_authority_path=predecessor["authority"],
+        prior_result_path=predecessor["result"],
+        prior_provider_zero_path=predecessor["zero"],
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+        authorization_reference="user-directed warm controls session",
+        authorized_by="user",
+        authorized_on="2026-08-21",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.6,
+        hard_cap_usd=0.6,
+        hard_ttl_seconds=3600,
+        output_path=tmp_path / "attempt_authority.json",
+        retain_warm_session=True,
+    )
+
+    assert authority["retain_warm_session"] is True
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.6,
+        hard_cap_usd=0.6,
+        hard_ttl_seconds=3600,
+        retain_warm_session=True,
+    )["authorization_digest"] == authority["authorization_digest"]
+    with pytest.raises(ValueError, match="retain_warm_session_mismatch"):
+        paid.validate_native_task_arena_paid_attempt_authority(
+            authority,
+            prepared_bundle=prepared,
+            max_hourly_rate_usd=0.6,
+            hard_cap_usd=0.6,
+            hard_ttl_seconds=3600,
+            retain_warm_session=False,
         )
 
 

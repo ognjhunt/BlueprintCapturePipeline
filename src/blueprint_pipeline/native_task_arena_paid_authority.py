@@ -226,6 +226,7 @@ def materialize_native_task_arena_paid_attempt_authority(
     hard_ttl_seconds: int,
     output_path: str | Path,
     allowed_active_instance_ids: Sequence[int] = (),
+    retain_warm_session: bool = False,
 ) -> dict[str, Any]:
     """Seal one zero-retry authority against a bundle and terminal predecessor."""
 
@@ -271,6 +272,7 @@ def materialize_native_task_arena_paid_attempt_authority(
         or hard_ttl_seconds * max_hourly_rate_usd / 3600 > hard_cap_usd
         or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
+        or (retain_warm_session and mode != "controls")
     ):
         raise ValueError("native_task_arena_authority_configuration_invalid")
     authority: dict[str, Any] = {
@@ -284,6 +286,7 @@ def materialize_native_task_arena_paid_attempt_authority(
         "paid_compute_authorized": True,
         "maximum_paid_attempts": 1,
         "maximum_provider_allocations": 1,
+        "retain_warm_session": bool(retain_warm_session),
         "maximum_automatic_retries": 0,
         "automatic_paid_retry_authorized": False,
         "zero_retry": True,
@@ -336,6 +339,7 @@ def materialize_native_task_arena_paid_attempt_authority(
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
         allowed_active_instance_ids=allowed,
+        retain_warm_session=retain_warm_session,
     )
     return authority
 
@@ -348,6 +352,7 @@ def validate_native_task_arena_paid_attempt_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     allowed_active_instance_ids: Sequence[int] = (),
+    retain_warm_session: bool = False,
 ) -> dict[str, Any]:
     value = dict(authority)
     expected_allowlist = {
@@ -386,6 +391,9 @@ def validate_native_task_arena_paid_attempt_authority(
     errors.extend(
         f"{key}_mismatch" for key, expected_value in expected.items() if value.get(key) != expected_value
     )
+    observed_retain = value.get("retain_warm_session", False)
+    if not isinstance(observed_retain, bool) or observed_retain != retain_warm_session:
+        errors.append("retain_warm_session_mismatch")
     if value.get("authorization_digest") != canonical_digest(
         value, digest_field="authorization_digest"
     ):
