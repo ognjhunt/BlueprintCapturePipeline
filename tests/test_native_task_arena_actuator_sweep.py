@@ -520,3 +520,79 @@ def test_the_probe_records_targets_the_solver_cannot_reach() -> None:
     assert unsolved
     assert all("measured_grasp_frame_position_world_m" not in c for c in unsolved)
     assert report["status"] == "measured"
+
+
+def test_the_sweep_measures_the_model_versus_physics_gap() -> None:
+    """C42 ruled out everything else; this is what was left, unmeasured.
+
+    All five contact branches predicted 4.5-4.9 mm off-sim and measured 12.9,
+    12.9, 13.8, 15.2 and 204 mm, and the executed branch was within 0.06 mm of
+    the best available.  Gains, branch, posture and obstruction are all
+    excluded by measurement.  What remains is that the solver and the simulator
+    disagree about where the gripper is at a given set of joints -- and that
+    was being inferred by subtracting two error magnitudes rather than
+    measured as a vector with a direction.
+    """
+
+    class _ModelDisagrees(_SweepEnvironment):
+        OFFSET_M = 0.008
+
+        def step(self, action) -> None:
+            # This arm tracks perfectly, so the only thing separating the
+            # prediction from the measurement is the disagreement itself --
+            # not a tracking shortfall wearing its clothes.
+            self.joints = [float(value) for value in action[:7]]
+
+        def read_task_sample(self):
+            return {
+                "grasp_frame_position_world_m": [
+                    self.joints[4] + self.OFFSET_M,
+                    0.0,
+                    0.0,
+                ]
+            }
+
+        def read_object_sample(self):
+            raise RuntimeError("isaac_episode_rigid_task_object_missing")
+
+    postures = [
+        {
+            "posture_index": 0,
+            "seed_index": 1,
+            "joint_positions_rad": [0.0] * 4 + [1.0, 0.0, 0.0],
+            # Where the solver believes this posture lands the grasp frame.
+            "predicted_grasp_frame_position_world_m": [1.0, 0.0, 0.0],
+        }
+    ]
+
+    report = _sweep(_ModelDisagrees(), postures=postures)
+
+    assert report["status"] == "measured"
+    for cell in report["cells"]:
+        gap = cell["model_minus_measured_m"]
+        assert gap is not None
+        # The gap is a vector with a direction, not a difference of magnitudes.
+        assert gap[0] > 0.0
+        assert cell["model_minus_measured_distance_m"] == pytest.approx(
+            abs(gap[0]), abs=1e-9
+        )
+        assert cell["predicted_grasp_frame_position_world_m"] == [1.0, 0.0, 0.0]
+
+
+def test_a_posture_without_a_prediction_still_measures() -> None:
+    """Older receipts carry no prediction; the sweep must not lose the cell."""
+
+    postures = [
+        {
+            "posture_index": 0,
+            "seed_index": 1,
+            "joint_positions_rad": [0.0] * 4 + [1.0, 0.0, 0.0],
+        }
+    ]
+
+    report = _sweep(_SweepEnvironment(), postures=postures)
+
+    assert report["status"] == "measured"
+    for cell in report["cells"]:
+        assert cell["model_minus_measured_m"] is None
+        assert cell["measured_distance_to_target_m"] is not None

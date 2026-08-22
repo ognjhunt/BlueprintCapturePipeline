@@ -33,6 +33,7 @@ from .native_franka_grasp_geometry import (
 )
 from .native_pose_transforms import (
     NativePoseTransformError,
+    pose_base_to_world,
     pose_world_to_base,
     world_to_base_rotation_row_major_xyzw,
 )
@@ -1464,6 +1465,25 @@ class NativeFrankaDifferentialIkServo:
             ),
         )
 
+    def _grasp_frame_base_pose_to_world(
+        self, position_base: Sequence[float]
+    ) -> list[float] | None:
+        """The solver reasons in robot root; every gate reads world."""
+
+        base_pose = getattr(self, "_base_pose", None)
+        if not base_pose or len(base_pose) < 7:
+            return None
+        try:
+            position_world, _ = pose_base_to_world(
+                position_base=position_base,
+                quaternion_base_xyzw=[0.0, 0.0, 0.0, 1.0],
+                base_position_world=base_pose[:3],
+                base_quaternion_world_xyzw=base_pose[3:7],
+            )
+        except Exception:  # noqa: BLE001 - a diagnostic never fails a solve
+            return None
+        return position_world
+
     def _pink_grasp_frame_for_hand_candidate(
         self,
         *,
@@ -1634,6 +1654,16 @@ class NativeFrankaDifferentialIkServo:
                         "orientation_error_rad": orientation_error,
                         "grasp_frame_position_error_m": position_error,
                         "grasp_frame_orientation_error_rad": orientation_error,
+                        # Where the *model* believes this posture puts the
+                        # grasp frame.  Every sweep cell measures where physics
+                        # actually puts it for the same joints, so sealing the
+                        # prediction turns "the model and the simulator
+                        # disagree by about 8 mm" from an inference drawn by
+                        # subtracting two error magnitudes into a measured
+                        # vector with a direction.
+                        "predicted_grasp_frame_position_world_m": (
+                            self._grasp_frame_base_pose_to_world(grasp_position)
+                        ),
                         "controlled_body_position_error_m": hand_position_error,
                         "controlled_body_orientation_error_rad": (
                             hand_orientation_error

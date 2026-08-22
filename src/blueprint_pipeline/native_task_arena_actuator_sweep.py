@@ -147,6 +147,9 @@ def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[d
                     "seed_index": row.get("seed_index"),
                     "joint_positions_rad": joints,
                     "offsim_position_error_m": row.get("position_error_m"),
+                    "predicted_grasp_frame_position_world_m": row.get(
+                        "predicted_grasp_frame_position_world_m"
+                    ),
                     "minimum_joint_limit_margin_rad": row.get(
                         "minimum_joint_limit_margin_rad"
                     ),
@@ -231,6 +234,9 @@ def run_actuator_posture_sweep(
                     environment.read_arm_joint_positions(), length=7
                 )
                 measured = _grasp_frame_position(environment)
+                predicted = _finite_vector(
+                    posture.get("predicted_grasp_frame_position_world_m"), length=3
+                )
                 cells.append(
                     {
                         "wrist_stiffness_nm_per_rad": float(stiffness),
@@ -238,6 +244,23 @@ def run_actuator_posture_sweep(
                         "posture_index": posture.get("posture_index"),
                         "seed_index": posture.get("seed_index"),
                         "offsim_position_error_m": posture.get("offsim_position_error_m"),
+                        # What the solver believed, minus what physics did, at
+                        # the same joints.  Gains, branch, posture and
+                        # obstruction are all ruled out by measurement as
+                        # causes of the recurring ~13 mm; this is what is left,
+                        # and it has been inferred by subtracting two error
+                        # magnitudes rather than measured as a vector.
+                        "predicted_grasp_frame_position_world_m": predicted,
+                        "model_minus_measured_m": (
+                            [measured[axis] - predicted[axis] for axis in range(3)]
+                            if measured is not None and predicted is not None
+                            else None
+                        ),
+                        "model_minus_measured_distance_m": (
+                            math.dist(measured, predicted)
+                            if measured is not None and predicted is not None
+                            else None
+                        ),
                         "joint_tracking_error_rad": (
                             max(abs(a - b) for a, b in zip(joints, observed))
                             if observed is not None
