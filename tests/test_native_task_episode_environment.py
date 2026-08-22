@@ -296,7 +296,7 @@ def test_factory_uses_cartesian_servo_before_precision_contact(
     )
     assert approach_action == [0.5] * 7 + [0.0]
     assert servo.calls[-1]["backend"] == "physx_dls"
-    assert "preferred_posture_joint_positions_rad" not in servo.calls[-1]
+    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [0.1] * 7
 
     action = adapter.kwargs["scripted_pose_action_callback"](
         target_position_world_m=[1.0, 2.0, 3.0],
@@ -309,17 +309,20 @@ def test_factory_uses_cartesian_servo_before_precision_contact(
     assert action == [0.5] * 7 + [0.0]
     assert servo.calls[-1]["backend"] == "physx_dls"
     assert servo.calls[-1]["target_position_world_m"] == [1.0, 2.0, 3.0]
-    assert "preferred_posture_joint_positions_rad" not in servo.calls[-1]
+    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [0.2] * 7
     assert "target_joint_positions_rad" not in servo.calls[-1]
     assert receipt["scripted_pose_source"] == (
         "global_ik_free_space_with_live_physx_jacobian_precision_servo_"
-        "and_position_nullspace_joint_limit_avoidance"
+        "and_full_pose_nullspace_joint_limit_avoidance"
     )
-    assert receipt["cartesian_contact_posture_source"] is None
+    assert receipt["cartesian_contact_posture_source"] == (
+        "selected_global_ik_joint_target_projected_through_live_physx_"
+        "full_pose_jacobian_nullspace"
+    )
     assert receipt["cartesian_precision_joint_limit_avoidance_source"] == (
-        "isaaclab_develop_differential_ik_position_nullspace_backport"
+        "isaaclab_pink_combined_task_jacobian_nullspace_projection"
     )
-    assert receipt["cartesian_contact_posture_nullspace_gain"] is None
+    assert receipt["cartesian_contact_posture_nullspace_gain"] == pytest.approx(0.20)
     assert receipt["cartesian_precision_joint_limit_avoidance_gain"] == pytest.approx(0.20)
     assert receipt["cartesian_precision_joint_limit_avoidance_margin_rad"] == pytest.approx(0.30)
     assert receipt["cartesian_contact_phase_ids"] == ["contact_open"]

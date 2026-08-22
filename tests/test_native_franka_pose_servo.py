@@ -21,57 +21,54 @@ from blueprint_pipeline.native_franka_pose_servo import (
     deterministic_pink_joint_seeds,
     native_xyzw_to_contract_xyzw,
     pink_configuration_joint_positions,
-    position_nullspace_posture_bias,
-    position_nullspace_joint_limit_avoidance,
+    pose_nullspace_posture_bias,
+    pose_nullspace_joint_limit_avoidance,
     resolve_native_franka_pose_binding,
 )
 
 
-def test_position_nullspace_posture_bias_preserves_linear_task() -> None:
+def test_pose_nullspace_posture_bias_preserves_full_pose_task() -> None:
     torch = pytest.importorskip(
         "torch",
         reason="tensor projection executes inside the Isaac GPU runtime",
     )
 
     jacobian = torch.zeros((1, 6, 7), dtype=torch.float64)
-    jacobian[0, 0, 0] = 1.0
-    jacobian[0, 1, 1] = 1.0
-    jacobian[0, 2, 2] = 1.0
+    jacobian[0, :6, :6] = torch.eye(6, dtype=torch.float64)
+    jacobian[0, :, 6] = 1.0
     current = torch.zeros((1, 7), dtype=torch.float64)
     preferred = torch.tensor(
         [[1.0, -1.0, 0.5, 0.4, -0.3, 0.2, -0.1]], dtype=torch.float64
     )
 
-    bias = position_nullspace_posture_bias(
+    bias = pose_nullspace_posture_bias(
         joint_positions=current,
         preferred_joint_positions=preferred,
         task_jacobian=jacobian,
         gain=PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
     )
 
-    assert torch.matmul(jacobian[:, :3, :], bias.unsqueeze(-1)).squeeze(-1) == (
-        pytest.approx(torch.zeros((1, 3), dtype=torch.float64))
+    assert torch.matmul(jacobian, bias.unsqueeze(-1)).squeeze(-1) == (
+        pytest.approx(torch.zeros((1, 6), dtype=torch.float64), abs=1e-12)
     )
-    assert bias[0, :3].tolist() == pytest.approx([0.0, 0.0, 0.0])
-    assert bias[0, 3:].tolist() == pytest.approx([0.08, -0.06, 0.04, -0.02])
+    assert torch.linalg.vector_norm(bias).item() > 0.0
 
 
-def test_position_nullspace_joint_limit_avoidance_preserves_linear_task() -> None:
+def test_pose_nullspace_joint_limit_avoidance_preserves_full_pose_task() -> None:
     torch = pytest.importorskip(
         "torch",
         reason="tensor projection executes inside the Isaac GPU runtime",
     )
     jacobian = torch.zeros((1, 6, 7), dtype=torch.float64)
-    jacobian[0, 0, 0] = 1.0
-    jacobian[0, 1, 1] = 1.0
-    jacobian[0, 2, 2] = 1.0
+    jacobian[0, :6, :6] = torch.eye(6, dtype=torch.float64)
+    jacobian[0, :, 6] = 1.0
     current = torch.tensor(
-        [[0.0, 0.0, 0.0, 0.0, -0.99, 0.0, 0.99]], dtype=torch.float64
+        [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.99]], dtype=torch.float64
     )
     lower = torch.full((1, 7), -1.0, dtype=torch.float64)
     upper = torch.full((1, 7), 1.0, dtype=torch.float64)
 
-    bias = position_nullspace_joint_limit_avoidance(
+    bias = pose_nullspace_joint_limit_avoidance(
         joint_positions=current,
         lower_joint_limits=lower,
         upper_joint_limits=upper,
@@ -80,11 +77,9 @@ def test_position_nullspace_joint_limit_avoidance_preserves_linear_task() -> Non
         margin=PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
     )
 
-    assert torch.matmul(jacobian[:, :3, :], bias.unsqueeze(-1)).squeeze(-1) == (
-        pytest.approx(torch.zeros((1, 3), dtype=torch.float64))
+    assert torch.matmul(jacobian, bias.unsqueeze(-1)).squeeze(-1) == (
+        pytest.approx(torch.zeros((1, 6), dtype=torch.float64), abs=1e-12)
     )
-    assert bias[0, :4].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
-    assert bias[0, 4] > 0.0
     assert bias[0, 6] < 0.0
 
 
@@ -485,6 +480,38 @@ def test_multistart_avoids_a_joint_limit_solution_before_continuity() -> None:
 
     assert result["selected"]["seed_index"] == 1
     assert result["selected"]["minimum_joint_limit_margin_rad"] > 0.05
+
+
+def test_multistart_rejects_solved_pose_below_required_joint_margin() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-2.0] * 7
+    servo._joint_position_upper = [2.0] * 7
+    servo.solve_grasp_target_from_joint_seed = lambda **kwargs: {
+        "solved": True,
+        "joint_positions_rad": list(kwargs["seed_joint_positions_rad"]),
+        "position_error_m": 0.001,
+        "orientation_error_rad": 0.01,
+        "iterations": 4,
+    }
+
+    result = servo.solve_grasp_target_multistart(
+        target_position_world_m=[0.5, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[1.999] * 7, [1.99] * 7],
+        reference_joint_positions_rad=[1.999] * 7,
+        seed_count=2,
+        preferred_minimum_joint_limit_margin_rad=0.05,
+        required_minimum_joint_limit_margin_rad=0.005,
+    )
+
+    assert result["solved"] is True
+    assert result["selected"]["seed_index"] == 1
+    assert result["selected"]["minimum_joint_limit_margin_rad"] == pytest.approx(
+        0.01
+    )
+    assert result["required_minimum_joint_limit_margin_rad"] == pytest.approx(
+        0.005
+    )
 
 
 def test_pose_servo_uses_pink_for_free_space_and_physx_dls_for_contact() -> None:

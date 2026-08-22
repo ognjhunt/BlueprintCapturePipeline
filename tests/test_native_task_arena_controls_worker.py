@@ -59,6 +59,10 @@ def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -
                     "phase_id": "prealign",
                     "mode": "ik_pose",
                     "position_only_arrival": True,
+                    "target_position_world_m": [0.5, 0.0, 0.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "arrival_tolerance_m": 0.02,
+                    "arrival_orientation_tolerance_rad": None,
                 },
                 {
                     "phase_id": "approach",
@@ -86,19 +90,94 @@ def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -
         reference_seeds=[[0.5] * 7],
     )
 
-    assert len(servo.calls) == 1
-    assert servo.calls[0]["preferred_seeds"][0] == [0.1] * 7
-    assert servo.calls[0]["position_tolerance_m"] == pytest.approx(0.005)
+    assert len(servo.calls) == 2
+    assert servo.calls[0]["preferred_seeds"][0] == [0.0] * 7
+    assert servo.calls[0]["position_tolerance_m"] == pytest.approx(0.02)
     assert servo.calls[0]["orientation_tolerance_rad"] == pytest.approx(0.08)
-    assert [row["phase_id"] for row in targets] == ["approach", "contact_open"]
+    assert servo.calls[1]["preferred_seeds"][0] == [0.1] * 7
+    assert servo.calls[1]["position_tolerance_m"] == pytest.approx(0.005)
+    assert servo.calls[1]["orientation_tolerance_rad"] == pytest.approx(0.08)
+    assert servo.calls[1][
+        "required_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.005)
+    assert [row["phase_id"] for row in targets] == [
+        "approach",
+        "prealign",
+        "contact_open",
+    ]
+    assert targets[1]["joint_positions_rad"] == [0.5] * 7
     assert targets[-1]["joint_positions_rad"] == [2.0] * 7
     assert receipt["status"] == "all_unique_poses_solved_or_bound"
     assert [row.get("status") for row in receipt["phases"]] == [
-        "skipped_position_only_arrival",
+        None,
         "reused_bound_pose_solution",
         None,
         "reused_bound_pose_solution",
     ]
+    assert receipt["phases"][0]["position_only_arrival_gate"] is True
+    assert receipt["phases"][0][
+        "full_pose_prepositioning_tolerance_rad"
+    ] == pytest.approx(0.08)
+
+
+def test_controls_approach_uses_path_margin_before_exact_contact() -> None:
+    class _Servo:
+        def __init__(self):
+            self.calls = []
+
+        def read_arm_joint_positions(self):
+            return [0.0] * 7
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "solved": True,
+                "selected": {
+                    "solved": True,
+                    "joint_positions_rad": [0.1] * 7,
+                },
+                "attempts": [],
+            }
+
+    servo = _Servo()
+    _control_plan_global_ik_joint_targets(
+        servo=servo,
+        control_plan={
+            "scripted_positive_actions": [
+                {
+                    "phase_id": "approach",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [1.0, 0.0, 0.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "arrival_tolerance_m": 0.02,
+                    "arrival_orientation_tolerance_rad": 0.08,
+                },
+                {
+                    "phase_id": "contact_open",
+                    "mode": "ik_pose",
+                    "target_position_world_m": [2.0, 0.0, 0.0],
+                    "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "arrival_tolerance_m": 0.005,
+                    "arrival_orientation_tolerance_rad": 0.08,
+                },
+            ]
+        },
+        bound_targets=[],
+        reference_seeds=[],
+    )
+
+    assert servo.calls[0][
+        "preferred_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.04)
+    assert servo.calls[0][
+        "required_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.0)
+    assert servo.calls[1][
+        "preferred_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.05)
+    assert servo.calls[1][
+        "required_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.005)
 
 
 def test_parallel_jaw_equivalent_preserves_approach_and_reverses_jaw() -> None:

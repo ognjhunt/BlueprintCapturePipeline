@@ -154,7 +154,21 @@ def validate_terminal_spend_chain(
     else:
         raise ValueError("native_task_arena_predecessor_authority_schema_invalid")
     authorization_digest = authority.get(authority_digest_field)
-    cost = _finite_cost(result.get("estimated_cost_usd"))
+    try:
+        cost = _finite_cost(result.get("estimated_cost_usd"))
+    except ValueError:
+        # Older pre-allocation adapter results omitted the explicit 0.0 even
+        # though their provider-zero receipt had already proved that no
+        # provider allocation occurred.  The self-digesting zero and its
+        # terminal-result binding are validated below, so only that exact
+        # evidence scope may repair the missing historical scalar.
+        if (
+            result.get("estimated_cost_usd") is None
+            and zero.get("inventory_scope") == "no_provider_allocation"
+        ):
+            cost = 0.0
+        else:
+            raise
     before = _finite_cost(authority.get("aggregate_goal_spend_before_attempt_usd"))
     cap = _finite_cost(authority.get("aggregate_goal_spend_cap_usd"))
     zero_result_path, zero_result_bound = _bound_record(
@@ -638,6 +652,19 @@ def _zero_cost(value: Any) -> bool:
         return False
 
 
+def _definitive_preallocation_no_allocation(
+    *, adapter: Mapping[str, Any], teardown: Mapping[str, Any]
+) -> bool:
+    """Prove a legacy preflight exit never reached a provider create call."""
+
+    return (
+        adapter.get("api_call_performed") is False
+        and adapter.get("provider_create_attempted") is False
+        and adapter.get("vast_instance_ids") == []
+        and teardown.get("vast_instance_ids") == []
+    )
+
+
 def materialize_native_task_arena_provider_zero(
     *, authority_path: str | Path, result_path: str | Path, output_path: str | Path
 ) -> dict[str, Any]:
@@ -682,12 +709,22 @@ def materialize_native_task_arena_provider_zero(
     # provider mutations, armed before allocation, and no continuing spend
     # anywhere. An orphaned resource requires an allocation to exist, so this
     # cannot mask one.
+    definitive_preallocation_no_allocation = _definitive_preallocation_no_allocation(
+        adapter=adapter,
+        teardown=teardown,
+    )
     no_allocation_seal = (
         watchdog.get("schema_version") == WATCHDOG_HANDOFF_SCHEMA_VERSION
         and watchdog.get("status") == "cancelled_no_allocation"
         and watchdog.get("provider_mutations_performed") == 0
         and watchdog.get("watchdog_armed_before_allocation") is True
-        and _zero_cost(result.get("estimated_cost_usd"))
+        and (
+            _zero_cost(result.get("estimated_cost_usd"))
+            or (
+                result.get("estimated_cost_usd") is None
+                and definitive_preallocation_no_allocation
+            )
+        )
     )
 
     shared_invalid = (
@@ -703,7 +740,14 @@ def materialize_native_task_arena_provider_zero(
         or cleanup.get("all_objects_absent") is not True
         or cleanup.get("signed_url_files_removed") is not True
         or teardown.get("continuing_spend_from_this_run") is not False
-        or adapter.get("continuing_spend_from_this_run") is not False
+        or (
+            adapter.get("continuing_spend_from_this_run") is not False
+            and not (
+                no_allocation_seal
+                and definitive_preallocation_no_allocation
+                and adapter.get("continuing_spend_from_this_run") is None
+            )
+        )
     )
     if no_allocation_seal:
         inventory = None

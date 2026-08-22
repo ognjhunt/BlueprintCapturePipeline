@@ -17,6 +17,7 @@ from .native_franka_pose_servo import (
     DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
     PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
+    PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
 )
 
 
@@ -327,6 +328,16 @@ def build_native_task_episode_environment(
             action, _diagnostic = servo.action_for_grasp_target_physx_dls(
                 target_position_world_m=kwargs["target_position_world_m"],
                 target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                # C24 proved the off-sim solver can reach contact to 4.8 mm,
+                # while the live DLS controller converges to a different
+                # redundant-arm posture and stalls 15.0 mm away.  Preserve
+                # the Cartesian path, but guide its one redundant DOF toward
+                # the exact receipt-bound whole-arm solution.  The correction
+                # is projected through the full six-row task null space, so it
+                # cannot replace or weaken measured pose arrival.
+                preferred_posture_joint_positions_rad=joint_target[
+                    "joint_positions_rad"
+                ],
                 **common,
             )
         elif joint_target is not None:
@@ -378,7 +389,7 @@ def build_native_task_episode_environment(
         ),
         "scripted_pose_source": (
             "global_ik_free_space_with_live_physx_jacobian_precision_servo_"
-            "and_position_nullspace_joint_limit_avoidance"
+            "and_full_pose_nullspace_joint_limit_avoidance"
             if any(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
@@ -397,16 +408,31 @@ def build_native_task_episode_environment(
             for row in joint_target_rows
             if row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
         ),
-        "cartesian_contact_posture_source": None,
-        "cartesian_precision_joint_limit_avoidance_source": (
-            "isaaclab_develop_differential_ik_position_nullspace_backport"
+        "cartesian_contact_posture_source": (
+            "selected_global_ik_joint_target_projected_through_live_physx_"
+            "full_pose_jacobian_nullspace"
             if any(
                 row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
                 for row in joint_target_rows
             )
             else None
         ),
-        "cartesian_contact_posture_nullspace_gain": None,
+        "cartesian_precision_joint_limit_avoidance_source": (
+            "isaaclab_pink_combined_task_jacobian_nullspace_projection"
+            if any(
+                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
+                for row in joint_target_rows
+            )
+            else None
+        ),
+        "cartesian_contact_posture_nullspace_gain": (
+            PHYSX_DLS_POSTURE_NULLSPACE_GAIN
+            if any(
+                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
+                for row in joint_target_rows
+            )
+            else None
+        ),
         "cartesian_precision_joint_limit_avoidance_gain": (
             PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN
             if any(
