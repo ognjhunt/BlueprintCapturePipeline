@@ -1043,6 +1043,44 @@ class NativeFrankaDifferentialIkServo:
             leads.append(ACTUATOR_FEASIBLE_LEAD_FRACTION * effort / stiff)
         return leads
 
+    def actuator_feasible_joint_step_rad(self) -> list[float] | None:
+        """How far each joint may be re-commanded per control step.
+
+        Bounding the setpoint *lead* fixed the stiffness half of the effort
+        budget; this is the damping half.  An implicit PD actuator spends
+        ``damping * velocity`` of the same limited torque, so a joint cannot
+        be driven faster than ``effort_limit / damping`` without clipping --
+        for the Arena wrist, 12 / 80 = 0.15 rad/s.  C32 still clipped on 22%
+        of its contact steps because the commanded 0.03 rad per 15 Hz step is
+        0.45 rad/s, three times that.  Returns the per-step travel that keeps
+        both terms inside the budget, or ``None`` when the gains are unknown.
+        """
+
+        leads = getattr(self, "_actuator_feasible_lead_rad", None)
+        damping = self._joint_damping
+        efforts = self._joint_effort_limit
+        if (
+            not leads
+            or not damping
+            or not efforts
+            or len(damping) != len(efforts)
+            or len(damping) != len(leads)
+        ):
+            return None
+        period = self._control_period_seconds
+        steps: list[float] = []
+        for lead, damp, effort in zip(leads, damping, efforts, strict=True):
+            if (
+                not math.isfinite(damp)
+                or not math.isfinite(effort)
+                or damp <= 0.0
+                or effort <= 0.0
+            ):
+                return None
+            velocity = ACTUATOR_FEASIBLE_LEAD_FRACTION * effort / damp
+            steps.append(min(lead, velocity * period))
+        return steps
+
     def _arm_gain(self, attribute: str) -> list[float] | None:
         data = getattr(self._robot, "data", None)
         value = getattr(data, attribute, None) if data is not None else None

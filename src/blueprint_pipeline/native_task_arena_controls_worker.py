@@ -49,7 +49,10 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
 CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
-CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS = 55
+# Raised once the row size became actuator-bound: a 0.6 rad reorientation
+# at a wrist-feasible 0.005 rad per step simply needs ~124 rows.  The task
+# step budget remains the real limiter; this only stops a runaway.
+CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS = 240
 
 
 def _announce(phase: str, status: str = "started") -> None:
@@ -577,6 +580,7 @@ def _with_contact_entry_branch_replay(
     control_plan: Mapping[str, Any],
     scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
     task_spec: Mapping[str, Any],
+    actuator_feasible_step_rad: Sequence[float] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Enter contact_open on the solved branch instead of servoing onto it.
 
@@ -650,38 +654,79 @@ def _with_contact_entry_branch_replay(
         receipt["reason"] = "approach_or_contact_solution_unsolved"
         return plan, receipt
 
-    max_delta = max(abs(e - s) for s, e in zip(start, end))
-    interp_rows = max(
-        4, math.ceil(max_delta / CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD)
+    # These rows are commanded joint targets, so they bypass the servo's slew
+    # and lead bounding entirely -- which is why C30's replay drove straight
+    # into saturation by its eleventh row.  Size each row by what the slowest
+    # participating actuator can actually track in one control step.
+    per_joint_step = (
+        [abs(float(value)) for value in actuator_feasible_step_rad]
+        if actuator_feasible_step_rad
+        else None
     )
-    interp_rows = min(
-        interp_rows,
-        CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS
-        - CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS,
-    )
-    total_rows = interp_rows + CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS
+    feasible_step = CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD
+    if per_joint_step and len(per_joint_step) == len(start):
+        moving = [
+            step
+            for step, s, e in zip(per_joint_step, start, end)
+            if step > 0.0 and abs(e - s) > 1.0e-9
+        ]
+        if moving:
+            feasible_step = min(feasible_step, min(moving))
 
-    # The validator enforces the task budget; refusing here keeps a budget
-    # overflow from surfacing as a paid mid-run refusal.
+    max_delta = max(abs(e - s) for s, e in zip(start, end))
+    settle_rows = CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS
     maximum_action_steps = task_spec.get("maximum_action_steps")
+    settle = int(task_spec.get("settle_window_samples") or 0)
+    planned_steps = 0
+    contact_row = actions[contact_index]
+    for raw in actions:
+        if isinstance(raw, Mapping) and raw.get("mode") == "ik_pose":
+            try:
+                planned_steps += int(raw["maximum_steps"])
+            except (KeyError, TypeError, ValueError):
+                receipt["reason"] = "plan_step_budget_unreadable"
+                return plan, receipt
+        else:
+            planned_steps += 1
+
+    # A replayed entry lands the pose, so the Cartesian phase behind it only
+    # has to confirm arrival rather than search for it.  Reclaiming that
+    # budget is what buys the rows a feasible step size needs.
+    reclaimed = 0
+    try:
+        contact_maximum = int(contact_row["maximum_steps"])
+        contact_minimum = int(contact_row["minimum_steps"])
+        contact_stability = int(contact_row["arrival_stability_steps"])
+    except (KeyError, TypeError, ValueError):
+        receipt["reason"] = "plan_step_budget_unreadable"
+        return plan, receipt
+    confirm_steps = max(contact_minimum, contact_stability) + 2
+    if contact_maximum > confirm_steps:
+        reclaimed = contact_maximum - confirm_steps
+
+    available_rows = None
     if isinstance(maximum_action_steps, int) and not isinstance(
         maximum_action_steps, bool
     ):
-        planned_steps = 0
-        for raw in actions:
-            if isinstance(raw, Mapping) and raw.get("mode") == "ik_pose":
-                try:
-                    planned_steps += int(raw["maximum_steps"])
-                except (KeyError, TypeError, ValueError):
-                    receipt["reason"] = "plan_step_budget_unreadable"
-                    return plan, receipt
-            else:
-                planned_steps += 1
-        settle = int(task_spec.get("settle_window_samples") or 0)
-        if planned_steps + total_rows + settle > maximum_action_steps:
+        available_rows = (
+            maximum_action_steps - settle - (planned_steps - reclaimed)
+        )
+        if available_rows < 4 + settle_rows:
             receipt["reason"] = "task_step_budget_insufficient"
-            receipt["rows_required"] = total_rows
+            receipt["rows_required"] = 4 + settle_rows
+            receipt["rows_available"] = available_rows
             return plan, receipt
+
+    interp_rows = max(4, math.ceil(max_delta / feasible_step))
+    budget_limited = False
+    if available_rows is not None and interp_rows > available_rows - settle_rows:
+        interp_rows = available_rows - settle_rows
+        budget_limited = True
+    if interp_rows > CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS:
+        interp_rows = CONTACT_ENTRY_BRANCH_REPLAY_MAX_TOTAL_ROWS
+        budget_limited = True
+    if reclaimed:
+        contact_row["maximum_steps"] = confirm_steps
 
     rows: list[dict[str, Any]] = []
     for step in range(1, interp_rows + 1):
@@ -710,9 +755,16 @@ def _with_contact_entry_branch_replay(
             "status": "applied",
             "reason": None,
             "interpolation_rows": interp_rows,
-            "settle_rows": CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS,
+            "settle_rows": settle_rows,
             "maximum_joint_delta_rad": max_delta,
             "per_row_joint_step_rad": max_delta / interp_rows,
+            "actuator_feasible_step_rad": feasible_step,
+            # A budget-limited replay steps faster than the actuator can
+            # track, so it will clip.  Sealing that keeps the difference
+            # between "the entry was infeasible" and "the entry was rushed"
+            # visible in the receipt instead of inferred from the outcome.
+            "budget_limited": budget_limited,
+            "contact_phase_steps_reclaimed": reclaimed,
             "rewritten_control_plan_digest": plan["plan_digest"],
         }
     )
@@ -1221,6 +1273,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             control_plan=effective_control_plan,
             scripted_pose_joint_targets=scripted_pose_joint_targets,
             task_spec=scene_plan["task_spec"],
+            actuator_feasible_step_rad=(
+                servo.actuator_feasible_joint_step_rad()
+                if callable(
+                    getattr(servo, "actuator_feasible_joint_step_rad", None)
+                )
+                else None
+            ),
         )
         result["contact_entry_branch_replay"] = branch_replay
         controls_global_ik = jaw_selection["selected_global_ik_preflight"]
