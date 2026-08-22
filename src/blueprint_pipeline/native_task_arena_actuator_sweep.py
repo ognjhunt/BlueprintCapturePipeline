@@ -67,6 +67,33 @@ def _finite_vector(values: Any, *, length: int | None = None) -> list[float] | N
     return vector
 
 
+def _grasp_frame_position(environment: Any) -> list[float] | None:
+    """Read the measured fingertip from whichever sampler this task has.
+
+    An articulated cell carries no rigid task object, so asking for the rigid
+    sample raises rather than returning nothing -- which is how C35's sweep
+    reported `unavailable` on a run whose arm was perfectly measurable.  Both
+    samplers expose the same grasp-frame key, so try each and take the first
+    that answers.
+    """
+
+    for name in ("read_task_sample", "read_object_sample"):
+        reader = getattr(environment, name, None)
+        if not callable(reader):
+            continue
+        try:
+            sample = reader()
+        except Exception:  # noqa: BLE001 - the other sampler may still answer
+            continue
+        if isinstance(sample, Mapping):
+            position = _finite_vector(
+                sample.get("grasp_frame_position_world_m"), length=3
+            )
+            if position is not None:
+                return position
+    return None
+
+
 def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[dict[str, Any]]:
     """Every solved branch for one phase, not only the selected one.
 
@@ -181,12 +208,7 @@ def run_actuator_posture_sweep(
                 observed = _finite_vector(
                     environment.read_arm_joint_positions(), length=7
                 )
-                sample = environment.read_object_sample()
-                measured = (
-                    _finite_vector(sample.get("grasp_frame_position_world_m"), length=3)
-                    if isinstance(sample, Mapping)
-                    else None
-                )
+                measured = _grasp_frame_position(environment)
                 cells.append(
                     {
                         "wrist_stiffness_nm_per_rad": float(stiffness),

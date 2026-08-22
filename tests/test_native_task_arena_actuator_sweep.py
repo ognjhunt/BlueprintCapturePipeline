@@ -261,3 +261,27 @@ def test_a_cell_that_cannot_be_measured_does_not_poison_the_surface() -> None:
         and math.isfinite(cell["joint_tracking_error_rad"])
         for cell in report["cells"]
     )
+
+
+def test_an_articulated_cell_is_measured_through_its_own_sampler() -> None:
+    """C35 reported `unavailable` on a perfectly measurable arm.
+
+    An articulated cell carries no rigid task object, so asking for the rigid
+    sample raises instead of returning nothing -- and the whole sweep was
+    discarded on a run whose fingertip was readable the entire time.
+    """
+
+    class _Articulated(_SweepEnvironment):
+        def read_object_sample(self):
+            raise RuntimeError("isaac_episode_rigid_task_object_missing")
+
+        def read_task_sample(self):
+            return {"grasp_frame_position_world_m": [self.joints[4], 0.0, 0.0]}
+
+    report = _sweep(_Articulated())
+
+    assert report["status"] == "measured"
+    assert all(
+        cell["measured_distance_to_target_m"] is not None for cell in report["cells"]
+    )
+    assert report["best_cell"] is not None
