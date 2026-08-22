@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hard-cap-usd", required=True, type=float)
     parser.add_argument("--hard-ttl-seconds", required=True, type=int)
     parser.add_argument("--allow-active-instance", action="append", default=[], type=int)
+    parser.add_argument("--retain-warm-session", action="store_true")
     parser.add_argument("--output", required=True)
     return parser
 
@@ -54,6 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             hard_ttl_seconds=args.hard_ttl_seconds,
             output_path=args.output,
             allowed_active_instance_ids=tuple(args.allow_active_instance),
+            retain_warm_session=args.retain_warm_session,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(

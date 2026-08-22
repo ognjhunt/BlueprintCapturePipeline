@@ -110,6 +110,37 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
     assert decision["blockers"] == []
 
 
+def test_native_task_arena_warm_retention_requires_cache_and_direct_access() -> None:
+    decision = vpa._retention_decision(
+        requested=True,
+        watchdog_handoff={
+            "status": "armed",
+            "independent_process": True,
+            "watchdog_armed_before_allocation": True,
+            "watchdog_pid": 123,
+            "watchdog_deadline_epoch": 2_000.0,
+        },
+        instance_ids=[456],
+        startup_probe={"status": "completed", "startup_probe_proven": True},
+        gpu_sanity={"status": "completed", "gpu_sanity_proven": True},
+        video_smoke={},
+        retention_mode=vpa.NATIVE_TASK_ARENA_WARM_RETENTION_MODE,
+        warm_worker_evidence={
+            "provider_bundle_kind": "native_task_arena",
+            "runtime_dependency_cache_ready": True,
+            "instance_running": True,
+            "workload_independent_access_recorded": True,
+            "ssh_host": "ssh.example",
+            "ssh_port": 12345,
+        },
+        observed_now_epoch=1_000.0,
+    )
+
+    assert decision["status"] == "retained_owned"
+    assert decision["retention_mode"] == "native_task_arena_warm_worker"
+    assert decision["blockers"] == []
+
+
 def test_lifecycle_record_failure_blocks_result_without_raising() -> None:
     result: dict[str, object] = {"status": "completed", "blockers": ["prior_blocker"]}
 
@@ -5227,6 +5258,9 @@ def test_vast_adapter_small_provider_helper_edges(
     assert "native_task_runtime_dependency_cache" in arena_script
     assert "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT" in arena_script
     assert "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED" in arena_script
+    assert arena_script.index('if [ -f "$dependency_cache_packet" ]') < (
+        arena_script.index('if [ -z "$DEPENDENCY_URL" ]')
+    )
     assert 're.fullmatch(r"sha256:[0-9a-f]{64}", value)' in arena_script
     assert 'downloaded_sha" != "$dependency_sha' in arena_script
     assert 'downloaded_size" != "$dependency_size' in arena_script

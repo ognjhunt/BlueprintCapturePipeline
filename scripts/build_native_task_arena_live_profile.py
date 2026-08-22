@@ -370,12 +370,18 @@ def _lane_blockers(
                 authority = json.loads(authority_path.read_text(encoding="utf-8"))
                 if not isinstance(authority, Mapping) or prepared_bundle is None:
                     raise ValueError("native_task_arena_attempt_authority_invalid")
+                retain_warm_session = bool(authority.get("retain_warm_session"))
+                if retain_warm_session and link.probe_kind != CONTROLS_PROBE_KIND:
+                    raise ValueError(
+                        "native_task_arena_warm_session_requires_controls"
+                    )
                 validate_native_task_arena_paid_attempt_authority(
                     authority,
                     prepared_bundle=prepared_bundle,
                     max_hourly_rate_usd=context.max_hourly_rate_usd,
                     hard_cap_usd=context.max_spend_usd,
                     hard_ttl_seconds=context.hard_ttl_seconds,
+                    retain_warm_session=retain_warm_session,
                 )
             except (OSError, ValueError, json.JSONDecodeError):
                 found.append("native_task_arena_attempt_authority_invalid")
@@ -431,6 +437,12 @@ def _lane_argv(link: ArenaLink, *, authorize_gated_backbone: bool = False):
             built += ["--adp-machine-avoidlist", str(avoidlist)]
         if authorize_gated_backbone:
             built += ["--adp009d-authorize-gated-backbone"]
+        authority = _read_mapping(
+            context.extra_paths["attempt_authority"],
+            error="native_task_arena_attempt_authority_invalid",
+        )
+        if authority.get("retain_warm_session") is True:
+            built += ["--native-task-arena-retain-warm-session"]
         return built
 
     return argv

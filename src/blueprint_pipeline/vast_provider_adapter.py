@@ -113,6 +113,7 @@ from .wam_provider_output import (
 )
 from .retained_gpu_session_lifecycle import record_retained_gpu_state
 from .vast_retained_instance import (
+    NATIVE_TASK_ARENA_WARM_RETENTION_MODE,
     bind_all_in_cost,
     record_initial_lifecycle,
     record_terminal_lifecycle,
@@ -4006,7 +4007,6 @@ def _probe_shell_script(
                 "dependency_sha=\"$($RUNTIME_PY -c 'import json,re,sys; value=str(json.load(open(sys.argv[1], encoding=\"utf-8\")).get(\"packet_sha256\") or \"\"); print(value if re.fullmatch(r\"sha256:[0-9a-f]{64}\", value) else \"\")' \"$dependency_receipt\")\"; "
                 "dependency_size=\"$($RUNTIME_PY -c 'import json,sys; value=json.load(open(sys.argv[1], encoding=\"utf-8\")).get(\"packet_size_bytes\"); print(value if isinstance(value, int) and value > 0 else \"\")' \"$dependency_receipt\")\"; "
                 'if [ -z "$dependency_sha" ] || [ -z "$dependency_size" ]; then dependency_rc=22; '
-                'elif [ -z "$DEPENDENCY_URL" ]; then dependency_rc=21; '
                 "else "
                 'dependency_hex="${dependency_sha#sha256:}"; '
                 'dependency_cache_dir="$WORK_DIR/native_task_runtime_dependency_cache"; '
@@ -4022,7 +4022,8 @@ def _probe_shell_script(
                 'else rm -f "$dependency_cache_packet" "$dependency_cache_tmp"; fi; '
                 "fi; "
                 'if [ ! -f "$dependency_packet" ]; then '
-                'blueprint_download_url "$DEPENDENCY_URL" "$dependency_cache_tmp"; dependency_rc=$?; '
+                'if [ -z "$DEPENDENCY_URL" ]; then dependency_rc=21; '
+                'else blueprint_download_url "$DEPENDENCY_URL" "$dependency_cache_tmp"; dependency_rc=$?; '
                 'if [ $dependency_rc -eq 0 ]; then '
                 'downloaded_sha="sha256:$(sha256sum "$dependency_cache_tmp" | cut -d" " -f1)"; '
                 'downloaded_size="$(wc -c < "$dependency_cache_tmp" | tr -d " ")"; '
@@ -4030,7 +4031,7 @@ def _probe_shell_script(
                 'else mv "$dependency_cache_tmp" "$dependency_cache_packet"; '
                 'ln -s "$dependency_cache_packet" "$dependency_packet"; dependency_rc=$?; '
                 'if [ $dependency_rc -eq 0 ]; then echo BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:$dependency_sha; fi; fi; fi; '
-                "fi; fi; "
+                "fi; fi; fi; "
                 "fi; "
                 'if [ $dependency_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:runtime_dependency_download_failed:$dependency_rc; '
                 "else echo BLUEPRINT_VAST_RUNTIME_DEPENDENCY_READY; "
@@ -6507,6 +6508,7 @@ def run_vast_provider_adapter(
     instance_label_prefix: str = "blueprint-vast-probe-",
     started_instance_id_path: str | Path | None = None,
     retain_instance_on_runtime_failure: bool = False,
+    retain_native_task_arena_warm_session: bool = False,
     retention_watchdog_handoff: Mapping[str, Any] | None = None,
     forward_hf_token: bool = True,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -6515,6 +6517,10 @@ def run_vast_provider_adapter(
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
+        raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
+    if retain_native_task_arena_warm_session and retain_instance_on_runtime_failure:
+        raise ValueError("multiple_vast_retention_modes_invalid")
     resolved_image_login_mode = (
         _string(ngc_image_login_mode)
         or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
@@ -7888,7 +7894,7 @@ def run_vast_provider_adapter(
             raise RuntimeError("vast_create_response_missing_instance_id")
         started_at_monotonic = time.monotonic()
         instance_ids.append(instance_id)
-        if retain_instance_on_runtime_failure:
+        if retain_instance_on_runtime_failure or retain_native_task_arena_warm_session:
             record_initial_lifecycle(
                 resolved_job_dir,
                 instance_id=instance_id,
@@ -8720,20 +8726,58 @@ def run_vast_provider_adapter(
         startup_probe = _read_mapping_json(resolved_job_dir / "vast_startup_probe_manifest.json")
         gpu_sanity = _read_mapping_json(resolved_job_dir / "vast_gpu_sanity_report.json")
         video_smoke = _read_mapping_json(resolved_job_dir / "vast_video_smoke_result.json")
+        startup_log_text = ""
+        try:
+            startup_log_text = (
+                resolved_job_dir / "vast_onstart_container.log"
+            ).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        warm_worker_evidence = {
+            "provider_bundle_kind": provider_bundle_kind,
+            "runtime_dependency_cache_ready": any(
+                marker in startup_log_text
+                for marker in (
+                    "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT:",
+                    "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:",
+                )
+            ),
+            "instance_running": (
+                str(startup_probe.get("instance_final_status") or "").lower()
+                == "running"
+            ),
+            "workload_independent_access_recorded": (
+                startup_probe.get("workload_independent_access_recorded") is True
+            ),
+            "ssh_host": startup_probe.get("instance_ssh_host"),
+            "ssh_port": startup_probe.get("instance_ssh_port"),
+        }
         retention_decision = _retention_decision(
-            requested=retain_instance_on_runtime_failure,
+            requested=(
+                retain_instance_on_runtime_failure
+                or retain_native_task_arena_warm_session
+            ),
             watchdog_handoff=retention_watchdog_handoff,
             instance_ids=instance_ids,
             startup_probe=startup_probe,
             gpu_sanity=gpu_sanity,
             video_smoke=video_smoke,
+            retention_mode=(
+                NATIVE_TASK_ARENA_WARM_RETENTION_MODE
+                if retain_native_task_arena_warm_session
+                else "cosmos_server"
+            ),
+            warm_worker_evidence=warm_worker_evidence,
         )
         retention_authorized = retention_decision["status"] == "retained_owned"
         write_json(
             resolved_job_dir / "vast_retained_instance_decision.json",
             retention_decision,
         )
-        if retain_instance_on_runtime_failure and instance_ids:
+        if (
+            retain_instance_on_runtime_failure
+            or retain_native_task_arena_warm_session
+        ) and instance_ids:
             lifecycle_recorded = _record_lifecycle_or_block(
                 base_result,
                 operation="terminal",
@@ -8829,7 +8873,7 @@ def run_vast_provider_adapter(
                     }
                 )
         if (
-            retain_instance_on_runtime_failure
+            (retain_instance_on_runtime_failure or retain_native_task_arena_warm_session)
             and instance_ids
             and not retention_authorized
             and not continuing_spend
