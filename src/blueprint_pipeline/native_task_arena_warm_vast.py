@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Mapping
 import hashlib
 import os
 from pathlib import Path
+import re
 import shlex
+import subprocess
 import time
 from typing import Any
 import urllib.error
@@ -18,6 +19,11 @@ from .adp_isaac_lab_arena_vast import (
     _vast_authority_environment,
 )
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .gpu_render_providers import (
+    _latest_redacted_vast_ssh_output_fields,
+    _validated_vast_known_hosts_pin,
+    enroll_vast_ssh_host_key,
+)
 from .native_task_arena_controls_bundle import RESULT_FILENAME
 from .native_task_arena_warm_authority import (
     consume_native_task_arena_warm_authority_once,
@@ -32,7 +38,6 @@ from .vast_provider_adapter import (
     VAST_API_KEY_FILE_ENV,
     VAST_INSTANCE_LAUNCH_GATE_ENV,
     _api_json,
-    _execute_and_fetch,
     _instance_liveness_from_payload,
 )
 from .wam_provider_object_store import (
@@ -45,6 +50,8 @@ RESULT_SCHEMA_VERSION = "native_task_arena_warm_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-controls"
 MINIMUM_REMOTE_TIMEOUT_SECONDS = 600
 POLL_SECONDS = 10
+DEFAULT_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
+MAX_REMOTE_SCRIPT_BYTES = 128 * 1024
 
 
 def _truthy(name: str) -> bool:
@@ -163,6 +170,222 @@ echo BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK
 """
 
 
+def _run_pinned_ssh(
+    *,
+    session: Mapping[str, Any],
+    known_hosts_file: str | Path,
+    remote_argv: list[str],
+    stdin: bytes | None = None,
+    identity_file: str | Path = DEFAULT_SSH_IDENTITY_FILE,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """Run one bounded command on the retained worker over strict pinned SSH."""
+
+    host = str(session.get("ssh_host") or "").strip()
+    try:
+        port = int(session.get("ssh_port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    pin = (
+        _validated_vast_known_hosts_pin(known_hosts_file, host=host, port=port)
+        if host and 0 < port <= 65535
+        else None
+    )
+    if pin is None:
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_ssh_host_pin_invalid"],
+            "raw_secret_values_recorded": False,
+        }
+    known_hosts, known_hosts_sha256 = pin
+    identity = Path(identity_file).expanduser()
+    try:
+        identity_mode = identity.stat().st_mode & 0o777
+    except OSError:
+        identity_mode = -1
+    if (
+        identity.is_symlink()
+        or not identity.is_file()
+        or identity_mode < 0
+        or identity_mode & 0o077
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_ssh_identity_invalid"],
+            "known_hosts_sha256": known_hosts_sha256,
+            "raw_secret_values_recorded": False,
+        }
+    if not remote_argv or any("\x00" in value for value in remote_argv):
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_ssh_command_invalid"],
+            "known_hosts_sha256": known_hosts_sha256,
+            "raw_secret_values_recorded": False,
+        }
+    timeout = min(300.0, max(1.0, float(timeout_seconds)))
+    command = [
+        "ssh",
+        "-i",
+        str(identity.resolve(strict=True)),
+        "-p",
+        str(port),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        f"ConnectTimeout={max(1, int(timeout))}",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "--",
+        f"root@{host}",
+        shlex.join(remote_argv),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            input=stdin,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_ssh_timeout"],
+            **_latest_redacted_vast_ssh_output_fields(
+                stdout=exc.stdout, stderr=exc.stderr
+            ),
+            "known_hosts_sha256": known_hosts_sha256,
+            "strict_host_key_checking": True,
+            "raw_secret_values_recorded": False,
+        }
+    returncode = int(completed.returncode)
+    return {
+        "status": "completed" if returncode == 0 else "blocked",
+        "blockers": (
+            [] if returncode == 0 else ["native_task_arena_warm_ssh_command_failed"]
+        ),
+        "returncode": returncode,
+        **_latest_redacted_vast_ssh_output_fields(
+            stdout=completed.stdout, stderr=completed.stderr
+        ),
+        "known_hosts_sha256": known_hosts_sha256,
+        "strict_host_key_checking": True,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _dispatch_warm_script_over_ssh(
+    *,
+    job: Path,
+    session: Mapping[str, Any],
+    remote_script: str,
+    attempt_key: str,
+) -> dict[str, Any]:
+    """Stream the dispatcher over SSH; Vast's execute API caps commands at 512 B."""
+
+    if not re.fullmatch(r"[0-9a-f]{16}", attempt_key):
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_attempt_key_invalid"],
+            "raw_secret_values_recorded": False,
+        }
+    script_bytes = remote_script.encode("utf-8")
+    if (
+        not remote_script.startswith("#!/usr/bin/env bash\n")
+        or len(script_bytes) > MAX_REMOTE_SCRIPT_BYTES
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_remote_script_invalid"],
+            "raw_secret_values_recorded": False,
+        }
+    enrollment = enroll_vast_ssh_host_key(
+        session,
+        attempt_dir=job / "vast_ssh_trust",
+        timeout_seconds=15,
+    )
+    if enrollment.get("status") != "enrolled":
+        return {
+            "status": "blocked",
+            "blockers": list(enrollment.get("blockers") or [])
+            or ["native_task_arena_warm_ssh_host_enrollment_failed"],
+            "host_key_enrollment": enrollment,
+            "raw_secret_values_recorded": False,
+        }
+    remote_dir = f"/workspace/native_task_arena_warm_attempts/{attempt_key}"
+    wrapper = (
+        "set -euo pipefail; "
+        f"mkdir -p {shlex.quote(remote_dir)}; "
+        f"cat > {shlex.quote(remote_dir + '/run.sh')}; "
+        f"chmod 700 {shlex.quote(remote_dir + '/run.sh')}; "
+        f"nohup bash {shlex.quote(remote_dir + '/run.sh')} > "
+        f"{shlex.quote(remote_dir + '/run.log')} 2>&1 < /dev/null & "
+        "pid=$!; case \"$pid\" in ''|*[!0-9]*) exit 78;; esac; printf '%s\\n' \"$pid\""
+    )
+    result = _run_pinned_ssh(
+        session=session,
+        known_hosts_file=str(enrollment["known_hosts_file"]),
+        remote_argv=["/bin/bash", "-c", wrapper],
+        stdin=script_bytes,
+        timeout_seconds=30,
+    )
+    stdout = str(result.get("stdout") or "")
+    pid_match = re.fullmatch(r"([1-9][0-9]*)\n?", stdout)
+    if result.get("status") != "completed" or pid_match is None:
+        result["status"] = "blocked"
+        result["blockers"] = sorted(
+            set(
+                list(result.get("blockers") or [])
+                + ["native_task_arena_warm_dispatch_pid_unproven"]
+            )
+        )
+    else:
+        result["remote_pid"] = int(pid_match.group(1))
+    result["host_key_enrollment"] = enrollment
+    result["transport"] = "strict_pinned_ssh_stdin.v1"
+    (job / "warm_dispatch.log").write_text(
+        (
+            f"status={result.get('status')}\n"
+            f"remote_pid={result.get('remote_pid', '')}\n"
+            f"transport={result['transport']}\n"
+        ),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _fetch_warm_runtime_log_over_ssh(
+    *,
+    job: Path,
+    session: Mapping[str, Any],
+    dispatch: Mapping[str, Any],
+    attempt_key: str,
+) -> tuple[dict[str, Any], str]:
+    enrollment = dict(dispatch.get("host_key_enrollment") or {})
+    remote_log_path = (
+        f"/workspace/native_task_arena_warm_attempts/{attempt_key}/run.log"
+    )
+    result = _run_pinned_ssh(
+        session=session,
+        known_hosts_file=str(enrollment.get("known_hosts_file") or ""),
+        remote_argv=["tail", "-n", "500", "--", remote_log_path],
+        timeout_seconds=30,
+    )
+    text = str(result.get("stdout") or "")
+    (job / "warm_runtime.log").write_text(text, encoding="utf-8")
+    return result, text
+
+
 def _download_when_ready(
     *, url: str, destination: Path, deadline_monotonic: float
 ) -> bool:
@@ -270,24 +493,22 @@ def _execute_staged_warm_attempt(
         runtime_dependency_size_bytes=int(runtime_source["packet_size_bytes"]),
         attempt_key=attempt_key,
     )
-    encoded = base64.b64encode(remote_script.encode("utf-8")).decode("ascii")
-    remote_dir = f"/workspace/native_task_arena_warm_attempts/{attempt_key}"
-    command = (
-        f"mkdir -p {shlex.quote(remote_dir)} && "
-        f"echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(remote_dir + '/run.sh')} && "
-        f"chmod 700 {shlex.quote(remote_dir + '/run.sh')} && "
-        f"nohup bash {shlex.quote(remote_dir + '/run.sh')} > "
-        f"{shlex.quote(remote_dir + '/run.log')} 2>&1 < /dev/null & echo $!"
+    dispatch = _dispatch_warm_script_over_ssh(
+        job=job,
+        session=session,
+        remote_script=remote_script,
+        attempt_key=attempt_key,
     )
-    secrets = [bundle_url, output_put_url, output_get_url, api_key]
-    dispatch = _execute_and_fetch(
-        instance_id=instance_id,
-        api_key=api_key,
-        command=command,
-        output_log_path=job / "warm_dispatch.log",
-        secret_values=secrets,
-        wait_seconds=2,
-    )
+    if dispatch.get("status") != "completed":
+        return {
+            "dispatch": dispatch,
+            "remote_log": {},
+            "runtime_log_text": "",
+            "extracted": {},
+            "elapsed": 0.0,
+            "blockers": list(dispatch.get("blockers") or [])
+            or ["native_task_arena_warm_dispatch_failed"],
+        }
     output_zip = job / "vast_provider_runtime_output.zip"
     remaining_seconds = float(session["watchdog_deadline_epoch"]) - time.time() - 120
     timeout_seconds = max(
@@ -300,16 +521,11 @@ def _execute_staged_warm_attempt(
         destination=output_zip,
         deadline_monotonic=started + timeout_seconds,
     )
-    remote_log = _execute_and_fetch(
-        instance_id=instance_id,
-        api_key=api_key,
-        command=f"tail -n 500 {shlex.quote(remote_dir + '/run.log')}",
-        output_log_path=job / "warm_runtime.log",
-        secret_values=secrets,
-        wait_seconds=2,
-    )
-    runtime_log_text = (job / "warm_runtime.log").read_text(
-        encoding="utf-8", errors="replace"
+    remote_log, runtime_log_text = _fetch_warm_runtime_log_over_ssh(
+        job=job,
+        session=session,
+        dispatch=dispatch,
+        attempt_key=attempt_key,
     )
     extracted = (
         _extract_provider_output(
