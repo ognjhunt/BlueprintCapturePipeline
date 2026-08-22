@@ -2243,6 +2243,38 @@ def _run_task_control_episode(
                     arrival_target_orientation,
                 )
             )
+            terminal_reached_joints = [
+                float(value) for value in environment.read_arm_joint_positions()
+            ]
+            terminal_commanded_joints = [
+                float(value)
+                for value in actions[-1]["arm_dynamics_after"][
+                    "joint_position_target_rad"
+                ]
+            ]
+            selected_joints = row.get("hold_solved_arm_joint_positions_rad")
+            selected_joints = (
+                [float(value) for value in selected_joints]
+                if selected_joints is not None
+                else None
+            )
+            predictor = getattr(
+                environment, "predict_grasp_frame_pose_world", None
+            )
+            predicted_fk_pose = None
+            if callable(predictor):
+                try:
+                    candidate = predictor(
+                        terminal_reached_joints, gripper_command=command
+                    )
+                    if candidate is not None:
+                        candidate = [float(value) for value in candidate]
+                        if len(candidate) == 7 and all(
+                            math.isfinite(value) for value in candidate
+                        ):
+                            predicted_fk_pose = candidate
+                except Exception:  # noqa: BLE001 - retain an explicit gap
+                    predicted_fk_pose = None
             arrival = {
                 "phase_id": str(row["phase_id"]),
                 "start_position_world_m": start_sample.get(
@@ -2269,6 +2301,28 @@ def _run_task_control_episode(
                 "arrival_stability_steps_observed": stable_steps,
                 "termination_reason": termination_reason,
                 "target_reached": termination_reason == "stable_arrival",
+                "selected_joint_positions_rad": selected_joints,
+                "terminal_commanded_joint_positions_rad": terminal_commanded_joints,
+                "terminal_reached_joint_positions_rad": terminal_reached_joints,
+                "selected_to_commanded_joint_l2_rad": (
+                    math.dist(selected_joints, terminal_commanded_joints)
+                    if selected_joints is not None
+                    else None
+                ),
+                "commanded_to_reached_joint_l2_rad": math.dist(
+                    terminal_commanded_joints, terminal_reached_joints
+                ),
+                "terminal_fk_grasp_frame_position_world_m": (
+                    predicted_fk_pose[:3] if predicted_fk_pose is not None else None
+                ),
+                "terminal_fk_to_measured_tcp_error_m": (
+                    math.dist(predicted_fk_pose[:3], measured)
+                    if predicted_fk_pose is not None
+                    else None
+                ),
+                "terminal_fk_status": (
+                    "measured" if predicted_fk_pose is not None else "unavailable"
+                ),
             }
             arrival["attempt"] = attempt_number
             arrival["recovery_strategy"] = current_strategy

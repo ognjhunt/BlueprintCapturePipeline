@@ -56,12 +56,17 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 # tight enough that re-deriving loses: elsewhere a 20 mm departure still lands
 # inside a 20 mm gate.
 HOLD_SOLVED_VECTOR_PHASE_IDS = frozenset({"contact_open", "contact_close"})
-MEASURED_CONTACT_ENTRY_PHASE_ID = "measured_contact_entry"
+CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
+# The measured anchor replaces the old open-loop replay and keeps its public
+# phase identity.  Phase 3 is now a gated replay of a posture PhysX measured,
+# not ninety-six copies of an off-sim contact posture followed by another
+# unrelated entry phase.
+MEASURED_CONTACT_ENTRY_PHASE_ID = CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
 MEASURED_CONTACT_FRONTIER_PHASE_PREFIX = "measured_contact_frontier_"
 MEASURED_CONTACT_FRONTIER_FRACTIONS = (0.75, 0.5, 0.25)
 MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS = 45
+CONTACT_APPROACH_ANCHOR_DISTANCE_M = 0.04
 
-CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
 CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
 # Raised once the row size became actuator-bound: a 0.6 rad reorientation
@@ -844,6 +849,12 @@ def _with_measured_contact_frontier(
         receipt["reason"] = "plan_or_probe_cells_invalid"
         return plan, receipt
 
+    replaced_branch_replay_rows = sum(
+        1
+        for row in actions
+        if isinstance(row, Mapping)
+        and str(row.get("phase_id") or "") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    )
     contact_index = next(
         (
             index
@@ -861,6 +872,12 @@ def _with_measured_contact_frontier(
     try:
         target = [float(value) for value in contact["target_position_world_m"]]
         tolerance = float(contact["arrival_tolerance_m"])
+        target_orientation = [
+            float(value) for value in contact["target_quaternion_world_xyzw"]
+        ]
+        orientation_tolerance = float(
+            contact.get("arrival_orientation_tolerance_rad") or math.inf
+        )
     except (KeyError, TypeError, ValueError):
         receipt["reason"] = "contact_open_invalid"
         return plan, receipt
@@ -873,6 +890,15 @@ def _with_measured_contact_frontier(
             offset = [float(value) for value in cell["offset_m"]]
             joints = [float(value) for value in cell["joint_positions_rad"]]
             measured_error = float(cell["measured_distance_to_requested_m"])
+            measured_orientation = [
+                float(value)
+                for value in cell[
+                    "measured_grasp_frame_orientation_world_xyzw"
+                ]
+            ]
+            measured_orientation_error = _quaternion_angle_xyzw(
+                measured_orientation, target_orientation
+            )
             contact_steps = int(cell.get("contact_steps") or 0)
         except (KeyError, TypeError, ValueError):
             continue
@@ -882,16 +908,37 @@ def _with_measured_contact_frontier(
             or not all(math.isfinite(value) for value in [*offset, *joints])
             or not math.isfinite(measured_error)
             or measured_error > tolerance
+            or measured_orientation_error > orientation_tolerance
             or contact_steps != 0
             or math.isclose(sum(abs(value) for value in offset), 0.0)
         ):
             continue
-        candidates.append((math.dist(offset, [0.0, 0.0, 0.0]), cell, offset, joints))
+        candidates.append(
+            (math.dist(offset, [0.0, 0.0, 0.0]), cell, offset, joints)
+        )
     if not candidates:
         receipt["reason"] = "no_noncontact_probe_cell_inside_arrival_gate"
         return plan, receipt
 
     _distance, cell, offset, joints = min(candidates, key=lambda item: item[0])
+    if replaced_branch_replay_rows:
+        actions[:] = [
+            row
+            for row in actions
+            if not (
+                isinstance(row, Mapping)
+                and str(row.get("phase_id") or "")
+                == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+            )
+        ]
+        contact_index = next(
+            index
+            for index, row in enumerate(actions)
+            if isinstance(row, Mapping)
+            and row.get("mode") == "ik_pose"
+            and str(row.get("phase_id") or "") == "contact_open"
+        )
+        contact = actions[contact_index]
     entry = dict(contact)
     entry.update(
         {
@@ -934,7 +981,12 @@ def _with_measured_contact_frontier(
             "probe_measured_error_m": float(
                 cell["measured_distance_to_requested_m"]
             ),
+            "probe_measured_orientation_error_rad": _quaternion_angle_xyzw(
+                cell["measured_grasp_frame_orientation_world_xyzw"],
+                target_orientation,
+            ),
             "probe_joint_positions_rad": joints,
+            "replaced_branch_replay_rows": replaced_branch_replay_rows,
             "frontier_phase_ids": [
                 entry["phase_id"], *[row["phase_id"] for row in frontier], "contact_open"
             ],
@@ -942,6 +994,78 @@ def _with_measured_contact_frontier(
         }
     )
     return plan, receipt
+
+
+def _quaternion_angle_xyzw(
+    left: Sequence[float], right: Sequence[float]
+) -> float:
+    try:
+        first = [float(value) for value in left]
+        second = [float(value) for value in right]
+    except (TypeError, ValueError):
+        return math.inf
+    if len(first) != 4 or len(second) != 4:
+        return math.inf
+    norm_first = math.sqrt(sum(value * value for value in first))
+    norm_second = math.sqrt(sum(value * value for value in second))
+    if (
+        not all(math.isfinite(value) for value in [*first, *second])
+        or min(norm_first, norm_second) <= 1.0e-12
+    ):
+        return math.inf
+    dot = abs(
+        sum(a * b for a, b in zip(first, second, strict=True))
+        / (norm_first * norm_second)
+    )
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
+def _contact_approach_anchor_offset(
+    control_plan: Mapping[str, Any],
+    *,
+    distance_m: float = CONTACT_APPROACH_ANCHOR_DISTANCE_M,
+) -> list[float] | None:
+    """One clear-side probe derived from the authored approach line.
+
+    The direction is task-authored rather than a world-axis constant.  The
+    anchor stays no farther from contact than either 40 mm or the approach
+    pose itself, so it cannot overshoot behind a shorter authored approach.
+    """
+
+    actions = control_plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        return None
+    positions: dict[str, list[float]] = {}
+    for row in actions:
+        if not isinstance(row, Mapping) or row.get("mode") != "ik_pose":
+            continue
+        phase_id = str(row.get("phase_id") or "")
+        if phase_id not in {"approach", "contact_open"}:
+            continue
+        try:
+            position = [float(value) for value in row["target_position_world_m"]]
+        except (KeyError, TypeError, ValueError):
+            return None
+        if len(position) != 3 or not all(math.isfinite(value) for value in position):
+            return None
+        positions[phase_id] = position
+    if set(positions) != {"approach", "contact_open"}:
+        return None
+    clear_side = [
+        approach - contact
+        for approach, contact in zip(
+            positions["approach"], positions["contact_open"], strict=True
+        )
+    ]
+    norm = math.sqrt(sum(value * value for value in clear_side))
+    try:
+        requested = float(distance_m)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(norm) or norm <= 1.0e-9 or not math.isfinite(requested) or requested <= 0:
+        return None
+    distance = min(norm, requested)
+    return [distance * value / norm for value in clear_side]
 
 
 def _with_contact_entry_branch_replay(
@@ -1710,125 +1834,57 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
 
-        # Measure the gain x posture surface before the controls run.  Thirty-
-        # four runs varied the controller one hypothesis at a time while the
-        # binding constraint sat in the actuator configuration, so this trades
-        # seconds of simulator time for the sweep those runs should have been.
-        # Diagnostic only: it restores the gains, gates nothing, and a runtime
-        # that cannot retune reports that rather than failing the controls.
-        _announce("contact_posture_actuator_sweep")
-        try:
-            from blueprint_pipeline.native_task_arena_actuator_sweep import (
-                candidate_postures,
-                run_actuator_posture_sweep,
-            )
+        contact_row = next(
+            row
+            for row in effective_control_plan["scripted_positive_actions"]
+            if isinstance(row, Mapping)
+            and str(row.get("phase_id") or "") == "contact_open"
+        )
+        contact_quaternion = contact_row["target_quaternion_world_xyzw"]
+        contact_tolerance = float(contact_row["arrival_tolerance_m"])
+        contact_orientation_tolerance = float(
+            contact_row.get("arrival_orientation_tolerance_rad") or 0.08
+        )
 
-            contact_row = next(
-                row
-                for row in effective_control_plan["scripted_positive_actions"]
-                if isinstance(row, Mapping)
-                and str(row.get("phase_id") or "") == "contact_open"
-            )
-            sweep = run_actuator_posture_sweep(
-                environment=episode_environment,
-                robot=robot,
-                arm_joint_ids=list(range(7)),
-                target_position_world_m=contact_row["target_position_world_m"],
-                postures=candidate_postures(
-                    controls_global_ik, phase_id="contact_open"
-                ),
-                gripper_open_command=float(gripper["open_command"]),
-                max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
-                max_joint_setpoint_lead_rad=float(
-                    contact_row["max_joint_setpoint_lead_rad"]
+        def _solve_contact(target_position, seed_joints):
+            solved = servo.solve_grasp_target_multistart(
+                target_position_world_m=list(target_position),
+                target_grasp_frame_quaternion_world_xyzw=contact_quaternion,
+                preferred_seeds=[list(seed_joints)],
+                reference_joint_positions_rad=list(seed_joints),
+                position_tolerance_m=contact_tolerance,
+                orientation_tolerance_rad=contact_orientation_tolerance,
+                preferred_minimum_joint_limit_margin_rad=0.05,
+                required_minimum_joint_limit_margin_rad=(
+                    CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
                 ),
             )
-        except BaseException as exc:  # noqa: BLE001 - a diagnostic never fails a run
-            sweep = {
-                "schema_version": "native_task_arena_actuator_posture_sweep.v1",
-                "status": "unavailable",
-                "reason": f"{type(exc).__name__}:{exc}",
-                "cells": [],
-            }
-        result["contact_posture_actuator_sweep"] = sweep
+            selected = (solved or {}).get("selected")
+            if not isinstance(selected, Mapping):
+                return None
+            return selected.get("joint_positions_rad")
 
-        # C36 localized the defect to a kinematic constant: at the solved
-        # contact posture, across a tenfold stiffness range and with joint
-        # tracking at 0.007 rad, the measured fingertip sat +13.0 mm off in a
-        # single axis.  The solver hits its own target; its model of where the
-        # fingertip is disagrees with PhysX.  So solve for the posture whose
-        # *measured* fingertip reaches the sealed target, by folding each
-        # measured residual back into the solver's target.  The arrival gate is
-        # untouched -- this stops handing it a posture the model had wrong.
-        try:
-            from blueprint_pipeline.native_task_arena_actuator_sweep import (
-                calibrate_posture_to_measured_target,
-            )
+        seed_posture = next(
+            (
+                row["joint_positions_rad"]
+                for row in scripted_pose_joint_targets
+                if str(row.get("phase_id") or "") == "contact_open"
+            ),
+            None,
+        )
 
-            contact_quaternion = contact_row["target_quaternion_world_xyzw"]
-            contact_tolerance = float(contact_row["arrival_tolerance_m"])
-            contact_orientation_tolerance = float(
-                contact_row.get("arrival_orientation_tolerance_rad") or 0.08
-            )
-
-            def _solve_contact(target_position, seed_joints):
-                solved = servo.solve_grasp_target_multistart(
-                    target_position_world_m=list(target_position),
-                    target_grasp_frame_quaternion_world_xyzw=contact_quaternion,
-                    preferred_seeds=[list(seed_joints)],
-                    reference_joint_positions_rad=list(seed_joints),
-                    position_tolerance_m=contact_tolerance,
-                    orientation_tolerance_rad=contact_orientation_tolerance,
-                    preferred_minimum_joint_limit_margin_rad=0.05,
-                    required_minimum_joint_limit_margin_rad=(
-                        CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
-                    ),
-                )
-                selected = (solved or {}).get("selected")
-                if not isinstance(selected, Mapping):
-                    return None
-                return selected.get("joint_positions_rad")
-
-            seed_posture = next(
-                (
-                    row["joint_positions_rad"]
-                    for row in scripted_pose_joint_targets
-                    if str(row.get("phase_id") or "") == "contact_open"
-                ),
-                None,
-            )
-            calibration = (
-                calibrate_posture_to_measured_target(
-                    environment=episode_environment,
-                    solve=_solve_contact,
-                    target_position_world_m=contact_row["target_position_world_m"],
-                    seed_joint_positions_rad=seed_posture,
-                    gripper_open_command=float(gripper["open_command"]),
-                    max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
-                    max_joint_setpoint_lead_rad=float(
-                        contact_row["max_joint_setpoint_lead_rad"]
-                    ),
-                    arrival_tolerance_m=contact_tolerance,
-                )
-                if seed_posture is not None
-                else {"status": "unavailable", "reason": "contact_posture_unsolved"}
-            )
-        except BaseException as exc:  # noqa: BLE001 - a diagnostic never fails a run
-            calibration = {
-                "schema_version": "native_task_arena_measured_posture_calibration.v1",
-                "status": "unavailable",
-                "reason": f"{type(exc).__name__}:{exc}",
-                "iterations": [],
-            }
-        result["contact_posture_measured_calibration"] = calibration
-
-        _announce("contact_target_reachability_probe")
+        # First ask the cheapest question that can unlock execution: can this
+        # runtime reproduce one clear-side pose on the authored approach line?
+        # C46 already answered yes at 40 mm.  Re-measuring that one cell binds
+        # the new run without replaying a 25-cell gain surface and a nine-cell
+        # Cartesian cross whose result is already known.
+        anchor_offset = _contact_approach_anchor_offset(effective_control_plan)
         try:
             from blueprint_pipeline.native_task_arena_actuator_sweep import (
                 probe_target_reachability,
             )
 
-            reach_probe = (
+            anchor_probe = (
                 probe_target_reachability(
                     environment=episode_environment,
                     solve=_solve_contact,
@@ -1841,26 +1897,194 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_joint_setpoint_lead_rad=float(
                         contact_row["max_joint_setpoint_lead_rad"]
                     ),
+                    offsets_m=[anchor_offset],
                 )
-                if seed_posture is not None
+                if seed_posture is not None and anchor_offset is not None
                 else {
                     "schema_version": (
                         "native_task_arena_target_reachability_probe.v1"
                     ),
                     "status": "unavailable",
-                    "reason": "contact_posture_unsolved",
+                    "reason": "contact_approach_anchor_unresolved",
                     "cells": [],
                 }
             )
-        except BaseException as exc:  # noqa: BLE001 - a diagnostic never fails a run
-            reach_probe = {
-                "schema_version": (
-                    "native_task_arena_target_reachability_probe.v1"
-                ),
+        except BaseException as exc:  # noqa: BLE001 - fall back to full diagnostics
+            anchor_probe = {
+                "schema_version": "native_task_arena_target_reachability_probe.v1",
                 "status": "unavailable",
                 "reason": f"{type(exc).__name__}:{exc}",
                 "cells": [],
             }
+        anchor_cell = next(
+            (
+                cell
+                for cell in anchor_probe.get("cells") or []
+                if isinstance(cell, Mapping) and cell.get("status") == "measured"
+            ),
+            None,
+        )
+        anchor_orientation_error = (
+            _quaternion_angle_xyzw(
+                anchor_cell.get(
+                    "measured_grasp_frame_orientation_world_xyzw"
+                ),
+                contact_quaternion,
+            )
+            if isinstance(anchor_cell, Mapping)
+            else math.inf
+        )
+        anchor_admitted = bool(
+            isinstance(anchor_cell, Mapping)
+            and isinstance(
+                anchor_cell.get("measured_distance_to_requested_m"), (int, float)
+            )
+            and float(anchor_cell["measured_distance_to_requested_m"])
+            <= contact_tolerance
+            and anchor_orientation_error <= contact_orientation_tolerance
+            and int(anchor_cell.get("contact_steps") or 0) == 0
+        )
+        result["contact_approach_anchor_probe"] = {
+            **anchor_probe,
+            "anchor_offset_m": anchor_offset,
+            "anchor_orientation_error_rad": anchor_orientation_error,
+            "admitted_for_short_path": anchor_admitted,
+        }
+
+        # Measure the full gain x posture surface only when the one-cell anchor
+        # fails.  The fallback retains the earlier diagnostic power without
+        # charging every successful run for it.
+        _announce("contact_posture_actuator_sweep")
+        if anchor_admitted:
+            sweep = {
+                "schema_version": "native_task_arena_actuator_posture_sweep.v1",
+                "status": "skipped",
+                "reason": "measured_approach_anchor_inside_arrival_gate",
+                "cells": [],
+            }
+        else:
+            try:
+                from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                    candidate_postures,
+                    run_actuator_posture_sweep,
+                )
+
+                sweep = run_actuator_posture_sweep(
+                    environment=episode_environment,
+                    robot=robot,
+                    arm_joint_ids=list(range(7)),
+                    target_position_world_m=contact_row["target_position_world_m"],
+                    postures=candidate_postures(
+                        controls_global_ik, phase_id="contact_open"
+                    ),
+                    gripper_open_command=float(gripper["open_command"]),
+                    max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
+                    max_joint_setpoint_lead_rad=float(
+                        contact_row["max_joint_setpoint_lead_rad"]
+                    ),
+                )
+            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                sweep = {
+                    "schema_version": "native_task_arena_actuator_posture_sweep.v1",
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                    "cells": [],
+                }
+        result["contact_posture_actuator_sweep"] = sweep
+
+        # C36 localized the defect to a kinematic constant: at the solved
+        # contact posture, across a tenfold stiffness range and with joint
+        # tracking at 0.007 rad, the measured fingertip sat +13.0 mm off in a
+        # single axis.  The solver hits its own target; its model of where the
+        # fingertip is disagrees with PhysX.  So solve for the posture whose
+        # *measured* fingertip reaches the sealed target, by folding each
+        # measured residual back into the solver's target.  The arrival gate is
+        # untouched -- this stops handing it a posture the model had wrong.
+        if anchor_admitted:
+            calibration = {
+                "schema_version": "native_task_arena_measured_posture_calibration.v1",
+                "status": "skipped",
+                "reason": "measured_approach_anchor_inside_arrival_gate",
+                "iterations": [],
+            }
+        else:
+            try:
+                from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                    calibrate_posture_to_measured_target,
+                )
+
+                calibration = (
+                    calibrate_posture_to_measured_target(
+                        environment=episode_environment,
+                        solve=_solve_contact,
+                        target_position_world_m=contact_row[
+                            "target_position_world_m"
+                        ],
+                        seed_joint_positions_rad=seed_posture,
+                        gripper_open_command=float(gripper["open_command"]),
+                        max_joint_delta_rad=float(
+                            contact_row["max_joint_delta_rad"]
+                        ),
+                        max_joint_setpoint_lead_rad=float(
+                            contact_row["max_joint_setpoint_lead_rad"]
+                        ),
+                        arrival_tolerance_m=contact_tolerance,
+                    )
+                    if seed_posture is not None
+                    else {
+                        "status": "unavailable",
+                        "reason": "contact_posture_unsolved",
+                    }
+                )
+            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                calibration = {
+                    "schema_version": "native_task_arena_measured_posture_calibration.v1",
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                    "iterations": [],
+                }
+        result["contact_posture_measured_calibration"] = calibration
+
+        _announce("contact_target_reachability_probe")
+        if anchor_admitted:
+            reach_probe = anchor_probe
+        else:
+            try:
+                reach_probe = (
+                    probe_target_reachability(
+                        environment=episode_environment,
+                        solve=_solve_contact,
+                        base_target_position_world_m=contact_row[
+                            "target_position_world_m"
+                        ],
+                        seed_joint_positions_rad=seed_posture,
+                        gripper_open_command=float(gripper["open_command"]),
+                        max_joint_delta_rad=float(
+                            contact_row["max_joint_delta_rad"]
+                        ),
+                        max_joint_setpoint_lead_rad=float(
+                            contact_row["max_joint_setpoint_lead_rad"]
+                        ),
+                    )
+                    if seed_posture is not None
+                    else {
+                        "schema_version": (
+                            "native_task_arena_target_reachability_probe.v1"
+                        ),
+                        "status": "unavailable",
+                        "reason": "contact_posture_unsolved",
+                        "cells": [],
+                    }
+                )
+            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                reach_probe = {
+                    "schema_version": (
+                        "native_task_arena_target_reachability_probe.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                    "cells": [],
+                }
         result["contact_target_reachability_probe"] = reach_probe
 
         # Adopt the calibrated posture only when physics says it is closer than
@@ -1922,10 +2146,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         result["measured_contact_frontier"] = measured_frontier
+        if (
+            measured_frontier.get("status") == "applied"
+            and int(measured_frontier.get("replaced_branch_replay_rows") or 0) > 0
+        ):
+            result["contact_entry_branch_replay_pre_measured_anchor"] = result[
+                "contact_entry_branch_replay"
+            ]
+            result["contact_entry_branch_replay"] = {
+                "schema_version": (
+                    "native_task_controls_contact_entry_branch_replay.v1"
+                ),
+                "status": "replaced_by_measured_anchor",
+                "replaced_rows": int(
+                    measured_frontier["replaced_branch_replay_rows"]
+                ),
+                "replacement_phase_id": MEASURED_CONTACT_ENTRY_PHASE_ID,
+                "replacement_control_plan_digest": effective_control_plan[
+                    "plan_digest"
+                ],
+            }
         result["control_plan_digest"] = effective_control_plan["plan_digest"]
         _announce(
             "contact_posture_actuator_sweep",
-            "completed" if sweep.get("status") == "measured" else "blocked",
+            (
+                "completed"
+                if sweep.get("status") in {"measured", "skipped"}
+                else "blocked"
+            ),
         )
 
         _announce("required_controls")

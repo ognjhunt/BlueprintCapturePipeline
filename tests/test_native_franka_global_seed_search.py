@@ -4,9 +4,24 @@ import math
 
 
 from blueprint_pipeline.native_franka_global_seed_search import (
+    DEFAULT_DIVERSE_SEED_COUNT,
     GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
+    diverse_joint_seeds,
     high_margin_joint_seeds,
 )
+
+
+def test_diverse_seed_design_preserves_inputs_and_covers_over_one_hundred() -> None:
+    seeds = diverse_joint_seeds(
+        seeds=[[0.0] * 7, [0.1] * 7],
+        lower_joint_position_limits_rad=[-2.0] * 7,
+        upper_joint_position_limits_rad=[2.0] * 7,
+    )
+
+    assert len(seeds) == DEFAULT_DIVERSE_SEED_COUNT == 128
+    assert seeds[:2] == [[0.0] * 7, [0.1] * 7]
+    assert len({tuple(row) for row in seeds}) == len(seeds)
+    assert all(-1.8 <= value <= 1.8 for row in seeds[2:] for value in row)
 
 
 def _planar_arm(link_lengths):
