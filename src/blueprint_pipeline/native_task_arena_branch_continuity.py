@@ -23,6 +23,7 @@ the actuators must deliver.  Total travel and pose error break ties.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from itertools import product
 from typing import Any
@@ -44,16 +45,51 @@ def _joints(row: Mapping[str, Any]) -> list[float] | None:
     return values if len(values) == 7 else None
 
 
+def phase_offers_a_branch_choice(phase: Mapping[str, Any]) -> bool:
+    """Whether this phase chooses a branch at all.
+
+    A phase that reuses an earlier phase's bound pose has no attempt list and
+    no selection of its own -- it inherits.  C40 treated those as phases with
+    no admissible branch and abandoned the whole search, so the run fell back
+    to the greedy chain it was meant to replace.
+    """
+
+    return isinstance(phase.get("attempts"), list) or isinstance(
+        phase.get("selected"), Mapping
+    )
+
+
+def _required_margin_for_phase(
+    phase: Mapping[str, Any], *, default_margin_rad: float
+) -> float:
+    """The margin this phase actually required, not another phase's floor.
+
+    The solver seals the floor it enforced.  C40 applied contact's 0.005 rad
+    requirement to every phase, which discarded all five of prealign's solved
+    branches -- prealign never had to clear it -- and emptied the search.
+    """
+
+    value = phase.get("required_minimum_joint_limit_margin_rad")
+    try:
+        margin = float(value)
+    except (TypeError, ValueError):
+        return float(default_margin_rad)
+    return margin if math.isfinite(margin) else float(default_margin_rad)
+
+
 def admissible_branches(
     phase: Mapping[str, Any], *, required_margin_rad: float
 ) -> list[dict[str, Any]]:
-    """Every solved branch for one phase that clears the margin floor.
+    """Every solved branch for one phase that clears *its* margin floor.
 
     Falls back to the phase's own selection when the solver sealed no attempt
     list, so a receipt shape this has not seen still yields a usable chain
     rather than an empty one.
     """
 
+    required_margin_rad = _required_margin_for_phase(
+        phase, default_margin_rad=required_margin_rad
+    )
     rows = phase.get("attempts")
     candidates: list[dict[str, Any]] = []
     if isinstance(rows, list):
@@ -150,15 +186,27 @@ def select_continuous_branch_chain(
     rather than asserting one.
     """
 
+    # Phases that inherit a bound pose carry no branch decision; searching over
+    # them is meaningless and refusing because of them throws away the search.
+    choosing = [phase for phase in phases if phase_offers_a_branch_choice(phase)]
     per_phase = [
         admissible_branches(phase, required_margin_rad=required_margin_rad)
-        for phase in phases
+        for phase in choosing
     ]
     if not per_phase or any(not rows for rows in per_phase):
+        empty = [
+            str(phase.get("phase_id") or "")
+            for phase, rows in zip(choosing, per_phase, strict=True)
+            if not rows
+        ]
         return {
             "schema_version": BRANCH_CONTINUITY_SCHEMA_VERSION,
             "status": "unavailable",
-            "reason": "phase_without_admissible_branch",
+            "reason": (
+                "phase_without_admissible_branch:" + ",".join(empty)
+                if empty
+                else "no_phase_offers_a_branch_choice"
+            ),
             "selected_chain": [],
         }
     combinations = 1
@@ -206,6 +254,14 @@ def select_continuous_branch_chain(
         "combinations_evaluated": combinations,
         "branches_per_phase": [len(rows) for rows in per_phase],
         "selected_chain": [dict(row) for row in best_chain],
+        "chain_phase_ids": [
+            str(phase.get("phase_id") or "") for phase in choosing
+        ],
+        "inherited_phase_ids": [
+            str(phase.get("phase_id") or "")
+            for phase in phases
+            if not phase_offers_a_branch_choice(phase)
+        ],
         "largest_single_joint_hop_rad": best_cost[0],
         "total_joint_travel_rad": best_cost[1],
         "greedy_largest_single_joint_hop_rad": greedy_cost[0],
@@ -221,5 +277,6 @@ __all__ = [
     "BRANCH_CONTINUITY_SCHEMA_VERSION",
     "MAX_BRANCH_COMBINATIONS",
     "admissible_branches",
+    "phase_offers_a_branch_choice",
     "select_continuous_branch_chain",
 ]

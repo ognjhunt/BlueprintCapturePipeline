@@ -417,29 +417,31 @@ def _control_plan_global_ik_joint_targets(
     )
     if continuity.get("status") == "selected":
         chain = continuity["selected_chain"]
-        solvable = [
-            phase
+        chain_phase_ids = continuity.get("chain_phase_ids") or []
+        by_phase_id = {
+            str(phase.get("phase_id") or ""): phase
             for phase in phases
-            if isinstance(phase, Mapping) and phase.get("selected") is not None
-        ]
-        if len(chain) == len(phases):
-            for phase, chosen in zip(phases, chain, strict=True):
-                phase_id = str(phase.get("phase_id") or "")
+            if isinstance(phase, Mapping)
+        }
+        if len(chain) == len(chain_phase_ids):
+            for phase_id, chosen in zip(chain_phase_ids, chain, strict=True):
                 joints = [
                     float(value) for value in chosen["joint_positions_rad"]
                 ]
                 for row in targets:
                     if str(row.get("phase_id") or "") == phase_id:
                         row["joint_positions_rad"] = joints
-                if isinstance(phase.get("selected"), Mapping):
+                phase = by_phase_id.get(phase_id)
+                if isinstance(phase, Mapping) and isinstance(
+                    phase.get("selected"), Mapping
+                ):
                     phase["selected"] = {**phase["selected"], **chosen}
         else:
             continuity = {
                 **continuity,
                 "status": "unavailable",
-                "reason": "chain_length_does_not_match_phase_count",
+                "reason": "chain_length_does_not_match_chosen_phase_count",
             }
-        del solvable
     receipt = {
         "branch_continuity": continuity,
         "schema_version": "native_task_controls_global_ik_preflight.v1",
