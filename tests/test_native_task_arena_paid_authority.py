@@ -750,6 +750,71 @@ def test_a_run_that_never_allocated_can_still_seal(tmp_path: Path) -> None:
     assert receipt["inventory_scope"] == "no_provider_allocation"
 
 
+def test_legacy_preflight_exit_with_missing_cost_can_seal_and_chain(
+    tmp_path: Path,
+) -> None:
+    """The provider's own no-create evidence repairs the old absent scalar."""
+
+    authority_path, result_path, _ = _no_allocation_fixture(tmp_path)
+    authority = json.loads(authority_path.read_text())
+    authority.update(
+        {
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "hard_attempt_spend_cap_usd": 2.0,
+            "maximum_single_resource_ttl_seconds": 3600,
+            "aggregate_goal_spend_before_attempt_usd": 1.0,
+            "aggregate_goal_spend_cap_usd": 25.0,
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    result = json.loads(result_path.read_text())
+    result.update(
+        {
+            "bundle_sha256": authority["bundle_sha256"],
+            "hard_cap_usd": 2.0,
+            "hard_ttl_seconds": 3600,
+            "retry_cap": 0,
+            "estimated_cost_usd": None,
+            "authorization_consumption": {
+                "authorization_digest": authority["authorization_digest"]
+            },
+        }
+    )
+    adapter_path = Path(result["adapter_result_path"])
+    write_json(
+        adapter_path,
+        {
+            "api_call_performed": False,
+            "provider_create_attempted": False,
+            "vast_instance_ids": [],
+        },
+    )
+    teardown_path = Path(result["teardown_manifest_path"])
+    write_json(
+        teardown_path,
+        {"continuing_spend_from_this_run": False, "vast_instance_ids": []},
+    )
+    write_json(result_path, result)
+
+    zero_path = tmp_path / "legacy_provider_zero.json"
+    receipt = paid.materialize_native_task_arena_provider_zero(
+        authority_path=authority_path,
+        result_path=result_path,
+        output_path=zero_path,
+    )
+    assert receipt["inventory_scope"] == "no_provider_allocation"
+    chain = paid.validate_terminal_spend_chain(
+        authority_path=authority_path,
+        result_path=result_path,
+        provider_zero_path=zero_path,
+    )
+    assert chain["attempt_cost_usd"] == 0.0
+
+
 def test_the_no_allocation_seal_demands_proof_that_nothing_was_allocated(
     tmp_path: Path,
 ) -> None:
