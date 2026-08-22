@@ -176,6 +176,39 @@ def test_warm_dispatch_streams_script_over_pinned_ssh_without_url_in_command(
     assert observed["stdin"] == script.encode("utf-8")
     assert signed_url not in " ".join(observed["remote_argv"])
     assert "StrictHostKeyChecking=no" not in " ".join(observed["remote_argv"])
+    remote_command = " ".join(observed["remote_argv"])
+    assert "/workspace/native_task_arena_warm_dispatches/" in remote_command
+    assert "/workspace/native_task_arena_warm_attempts/" not in remote_command
+
+
+def test_warm_log_fetch_reads_dispatch_namespace_not_workload_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_ssh(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "stdout": "sealed-log\n"}
+
+    monkeypatch.setattr(warm_vast, "_run_pinned_ssh", fake_ssh)
+    result, text = warm_vast._fetch_warm_runtime_log_over_ssh(
+        job=tmp_path,
+        session={"ssh_host": "ssh.example", "ssh_port": 12345},
+        dispatch={"host_key_enrollment": {"known_hosts_file": "/private/pin"}},
+        attempt_key="b" * 16,
+    )
+
+    assert result["status"] == "completed"
+    assert text == "sealed-log\n"
+    assert observed["remote_argv"] == [
+        "tail",
+        "-n",
+        "500",
+        "--",
+        "/workspace/native_task_arena_warm_dispatches/"
+        + "b" * 16
+        + "/run.log",
+    ]
 
 
 def test_pinned_ssh_uses_service_bound_identity_file(
