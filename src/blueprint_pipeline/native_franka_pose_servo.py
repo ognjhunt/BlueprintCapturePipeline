@@ -1044,6 +1044,78 @@ class NativeFrankaDifferentialIkServo:
             leads.append(ACTUATOR_FEASIBLE_LEAD_FRACTION * effort / stiff)
         return leads
 
+    def _current_actuator_lead(self) -> list[float] | None:
+        """The lead budget for this command, priced at the measured velocity."""
+
+        try:
+            velocities = self.read_arm_joint_velocities()
+        except Exception:  # noqa: BLE001 - fall back to the static reservation
+            velocities = None
+        return self.actuator_feasible_lead_rad(velocities)
+
+    def actuator_feasible_lead_rad(
+        self, measured_joint_velocities_rad_s: Sequence[float] | None = None
+    ) -> list[float] | None:
+        """The lead each joint can pull *right now*, given how fast it is going.
+
+        An implicit PD joint spends one effort budget on both terms:
+        ``stiffness * lead + damping * |velocity| <= effort_limit``.  The
+        static split reserved half the budget for damping at all times, which
+        is the correct reservation while a joint is slewing and the wrong one
+        once it has settled -- and settled is exactly when arrival is measured.
+        Worse, the reserved form makes the achievable holding torque
+        ``stiffness * (0.5 * effort / stiffness)``, that is half the effort
+        limit *regardless of stiffness*: C36 swept wrist stiffness over a
+        tenfold range and the fingertip moved 0.3 mm, because every cell was
+        being held by the same 6 N-m.
+
+        Charging the damping term what it actually costs restores the rest of
+        the budget.  Velocities that cannot be read fall back to the static
+        reservation, so a runtime without velocity readback is no worse off.
+        """
+
+        leads = getattr(self, "_actuator_feasible_lead_rad", None)
+        stiffness = getattr(self, "_joint_stiffness", None)
+        efforts = getattr(self, "_joint_effort_limit", None)
+        damping = getattr(self, "_joint_damping", None)
+        if (
+            measured_joint_velocities_rad_s is None
+            or not stiffness
+            or not efforts
+            or not damping
+            or len(stiffness) != len(efforts)
+            or len(stiffness) != len(damping)
+        ):
+            return leads
+        try:
+            velocities = [
+                abs(float(value)) for value in measured_joint_velocities_rad_s
+            ]
+        except (TypeError, ValueError):
+            return leads
+        if len(velocities) != len(stiffness):
+            return leads
+        dynamic: list[float] = []
+        for index, (stiff, effort, damp) in enumerate(
+            zip(stiffness, efforts, damping, strict=True)
+        ):
+            if (
+                not math.isfinite(stiff)
+                or not math.isfinite(effort)
+                or not math.isfinite(damp)
+                or stiff <= 0.0
+                or effort <= 0.0
+                or damp < 0.0
+                or not math.isfinite(velocities[index])
+            ):
+                return leads
+            remaining = effort - damp * velocities[index]
+            # Never below the static reservation: this may only return budget
+            # the joint is demonstrably not spending, never take more away.
+            floor = ACTUATOR_FEASIBLE_LEAD_FRACTION * effort / stiff
+            dynamic.append(max(floor, remaining / stiff) if remaining > 0.0 else floor)
+        return dynamic
+
     def actuator_feasible_joint_step_rad(self) -> list[float] | None:
         """How far each joint may be re-commanded per control step.
 
@@ -1849,9 +1921,7 @@ class NativeFrankaDifferentialIkServo:
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
-            max_setpoint_lead_rad_per_joint=getattr(
-                self, "_actuator_feasible_lead_rad", None
-            ),
+            max_setpoint_lead_rad_per_joint=self._current_actuator_lead(),
         )
         feedforward = joint_velocity_feedforward_rad_s(
             commanded_joint_positions_rad=bounded,
@@ -2013,9 +2083,7 @@ class NativeFrankaDifferentialIkServo:
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
-            max_setpoint_lead_rad_per_joint=getattr(
-                self, "_actuator_feasible_lead_rad", None
-            ),
+            max_setpoint_lead_rad_per_joint=self._current_actuator_lead(),
         )
         feedforward = joint_velocity_feedforward_rad_s(
             commanded_joint_positions_rad=bounded,
@@ -2220,9 +2288,7 @@ class NativeFrankaDifferentialIkServo:
             previous_commanded_joint_positions_rad=previous,
             max_command_slew_per_step_rad=float(max_joint_delta_rad),
             max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
-            max_setpoint_lead_rad_per_joint=getattr(
-                self, "_actuator_feasible_lead_rad", None
-            ),
+            max_setpoint_lead_rad_per_joint=self._current_actuator_lead(),
         )
         # Declare the rate the setpoint is advancing at, so the damping term
         # stops braking the motion we just commanded.  It is zero whenever the
