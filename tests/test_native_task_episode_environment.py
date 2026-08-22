@@ -298,10 +298,17 @@ def test_factory_keeps_globally_solved_contact_pose_on_cartesian_servo(
     assert action == [0.5] * 7 + [0.0]
     assert servo.calls[-1]["backend"] == "physx_dls"
     assert servo.calls[-1]["target_position_world_m"] == [1.0, 2.0, 3.0]
+    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [0.2] * 7
     assert "target_joint_positions_rad" not in servo.calls[-1]
     assert receipt["scripted_pose_source"] == (
-        "global_ik_free_space_with_live_physx_jacobian_contact_servo"
+        "global_ik_free_space_with_live_physx_jacobian_contact_servo_"
+        "and_position_nullspace_bound_global_posture"
     )
+    assert receipt["cartesian_contact_posture_source"] == (
+        "construction_global_ik_selected_joint_target_projected_through_"
+        "live_physx_position_jacobian_nullspace"
+    )
+    assert receipt["cartesian_contact_posture_nullspace_gain"] == pytest.approx(0.20)
     assert receipt["cartesian_contact_phase_ids"] == ["contact_open"]
     assert receipt["cartesian_contact_physx_dls_phase_ids"] == [
         "contact_open"
