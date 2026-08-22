@@ -23,6 +23,7 @@ from typing import Any
 
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
+POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
 
 
 def _announce(phase: str, status: str = "started") -> None:
@@ -278,14 +279,7 @@ def _control_plan_global_ik_joint_targets(
         if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
             continue
         phase_id = str(raw.get("phase_id") or "")
-        if raw.get("position_only_arrival") is True:
-            phases.append(
-                {
-                    "phase_id": phase_id,
-                    "status": "skipped_position_only_arrival",
-                }
-            )
-            continue
+        position_only_arrival = raw.get("position_only_arrival") is True
         try:
             position = [float(value) for value in raw["target_position_world_m"]]
             quaternion = [
@@ -309,8 +303,10 @@ def _control_plan_global_ik_joint_targets(
             continue
         try:
             position_tolerance_m = float(raw["arrival_tolerance_m"])
-            orientation_tolerance_rad = float(
-                raw["arrival_orientation_tolerance_rad"]
+            orientation_tolerance_rad = (
+                POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD
+                if position_only_arrival
+                else float(raw["arrival_orientation_tolerance_rad"])
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
@@ -336,7 +332,18 @@ def _control_plan_global_ik_joint_targets(
         if not isinstance(solved, Mapping):
             raise RuntimeError("native_task_controls_multistart_result_invalid")
         selected = solved.get("selected")
-        phases.append({"phase_id": phase_id, **dict(solved)})
+        phases.append(
+            {
+                "phase_id": phase_id,
+                "position_only_arrival_gate": position_only_arrival,
+                "full_pose_prepositioning_tolerance_rad": (
+                    orientation_tolerance_rad
+                    if position_only_arrival
+                    else None
+                ),
+                **dict(solved),
+            }
+        )
         if not isinstance(selected, Mapping):
             continue
         joints = [float(value) for value in selected["joint_positions_rad"]]
@@ -354,11 +361,7 @@ def _control_plan_global_ik_joint_targets(
         "status": (
             "all_unique_poses_solved_or_bound"
             if all(
-                phase.get("status")
-                in {
-                    "skipped_position_only_arrival",
-                    "reused_bound_pose_solution",
-                }
+                phase.get("status") == "reused_bound_pose_solution"
                 or phase.get("selected") is not None
                 for phase in phases
             )
