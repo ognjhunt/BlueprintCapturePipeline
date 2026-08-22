@@ -632,6 +632,7 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
         entrypoint = archive.read(
             "provider_runtime/run_adp_arena_provider_runtime.sh"
         ).decode()
+        assert 'export RUNTIME_DIR OUT_DIR' in entrypoint
         assert entrypoint.index("policy_provisioning:started") < entrypoint.index(
             '"$RUNTIME_DIR/adp_arena_provider_runner.py"'
         )
