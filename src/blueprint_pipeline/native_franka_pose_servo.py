@@ -1760,6 +1760,104 @@ class NativeFrankaDifferentialIkServo:
         )
         return local
 
+    def _pinocchio_frame_probes(self):
+        """FK and Jacobian for the tool frame, from the solver's own model.
+
+        Uses the model the live controller already loaded, so a seed produced
+        here is a configuration of the same robot the solver will refine.
+        """
+
+        controller = getattr(self, "_pink_controller", None)
+        configuration = getattr(controller, "_configuration", None)
+        model = getattr(configuration, "model", None)
+        data = getattr(configuration, "data", None)
+        if model is None or data is None:
+            return None
+        try:
+            import numpy as np
+            import pinocchio as pin
+        except Exception:  # noqa: BLE001 - the search is optional
+            return None
+        try:
+            frame_id = model.getFrameId("panda_hand")
+        except Exception:  # noqa: BLE001
+            return None
+        arm = len(self.binding["arm_joint_names"])
+
+        def _configuration_vector(joints):
+            vector = pin.neutral(model)
+            vector[:arm] = np.array([float(value) for value in joints], dtype=float)
+            return vector
+
+        def frame_pose(joints):
+            vector = _configuration_vector(joints)
+            pin.forwardKinematics(model, data, vector)
+            pin.updateFramePlacements(model, data)
+            placement = data.oMf[frame_id]
+            return (
+                [float(value) for value in placement.translation],
+                [float(value) for value in pin.Quaternion(placement.rotation).coeffs()],
+            )
+
+        def frame_jacobian(joints):
+            vector = _configuration_vector(joints)
+            pin.forwardKinematics(model, data, vector)
+            pin.updateFramePlacements(model, data)
+            jacobian = pin.computeFrameJacobian(
+                model, data, vector, frame_id, pin.LOCAL_WORLD_ALIGNED
+            )
+            return jacobian[:, :arm].tolist()
+
+        return frame_pose, frame_jacobian
+
+    def global_margin_seeds(
+        self,
+        *,
+        target_position_base_m,
+        target_quaternion_base_xyzw,
+        seeds,
+        position_tolerance_m: float,
+        orientation_tolerance_rad: float,
+    ) -> dict[str, Any]:
+        """Configurations a local tracker will not find on its own.
+
+        The live controller carries a posture cost, so it refines within
+        whichever basin its seed lands in.  C45 measured every branch it found
+        sitting 0.014 to 0.024 rad from a joint stop while an unregularised
+        search over the *same* seeds and the *same* limits reached 0.45 rad at
+        the same pose, 2.66 rad away in joint space.  Handing those
+        configurations back as seeds is the whole intervention: the live solver
+        still refines and scores, and every gate is unchanged.
+        """
+
+        from blueprint_pipeline.native_franka_global_seed_search import (
+            GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
+            high_margin_joint_seeds,
+        )
+
+        probes = self._pinocchio_frame_probes()
+        lower = getattr(self, "_joint_position_lower", None)
+        upper = getattr(self, "_joint_position_upper", None)
+        if probes is None or not lower or not upper:
+            return {
+                "schema_version": GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
+                "status": "unavailable",
+                "reason": "solver_model_or_limits_unavailable",
+                "seeds": [],
+            }
+        frame_pose, frame_jacobian = probes
+        return high_margin_joint_seeds(
+            frame_pose=frame_pose,
+            frame_jacobian=frame_jacobian,
+            seeds=seeds,
+            target_position_m=target_position_base_m,
+            target_quaternion_xyzw=target_quaternion_base_xyzw,
+            lower_joint_position_limits_rad=lower,
+            upper_joint_position_limits_rad=upper,
+            position_tolerance_m=position_tolerance_m,
+            orientation_tolerance_rad=orientation_tolerance_rad,
+        )
+
     def solve_grasp_target_multistart(
         self,
         *,
@@ -1793,6 +1891,37 @@ class NativeFrankaDifferentialIkServo:
             preferred_seeds=preferred_seeds,
             seed_count=seed_count,
         )
+        # Add configurations the local tracker will not reach on its own.  It
+        # carries a posture cost, so it refines within its seed's basin: C45
+        # measured every branch it found sitting 0.014 to 0.024 rad from a
+        # joint stop, while an unregularised search over these same seeds and
+        # these same limits reached 0.45 rad at the same pose.  These are
+        # additions to a seed list that already works, so a runtime that cannot
+        # run the search is no worse off.
+        global_seeds: dict[str, Any] = {"status": "not_attempted", "seeds": []}
+        try:
+            hand_position, hand_quaternion = self._pink_hand_target_for_grasp_world(
+                target_position_world_m=target_position_world_m,
+                target_grasp_frame_quaternion_world_xyzw=(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
+            )
+            global_seeds = self.global_margin_seeds(
+                target_position_base_m=hand_position,
+                target_quaternion_base_xyzw=hand_quaternion,
+                seeds=seeds,
+                position_tolerance_m=float(position_tolerance_m),
+                orientation_tolerance_rad=float(orientation_tolerance_rad),
+            )
+        except Exception as exc:  # noqa: BLE001 - the search never fails a solve
+            global_seeds = {
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "seeds": [],
+            }
+        extra = [row for row in (global_seeds.get("seeds") or []) if len(row) == 7]
+        if extra:
+            seeds = [*extra, *seeds]
         reference = [float(value) for value in reference_joint_positions_rad]
         attempts = []
         for index, seed in enumerate(seeds):
@@ -1882,6 +2011,7 @@ class NativeFrankaDifferentialIkServo:
             "solved": selected is not None,
             "selected": None if selected is None else dict(selected),
             "attempts": attempts,
+            "global_margin_seed_search": global_seeds,
             "seed_count": len(seeds),
             "solver": "isaacsim.robot_motion.pink.PinkIKController_multistart",
             "position_tolerance_m": float(position_tolerance_m),
