@@ -8,6 +8,7 @@ import pytest
 from blueprint_pipeline.native_franka_pose_servo import (
     NativeFrankaDifferentialIkServo,
     NativeFrankaPoseServoError,
+    PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
     PINK_CONFIGURATION_LIMIT_MARGIN_RAD,
     PINK_INTEGRATION_DT_SECONDS,
     PINK_ORIENTATION_COST,
@@ -18,8 +19,35 @@ from blueprint_pipeline.native_franka_pose_servo import (
     deterministic_pink_joint_seeds,
     native_xyzw_to_contract_xyzw,
     pink_configuration_joint_positions,
+    position_nullspace_posture_bias,
     resolve_native_franka_pose_binding,
 )
+
+
+def test_position_nullspace_posture_bias_preserves_linear_task() -> None:
+    import torch
+
+    jacobian = torch.zeros((1, 6, 7), dtype=torch.float64)
+    jacobian[0, 0, 0] = 1.0
+    jacobian[0, 1, 1] = 1.0
+    jacobian[0, 2, 2] = 1.0
+    current = torch.zeros((1, 7), dtype=torch.float64)
+    preferred = torch.tensor(
+        [[1.0, -1.0, 0.5, 0.4, -0.3, 0.2, -0.1]], dtype=torch.float64
+    )
+
+    bias = position_nullspace_posture_bias(
+        joint_positions=current,
+        preferred_joint_positions=preferred,
+        task_jacobian=jacobian,
+        gain=PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
+    )
+
+    assert torch.matmul(jacobian[:, :3, :], bias.unsqueeze(-1)).squeeze(-1) == (
+        pytest.approx(torch.zeros((1, 3), dtype=torch.float64))
+    )
+    assert bias[0, :3].tolist() == pytest.approx([0.0, 0.0, 0.0])
+    assert bias[0, 3:].tolist() == pytest.approx([0.08, -0.06, 0.04, -0.02])
 
 
 def test_grasp_tcp_interpolates_between_measured_gripper_endpoints() -> None:

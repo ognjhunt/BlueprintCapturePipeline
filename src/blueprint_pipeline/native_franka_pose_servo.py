@@ -115,6 +115,14 @@ DEFAULT_VELOCITY_FEEDFORWARD_SCALE = 1.0
 # 20 Hz control cadence these ceilings are 0.4 m/s and 2 rad/s respectively.
 MAX_CARTESIAN_TRANSLATION_STEP_M = 0.02
 MAX_CARTESIAN_ORIENTATION_STEP_RAD = 0.10
+# The pinned Isaac Lab controller predates its upstream null-space joint-limit
+# avoidance.  C20c reached the contact target's depth but saturated panda_joint5
+# while the remaining redundant joints stayed on the local approach branch.
+# Bias contact DLS toward the already solved, receipt-bound PINK posture through
+# the *position* null space.  This preserves fingertip translation while using
+# the seventh DOF to escape the saturated local branch.  The gain is still
+# independently bounded by the existing per-tick slew and measured-state lead.
+PHYSX_DLS_POSTURE_NULLSPACE_GAIN = 0.20
 # Position and posture retain Isaac Sim 6.0.1's shipped Franka PINK example.
 # Orientation uses the pinned IsaacLab manipulation setting rather than the
 # demo's 0.05: r37 proved that a 100:1 position/orientation ratio reached every
@@ -329,6 +337,62 @@ def native_xyzw_to_contract_xyzw(value: Sequence[float]) -> list[float]:
             ["native_franka_pose_servo_quaternion_invalid"]
         )
     return [item / norm for item in quaternion]
+
+
+def position_nullspace_posture_bias(
+    *,
+    joint_positions: Any,
+    preferred_joint_positions: Any,
+    task_jacobian: Any,
+    gain: float,
+) -> Any:
+    """Project a preferred posture update away from fingertip translation.
+
+    This is the posture-target sibling of Isaac Lab's current joint-limit
+    avoidance term: both use ``I - pinv(J_position) @ J_position``.  Keeping the
+    projection limited to the linear rows lets the redundant Franka joints
+    change wrist orientation as needed without stealing convergence from the
+    measured fingertip position.
+    """
+
+    import torch
+
+    try:
+        resolved_gain = float(gain)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_posture_nullspace_invalid"]
+        ) from exc
+    if (
+        not math.isfinite(resolved_gain)
+        or resolved_gain <= 0.0
+        or joint_positions.ndim != 2
+        or preferred_joint_positions.shape != joint_positions.shape
+        or task_jacobian.ndim != 3
+        or task_jacobian.shape[0] != joint_positions.shape[0]
+        or task_jacobian.shape[1] < 3
+        or task_jacobian.shape[2] != joint_positions.shape[1]
+    ):
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_posture_nullspace_invalid"]
+        )
+    position_jacobian = task_jacobian[:, :3, :]
+    position_pseudoinverse = torch.linalg.pinv(position_jacobian)
+    joint_count = task_jacobian.shape[2]
+    identity = torch.eye(
+        joint_count,
+        device=task_jacobian.device,
+        dtype=task_jacobian.dtype,
+    ).expand(task_jacobian.shape[0], -1, -1)
+    nullspace_projection = identity - torch.bmm(
+        position_pseudoinverse, position_jacobian
+    )
+    posture_delta = resolved_gain * (
+        preferred_joint_positions - joint_positions
+    )
+    return torch.bmm(
+        nullspace_projection, posture_delta.unsqueeze(-1)
+    ).squeeze(-1)
 
 
 def contract_xyzw_to_native_xyzw(value: Sequence[float]) -> list[float]:
@@ -1582,6 +1646,7 @@ class NativeFrankaDifferentialIkServo:
         max_joint_delta_rad: float,
         max_joint_setpoint_lead_rad: float,
         velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
+        preferred_posture_joint_positions_rad: Sequence[float] | None = None,
     ) -> tuple[list[float], dict[str, Any]]:
         """Close exact contact error with the live PhysX articulation Jacobian.
 
@@ -1656,6 +1721,25 @@ class NativeFrankaDifferentialIkServo:
             jacobian_root,
             current,
         )
+        posture_bias = self._torch.zeros_like(current)
+        if preferred_posture_joint_positions_rad is not None:
+            try:
+                preferred_posture = self._torch.tensor(
+                    [[float(value) for value in preferred_posture_joint_positions_rad]],
+                    device=current.device,
+                    dtype=current.dtype,
+                )
+            except (TypeError, ValueError) as exc:
+                raise NativeFrankaPoseServoError(
+                    ["native_franka_pose_servo_posture_nullspace_invalid"]
+                ) from exc
+            posture_bias = position_nullspace_posture_bias(
+                joint_positions=current,
+                preferred_joint_positions=preferred_posture,
+                task_jacobian=jacobian_root,
+                gain=PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
+            )
+            desired = desired + posture_bias
         current_values = [float(value) for value in current[0]]
         desired_values = [float(value) for value in desired[0]]
         desired_within_joint_limits = clip_joint_positions_to_limits(
@@ -1725,6 +1809,15 @@ class NativeFrankaDifferentialIkServo:
                 self._torch.linalg.matrix_rank(jacobian_root[0])
             ),
             "desired_joint_positions_rad": desired_values,
+            "preferred_posture_joint_positions_rad": (
+                None
+                if preferred_posture_joint_positions_rad is None
+                else [float(value) for value in preferred_posture_joint_positions_rad]
+            ),
+            "position_nullspace_posture_bias_rad": [
+                float(value) for value in posture_bias[0]
+            ],
+            "position_nullspace_posture_gain": PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
             "desired_joint_positions_clipped_to_limits_rad": (
                 desired_within_joint_limits
             ),

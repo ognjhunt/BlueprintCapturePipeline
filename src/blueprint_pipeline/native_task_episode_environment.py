@@ -13,7 +13,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
-from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
+from .native_franka_pose_servo import (
+    DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
+    PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
+)
 
 
 SCHEMA_VERSION = "native_task_episode_environment.v2"
@@ -315,6 +318,9 @@ def build_native_task_episode_environment(
             action, _diagnostic = servo.action_for_grasp_target_physx_dls(
                 target_position_world_m=kwargs["target_position_world_m"],
                 target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                preferred_posture_joint_positions_rad=joint_target[
+                    "joint_positions_rad"
+                ],
                 **common,
             )
         elif joint_target is not None:
@@ -365,7 +371,8 @@ def build_native_task_episode_environment(
             else "native_rigid_body_readback"
         ),
         "scripted_pose_source": (
-            "global_ik_free_space_with_live_physx_jacobian_contact_servo"
+            "global_ik_free_space_with_live_physx_jacobian_contact_servo_"
+            "and_position_nullspace_bound_global_posture"
             if any(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
@@ -383,6 +390,23 @@ def build_native_task_episode_environment(
             row["phase_id"]
             for row in joint_target_rows
             if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+        ),
+        "cartesian_contact_posture_source": (
+            "construction_global_ik_selected_joint_target_projected_through_"
+            "live_physx_position_jacobian_nullspace"
+            if any(
+                row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+                for row in joint_target_rows
+            )
+            else None
+        ),
+        "cartesian_contact_posture_nullspace_gain": (
+            PHYSX_DLS_POSTURE_NULLSPACE_GAIN
+            if any(
+                row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+                for row in joint_target_rows
+            )
+            else None
         ),
         "scripted_pose_joint_targets": joint_target_rows,
         "joint_wrench_source": "IsaacLab JointWrenchSensor force+torque",
