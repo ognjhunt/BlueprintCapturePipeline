@@ -180,7 +180,15 @@ BLOCKER_MEDIA_INCOMPLETE = "control_episode_media_incomplete"
 # -- only the command is biased -- and every attempt seals its own arrival
 # row, so a run either passes honestly or pins whether the miss is a
 # constant offset (compensation converges) or a saturation (it does not).
-TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS = 8
+# An attempt costs about 88 simulator steps -- the phase plus its bounded
+# retreat -- which at 15 Hz is roughly six seconds of a run that is already
+# paying minutes for scene construction.  Thirty attempts is therefore about
+# three minutes of GPU time, while a fresh run to resume the same search costs
+# a full cold start.  The count was never the thing worth conserving; the
+# projection below is what stops a dead strategy from consuming the budget,
+# and a converging one should be allowed to finish inside the run that found
+# it.  C29 was ended by a cap of three while it was still closing the gap.
+TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS = 30
 TASK_CONTROL_RECOVERY_RETREAT_MAXIMUM_STEPS = 24
 
 # C28 sealed why a single strategy repeated blindly is the wrong budget: its
