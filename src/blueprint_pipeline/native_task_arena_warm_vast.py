@@ -393,6 +393,30 @@ def _fetch_warm_runtime_log_over_ssh(
         timeout_seconds=30,
     )
     text = str(result.get("stdout") or "")
+    # The warm markers are emitted at the very start of the run, and a chatty
+    # Isaac controls episode pushes them past any bounded tail: C28's real
+    # cache hit was declared "unproven" because the marker had scrolled out of
+    # the last 500 lines.  Scrape the bounded marker lines from the whole log
+    # separately so marker-presence gates judge the run, not the tail window.
+    markers = _run_pinned_ssh(
+        session=session,
+        known_hosts_file=str(enrollment.get("known_hosts_file") or ""),
+        remote_argv=[
+            "sh",
+            "-c",
+            "grep -aoE 'BLUEPRINT_ARENA_WARM_[A-Z_]+(:[A-Za-z0-9:_.-]+)?' -- "
+            + shlex.quote(remote_log_path)
+            + " | head -n 80",
+        ],
+        timeout_seconds=30,
+    )
+    marker_lines = [
+        line
+        for line in str(markers.get("stdout") or "").splitlines()
+        if line.startswith("BLUEPRINT_ARENA_WARM_")
+    ]
+    if marker_lines:
+        text = "\n".join(marker_lines) + "\n" + text
     (job / "warm_runtime.log").write_text(text, encoding="utf-8")
     return result, text
 
