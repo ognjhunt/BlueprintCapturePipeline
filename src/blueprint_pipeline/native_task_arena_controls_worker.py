@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Any
 
 
+from blueprint_pipeline.native_task_arena_branch_continuity import (
+    select_continuous_branch_chain,
+)
+
+
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
 POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
@@ -303,6 +308,7 @@ def _control_plan_global_ik_joint_targets(
         by_pose[key] = row
 
     reference = [float(value) for value in servo.read_arm_joint_positions()]
+    start_joint_positions = list(reference)
     phases: list[dict[str, Any]] = []
     for raw in actions:
         if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
@@ -395,7 +401,47 @@ def _control_plan_global_ik_joint_targets(
         targets.append(row)
         by_pose[key] = row
         reference = joints
+
+    # The greedy chain above commits each phase before it knows whether the
+    # next one can be reached from where it landed.  C39 paid for that: with
+    # solves scored on the gate's frame, approach's own best branch sat
+    # 0.615 rad from contact's, and the bounded entry path -- built to
+    # interpolate hundredths of a radian -- was handed a whole arm
+    # reconfiguration.  Every admissible branch is already sealed under each
+    # phase's `attempts`, so enumerate the combinations and keep the chain
+    # that is actually traversable.  Pure arithmetic, off-sim, no GPU time.
+    continuity = select_continuous_branch_chain(
+        phases=[phase for phase in phases if isinstance(phase, Mapping)],
+        required_margin_rad=CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD,
+        start_joint_positions_rad=start_joint_positions,
+    )
+    if continuity.get("status") == "selected":
+        chain = continuity["selected_chain"]
+        solvable = [
+            phase
+            for phase in phases
+            if isinstance(phase, Mapping) and phase.get("selected") is not None
+        ]
+        if len(chain) == len(phases):
+            for phase, chosen in zip(phases, chain, strict=True):
+                phase_id = str(phase.get("phase_id") or "")
+                joints = [
+                    float(value) for value in chosen["joint_positions_rad"]
+                ]
+                for row in targets:
+                    if str(row.get("phase_id") or "") == phase_id:
+                        row["joint_positions_rad"] = joints
+                if isinstance(phase.get("selected"), Mapping):
+                    phase["selected"] = {**phase["selected"], **chosen}
+        else:
+            continuity = {
+                **continuity,
+                "status": "unavailable",
+                "reason": "chain_length_does_not_match_phase_count",
+            }
+        del solvable
     receipt = {
+        "branch_continuity": continuity,
         "schema_version": "native_task_controls_global_ik_preflight.v1",
         "status": (
             "all_unique_poses_solved_or_bound"
