@@ -661,6 +661,51 @@ def test_receipt_records_the_observation_conversion_actually_applied() -> None:
     assert conversion["scene_content_cropped"] is False
 
 
+def test_receipt_source_resolution_is_measured_not_defaulted() -> None:
+    """Scene 840920 cameras render 320x180, not the 1280x720 module default.
+
+    The scripted environment above happens to render at exactly the default,
+    so the default was indistinguishable from a measurement.  Render at the
+    real Task A size: the sealed receipt must report the frames the policy
+    actually received, or it describes a conversion that did not happen.
+    """
+
+    class _TaskASized(_Environment):
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            frame = np.zeros((180, 320, 3), dtype=np.uint8)
+            frame[..., 0] = 128
+            inputs[DROID_EXTERIOR_VIEW_1] = frame
+            inputs[DROID_WRIST_VIEW] = frame
+            return inputs
+
+    receipt = _run(_TaskASized())
+
+    conversion = receipt["observation_conversion"]
+    assert conversion["source_resolution_hw"] == [180, 320]
+    assert conversion["target_resolution_hw"] == [224, 224]
+    assert conversion["content_resolution_hw"] == [126, 224]
+    assert conversion["padded_rows"] == 98
+    assert conversion["padded_columns"] == 0
+
+
+def test_mixed_source_resolutions_refuse_a_single_conversion_claim() -> None:
+    """One source_hw cannot truthfully describe two differently sized views."""
+
+    class _MixedSizes(_Environment):
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            inputs[DROID_WRIST_VIEW] = np.zeros((180, 320, 3), dtype=np.uint8)
+            return inputs
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(_MixedSizes())
+    assert any(
+        "policy_episode_source_resolution_unmeasured_or_mixed" in error
+        for error in excinfo.value.errors
+    )
+
+
 def test_the_shipped_openpi_client_satisfies_the_episode_loop_seam() -> None:
     """No new client is needed: the existing one already fits the protocol.
 
