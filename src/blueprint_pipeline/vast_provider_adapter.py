@@ -6787,6 +6787,13 @@ def run_vast_provider_adapter(
         "generated_at": generated_at,
         "job_dir": str(resolved_job_dir),
         "mode": mode,
+        # These are the truthful defaults until a provider allocation exists.
+        # Every post-allocation terminal path overwrites them from the budget
+        # ledger.  Keeping them explicit here makes preflight failures
+        # chainable as proven zero-cost attempts instead of leaving the paid
+        # authority wedged on absent fields.
+        "estimated_cost_usd": 0.0,
+        "continuing_spend_from_this_run": False,
         "api_call_performed": False,
         "vast_side_effects_may_have_occurred": False,
         "provider_create_attempted": False,

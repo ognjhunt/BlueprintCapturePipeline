@@ -2060,6 +2060,8 @@ def test_vast_adapter_blocks_blueprint_bundle_missing_staging_before_api(
     assert result["status"] == "blocked"
     assert result["api_call_performed"] is False
     assert result["reason"] == "vast_blueprint_bundle_preflight_blocked"
+    assert result["estimated_cost_usd"] == 0.0
+    assert result["continuing_spend_from_this_run"] is False
     assert result["blockers"] == [
         "provider_bundle_fetch_url_missing",
         "provider_output_put_url_missing",
