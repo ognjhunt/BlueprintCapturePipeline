@@ -421,7 +421,7 @@ def test_multistart_avoids_a_joint_limit_solution_before_continuity() -> None:
     assert result["selected"]["minimum_joint_limit_margin_rad"] > 0.05
 
 
-def test_pose_servo_uses_pink_limits_and_posture_not_plain_dls() -> None:
+def test_pose_servo_uses_pink_for_free_space_and_physx_dls_for_contact() -> None:
     import inspect
 
     from blueprint_pipeline.native_franka_pose_servo import (
@@ -434,7 +434,9 @@ def test_pose_servo_uses_pink_limits_and_posture_not_plain_dls() -> None:
     assert 'tool_frame="panda_hand"' in source
     assert "dt=PINK_INTEGRATION_DT_SECONDS" in source
     assert "self._pink_time_seconds += PINK_INTEGRATION_DT_SECONDS" in source
-    assert "DifferentialIKController" not in source
+    assert "DifferentialIKController" in source
+    assert "self._physx_dls_controller.compute" in source
+    assert "robot.root_view.get_jacobians:physx_articulation" in source
     assert "pink_hand_pose_at_binding" in source
     assert "current_grasp_frame_pose_world" in source
     reset_source = inspect.getsource(

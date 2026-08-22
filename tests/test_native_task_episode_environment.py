@@ -46,6 +46,10 @@ class _Servo:
         self.calls.append(kwargs)
         return [0.0] * 7 + [float(kwargs["gripper_command"])], {"ok": True}
 
+    def action_for_grasp_target_physx_dls(self, **kwargs):
+        self.calls.append({"backend": "physx_dls", **kwargs})
+        return [0.5] * 7 + [float(kwargs["gripper_command"])], {"ok": True}
+
     def action_for_joint_target(self, **kwargs):
         self.calls.append(kwargs)
         return [0.25] * 7 + [float(kwargs["gripper_command"])], {"ok": True}
@@ -291,16 +295,15 @@ def test_factory_keeps_globally_solved_contact_pose_on_cartesian_servo(
         max_joint_setpoint_lead_rad=0.2,
     )
 
-    assert action == [0.0] * 8
+    assert action == [0.5] * 7 + [0.0]
+    assert servo.calls[-1]["backend"] == "physx_dls"
     assert servo.calls[-1]["target_position_world_m"] == [1.0, 2.0, 3.0]
     assert "target_joint_positions_rad" not in servo.calls[-1]
-    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [0.2] * 7
     assert receipt["scripted_pose_source"] == (
-        "global_ik_free_space_with_native_cartesian_contact_servo_and_"
-        "selected_posture_reference"
+        "global_ik_free_space_with_live_physx_jacobian_contact_servo"
     )
     assert receipt["cartesian_contact_phase_ids"] == ["contact_open"]
-    assert receipt["cartesian_contact_posture_reference_phase_ids"] == [
+    assert receipt["cartesian_contact_physx_dls_phase_ids"] == [
         "contact_open"
     ]
 

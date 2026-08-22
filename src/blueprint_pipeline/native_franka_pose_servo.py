@@ -634,6 +634,11 @@ class NativeFrankaDifferentialIkServo:
         import torch
         import warp as wp
         import isaacsim.robot_motion.experimental.motion_generation as mg
+        from isaaclab.controllers import (
+            DifferentialIKController,
+            DifferentialIKControllerCfg,
+        )
+        from isaaclab.utils.math import subtract_frame_transforms
         from isaacsim.robot_motion.pink import (
             PinkIKController,
             load_pink_supported_robot,
@@ -647,6 +652,7 @@ class NativeFrankaDifferentialIkServo:
         self._wp = wp
         self._Rotation = Rotation
         self._torch = torch
+        self._subtract_frame_transforms = subtract_frame_transforms
         self._to_torch = lambda value: (
             value if hasattr(value, "detach") else torch.as_tensor(value)
         )
@@ -654,6 +660,17 @@ class NativeFrankaDifferentialIkServo:
             body_names=list(robot.data.body_names),
             joint_names=list(robot.joint_names),
             fixed_base=bool(robot.is_fixed_base),
+        )
+        # PINK remains the constrained/global controller for free-space motion.
+        # The exact contact phases use this stock Isaac Lab DLS controller with
+        # the live PhysX articulation Jacobian.  That closes error against the
+        # body actually being simulated instead of a second Franka model.
+        self._physx_dls_controller = DifferentialIKController(
+            DifferentialIKControllerCfg(
+                command_type="pose", use_relative_mode=False, ik_method="dls"
+            ),
+            num_envs=1,
+            device=env.unwrapped.device,
         )
         base_pose = self._to_torch(robot.data.root_pose_w)[0, :7]
         self._base_pose = [
@@ -900,6 +917,7 @@ class NativeFrankaDifferentialIkServo:
     def reset_command_state(self) -> None:
         self._last_command = None
         self._last_gripper_command = self._open_gripper_command
+        self._physx_dls_controller.reset()
         # Keep PINK's posture target at the episode's bent reset posture across
         # phase boundaries. Resetting PINK here would redefine its posture task
         # to the current pose -- including a joint-limit pose at the start of
@@ -1554,6 +1572,175 @@ class NativeFrankaDifferentialIkServo:
                 self._joint_position_upper
             ),
         }
+
+    def action_for_grasp_target_physx_dls(
+        self,
+        *,
+        target_position_world_m: Sequence[float],
+        target_grasp_frame_quaternion_world_xyzw: Sequence[float],
+        gripper_command: float,
+        max_joint_delta_rad: float,
+        max_joint_setpoint_lead_rad: float,
+        velocity_feedforward_scale: float = DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
+    ) -> tuple[list[float], dict[str, Any]]:
+        """Close exact contact error with the live PhysX articulation Jacobian.
+
+        PINK remains authoritative for constrained free-space motion and the
+        off-sim reachability preflight.  At contact, however, the gate measures
+        the live fingertip-pad midpoint.  Drive the corresponding controlled
+        body pose with Isaac Lab's stock damped-least-squares controller so the
+        Jacobian and measured pose come from the same PhysX articulation as the
+        success measurement.
+        """
+
+        self._last_gripper_command = float(gripper_command)
+        body_pose = self.current_body_pose_world()
+        grasp_pose = self.current_grasp_frame_pose_world(
+            gripper_command=gripper_command
+        )
+        local_target_position, local_target_quaternion = (
+            bounded_cartesian_pose_target(
+                current_position_world_m=grasp_pose[:3],
+                current_quaternion_world_xyzw=grasp_pose[3:7],
+                target_position_world_m=target_position_world_m,
+                target_quaternion_world_xyzw=(
+                    target_grasp_frame_quaternion_world_xyzw
+                ),
+                max_translation_step_m=MAX_CARTESIAN_TRANSLATION_STEP_M,
+                max_orientation_step_rad=MAX_CARTESIAN_ORIENTATION_STEP_RAD,
+            )
+        )
+        target_body_position, target_body_quaternion = (
+            controlled_body_pose_for_rigid_grasp_frame_target(
+                current_body_position_world_m=body_pose[:3],
+                current_body_quaternion_world_xyzw=body_pose[3:7],
+                current_grasp_frame_position_world_m=grasp_pose[:3],
+                current_grasp_frame_quaternion_world_xyzw=grasp_pose[3:7],
+                target_grasp_frame_position_world_m=local_target_position,
+                target_grasp_frame_quaternion_world_xyzw=(
+                    local_target_quaternion
+                ),
+            )
+        )
+        position_root, quaternion_root = pose_world_to_base(
+            position_world=target_body_position,
+            quaternion_world_xyzw=target_body_quaternion,
+            base_position_world=self._base_pose[:3],
+            base_quaternion_world_xyzw=self._base_pose[3:7],
+        )
+        quaternion_root_native = contract_xyzw_to_native_xyzw(quaternion_root)
+        command = self._torch.tensor(
+            [position_root + quaternion_root_native],
+            device=self._env.unwrapped.device,
+            dtype=self._torch.float32,
+        )
+        self._physx_dls_controller.reset()
+        self._physx_dls_controller.set_command(command)
+        jacobian_world, jacobian_root = self._jacobians_world_and_root()
+        body_pose_tensor = self._to_torch(self._robot.data.body_pose_w)[
+            :, self.binding["controlled_body_index"]
+        ]
+        root_pose = self._to_torch(self._robot.data.root_pose_w)
+        body_position_root, body_quaternion_root = self._subtract_frame_transforms(
+            root_pose[:, :3],
+            root_pose[:, 3:7],
+            body_pose_tensor[:, :3],
+            body_pose_tensor[:, 3:7],
+        )
+        current = self._to_torch(self._robot.data.joint_pos)[
+            :, self.binding["arm_joint_ids"]
+        ]
+        desired = self._physx_dls_controller.compute(
+            body_position_root,
+            body_quaternion_root,
+            jacobian_root,
+            current,
+        )
+        current_values = [float(value) for value in current[0]]
+        desired_values = [float(value) for value in desired[0]]
+        desired_within_joint_limits = clip_joint_positions_to_limits(
+            desired_joint_positions_rad=desired_values,
+            lower_joint_position_limits_rad=self._joint_position_lower,
+            upper_joint_position_limits_rad=self._joint_position_upper,
+        )
+        previous = current_values if self._last_command is None else self._last_command
+        bounded = bounded_absolute_joint_setpoint(
+            measured_joint_positions_rad=current_values,
+            desired_joint_positions_rad=desired_within_joint_limits,
+            previous_commanded_joint_positions_rad=previous,
+            max_command_slew_per_step_rad=float(max_joint_delta_rad),
+            max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+        )
+        feedforward = joint_velocity_feedforward_rad_s(
+            commanded_joint_positions_rad=bounded,
+            previous_commanded_joint_positions_rad=previous,
+            control_period_seconds=self._control_period_seconds,
+            scale=float(velocity_feedforward_scale),
+        )
+        self._write_joint_velocity_target(feedforward)
+        measured_velocities = self.read_arm_joint_velocities()
+        torque_terms: dict[str, Any] = {
+            "available": False,
+            "reason": "joint_gains_unavailable",
+        }
+        if self._joint_stiffness is not None and self._joint_damping is not None:
+            torque_terms = implicit_pd_torque_terms(
+                commanded_joint_positions_rad=bounded,
+                measured_joint_positions_rad=current_values,
+                commanded_joint_velocities_rad_s=feedforward,
+                measured_joint_velocities_rad_s=measured_velocities,
+                joint_stiffness=self._joint_stiffness,
+                joint_damping=self._joint_damping,
+            )
+        self._last_command = list(bounded)
+        action = [*bounded, float(gripper_command)]
+        diagnostics = {
+            "target_grasp_frame_position_world_m": [
+                float(value) for value in target_position_world_m
+            ],
+            "current_grasp_frame_position_world_m": grasp_pose[:3],
+            "current_grasp_frame_quaternion_world_xyzw": grasp_pose[3:7],
+            "target_grasp_frame_quaternion_world_xyzw": list(
+                target_grasp_frame_quaternion_world_xyzw
+            ),
+            "local_ik_target_grasp_frame_position_world_m": local_target_position,
+            "local_ik_target_grasp_frame_quaternion_world_xyzw": (
+                local_target_quaternion
+            ),
+            "max_cartesian_translation_step_m": MAX_CARTESIAN_TRANSLATION_STEP_M,
+            "max_cartesian_orientation_step_rad": MAX_CARTESIAN_ORIENTATION_STEP_RAD,
+            "target_controlled_body_position_world_m": target_body_position,
+            "current_controlled_body_position_world_m": body_pose[:3],
+            "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,
+            "controller_target_quaternion_root_xyzw": quaternion_root_native,
+            "ik_backend": "isaaclab.controllers.DifferentialIKController:physx_dls",
+            "jacobian_authority": "robot.root_view.get_jacobians:physx_articulation",
+            "jacobian_world_frobenius_norm": float(
+                self._torch.linalg.vector_norm(jacobian_world[0])
+            ),
+            "jacobian_root_frobenius_norm": float(
+                self._torch.linalg.vector_norm(jacobian_root[0])
+            ),
+            "jacobian_root_rank": int(
+                self._torch.linalg.matrix_rank(jacobian_root[0])
+            ),
+            "desired_joint_positions_rad": desired_values,
+            "desired_joint_positions_clipped_to_limits_rad": (
+                desired_within_joint_limits
+            ),
+            "joint_position_lower_limits_rad": self._joint_position_lower,
+            "joint_position_upper_limits_rad": self._joint_position_upper,
+            "bounded_joint_positions_rad": bounded,
+            "measured_joint_positions_rad": current_values,
+            "commanded_joint_velocity_feedforward_rad_s": feedforward,
+            "measured_joint_velocity_rad_s": measured_velocities,
+            "velocity_feedforward_scale": float(velocity_feedforward_scale),
+            "control_period_seconds": self._control_period_seconds,
+            "joint_stiffness": self._joint_stiffness,
+            "joint_damping": self._joint_damping,
+            "implicit_pd_torque_terms": torque_terms,
+        }
+        return action, diagnostics
 
     def action_for_grasp_target(
         self,
