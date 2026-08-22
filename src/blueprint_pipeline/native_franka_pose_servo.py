@@ -1718,6 +1718,8 @@ class NativeFrankaDifferentialIkServo:
         target_position_world_m,
         target_grasp_frame_quaternion_world_xyzw,
         roll_candidates_rad,
+        authored_preference_margin_rad: float = 0.0,
+        locked_roll_rad: float | None = None,
         **multistart_kwargs,
     ) -> dict[str, Any]:
         """Solve the grasp, letting the gripper roll about its approach axis.
@@ -1746,9 +1748,18 @@ class NativeFrankaDifferentialIkServo:
         quaternion = [
             float(value) for value in target_grasp_frame_quaternion_world_xyzw
         ]
-        rolls = [float(value) for value in roll_candidates_rad]
-        if 0.0 not in rolls:
-            rolls = [0.0, *rolls]
+        # A roll already chosen for this grasp is the only candidate: the whole
+        # grasp-holding family must share one object-relative transform, or the
+        # gripper twists against a rim it is already holding.
+        if locked_roll_rad is not None:
+            rolls = [float(locked_roll_rad)]
+        else:
+            rolls = [float(value) for value in roll_candidates_rad]
+            if 0.0 not in rolls:
+                rolls = [0.0, *rolls]
+            # Search outward from the authored orientation so the smallest
+            # deviation that works is the one found first.
+            rolls.sort(key=abs)
         axis = self._approach_axis_world(quaternion)
         best: dict[str, Any] | None = None
         attempts: list[dict[str, Any]] = []
@@ -1785,6 +1796,28 @@ class NativeFrankaDifferentialIkServo:
             )
             if selected is None:
                 continue
+            # Prefer the authored grasp whenever it can actually be held, and
+            # otherwise the smallest deviation that clears the floor -- not the
+            # largest margin on offer.  Roll is a candidate generator here, not
+            # an optimisation target: the further it strays from the authored
+            # contact geometry, the more of that geometry it puts at risk, and
+            # nothing in this search checks pad overlap, closure direction, or
+            # approach collision.  Those remain the construction stage's job
+            # and the native contact gate's.
+            floor = float(authored_preference_margin_rad)
+            if margin is not None and margin >= floor and floor > 0.0:
+                if best is None or (
+                    best["_margin"] < floor or abs(roll) < abs(best["_roll"])
+                ):
+                    best = {
+                        "_margin": margin,
+                        "_roll": roll,
+                        "_quaternion": rolled,
+                        "_solved": solved,
+                    }
+                continue
+            if best is not None and best["_margin"] >= floor > 0.0:
+                continue
             if best is None or margin > best["_margin"]:
                 best = {
                     "_margin": margin,
@@ -1808,9 +1841,15 @@ class NativeFrankaDifferentialIkServo:
             "selected_target_quaternion_world_xyzw": best["_quaternion"],
             "authored_target_quaternion_world_xyzw": quaternion,
             "selected_minimum_joint_limit_margin_rad": best["_margin"],
+            "authored_preference_margin_rad": float(authored_preference_margin_rad),
+            "locked_roll_rad": (
+                None if locked_roll_rad is None else float(locked_roll_rad)
+            ),
             "attempts": attempts,
             "claim_boundary": (
-                "rolls_the_grasp_about_its_own_approach_axis_only;native_"
+                "rolls_the_grasp_about_its_own_approach_axis_only;selects_the_"
+                "smallest_deviation_clearing_the_margin_floor;does_not_check_"
+                "pad_overlap_closure_direction_or_approach_collision;native_"
                 "arrival_and_contact_gates_remain_the_authority"
             ),
         }
