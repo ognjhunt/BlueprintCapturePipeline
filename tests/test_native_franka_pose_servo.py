@@ -482,6 +482,38 @@ def test_multistart_avoids_a_joint_limit_solution_before_continuity() -> None:
     assert result["selected"]["minimum_joint_limit_margin_rad"] > 0.05
 
 
+def test_multistart_rejects_solved_pose_below_required_joint_margin() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo._joint_position_lower = [-2.0] * 7
+    servo._joint_position_upper = [2.0] * 7
+    servo.solve_grasp_target_from_joint_seed = lambda **kwargs: {
+        "solved": True,
+        "joint_positions_rad": list(kwargs["seed_joint_positions_rad"]),
+        "position_error_m": 0.001,
+        "orientation_error_rad": 0.01,
+        "iterations": 4,
+    }
+
+    result = servo.solve_grasp_target_multistart(
+        target_position_world_m=[0.5, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[1.999] * 7, [1.99] * 7],
+        reference_joint_positions_rad=[1.999] * 7,
+        seed_count=2,
+        preferred_minimum_joint_limit_margin_rad=0.05,
+        required_minimum_joint_limit_margin_rad=0.005,
+    )
+
+    assert result["solved"] is True
+    assert result["selected"]["seed_index"] == 1
+    assert result["selected"]["minimum_joint_limit_margin_rad"] == pytest.approx(
+        0.01
+    )
+    assert result["required_minimum_joint_limit_margin_rad"] == pytest.approx(
+        0.005
+    )
+
+
 def test_pose_servo_uses_pink_for_free_space_and_physx_dls_for_contact() -> None:
     import inspect
 
