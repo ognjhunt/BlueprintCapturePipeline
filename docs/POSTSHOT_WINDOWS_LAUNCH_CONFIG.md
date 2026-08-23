@@ -30,10 +30,10 @@ commit #287 carved the MSI out. Reproduce the carve with:
 | Staged object | `s3://blueprint/postshot/Postshot-1.1.0.msi` (private) |
 | Readback | full-byte re-download re-hashed; matches |
 
-Signed GET URL: `~/.blueprint-secrets/postshot_installer_get_url` (0600, 7-day
-expiry from 2026-08-17). Digest also at
-`~/.blueprint-secrets/postshot_installer_sha256`. The URL carries an
-`X-Amz-Signature` and must never enter a tracked file.
+The durable production input is the exact local MSI plus its digest. The
+allocator content-addresses it into the governed object store and issues a new
+run-scoped signed GET URL. A signed URL carries an `X-Amz-Signature`, must never
+enter a tracked file, and must never be stored as durable production config.
 
 ## Instance
 
@@ -66,15 +66,25 @@ export BLUEPRINT_AWS_HOURLY_RATE_USD=<verified-current-rate>
 export BLUEPRINT_AWS_MAX_HOURLY_RATE_USD=<authorized-ceiling>
 ```
 
-Bootstrap inputs, read from the worker spec env:
+Durable host inputs (local files plus exact hashes):
 
 ```bash
-BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL=<signed url to the datacenter driver>
-BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL=<contents of postshot_installer_get_url>
+BLUEPRINT_WINDOWS_NVIDIA_DRIVER_FILE=/opt/blueprint/runtime-assets/nvidia-566.03-datacenter-winserver2022.exe
+BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256=13b24a4a28bf17138b548b9a46504c1c4e79fcc1ad460c10a5ac4adab33a7a3a
+BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_FILE=/opt/blueprint/runtime-assets/Postshot-1.1.0.msi
 BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256=70d4c35de6ff1296a8c0b4b2d87e84b35579baaf08ae173fa843601a2ea0e361
+BLUEPRINT_WINDOWS_PYTHON_EMBED_FILE=/opt/blueprint/runtime-assets/python-3.12.10-embed-amd64.zip
+BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256=4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3
+BLUEPRINT_WINDOWS_NUMPY_WHEEL_FILE=/opt/blueprint/runtime-assets/numpy-2.4.6-cp312-cp312-win_amd64.whl
+BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256=d8e8286dd7cea7895157318d1b91cdacac64c479f3cbc8dce548331728484751
 BLUEPRINT_WORKER_HARD_TTL_SECONDS=<ttl>
 BLUEPRINT_POSTSHOT_LICENCE_GET_URL=<signed url to a one-shot licence object>
 ```
+
+The run-local worker spec receives fresh signed URLs for those four files. The
+PowerShell bootstrap verifies all four hashes, verifies the immutable transport
+bundle before extracting the exact promoted-SHA Blueprint wheel, and only then
+fetches the one-shot licence and starts Postshot.
 
 The licence object holds only `POSTSHOT_LOGIN_EMAIL` and
 `POSTSHOT_LOGIN_PASSWORD` from `~/.blueprint-secrets/postshot.env`. The worker
@@ -82,9 +92,8 @@ deletes it on acknowledgement, and the bootstrap refuses any secret-shaped key
 in the spec env because EC2 UserData is readable over IMDS and via
 `DescribeInstanceAttribute`.
 
-The NVIDIA datacenter driver still needs staging. Candidate URLs are recorded in
-`scripts/postshot_windows_worker/launch_postshot_worker.py`; mirror one to the
-same bucket and pin its digest the way the installer is pinned.
+The NVIDIA datacenter driver must be staged as exact local bytes and pinned by
+full-byte SHA-256 before the first production allocation.
 
 ## Spend controls
 

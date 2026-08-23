@@ -216,8 +216,13 @@ def run_reconstruction_aws_windows_operation(
                 "BLUEPRINT_POSTSHOT_RUNTIME_DIGEST",
                 "BLUEPRINT_POSTSHOT_RUNTIME_VERSION",
                 "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL",
+                "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256",
                 "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL",
                 "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256",
+                "BLUEPRINT_WINDOWS_PYTHON_EMBED_GET_URL",
+                "BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256",
+                "BLUEPRINT_WINDOWS_NUMPY_WHEEL_GET_URL",
+                "BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256",
             ):
                 value = os.environ.get(key)
                 if value:
@@ -236,7 +241,8 @@ def run_reconstruction_aws_windows_operation(
                 max_hourly_rate_usd=float(
                     preflight.get("on_demand_price_usd_per_hour") or 0
                 ),
-                min_gpu_ram_mb=24_000,
+                # EC2 reports the A10G's 24 GB as 22,888 MiB.
+                min_gpu_ram_mb=22_000,
                 requires_rtx=False,
             )
             provider_request = provider.build_request(spec, root)

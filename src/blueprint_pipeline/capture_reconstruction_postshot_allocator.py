@@ -36,13 +36,44 @@ from .reconstruction_gpu_admission import (
 )
 from .reconstruction_vast_operation import _default_output_fetcher
 from .wam_provider_object_store import (
+    RUNTIME_DEPENDENCY_URL_FILENAME,
     cleanup_staged_wam_provider_objects,
+    close_cached_runtime_dependency_staging,
+    stage_cached_runtime_dependency_object_store,
     stage_wam_provider_bundle_object_store,
 )
 
 
 class CapturePostshotAllocatorError(RuntimeError):
     pass
+
+
+_WINDOWS_RUNTIME_DEPENDENCIES = (
+    (
+        "nvidia-driver",
+        "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_FILE",
+        "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256",
+        "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL",
+    ),
+    (
+        "postshot-installer",
+        "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_FILE",
+        "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256",
+        "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL",
+    ),
+    (
+        "python-embed",
+        "BLUEPRINT_WINDOWS_PYTHON_EMBED_FILE",
+        "BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256",
+        "BLUEPRINT_WINDOWS_PYTHON_EMBED_GET_URL",
+    ),
+    (
+        "numpy-wheel",
+        "BLUEPRINT_WINDOWS_NUMPY_WHEEL_FILE",
+        "BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256",
+        "BLUEPRINT_WINDOWS_NUMPY_WHEEL_GET_URL",
+    ),
+)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -126,11 +157,49 @@ def _provider_zero_receipt() -> dict[str, Any]:
 def _staging_kwargs() -> dict[str, Any]:
     return {
         "access_key_id_file": _required_env("BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE"),
-        "secret_access_key_file": _required_env("BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE"),
+        "secret_access_key_file": _required_env(
+            "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE"
+        ),
         "endpoint_url_file": os.environ.get("BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE"),
         "bucket_file": _required_env("BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE"),
         "region_file": os.environ.get("BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE"),
     }
+
+
+def _stage_windows_runtime_dependencies(
+    *, root: Path, expiration_seconds: int
+) -> tuple[dict[str, str], list[Path]]:
+    """Issue fresh run-local URLs for exact reusable Windows runtime bytes."""
+
+    environment: dict[str, str] = {}
+    staged_roots: list[Path] = []
+    try:
+        for label, file_env, digest_env, url_env in _WINDOWS_RUNTIME_DEPENDENCIES:
+            staged_root = root / label
+            staged = stage_cached_runtime_dependency_object_store(
+                job_dir=staged_root,
+                dependency_path=_required_env(file_env),
+                expected_sha256=_required_env(digest_env),
+                key_prefix=f"blueprint/capture-postshot-runtime/{label}",
+                expiration_seconds=expiration_seconds,
+            )
+            staged_roots.append(staged_root)
+            if staged.get("status") != "completed":
+                raise CapturePostshotAllocatorError(
+                    "capture_postshot_runtime_dependency_staging_blocked:"
+                    + label
+                    + ":"
+                    + ",".join(str(item) for item in staged.get("blockers") or [])
+                )
+            environment[url_env] = (
+                (staged_root / RUNTIME_DEPENDENCY_URL_FILENAME).read_text(encoding="utf-8").strip()
+            )
+            environment[digest_env] = _required_env(digest_env)
+        return environment, staged_roots
+    except Exception:
+        for staged_root in staged_roots:
+            close_cached_runtime_dependency_staging(staged_root)
+        raise
 
 
 def _campaign_from_publication(
@@ -254,24 +323,6 @@ def execute_postshot_capture(
     staged_bundle_root = root / "object-store" / "input"
     staged_receipt_root = root / "object-store" / "receipt"
     staging_kwargs = _staging_kwargs()
-    staged_bundle = stage_wam_provider_bundle_object_store(
-        job_dir=staged_bundle_root,
-        bundle_path=bundle,
-        key_prefix="blueprint/capture-postshot",
-        expiration_seconds=hard_ttl_seconds,
-        **staging_kwargs,
-    )
-    staged_receipt = stage_wam_provider_bundle_object_store(
-        job_dir=staged_receipt_root,
-        bundle_path=receipt_path,
-        key_prefix="blueprint/capture-postshot-receipts",
-        output_content_type="application/json",
-        expiration_seconds=hard_ttl_seconds,
-        **staging_kwargs,
-    )
-    staging_blockers = [*staged_bundle.get("blockers", []), *staged_receipt.get("blockers", [])]
-    if staging_blockers:
-        raise CapturePostshotAllocatorError("capture_postshot_staging_blocked:" + ",".join(staging_blockers))
 
     calibration = next(
         (row["digest"] for row in dataset["output_artifacts"] if row["relative_path"].endswith("sparse/0/cameras.txt")),
@@ -329,7 +380,10 @@ def execute_postshot_capture(
             container_disk_gb=max(100, container_bytes // 1024**3),
             volume_gb=0,
             max_hourly_rate_usd=max_hourly,
-            min_gpu_ram_mb=24_000,
+            # AWS reports the A10G's marketed 24 GB as 22,888 MiB. Keep the
+            # admission above 22 GiB while avoiding a false rejection of the
+            # explicitly configured compatible g5.xlarge worker.
+            min_gpu_ram_mb=22_000,
             requires_rtx=False,
         ),
         root / "aws_preflight",
@@ -368,15 +422,13 @@ def execute_postshot_capture(
     )
 
     license_stage: dict[str, Any] | None = None
+    runtime_environment: dict[str, str] = {}
+    runtime_staged_roots: list[Path] = []
+    staged_object_roots: list[Path] = []
     operation: dict[str, Any] = {}
     watchdog_close: dict[str, Any] = {}
     cleanup: list[dict[str, Any]] = []
     try:
-        license_stage = stage_postshot_license(
-            job_dir=root / "license",
-            license_file=_required_env("BLUEPRINT_POSTSHOT_LICENSE_FILE"),
-            expiration_seconds=hard_ttl_seconds,
-        )
         lane = build_paid_lane_admission(
             resource_class="gpu_render", blockers=list(admission.get("blockers") or [])
         )
@@ -385,21 +437,71 @@ def execute_postshot_capture(
             resource_class="gpu_render",
             expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
         )
-        previous = {key: os.environ.get(key) for key in ("BLUEPRINT_POSTSHOT_LICENCE_GET_URL", "BLUEPRINT_POSTSHOT_LICENCE_DELETE_URL")}
-        os.environ["BLUEPRINT_POSTSHOT_LICENCE_GET_URL"] = str(license_stage["get_url"])
-        os.environ["BLUEPRINT_POSTSHOT_LICENCE_DELETE_URL"] = str(license_stage["delete_url"])
+        staged_object_roots.append(staged_bundle_root)
+        staged_bundle = stage_wam_provider_bundle_object_store(
+            job_dir=staged_bundle_root,
+            bundle_path=bundle,
+            key_prefix="blueprint/capture-postshot",
+            expiration_seconds=hard_ttl_seconds,
+            **staging_kwargs,
+        )
+        staged_object_roots.append(staged_receipt_root)
+        staged_receipt = stage_wam_provider_bundle_object_store(
+            job_dir=staged_receipt_root,
+            bundle_path=receipt_path,
+            key_prefix="blueprint/capture-postshot-receipts",
+            output_content_type="application/json",
+            expiration_seconds=hard_ttl_seconds,
+            **staging_kwargs,
+        )
+        staging_blockers = [
+            *staged_bundle.get("blockers", []),
+            *staged_receipt.get("blockers", []),
+        ]
+        if staging_blockers:
+            raise CapturePostshotAllocatorError(
+                "capture_postshot_staging_blocked:" + ",".join(staging_blockers)
+            )
+        runtime_environment, runtime_staged_roots = _stage_windows_runtime_dependencies(
+            root=root / "runtime-dependencies",
+            expiration_seconds=hard_ttl_seconds,
+        )
+        license_stage = stage_postshot_license(
+            job_dir=root / "license",
+            license_file=_required_env("BLUEPRINT_POSTSHOT_LICENSE_FILE"),
+            expiration_seconds=hard_ttl_seconds,
+        )
+        transient_environment = {
+            **runtime_environment,
+            "BLUEPRINT_POSTSHOT_LICENCE_GET_URL": str(license_stage["get_url"]),
+            "BLUEPRINT_POSTSHOT_LICENCE_DELETE_URL": str(license_stage["delete_url"]),
+        }
+        previous = {key: os.environ.get(key) for key in transient_environment}
+        os.environ.update(transient_environment)
         try:
             operation = run_reconstruction_aws_windows_operation(
                 bound_request=_read(bound_path),
                 preflight=preflight,
                 job_dir=root / "reconstruction_aws_windows_operation",
-                output_bundle_get_url=(staged_bundle_root / "provider_output_get_url.txt").read_text().strip(),
-                input_bundle_get_url=(staged_bundle_root / "provider_bundle_url.txt").read_text().strip(),
-                input_receipt_get_url=(staged_receipt_root / "provider_bundle_url.txt").read_text().strip(),
+                output_bundle_get_url=(staged_bundle_root / "provider_output_get_url.txt")
+                .read_text()
+                .strip(),
+                input_bundle_get_url=(staged_bundle_root / "provider_bundle_url.txt")
+                .read_text()
+                .strip(),
+                input_receipt_get_url=(staged_receipt_root / "provider_bundle_url.txt")
+                .read_text()
+                .strip(),
                 input_receipt_file_digest=_sha(receipt_path),
-                output_bundle_put_url=(staged_bundle_root / "provider_output_put_url.txt").read_text().strip(),
-                progress_put_url=(staged_receipt_root / "provider_output_put_url.txt").read_text().strip(),
-                progress_get_url=(staged_receipt_root / "provider_output_get_url.txt").read_text().strip(),
+                output_bundle_put_url=(staged_bundle_root / "provider_output_put_url.txt")
+                .read_text()
+                .strip(),
+                progress_put_url=(staged_receipt_root / "provider_output_put_url.txt")
+                .read_text()
+                .strip(),
+                progress_get_url=(staged_receipt_root / "provider_output_get_url.txt")
+                .read_text()
+                .strip(),
                 progress_observer=lambda value: write_json(
                     root / "postshot_live_progress.json", dict(value)
                 ),
@@ -420,10 +522,14 @@ def execute_postshot_capture(
     finally:
         if license_stage is not None:
             cleanup.append(close_postshot_license(staged=license_stage, job_dir=root / "license"))
-        cleanup.extend([
-            cleanup_staged_wam_provider_objects(staged_bundle_root, **staging_kwargs),
-            cleanup_staged_wam_provider_objects(staged_receipt_root, **staging_kwargs),
-        ])
+        cleanup.extend(
+            close_cached_runtime_dependency_staging(staged_root)
+            for staged_root in runtime_staged_roots
+        )
+        cleanup.extend(
+            cleanup_staged_wam_provider_objects(staged_root, **staging_kwargs)
+            for staged_root in staged_object_roots
+        )
         watchdog_close = close_aws_watchdog(job_dir=root / "watchdog", process=watchdog_process)
 
     if operation.get("status") != "completed":
