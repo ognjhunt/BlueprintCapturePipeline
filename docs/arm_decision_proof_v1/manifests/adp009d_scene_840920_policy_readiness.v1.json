@@ -284,15 +284,21 @@
   "controls_predecessor": {
     "status": "waiting",
     "blocker_code": "authoritative_controls_positive_receipt_missing",
-    "required_schema": "native_task_arena_controls_result.v1",
+    "required_schema": "native_task_arena_control_result.v1",
     "required_status": "completed",
     "required_qualification": "controls_qualified",
     "required_pair_fields": [
-      "zero_action_negative",
-      "scripted_positive",
+      "cell_id",
+      "task_spec_digest",
       "cell_admitted_for_policy_execution",
-      "control_pair_digest"
+      "policy_execution_blockers",
+      "candidate_policy_queried",
+      "pair_digest"
     ],
+    "required_semantic_controls": {
+      "zero_action_negative": "never_moved",
+      "deterministic_scripted_positive": "task_success"
+    },
     "receipt_digest": null,
     "bypass_permitted": false
   },
@@ -323,5 +329,5 @@
     "readiness seal is regenerated with pi05_droid rights_ready=true"
   ],
   "verdict": "BLOCKED",
-  "readiness_digest": "sha256:2d6b86129f109024608cbbbe0ce18f28b1e8ec4489ae5adb033957f1cea3c76e"
+  "readiness_digest": "sha256:4d4b3bca8af730f7f88c8a09df6df1b812017819f3f3332cd8d5e7490aa17601"
 }

@@ -133,6 +133,8 @@ def validate_scene_policy_readiness(
     if (
         controls.get("status") != "waiting"
         or controls.get("blocker_code") != CONTROLS_PREDECESSOR
+        or controls.get("required_schema")
+        != "native_task_arena_control_result.v1"
         or controls.get("receipt_digest") is not None
         or controls.get("bypass_permitted") is not False
     ):

@@ -30,6 +30,9 @@ def test_committed_scene_policy_readiness_has_one_external_blocker() -> None:
     assert report["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
     assert report["external_blockers"] == [PI05_RIGHTS_BLOCKER]
     assert report["controls_predecessor"]["blocker_code"] == CONTROLS_PREDECESSOR
+    assert report["controls_predecessor"]["required_schema"] == (
+        "native_task_arena_control_result.v1"
+    )
     assert report["controls_predecessor"]["receipt_digest"] is None
     assert report["scenario_matrix"]["cell_count"] == 7
     assert report["scenario_matrix"]["seeds"] == [3101, 3102]
