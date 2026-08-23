@@ -65,6 +65,13 @@ MEASURED_CONTACT_ENTRY_PHASE_ID = CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
 MEASURED_CONTACT_FRONTIER_PHASE_PREFIX = "measured_contact_frontier_"
 MEASURED_CONTACT_FRONTIER_FRACTIONS = (0.75, 0.5, 0.25)
 MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS = 45
+# C53 reached the measured open standoff exactly, but its twelve-step close
+# dwell moved the fingers only ~1.7 mm before the next arm phase began.  The
+# retained task budget has room for 39 steps, which lets the same bounded arm
+# command advance from the no-contact anchor to the authored grasp while the
+# gripper closes.  This is a ceiling, not a required dwell: bilateral contact
+# plus pose stability can terminate it early.
+MEASURED_CONTACT_CLOSE_MAXIMUM_STEPS = 39
 CONTACT_APPROACH_ANCHOR_DISTANCE_M = 0.04
 MEASURED_CONTACT_STANDOFF_AXIS_MINIMUM_DOT = 0.999
 MEASURED_CONTACT_STANDOFF_MAXIMUM_TRACKING_ERROR_RAD = 0.01
@@ -822,36 +829,36 @@ def _with_measured_contact_frontier(
     control_plan: Mapping[str, Any],
     reachability_probe: Mapping[str, Any],
     reclaimed_contact_steps: int = 0,
+    task_spec: Mapping[str, Any] | None = None,
+    task_contact_minimum_force_n: float = 0.5,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Promote the deepest measured collision-free grasp standoff.
+    """Promote the deepest measured collision-free *open-entry* standoff.
 
     The reachability probe is stronger evidence than another off-sim solve: it
     records the commanded posture, reached joints, and measured grasp frame in
     the same runtime as the episode. C51 measured the actual geometry boundary:
     the -32 mm cell was inside the native arrival gate with no task contact and
-    0.0002 rad joint tracking error, while -30 mm was already in task contact
-    and the authored endpoint jammed. Select the closest proven-free cell,
-    require its offset to follow gripper-local clearance, and preserve that
-    standoff through every grasp-holding phase. The selected measured joints
-    are commanded for the equal-pose open/close phases. Native TCP arrival,
-    contact, containment, and task-outcome gates remain authoritative.
+    0.0002 rad joint tracking error, while -30 mm was already in task contact.
+    C53 then proved that preserving that collision-free standoff through close
+    and swing was a category error: contact_close passed its arm-pose gate while
+    the fingers remained open, and the door never moved. Keep the measured pose
+    only for entry/contact_open, then close while advancing to the original
+    authored grasp and preserve every original globally solved swing target.
+    Native TCP, bilateral contact, containment, and task-outcome gates remain
+    authoritative.
     """
-
-    from blueprint_pipeline.native_task_arena_grasp_roll import (
-        DEFAULT_GRASP_HOLDING_PHASE_IDS,
-    )
 
     plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
     receipt: dict[str, Any] = {
-        "schema_version": "native_task_controls_measured_contact_frontier.v2",
+        "schema_version": "native_task_controls_measured_contact_frontier.v3",
         "status": "not_applied",
         "reason": None,
         "source_control_plan_digest": plan.get("plan_digest"),
         "claim_boundary": (
-            "promotes_the_closest_zero_contact_physx_measured_pose_inside_the_"
-            "native_arrival_gate_as_a_gripper_local_standoff_for_every_grasp_"
-            "holding_phase;arrival_contact_containment_and_outcome_gates_are_"
-            "unchanged"
+            "uses_the_closest_zero_contact_physx_measured_pose_only_as_the_"
+            "open_entry_anchor_then_advances_to_the_authored_grasp_while_"
+            "closing_and_requires_bilateral_task_contact;original_global_"
+            "swing_targets_arrival_containment_and_outcome_gates_are_preserved"
         ),
     }
     actions = plan.get("scripted_positive_actions")
@@ -1027,53 +1034,80 @@ def _with_measured_contact_frontier(
     else:
         restored = 0
 
-    rewritten_phase_ids: list[str] = []
-    bound_phase_ids: list[str] = []
-    for row in actions:
-        if not isinstance(row, dict) or row.get("mode") != "ik_pose":
-            continue
-        phase_id = str(row.get("phase_id") or "")
-        if phase_id not in DEFAULT_GRASP_HOLDING_PHASE_IDS:
-            continue
-        try:
-            position = [float(value) for value in row["target_position_world_m"]]
-            quaternion = [
-                float(value) for value in row["target_quaternion_world_xyzw"]
-            ]
-            phase_clearance = _quaternion_axis_world_xyzw(
-                quaternion, [0.0, 0.0, -1.0]
-            )
-            phase_clearance_norm = math.dist(
-                phase_clearance, [0.0, 0.0, 0.0]
-            )
-        except (KeyError, TypeError, ValueError):
-            receipt["reason"] = f"grasp_holding_phase_invalid:{phase_id}"
-            original = json.loads(json.dumps(dict(control_plan), allow_nan=False))
-            return original, receipt
-        if (
-            not math.isfinite(phase_clearance_norm)
-            or phase_clearance_norm <= 1.0e-12
-        ):
-            receipt["reason"] = f"grasp_holding_phase_invalid:{phase_id}"
-            original = json.loads(json.dumps(dict(control_plan), allow_nan=False))
-            return original, receipt
-        phase_clearance = [
-            value / phase_clearance_norm for value in phase_clearance
-        ]
-        row["target_position_world_m"] = [
-            position[axis] + standoff * phase_clearance[axis]
-            for axis in range(3)
-        ]
-        rewritten_phase_ids.append(phase_id)
+    # The measured cell is a no-contact open anchor. Rewriting contact_close
+    # and the swing poses to it discarded the exact global IK solutions for
+    # their authored poses because pose-key dispatch could no longer match.
+    # Rewrite only contact_open; all downstream poses stay byte-for-byte at
+    # the targets their preflight solved.
+    contact["target_position_world_m"] = [
+        target[axis] + standoff * clearance_axis[axis] for axis in range(3)
+    ]
+    contact["hold_solved_arm_joint_positions_rad"] = list(joints)
+    rewritten_phase_ids = ["contact_open"]
+    bound_phase_ids = ["contact_open"]
 
-        same_contact_pose = math.dist(position, target) <= 1.0e-9 and (
-            _quaternion_angle_xyzw(quaternion, target_orientation) <= 1.0e-9
+    contact_close = next(
+        (
+            row
+            for row in actions
+            if isinstance(row, dict)
+            and row.get("mode") == "ik_pose"
+            and str(row.get("phase_id") or "") == "contact_close"
+        ),
+        None,
+    )
+    if contact_close is None:
+        receipt["reason"] = "contact_close_missing"
+        original = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+        return original, receipt
+    try:
+        threshold = float(task_contact_minimum_force_n)
+    except (TypeError, ValueError):
+        threshold = math.nan
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        receipt["reason"] = "task_contact_minimum_force_invalid"
+        original = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+        return original, receipt
+    contact_close["hold_arm_joint_positions_during_gripper_transition"] = False
+    contact_close["require_bilateral_task_contact"] = True
+    contact_close["bilateral_task_contact_minimum_force_n"] = threshold
+
+    # Consume only real spare task budget and never invalidate a smaller plan.
+    close_budget_added = 0
+    maximum_action_steps = (
+        task_spec.get("maximum_action_steps")
+        if isinstance(task_spec, Mapping)
+        else None
+    )
+    settle_steps = (
+        int(task_spec.get("settle_window_samples") or 0)
+        if isinstance(task_spec, Mapping)
+        else 0
+    )
+    if isinstance(maximum_action_steps, int) and not isinstance(
+        maximum_action_steps, bool
+    ):
+        planned_steps = sum(
+            int(row.get("maximum_steps") or 1)
+            if isinstance(row, Mapping) and row.get("mode") == "ik_pose"
+            else 1
+            for row in actions
         )
-        if phase_id == "contact_open" or (
-            phase_id == "contact_close" and same_contact_pose
-        ):
-            row["hold_solved_arm_joint_positions_rad"] = list(joints)
-            bound_phase_ids.append(phase_id)
+        # The measured entry is inserted below, so reserve its budget before
+        # assigning any genuinely spare steps to contact_close.
+        spare_steps = max(
+            0,
+            maximum_action_steps
+            - settle_steps
+            - planned_steps
+            - entry_maximum_steps,
+        )
+        old_close_steps = int(contact_close["maximum_steps"])
+        desired_addition = max(
+            0, MEASURED_CONTACT_CLOSE_MAXIMUM_STEPS - old_close_steps
+        )
+        close_budget_added = min(spare_steps, desired_addition)
+        contact_close["maximum_steps"] = old_close_steps + close_budget_added
 
     contact_index = next(
         index
@@ -1133,6 +1167,9 @@ def _with_measured_contact_frontier(
                 preserved_branch_replay_step_rad
             ),
             "measured_entry_maximum_steps": entry_maximum_steps,
+            "contact_close_step_budget_added": close_budget_added,
+            "contact_close_maximum_steps": int(contact_close["maximum_steps"]),
+            "bilateral_task_contact_minimum_force_n": threshold,
             "restored_contact_steps": restored,
             "restoration_limited_by_action_budget": restored
             < max(0, int(reclaimed_contact_steps)),
@@ -2365,6 +2402,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             _with_measured_contact_frontier(
                 control_plan=effective_control_plan,
                 reachability_probe=reach_probe,
+                task_spec=scene_plan["task_spec"],
+                task_contact_minimum_force_n=float(
+                    scene_plan["task_state_binding"][
+                        "task_contact_minimum_force_n"
+                    ]
+                ),
                 reclaimed_contact_steps=int(
                     result["contact_entry_branch_replay"].get(
                         "contact_phase_steps_reclaimed"

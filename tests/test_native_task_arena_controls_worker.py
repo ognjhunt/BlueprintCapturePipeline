@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -1390,6 +1391,23 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
     for row in plan["scripted_positive_actions"]:
         if row["phase_id"] == "contact_open":
             row["hold_solved_arm_joint_positions_rad"] = [0.9] * 7
+        elif row["phase_id"] == "contact_close":
+            row["hold_solved_arm_joint_positions_rad"] = [0.8] * 7
+    contact_close_source = next(
+        row
+        for row in plan["scripted_positive_actions"]
+        if row["phase_id"] == "contact_close"
+    )
+    path_row = copy.deepcopy(contact_close_source)
+    path_row.update(
+        {
+            "phase_id": "joint_path_01",
+            "target_position_world_m": [0.6, 0.2, 0.4],
+            "hold_solved_arm_joint_positions_rad": None,
+            "hold_arm_joint_positions_during_gripper_transition": False,
+        }
+    )
+    plan["scripted_positive_actions"].insert(-1, path_row)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     known_joints = [0.11, -0.22, 0.33, -0.44, 0.55, -0.66, 0.77]
     probe = {
@@ -1429,12 +1447,14 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
     derived, receipt = _with_measured_contact_frontier(
         control_plan=plan,
         reachability_probe=probe,
+        task_spec=task,
     )
     checked = validate_task_control_plan(derived, task_spec=task)
     rows = checked["scripted_positive_actions"]
     entry = next(row for row in rows if row["phase_id"] == MEASURED_CONTACT_ENTRY_PHASE_ID)
     contact = next(row for row in rows if row["phase_id"] == "contact_open")
     contact_close = next(row for row in rows if row["phase_id"] == "contact_close")
+    joint_path = next(row for row in rows if row["phase_id"] == "joint_path_01")
     frontier = [
         row
         for row in rows
@@ -1453,26 +1473,36 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
     )
     assert contact["target_position_world_m"] == pytest.approx([0.5, 0.1, 0.36])
     assert contact_close["target_position_world_m"] == pytest.approx(
-        [0.5, 0.1, 0.36]
+        [0.5, 0.1, 0.4]
     )
     assert contact_close["hold_solved_arm_joint_positions_rad"] == pytest.approx(
-        known_joints
+        [0.8] * 7
+    )
+    assert contact_close[
+        "hold_arm_joint_positions_during_gripper_transition"
+    ] is False
+    assert contact_close["require_bilateral_task_contact"] is True
+    assert contact_close[
+        "bilateral_task_contact_minimum_force_n"
+    ] == pytest.approx(0.5)
+    assert contact_close["maximum_steps"] == 39
+    assert joint_path["target_position_world_m"] == pytest.approx(
+        [0.6, 0.2, 0.4]
     )
     assert receipt["frontier_phase_ids"] == [
         MEASURED_CONTACT_ENTRY_PHASE_ID,
         "contact_open",
-        "contact_close",
     ]
     assert receipt["promoted_standoff_m"] == pytest.approx(0.04)
     assert receipt["probe_clearance_axis_alignment_dot"] == pytest.approx(1.0)
     assert receipt["rewritten_grasp_holding_phase_ids"] == [
         "contact_open",
-        "contact_close",
     ]
     assert receipt["measured_joint_vector_bound_phase_ids"] == [
         "contact_open",
-        "contact_close",
     ]
+    assert receipt["contact_close_step_budget_added"] == 27
+    assert receipt["contact_close_maximum_steps"] == 39
     assert receipt["synthetic_frontier_rows_inserted"] == 0
     assert receipt["replaced_branch_replay_rows"] == 0
     assert derived["plan_digest"] == canonical_digest(

@@ -281,6 +281,35 @@ class _SolvedJointCartesianEnvironment(_CartesianEnvironment):
         ]
 
 
+class _BilateralContactCartesianEnvironment(_CartesianEnvironment):
+    def read_task_sample(self):
+        sample = super().read_task_sample()
+        if self.gripper <= 0.5:
+            return sample
+        closed_steps = sum(row[7] > 0.5 for row in self.steps)
+        sides = ["left_inner_finger"]
+        if closed_steps >= 2:
+            sides.append("right_inner_finger")
+        sample["native_readback"] = {
+            "contact_sensor_instance_readback": {
+                "task_robot_contact": [
+                    {
+                        "nonzero_filter_forces": [
+                            {
+                                "filter_prim_path_expr": (
+                                    "{ENV_REGEX_NS}/Robot/Gripper/" + side
+                                ),
+                                "force_magnitude_n": 2.0,
+                            }
+                            for side in sides
+                        ]
+                    }
+                ]
+            }
+        }
+        return sample
+
+
 @pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
 def test_same_control_contract_passes_original_and_second_scene_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_kind: str
@@ -631,6 +660,103 @@ def test_gripper_transition_holds_arm_targets_and_runs_full_dwell(
     )
     assert close_arrival["target_position_world_m"] == [0.0, 0.0, 0.0]
     assert close_arrival["target_reached"] is True
+
+
+def test_contact_close_requires_simultaneous_bilateral_native_contact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    task["maximum_action_steps"] = 12
+
+    def phase(phase_id, target, gripper_state, *, steps=2):
+        return {
+            "phase_id": phase_id,
+            "mode": "ik_pose",
+            "target_position_world_m": target,
+            "target_quaternion_world_xyzw": None,
+            "gripper_state": gripper_state,
+            "minimum_steps": 1,
+            "maximum_steps": steps,
+            "arrival_tolerance_m": 1.0e-6,
+            "arrival_stability_steps": 1,
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.2,
+        }
+
+    close = phase("contact_close", [0.9, 0.0, 0.0], "closed", steps=3)
+    close.update(
+        {
+            "require_bilateral_task_contact": True,
+            "bilateral_task_contact_minimum_force_n": 0.5,
+        }
+    )
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "articulated-bilateral-contact-close",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "e" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            phase("contact_open", [0.0, 0.0, 0.0], "open"),
+            close,
+            phase("retreat", [0.9, 1.0, 0.0], "open"),
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    pair = run_task_neutral_controls(
+        environment=_BilateralContactCartesianEnvironment(
+            "articulated_open_close"
+        ),
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    close_actions = [
+        row
+        for row in positive["action_trace"]
+        if row["phase_id"] == "contact_close"
+    ]
+    assert len(close_actions) == 2
+    arrival = next(
+        row
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "contact_close"
+    )
+    assert arrival["target_reached"] is True
+    assert arrival["terminal_bilateral_task_contact_active"] is True
+    assert arrival["terminal_task_contact_pad_forces_n"] == {
+        "left_inner_finger": 2.0,
+        "right_inner_finger": 2.0,
+    }
 
 
 class _OffsetCartesianEnvironment(_CartesianEnvironment):

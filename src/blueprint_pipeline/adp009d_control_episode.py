@@ -1648,6 +1648,48 @@ def _task_neutral_sample(
     return sample
 
 
+def _task_contact_pad_forces_n(sample: Mapping[str, Any]) -> dict[str, float]:
+    """Return attributed inner-finger contact peaks from native readback."""
+
+    native = sample.get("native_readback")
+    if not isinstance(native, Mapping):
+        return {}
+    instance_readback = native.get("contact_sensor_instance_readback")
+    if not isinstance(instance_readback, Mapping):
+        return {}
+    instances = instance_readback.get("task_robot_contact")
+    if not isinstance(instances, Sequence) or isinstance(instances, (str, bytes)):
+        return {}
+    peaks: dict[str, float] = {}
+    for instance in instances:
+        if not isinstance(instance, Mapping):
+            continue
+        forces = instance.get("nonzero_filter_forces")
+        if not isinstance(forces, Sequence) or isinstance(forces, (str, bytes)):
+            continue
+        for force in forces:
+            if not isinstance(force, Mapping):
+                continue
+            path = str(force.get("filter_prim_path_expr") or "")
+            side = next(
+                (
+                    candidate
+                    for candidate in ("left_inner_finger", "right_inner_finger")
+                    if candidate in path
+                ),
+                None,
+            )
+            if side is None:
+                continue
+            try:
+                magnitude = float(force["force_magnitude_n"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(magnitude) and magnitude >= 0.0:
+                peaks[side] = max(peaks.get(side, 0.0), magnitude)
+    return peaks
+
+
 def validate_task_control_plan(
     plan: Mapping[str, Any], *, task_spec: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1749,6 +1791,20 @@ def validate_task_control_plan(
                 raw.get("hold_arm_joint_positions_during_gripper_transition")
                 is True
             )
+            require_bilateral_task_contact = (
+                raw.get("require_bilateral_task_contact") is True
+            )
+            bilateral_threshold_raw = raw.get(
+                "bilateral_task_contact_minimum_force_n"
+            )
+            try:
+                bilateral_threshold = (
+                    None
+                    if bilateral_threshold_raw is None
+                    else float(bilateral_threshold_raw)
+                )
+            except (TypeError, ValueError):
+                bilateral_threshold = math.nan
             quaternion_valid = quaternion is None or (
                 len(quaternion) == 4
                 and all(math.isfinite(value) for value in quaternion)
@@ -1786,6 +1842,20 @@ def validate_task_control_plan(
                     not in {("contact_close", "closed"), ("release", "open")}
                 )
                 or (
+                    require_bilateral_task_contact
+                    and (
+                        (phase_id, gripper_state) != ("contact_close", "closed")
+                        or hold_arm_during_gripper_transition
+                        or bilateral_threshold is None
+                        or not math.isfinite(bilateral_threshold)
+                        or bilateral_threshold <= 0.0
+                    )
+                )
+                or (
+                    not require_bilateral_task_contact
+                    and bilateral_threshold_raw is not None
+                )
+                or (
                     arrival_orientation_tolerance_rad is not None
                     and (
                         arrival_orientation_tolerance_rad <= 0.0
@@ -1818,6 +1888,12 @@ def validate_task_control_plan(
                         "position_only_arrival": position_only_arrival,
                         "hold_arm_joint_positions_during_gripper_transition": (
                             hold_arm_during_gripper_transition
+                        ),
+                        "require_bilateral_task_contact": (
+                            require_bilateral_task_contact
+                        ),
+                        "bilateral_task_contact_minimum_force_n": (
+                            bilateral_threshold
                         ),
                         "max_joint_delta_rad": max_joint_delta_rad,
                         "max_joint_setpoint_lead_rad": max_joint_setpoint_lead_rad,
@@ -2004,9 +2080,19 @@ def _run_task_control_episode(
             )
             is True
         )
+        require_bilateral_task_contact = bool(
+            pose_mode and row.get("require_bilateral_task_contact") is True
+        )
+        bilateral_contact_threshold_n = (
+            float(row["bilateral_task_contact_minimum_force_n"])
+            if require_bilateral_task_contact
+            else None
+        )
         phase_steps = int(row["maximum_steps"]) if pose_mode else 1
         phase_steps_executed = 0
         stable_steps = 0
+        bilateral_contact_stability_steps = 0
+        terminal_pad_forces_n: dict[str, float] = {}
         termination_reason = "fixed_steps_completed"
         start_sample = samples[-1]
         held_arm_joint_positions = (
@@ -2217,6 +2303,19 @@ def _run_task_control_episode(
                     orientation_error is None
                     or orientation_error <= float(orientation_tolerance)
                 )
+                if require_bilateral_task_contact:
+                    terminal_pad_forces_n = _task_contact_pad_forces_n(samples[-1])
+                    bilateral_active = all(
+                        terminal_pad_forces_n.get(side, 0.0)
+                        >= float(bilateral_contact_threshold_n)
+                        for side in ("left_inner_finger", "right_inner_finger")
+                    )
+                    bilateral_contact_stability_steps = (
+                        bilateral_contact_stability_steps + 1
+                        if bilateral_active
+                        else 0
+                    )
+                    arrived = arrived and bilateral_active
                 stable_steps = (
                     stable_steps + 1 if arrived else 0
                 )
@@ -2299,6 +2398,24 @@ def _run_task_control_episode(
                     row["arrival_stability_steps"]
                 ),
                 "arrival_stability_steps_observed": stable_steps,
+                "bilateral_task_contact_required": (
+                    require_bilateral_task_contact
+                ),
+                "bilateral_task_contact_minimum_force_n": (
+                    bilateral_contact_threshold_n
+                ),
+                "terminal_task_contact_pad_forces_n": terminal_pad_forces_n,
+                "terminal_bilateral_task_contact_active": (
+                    require_bilateral_task_contact
+                    and all(
+                        terminal_pad_forces_n.get(side, 0.0)
+                        >= float(bilateral_contact_threshold_n)
+                        for side in ("left_inner_finger", "right_inner_finger")
+                    )
+                ),
+                "bilateral_task_contact_stability_steps_observed": (
+                    bilateral_contact_stability_steps
+                ),
                 "termination_reason": termination_reason,
                 "target_reached": termination_reason == "stable_arrival",
                 "selected_joint_positions_rad": selected_joints,
@@ -2492,6 +2609,13 @@ def _run_task_control_episode(
                     f"{stable_steps}/{row['arrival_stability_steps']}"
                     f":attempts={attempt_number}"
                     f":strategies_exhausted={next_strategy is None}"
+                    + (
+                        ":bilateral_task_contact=false"
+                        f":pad_forces_n={terminal_pad_forces_n}"
+                        f":contact_threshold_n={bilateral_contact_threshold_n}"
+                        if require_bilateral_task_contact
+                        else ""
+                    )
                 )
                 break
         row_index += 1
