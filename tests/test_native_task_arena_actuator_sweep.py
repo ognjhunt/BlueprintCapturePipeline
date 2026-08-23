@@ -271,6 +271,47 @@ def test_close_sweep_isolates_one_bad_branch_instead_of_losing_the_surface() -> 
     assert report["cells"][1]["measured_distance_to_target_m"] == 0.0
 
 
+def test_close_sweep_preserves_cells_when_final_cleanup_fails() -> None:
+    class _CleanupFails(_SweepEnvironment):
+        def reset(self) -> None:
+            super().reset()
+            if self.reset_count == 3:
+                raise TypeError(
+                    "float() argument must be a string or a real number, not 'NoneType'"
+                )
+
+        def read_task_sample(self):
+            return {
+                "grasp_frame_position_world_m": [self.joints[0], 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+
+    report = run_contact_close_posture_sweep(
+        environment=_CleanupFails(),
+        target_position_world_m=[0.2, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        postures=[
+            {"posture_index": 0, "joint_positions_rad": [0.1] * 7},
+            {"posture_index": 1, "joint_positions_rad": [0.2] * 7},
+        ],
+        preposition_joint_positions_rad=[0.0] * 7,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        preposition_steps=1,
+        settle_steps=1,
+    )
+
+    assert report["status"] == "measured"
+    assert report["cell_count"] == 2
+    assert len(report["cells"]) == 2
+    assert report["cleanup_error"].startswith("final_reset:TypeError:")
+
+
 def test_the_sweep_separates_gains_that_can_track_from_gains_that_cannot() -> None:
     """The shipped stiffness is measurably the worst cell, not a guess."""
 

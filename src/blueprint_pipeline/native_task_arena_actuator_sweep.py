@@ -160,13 +160,13 @@ def run_contact_close_posture_sweep(
     target_orientation_world_xyzw: Sequence[float],
     postures: Sequence[Mapping[str, Any]],
     preposition_joint_positions_rad: Sequence[float],
-    gripper_open_command: float,
-    gripper_closed_command: float,
-    max_joint_delta_rad: float,
-    max_joint_setpoint_lead_rad: float,
-    arrival_tolerance_m: float,
-    orientation_tolerance_rad: float,
-    bilateral_contact_minimum_force_n: float,
+    gripper_open_command: Any,
+    gripper_closed_command: Any,
+    max_joint_delta_rad: Any,
+    max_joint_setpoint_lead_rad: Any,
+    arrival_tolerance_m: Any,
+    orientation_tolerance_rad: Any,
+    bilateral_contact_minimum_force_n: Any,
     preposition_steps: int = DEFAULT_CELL_SETTLE_STEPS,
     settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
 ) -> dict[str, Any]:
@@ -264,6 +264,93 @@ def run_contact_close_posture_sweep(
                 environment.read_arm_joint_positions(), length=7
             )
             terminal_sample = terminal_sample or _grasp_frame_sample(environment)
+            # C58 proved that isolating only reset/step/readback is not enough:
+            # a later conversion or derived measurement can still erase every
+            # branch through the caller's outer diagnostic catch.  Keep the
+            # complete cell lifecycle inside the same isolation boundary.
+            stage = "measurement"
+            measured = _finite_vector(
+                (terminal_sample or {}).get("grasp_frame_position_world_m"),
+                length=3,
+            )
+            measured_orientation = _finite_vector(
+                (terminal_sample or {}).get(
+                    "grasp_frame_orientation_world_xyzw"
+                ),
+                length=4,
+            )
+            terminal_forces = _task_pad_forces_n(terminal_sample)
+            predictor = getattr(
+                environment, "predict_grasp_frame_pose_world", None
+            )
+            predicted = None
+            if reached is not None and callable(predictor):
+                try:
+                    predicted = _finite_vector(
+                        predictor(reached, gripper_command=closed_command),
+                        length=7,
+                    )
+                except Exception:  # noqa: BLE001 - retain an explicit FK gap
+                    predicted = None
+            distance = (
+                math.dist(measured, target) if measured is not None else None
+            )
+            orientation_error = (
+                _quaternion_angle_xyzw(measured_orientation, orientation)
+                if measured_orientation is not None
+                else None
+            )
+            admitted = bool(
+                distance is not None
+                and distance <= position_tolerance
+                and orientation_error is not None
+                and orientation_error <= orientation_tolerance
+                and all(
+                    terminal_forces.get(side, 0.0) >= contact_threshold
+                    for side in ("left_inner_finger", "right_inner_finger")
+                )
+            )
+            cells.append(
+                {
+                    **{
+                        key: posture.get(key)
+                        for key in (
+                            "posture_index",
+                            "seed_index",
+                            "offsim_position_error_m",
+                            "minimum_joint_limit_margin_rad",
+                        )
+                    },
+                    "commanded_joint_positions_rad": commanded,
+                    "reached_joint_positions_rad": reached,
+                    "commanded_to_reached_joint_l2_rad": (
+                        math.sqrt(
+                            sum(
+                                (a - b) ** 2
+                                for a, b in zip(commanded, reached)
+                            )
+                        )
+                        if reached is not None
+                        else None
+                    ),
+                    "predicted_grasp_frame_pose_world": predicted,
+                    "fk_to_measured_tcp_error_m": (
+                        math.dist(predicted[:3], measured)
+                        if predicted is not None and measured is not None
+                        else None
+                    ),
+                    "measured_grasp_frame_position_world_m": measured,
+                    "measured_grasp_frame_orientation_world_xyzw": (
+                        measured_orientation
+                    ),
+                    "measured_distance_to_target_m": distance,
+                    "measured_orientation_error_rad": orientation_error,
+                    "terminal_task_contact_pad_forces_n": terminal_forces,
+                    "peak_task_contact_pad_forces_n": peak_pad_forces,
+                    "bilateral_contact_steps": bilateral_steps,
+                    "admitted": admitted,
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - isolate one physical branch
             cells.append(
                 {
@@ -277,70 +364,6 @@ def run_contact_close_posture_sweep(
                 }
             )
             continue
-        measured = _finite_vector(
-            (terminal_sample or {}).get("grasp_frame_position_world_m"), length=3
-        )
-        measured_orientation = _finite_vector(
-            (terminal_sample or {}).get("grasp_frame_orientation_world_xyzw"),
-            length=4,
-        )
-        terminal_forces = _task_pad_forces_n(terminal_sample)
-        predictor = getattr(environment, "predict_grasp_frame_pose_world", None)
-        predicted = None
-        if reached is not None and callable(predictor):
-            try:
-                predicted = _finite_vector(
-                    predictor(reached, gripper_command=closed_command),
-                    length=7,
-                )
-            except Exception:  # noqa: BLE001 - retain an explicit FK gap
-                predicted = None
-        distance = math.dist(measured, target) if measured is not None else None
-        orientation_error = (
-            _quaternion_angle_xyzw(measured_orientation, orientation)
-            if measured_orientation is not None
-            else None
-        )
-        admitted = bool(
-            distance is not None
-            and distance <= position_tolerance
-            and orientation_error is not None
-            and orientation_error <= orientation_tolerance
-            and all(
-                terminal_forces.get(side, 0.0)
-                >= contact_threshold
-                for side in ("left_inner_finger", "right_inner_finger")
-            )
-        )
-        cells.append(
-            {
-                **{key: posture.get(key) for key in (
-                    "posture_index", "seed_index", "offsim_position_error_m",
-                    "minimum_joint_limit_margin_rad",
-                )},
-                "commanded_joint_positions_rad": commanded,
-                "reached_joint_positions_rad": reached,
-                "commanded_to_reached_joint_l2_rad": (
-                    math.sqrt(sum((a - b) ** 2 for a, b in zip(commanded, reached)))
-                    if reached is not None
-                    else None
-                ),
-                "predicted_grasp_frame_pose_world": predicted,
-                "fk_to_measured_tcp_error_m": (
-                    math.dist(predicted[:3], measured)
-                    if predicted is not None and measured is not None
-                    else None
-                ),
-                "measured_grasp_frame_position_world_m": measured,
-                "measured_grasp_frame_orientation_world_xyzw": measured_orientation,
-                "measured_distance_to_target_m": distance,
-                "measured_orientation_error_rad": orientation_error,
-                "terminal_task_contact_pad_forces_n": terminal_forces,
-                "peak_task_contact_pad_forces_n": peak_pad_forces,
-                "bilateral_contact_steps": bilateral_steps,
-                "admitted": admitted,
-            }
-        )
     admitted_cells = [cell for cell in cells if cell["admitted"]]
     measurable = [
         cell for cell in cells if cell["measured_distance_to_target_m"] is not None
@@ -353,8 +376,12 @@ def run_contact_close_posture_sweep(
         ),
         default=None,
     )
-    environment.reset()
-    return {
+    cleanup_error = None
+    try:
+        environment.reset()
+    except Exception as exc:  # noqa: BLE001 - preserve completed measurements
+        cleanup_error = f"final_reset:{type(exc).__name__}:{exc}"
+    report = {
         "schema_version": CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
         "status": "measured" if cells else "unavailable",
         "cell_count": len(cells),
@@ -366,6 +393,9 @@ def run_contact_close_posture_sweep(
             "deterministic_controls_episode_asserts_task_success"
         ),
     }
+    if cleanup_error is not None:
+        report["cleanup_error"] = cleanup_error
+    return report
 
 
 def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[dict[str, Any]]:

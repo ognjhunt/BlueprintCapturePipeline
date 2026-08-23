@@ -141,6 +141,25 @@ def test_native_task_arena_warm_retention_requires_cache_and_direct_access() -> 
     assert decision["blockers"] == []
 
 
+def test_warm_cache_proof_survives_a_truncated_noisy_log_tail() -> None:
+    marker = (
+        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:"
+        "sha256:" + "a" * 64
+    )
+
+    assert vpa._runtime_dependency_cache_ready(
+        startup_log_text=(
+            "Error: remote port forwarding failed for listen port 14060\n"
+        ),
+        isaac_smoke={
+            "container_log_result": {
+                "observed_blueprint_marker_lines": [marker],
+                "break_reason": "success_marker_found",
+            }
+        },
+    ) is True
+
+
 def test_lifecycle_record_failure_blocks_result_without_raising() -> None:
     result: dict[str, object] = {"status": "completed", "blockers": ["prior_blocker"]}
 
