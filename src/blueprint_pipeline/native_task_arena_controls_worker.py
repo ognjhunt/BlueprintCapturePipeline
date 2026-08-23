@@ -2547,28 +2547,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                         controls_global_ik, phase_id="contact_close"
                     ),
                     preposition_joint_positions_rad=close_sweep_preposition,
-                    gripper_open_command=float(gripper["open_command"]),
-                    gripper_closed_command=float(gripper["closed_command"]),
-                    max_joint_delta_rad=float(
-                        contact_close_row["max_joint_delta_rad"]
-                    ),
-                    max_joint_setpoint_lead_rad=float(
-                        contact_close_row["max_joint_setpoint_lead_rad"]
-                    ),
-                    arrival_tolerance_m=float(
-                        contact_close_row["arrival_tolerance_m"]
-                    ),
-                    orientation_tolerance_rad=float(
+                    # The sweep owns scalar validation and reports a typed
+                    # input error.  Eager caller-side float conversions made
+                    # C57/C58 lose the entire branch surface before the
+                    # sweep's isolation code could run.
+                    gripper_open_command=gripper["open_command"],
+                    gripper_closed_command=gripper["closed_command"],
+                    max_joint_delta_rad=contact_close_row[
+                        "max_joint_delta_rad"
+                    ],
+                    max_joint_setpoint_lead_rad=contact_close_row[
+                        "max_joint_setpoint_lead_rad"
+                    ],
+                    arrival_tolerance_m=contact_close_row[
+                        "arrival_tolerance_m"
+                    ],
+                    orientation_tolerance_rad=(
                         contact_close_row.get(
                             "arrival_orientation_tolerance_rad"
                         )
                         or 0.08
                     ),
-                    bilateral_contact_minimum_force_n=float(
-                        contact_close_row[
-                            "bilateral_task_contact_minimum_force_n"
-                        ]
-                    ),
+                    bilateral_contact_minimum_force_n=contact_close_row[
+                        "bilateral_task_contact_minimum_force_n"
+                    ],
                 )
                 if close_sweep_preposition is not None
                 else {

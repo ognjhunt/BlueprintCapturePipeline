@@ -301,6 +301,35 @@ def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _runtime_dependency_cache_ready(
+    *, startup_log_text: str, isaac_smoke: Mapping[str, Any]
+) -> bool:
+    """Read cache proof from both transient logs and their durable receipt.
+
+    Vast's SSH proxy can flood the bounded local log tail after execution and
+    evict an earlier cache marker.  The Isaac smoke receipt independently
+    seals every observed Blueprint marker line, so retention must accept that
+    durable observation rather than tear down a healthy requested worker.
+    """
+
+    container_log = isaac_smoke.get("container_log_result")
+    durable_lines = (
+        container_log.get("observed_blueprint_marker_lines")
+        if isinstance(container_log, Mapping)
+        else []
+    )
+    durable_lines = durable_lines if isinstance(durable_lines, list) else []
+    markers = (
+        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT:",
+        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:",
+    )
+    return any(
+        marker in startup_log_text
+        or any(isinstance(line, str) and marker in line for line in durable_lines)
+        for marker in markers
+    )
+
+
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
     """Return whether a bundle must use the Isaac image/runtime safety path."""
 
@@ -8745,6 +8774,9 @@ def run_vast_provider_adapter(
     finally:
         startup_probe = _read_mapping_json(resolved_job_dir / "vast_startup_probe_manifest.json")
         gpu_sanity = _read_mapping_json(resolved_job_dir / "vast_gpu_sanity_report.json")
+        isaac_smoke = _read_mapping_json(
+            resolved_job_dir / "vast_isaac_smoke_result.json"
+        )
         video_smoke = _read_mapping_json(resolved_job_dir / "vast_video_smoke_result.json")
         startup_log_text = ""
         try:
@@ -8755,12 +8787,9 @@ def run_vast_provider_adapter(
             pass
         warm_worker_evidence = {
             "provider_bundle_kind": provider_bundle_kind,
-            "runtime_dependency_cache_ready": any(
-                marker in startup_log_text
-                for marker in (
-                    "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT:",
-                    "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:",
-                )
+            "runtime_dependency_cache_ready": _runtime_dependency_cache_ready(
+                startup_log_text=startup_log_text,
+                isaac_smoke=isaac_smoke,
             ),
             "instance_running": (
                 str(startup_probe.get("instance_final_status") or "").lower()
