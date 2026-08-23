@@ -14,8 +14,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Mapping, Sequence
 
-import rfc8785
-
 
 TESTBED_SCHEMA_VERSION = "maintained_site_task_testbed.v1"
 DECISION_REQUEST_SCHEMA_VERSION = "decision_evidence_request.v1"
@@ -77,6 +75,12 @@ def cross_runtime_canonical_json(value: Mapping[str, Any]) -> str:
     the shared byte contract for that boundary; the broader Pipeline evidence
     contracts retain their existing Python-owned canonicalization.
     """
+
+    # This dependency belongs only to the Raw V3.2 cross-runtime boundary.
+    # Keep it out of module initialization so isolated native-task runtimes
+    # that use the long-standing Python canonical digest do not need to carry
+    # an unrelated phone-capture package before dependency provisioning runs.
+    import rfc8785
 
     return rfc8785.dumps(dict(value)).decode("utf-8")
 
