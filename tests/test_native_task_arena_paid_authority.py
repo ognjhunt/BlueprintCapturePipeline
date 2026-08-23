@@ -136,7 +136,7 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     # A current program-level ceiling may explicitly supersede the lower
     # immutable ceiling recorded by the predecessor.  Per-attempt limits and
     # the predecessor's spend still remain digest-bound.
-    assert authority["aggregate_goal_spend_cap_usd"] == 25.0
+    assert authority["aggregate_goal_spend_cap_usd"] == 40.0
     assert authority["prior_terminal_attempt"]["attempt_cost_usd"] == 0.092936
     assert authority["prior_terminal_attempt"]["actual_provider_charge_usd"] == 0.025
     assert authority["prior_terminal_attempt"]["terminal_result"]["path"] == str(
@@ -763,7 +763,7 @@ def test_legacy_preflight_exit_with_missing_cost_can_seal_and_chain(
             "hard_attempt_spend_cap_usd": 2.0,
             "maximum_single_resource_ttl_seconds": 3600,
             "aggregate_goal_spend_before_attempt_usd": 1.0,
-            "aggregate_goal_spend_cap_usd": 25.0,
+            "aggregate_goal_spend_cap_usd": 40.0,
         }
     )
     authority["authorization_digest"] = canonical_digest(

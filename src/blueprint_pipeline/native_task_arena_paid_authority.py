@@ -45,7 +45,7 @@ CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
 # offers.  The aggregate ceiling does not weaken the per-attempt contract:
 # every authority remains single-use, retry-0, provider-zero-gated, and bounded
 # by ``MAX_HARD_CAP_USD`` below.
-AGGREGATE_GOAL_SPEND_CAP_USD = 25.0
+AGGREGATE_GOAL_SPEND_CAP_USD = 40.0
 MAX_HARD_CAP_USD = 2.0
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
