@@ -232,6 +232,10 @@ def test_capture_reconstruction_queue_is_path_activated_and_automatically_execut
     assert "capture-reconstruction-policies" in installer
     assert "capture-reconstruction-queue/pending" in installer
     assert "systemctl enable --now blueprint-capture-reconstruction-dispatcher.path" in installer
+    assert "build_canonical_3dgs_worker_wheel.sh" in installer
+    assert 'WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"' in installer
+    assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" in installer
+    assert "REPLACED_BY_INSTALLER_EXACT_RELEASE_WHEEL" in env_example
 
 
 def test_control_plane_postcheck_pages_or_fails_blocked_manifests():

@@ -852,12 +852,25 @@ def dispatch_launch_request(
             existing_allocation.get("status") == "completed"
             and existing_allocation.get("campaign_path")
         ):
+            downstream_dispatch = None
+            downstream_request_path = existing_allocation.get(
+                "downstream_dispatch_request_path"
+            )
+            if downstream_request_path:
+                from .capture_reconstruction_postshot_allocator import (
+                    load_postshot_downstream_dispatch,
+                )
+
+                downstream_dispatch = load_postshot_downstream_dispatch(
+                    str(downstream_request_path)
+                )
             terminal = complete_capture_reconstruction(
                 state_root=state_root,
                 capture_id=str(request["capture_id"]),
                 capture_digest=capture_digest,
                 campaign_path=str(existing_allocation["campaign_path"]),
                 completed_at=str(existing_allocation.get("completed_at") or ""),
+                downstream_dispatch=downstream_dispatch,
             )
             terminal["provider_mutation_performed"] = False
             terminal["resumed_after_paid_work"] = True
@@ -892,6 +905,7 @@ def dispatch_launch_request(
             hard_ttl_seconds=int(request["hard_ttl_seconds"]),
             authority_id=str(request["authority_id"]),
             dataset_root=str(derived),
+            capture_store_root=str(raw_root),
             retry_cap=0,
         )
     )
@@ -912,6 +926,9 @@ def dispatch_launch_request(
             "campaign_path": allocation.get("campaign_path"),
             "completed_at": allocation.get("completed_at"),
             "provider_zero": allocation.get("provider_zero"),
+            "downstream_dispatch_request_path": allocation.get(
+                "downstream_dispatch_request_path"
+            ),
         },
     )
     allocation_status = str(allocation.get("status"))
@@ -1062,41 +1079,11 @@ def complete_capture_reconstruction(
     if status["state"] == "published":
         if downstream_dispatch is not None:
             result = downstream_dispatch(status=status)
-        else:
-            # This queue is the existing post-capture evidence-spine boundary.
-            # The request is content-bound and create-only, so a callback retry
-            # cannot launch a second analysis and a dispatcher restart after a
-            # successful paid run still advances the automatic downstream path.
-            request = {
-                "schema_version": "post_capture_evidence_dispatch.v1",
-                "capture_id": capture_id,
-                "capture_digest": capture_digest,
-                "terminal_status_digest": status["status_digest"],
-                "campaign_digest": status["campaign_digest"],
-                "entrypoint": "blueprint_pipeline.post_capture_evidence_spine",
-                "requested_at": completed_at,
-                "claim_ceiling": "candidate_artifacts_only",
+            dispatched = True
+            downstream_evidence = {
+                "dispatched": True,
+                "result": json.loads(canonical_json(_mapping(result))),
             }
-            request["dispatch_digest"] = canonical_digest(
-                request, digest_field="dispatch_digest"
-            )
-            request_path = (
-                Path(state_root).expanduser().resolve()
-                / "post-capture-analysis-queue"
-                / "pending"
-                / f"{capture_id}-{request['dispatch_digest'][7:23]}.json"
-            )
-            _write_immutable(request_path, request)
-            result = {
-                "status": "queued",
-                "queue_path": str(request_path),
-                "dispatch_digest": request["dispatch_digest"],
-            }
-        dispatched = True
-        downstream_evidence = {
-            "dispatched": True,
-            "result": json.loads(canonical_json(_mapping(result))),
-        }
     record_checkpoint(
         state_root=state_root,
         capture_digest=capture_digest,

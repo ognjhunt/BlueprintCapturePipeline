@@ -484,7 +484,38 @@ def _runner(arm: dict, dataset_root: Path, output_root: Path) -> dict:
     ]
     if arm["role"] == "primary":
         (output_root / "project.psht").write_bytes(b"fixture-postshot-project")
-        artifacts.append({"kind": "postshot_project", "relative_path": "project.psht"})
+        (output_root / "candidate.spz").write_bytes(b"fixture-spz-v4")
+        (output_root / "coordinate_binding.json").write_text(
+            json.dumps({"source": "canonical_arkit_world", "metric_qualified": False}),
+            encoding="utf-8",
+        )
+        for source, destination in (
+            ("cameras.txt", "input_cameras.txt"),
+            ("images.txt", "input_images.txt"),
+            ("points3D.txt", "input_points3D.txt"),
+        ):
+            (output_root / destination).write_bytes(
+                (dataset_root / "sparse" / "0" / source).read_bytes()
+            )
+        artifacts.extend(
+            [
+                {"kind": "postshot_project", "relative_path": "project.psht"},
+                {"kind": "compressed_3dgs_spz_v4", "relative_path": "candidate.spz"},
+                {
+                    "kind": "postshot_coordinate_binding",
+                    "relative_path": "coordinate_binding.json",
+                },
+                {
+                    "kind": "colmap_camera_intrinsics",
+                    "relative_path": "input_cameras.txt",
+                },
+                {
+                    "kind": "colmap_camera_extrinsics_and_order",
+                    "relative_path": "input_images.txt",
+                },
+                {"kind": "colmap_seed_points", "relative_path": "input_points3D.txt"},
+            ]
+        )
     else:
         (output_root / "config.yml").write_text("method: splatfacto\n", encoding="utf-8")
         artifacts.append({"kind": "nerfstudio_config", "relative_path": "config.yml"})

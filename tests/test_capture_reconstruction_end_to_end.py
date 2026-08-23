@@ -21,6 +21,9 @@ from blueprint_pipeline.capture_reconstruction_launch_dispatcher import (
     dispatch_launch_request,
     enqueue_capture_reconstruction,
 )
+from blueprint_pipeline.capture_reconstruction_downstream import (
+    dispatch_postshot_to_evidence_spine,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 from .test_canonical_3dgs_pipeline import (  # noqa: F401 - shared canonical fixture
@@ -184,6 +187,63 @@ def test_evaluator_hidden_pixels_never_enter_the_trainer_dataset(
         row for row in ledger["checkpoints"] if row["stage"] == "intake_validated"
     )
     assert intake["evidence"]["hidden_heldout_pixels_included"] is False
+
+
+def test_published_postshot_candidate_invokes_existing_downstream_spine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root, times, manifest_digest = _stage_as_uploaded_capture(tmp_path)
+    _stub_v32_media(monkeypatch, times)
+    _policy(tmp_path / "policies", [0, 2, 5, 7], manifest_digest)
+    receipt = enqueue_capture_reconstruction(
+        capture_root=capture_root,
+        payload=_payload(),
+        policy_root=tmp_path / "policies",
+        queue_root=tmp_path / "queue",
+        source_commit_sha="a" * 40,
+        requested_at="2026-08-17T00:00:00Z",
+    )
+    dispatch_launch_request(
+        queue_path=receipt["queue_path"],
+        state_root=tmp_path / "checkpoints",
+        derived_root=tmp_path / "derived",
+        capture_store_root=capture_root / "raw",
+        execute=False,
+    )
+    derived = tmp_path / "derived" / receipt["capture_digest"][7:23]
+    publication = {
+        "schema_version": "capture_reconstruction_publication.v1",
+        "capture_digest": receipt["capture_digest"],
+        "publication_digest": _sha("publication"),
+        "artifacts": [
+            {
+                "kind": "standard_3dgs_ply",
+                "digest": _sha("published-ply"),
+                "uri": "gs://publish/capture/scene.ply",
+            }
+        ],
+    }
+
+    first = dispatch_postshot_to_evidence_spine(
+        capture_id="capture-live-001",
+        capture_digest=receipt["capture_digest"],
+        raw_root=capture_root / "raw",
+        derived_root=derived,
+        publication=publication,
+    )
+    second = dispatch_postshot_to_evidence_spine(
+        capture_id="capture-live-001",
+        capture_digest=receipt["capture_digest"],
+        raw_root=capture_root / "raw",
+        derived_root=derived,
+        publication=publication,
+    )
+
+    assert first == second
+    assert first["entrypoint"] == "blueprint_pipeline.post_capture_evidence_spine"
+    assert first["status"] == "abstained"
+    assert first["physical_truth_inferred"] is False
+    assert Path(first["run_root"]).is_dir()
 
 
 def test_dispatch_resumes_without_redoing_prepared_work(

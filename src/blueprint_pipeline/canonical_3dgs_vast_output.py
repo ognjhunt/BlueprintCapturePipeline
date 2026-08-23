@@ -262,23 +262,6 @@ def compile_canonical_3dgs_vast_output_bundle(
         "worker_image_digest": worker_image_digest,
         "source_commit_sha": source_commit_sha,
         "standard_3dgs_ply_digest": splats[0]["digest"],
-        "postshot_project_digest": next(
-            (
-                row.get("digest")
-                for row in artifacts
-                if isinstance(row, Mapping) and row.get("kind") == "postshot_project"
-            ),
-            None,
-        ),
-        "standard_3dgs_spz_digest": next(
-            (
-                row.get("digest")
-                for row in artifacts
-                if isinstance(row, Mapping)
-                and row.get("kind") == "compressed_3dgs_spz_v4"
-            ),
-            None,
-        ),
         "gaussian_count": int(decoded.count),
         "members": [row for _, row in files],
         "member_count": len(files),
@@ -288,6 +271,18 @@ def compile_canonical_3dgs_vast_output_bundle(
         "proof_effect": "appearance_asset_candidate_only",
         "claim_ceiling": "appearance_reconstruction",
     }
+    if arm_id == "postshot-primary":
+        manifest["postshot_project_digest"] = next(
+            row.get("digest")
+            for row in artifacts
+            if isinstance(row, Mapping) and row.get("kind") == "postshot_project"
+        )
+        manifest["standard_3dgs_spz_digest"] = next(
+            row.get("digest")
+            for row in artifacts
+            if isinstance(row, Mapping)
+            and row.get("kind") == "compressed_3dgs_spz_v4"
+        )
     manifest["output_bundle_receipt_digest"] = canonical_digest(
         manifest, digest_field="output_bundle_receipt_digest"
     )

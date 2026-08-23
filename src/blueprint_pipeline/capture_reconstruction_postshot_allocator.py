@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 from typing import Any, Mapping
 
 from .aws_independent_watchdog_control import arm_aws_watchdog, close_aws_watchdog
@@ -13,8 +14,9 @@ from .canonical_3dgs_pipeline import build_canonical_3dgs_execution_plan
 from .canonical_3dgs_transport import compile_canonical_3dgs_transport_bundle
 from .canonical_3dgs_vast_output import validate_canonical_3dgs_vast_output_bundle
 from .capture_reconstruction_publication import publish_postshot_output_bundle
+from .capture_reconstruction_downstream import dispatch_postshot_to_evidence_spine
 from .common import utc_now_iso, write_json
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, canonical_json
 from .gpu_render_providers import get_render_provider
 from .gpu_render_providers import RenderLaunchSpec
 from .paid_resource_admission import (
@@ -55,11 +57,50 @@ def _sha(path: Path) -> str:
     return "sha256:" + digest
 
 
+def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
+    payload = (canonical_json(dict(value)) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as stream:
+            stream.write(payload)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+            raise CapturePostshotAllocatorError(
+                f"capture_postshot_immutable_output_conflict:{path.name}"
+            )
+
+
 def _required_env(name: str) -> str:
     value = str(os.environ.get(name) or "").strip()
     if not value:
         raise CapturePostshotAllocatorError(f"capture_postshot_required_env_missing:{name}")
     return value
+
+
+def _require_exact_clean_checkout(expected_commit: str) -> dict[str, Any]:
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise CapturePostshotAllocatorError(
+            "capture_postshot_checkout_identity_unavailable"
+        ) from exc
+    if head != expected_commit:
+        raise CapturePostshotAllocatorError("capture_postshot_checkout_commit_mismatch")
+    if dirty:
+        raise CapturePostshotAllocatorError("capture_postshot_checkout_not_clean")
+    return {"source_commit_sha": head, "checkout_clean": True}
 
 
 def _provider_zero_receipt() -> dict[str, Any]:
@@ -119,32 +160,62 @@ def _campaign_from_publication(
     return destination
 
 
-def _downstream_dispatcher(*, root: Path, request: Mapping[str, Any], publication: Mapping[str, Any]):
+def _downstream_dispatcher(
+    *,
+    root: Path,
+    raw_root: Path,
+    request: Mapping[str, Any],
+    publication: Mapping[str, Any],
+):
     def dispatch(*, status: Mapping[str, Any]) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "schema_version": "capture_reconstruction_downstream_dispatch.v1",
-            "status": "dispatched",
-            "entrypoint": "blueprint_pipeline.post_capture_evidence_spine",
-            "capture_id": request["capture_id"],
-            "capture_digest": request["capture_digest"],
-            "terminal_status_digest": status["status_digest"],
-            "publication_digest": publication["publication_digest"],
-            "claim_ceiling": "candidate_artifacts_only",
-            "metric_alignment_qualified": False,
-            "physical_truth_inferred": False,
-            "dispatched_at": utc_now_iso(),
-        }
+        payload = dispatch_postshot_to_evidence_spine(
+            capture_id=str(request["capture_id"]),
+            capture_digest=str(request["capture_digest"]),
+            raw_root=raw_root,
+            derived_root=root,
+            publication=publication,
+        )
+        payload["terminal_status_digest"] = status["status_digest"]
         payload["dispatch_digest"] = canonical_digest(payload, digest_field="dispatch_digest")
-        write_json(root / "downstream_analysis_dispatch.json", payload)
+        _write_immutable_json(root / "downstream_analysis_dispatch.json", payload)
         return payload
 
     return dispatch
+
+
+def load_postshot_downstream_dispatch(
+    request_path: str | Path,
+):
+    """Rebuild the downstream callback after a dispatcher process restart."""
+
+    path = Path(request_path).expanduser().resolve(strict=True)
+    payload = _read(path)
+    digest = payload.get("downstream_request_digest")
+    if digest != canonical_digest(payload, digest_field="downstream_request_digest"):
+        raise CapturePostshotAllocatorError(
+            "capture_postshot_downstream_request_digest_invalid"
+        )
+    publication = payload.get("publication")
+    if not isinstance(publication, Mapping):
+        raise CapturePostshotAllocatorError(
+            "capture_postshot_downstream_publication_invalid"
+        )
+    return _downstream_dispatcher(
+        root=Path(str(payload["derived_root"])),
+        raw_root=Path(str(payload["raw_root"])),
+        request={
+            "capture_id": payload["capture_id"],
+            "capture_digest": payload["capture_digest"],
+        },
+        publication=publication,
+    )
 
 
 def execute_postshot_capture(
     *,
     request: Mapping[str, Any],
     derived_root: str | Path,
+    capture_store_root: str | Path,
     max_spend_usd: float,
     hard_ttl_seconds: int,
     authority_id: str,
@@ -154,7 +225,9 @@ def execute_postshot_capture(
 
     if retry_cap != 0:
         raise CapturePostshotAllocatorError("capture_postshot_retry_cap_must_be_zero")
+    checkout = _require_exact_clean_checkout(str(request["source_commit_sha"]))
     root = Path(derived_root).expanduser().resolve()
+    raw_root = Path(capture_store_root).expanduser().resolve(strict=True)
     preparation = _read(root / "canonical_v32_3dgs_preparation.json")
     dataset = _read(root / "colmap_training_dataset_export_result.json")
     dataset_root = root / "trainer_input" / str(dataset["relative_path"])
@@ -284,8 +357,8 @@ def execute_postshot_capture(
         adapter_output=adapter_path,
         provider="aws",
         expected_source_commit=str(request["source_commit_sha"]),
-        checkout_source_commit=str(request["source_commit_sha"]),
-        checkout_clean=True,
+        checkout_source_commit=str(checkout["source_commit_sha"]),
+        checkout_clean=bool(checkout["checkout_clean"]),
         max_spend_usd=max_spend_usd,
         hard_ttl_seconds=hard_ttl_seconds,
         retry_cap=0,
@@ -368,6 +441,19 @@ def execute_postshot_capture(
     campaign_path = _campaign_from_publication(
         publication=publication, plan=plan, destination=root / "canonical_3dgs_campaign_result.json"
     )
+    downstream_request: dict[str, Any] = {
+        "schema_version": "capture_reconstruction_downstream_request.v1",
+        "capture_id": request["capture_id"],
+        "capture_digest": request["capture_digest"],
+        "raw_root": str(raw_root),
+        "derived_root": str(root),
+        "publication": publication,
+    }
+    downstream_request["downstream_request_digest"] = canonical_digest(
+        downstream_request, digest_field="downstream_request_digest"
+    )
+    downstream_request_path = root / "downstream_analysis_request.json"
+    _write_immutable_json(downstream_request_path, downstream_request)
     return {
         "status": "completed",
         "admission_digest": admission["admission_digest"],
@@ -376,7 +462,10 @@ def execute_postshot_capture(
         "completed_at": utc_now_iso(),
         "provider_mutations_performed": operation.get("provider_mutations_performed", 0),
         "provider_zero": watchdog_close,
-        "downstream_dispatch": _downstream_dispatcher(root=root, request=request, publication=publication),
+        "downstream_dispatch_request_path": str(downstream_request_path),
+        "downstream_dispatch": load_postshot_downstream_dispatch(
+            downstream_request_path
+        ),
     }
 
 
@@ -391,4 +480,9 @@ def production_allocator(**kwargs: Any) -> dict[str, Any]:
     return execute_postshot_capture(derived_root=derived_root, **kwargs)
 
 
-__all__ = ["CapturePostshotAllocatorError", "execute_postshot_capture", "production_allocator"]
+__all__ = [
+    "CapturePostshotAllocatorError",
+    "execute_postshot_capture",
+    "load_postshot_downstream_dispatch",
+    "production_allocator",
+]

@@ -239,6 +239,40 @@ else
   echo "WARNING: no source commit resolved; /api/live-pipeline/version stays 503" >&2
 fi
 
+# Build the Windows worker package from the exact promoted commit and bind the
+# environment to that immutable release directory. The transport compiler also
+# verifies the wheel's embedded source digest before any provider mutation.
+# This closes the gap where an old wheel at a stable placeholder path could be
+# paired with a newer dispatcher checkout.
+if [[ -n "${SOURCE_COMMIT:-}" ]]; then
+  WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    printf '[dry-run] build exact worker wheel for %s into %s\n' \
+      "${SOURCE_COMMIT}" "${WORKER_RELEASE_DIR}"
+  else
+    run install -d -m 0755 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+      "${WORKER_RELEASE_DIR}"
+    WORKER_BUILD_RECEIPT="$(runuser -u "${SERVICE_USER}" -- \
+      "${REPO_ROOT}/scripts/build_canonical_3dgs_worker_wheel.sh" \
+      "${SOURCE_COMMIT}" "${WORKER_RELEASE_DIR}")"
+    WORKER_WHEEL="$(printf '%s' "${WORKER_BUILD_RECEIPT}" | \
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["wheel_path"])')"
+    if [[ ! -f "${WORKER_WHEEL}" ]]; then
+      echo "ERROR: exact canonical worker wheel was not produced" >&2
+      exit 1
+    fi
+    printf '%s\n' "${WORKER_BUILD_RECEIPT}" > \
+      "${WORKER_RELEASE_DIR}/build_receipt.json"
+    run chown root:"${SERVICE_GROUP}" \
+      "${WORKER_RELEASE_DIR}/build_receipt.json"
+    run chmod 0644 "${WORKER_RELEASE_DIR}/build_receipt.json"
+    sed -i '/^BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL=/d' "${ENV_FILE}"
+    printf 'BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL=%s\n' "${WORKER_WHEEL}" >> \
+      "${ENV_FILE}"
+    echo "bound exact canonical worker wheel ${WORKER_WHEEL}"
+  fi
+fi
+
 # Single-use paid-attempt enforcement writes a consumption record before any
 # provider allocation.  It defaults to the invoking user's home, which the
 # hardened units cannot reach: the service account's home is /nonexistent and
