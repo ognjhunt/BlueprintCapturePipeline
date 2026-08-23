@@ -11,6 +11,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_controls_worker import (
     _RigidScoringEnvironment,
     _canonical_digest,
+    _contact_close_sweep_minimum_force_n,
     _construction_global_ik_joint_targets,
     _control_plan_global_ik_joint_targets,
     _input_binding_mismatches,
@@ -21,6 +22,23 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _select_parallel_jaw_control_plan,
     _verified_runtime_inputs,
 )
+
+
+def test_close_sweep_uses_task_contact_force_before_plan_row_is_compiled() -> None:
+    assert _contact_close_sweep_minimum_force_n(
+        contact_close_row={"bilateral_task_contact_minimum_force_n": None},
+        task_state_binding={"task_contact_minimum_force_n": 0.5},
+    ) == pytest.approx(0.5)
+
+
+def test_close_sweep_refuses_a_contact_force_gate_mismatch() -> None:
+    with pytest.raises(
+        RuntimeError, match="native_task_controls_contact_force_mismatch"
+    ):
+        _contact_close_sweep_minimum_force_n(
+            contact_close_row={"bilateral_task_contact_minimum_force_n": 0.4},
+            task_state_binding={"task_contact_minimum_force_n": 0.5},
+        )
 
 
 def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -> None:

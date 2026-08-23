@@ -110,6 +110,41 @@ def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _contact_close_sweep_minimum_force_n(
+    *,
+    contact_close_row: Mapping[str, Any],
+    task_state_binding: Mapping[str, Any],
+) -> float:
+    """Use the same authoritative threshold as the scored contact gate.
+
+    Before the measured frontier is compiled, the optional plan-row field can
+    legitimately be ``None``.  The episode later fills it from the task-state
+    binding, so reading the row here made the diagnostic sweep reject a value
+    that the real gate already knew.  If a row does carry a value, require it
+    to agree rather than silently measuring against a different threshold.
+    """
+
+    try:
+        threshold = float(task_state_binding["task_contact_minimum_force_n"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("native_task_controls_contact_force_invalid") from exc
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        raise RuntimeError("native_task_controls_contact_force_invalid")
+    row_value = contact_close_row.get(
+        "bilateral_task_contact_minimum_force_n"
+    )
+    if row_value is not None:
+        try:
+            row_threshold = float(row_value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "native_task_controls_contact_force_plan_invalid"
+            ) from exc
+        if not math.isfinite(row_threshold) or row_threshold != threshold:
+            raise RuntimeError("native_task_controls_contact_force_mismatch")
+    return threshold
+
+
 def _persist(output: Path, result: dict[str, Any]) -> None:
     # Normalise before digesting. This runs from a `finally`, and
     # `_canonical_digest` refuses values json cannot encode -- a stray warp
@@ -2527,6 +2562,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if isinstance(row, Mapping)
             and str(row.get("phase_id") or "") == "contact_close"
         )
+        close_contact_threshold = _contact_close_sweep_minimum_force_n(
+            contact_close_row=contact_close_row,
+            task_state_binding=scene_plan["task_state_binding"],
+        )
         try:
             from blueprint_pipeline.native_task_arena_actuator_sweep import (
                 candidate_postures,
@@ -2568,9 +2607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         or 0.08
                     ),
-                    bilateral_contact_minimum_force_n=contact_close_row[
-                        "bilateral_task_contact_minimum_force_n"
-                    ],
+                    bilateral_contact_minimum_force_n=close_contact_threshold,
                 )
                 if close_sweep_preposition is not None
                 else {
@@ -2687,11 +2724,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_plan=effective_control_plan,
                 reachability_probe=reach_probe,
                 task_spec=scene_plan["task_spec"],
-                task_contact_minimum_force_n=float(
-                    scene_plan["task_state_binding"][
-                        "task_contact_minimum_force_n"
-                    ]
-                ),
+                task_contact_minimum_force_n=close_contact_threshold,
                 reclaimed_contact_steps=int(
                     result["contact_entry_branch_replay"].get(
                         "contact_phase_steps_reclaimed"
