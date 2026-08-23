@@ -2224,6 +2224,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     offsets_m=frontier_offsets,
                     preposition_target_position_world_m=preposition_target,
                     abort_contact_force_n=50.0,
+                    # The ordered cells walk from known-clear toward the
+                    # authored endpoint. Once one cell makes task contact the
+                    # boundary is bracketed; deeper cells only repeat a known
+                    # collision and cannot improve the promoted safe standoff.
+                    stop_after_first_contact_cell=True,
                 )
                 reach_probe["diagnostic_kind"] = (
                     "known_clear_anchor_to_authored_contact_force_frontier"
