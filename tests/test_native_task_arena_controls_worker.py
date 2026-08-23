@@ -1496,6 +1496,7 @@ def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
 def test_measured_anchor_replaces_the_old_contact_replay() -> None:
     from blueprint_pipeline.native_task_arena_controls_worker import (
         CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,
+        MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
         _with_contact_entry_branch_replay,
         _with_measured_contact_frontier,
     )
@@ -1534,6 +1535,11 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
         if row["phase_id"] == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
     ]
     assert len(old_rows) > 1
+    replayed_contact = next(
+        row
+        for row in replayed["scripted_positive_actions"]
+        if row["phase_id"] == "contact_open"
+    )
 
     derived, receipt = _with_measured_contact_frontier(
         control_plan=replayed,
@@ -1571,10 +1577,27 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
         if row["phase_id"] == "contact_open"
     )
     assert contact["hold_solved_arm_joint_positions_rad"] == [0.9] * 7
-    assert contact["maximum_steps"] == original_contact_maximum_steps
-    assert receipt["restored_contact_steps"] == replay_receipt[
-        "contact_phase_steps_reclaimed"
-    ]
+    expected_anchor_steps = max(
+        MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
+        replayed_contact["maximum_steps"],
+    )
+    expected_restoration = min(
+        replay_receipt["contact_phase_steps_reclaimed"],
+        max(0, len(old_rows) - expected_anchor_steps),
+    )
+    assert contact["maximum_steps"] == (
+        replayed_contact["maximum_steps"] + expected_restoration
+    )
+    assert contact["maximum_steps"] < original_contact_maximum_steps
+    assert receipt["restored_contact_steps"] == expected_restoration
+    assert receipt["restoration_limited_by_action_budget"] is True
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+
+    validated = validate_task_control_plan(derived, task_spec=task)
+    assert validated["plan_digest"] == derived["plan_digest"]
 
 
 def test_contact_anchor_is_derived_from_the_approach_line() -> None:
