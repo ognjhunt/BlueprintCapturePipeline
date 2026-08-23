@@ -191,42 +191,92 @@ def run_contact_close_posture_sweep(
             "reason": "runtime_missing_bounded_action",
             "cells": [],
         }
+    try:
+        open_command = float(gripper_open_command)
+        closed_command = float(gripper_closed_command)
+        joint_delta = float(max_joint_delta_rad)
+        setpoint_lead = float(max_joint_setpoint_lead_rad)
+        position_tolerance = float(arrival_tolerance_m)
+        orientation_tolerance = float(orientation_tolerance_rad)
+        contact_threshold = float(bilateral_contact_minimum_force_n)
+    except (TypeError, ValueError) as exc:
+        raise ActuatorSweepError(
+            ["contact_close_posture_sweep_scalar_inputs_invalid"]
+        ) from exc
+    if not all(
+        math.isfinite(value)
+        for value in (
+            open_command,
+            closed_command,
+            joint_delta,
+            setpoint_lead,
+            position_tolerance,
+            orientation_tolerance,
+            contact_threshold,
+        )
+    ):
+        raise ActuatorSweepError(
+            ["contact_close_posture_sweep_scalar_inputs_invalid"]
+        )
 
     def _command(joints: Sequence[float], gripper: float) -> None:
         action = bounded(
             target_joint_positions_rad=list(joints),
-            gripper_command=float(gripper),
-            max_joint_delta_rad=float(max_joint_delta_rad),
-            max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+            gripper_command=gripper,
+            max_joint_delta_rad=joint_delta,
+            max_joint_setpoint_lead_rad=setpoint_lead,
         )
-        environment.step([float(value) for value in action])
+        # The bounded-action seam already validates and canonicalizes every
+        # action component.  Converting it a second time here hid C57's failing
+        # cell behind an unlocated ``float(None)`` error.
+        environment.step(action)
 
     cells: list[dict[str, Any]] = []
-    for posture in postures:
+    for cell_index, posture in enumerate(postures):
         commanded = _finite_vector(posture.get("joint_positions_rad"), length=7)
         if commanded is None:
             continue
-        environment.reset()
-        for _ in range(max(1, int(preposition_steps))):
-            _command(preposition, float(gripper_open_command))
-        bilateral_steps = 0
-        peak_pad_forces: dict[str, float] = {}
-        terminal_sample: Mapping[str, Any] | None = None
-        for _ in range(max(1, int(settle_steps))):
-            _command(commanded, float(gripper_closed_command))
-            terminal_sample = _grasp_frame_sample(environment)
-            forces = _task_pad_forces_n(terminal_sample)
-            for side, magnitude in forces.items():
-                peak_pad_forces[side] = max(
-                    peak_pad_forces.get(side, 0.0), magnitude
-                )
-            if all(
-                forces.get(side, 0.0) >= float(bilateral_contact_minimum_force_n)
-                for side in ("left_inner_finger", "right_inner_finger")
-            ):
-                bilateral_steps += 1
-        reached = _finite_vector(environment.read_arm_joint_positions(), length=7)
-        terminal_sample = terminal_sample or _grasp_frame_sample(environment)
+        stage = "reset"
+        try:
+            environment.reset()
+            stage = "preposition"
+            for _ in range(max(1, int(preposition_steps))):
+                _command(preposition, open_command)
+            bilateral_steps = 0
+            peak_pad_forces: dict[str, float] = {}
+            terminal_sample: Mapping[str, Any] | None = None
+            stage = "close"
+            for _ in range(max(1, int(settle_steps))):
+                _command(commanded, closed_command)
+                terminal_sample = _grasp_frame_sample(environment)
+                forces = _task_pad_forces_n(terminal_sample)
+                for side, magnitude in forces.items():
+                    peak_pad_forces[side] = max(
+                        peak_pad_forces.get(side, 0.0), magnitude
+                    )
+                if all(
+                    forces.get(side, 0.0) >= contact_threshold
+                    for side in ("left_inner_finger", "right_inner_finger")
+                ):
+                    bilateral_steps += 1
+            stage = "terminal_readback"
+            reached = _finite_vector(
+                environment.read_arm_joint_positions(), length=7
+            )
+            terminal_sample = terminal_sample or _grasp_frame_sample(environment)
+        except Exception as exc:  # noqa: BLE001 - isolate one physical branch
+            cells.append(
+                {
+                    "posture_index": posture.get("posture_index"),
+                    "seed_index": posture.get("seed_index"),
+                    "commanded_joint_positions_rad": commanded,
+                    "status": "cell_error",
+                    "error": f"{stage}:{type(exc).__name__}:{exc}",
+                    "admitted": False,
+                    "measured_distance_to_target_m": None,
+                }
+            )
+            continue
         measured = _finite_vector(
             (terminal_sample or {}).get("grasp_frame_position_world_m"), length=3
         )
@@ -240,7 +290,7 @@ def run_contact_close_posture_sweep(
         if reached is not None and callable(predictor):
             try:
                 predicted = _finite_vector(
-                    predictor(reached, gripper_command=float(gripper_closed_command)),
+                    predictor(reached, gripper_command=closed_command),
                     length=7,
                 )
             except Exception:  # noqa: BLE001 - retain an explicit FK gap
@@ -253,12 +303,12 @@ def run_contact_close_posture_sweep(
         )
         admitted = bool(
             distance is not None
-            and distance <= float(arrival_tolerance_m)
+            and distance <= position_tolerance
             and orientation_error is not None
-            and orientation_error <= float(orientation_tolerance_rad)
+            and orientation_error <= orientation_tolerance
             and all(
                 terminal_forces.get(side, 0.0)
-                >= float(bilateral_contact_minimum_force_n)
+                >= contact_threshold
                 for side in ("left_inner_finger", "right_inner_finger")
             )
         )
