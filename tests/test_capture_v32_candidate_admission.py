@@ -11,7 +11,10 @@ from blueprint_pipeline.capture_v32_candidate_admission import (
     build_capture_v32_reconstruction_admission,
     validate_capture_v32_candidate_manifest,
 )
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "capture_v32_downstream_candidate_manifest.json"
@@ -64,7 +67,9 @@ def _manifest_with_encoded_frame_gap() -> dict:
     )
     manifest["candidates"].append(second)
     manifest["candidate_count"] = 2
-    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    manifest["manifest_digest"] = cross_runtime_canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
     return manifest
 
 
@@ -150,7 +155,9 @@ def test_capture_contract_authority_drift_fails_closed() -> None:
     manifest["selection_contract"]["capture_default_selection"] = [0]
     manifest["claim_boundary"]["candidate_manifest_qualifies_reconstruction"] = True
     manifest["candidates"][0]["camera_intrinsics"]["authority"] = "nominal_camera"
-    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    manifest["manifest_digest"] = cross_runtime_canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
     with pytest.raises(CaptureV32CandidateAdmissionError) as exc:
         validate_capture_v32_candidate_manifest(manifest)
     assert "capture_v32_candidate_selection_contract_invalid" in exc.value.codes

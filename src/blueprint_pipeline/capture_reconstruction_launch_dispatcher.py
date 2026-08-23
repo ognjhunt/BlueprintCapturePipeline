@@ -24,10 +24,14 @@ the dispatcher remains the sole bridge to the canonical allocator.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .capture_v32_candidate_admission import (
     ALLOWED_CAPTURE_SELECTORS,
@@ -116,6 +120,12 @@ def validate_site_task_reconstruction_policy(value: Mapping[str, Any]) -> list[s
     # site and task for provenance, but its scope key is the capture id.
     if "capture_id" in policy and not _is_identifier(policy.get("capture_id")):
         blockers.append("site_task_reconstruction_policy_capture_id_invalid")
+    if "capture_job_id" in policy and not _is_identifier(
+        policy.get("capture_job_id")
+    ):
+        blockers.append("site_task_reconstruction_policy_capture_job_id_invalid")
+    if policy.get("capture_id") and policy.get("capture_job_id"):
+        blockers.append("site_task_reconstruction_policy_scope_ambiguous")
     if policy.get("selector") not in ALLOWED_CAPTURE_SELECTORS:
         blockers.append("site_task_reconstruction_policy_selector_invalid")
     if not isinstance(policy.get("parameters"), Mapping) or not policy.get("parameters"):
@@ -153,6 +163,7 @@ def resolve_site_task_policy(
     site_id: str,
     task_id: str,
     capture_id: str | None = None,
+    capture_job_id: str | None = None,
 ) -> dict[str, Any]:
     """Return the single registered policy governing this capture, or abstain.
 
@@ -172,6 +183,7 @@ def resolve_site_task_policy(
 
     root = Path(policy_root).expanduser().resolve()
     capture_matches: list[dict[str, Any]] = []
+    capture_job_matches: list[dict[str, Any]] = []
     site_task_matches: list[dict[str, Any]] = []
     if root.is_dir():
         for path in sorted(root.glob("*.json")):
@@ -188,22 +200,37 @@ def resolve_site_task_policy(
                 # A capture-scoped policy never satisfies another capture, even
                 # one sharing its site and task.
                 continue
+            scoped_job = str(candidate.get("capture_job_id") or "")
+            if scoped_job:
+                if capture_job_id and scoped_job == capture_job_id:
+                    capture_job_matches.append(dict(candidate))
+                # A job-scoped policy cannot authorize an unrelated job that
+                # happens to share the same site/task pair.
+                continue
             if (
                 str(candidate.get("site_id") or "") == site_id
                 and str(candidate.get("task_id") or "") == task_id
             ):
                 site_task_matches.append(dict(candidate))
 
-    matches = capture_matches or site_task_matches
-    scope = "capture" if capture_matches else "site_task"
+    matches = capture_matches or capture_job_matches or site_task_matches
+    scope = (
+        "capture"
+        if capture_matches
+        else "capture_job"
+        if capture_job_matches
+        else "site_task"
+    )
     if not matches:
         raise CaptureReconstructionLaunchError(
-            f"{MISSING_POLICY}:site={site_id};task={task_id};capture={capture_id or ''}"
+            f"{MISSING_POLICY}:site={site_id};task={task_id};"
+            f"capture={capture_id or ''};capture_job={capture_job_id or ''}"
         )
     if len(matches) > 1:
         raise CaptureReconstructionLaunchError(
             f"site_task_reconstruction_policy_ambiguous:scope={scope};"
-            f"site={site_id};task={task_id};capture={capture_id or ''}"
+            f"site={site_id};task={task_id};capture={capture_id or ''};"
+            f"capture_job={capture_job_id or ''}"
         )
     policy = matches[0]
     blockers = validate_site_task_reconstruction_policy(policy)
@@ -341,6 +368,11 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
     for field in ("capture_id", "scene_id", "intake_id", "site_id", "task_id", "policy_id"):
         if not _is_identifier(request.get(field)):
             blockers.append(f"capture_reconstruction_launch_{field}_invalid")
+    source_commit = str(request.get("source_commit_sha") or "")
+    if len(source_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in source_commit
+    ):
+        blockers.append("capture_reconstruction_launch_source_commit_sha_invalid")
     for field in (
         "capture_digest",
         "candidate_manifest_digest",
@@ -523,10 +555,24 @@ def compute_capture_digest(raw_root: str | Path) -> str:
         raise CaptureReconstructionLaunchError(
             "capture_reconstruction_hash_mismatch:" + ",".join(mismatched[:8])
         )
-    return canonical_digest(
-        {"artifacts": {key: observed[key] for key in sorted(observed)}},
-        digest_field="capture_digest",
+    # Raw V3.2 defines the immutable bundle identity as SHA-256 over the
+    # lexicographically ordered ``relative_path:artifact_sha256`` rows. Return
+    # that exact device-authored identity after independently rebuilding it;
+    # a second Pipeline-only digest would break the causal phone/WebApp bind.
+    canonical_rows = "\n".join(
+        f"{relative}:{observed[relative]}" for relative in sorted(observed)
     )
+    import hashlib
+
+    rebuilt = hashlib.sha256(canonical_rows.encode("utf-8")).hexdigest()
+    declared = str(payload.get("bundle_sha256") or "").lower().removeprefix(
+        _DIGEST_PREFIX
+    )
+    if declared != rebuilt:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_bundle_digest_mismatch"
+        )
+    return _DIGEST_PREFIX + rebuilt
 
 
 def _sha256_file(path: Path) -> str:
@@ -597,6 +643,9 @@ def resolve_capture_identity(
         "task_id": task_id,
         "capture_id": _first_identity(sources, ("capture_id", "captureId"))
         or root.name,
+        "capture_job_id": _first_identity(
+            sources, ("capture_job_id", "captureJobId")
+        ),
         "scene_id": _first_identity(sources, ("scene_id", "sceneId")),
         "capture_digest": compute_capture_digest(raw),
         "candidate_manifest_digest": candidate_manifest_digest,
@@ -625,6 +674,7 @@ def enqueue_capture_reconstruction(
         site_id=identity["site_id"],
         task_id=identity["task_id"],
         capture_id=identity["capture_id"],
+        capture_job_id=identity["capture_job_id"],
     )
     request = build_launch_request(
         policy=policy,
@@ -785,8 +835,54 @@ def dispatch_launch_request(
             "provider_mutation_performed": False,
         }
 
-    # Paid boundary.  Refuse before touching a provider if this capture already
-    # allocated, so a resumed dispatch cannot book a second instance.
+    # Paid boundary. A completed allocation is resumable from its immutable
+    # campaign path; any other previous allocation is terminally blocked. It is
+    # never legal to book a second instance merely because publication or the
+    # WebApp callback was interrupted after the first one finished.
+    existing_allocation = next(
+        (
+            _mapping(row.get("evidence"))
+            for row in ledger["checkpoints"]
+            if row.get("stage") == "worker_allocated"
+        ),
+        None,
+    )
+    if existing_allocation is not None:
+        if (
+            existing_allocation.get("status") == "completed"
+            and existing_allocation.get("campaign_path")
+        ):
+            downstream_dispatch = None
+            downstream_request_path = existing_allocation.get(
+                "downstream_dispatch_request_path"
+            )
+            if downstream_request_path:
+                from .capture_reconstruction_postshot_allocator import (
+                    load_postshot_downstream_dispatch,
+                )
+
+                downstream_dispatch = load_postshot_downstream_dispatch(
+                    str(downstream_request_path)
+                )
+            terminal = complete_capture_reconstruction(
+                state_root=state_root,
+                capture_id=str(request["capture_id"]),
+                capture_digest=capture_digest,
+                campaign_path=str(existing_allocation["campaign_path"]),
+                completed_at=str(existing_allocation.get("completed_at") or ""),
+                downstream_dispatch=downstream_dispatch,
+            )
+            terminal["provider_mutation_performed"] = False
+            terminal["resumed_after_paid_work"] = True
+            return terminal
+        return {
+            "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+            "status": "allocation_blocked",
+            "capture_digest": capture_digest,
+            "stage": "worker_allocated",
+            "blockers": ["capture_reconstruction_previous_paid_attempt_not_completed"],
+            "provider_mutation_performed": False,
+        }
     assert_paid_stage_not_repeated(
         state_root=state_root, capture_digest=capture_digest, stage="worker_allocated"
     )
@@ -802,12 +898,14 @@ def dispatch_launch_request(
     # enforced per run rather than assumed.
     allocation = _mapping(
         allocator(
+            request=request,
             capture_digest=capture_digest,
             arms=list(request["arms"]),
             max_spend_usd=float(request["max_spend_usd"]),
             hard_ttl_seconds=int(request["hard_ttl_seconds"]),
             authority_id=str(request["authority_id"]),
             dataset_root=str(derived),
+            capture_store_root=str(raw_root),
             retry_cap=0,
         )
     )
@@ -825,9 +923,64 @@ def dispatch_launch_request(
                 "provider_mutations_performed", 0
             ),
             "arms": request["arms"],
+            "campaign_path": allocation.get("campaign_path"),
+            "completed_at": allocation.get("completed_at"),
+            "provider_zero": allocation.get("provider_zero"),
+            "downstream_dispatch_request_path": allocation.get(
+                "downstream_dispatch_request_path"
+            ),
         },
     )
-    if str(allocation.get("status")) != "execute_ready":
+    allocation_status = str(allocation.get("status"))
+    if allocation_status == "completed":
+        campaign_path = str(allocation.get("campaign_path") or "")
+        if not campaign_path:
+            return {
+                "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+                "status": "allocation_blocked",
+                "capture_digest": capture_digest,
+                "stage": "publish",
+                "blockers": ["capture_reconstruction_campaign_path_missing"],
+                "provider_mutation_performed": bool(
+                    allocation.get("provider_mutations_performed")
+                ),
+            }
+        record_checkpoint(
+            state_root=state_root,
+            capture_digest=capture_digest,
+            stage="postshot_import",
+            evidence={
+                "status": "completed",
+                "operation_receipt_digest": allocation.get(
+                    "operation_receipt_digest"
+                ),
+            },
+        )
+        record_checkpoint(
+            state_root=state_root,
+            capture_digest=capture_digest,
+            stage="training",
+            evidence={
+                "status": "completed",
+                "operation_receipt_digest": allocation.get(
+                    "operation_receipt_digest"
+                ),
+            },
+        )
+        terminal = complete_capture_reconstruction(
+            state_root=state_root,
+            capture_id=str(request["capture_id"]),
+            capture_digest=capture_digest,
+            campaign_path=campaign_path,
+            completed_at=str(allocation.get("completed_at") or ""),
+            downstream_dispatch=allocation.get("downstream_dispatch"),
+        )
+        terminal["provider_mutation_performed"] = bool(
+            allocation.get("provider_mutations_performed")
+        )
+        terminal["provider_zero"] = allocation.get("provider_zero")
+        return terminal
+    if allocation_status != "execute_ready":
         return {
             "schema_version": QUEUE_RUN_SCHEMA_VERSION,
             "status": "allocation_blocked",
@@ -862,7 +1015,7 @@ def complete_capture_reconstruction(
     capture_digest: str,
     campaign_path: str | Path,
     completed_at: str,
-    status_writer: Any,
+    status_writer: Any = None,
     status_reader: Any = None,
     downstream_dispatch: Any = None,
 ) -> dict[str, Any]:
@@ -883,6 +1036,7 @@ def complete_capture_reconstruction(
     from .capture_reconstruction_status_sync import (
         status_from_campaign,
         sync_terminal_status,
+        sync_terminal_status_to_webapp,
     )
 
     ledger = read_checkpoints(state_root=state_root, capture_digest=capture_digest)
@@ -903,8 +1057,12 @@ def complete_capture_reconstruction(
         },
     )
 
-    sync = sync_terminal_status(
-        status=status, writer=status_writer, reader=status_reader
+    sync = (
+        sync_terminal_status_to_webapp(status=status)
+        if status_writer is None
+        else sync_terminal_status(
+            status=status, writer=status_writer, reader=status_reader
+        )
     )
     record_checkpoint(
         state_root=state_root,
@@ -918,13 +1076,14 @@ def complete_capture_reconstruction(
 
     dispatched = False
     downstream_evidence: dict[str, Any] = {"dispatched": False}
-    if downstream_dispatch is not None and status["state"] == "published":
-        result = downstream_dispatch(status=status)
-        dispatched = True
-        downstream_evidence = {
-            "dispatched": True,
-            "result": json.loads(canonical_json(_mapping(result))),
-        }
+    if status["state"] == "published":
+        if downstream_dispatch is not None:
+            result = downstream_dispatch(status=status)
+            dispatched = True
+            downstream_evidence = {
+                "dispatched": True,
+                "result": json.loads(canonical_json(_mapping(result))),
+            }
     record_checkpoint(
         state_root=state_root,
         capture_digest=capture_digest,
@@ -957,18 +1116,30 @@ def process_launch_queue(
     *,
     queue_root: str | Path,
     state_root: str | Path,
+    derived_root: str | Path | None = None,
+    capture_storage_root: str | Path | None = None,
+    prepare: bool = False,
     execute: bool = False,
+    allocator: Any = None,
 ) -> dict[str, Any]:
-    """Preview or dispatch queued launches.
+    """Preview or durably advance queued launches.
 
-    Without explicit execute authority this is a read-only preview: it reports
-    what would be dispatched and performs no provider mutation.
+    The default remains a read-only preview. ``prepare`` claims each pending
+    item under one cross-process queue lock and runs the no-spend dataset gate;
+    an item stays in ``processing`` while it awaits paid authority or worker
+    completion. ``execute`` additionally crosses the paid boundary through the
+    injected canonical allocator. A blocked/abstained item is moved exactly
+    once to ``blocked``; no caller can observe it in two queue states.
     """
+
+    from .capture_reconstruction_checkpoints import read_checkpoints
 
     queue = Path(queue_root).expanduser().resolve()
     state = Path(state_root).expanduser().resolve()
     state.mkdir(parents=True, exist_ok=True)
-    pending = sorted((queue / "pending").glob("*.json")) if (queue / "pending").is_dir() else []
+    for name in QUEUE_STATES:
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    pending = sorted((queue / "pending").glob("*.json"))
 
     previewed: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
@@ -995,19 +1166,168 @@ def process_launch_queue(
             }
         )
 
+    if not prepare and not execute:
+        return {
+            "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+            "queue_root": str(queue),
+            "state_root": str(state),
+            "execute_requested": False,
+            "previewed": len(previewed),
+            "dispatched": 0,
+            "blocked": len(blocked),
+            "entries": previewed,
+            "blocked_entries": blocked,
+            "provider_mutation_performed": False,
+            "paid_execution_boundary": CANONICAL_ALLOCATOR_ENTRYPOINT,
+        }
+
+    if derived_root is None or capture_storage_root is None:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_queue_roots_required_for_prepare"
+        )
+
+    processed: list[dict[str, Any]] = []
+    mutations = False
+    with _queue_process_lock(queue):
+        work = sorted((queue / "processing").glob("*.json"))
+        for pending_path in sorted((queue / "pending").glob("*.json")):
+            processing_path = queue / "processing" / pending_path.name
+            try:
+                os.replace(pending_path, processing_path)
+            except FileNotFoundError:
+                continue
+            work.append(processing_path)
+
+        for path in sorted(set(work)):
+            request: dict[str, Any] = {}
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+                request_blockers = validate_launch_request(request)
+                if request_blockers:
+                    result = {
+                        "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+                        "status": "blocked",
+                        "blockers": request_blockers,
+                        "provider_mutation_performed": False,
+                    }
+                else:
+                    capture_raw = _resolve_staged_capture_raw_root(
+                        request=request,
+                        capture_storage_root=capture_storage_root,
+                    )
+                    result = dispatch_launch_request(
+                        queue_path=path,
+                        state_root=state,
+                        derived_root=derived_root,
+                        capture_store_root=capture_raw,
+                        execute=execute,
+                        allocator=allocator,
+                    )
+            except Exception as exc:  # noqa: BLE001 - durable queue records the failure
+                paid_complete = False
+                try:
+                    ledger = read_checkpoints(
+                        state_root=state,
+                        capture_digest=str(request.get("capture_digest") or ""),
+                    )
+                    paid_complete = any(
+                        row.get("stage") == "worker_allocated"
+                        and _mapping(row.get("evidence")).get("status") == "completed"
+                        for row in ledger["checkpoints"]
+                    )
+                except Exception:  # noqa: BLE001 - original failure remains authoritative
+                    paid_complete = False
+                result = {
+                    "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+                    "status": "resume_pending" if paid_complete else "blocked",
+                    "blockers": [
+                        "capture_reconstruction_queue_dispatch_failed:"
+                        + type(exc).__name__
+                    ],
+                    "provider_mutation_performed": False,
+                    "paid_work_will_not_repeat": paid_complete,
+                }
+
+            mutations = mutations or bool(result.get("provider_mutation_performed"))
+            result_path = state / "queue-runs" / f"{path.name}.result.json"
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            from .common import write_json
+
+            write_json(result_path, result)
+            status = str(result.get("status") or "")
+            if status in {"abstained", "blocked", "allocation_blocked"}:
+                os.replace(path, queue / "blocked" / path.name)
+            elif status == "terminal":
+                os.replace(path, queue / "completed" / path.name)
+            processed.append(
+                {
+                    "queue_path": str(path),
+                    "result_path": str(result_path),
+                    "status": status,
+                    "blockers": list(result.get("blockers") or []),
+                }
+            )
+
     return {
         "schema_version": QUEUE_RUN_SCHEMA_VERSION,
         "queue_root": str(queue),
         "state_root": str(state),
         "execute_requested": bool(execute),
-        "previewed": len(previewed),
-        "dispatched": 0,
-        "blocked": len(blocked),
-        "entries": previewed,
-        "blocked_entries": blocked,
-        "provider_mutation_performed": False,
+        "previewed": 0,
+        "dispatched": len(processed),
+        "blocked": sum(1 for item in processed if item["status"] in {"abstained", "blocked", "allocation_blocked"}),
+        "entries": processed,
+        "blocked_entries": [item for item in processed if item["blockers"]],
+        "provider_mutation_performed": mutations,
         "paid_execution_boundary": CANONICAL_ALLOCATOR_ENTRYPOINT,
     }
+
+
+@contextmanager
+def _queue_process_lock(queue_root: Path):
+    """Serialize queue claims so two timer/path activations cannot double-spend."""
+
+    lock_path = queue_root / ".capture-reconstruction.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _resolve_staged_capture_raw_root(
+    *, request: Mapping[str, Any], capture_storage_root: str | Path
+) -> Path:
+    """Map the immutable gs:// identity to the listener's deterministic staging path."""
+
+    from .core.security_controls import contained_path
+
+    parsed = urlparse(str(request.get("capture_root_uri") or ""))
+    expected_suffix = (
+        f"/scenes/{request.get('scene_id')}/captures/{request.get('capture_id')}/raw"
+    )
+    if parsed.scheme != "gs" or not parsed.netloc or parsed.path != expected_suffix:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_capture_root_uri_identity_mismatch"
+        )
+    root = Path(capture_storage_root).expanduser().resolve()
+    raw = contained_path(
+        root,
+        parsed.netloc,
+        "scenes",
+        str(request["scene_id"]),
+        "captures",
+        str(request["capture_id"]),
+        "raw",
+        field="capture reconstruction staged raw path",
+    )
+    if not (raw / "capture_upload_complete.json").is_file():
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_staged_raw_capture_absent"
+        )
+    return raw
 
 
 def build_capture_scoped_policy(
@@ -1055,6 +1375,46 @@ def build_capture_scoped_policy(
     return policy
 
 
+def build_capture_job_scoped_policy(
+    *,
+    capture_job_id: str,
+    site_id: str,
+    task_id: str,
+    selector: str,
+    parameters: Mapping[str, Any],
+    rights_profile: str,
+    rights_evidence_digest: str,
+    arms: Sequence[str],
+    max_spend_usd: float,
+    hard_ttl_seconds: int,
+    authority_id: str,
+) -> dict[str, Any]:
+    """Compose standing authority for captures from one reserved WebApp job."""
+
+    policy: dict[str, Any] = {
+        "schema_version": POLICY_SCHEMA_VERSION,
+        "policy_id": f"capture-job-{capture_job_id}",
+        "capture_job_id": str(capture_job_id),
+        "site_id": str(site_id),
+        "task_id": str(task_id),
+        "selector": str(selector),
+        "parameters": json.loads(canonical_json(dict(parameters))),
+        "rights_authority": {
+            "rights_profile": str(rights_profile),
+            "rights_evidence_digest": str(rights_evidence_digest),
+        },
+        "arms": sorted(str(arm) for arm in arms),
+        "max_spend_usd": float(max_spend_usd),
+        "hard_ttl_seconds": int(hard_ttl_seconds),
+        "authority_id": str(authority_id),
+    }
+    policy["policy_digest"] = canonical_digest(policy, digest_field="policy_digest")
+    blockers = validate_site_task_reconstruction_policy(policy)
+    if blockers:
+        raise CaptureReconstructionLaunchError(",".join(blockers))
+    return policy
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1062,6 +1422,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     drain = commands.add_parser("drain", help="preview or dispatch queued launches")
     drain.add_argument("--queue-root", required=True)
     drain.add_argument("--state-root", required=True)
+    drain.add_argument("--derived-root")
+    drain.add_argument("--capture-storage-root")
+    drain.add_argument("--prepare", action="store_true")
     drain.add_argument("--execute", action="store_true")
 
     bind = commands.add_parser(
@@ -1081,11 +1444,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     bind.add_argument("--hard-ttl-seconds", type=int, required=True)
     bind.add_argument("--authority-id", required=True)
 
+    bind_job = commands.add_parser(
+        "bind-capture-job",
+        help="register standing reconstruction authority for one reserved capture job",
+    )
+    bind_job.add_argument("--policy-root", required=True)
+    bind_job.add_argument("--capture-job-id", required=True)
+    bind_job.add_argument("--site-id", required=True)
+    bind_job.add_argument("--task-id", required=True)
+    bind_job.add_argument("--selector", required=True, choices=sorted(ALLOWED_CAPTURE_SELECTORS))
+    bind_job.add_argument("--parameters-json", required=True)
+    bind_job.add_argument("--rights-profile", required=True)
+    bind_job.add_argument("--rights-evidence-digest", required=True)
+    bind_job.add_argument("--arm", action="append", required=True, choices=sorted(ADMITTED_ARMS))
+    bind_job.add_argument("--max-spend-usd", type=float, required=True)
+    bind_job.add_argument("--hard-ttl-seconds", type=int, required=True)
+    bind_job.add_argument("--authority-id", required=True)
+
     arguments = parser.parse_args(argv)
 
-    if arguments.command == "bind-capture":
-        policy = build_capture_scoped_policy(
-            capture_id=arguments.capture_id,
+    if arguments.command in {"bind-capture", "bind-capture-job"}:
+        common = dict(
             site_id=arguments.site_id,
             task_id=arguments.task_id,
             selector=arguments.selector,
@@ -1097,9 +1476,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             hard_ttl_seconds=arguments.hard_ttl_seconds,
             authority_id=arguments.authority_id,
         )
+        if arguments.command == "bind-capture":
+            policy = build_capture_scoped_policy(
+                capture_id=arguments.capture_id, **common
+            )
+            filename = f"capture-{arguments.capture_id}.json"
+        else:
+            policy = build_capture_job_scoped_policy(
+                capture_job_id=arguments.capture_job_id, **common
+            )
+            filename = f"capture-job-{arguments.capture_job_id}.json"
         root = Path(arguments.policy_root).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
-        path = root / f"capture-{arguments.capture_id}.json"
+        path = root / filename
         _write_immutable(path, policy)
         json.dump(
             {"policy_path": str(path), "policy_digest": policy["policy_digest"]},
@@ -1110,10 +1499,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
 
+    allocator = None
+    if arguments.execute:
+        from .capture_reconstruction_postshot_allocator import production_allocator
+
+        allocator = production_allocator
     result = process_launch_queue(
         queue_root=arguments.queue_root,
         state_root=arguments.state_root,
+        derived_root=arguments.derived_root,
+        capture_storage_root=arguments.capture_storage_root,
+        prepare=arguments.prepare or arguments.execute,
         execute=arguments.execute,
+        allocator=allocator,
     )
     json.dump(result, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
@@ -1131,6 +1529,7 @@ __all__ = [
     "QUEUE_RUN_SCHEMA_VERSION",
     "SELECTION_PROFILE_SCHEMA_VERSION",
     "build_capture_scoped_policy",
+    "build_capture_job_scoped_policy",
     "build_launch_request",
     "complete_capture_reconstruction",
     "compute_capture_digest",

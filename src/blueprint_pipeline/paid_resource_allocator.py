@@ -105,8 +105,8 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
     run_gpu_lane as run_cosmos_reasoner_gpu_lane,
 )
 from .policy_ranking_successor_retained_session import refresh_retained_session
-from .reconstruction_gpu_operation_output import (
-    validate_reconstruction_gpu_operation_output_bundle as _windows_output_validator,
+from .canonical_3dgs_vast_output import (
+    validate_canonical_3dgs_vast_output_bundle as _windows_output_validator,
 )
 from .reconstruction_vast_operation import (
     _default_output_fetcher as _windows_output_fetcher,
@@ -1279,6 +1279,39 @@ def _run_reconstruction_gpu_canary(
             or container_disk_bytes < 0
         ):
             container_disk_bytes = 0
+        capacity_probe = provider.capacity_preflight
+        if args.provider == "aws":
+            canary_request = _load(args.provider_launch_request)
+            probe_spec = RenderLaunchSpec(
+                name=str(
+                    getattr(
+                        args,
+                        "reconstruction_name_prefix",
+                        "blueprint-postshot-preflight",
+                    )
+                )[:255],
+                image=str(canary_request.get("worker_image_digest") or ""),
+                env={
+                    "BLUEPRINT_WORKER_HARD_TTL_SECONDS": str(
+                        getattr(args, "reconstruction_hard_ttl_seconds", 0) or 0
+                    )
+                },
+                bootstrap_argv=[],
+                entrypoint=[],
+                container_disk_gb=max(100, int(container_disk_bytes) // 1024**3),
+                volume_gb=0,
+                max_hourly_rate_usd=float(max_hourly_rate),
+                min_gpu_ram_mb=24_000,
+                requires_rtx=False,
+            )
+            aws_probe_request = provider.build_request(
+                probe_spec,
+                Path(args.adapter_output).expanduser().resolve().parent
+                / "aws_preflight",
+            )
+            capacity_probe = lambda _request: provider.capacity_preflight(
+                aws_probe_request
+            )
         refreshed = collect_reconstruction_vast_preflight(
             name_prefix=getattr(
                 args,
@@ -1288,9 +1321,10 @@ def _run_reconstruction_gpu_canary(
             container_disk_bytes=container_disk_bytes,
             watchdog=(seed.get("watchdog") if isinstance(seed.get("watchdog"), dict) else {}),
             conflicting_owner_present=(seed.get("conflicting_owner_present") is not False),
-            capacity_probe=provider.capacity_preflight,
+            capacity_probe=capacity_probe,
             inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
             max_hourly_rate_usd=float(max_hourly_rate),
+            provider_name=args.provider,
         )
         write_json(Path(args.preflight_bundle), refreshed)
     admission = prepare_reconstruction_gpu_canary(
@@ -1392,6 +1426,15 @@ def _run_reconstruction_gpu_canary(
             preflight=_load(args.preflight_bundle),
             job_dir=adapter_path.parent / "reconstruction_aws_windows_operation",
             output_bundle_get_url=resolved_urls["provider_output_get_url"],
+            input_bundle_get_url=resolved_urls["provider_bundle_url"],
+            input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
+            input_receipt_file_digest=(
+                "sha256:"
+                + hashlib.sha256(
+                    Path(args.reconstruction_operation_bundle_receipt).read_bytes()
+                ).hexdigest()
+            ),
+            output_bundle_put_url=resolved_urls["provider_output_put_url"],
             provider=get_render_provider("aws"),
             allocator_admission=admission,
             paid_resource_admission_grant=grant,
@@ -1489,7 +1532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument(
         "--provider",
-        choices=("runpod", "vast", "digitalocean"),
+        choices=("runpod", "vast", "digitalocean", "aws"),
         default="runpod",
     )
     gpu.add_argument(

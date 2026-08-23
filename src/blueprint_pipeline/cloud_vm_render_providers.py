@@ -9,6 +9,7 @@ closed before a mutating API call.  Provider responses are normalized to the
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import os
 import re
@@ -42,6 +43,7 @@ GCP_SERVICE_USAGE_API = "https://serviceusage.googleapis.com/v1beta1"
 _GCP_SERVICE_USAGE_POLICY = safe_outbound_http.pinned_api_policy(GCP_SERVICE_USAGE_API)
 GCP_CREDENTIALS_FILE_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
 AWS_CREDENTIALS_FILE_ENV = "AWS_SHARED_CREDENTIALS_FILE"
+AWS_USER_DATA_MAX_BYTES = 16 * 1024
 
 _NAME_RE = re.compile(r"^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 _AWS_ID_RE = re.compile(r"^i-[0-9a-f]{8,32}$")
@@ -148,8 +150,20 @@ WINDOWS_WORKER_PLATFORM = "windows"
 #: digests: the driver is large and the Postshot MSI is licensed, so neither
 #: can be fetched from an arbitrary location.
 WINDOWS_DRIVER_URL_ENV = "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL"
+WINDOWS_DRIVER_SHA256_ENV = "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256"
 WINDOWS_INSTALLER_URL_ENV = "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL"
 WINDOWS_INSTALLER_SHA256_ENV = "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256"
+WINDOWS_PYTHON_URL_ENV = "BLUEPRINT_WINDOWS_PYTHON_EMBED_GET_URL"
+WINDOWS_PYTHON_SHA256_ENV = "BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256"
+WINDOWS_NUMPY_URL_ENV = "BLUEPRINT_WINDOWS_NUMPY_WHEEL_GET_URL"
+WINDOWS_NUMPY_SHA256_ENV = "BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256"
+
+
+def _validated_sha256(spec: RenderLaunchSpec, name: str) -> str:
+    value = str(spec.env.get(name) or "").lower().removeprefix("sha256:")
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"windows_worker_runtime_digest_invalid:{name}")
+    return value
 
 
 def _windows_provisioning_block(spec: RenderLaunchSpec, *, marker: str) -> str:
@@ -167,7 +181,8 @@ def _windows_provisioning_block(spec: RenderLaunchSpec, *, marker: str) -> str:
 
     driver_url = str(spec.env.get(WINDOWS_DRIVER_URL_ENV) or "")
     installer_url = str(spec.env.get(WINDOWS_INSTALLER_URL_ENV) or "")
-    installer_sha = str(spec.env.get(WINDOWS_INSTALLER_SHA256_ENV) or "").lower()
+    python_url = str(spec.env.get(WINDOWS_PYTHON_URL_ENV) or "")
+    numpy_url = str(spec.env.get(WINDOWS_NUMPY_URL_ENV) or "")
 
     if not (driver_url or installer_url):
         return f"""# The baked host image must already carry the exact worker identity.
@@ -176,27 +191,70 @@ if (-not (Test-Path $markerPath)) {{ throw "blueprint_worker_image_marker_missin
 $marker = (Get-Content $markerPath -Raw).Trim()
 if ($marker -ne {marker}) {{ throw "blueprint_worker_image_marker_mismatch" }}"""
 
-    if not (driver_url and installer_url and installer_sha):
-        raise ValueError(
-            "windows_worker_install_at_boot_requires_driver_url_installer_url_and_digest"
-        )
-    if len(installer_sha) != 64 or any(c not in "0123456789abcdef" for c in installer_sha):
-        raise ValueError("windows_worker_installer_digest_invalid")
+    if not (driver_url and installer_url and python_url and numpy_url):
+        raise ValueError("windows_worker_install_at_boot_requires_all_runtime_urls")
+    for digest_name in (
+        WINDOWS_DRIVER_SHA256_ENV,
+        WINDOWS_INSTALLER_SHA256_ENV,
+        WINDOWS_PYTHON_SHA256_ENV,
+        WINDOWS_NUMPY_SHA256_ENV,
+    ):
+        _validated_sha256(spec, digest_name)
 
     return f"""# No baked image yet: provision this host in the paid window.
-Invoke-WebRequest -Uri "{driver_url}" -OutFile C:\\work\\nvidia.exe -UseBasicParsing -TimeoutSec 900
+Invoke-WebRequest -Uri $workerEnv["{WINDOWS_DRIVER_URL_ENV}"] -OutFile C:\\work\\nvidia.exe -UseBasicParsing -TimeoutSec 900
+$driverHash = (Get-FileHash C:\\work\\nvidia.exe -Algorithm SHA256).Hash.ToLower()
+if ($driverHash -ne $workerEnv["{WINDOWS_DRIVER_SHA256_ENV}"].Replace("sha256:", "")) {{ throw "nvidia_driver_digest_mismatch" }}
 $d = Start-Process -FilePath C:\\work\\nvidia.exe -ArgumentList "-s","-noreboot" -PassThru
 Wait-Process -Id $d.Id -Timeout 1800 -ErrorAction SilentlyContinue | Out-Null
+if (-not $d.HasExited) {{ Stop-Process -Id $d.Id -Force; throw "nvidia_driver_install_timeout" }}
+if ($d.ExitCode -ne 0 -and $d.ExitCode -ne 3010) {{ throw "nvidia_driver_install_exit_$($d.ExitCode)" }}
 if (-not (Test-Path "C:\\Windows\\System32\\nvidia-smi.exe")) {{ throw "nvidia_driver_install_failed" }}
 
-Invoke-WebRequest -Uri "{installer_url}" -OutFile C:\\work\\postshot.msi -UseBasicParsing -TimeoutSec 900
+Invoke-WebRequest -Uri $workerEnv["{WINDOWS_INSTALLER_URL_ENV}"] -OutFile C:\\work\\postshot.msi -UseBasicParsing -TimeoutSec 900
 $hash = (Get-FileHash C:\\work\\postshot.msi -Algorithm SHA256).Hash.ToLower()
-if ($hash -ne "{installer_sha}") {{ throw "postshot_installer_digest_mismatch" }}
+if ($hash -ne $workerEnv["{WINDOWS_INSTALLER_SHA256_ENV}"].Replace("sha256:", "")) {{ throw "postshot_installer_digest_mismatch" }}
 $m = Start-Process -FilePath msiexec.exe -ArgumentList "/i","C:\\work\\postshot.msi","/qn","/norestart" -PassThru
 Wait-Process -Id $m.Id -Timeout 900 -ErrorAction SilentlyContinue | Out-Null
 if (-not $m.HasExited) {{ Stop-Process -Id $m.Id -Force; throw "msiexec_timeout" }}
 if ($m.ExitCode -ne 0 -and $m.ExitCode -ne 3010) {{ throw "msiexec_exit_$($m.ExitCode)" }}
-if (-not (Test-Path "$Env:ProgramFiles\\Jawset Postshot\\bin\\postshot-cli.exe")) {{ throw "postshot_cli_not_found" }}"""
+if (-not (Test-Path "$Env:ProgramFiles\\Jawset Postshot\\bin\\postshot-cli.exe")) {{ throw "postshot_cli_not_found" }}
+
+# Bootstrap an exact Python 3.12 runtime without a package index or mutable
+# resolver. The official embeddable runtime and the only binary dependency are
+# content-addressed before either can execute.
+Invoke-WebRequest -Uri $workerEnv["{WINDOWS_PYTHON_URL_ENV}"] -OutFile C:\\work\\python-embed.zip -UseBasicParsing -TimeoutSec 900
+$pythonHash = (Get-FileHash C:\\work\\python-embed.zip -Algorithm SHA256).Hash.ToLower()
+if ($pythonHash -ne $workerEnv["{WINDOWS_PYTHON_SHA256_ENV}"].Replace("sha256:", "")) {{ throw "python_embed_digest_mismatch" }}
+New-Item -ItemType Directory -Force -Path C:\\blueprint\\python\\Lib\\site-packages | Out-Null
+Expand-Archive -LiteralPath C:\\work\\python-embed.zip -DestinationPath C:\\blueprint\\python -Force
+$pth = Get-ChildItem C:\\blueprint\\python -Filter "python*._pth"
+if (@($pth).Count -ne 1) {{ throw "python_embed_path_file_invalid" }}
+$pthText = (Get-Content $pth.FullName -Raw).Replace("#import site", "import site")
+if ($pthText -notmatch "Lib\\\\site-packages") {{ $pthText += "`r`nLib\\site-packages`r`n" }}
+Set-Content -LiteralPath $pth.FullName -Value $pthText -Encoding ASCII -NoNewline
+
+Invoke-WebRequest -Uri $workerEnv["{WINDOWS_NUMPY_URL_ENV}"] -OutFile C:\\work\\numpy.whl -UseBasicParsing -TimeoutSec 900
+$numpyHash = (Get-FileHash C:\\work\\numpy.whl -Algorithm SHA256).Hash.ToLower()
+if ($numpyHash -ne $workerEnv["{WINDOWS_NUMPY_SHA256_ENV}"].Replace("sha256:", "")) {{ throw "numpy_wheel_digest_mismatch" }}
+Copy-Item C:\\work\\numpy.whl C:\\work\\numpy.zip
+Expand-Archive -LiteralPath C:\\work\\numpy.zip -DestinationPath C:\\blueprint\\python\\Lib\\site-packages -Force
+
+# The exact promoted-SHA Blueprint wheel already travels inside the immutable
+# input bundle. Verify the whole bundle before extracting that wheel.
+$bundleUrl = $workerEnv["BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL"]
+$bundleDigest = $workerEnv["BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST"].Replace("sha256:", "")
+if (-not $bundleUrl -or $bundleDigest.Length -ne 64) {{ throw "bootstrap_transport_identity_missing" }}
+Invoke-WebRequest -Uri $bundleUrl -OutFile C:\\work\\bootstrap-transport.zip -UseBasicParsing -TimeoutSec 900
+$bundleHash = (Get-FileHash C:\\work\\bootstrap-transport.zip -Algorithm SHA256).Hash.ToLower()
+if ($bundleHash -ne $bundleDigest) {{ throw "bootstrap_transport_digest_mismatch" }}
+Expand-Archive -LiteralPath C:\\work\\bootstrap-transport.zip -DestinationPath C:\\work\\bootstrap-transport -Force
+$workerWheel = Get-ChildItem C:\\work\\bootstrap-transport\\worker -Filter "*.whl" -File
+if (@($workerWheel).Count -ne 1) {{ throw "bootstrap_worker_wheel_count_invalid" }}
+Copy-Item $workerWheel.FullName C:\\work\\blueprint-worker.zip
+Expand-Archive -LiteralPath C:\\work\\blueprint-worker.zip -DestinationPath C:\\blueprint\\python\\Lib\\site-packages -Force
+& C:\\blueprint\\python\\python.exe -I -c "import numpy, blueprint_pipeline.windows_worker_entrypoint"
+if ($LASTEXITCODE -ne 0) {{ throw "blueprint_python_runtime_import_failed" }}"""
 
 
 def _windows_worker_bootstrap(spec: RenderLaunchSpec) -> str:
@@ -235,8 +293,11 @@ def _windows_worker_bootstrap(spec: RenderLaunchSpec) -> str:
             + ",".join(smuggled)
         )
 
-    env_b64 = base64.b64encode(
-        "\n".join(f"{key}={value}" for key, value in spec.env.items()).encode()
+    env_gzip_b64 = base64.b64encode(
+        gzip.compress(
+            "\n".join(f"{key}={value}" for key, value in spec.env.items()).encode(),
+            mtime=0,
+        )
     ).decode()
     argv_b64 = base64.b64encode(json.dumps(list(spec.bootstrap_argv)).encode()).decode()
     marker = json.dumps(spec.image)
@@ -255,16 +316,35 @@ if ($deadline -gt 0) {{
     -Trigger $trigger -User "SYSTEM" -RunLevel Highest -Force | Out-Null
 }}
 
-{provision}
-
-[IO.File]::WriteAllBytes("C:\\work\\blueprint_worker.env",
-  [Convert]::FromBase64String("{env_b64}"))
+$compressedEnv = [Convert]::FromBase64String("{env_gzip_b64}")
+$compressedStream = New-Object IO.MemoryStream(,$compressedEnv)
+$gzipStream = New-Object IO.Compression.GzipStream(
+  $compressedStream, [IO.Compression.CompressionMode]::Decompress)
+$environmentStream = New-Object IO.MemoryStream
+$gzipStream.CopyTo($environmentStream)
+[IO.File]::WriteAllBytes("C:\\work\\blueprint_worker.env", $environmentStream.ToArray())
+$gzipStream.Dispose()
+$compressedStream.Dispose()
+$environmentStream.Dispose()
 [IO.File]::WriteAllBytes("C:\\work\\blueprint_argv.json",
   [Convert]::FromBase64String("{argv_b64}"))
 
+$workerEnv = @{{}}
+Get-Content C:\\work\\blueprint_worker.env | ForEach-Object {{
+  $parts = $_.Split('=', 2)
+  if ($parts.Count -eq 2) {{ $workerEnv[$parts[0]] = $parts[1] }}
+}}
+
+{provision}
+
 $env:BLUEPRINT_WORKER_ENV_FILE = "C:\\work\\blueprint_worker.env"
 $env:BLUEPRINT_WORKER_ARGV_FILE = "C:\\work\\blueprint_argv.json"
-& "C:\\blueprint\\venv\\Scripts\\python.exe" -m blueprint_pipeline.windows_worker_entrypoint
+& "C:\\blueprint\\python\\python.exe" -I -m blueprint_pipeline.windows_worker_entrypoint
+$workerExit = $LASTEXITCODE
+# The output upload is synchronous. Once it returns, terminate immediately;
+# the scheduled deadline remains only the crash/hang backstop.
+shutdown.exe /s /t 0 /f
+exit $workerExit
 </powershell>
 <persist>false</persist>
 """
@@ -786,6 +866,13 @@ class AWSRenderProvider(GpuRenderProvider):
         elif config["configured_hourly_rate_usd"] is not None and config["configured_hourly_rate_usd"] > config["max_hourly_rate_usd"]:
             blockers.append("aws_hourly_rate_exceeds_cap")
         name = spec.name[:255]
+        user_data = (
+            _windows_worker_bootstrap(spec)
+            if windows_worker
+            else _worker_cloud_init(spec, provider="aws", registry_auth=config["registry_auth"], registry_host=config["registry_host"], aws_region=config["region"])
+        )
+        if len(user_data.encode("utf-8")) > AWS_USER_DATA_MAX_BYTES:
+            blockers.append("aws_user_data_exceeds_provider_limit")
         body: dict[str, Any] = {
             "ImageId": config["ami_id"],
             "InstanceType": config["instance_type"],
@@ -793,11 +880,7 @@ class AWSRenderProvider(GpuRenderProvider):
             "MaxCount": 1,
             "SubnetId": config["subnet_id"],
             "SecurityGroupIds": config["security_group_ids"],
-            "UserData": (
-                _windows_worker_bootstrap(spec)
-                if windows_worker
-                else _worker_cloud_init(spec, provider="aws", registry_auth=config["registry_auth"], registry_host=config["registry_host"], aws_region=config["region"])
-            ),
+            "UserData": user_data,
             # Windows AMIs expose the root volume as /dev/sda1 too, but the
             # device name must match the AMI's own block device mapping.
             "BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": max(spec.container_disk_gb, int(config["boot_disk_gb"])), "VolumeType": "gp3", "DeleteOnTermination": True, "Encrypted": True}}],
@@ -837,9 +920,26 @@ class AWSRenderProvider(GpuRenderProvider):
             subnets = ec2.describe_subnets(SubnetIds=[body["SubnetId"]]).get("Subnets", [])
             groups = ec2.describe_security_groups(GroupIds=list(body["SecurityGroupIds"])).get("SecurityGroups", [])
             profile_arn = str(_mapping(body.get("IamInstanceProfile")).get("Arn") or "")
-            profile_name = profile_arn.rsplit("/", 1)[-1]
-            profile = self._iam().get_instance_profile(InstanceProfileName=profile_name).get("InstanceProfile", {})
-            checks.update({"instance_type": bool(types), "regional_offering": bool(offerings), "ami": bool(image), "subnet": bool(subnets), "security_groups": len(groups) == len(body["SecurityGroupIds"]), "iam_instance_profile": bool(profile) and profile.get("Arn") == profile_arn})
+            profile_verified = True
+            if profile_arn:
+                profile_name = profile_arn.rsplit("/", 1)[-1]
+                profile = self._iam().get_instance_profile(
+                    InstanceProfileName=profile_name
+                ).get("InstanceProfile", {})
+                profile_verified = bool(profile) and profile.get("Arn") == profile_arn
+            checks.update(
+                {
+                    "instance_type": bool(types),
+                    "regional_offering": bool(offerings),
+                    "ami": bool(image),
+                    "subnet": bool(subnets),
+                    "security_groups": len(groups) == len(body["SecurityGroupIds"]),
+                    # A Windows signed-URL worker deliberately has no instance
+                    # role.  Only verify a profile when the launch request
+                    # actually carries one.
+                    "iam_instance_profile": profile_verified,
+                }
+            )
             for key, passed in list(checks.items()):
                 if key == "account":
                     continue
@@ -867,7 +967,39 @@ class AWSRenderProvider(GpuRenderProvider):
         except Exception as exc:  # noqa: BLE001
             blockers.append("aws_capacity_preflight_api_failed")
             checks["error_type"] = type(exc).__name__
-        return {"status": "available" if not blockers else "blocked", "provider": self.name, "region": req.get("region") or self._config()["region"], "checks": checks, "quota_verified": bool(_mapping(checks.get("quota")).get("verified")), "capacity_reservation_proven": False, "blockers": list(dict.fromkeys(blockers)), "api_confirmed": not blockers, "raw_provider_response_recorded": False}
+        instance_metadata = _mapping(types[0]) if types else {}
+        gpu_rows = _mapping(instance_metadata.get("GpuInfo")).get("Gpus")
+        gpu_rows = gpu_rows if isinstance(gpu_rows, list) else []
+        gpu_memory_mb = sum(
+            int(_mapping(_mapping(row).get("MemoryInfo")).get("SizeInMiB") or 0)
+            * int(_mapping(row).get("Count") or 0)
+            for row in gpu_rows
+        )
+        configured_rate = self._config()["configured_hourly_rate_usd"]
+        selected_offer = (
+            {
+                "gpu_name": ",".join(
+                    str(_mapping(row).get("Name") or "") for row in gpu_rows
+                ),
+                "gpu_ram_mb": gpu_memory_mb,
+                "on_demand_price_usd_per_hour": configured_rate,
+                "instance_type": instance_type,
+            }
+            if gpu_rows
+            else None
+        )
+        return {
+            "status": "available" if not blockers else "blocked",
+            "provider": self.name,
+            "region": req.get("region") or self._config()["region"],
+            "checks": checks,
+            "quota_verified": bool(_mapping(checks.get("quota")).get("verified")),
+            "selected_offer": selected_offer,
+            "capacity_reservation_proven": False,
+            "blockers": list(dict.fromkeys(blockers)),
+            "api_confirmed": not blockers,
+            "raw_provider_response_recorded": False,
+        }
 
     def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True, paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None) -> dict:
         try:

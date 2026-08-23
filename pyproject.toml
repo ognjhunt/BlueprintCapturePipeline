@@ -32,6 +32,10 @@ dependencies = [
     # module load. Keep this direct in the production base instead of relying
     # on a developer-only transitive dependency.
     "packaging>=24.0",
+    # Raw V3.2 candidate manifests are signed by iOS and verified by the
+    # Node.js upload bridge. RFC 8785 preserves ECMAScript number formatting so
+    # Pipeline verifies the exact same canonical bytes across runtimes.
+    "rfc8785==0.1.4",
     # The canonical allocator imports the Content Agents adapter at module
     # load, and that adapter imports OpenUSD pxr. The production control-plane
     # base must therefore carry usd-core; a geometry/dev-only declaration

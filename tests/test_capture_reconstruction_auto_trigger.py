@@ -85,8 +85,17 @@ def _capture_root(tmp_path: Path, *, site_id: str = "site-warehouse-a",
             artifacts[str(path.relative_to(raw))] = hashlib.sha256(
                 path.read_bytes()
             ).hexdigest()
+    canonical_rows = "\n".join(
+        f"{relative}:{artifacts[relative]}" for relative in sorted(artifacts)
+    )
     (raw / "hashes.json").write_text(
-        json.dumps({"artifacts": artifacts}), encoding="utf-8"
+        json.dumps(
+            {
+                "bundle_sha256": hashlib.sha256(canonical_rows.encode()).hexdigest(),
+                "artifacts": artifacts,
+            }
+        ),
+        encoding="utf-8",
     )
     return capture_root
 
@@ -109,6 +118,8 @@ def test_capture_digest_is_derived_from_the_validated_hash_manifest(tmp_path: Pa
     raw = _capture_root(tmp_path) / "raw"
     digest = compute_capture_digest(raw)
     assert digest.startswith("sha256:")
+    hashes = json.loads((raw / "hashes.json").read_text(encoding="utf-8"))
+    assert digest == "sha256:" + hashes["bundle_sha256"]
     assert compute_capture_digest(raw) == digest
 
 
@@ -119,8 +130,23 @@ def test_capture_digest_changes_when_any_raw_byte_changes(tmp_path: Path) -> Non
     (raw / "video.mov").write_bytes(b"tampered")
     hashes = json.loads((raw / "hashes.json").read_text(encoding="utf-8"))
     hashes["artifacts"]["video.mov"] = hashlib.sha256(b"tampered").hexdigest()
+    canonical_rows = "\n".join(
+        f"{relative}:{hashes['artifacts'][relative]}"
+        for relative in sorted(hashes["artifacts"])
+    )
+    hashes["bundle_sha256"] = hashlib.sha256(canonical_rows.encode()).hexdigest()
     (raw / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
     assert compute_capture_digest(raw) != before
+
+
+def test_capture_digest_refuses_a_mutated_declared_bundle_digest(tmp_path: Path) -> None:
+    raw = _capture_root(tmp_path) / "raw"
+    hashes = json.loads((raw / "hashes.json").read_text(encoding="utf-8"))
+    hashes["bundle_sha256"] = "0" * 64
+    (raw / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
+    with pytest.raises(CaptureReconstructionLaunchError) as excinfo:
+        compute_capture_digest(raw)
+    assert "bundle_digest_mismatch" in str(excinfo.value)
 
 
 def test_capture_digest_refuses_a_hash_manifest_that_disagrees_with_bytes(
@@ -271,6 +297,7 @@ def test_listener_enqueues_automatically_when_configured(
     monkeypatch.setenv(
         listener.RECONSTRUCTION_QUEUE_ROOT_ENV, str(tmp_path / "queue")
     )
+    monkeypatch.setenv(listener.RECONSTRUCTION_SOURCE_COMMIT_ENV, "a" * 40)
 
     # Two deliveries of the same message, seconds apart, as Pub/Sub really does.
     first = listener._enqueue_capture_reconstruction_if_configured(

@@ -1,0 +1,11 @@
+[Unit]
+Description=Resume incomplete Blueprint capture reconstruction checkpoints
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+Unit=blueprint-capture-reconstruction-dispatcher.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

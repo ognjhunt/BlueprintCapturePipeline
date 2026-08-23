@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import join_gs_uri, read_json
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import (
+    canonical_digest,
+    canonical_json,
+    cross_runtime_canonical_digest,
+)
 
 
 CANDIDATE_SCHEMA_VERSION = "downstream_candidate_manifest.v1"
@@ -87,7 +91,7 @@ def validate_capture_v32_candidate_manifest(
     errors: list[str] = []
     if manifest.get("schema_version") != CANDIDATE_SCHEMA_VERSION:
         errors.append("capture_v32_candidate_schema_invalid")
-    if manifest.get("manifest_digest") != canonical_digest(
+    if manifest.get("manifest_digest") != cross_runtime_canonical_digest(
         manifest, digest_field="manifest_digest"
     ):
         errors.append("capture_v32_candidate_digest_mismatch")
@@ -244,7 +248,8 @@ def validate_capture_v32_candidate_manifest(
             or not isinstance(intrinsics.get("matrix_column_major"), list)
             or len(intrinsics["matrix_column_major"]) != 9
             or not all(_finite_number(cell) for cell in intrinsics["matrix_column_major"])
-            or row.get("camera_calibration_digest") != canonical_digest(intrinsics)
+            or row.get("camera_calibration_digest")
+            != cross_runtime_canonical_digest(intrinsics)
         ):
             errors.append(f"capture_v32_candidate_intrinsics_invalid:{ordinal}")
         tracking_state = str(row.get("tracking_state") or "unknown")

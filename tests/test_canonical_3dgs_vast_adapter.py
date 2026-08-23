@@ -197,7 +197,12 @@ def _write_worker_controls(root: Path, splat: Path) -> dict:
                 "relative_path": "candidate.ply",
                 "digest": "sha256:" + hashlib.sha256(splat.read_bytes()).hexdigest(),
             },
-            {"kind": "training_log", "relative_path": "training.log"},
+            {
+                "kind": "training_log",
+                "relative_path": "training.log",
+                "digest": "sha256:"
+                + hashlib.sha256((root / "training.log").read_bytes()).hexdigest(),
+            },
         ],
     }
     receipt["canonical_3dgs_worker_receipt_digest"] = canonical_digest(
@@ -233,8 +238,8 @@ def test_canonical_vast_bootstrap_uses_container_python3_entrypoint() -> None:
 
 def test_canonical_paid_transport_requires_embedded_worker_wheel() -> None:
     assert paid_transport._canonical_worker_wheel_blockers(
-        {}, canonical_splatfacto=True
-    ) == ["canonical_splatfacto_worker_wheel_missing"]
+        {}, canonical_transport=True
+    ) == ["canonical_3dgs_worker_wheel_missing"]
     assert paid_transport._canonical_worker_wheel_blockers(
         {
             "worker_wheel_filename": "worker.whl",
@@ -242,10 +247,10 @@ def test_canonical_paid_transport_requires_embedded_worker_wheel() -> None:
             "worker_wheel_archive_path": "worker/worker.whl",
             "worker_wheel_bytes": 1,
         },
-        canonical_splatfacto=True,
+        canonical_transport=True,
     ) == []
     assert paid_transport._canonical_worker_wheel_blockers(
-        {}, canonical_splatfacto=False
+        {}, canonical_transport=False
     ) == []
 
 

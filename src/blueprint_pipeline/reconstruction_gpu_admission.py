@@ -94,7 +94,8 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "measurement_dlo_lab_canary": "measurement_dlo_lab_cuda_vast_runtime_result.v1",
     "measurement_chrono_dem_canary": "measurement_chrono_dem_cuda_vast_runtime_result.v1",
 }
-CANONICAL_SPLATFACTO_RUNTIME_RESULT_SCHEMA = "canonical_3dgs_vast_runtime_result.v1"
+CANONICAL_3DGS_RUNTIME_RESULT_SCHEMA = "canonical_3dgs_vast_runtime_result.v1"
+CANONICAL_SPLATFACTO_RUNTIME_RESULT_SCHEMA = CANONICAL_3DGS_RUNTIME_RESULT_SCHEMA
 PROVIDER_NUREC_ISAAC_OPERATION = "provider_nurec_isaac_canary"
 EXTERNAL_SCENE_ISAAC_OPERATION = "external_scene_isaac_canary"
 EXTERNAL_DERIVED_ISAAC_OPERATIONS = {
@@ -113,9 +114,13 @@ def _expected_runtime_result_schema(
         return "lightwheel_sink_isaac_runtime_result.v1"
     if (
         operation == "trainer_canary"
-        and requested_adapter == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID
+        and requested_adapter
+        in {
+            CANONICAL_SPLATFACTO_VAST_ADAPTER_ID,
+            CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID,
+        }
     ):
-        return CANONICAL_SPLATFACTO_RUNTIME_RESULT_SCHEMA
+        return CANONICAL_3DGS_RUNTIME_RESULT_SCHEMA
     return EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation)
 
 
@@ -303,9 +308,18 @@ def collect_reconstruction_vast_preflight(
     max_hourly_rate_usd: float,
     minimum_gpu_ram_mb: int = 24_000,
     minimum_reliability: float = 0.98,
+    provider_name: str = "vast",
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
-    """Collect mutation-free Vast capacity and provider-zero evidence."""
+    """Collect mutation-free GPU capacity and provider-zero evidence.
+
+    The public name is retained for receipt compatibility.  A Postshot worker
+    is Windows-only, however, so the same evidence envelope can now bind the
+    governed AWS adapter instead of pretending Vast can execute it.
+    """
+
+    if provider_name not in {"vast", "aws"}:
+        raise ValueError("reconstruction_gpu_preflight_provider_unsupported")
 
     capacity_request = {
         "max_hourly_rate_usd": float(max_hourly_rate_usd),
@@ -363,7 +377,7 @@ def collect_reconstruction_vast_preflight(
     result = {
         "schema_version": PREFLIGHT_SCHEMA_VERSION,
         "status": "verified" if not blockers else "blocked",
-        "provider": "vast",
+        "provider": provider_name,
         "observed_at_epoch": float(clock()),
         "provider_api_verified": provider_api_verified,
         "provider_inventory_verified_zero": provider_zero,
@@ -630,8 +644,14 @@ def build_reconstruction_gpu_canary_admission(
                 ):
                     blockers.append("measurement_chrono_dem_runtime_release_image_mismatch")
 
-    if provider != "vast" or provider_snapshot.get("provider") != "vast":
-        blockers.append("reconstruction_gpu_vast_first_required")
+    requested_adapter = source.get("requested_execution_adapter_id")
+    required_provider = (
+        "aws"
+        if requested_adapter == CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID
+        else "vast"
+    )
+    if provider != required_provider or provider_snapshot.get("provider") != required_provider:
+        blockers.append(f"reconstruction_gpu_{required_provider}_provider_required")
     if provider_snapshot.get("schema_version") != PREFLIGHT_SCHEMA_VERSION:
         blockers.append("reconstruction_gpu_preflight_schema_invalid")
     if provider_snapshot.get("status") != "verified":
@@ -782,7 +802,11 @@ def build_reconstruction_gpu_canary_admission(
         "paid_execution_started": False,
         "execution_adapter_qualified": operation_adapter_qualified,
         "execution_adapter_id": execution_adapter_id if operation_adapter_qualified else None,
-        "worker_platform": "linux" if operation_adapter_qualified and provider == "vast" else None,
+        "worker_platform": (
+            "windows"
+            if operation_adapter_qualified and provider == "aws"
+            else ("linux" if operation_adapter_qualified and provider == "vast" else None)
+        ),
         "allocation_success_is_scientific_success": False,
         "proof_effect": "none",
         "claim_ceiling": "paid_gpu_admission_only",

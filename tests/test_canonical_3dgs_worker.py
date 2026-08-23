@@ -124,8 +124,13 @@ def test_postshot_worker_runs_full_resolution_and_never_returns_secrets(tmp_path
             "https://worker.invalid/presigned?token=value\n",
             encoding="utf-8",
         )
-        Path(arguments[arguments.index("--output") + 1]).write_bytes(b"project")
-        _write_standard_splat(Path(arguments[arguments.index("--export-splat") + 1]))
+        if "train" in arguments:
+            Path(arguments[arguments.index("--output") + 1]).write_bytes(b"project")
+            _write_standard_splat(
+                Path(arguments[arguments.index("--export-splat-ply") + 1])
+            )
+        else:
+            Path(arguments[arguments.index("--export") + 1]).write_bytes(b"spz-v4")
         return 0
 
     receipt = run_postshot_arm(
@@ -148,6 +153,7 @@ def test_postshot_worker_runs_full_resolution_and_never_returns_secrets(tmp_path
         "standard_3dgs_ply",
         "postshot_project",
         "training_log",
+        "compressed_3dgs_spz_v4",
     }
     rendered = str(receipt)
     assert "operator@example.invalid" not in rendered
@@ -160,6 +166,9 @@ def test_postshot_worker_runs_full_resolution_and_never_returns_secrets(tmp_path
     assert seen[0].index("--login") < seen[0].index("train")
     assert seen[0][seen[0].index("--max-image-size") + 1] == "0"
     assert "--no-recenter-points" in seen[0]
+    assert len(seen) == 2
+    assert seen[1][seen[1].index("--spz-version") + 1] == "4"
+    assert seen[1][seen[1].index("--spz-quality") + 1] == "6"
 
 
 def test_postshot_runtime_binding_hashes_actual_executable_bytes(tmp_path: Path) -> None:

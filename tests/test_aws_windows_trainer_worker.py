@@ -8,11 +8,14 @@ that make a Windows trainer host safe to allocate rather than merely possible.
 from __future__ import annotations
 
 import base64
+import hashlib
+import gzip
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.cloud_vm_render_providers import (
+    AWS_USER_DATA_MAX_BYTES,
     WINDOWS_WORKER_PLATFORM,
     AWSRenderProvider,
     _windows_worker_bootstrap,
@@ -25,6 +28,8 @@ def _spec(**env: str) -> RenderLaunchSpec:
         "BLUEPRINT_WORKER_IMAGE_DIGEST": "blueprint-postshot-host@sha256:" + "a" * 64,
         "BLUEPRINT_WORKER_HARD_TTL_SECONDS": "5400",
         "BLUEPRINT_POSTSHOT_LICENCE_GET_URL": "https://example.invalid/signed-licence",
+        "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL": "https://example.invalid/signed-bundle",
+        "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST": "sha256:" + "f" * 64,
     }
     base.update(env)
     return RenderLaunchSpec(
@@ -53,6 +58,19 @@ def _aws_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
         monkeypatch.setenv(key, value)
 
 
+def _decoded_user_data(script: str) -> str:
+    decoded = ""
+    for token in script.split('"'):
+        try:
+            raw = base64.b64decode(token)
+            if raw.startswith(b"\x1f\x8b"):
+                raw = gzip.decompress(raw)
+            decoded += raw.decode("utf-8", errors="ignore")
+        except Exception:  # noqa: BLE001
+            continue
+    return script + decoded
+
+
 # --------------------------------------------------------------------------
 # The licence must never cross the UserData boundary
 # --------------------------------------------------------------------------
@@ -62,22 +80,14 @@ def test_bootstrap_refuses_a_credential_instead_of_embedding_it() -> None:
     """UserData is readable over IMDS and via DescribeInstanceAttribute, so a
     credential must never reach it — and refusing beats silently dropping."""
     with pytest.raises(ValueError) as excinfo:
-        _windows_worker_bootstrap(
-            _spec(POSTSHOT_LOGIN_PASSWORD="correct-horse-battery-staple")
-        )
+        _windows_worker_bootstrap(_spec(POSTSHOT_LOGIN_PASSWORD="correct-horse-battery-staple"))
     assert "refuses_credential_in_user_data" in str(excinfo.value)
     assert "correct-horse-battery-staple" not in str(excinfo.value)
 
 
 def test_bootstrap_carries_only_the_signed_licence_fetch_url() -> None:
     script = _windows_worker_bootstrap(_spec())
-    decoded = ""
-    for token in script.split('"'):
-        try:
-            decoded += base64.b64decode(token).decode("utf-8", errors="ignore")
-        except Exception:  # noqa: BLE001
-            continue
-    haystack = (script + decoded).lower()
+    haystack = _decoded_user_data(script).lower()
     assert "signed-licence" in haystack
     for fragment in ("password", "private_key", "secret"):
         assert fragment not in haystack
@@ -163,20 +173,14 @@ def test_windows_platform_selects_the_powershell_bootstrap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _aws_env(monkeypatch)
-    user_data = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"][
-        "UserData"
-    ]
+    user_data = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"]["UserData"]
     assert user_data.startswith("<powershell>")
     assert "docker" not in user_data.lower()
 
 
-def test_linux_platform_is_unchanged(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_linux_platform_is_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _aws_env(monkeypatch, BLUEPRINT_AWS_WORKER_PLATFORM="linux")
-    user_data = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"][
-        "UserData"
-    ]
+    user_data = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"]["UserData"]
     assert user_data.startswith("#!/bin/bash")
 
 
@@ -194,9 +198,7 @@ def test_windows_lane_refuses_a_registry_mode_it_cannot_honour(
     """There is no container runtime on the trainer host."""
     _aws_env(monkeypatch, BLUEPRINT_AWS_REGISTRY_AUTH="aws_ecr")
     request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert "aws_windows_worker_registry_auth_unsupported" in request[
-        "configuration_blockers"
-    ]
+    assert "aws_windows_worker_registry_auth_unsupported" in request["configuration_blockers"]
 
 
 def test_rate_above_the_authorized_ceiling_blocks(
@@ -213,20 +215,35 @@ def test_rate_above_the_authorized_ceiling_blocks(
 
 DRIVER_URL = "https://example.invalid/nvidia-datacenter.exe"
 INSTALLER_URL = "https://example.invalid/Postshot.msi"
+PYTHON_URL = "https://example.invalid/python-embed.zip"
+NUMPY_URL = "https://example.invalid/numpy.whl"
+DRIVER_SHA = "a" * 64
 INSTALLER_SHA = "b" * 64
+PYTHON_SHA = "c" * 64
+NUMPY_SHA = "d" * 64
 
 
 def _install_at_boot_spec(**extra: str) -> RenderLaunchSpec:
     from blueprint_pipeline.cloud_vm_render_providers import (
         WINDOWS_DRIVER_URL_ENV,
+        WINDOWS_DRIVER_SHA256_ENV,
         WINDOWS_INSTALLER_SHA256_ENV,
         WINDOWS_INSTALLER_URL_ENV,
+        WINDOWS_NUMPY_SHA256_ENV,
+        WINDOWS_NUMPY_URL_ENV,
+        WINDOWS_PYTHON_SHA256_ENV,
+        WINDOWS_PYTHON_URL_ENV,
     )
 
     env = {
         WINDOWS_DRIVER_URL_ENV: DRIVER_URL,
+        WINDOWS_DRIVER_SHA256_ENV: DRIVER_SHA,
         WINDOWS_INSTALLER_URL_ENV: INSTALLER_URL,
         WINDOWS_INSTALLER_SHA256_ENV: INSTALLER_SHA,
+        WINDOWS_PYTHON_URL_ENV: PYTHON_URL,
+        WINDOWS_PYTHON_SHA256_ENV: PYTHON_SHA,
+        WINDOWS_NUMPY_URL_ENV: NUMPY_URL,
+        WINDOWS_NUMPY_SHA256_ENV: NUMPY_SHA,
     }
     env.update(extra)
     return _spec(**env)
@@ -240,18 +257,75 @@ def test_without_installer_urls_the_host_must_already_be_baked() -> None:
 
 def test_install_at_boot_provisions_driver_and_postshot() -> None:
     script = _windows_worker_bootstrap(_install_at_boot_spec())
-    assert DRIVER_URL in script
-    assert INSTALLER_URL in script
+    decoded = _decoded_user_data(script)
+    assert DRIVER_URL in decoded
+    assert INSTALLER_URL in decoded
+    assert PYTHON_URL in decoded
+    assert NUMPY_URL in decoded
+    assert "nvidia_driver_digest_mismatch" in script
     assert "nvidia_driver_install_failed" in script
     assert "postshot_cli_not_found" in script
+    assert "python_embed_digest_mismatch" in script
+    assert "numpy_wheel_digest_mismatch" in script
+    assert "bootstrap_transport_digest_mismatch" in script
+    assert "blueprint_python_runtime_import_failed" in script
     # A baked marker is meaningless on a host we are building right now.
     assert "blueprint_worker_image_marker_missing" not in script
+    assert len(script.encode("utf-8")) <= AWS_USER_DATA_MAX_BYTES
+
+
+def test_windows_user_data_over_provider_limit_blocks_before_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _aws_env(monkeypatch)
+    request = AWSRenderProvider().build_request(
+        _install_at_boot_spec(
+            BLUEPRINT_LARGE_PUBLIC_VALUE="".join(
+                hashlib.sha256(str(index).encode()).hexdigest()
+                for index in range(1_500)
+            )
+        ),
+        tmp_path,
+    )
+    assert "aws_user_data_exceeds_provider_limit" in request["configuration_blockers"]
+
+
+def test_production_shaped_signed_transport_fits_aws_user_data_limit() -> None:
+    def signed(label: str) -> str:
+        query = "".join(
+            hashlib.sha256(f"{label}-{index}".encode()).hexdigest()
+            for index in range(8)
+        )
+        return (
+            f"https://sfo3.digitaloceanspaces.com/blueprint/{label}"
+            f"?X-Amz-Signature={query}"
+        )
+
+    script = _windows_worker_bootstrap(
+        _install_at_boot_spec(
+            BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL=signed("driver"),
+            BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL=signed("postshot"),
+            BLUEPRINT_WINDOWS_PYTHON_EMBED_GET_URL=signed("python"),
+            BLUEPRINT_WINDOWS_NUMPY_WHEEL_GET_URL=signed("numpy"),
+            BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL=signed("bundle"),
+            BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL=signed("receipt"),
+            BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL=signed("output"),
+            BLUEPRINT_RECONSTRUCTION_PROGRESS_PUT_URL=signed("progress"),
+            BLUEPRINT_POSTSHOT_LICENCE_GET_URL=signed("license-get"),
+            BLUEPRINT_POSTSHOT_LICENCE_DELETE_URL=signed("license-delete"),
+            BLUEPRINT_CANONICAL_ALLOCATOR_ADMISSION_B64="".join(
+                hashlib.sha256(f"admission-{index}".encode()).hexdigest()
+                for index in range(25)
+            ),
+        )
+    )
+    assert len(script.encode("utf-8")) <= AWS_USER_DATA_MAX_BYTES
 
 
 def test_install_at_boot_pins_the_installer_digest() -> None:
     """An unverified MSI decides which binary a paid instance executes."""
     script = _windows_worker_bootstrap(_install_at_boot_spec())
-    assert INSTALLER_SHA in script
+    assert INSTALLER_SHA in _decoded_user_data(script)
     assert "postshot_installer_digest_mismatch" in script
 
 
@@ -264,15 +338,34 @@ def test_installer_url_without_a_digest_is_refused() -> None:
     del spec.env[WINDOWS_INSTALLER_SHA256_ENV]
     with pytest.raises(ValueError) as excinfo:
         _windows_worker_bootstrap(spec)
-    assert "requires_driver_url_installer_url_and_digest" in str(excinfo.value)
+    assert "runtime_digest_invalid" in str(excinfo.value)
 
 
 def test_a_malformed_installer_digest_is_refused() -> None:
     with pytest.raises(ValueError) as excinfo:
-        _windows_worker_bootstrap(_install_at_boot_spec(**{
-            "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256": "not-a-digest",
-        }))
-    assert "installer_digest_invalid" in str(excinfo.value)
+        _windows_worker_bootstrap(
+            _install_at_boot_spec(
+                **{
+                    "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256": "not-a-digest",
+                }
+            )
+        )
+    assert "runtime_digest_invalid" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256",
+        "BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256",
+        "BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256",
+    ],
+)
+def test_every_executable_runtime_layer_requires_a_digest(name: str) -> None:
+    spec = _install_at_boot_spec()
+    del spec.env[name]
+    with pytest.raises(ValueError, match="runtime_digest_invalid"):
+        _windows_worker_bootstrap(spec)
 
 
 def test_install_at_boot_still_arms_the_hard_deadline() -> None:

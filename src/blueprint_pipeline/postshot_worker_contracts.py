@@ -226,10 +226,45 @@ def build_postshot_train_args(
     arguments += [
         "--output",
         output_project,
-        "--export-splat",
+        # Postshot 1.1.69 renamed the training-time PLY export switch.  This is
+        # the exact option embedded in the pinned CLI, not the pre-1.1.69
+        # ``--export-splat`` spelling.
+        "--export-splat-ply",
         output_splat,
     ]
     return arguments
+
+
+def build_postshot_spz_export_args(
+    *,
+    login_email: str,
+    login_password: str,
+    project: str,
+    output_spz: str,
+    spz_version: int = 4,
+    spz_quality: int = 6,
+) -> list[str]:
+    """Build the pinned 1.1.69 project-to-SPZ export invocation."""
+
+    if spz_version not in {3, 4}:
+        raise ValueError("postshot_spz_version_unsupported")
+    if not 1 <= int(spz_quality) <= 6:
+        raise ValueError("postshot_spz_quality_out_of_range")
+    return [
+        "--login",
+        login_email,
+        "--password",
+        login_password,
+        "export",
+        "--project",
+        project,
+        "--export",
+        output_spz,
+        "--spz-version",
+        str(int(spz_version)),
+        "--spz-quality",
+        str(int(spz_quality)),
+    ]
 
 
 # Frozen tiny-canary bounds (phase D): candidate-only images, minimum supported

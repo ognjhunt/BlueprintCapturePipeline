@@ -7,6 +7,7 @@ run time.  These tests pin the properties that make that safe.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,7 @@ def test_run_hands_the_credential_to_the_arm_and_reports_no_disk_write(
         runner=runner,
     )
     assert seen["POSTSHOT_LOGIN_PASSWORD"] == PASSWORD
+    assert os.environ.get("POSTSHOT_LOGIN_PASSWORD") != PASSWORD
     assert receipt["licence_object_deleted"] is True
     assert receipt["credential_written_to_disk"] is False
     assert receipt["result"]["exit_code"] == 0

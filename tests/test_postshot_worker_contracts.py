@@ -15,6 +15,7 @@ from blueprint_pipeline.postshot_worker_contracts import (
     build_deletion_receipt,
     build_external_watchdog_record,
     build_live_cost_estimate,
+    build_postshot_spz_export_args,
     build_postshot_train_args,
     build_provider_zero_proof,
     build_worker_pulse,
@@ -82,6 +83,22 @@ def test_postshot_global_flags_and_profile_spaces_are_preserved() -> None:
     assert args[4] == "train"
     assert args[args.index("--profile") + 1] == "Splat MCMC"
     assert "--no-recenter-points" in args
+    assert "--export-splat-ply" in args
+    assert "--export-splat" not in args
+
+
+def test_postshot_spz_export_is_version_four_and_max_quality() -> None:
+    args = build_postshot_spz_export_args(
+        login_email="operator@example.invalid",
+        login_password="secret-value",
+        project=r"C:\work\out\P1.psht",
+        output_spz=r"C:\work\out\P1.spz",
+    )
+    assert args[4] == "export"
+    assert args[args.index("--project") + 1].endswith("P1.psht")
+    assert args[args.index("--export") + 1].endswith("P1.spz")
+    assert args[args.index("--spz-version") + 1] == "4"
+    assert args[args.index("--spz-quality") + 1] == "6"
 
 
 def test_tiny_canary_spec_is_bounded_and_uses_supported_flags() -> None:

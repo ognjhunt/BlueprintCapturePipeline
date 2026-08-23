@@ -12,6 +12,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/blueprint/pipeline-control-plane}"
 HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
 LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
+CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
 SERVICE_GROUP="${SERVICE_GROUP:-blueprint}"
@@ -40,6 +41,7 @@ Environment overrides:
   HANDOFF_DIR=/var/lib/blueprint/pubsub-handoffs
   PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+  CAPTURE_RECONSTRUCTION_POLICY_DIR=/etc/blueprint/capture-reconstruction-policies
   CADDY_SITE_FILE=/etc/caddy/Caddyfile
   SERVICE_USER=blueprint
   SERVICE_GROUP=blueprint
@@ -110,6 +112,8 @@ run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${PROVIDER_SECRETS_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${LAUNCH_PROFILE_DIR}"
+run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
+  "${CAPTURE_RECONSTRUCTION_POLICY_DIR}"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}" \
   "${STATE_DIR}/robot-eval-job-requests" \
@@ -131,6 +135,13 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-control-plane-releases" \
   "${STATE_DIR}/task-evaluation-launch-reconciliation" \
   "${STATE_DIR}/task-evaluation-launch-supervision/recommendations"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${STATE_DIR}/capture-reconstruction-queue/pending" \
+  "${STATE_DIR}/capture-reconstruction-queue/processing" \
+  "${STATE_DIR}/capture-reconstruction-queue/completed" \
+  "${STATE_DIR}/capture-reconstruction-queue/blocked" \
+  "${STATE_DIR}/capture-reconstruction-runs" \
+  "${STATE_DIR}/capture-reconstruction-derived"
 # Older units ran as root. Migrate only the two explicitly bounded runtime
 # trees before installing the hardened service-user units. GNU chown's
 # --no-dereference keeps a symlink itself in scope instead of following it to
@@ -153,6 +164,15 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pubsub-handoff-listener.timer" \
   "${SYSTEMD_DIR}/blueprint-pubsub-handoff-listener.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-capture-reconstruction-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-capture-reconstruction-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-capture-reconstruction-dispatcher.path" \
+  "${SYSTEMD_DIR}/blueprint-capture-reconstruction-dispatcher.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-capture-reconstruction-dispatcher.timer" \
+  "${SYSTEMD_DIR}/blueprint-capture-reconstruction-dispatcher.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-gpu-spend-guard.service" \
   "${SYSTEMD_DIR}/blueprint-gpu-spend-guard.service"
@@ -217,6 +237,68 @@ if SOURCE_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null)"; then
   fi
 else
   echo "WARNING: no source commit resolved; /api/live-pipeline/version stays 503" >&2
+fi
+
+# The production host intentionally retains one service virtualenv across
+# promoted checkouts. Merely moving that checkout does not install a newly
+# declared dependency, which would let the units restart on source they cannot
+# import. Keep the small control-plane-only delta hash-pinned and install it as
+# the unprivileged service owner before any worker wheel or unit is activated.
+RUNTIME_REQUIREMENTS="${REPO_ROOT}/deploy/systemd/production-control-plane-requirements.txt"
+RUNTIME_PYTHON="${REPO_ROOT}/.venv/bin/python"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  printf '[dry-run] synchronize hash-pinned production runtime requirements from %s\n' \
+    "${RUNTIME_REQUIREMENTS}"
+else
+  if [[ ! -x "${RUNTIME_PYTHON}" ]]; then
+    echo "ERROR: production service virtualenv is missing at ${RUNTIME_PYTHON}" >&2
+    exit 1
+  fi
+  if runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
+       'import importlib.metadata as m; raise SystemExit(m.version("rfc8785") != "0.1.4")'; then
+    echo "production runtime dependency rfc8785==0.1.4 already present"
+  else
+    run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -m pip install \
+      --disable-pip-version-check --no-deps --only-binary=:all: \
+      --require-hashes --requirement "${RUNTIME_REQUIREMENTS}"
+    run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
+      'import importlib.metadata as m; assert m.version("rfc8785") == "0.1.4"'
+    echo "installed and verified hash-pinned production runtime dependencies"
+  fi
+fi
+
+# Build the Windows worker package from the exact promoted commit and bind the
+# environment to that immutable release directory. The transport compiler also
+# verifies the wheel's embedded source digest before any provider mutation.
+# This closes the gap where an old wheel at a stable placeholder path could be
+# paired with a newer dispatcher checkout.
+if [[ -n "${SOURCE_COMMIT:-}" ]]; then
+  WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    printf '[dry-run] build exact worker wheel for %s into %s\n' \
+      "${SOURCE_COMMIT}" "${WORKER_RELEASE_DIR}"
+  else
+    run install -d -m 0755 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+      "${WORKER_RELEASE_DIR}"
+    WORKER_BUILD_RECEIPT="$(runuser -u "${SERVICE_USER}" -- \
+      "${REPO_ROOT}/scripts/build_canonical_3dgs_worker_wheel.sh" \
+      "${SOURCE_COMMIT}" "${WORKER_RELEASE_DIR}")"
+    WORKER_WHEEL="$(printf '%s' "${WORKER_BUILD_RECEIPT}" | \
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["wheel_path"])')"
+    if [[ ! -f "${WORKER_WHEEL}" ]]; then
+      echo "ERROR: exact canonical worker wheel was not produced" >&2
+      exit 1
+    fi
+    printf '%s\n' "${WORKER_BUILD_RECEIPT}" > \
+      "${WORKER_RELEASE_DIR}/build_receipt.json"
+    run chown root:"${SERVICE_GROUP}" \
+      "${WORKER_RELEASE_DIR}/build_receipt.json"
+    run chmod 0644 "${WORKER_RELEASE_DIR}/build_receipt.json"
+    sed -i '/^BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL=/d' "${ENV_FILE}"
+    printf 'BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL=%s\n' "${WORKER_WHEEL}" >> \
+      "${ENV_FILE}"
+    echo "bound exact canonical worker wheel ${WORKER_WHEEL}"
+  fi
 fi
 
 # Single-use paid-attempt enforcement writes a consumption record before any
@@ -291,6 +373,8 @@ systemctl daemon-reload
 if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-pipeline-control-plane.timer
   systemctl enable --now blueprint-pubsub-handoff-listener.timer
+  systemctl enable --now blueprint-capture-reconstruction-dispatcher.path
+  systemctl enable --now blueprint-capture-reconstruction-dispatcher.timer
   systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
@@ -300,6 +384,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
 else
   echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
+  echo "enable capture reconstruction queue with: systemctl enable --now blueprint-capture-reconstruction-dispatcher.path"
   echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
