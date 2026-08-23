@@ -860,11 +860,23 @@ def _with_measured_contact_frontier(
         receipt["reason"] = "plan_or_probe_cells_invalid"
         return plan, receipt
 
-    replaced_branch_replay_rows = sum(
-        1
+    branch_replay_rows = [
+        row
         for row in actions
         if isinstance(row, Mapping)
         and str(row.get("phase_id") or "") == CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID
+    ]
+    replaced_branch_replay_rows = len(branch_replay_rows)
+    branch_replay_step_limits = []
+    for row in branch_replay_rows:
+        try:
+            value = float(row["max_joint_delta_rad"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0.0:
+            branch_replay_step_limits.append(value)
+    preserved_branch_replay_step_rad = (
+        min(branch_replay_step_limits) if branch_replay_step_limits else None
     )
     contact_index = next(
         (
@@ -884,6 +896,13 @@ def _with_measured_contact_frontier(
         entry_maximum_steps = max(
             MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
             int(contact.get("maximum_steps") or 0),
+            # C52 proved that the measured endpoint is not enough by itself:
+            # collapsing a 96-row, 0.005 rad/step replay into a 45-step phase
+            # that inherited contact_open's 0.1 rad slew hit the door on its
+            # second step (68 N) and saturated joint 7. Preserve the traversal
+            # time already sized from the live actuator before replacing the
+            # old rows with the measured endpoint.
+            replaced_branch_replay_rows,
         )
     except (TypeError, ValueError):
         receipt["reason"] = "contact_open_invalid"
@@ -1074,12 +1093,17 @@ def _with_measured_contact_frontier(
                 target[axis] + offset[axis] for axis in range(3)
             ],
             "hold_solved_arm_joint_positions_rad": list(joints),
-            # Replay the same settle budget that established this cell as
-            # measured-good.  A shorter dwell would no longer be a replay of
-            # the observation on which this derived plan relies.
+            # Preserve the actuator-sized traversal budget when one existed;
+            # otherwise replay at least the settle budget that established
+            # this cell as measured-good.
             "maximum_steps": entry_maximum_steps,
         }
     )
+    if preserved_branch_replay_step_rad is not None:
+        entry["max_joint_delta_rad"] = min(
+            float(entry["max_joint_delta_rad"]),
+            preserved_branch_replay_step_rad,
+        )
     # Keep one measured replay phase for the scoreboard/evidence boundary, then
     # hold the same proven standoff in contact_open instead of driving onward
     # to the collision-producing authored endpoint.
@@ -1105,6 +1129,10 @@ def _with_measured_contact_frontier(
             "rewritten_grasp_holding_phase_ids": rewritten_phase_ids,
             "measured_joint_vector_bound_phase_ids": bound_phase_ids,
             "replaced_branch_replay_rows": replaced_branch_replay_rows,
+            "preserved_branch_replay_step_rad": (
+                preserved_branch_replay_step_rad
+            ),
+            "measured_entry_maximum_steps": entry_maximum_steps,
             "restored_contact_steps": restored,
             "restoration_limited_by_action_budget": restored
             < max(0, int(reclaimed_contact_steps)),

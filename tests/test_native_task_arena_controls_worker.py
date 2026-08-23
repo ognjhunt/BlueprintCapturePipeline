@@ -1547,6 +1547,7 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
         control_plan=plan,
         scripted_pose_joint_targets=targets,
         task_spec=task,
+        actuator_feasible_step_rad=[0.005] * 7,
     )
     assert replay_receipt["status"] == "applied"
     old_rows = [
@@ -1591,7 +1592,11 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
     assert len(new_rows) == 1
     assert new_rows[0]["mode"] == "ik_pose"
     assert new_rows[0]["hold_solved_arm_joint_positions_rad"] == [0.2] * 7
+    assert new_rows[0]["maximum_steps"] == len(old_rows)
+    assert new_rows[0]["max_joint_delta_rad"] == pytest.approx(0.005)
     assert receipt["replaced_branch_replay_rows"] == len(old_rows)
+    assert receipt["preserved_branch_replay_step_rad"] == pytest.approx(0.005)
+    assert receipt["measured_entry_maximum_steps"] == len(old_rows)
     contact = next(
         row
         for row in derived["scripted_positive_actions"]
@@ -1602,6 +1607,7 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
     expected_anchor_steps = max(
         MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
         replayed_contact["maximum_steps"],
+        len(old_rows),
     )
     expected_restoration = min(
         replay_receipt["contact_phase_steps_reclaimed"],
