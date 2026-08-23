@@ -1732,6 +1732,12 @@ def validate_task_control_plan(
         if raw.get("mode") == "ik_pose" or "target_position_world_m" in raw:
             try:
                 position = [float(value) for value in raw["target_position_world_m"]]
+                arrival_position_raw = raw.get("arrival_target_position_world_m")
+                arrival_position = (
+                    None
+                    if arrival_position_raw is None
+                    else [float(value) for value in arrival_position_raw]
+                )
                 quaternion_raw = raw.get("target_quaternion_world_xyzw")
                 quaternion = (
                     None
@@ -1756,6 +1762,7 @@ def validate_task_control_plan(
                 )
             except (KeyError, TypeError, ValueError):
                 position = []
+                arrival_position = []
                 quaternion = []
                 minimum_steps = 0
                 maximum_steps = 0
@@ -1819,6 +1826,13 @@ def validate_task_control_plan(
                 not phase_id
                 or len(position) != 3
                 or not all(math.isfinite(value) for value in position)
+                or not (
+                    arrival_position is None
+                    or (
+                        len(arrival_position) == 3
+                        and all(math.isfinite(value) for value in arrival_position)
+                    )
+                )
                 or not quaternion_valid
                 or gripper_state not in {"open", "closed"}
                 or minimum_steps < 1
@@ -1875,6 +1889,7 @@ def validate_task_control_plan(
                         "phase_id": phase_id,
                         "mode": "ik_pose",
                         "target_position_world_m": position,
+                        "arrival_target_position_world_m": arrival_position,
                         "target_quaternion_world_xyzw": quaternion,
                         "hold_solved_arm_joint_positions_rad": held_joints,
                         "gripper_state": gripper_state,
@@ -2100,9 +2115,15 @@ def _run_task_control_episode(
             if hold_arm_during_gripper_transition
             else None
         )
-        arrival_target_position = row.get("target_position_world_m")
+        arrival_target_position = row.get("arrival_target_position_world_m")
+        if arrival_target_position is None:
+            arrival_target_position = row.get("target_position_world_m")
         arrival_target_orientation = row.get("target_quaternion_world_xyzw")
-        arrival_target_source = "commanded_phase_pose"
+        arrival_target_source = (
+            "sealed_arrival_pose_override"
+            if row.get("arrival_target_position_world_m") is not None
+            else "commanded_phase_pose"
+        )
         if hold_arm_during_gripper_transition:
             arrival_target_position = start_sample.get(
                 "grasp_frame_position_world_m"
