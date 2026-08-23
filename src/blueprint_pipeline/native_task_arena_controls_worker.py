@@ -824,6 +824,135 @@ def _with_held_solved_contact_vectors(
     }
 
 
+def _with_closed_pad_midpoint_compensated_contact(
+    *,
+    control_plan: Mapping[str, Any],
+    gripper_convention: Mapping[str, Any],
+    grasp_approach_axis_body: Sequence[float],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Author contact_close for the TCP the *closed* linkage actually has.
+
+    C54 measured a 13.56 mm pad-midpoint translation while the Robotiq closed.
+    The IK preflight solved the open-pad midpoint at the authored grasp and the
+    episode then scored the moving, measured pad midpoint.  That made
+    contact_close pose-identical to contact_open during preflight, so its
+    solution was bound and later discarded when contact_open was moved to the
+    measured standoff.  Give contact_close its own compensated pose before
+    preflight: the globally solved open midpoint starts one linkage-travel
+    behind the authored target, and closure brings the measured midpoint onto
+    that target.  The native TCP and bilateral-contact gates stay unchanged.
+    """
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    receipt: dict[str, Any] = {
+        "schema_version": "native_task_controls_closed_pad_compensation.v1",
+        "status": "not_applied",
+        "reason": None,
+        "source_control_plan_digest": plan.get("plan_digest"),
+    }
+    actions = plan.get("scripted_positive_actions")
+    midpoint_by_command = gripper_convention.get(
+        "pad_midpoint_controlled_body_m"
+    )
+    try:
+        open_command = float(gripper_convention["open_command"])
+        closed_command = float(gripper_convention["closed_command"])
+        axis = [float(value) for value in grasp_approach_axis_body]
+    except (KeyError, TypeError, ValueError):
+        receipt["reason"] = "gripper_convention_or_approach_axis_invalid"
+        return plan, receipt
+    if not isinstance(actions, list) or not isinstance(midpoint_by_command, Mapping):
+        receipt["reason"] = "plan_or_pad_midpoints_invalid"
+        return plan, receipt
+
+    def _midpoint(command: float) -> list[float] | None:
+        for raw_key, raw_value in midpoint_by_command.items():
+            try:
+                if abs(float(raw_key) - command) <= 1.0e-9:
+                    value = [float(component) for component in raw_value]
+                    return value if len(value) == 3 else None
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    open_midpoint = _midpoint(open_command)
+    closed_midpoint = _midpoint(closed_command)
+    axis_norm = math.dist(axis, [0.0, 0.0, 0.0]) if len(axis) == 3 else 0.0
+    if open_midpoint is None or closed_midpoint is None or axis_norm <= 1.0e-12:
+        receipt["reason"] = "pad_midpoint_travel_unavailable"
+        return plan, receipt
+    axis = [value / axis_norm for value in axis]
+    delta_body = [
+        closed_midpoint[index] - open_midpoint[index] for index in range(3)
+    ]
+    travel = sum(delta_body[index] * axis[index] for index in range(3))
+    transverse = [
+        delta_body[index] - travel * axis[index] for index in range(3)
+    ]
+    transverse_m = math.dist(transverse, [0.0, 0.0, 0.0])
+    if (
+        not math.isfinite(travel)
+        or travel <= 0.0
+        or not math.isfinite(transverse_m)
+        or transverse_m > 0.001
+    ):
+        receipt["reason"] = "pad_midpoint_travel_not_approach_aligned"
+        return plan, receipt
+
+    original_targets: list[list[float]] = []
+    compensated_targets: list[list[float]] = []
+    for row in actions:
+        if (
+            not isinstance(row, dict)
+            or row.get("mode") != "ik_pose"
+            or str(row.get("phase_id") or "") != "contact_close"
+        ):
+            continue
+        try:
+            target = [float(value) for value in row["target_position_world_m"]]
+            orientation = [
+                float(value)
+                for value in row["target_quaternion_world_xyzw"]
+            ]
+            approach_world = _quaternion_axis_world_xyzw(
+                orientation, [0.0, 0.0, 1.0]
+            )
+        except (KeyError, TypeError, ValueError):
+            receipt["reason"] = "contact_close_pose_invalid"
+            return json.loads(json.dumps(dict(control_plan), allow_nan=False)), receipt
+        compensated = [
+            target[index] - travel * approach_world[index]
+            for index in range(3)
+        ]
+        row["target_position_world_m"] = compensated
+        row["hold_arm_joint_positions_during_gripper_transition"] = False
+        original_targets.append(target)
+        compensated_targets.append(compensated)
+    if not compensated_targets:
+        receipt["reason"] = "contact_close_missing"
+        return plan, receipt
+
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    receipt.update(
+        {
+            "status": "applied",
+            "reason": None,
+            "pad_midpoint_delta_controlled_body_m": delta_body,
+            "approach_travel_m": travel,
+            "transverse_travel_m": transverse_m,
+            "original_target_positions_world_m": original_targets,
+            "compensated_target_positions_world_m": compensated_targets,
+            "derived_control_plan_digest": plan["plan_digest"],
+            "claim_boundary": (
+                "compensates_only_measured_gripper_linkage_tcp_travel_before_"
+                "global_ik;native_tcp_bilateral_contact_and_outcome_gates_"
+                "remain_authoritative"
+            ),
+        }
+    )
+    return plan, receipt
+
+
 def _with_measured_contact_frontier(
     *,
     control_plan: Mapping[str, Any],
@@ -1943,6 +2072,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             control_plan=control_plan,
             task_spec=scene_plan["task_spec"],
         )
+        normalized_control_plan, closed_pad_compensation = (
+            _with_closed_pad_midpoint_compensated_contact(
+                control_plan=normalized_control_plan,
+                gripper_convention=gripper,
+                grasp_approach_axis_body=servo.grasp_approach_axis_body(),
+            )
+        )
+        result["closed_pad_midpoint_compensation"] = closed_pad_compensation
         result["normalized_control_plan_digest"] = normalized_control_plan[
             "plan_digest"
         ]
