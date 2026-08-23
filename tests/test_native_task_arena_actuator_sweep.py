@@ -589,6 +589,36 @@ def test_the_probe_starts_each_cell_from_the_known_anchor_and_stops_on_force() -
     }
 
 
+def test_ordered_frontier_stops_after_the_first_contact_cell() -> None:
+    class _OrderedFrontier(_WallEnvironment):
+        pass
+
+    report = _probe(
+        _OrderedFrontier(),
+        base_target_position_world_m=[0.34, 0.0, 0.0],
+        offsets_m=[
+            [0.02, 0.0, 0.0],
+            [0.00, 0.0, 0.0],
+            [-0.02, 0.0, 0.0],
+            [-0.04, 0.0, 0.0],
+            [-0.06, 0.0, 0.0],
+            [-0.08, 0.0, 0.0],
+        ],
+        stop_after_first_contact_cell=True,
+    )
+
+    assert [cell["offset_m"] for cell in report["cells"]] == [
+        [0.02, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [-0.02, 0.0, 0.0],
+        [-0.04, 0.0, 0.0],
+        [-0.06, 0.0, 0.0],
+    ]
+    assert report["cells"][-1]["contact_steps"] > 0
+    assert report["stop_after_first_contact_cell"] is True
+    assert report["stopped_after_first_contact_cell"] is True
+
+
 def test_the_sweep_measures_the_model_versus_physics_gap() -> None:
     """C42 ruled out everything else; this is what was left, unmeasured.
 

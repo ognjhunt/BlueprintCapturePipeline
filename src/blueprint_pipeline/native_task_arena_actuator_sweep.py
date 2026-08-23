@@ -501,6 +501,7 @@ def probe_target_reachability(
     preposition_target_position_world_m: Sequence[float] | None = None,
     preposition_settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
     abort_contact_force_n: float | None = None,
+    stop_after_first_contact_cell: bool = False,
 ) -> dict[str, Any]:
     """Map where the measured pad midpoint can actually be placed.
 
@@ -720,6 +721,8 @@ def probe_target_reachability(
                 "settle_steps": int(settle_steps),
             }
         )
+        if stop_after_first_contact_cell and contact_steps > 0:
+            break
     environment.reset()
 
     # Does the measured point follow the target at all?  Compare the spread of
@@ -744,6 +747,12 @@ def probe_target_reachability(
         "preposition_target_position_world_m": preposition_target,
         "preposition_joint_positions_rad": preposition_joints,
         "abort_contact_force_n": abort_force,
+        "stop_after_first_contact_cell": bool(stop_after_first_contact_cell),
+        "stopped_after_first_contact_cell": bool(
+            stop_after_first_contact_cell
+            and cells
+            and int(cells[-1].get("contact_steps") or 0) > 0
+        ),
         "cells": cells,
         "axis_following": follow,
         "claim_boundary": _REACHABILITY_CLAIM_BOUNDARY,
