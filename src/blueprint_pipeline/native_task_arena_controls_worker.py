@@ -66,6 +66,8 @@ MEASURED_CONTACT_FRONTIER_PHASE_PREFIX = "measured_contact_frontier_"
 MEASURED_CONTACT_FRONTIER_FRACTIONS = (0.75, 0.5, 0.25)
 MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS = 45
 CONTACT_APPROACH_ANCHOR_DISTANCE_M = 0.04
+MEASURED_CONTACT_STANDOFF_AXIS_MINIMUM_DOT = 0.999
+MEASURED_CONTACT_STANDOFF_MAXIMUM_TRACKING_ERROR_RAD = 0.01
 
 CONTACT_ENTRY_BRANCH_REPLAY_MAX_STEP_RAD = 0.05
 CONTACT_ENTRY_BRANCH_REPLAY_SETTLE_ROWS = 5
@@ -821,34 +823,35 @@ def _with_measured_contact_frontier(
     reachability_probe: Mapping[str, Any],
     reclaimed_contact_steps: int = 0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Enter contact from a posture already proven to work in PhysX.
+    """Promote the deepest measured collision-free grasp standoff.
 
     The reachability probe is stronger evidence than another off-sim solve: it
     records the commanded posture, reached joints, and measured grasp frame in
-    the same runtime as the episode. Select the closest non-contact probe cell
-    that already clears the contact arrival gate and replay its joints before
-    the original contact phase.
-
-    C48b showed why the measured cells must remain diagnostics rather than new
-    success gates. The 40 mm anchor and first 10 mm Cartesian increment both
-    passed, while the second increment failed and stopped the episode before
-    contact_open. More importantly, the frontier rewrite explicitly removed
-    contact_open's preflight-solved joint vector, so the run never tested the
-    hypothesis it was launched to test. Preserve that vector and go directly
-    from the measured-good anchor to the original phase. The original TCP
-    arrival gate remains the authority.
+    the same runtime as the episode. C51 measured the actual geometry boundary:
+    the -32 mm cell was inside the native arrival gate with no task contact and
+    0.0002 rad joint tracking error, while -30 mm was already in task contact
+    and the authored endpoint jammed. Select the closest proven-free cell,
+    require its offset to follow gripper-local clearance, and preserve that
+    standoff through every grasp-holding phase. The selected measured joints
+    are commanded for the equal-pose open/close phases. Native TCP arrival,
+    contact, containment, and task-outcome gates remain authoritative.
     """
+
+    from blueprint_pipeline.native_task_arena_grasp_roll import (
+        DEFAULT_GRASP_HOLDING_PHASE_IDS,
+    )
 
     plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
     receipt: dict[str, Any] = {
-        "schema_version": "native_task_controls_measured_contact_frontier.v1",
+        "schema_version": "native_task_controls_measured_contact_frontier.v2",
         "status": "not_applied",
         "reason": None,
         "source_control_plan_digest": plan.get("plan_digest"),
         "claim_boundary": (
-            "starts_from_a_noncontact_pose_measured_inside_its_native_arrival_"
-            "gate_then_expands_the_success_frontier_toward_contact;task_"
-            "arrival_contact_and_outcome_gates_are_unchanged"
+            "promotes_the_closest_zero_contact_physx_measured_pose_inside_the_"
+            "native_arrival_gate_as_a_gripper_local_standoff_for_every_grasp_"
+            "holding_phase;arrival_contact_containment_and_outcome_gates_are_"
+            "unchanged"
         ),
     }
     actions = plan.get("scripted_positive_actions")
@@ -898,7 +901,18 @@ def _with_measured_contact_frontier(
         receipt["reason"] = "contact_open_invalid"
         return plan, receipt
 
-    candidates: list[tuple[float, Mapping[str, Any], list[float], list[float]]] = []
+    clearance_axis = _quaternion_axis_world_xyzw(
+        target_orientation, [0.0, 0.0, -1.0]
+    )
+    clearance_norm = math.dist(clearance_axis, [0.0, 0.0, 0.0])
+    if not math.isfinite(clearance_norm) or clearance_norm <= 1.0e-12:
+        receipt["reason"] = "contact_open_clearance_axis_invalid"
+        return plan, receipt
+    clearance_axis = [value / clearance_norm for value in clearance_axis]
+
+    candidates: list[
+        tuple[float, Mapping[str, Any], list[float], list[float], float, float]
+    ] = []
     for cell in cells:
         if not isinstance(cell, Mapping) or cell.get("status") != "measured":
             continue
@@ -916,8 +930,19 @@ def _with_measured_contact_frontier(
                 measured_orientation, target_orientation
             )
             contact_steps = int(cell.get("contact_steps") or 0)
+            tracking_error = float(cell["joint_tracking_error_rad"])
         except (KeyError, TypeError, ValueError):
             continue
+        offset_distance = math.dist(offset, [0.0, 0.0, 0.0])
+        axis_alignment = (
+            sum(
+                offset[axis] * clearance_axis[axis]
+                for axis in range(3)
+            )
+            / offset_distance
+            if offset_distance > 1.0e-12
+            else -1.0
+        )
         if (
             len(offset) != 3
             or len(joints) != 7
@@ -926,17 +951,30 @@ def _with_measured_contact_frontier(
             or measured_error > tolerance
             or measured_orientation_error > orientation_tolerance
             or contact_steps != 0
-            or math.isclose(sum(abs(value) for value in offset), 0.0)
+            or bool(cell.get("aborted_on_contact_force"))
+            or not math.isfinite(tracking_error)
+            or tracking_error
+            > MEASURED_CONTACT_STANDOFF_MAXIMUM_TRACKING_ERROR_RAD
+            or axis_alignment < MEASURED_CONTACT_STANDOFF_AXIS_MINIMUM_DOT
         ):
             continue
         candidates.append(
-            (math.dist(offset, [0.0, 0.0, 0.0]), cell, offset, joints)
+            (
+                offset_distance,
+                cell,
+                offset,
+                joints,
+                tracking_error,
+                axis_alignment,
+            )
         )
     if not candidates:
         receipt["reason"] = "no_noncontact_probe_cell_inside_arrival_gate"
         return plan, receipt
 
-    _distance, cell, offset, joints = min(candidates, key=lambda item: item[0])
+    standoff, cell, offset, joints, tracking_error, axis_alignment = min(
+        candidates, key=lambda item: item[0]
+    )
     if replaced_branch_replay_rows:
         actions[:] = [
             row
@@ -969,10 +1007,69 @@ def _with_measured_contact_frontier(
             contact["maximum_steps"] = int(contact["maximum_steps"]) + restored
     else:
         restored = 0
+
+    rewritten_phase_ids: list[str] = []
+    bound_phase_ids: list[str] = []
+    for row in actions:
+        if not isinstance(row, dict) or row.get("mode") != "ik_pose":
+            continue
+        phase_id = str(row.get("phase_id") or "")
+        if phase_id not in DEFAULT_GRASP_HOLDING_PHASE_IDS:
+            continue
+        try:
+            position = [float(value) for value in row["target_position_world_m"]]
+            quaternion = [
+                float(value) for value in row["target_quaternion_world_xyzw"]
+            ]
+            phase_clearance = _quaternion_axis_world_xyzw(
+                quaternion, [0.0, 0.0, -1.0]
+            )
+            phase_clearance_norm = math.dist(
+                phase_clearance, [0.0, 0.0, 0.0]
+            )
+        except (KeyError, TypeError, ValueError):
+            receipt["reason"] = f"grasp_holding_phase_invalid:{phase_id}"
+            original = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+            return original, receipt
+        if (
+            not math.isfinite(phase_clearance_norm)
+            or phase_clearance_norm <= 1.0e-12
+        ):
+            receipt["reason"] = f"grasp_holding_phase_invalid:{phase_id}"
+            original = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+            return original, receipt
+        phase_clearance = [
+            value / phase_clearance_norm for value in phase_clearance
+        ]
+        row["target_position_world_m"] = [
+            position[axis] + standoff * phase_clearance[axis]
+            for axis in range(3)
+        ]
+        rewritten_phase_ids.append(phase_id)
+
+        same_contact_pose = math.dist(position, target) <= 1.0e-9 and (
+            _quaternion_angle_xyzw(quaternion, target_orientation) <= 1.0e-9
+        )
+        if phase_id == "contact_open" or (
+            phase_id == "contact_close" and same_contact_pose
+        ):
+            row["hold_solved_arm_joint_positions_rad"] = list(joints)
+            bound_phase_ids.append(phase_id)
+
+    contact_index = next(
+        index
+        for index, row in enumerate(actions)
+        if isinstance(row, Mapping)
+        and row.get("mode") == "ik_pose"
+        and str(row.get("phase_id") or "") == "contact_open"
+    )
+    contact = actions[contact_index]
     entry = dict(contact)
     entry.update(
         {
             "phase_id": MEASURED_CONTACT_ENTRY_PHASE_ID,
+            # Use the exact requested pose whose reached joints and TCP were
+            # measured, rather than reconstructing it from a rounded distance.
             "target_position_world_m": [
                 target[axis] + offset[axis] for axis in range(3)
             ],
@@ -983,8 +1080,9 @@ def _with_measured_contact_frontier(
             "maximum_steps": entry_maximum_steps,
         }
     )
-    # Do not turn diagnostic samples into mandatory episode phases, and do not
-    # discard the exact contact posture selected by the global preflight.
+    # Keep one measured replay phase for the scoreboard/evidence boundary, then
+    # hold the same proven standoff in contact_open instead of driving onward
+    # to the collision-producing authored endpoint.
     actions[contact_index:contact_index] = [entry]
     plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
     receipt.update(
@@ -1000,11 +1098,17 @@ def _with_measured_contact_frontier(
                 target_orientation,
             ),
             "probe_joint_positions_rad": joints,
+            "probe_joint_tracking_error_rad": tracking_error,
+            "probe_clearance_axis_alignment_dot": axis_alignment,
+            "promoted_standoff_m": standoff,
+            "clearance_axis_body": [0.0, 0.0, -1.0],
+            "rewritten_grasp_holding_phase_ids": rewritten_phase_ids,
+            "measured_joint_vector_bound_phase_ids": bound_phase_ids,
             "replaced_branch_replay_rows": replaced_branch_replay_rows,
             "restored_contact_steps": restored,
             "restoration_limited_by_action_budget": restored
             < max(0, int(reclaimed_contact_steps)),
-            "frontier_phase_ids": [entry["phase_id"], "contact_open"],
+            "frontier_phase_ids": [entry["phase_id"], *rewritten_phase_ids],
             "synthetic_frontier_rows_inserted": 0,
             "rewritten_control_plan_digest": plan["plan_digest"],
         }
