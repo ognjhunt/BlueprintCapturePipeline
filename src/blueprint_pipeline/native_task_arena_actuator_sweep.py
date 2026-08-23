@@ -498,6 +498,9 @@ def probe_target_reachability(
     max_joint_setpoint_lead_rad: float,
     offsets_m: Sequence[Sequence[float]] = DEFAULT_REACHABILITY_OFFSETS_M,
     settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+    preposition_target_position_world_m: Sequence[float] | None = None,
+    preposition_settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+    abort_contact_force_n: float | None = None,
 ) -> dict[str, Any]:
     """Map where the measured pad midpoint can actually be placed.
 
@@ -530,6 +533,108 @@ def probe_target_reachability(
             "claim_boundary": _REACHABILITY_CLAIM_BOUNDARY,
         }
 
+    preposition_target = (
+        _finite_vector(preposition_target_position_world_m, length=3)
+        if preposition_target_position_world_m is not None
+        else None
+    )
+    if (
+        preposition_target_position_world_m is not None
+        and preposition_target is None
+    ):
+        raise ActuatorSweepError(["reachability_probe_preposition_invalid"])
+    try:
+        abort_force = (
+            None
+            if abort_contact_force_n is None
+            else float(abort_contact_force_n)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ActuatorSweepError(
+            ["reachability_probe_abort_force_invalid"]
+        ) from exc
+    if abort_force is not None and (
+        not math.isfinite(abort_force) or abort_force <= 0.0
+    ):
+        raise ActuatorSweepError(["reachability_probe_abort_force_invalid"])
+    preposition_joints = (
+        _finite_vector(solve(preposition_target, list(seed)), length=7)
+        if preposition_target is not None
+        else None
+    )
+    if preposition_target is not None and preposition_joints is None:
+        return {
+            "schema_version": REACHABILITY_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "preposition_unsolved",
+            "cells": [],
+            "claim_boundary": _REACHABILITY_CLAIM_BOUNDARY,
+        }
+
+    def _command(joints: Sequence[float]) -> None:
+        environment.step(
+            [
+                float(value)
+                for value in bounded(
+                    target_joint_positions_rad=joints,
+                    gripper_command=float(gripper_open_command),
+                    max_joint_delta_rad=float(max_joint_delta_rad),
+                    max_joint_setpoint_lead_rad=float(
+                        max_joint_setpoint_lead_rad
+                    ),
+                )
+            ]
+        )
+
+    def _contact_measurement() -> tuple[bool, float, dict[str, float]]:
+        reader = getattr(environment, "read_task_sample", None)
+        if not callable(reader):
+            return False, 0.0, {}
+        try:
+            sample = reader() or {}
+        except Exception:  # noqa: BLE001 - diagnostic contact is optional
+            return False, 0.0, {}
+        active = sample.get("task_contact_active") is True
+        try:
+            peak = float(sample.get("task_robot_contact_peak_force_n") or 0.0)
+        except (TypeError, ValueError):
+            peak = 0.0
+        pad_forces: dict[str, float] = {}
+        native = sample.get("native_readback")
+        instances = (
+            (native.get("contact_sensor_instance_readback") or {}).get(
+                "task_robot_contact"
+            )
+            if isinstance(native, Mapping)
+            else None
+        )
+        for instance in instances or []:
+            if not isinstance(instance, Mapping):
+                continue
+            for force in instance.get("nonzero_filter_forces") or []:
+                if not isinstance(force, Mapping):
+                    continue
+                path = str(force.get("filter_prim_path_expr") or "")
+                side = next(
+                    (
+                        name
+                        for name in (
+                            "left_inner_finger",
+                            "right_inner_finger",
+                        )
+                        if name in path
+                    ),
+                    path or "unattributed",
+                )
+                try:
+                    magnitude = float(force.get("force_magnitude_n") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                pad_forces[side] = max(
+                    pad_forces.get(side, 0.0), magnitude
+                )
+        return active, peak, pad_forces
+
     cells: list[dict[str, Any]] = []
     for offset in offsets_m:
         delta = _finite_vector(offset, length=3)
@@ -548,26 +653,28 @@ def probe_target_reachability(
             )
             continue
         environment.reset()
+        if preposition_joints is not None:
+            for _ in range(max(1, int(preposition_settle_steps))):
+                _command(preposition_joints)
         contact_steps = 0
+        peak_contact_force_n = 0.0
+        peak_pad_contact_forces_n: dict[str, float] = {}
+        aborted_on_contact_force = False
+        executed_steps = 0
         for _ in range(max(1, int(settle_steps))):
-            environment.step(
-                [
-                    float(value)
-                    for value in bounded(
-                        target_joint_positions_rad=joints,
-                        gripper_command=float(gripper_open_command),
-                        max_joint_delta_rad=float(max_joint_delta_rad),
-                        max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
-                    )
-                ]
-            )
-            reader = getattr(environment, "read_task_sample", None)
-            if callable(reader):
-                try:
-                    if (reader() or {}).get("task_contact_active"):
-                        contact_steps += 1
-                except Exception:  # noqa: BLE001 - contact state is optional here
-                    pass
+            _command(joints)
+            executed_steps += 1
+            active, peak_force, pad_forces = _contact_measurement()
+            if active:
+                contact_steps += 1
+            peak_contact_force_n = max(peak_contact_force_n, peak_force)
+            for side, magnitude in pad_forces.items():
+                peak_pad_contact_forces_n[side] = max(
+                    peak_pad_contact_forces_n.get(side, 0.0), magnitude
+                )
+            if abort_force is not None and peak_force >= abort_force:
+                aborted_on_contact_force = True
+                break
         # C37's calibration could not distinguish "the arm never realized
         # this posture" from "the arm realized it and the fingertip did not
         # move" because it recorded no per-cell joint tracking.  Record it.
@@ -606,6 +713,10 @@ def probe_target_reachability(
                     math.dist(measured, target) if measured is not None else None
                 ),
                 "contact_steps": contact_steps,
+                "peak_task_contact_force_n": peak_contact_force_n,
+                "peak_pad_contact_forces_n": peak_pad_contact_forces_n,
+                "aborted_on_contact_force": aborted_on_contact_force,
+                "executed_steps": executed_steps,
                 "settle_steps": int(settle_steps),
             }
         )
@@ -630,6 +741,9 @@ def probe_target_reachability(
         "schema_version": REACHABILITY_SCHEMA_VERSION,
         "status": "measured" if reached else "unavailable",
         "cell_count": len(cells),
+        "preposition_target_position_world_m": preposition_target,
+        "preposition_joint_positions_rad": preposition_joints,
+        "abort_contact_force_n": abort_force,
         "cells": cells,
         "axis_following": follow,
         "claim_boundary": _REACHABILITY_CLAIM_BOUNDARY,

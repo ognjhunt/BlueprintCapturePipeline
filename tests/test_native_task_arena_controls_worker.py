@@ -1613,3 +1613,21 @@ def test_contact_anchor_is_derived_from_the_approach_line() -> None:
     assert _contact_approach_anchor_offset(plan) == pytest.approx(
         [0.0, -0.04, 0.0]
     )
+
+
+def test_contact_frontier_walks_from_the_proven_anchor_to_authored_contact() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _contact_frontier_offsets,
+    )
+
+    offsets = _contact_frontier_offsets([0.0, -0.04, 0.0], sample_count=5)
+    expected = [
+        [0.0, -0.04, 0.0],
+        [0.0, -0.03, 0.0],
+        [0.0, -0.02, 0.0],
+        [0.0, -0.01, 0.0],
+        [0.0, 0.0, 0.0],
+    ]
+    assert len(offsets) == len(expected)
+    for observed, row in zip(offsets, expected, strict=True):
+        assert observed == pytest.approx(row)
