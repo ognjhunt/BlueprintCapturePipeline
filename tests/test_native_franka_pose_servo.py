@@ -473,6 +473,34 @@ def test_global_pink_iteration_clamps_integrated_float_overshoot() -> None:
     )
 
 
+def test_predicted_grasp_frame_fk_uses_pink_to_tcp_binding() -> None:
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo.binding = {"arm_joint_names": [f"joint_{index}" for index in range(7)]}
+    servo._base_pose = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+    servo._pinocchio_frame_probes = lambda: (
+        lambda _joints: ([0.2, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+        lambda _joints: [],
+    )
+    observed: dict[str, list[float]] = {}
+
+    def grasp_for_hand_candidate(**kwargs):
+        observed.update(kwargs)
+        return [0.4, 0.1, 0.2], [0.0, 0.0, 0.0, 1.0]
+
+    servo._pink_grasp_frame_for_hand_candidate = grasp_for_hand_candidate
+
+    predicted = servo.predicted_grasp_frame_pose_world(
+        [0.0] * 7, gripper_command=1.0
+    )
+
+    assert observed["candidate_body_position_base_m"] == pytest.approx(
+        [0.2, 0.0, 0.0]
+    )
+    assert predicted == pytest.approx(
+        [1.4, 2.1, 3.2, 0.0, 0.0, 0.0, 1.0]
+    )
+
+
 def test_global_joint_solution_replay_stays_under_native_command_bounds() -> None:
     servo = object.__new__(NativeFrankaDifferentialIkServo)
     servo._joint_position_lower = [-2.0] * 7
