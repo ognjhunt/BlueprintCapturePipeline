@@ -1377,6 +1377,13 @@ def test_contact_close_compensates_measured_closed_pad_midpoint_travel() -> None
         for row in plan["scripted_positive_actions"]
         if row["phase_id"] == "contact_close"
     )
+    source["target_quaternion_world_xyzw"] = [
+        0.0,
+        0.7071067811865475,
+        0.7071067811865476,
+        0.0,
+    ]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     original = list(source["target_position_world_m"])
     derived, receipt = _with_closed_pad_midpoint_compensated_contact(
         control_plan=plan,
@@ -1384,24 +1391,57 @@ def test_contact_close_compensates_measured_closed_pad_midpoint_travel() -> None
             "open_command": 0.0,
             "closed_command": 1.0,
             "pad_midpoint_controlled_body_m": {
-                "0.0": [0.1301, 0.0, 0.0],
-                "1.0": [0.14366, 0.0, 0.0],
+                "0.0": [
+                    0.13009979642662167,
+                    3.1868757355280053e-09,
+                    -4.266703018673823e-09,
+                ],
+                "1.0": [
+                    0.14365582057985699,
+                    2.427310029085028e-07,
+                    -2.635381418092386e-07,
+                ],
             },
         },
-        grasp_approach_axis_body=[1.0, 0.0, 0.0],
+        # C55's sealed reset frames. Controlled-body +X is not grasp-frame
+        # +X, and at the authored grasp it maps almost entirely to world +Y.
+        current_controlled_body_pose_world=[
+            3.813486337661743,
+            9.166367530822754,
+            0.5625487565994263,
+            -0.5000001490115236,
+            0.5000003874300885,
+            0.4999997019767144,
+            0.4999997615813556,
+        ],
+        current_grasp_frame_pose_world=[
+            3.8134863112111903,
+            9.166367386974125,
+            0.4324489601728867,
+            0.7071061879139766,
+            -0.7071072373633318,
+            -0.0003500406233814535,
+            0.0002671211765628578,
+        ],
     )
 
     assert receipt["status"] == "applied"
-    assert receipt["approach_travel_m"] == pytest.approx(0.01356)
+    assert receipt["pad_midpoint_travel_m"] == pytest.approx(0.01355602415783117)
     checked = validate_task_control_plan(derived, task_spec=task)
     close = next(
         row
         for row in checked["scripted_positive_actions"]
         if row["phase_id"] == "contact_close"
     )
-    # The fixture uses identity orientation, so grasp-frame +Z is world +Z.
+    # The compensation follows the measured controlled-body delta through the
+    # rigid body-to-grasp transform. C55's discarded implementation compared
+    # these differently expressed vectors directly and incorrectly no-opped.
     assert close["target_position_world_m"] == pytest.approx(
-        [original[0], original[1], original[2] - 0.01356]
+        [
+            original[0] + 1.8634649404e-06,
+            original[1] - 0.013556019075444,
+            original[2] + 1.15897110396e-05,
+        ]
     )
     open_row = next(
         row
