@@ -878,6 +878,14 @@ def _with_measured_contact_frontier(
         return plan, receipt
     contact = actions[contact_index]
     try:
+        entry_maximum_steps = max(
+            MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
+            int(contact.get("maximum_steps") or 0),
+        )
+    except (TypeError, ValueError):
+        receipt["reason"] = "contact_open_invalid"
+        return plan, receipt
+    try:
         target = [float(value) for value in contact["target_position_world_m"]]
         tolerance = float(contact["arrival_tolerance_m"])
         target_orientation = [
@@ -948,9 +956,15 @@ def _with_measured_contact_frontier(
         )
         contact = actions[contact_index]
         # The removed replay borrowed most of contact_open's settle budget.
-        # Once the replay rows are gone, return those steps to the phase that
-        # now has to traverse from the measured anchor to its solved posture.
-        restored = max(0, int(reclaimed_contact_steps))
+        # The measured anchor consumes part of the rows we just removed, so
+        # only return the remainder to contact_open.  Returning every borrowed
+        # step *and* adding the anchor made C49 exceed the sealed task budget
+        # before a single episode action could run.
+        requested_restoration = max(0, int(reclaimed_contact_steps))
+        restoration_capacity = max(
+            0, replaced_branch_replay_rows - entry_maximum_steps
+        )
+        restored = min(requested_restoration, restoration_capacity)
         if restored:
             contact["maximum_steps"] = int(contact["maximum_steps"]) + restored
     else:
@@ -966,10 +980,7 @@ def _with_measured_contact_frontier(
             # Replay the same settle budget that established this cell as
             # measured-good.  A shorter dwell would no longer be a replay of
             # the observation on which this derived plan relies.
-            "maximum_steps": max(
-                MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
-                int(contact.get("maximum_steps") or 0),
-            ),
+            "maximum_steps": entry_maximum_steps,
         }
     )
     # Do not turn diagnostic samples into mandatory episode phases, and do not
@@ -991,6 +1002,8 @@ def _with_measured_contact_frontier(
             "probe_joint_positions_rad": joints,
             "replaced_branch_replay_rows": replaced_branch_replay_rows,
             "restored_contact_steps": restored,
+            "restoration_limited_by_action_budget": restored
+            < max(0, int(reclaimed_contact_steps)),
             "frontier_phase_ids": [entry["phase_id"], "contact_open"],
             "synthetic_frontier_rows_inserted": 0,
             "rewritten_control_plan_digest": plan["plan_digest"],
