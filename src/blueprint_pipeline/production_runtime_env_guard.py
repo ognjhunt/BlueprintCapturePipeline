@@ -55,6 +55,8 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.production_runtime_env_guard",
     "blueprint_pipeline.provider_billing_reconciler",
     "blueprint_pipeline.pubsub_handoff_listener",
+    "blueprint_pipeline.capture_reconstruction_launch_dispatcher",
+    "blueprint_pipeline.capture_reconstruction_postshot_allocator",
     "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup",
     "blueprint_pipeline.task_evaluation_launch_dispatcher",
     "blueprint_pipeline.task_evaluation_launch_reconciler",

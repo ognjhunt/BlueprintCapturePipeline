@@ -33,6 +33,7 @@ from .canonical_3dgs_transport import validate_canonical_3dgs_transport_receipt
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .postshot_worker_contracts import (
     assert_secret_free,
+    build_postshot_spz_export_args,
     build_postshot_train_args,
     redact_command,
     sanitize_text,
@@ -152,6 +153,7 @@ def run_postshot_arm(
     run_root.mkdir(parents=True, exist_ok=True)
     project = run_root / "postshot-primary.psht"
     splat = run_root / "postshot-primary.ply"
+    compressed_splat = run_root / "postshot-primary.spz"
     log = run_root / "training.log"
     arguments = build_postshot_train_args(
         login_email=email,
@@ -163,14 +165,49 @@ def run_postshot_arm(
         max_image_size=0,
     )
     actual_argv = [executable, *arguments]
-    exit_code = executor(actual_argv, run_root, log)
+    train_exit_code = executor(actual_argv, run_root, log)
+    export_arguments: list[str] = []
+    export_exit_code = train_exit_code
+    if train_exit_code == 0 and project.is_file() and splat.is_file():
+        export_arguments = [
+            executable,
+            *build_postshot_spz_export_args(
+                login_email=email,
+                login_password=password,
+                project=str(project),
+                output_spz=str(compressed_splat),
+                spz_version=4,
+                spz_quality=6,
+            ),
+        ]
+        export_exit_code = executor(export_arguments, run_root, log)
+    exit_code = export_exit_code
     _sanitize_postshot_log(log, (email, password))
-    redacted = redact_command(actual_argv, (email, password))
+    redacted = [
+        redact_command(actual_argv, (email, password)),
+        redact_command(export_arguments, (email, password)),
+    ]
     artifacts = [_artifact("training_log", log, run_root)]
     if project.is_file():
         artifacts.append(_artifact("postshot_project", project, run_root))
     if splat.is_file():
         artifacts.append(_artifact("standard_3dgs_ply", splat, run_root))
+    if compressed_splat.is_file():
+        artifacts.append(_artifact("compressed_3dgs_spz_v4", compressed_splat, run_root))
+    coordinate_binding = run_root / "postshot_coordinate_binding.json"
+    if coordinate_binding.is_file():
+        artifacts.append(
+            _artifact("postshot_coordinate_binding", coordinate_binding, run_root)
+        )
+    camera_metadata = run_root / "camera_metadata"
+    for name, kind in (
+        ("cameras.txt", "colmap_camera_intrinsics"),
+        ("images.txt", "colmap_camera_extrinsics_and_order"),
+        ("points3D.txt", "colmap_seed_points"),
+    ):
+        path = camera_metadata / name
+        if path.is_file():
+            artifacts.append(_artifact(kind, path, run_root))
     receipt = {
         "exit_code": exit_code,
         "argv": redacted,
@@ -179,6 +216,8 @@ def run_postshot_arm(
             "product": "Jawset Postshot CLI",
             "profile": "Splat3",
             "full_resolution": True,
+            "spz_version": 4,
+            "spz_quality": 6,
         },
         "artifacts": artifacts,
         "timestamp": _now(),
@@ -421,6 +460,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         Path(arguments.dataset_root),
         Path(arguments.output_root),
     ))
+    # The subprocess runner names artifacts, while this trusted wrapper binds
+    # every named byte into the immutable receipt.  Publication must never
+    # infer a digest from an untrusted filename alone.
+    output_root = Path(arguments.output_root).expanduser().resolve()
+    bound_artifacts: list[dict[str, Any]] = []
+    for raw_artifact in receipt.get("artifacts") or []:
+        if not isinstance(raw_artifact, Mapping):
+            raise Canonical3DGSPipelineError(["worker_artifact_invalid"])
+        row = dict(raw_artifact)
+        relative = Path(str(row.get("relative_path") or ""))
+        path = (output_root / relative).resolve()
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or output_root not in path.parents
+            or not path.is_file()
+            or path.is_symlink()
+        ):
+            raise Canonical3DGSPipelineError(["worker_artifact_path_invalid"])
+        row["digest"] = _sha256_file(path)
+        row["bytes"] = path.stat().st_size
+        bound_artifacts.append(row)
+    receipt["artifacts"] = bound_artifacts
     runtime_identity = dict(receipt.get("runtime_identity") or {})
     runtime_identity["worker_python_package_digest"] = (
         canonical_3dgs_worker_package_digest()
@@ -439,7 +501,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
     receipt["allocation_binding_digest"] = admission["allocation_binding_digest"]
     receipt["provider_zero_required_after_execution"] = True
-    output_root = Path(arguments.output_root).expanduser().resolve()
     transport_snapshot = output_root / "canonical_3dgs_transport_receipt.json"
     admission_snapshot = output_root / "canonical_3dgs_worker_admission.json"
     _write_immutable_json(transport_snapshot, transport)

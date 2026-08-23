@@ -265,6 +265,11 @@ if ($deadline -gt 0) {{
 $env:BLUEPRINT_WORKER_ENV_FILE = "C:\\work\\blueprint_worker.env"
 $env:BLUEPRINT_WORKER_ARGV_FILE = "C:\\work\\blueprint_argv.json"
 & "C:\\blueprint\\venv\\Scripts\\python.exe" -m blueprint_pipeline.windows_worker_entrypoint
+$workerExit = $LASTEXITCODE
+# The output upload is synchronous. Once it returns, terminate immediately;
+# the scheduled deadline remains only the crash/hang backstop.
+shutdown.exe /s /t 0 /f
+exit $workerExit
 </powershell>
 <persist>false</persist>
 """
@@ -837,9 +842,26 @@ class AWSRenderProvider(GpuRenderProvider):
             subnets = ec2.describe_subnets(SubnetIds=[body["SubnetId"]]).get("Subnets", [])
             groups = ec2.describe_security_groups(GroupIds=list(body["SecurityGroupIds"])).get("SecurityGroups", [])
             profile_arn = str(_mapping(body.get("IamInstanceProfile")).get("Arn") or "")
-            profile_name = profile_arn.rsplit("/", 1)[-1]
-            profile = self._iam().get_instance_profile(InstanceProfileName=profile_name).get("InstanceProfile", {})
-            checks.update({"instance_type": bool(types), "regional_offering": bool(offerings), "ami": bool(image), "subnet": bool(subnets), "security_groups": len(groups) == len(body["SecurityGroupIds"]), "iam_instance_profile": bool(profile) and profile.get("Arn") == profile_arn})
+            profile_verified = True
+            if profile_arn:
+                profile_name = profile_arn.rsplit("/", 1)[-1]
+                profile = self._iam().get_instance_profile(
+                    InstanceProfileName=profile_name
+                ).get("InstanceProfile", {})
+                profile_verified = bool(profile) and profile.get("Arn") == profile_arn
+            checks.update(
+                {
+                    "instance_type": bool(types),
+                    "regional_offering": bool(offerings),
+                    "ami": bool(image),
+                    "subnet": bool(subnets),
+                    "security_groups": len(groups) == len(body["SecurityGroupIds"]),
+                    # A Windows signed-URL worker deliberately has no instance
+                    # role.  Only verify a profile when the launch request
+                    # actually carries one.
+                    "iam_instance_profile": profile_verified,
+                }
+            )
             for key, passed in list(checks.items()):
                 if key == "account":
                     continue
@@ -867,7 +889,39 @@ class AWSRenderProvider(GpuRenderProvider):
         except Exception as exc:  # noqa: BLE001
             blockers.append("aws_capacity_preflight_api_failed")
             checks["error_type"] = type(exc).__name__
-        return {"status": "available" if not blockers else "blocked", "provider": self.name, "region": req.get("region") or self._config()["region"], "checks": checks, "quota_verified": bool(_mapping(checks.get("quota")).get("verified")), "capacity_reservation_proven": False, "blockers": list(dict.fromkeys(blockers)), "api_confirmed": not blockers, "raw_provider_response_recorded": False}
+        instance_metadata = _mapping(types[0]) if types else {}
+        gpu_rows = _mapping(instance_metadata.get("GpuInfo")).get("Gpus")
+        gpu_rows = gpu_rows if isinstance(gpu_rows, list) else []
+        gpu_memory_mb = sum(
+            int(_mapping(_mapping(row).get("MemoryInfo")).get("SizeInMiB") or 0)
+            * int(_mapping(row).get("Count") or 0)
+            for row in gpu_rows
+        )
+        configured_rate = self._config()["configured_hourly_rate_usd"]
+        selected_offer = (
+            {
+                "gpu_name": ",".join(
+                    str(_mapping(row).get("Name") or "") for row in gpu_rows
+                ),
+                "gpu_ram_mb": gpu_memory_mb,
+                "on_demand_price_usd_per_hour": configured_rate,
+                "instance_type": instance_type,
+            }
+            if gpu_rows
+            else None
+        )
+        return {
+            "status": "available" if not blockers else "blocked",
+            "provider": self.name,
+            "region": req.get("region") or self._config()["region"],
+            "checks": checks,
+            "quota_verified": bool(_mapping(checks.get("quota")).get("verified")),
+            "selected_offer": selected_offer,
+            "capacity_reservation_proven": False,
+            "blockers": list(dict.fromkeys(blockers)),
+            "api_confirmed": not blockers,
+            "raw_provider_response_recorded": False,
+        }
 
     def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True, paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None) -> dict:
         try:

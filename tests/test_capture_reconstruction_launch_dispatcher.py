@@ -19,6 +19,7 @@ from blueprint_pipeline.capture_reconstruction_launch_dispatcher import (
     POLICY_SCHEMA_VERSION,
     SELECTION_PROFILE_SCHEMA_VERSION,
     CaptureReconstructionLaunchError,
+    build_capture_job_scoped_policy,
     build_launch_request,
     mint_frame_selection_profile,
     process_launch_queue,
@@ -140,6 +141,39 @@ def test_policy_for_a_different_task_does_not_satisfy_this_capture(tmp_path: Pat
             task_id="task-something-else",
         )
     assert MISSING_POLICY in str(excinfo.value)
+
+
+def test_reserved_capture_job_policy_pre_authorizes_only_that_job(tmp_path: Path) -> None:
+    policy = build_capture_job_scoped_policy(
+        capture_job_id="job-approved-1",
+        site_id="site-warehouse-a",
+        task_id="task-shelf-restock",
+        selector="profile_bound_quality_filter",
+        parameters=_policy()["parameters"],
+        rights_profile="operator_authorized_commercial",
+        rights_evidence_digest=_sha("rights"),
+        arms=["postshot-primary"],
+        max_spend_usd=10.0,
+        hard_ttl_seconds=5400,
+        authority_id="authority-founder-20260817",
+    )
+    (tmp_path / "job.json").write_text(json.dumps(policy), encoding="utf-8")
+    resolved = resolve_site_task_policy(
+        policy_root=tmp_path,
+        site_id="site-warehouse-a",
+        task_id="task-shelf-restock",
+        capture_id="capture-created-later",
+        capture_job_id="job-approved-1",
+    )
+    assert resolved["capture_job_id"] == "job-approved-1"
+    with pytest.raises(CaptureReconstructionLaunchError, match=MISSING_POLICY):
+        resolve_site_task_policy(
+            policy_root=tmp_path,
+            site_id="site-warehouse-a",
+            task_id="task-shelf-restock",
+            capture_id="capture-other",
+            capture_job_id="job-other",
+        )
 
 
 # --------------------------------------------------------------------------
@@ -322,3 +356,87 @@ def test_queue_run_without_execute_authority_performs_no_paid_work(tmp_path: Pat
     assert result["provider_mutation_performed"] is False
     assert result["dispatched"] == 0
     assert result["previewed"] == 1
+
+
+def test_queue_prepare_claims_once_and_resumes_from_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "queue"
+    request = _request(
+        capture_root_uri=(
+            "gs://blueprint-captures/scenes/scene-live-001/"
+            "captures/capture-live-001/raw"
+        )
+    )
+    stage_launch_request(value=request, queue_root=queue_root)
+    raw = (
+        tmp_path
+        / "capture-store"
+        / "blueprint-captures"
+        / "scenes"
+        / "scene-live-001"
+        / "captures"
+        / "capture-live-001"
+        / "raw"
+    )
+    raw.mkdir(parents=True)
+    (raw / "capture_upload_complete.json").write_text("{}", encoding="utf-8")
+    calls: list[Path] = []
+
+    def dispatch(**kwargs):
+        calls.append(Path(kwargs["queue_path"]))
+        return {
+            "schema_version": "capture_reconstruction_launch_queue_run.v1",
+            "status": "prepared_awaiting_paid_authority",
+            "provider_mutation_performed": False,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_reconstruction_launch_dispatcher.dispatch_launch_request",
+        dispatch,
+    )
+    arguments = dict(
+        queue_root=queue_root,
+        state_root=tmp_path / "state",
+        derived_root=tmp_path / "derived",
+        capture_storage_root=tmp_path / "capture-store",
+        prepare=True,
+    )
+    first = process_launch_queue(**arguments)
+    second = process_launch_queue(**arguments)
+
+    assert first["dispatched"] == 1
+    assert second["dispatched"] == 1
+    assert not list((queue_root / "pending").glob("*.json"))
+    assert len(list((queue_root / "processing").glob("*.json"))) == 1
+    assert all(path.parent.name == "processing" for path in calls)
+
+
+def test_queue_refuses_a_gcs_identity_that_does_not_match_the_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "queue"
+    stage_launch_request(
+        value=_request(
+            capture_root_uri=(
+                "gs://blueprint-captures/scenes/a-different-scene/"
+                "captures/capture-live-001/raw"
+            )
+        ),
+        queue_root=queue_root,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_reconstruction_launch_dispatcher.dispatch_launch_request",
+        lambda **_kwargs: pytest.fail("mismatched storage identity reached dispatch"),
+    )
+    result = process_launch_queue(
+        queue_root=queue_root,
+        state_root=tmp_path / "state",
+        derived_root=tmp_path / "derived",
+        capture_storage_root=tmp_path / "capture-store",
+        prepare=True,
+    )
+
+    assert result["blocked"] == 1
+    assert len(list((queue_root / "blocked").glob("*.json"))) == 1
+    assert "CaptureReconstructionLaunchError" in result["entries"][0]["blockers"][0]

@@ -1,0 +1,50 @@
+[Unit]
+Description=Advance immutable Blueprint capture reconstruction queue
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+After=network-online.target blueprint-pubsub-handoff-listener.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
+Environment=PRIVACY_PIPELINE_ENABLED=true
+Environment=PRIVACY_FAIL_CLOSED=true
+Environment=PIPELINE_SYNC_REQUIRED=true
+Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
+Environment=BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue
+Environment=BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs
+Environment=BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT=/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived
+Environment=BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && py=python3 && [ ! -x .venv/bin/python ] || py=.venv/bin/python; exec env PYTHONPATH=src "$${py}" -m blueprint_pipeline.capture_reconstruction_launch_dispatcher drain --queue-root "$${BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT}" --state-root "$${BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT}" --derived-root "$${BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT}" --capture-storage-root "$${BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT}" --execute'
+TimeoutStartSec=15000

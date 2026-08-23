@@ -486,7 +486,9 @@ def _enqueue_capture_reconstruction_if_configured(
             policy_root=policy_root,
             queue_root=queue_root,
             source_commit_sha=str(
-                os.getenv(RECONSTRUCTION_SOURCE_COMMIT_ENV) or ""
+                os.getenv(RECONSTRUCTION_SOURCE_COMMIT_ENV)
+                or os.getenv("BLUEPRINT_SOURCE_COMMIT")
+                or ""
             ).strip(),
             requested_at=utc_now_iso(),
         )

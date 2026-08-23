@@ -75,6 +75,7 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
         "blueprint-pipeline-intake.service",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pubsub-handoff-listener.service",
+        "blueprint-capture-reconstruction-dispatcher.service",
     ):
         text = _read(unit)
 
@@ -203,6 +204,34 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert "${STATE_DIR}/robot-eval-job-requests" in installer
     assert "${STATE_DIR}/incoming_webapp_job_requests" in installer
     assert "${HANDOFF_DIR}" in installer
+
+
+def test_capture_reconstruction_queue_is_path_activated_and_automatically_executes_governed_work():
+    service = _read("blueprint-capture-reconstruction-dispatcher.service")
+    path = _read("blueprint-capture-reconstruction-dispatcher.path")
+    timer = _read("blueprint-capture-reconstruction-dispatcher.timer")
+    env_example = _read("pipeline-control-plane.env.example")
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "capture_reconstruction_launch_dispatcher drain" in service
+    assert "--execute" in service
+    assert "capture-reconstruction-queue/pending" in path
+    assert "Unit=blueprint-capture-reconstruction-dispatcher.service" in path
+    assert "Unit=blueprint-capture-reconstruction-dispatcher.service" in timer
+    assert "OnUnitInactiveSec=1min" in timer
+    for name in (
+        "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT",
+        "BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT",
+        "BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT",
+        "BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT",
+    ):
+        assert name in env_example
+    assert "blueprint-capture-reconstruction-dispatcher.service" in installer
+    assert "blueprint-capture-reconstruction-dispatcher.path" in installer
+    assert "blueprint-capture-reconstruction-dispatcher.timer" in installer
+    assert "capture-reconstruction-policies" in installer
+    assert "capture-reconstruction-queue/pending" in installer
+    assert "systemctl enable --now blueprint-capture-reconstruction-dispatcher.path" in installer
 
 
 def test_control_plane_postcheck_pages_or_fails_blocked_manifests():

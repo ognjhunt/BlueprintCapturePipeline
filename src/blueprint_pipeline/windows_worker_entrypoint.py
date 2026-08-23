@@ -15,6 +15,7 @@ authority, and cannot decide reconstruction quality.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import sys
@@ -131,6 +132,22 @@ def redact(value: str, secrets: Sequence[str]) -> str:
     return cleaned
 
 
+@contextmanager
+def _scoped_process_environment(values: Mapping[str, str]):
+    """Expose the in-memory licence only for the trainer call, then erase it."""
+
+    previous = {key: os.environ.get(key) for key in values}
+    try:
+        os.environ.update({key: str(value) for key, value in values.items()})
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def run(
     *,
     worker_env_file: str | Path,
@@ -155,15 +172,20 @@ def run(
         worker_environment=worker_environment, licence=licence
     )
 
-    if runner is None:  # pragma: no cover - exercised only on a real worker
-        from .canonical_3dgs_worker import main as worker_main
+    with _scoped_process_environment(trainer_environment):
+        if runner is None:  # pragma: no cover - exercised only on a real worker
+            from .canonical_3dgs_windows_bootstrap import (
+                run_canonical_3dgs_windows_bootstrap,
+            )
 
-        exit_code = worker_main(json.loads(Path(
-            worker_environment["BLUEPRINT_WORKER_ARGV_FILE"]
-        ).read_text(encoding="utf-8")))
-        result: dict[str, Any] = {"exit_code": exit_code}
-    else:
-        result = dict(runner(environment=trainer_environment))
+            result = run_canonical_3dgs_windows_bootstrap(
+                environment=os.environ,
+                work_root=worker_environment.get(
+                    "BLUEPRINT_CANONICAL_WORK_ROOT", r"C:\work\canonical"
+                ),
+            )
+        else:
+            result = dict(runner(environment=dict(os.environ)))
 
     receipt = {
         "schema_version": ENTRYPOINT_RECEIPT_SCHEMA_VERSION,

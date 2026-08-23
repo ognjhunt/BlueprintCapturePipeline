@@ -222,7 +222,23 @@ def test_gcp_empty_inventory_response_is_confirmed_zero(monkeypatch) -> None:
 
 class _FakeEC2:
     def describe_instance_types(self, **kwargs):
-        return {"InstanceTypes": [{"InstanceType": "g6e.2xlarge", "VCpuInfo": {"DefaultVCpus": 8}}]}
+        return {
+            "InstanceTypes": [
+                {
+                    "InstanceType": "g6e.2xlarge",
+                    "VCpuInfo": {"DefaultVCpus": 8},
+                    "GpuInfo": {
+                        "Gpus": [
+                            {
+                                "Name": "NVIDIA L40S",
+                                "Count": 1,
+                                "MemoryInfo": {"SizeInMiB": 49152},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
 
     def describe_instance_type_offerings(self, **kwargs):
         return {"InstanceTypeOfferings": [{"InstanceType": "g6e.2xlarge", "Location": "us-east-1"}]}
@@ -277,6 +293,8 @@ def test_aws_preflight_binds_account_network_image_and_quota(monkeypatch, tmp_pa
     assert result["status"] == "available"
     assert result["checks"]["account"] is True
     assert result["checks"]["quota"]["required_vcpus"] == 8
+    assert result["selected_offer"]["gpu_ram_mb"] == 49152
+    assert result["selected_offer"]["on_demand_price_usd_per_hour"] == 1.86
     assert request["run_instances"]["MetadataOptions"]["HttpTokens"] == "required"
     assert request["run_instances"]["ClientToken"]
     assert request["run_instances"]["BlockDeviceMappings"][0]["Ebs"]["DeleteOnTermination"] is True
@@ -284,6 +302,28 @@ def test_aws_preflight_binds_account_network_image_and_quota(monkeypatch, tmp_pa
     assert "docker pull" not in startup
     assert "docker login" not in startup
     assert "test -f /etc/blueprint/worker-image-ref" in startup
+
+
+def test_aws_windows_preflight_does_not_invent_an_instance_role(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _aws_env(monkeypatch)
+    monkeypatch.setenv("BLUEPRINT_AWS_WORKER_PLATFORM", "windows")
+    monkeypatch.delenv("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN", raising=False)
+    provider = AWSRenderProvider()
+    monkeypatch.setattr(provider, "_ec2", lambda: _FakeEC2())
+    monkeypatch.setattr(provider, "_service_quotas", lambda: _FakeQuota())
+    monkeypatch.setattr(provider, "_sts", lambda: _FakeSTS())
+
+    def forbidden_iam():
+        raise AssertionError("a signed-URL Windows worker must not query IAM")
+
+    monkeypatch.setattr(provider, "_iam", forbidden_iam)
+    request = provider.build_request(_spec(), tmp_path)
+    result = provider.capacity_preflight(request)
+    assert result["status"] == "available"
+    assert "IamInstanceProfile" not in request["run_instances"]
+    assert result["checks"]["iam_instance_profile"] is True
 
 
 def test_aws_launch_and_inventory_contract(monkeypatch, tmp_path: Path) -> None:

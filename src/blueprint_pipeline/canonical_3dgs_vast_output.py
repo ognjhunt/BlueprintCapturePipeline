@@ -111,8 +111,9 @@ def compile_canonical_3dgs_vast_output_bundle(
     output_path: str | Path,
     worker_image_digest: str,
     source_commit_sha: str,
+    arm_id: str = "splatfacto-comparison",
 ) -> dict[str, Any]:
-    """Package one successful, externally admitted arm without grading it."""
+    """Package one successful, externally admitted canonical arm without grading it."""
 
     root = Path(result_root).resolve()
     receipt = json.loads(canonical_json(dict(worker_receipt)))
@@ -136,6 +137,27 @@ def compile_canonical_3dgs_vast_output_bundle(
     ]
     if len(splats) != 1:
         errors.append("canonical_vast_output_standard_ply_missing")
+    if arm_id == "postshot-primary":
+        required_postshot_kinds = {
+            "postshot_project",
+            "compressed_3dgs_spz_v4",
+            "postshot_coordinate_binding",
+            "colmap_camera_intrinsics",
+            "colmap_camera_extrinsics_and_order",
+            "colmap_seed_points",
+            "training_log",
+        }
+        observed_postshot_kinds = {
+            str(row.get("kind")) for row in artifacts if isinstance(row, Mapping)
+        }
+        missing_postshot_kinds = sorted(
+            required_postshot_kinds - observed_postshot_kinds
+        )
+        if missing_postshot_kinds:
+            errors.append(
+                "canonical_postshot_output_artifacts_missing:"
+                + ",".join(missing_postshot_kinds)
+            )
     control_paths = {
         WORKER_RECEIPT_MEMBER: root / "worker_receipt.json",
         TRANSPORT_RECEIPT_MEMBER: root / "canonical_3dgs_transport_receipt.json",
@@ -199,6 +221,28 @@ def compile_canonical_3dgs_vast_output_bundle(
         raise ReconstructionGpuOperationOutputError(
             ["canonical_vast_output_standard_ply_digest_mismatch"]
         )
+    # Every declared worker artifact, including Postshot's native checkpoint,
+    # SPZ, and exact COLMAP camera/order snapshots, must resolve below the
+    # result root and match its receipt digest before publication.
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping):
+            raise ReconstructionGpuOperationOutputError(
+                ["canonical_vast_output_artifact_invalid"]
+            )
+        relative = _portable(artifact.get("relative_path"))
+        if relative is None:
+            raise ReconstructionGpuOperationOutputError(
+                ["canonical_vast_output_artifact_path_invalid"]
+            )
+        artifact_path = root.joinpath(*relative.parts)
+        if (
+            not artifact_path.is_file()
+            or artifact_path.is_symlink()
+            or _sha256(artifact_path) != artifact.get("digest")
+        ):
+            raise ReconstructionGpuOperationOutputError(
+                ["canonical_vast_output_artifact_digest_mismatch"]
+            )
     try:
         decoded = read_standard_3dgs_ply(splat_path)
     except (OSError, TypeError, ValueError) as exc:
@@ -209,7 +253,7 @@ def compile_canonical_3dgs_vast_output_bundle(
         "schema_version": SCHEMA_VERSION,
         "status": "candidate_generated_not_graded",
         "operation": "trainer_canary",
-        "arm_id": "splatfacto-comparison",
+        "arm_id": arm_id,
         "canonical_3dgs_execution_plan_digest": receipt[
             "canonical_3dgs_execution_plan_digest"
         ],
@@ -218,6 +262,23 @@ def compile_canonical_3dgs_vast_output_bundle(
         "worker_image_digest": worker_image_digest,
         "source_commit_sha": source_commit_sha,
         "standard_3dgs_ply_digest": splats[0]["digest"],
+        "postshot_project_digest": next(
+            (
+                row.get("digest")
+                for row in artifacts
+                if isinstance(row, Mapping) and row.get("kind") == "postshot_project"
+            ),
+            None,
+        ),
+        "standard_3dgs_spz_digest": next(
+            (
+                row.get("digest")
+                for row in artifacts
+                if isinstance(row, Mapping)
+                and row.get("kind") == "compressed_3dgs_spz_v4"
+            ),
+            None,
+        ),
         "gaussian_count": int(decoded.count),
         "members": [row for _, row in files],
         "member_count": len(files),
@@ -264,6 +325,7 @@ def validate_canonical_3dgs_vast_output_bundle(
     expected_allocator_admission_digest: str,
     expected_worker_image_digest: str,
     expected_source_commit_sha: str,
+    expected_arm_id: str = "splatfacto-comparison",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Independently decode every returned byte before accepting transport."""
 
@@ -356,7 +418,7 @@ def validate_canonical_3dgs_vast_output_bundle(
             )
             worker_admission = require_canonical_3dgs_worker_admission(
                 worker_admission_value,
-                arm_id="splatfacto-comparison",
+                arm_id=expected_arm_id,
                 plan_digest=expected_operation_request_digest,
                 dataset_digest=expected_reconstruction_dataset_digest,
                 transport_bundle_digest=expected_transport_bundle_digest,
@@ -386,6 +448,40 @@ def validate_canonical_3dgs_vast_output_bundle(
                 != splat_rows[0].get("archive_path")
             ):
                 raise ValueError("worker_receipt_splat_binding")
+            if expected_arm_id == "postshot-primary":
+                postshot_artifacts = {
+                    str(row.get("kind")): row
+                    for row in worker_receipt.get("artifacts") or []
+                    if isinstance(row, Mapping)
+                }
+                required_kinds = {
+                    "postshot_project",
+                    "compressed_3dgs_spz_v4",
+                    "postshot_coordinate_binding",
+                    "colmap_camera_intrinsics",
+                    "colmap_camera_extrinsics_and_order",
+                    "colmap_seed_points",
+                    "training_log",
+                }
+                if not required_kinds.issubset(postshot_artifacts):
+                    raise ValueError("postshot_artifacts_missing")
+                if (
+                    manifest.get("postshot_project_digest")
+                    != postshot_artifacts["postshot_project"].get("digest")
+                    or manifest.get("standard_3dgs_spz_digest")
+                    != postshot_artifacts["compressed_3dgs_spz_v4"].get("digest")
+                ):
+                    raise ValueError("postshot_export_binding")
+                for row in postshot_artifacts.values():
+                    matches = [
+                        member
+                        for member in members
+                        if member.get("digest") == row.get("digest")
+                        and member.get("archive_path")
+                        == "results/" + str(row.get("relative_path") or "")
+                    ]
+                    if len(matches) != 1:
+                        raise ValueError("postshot_artifact_member_binding")
             with tempfile.TemporaryDirectory(prefix="canonical-vast-ply-") as tmp:
                 splat_path = Path(tmp) / "candidate.ply"
                 with archive.open(
@@ -409,6 +505,7 @@ def validate_canonical_3dgs_vast_output_bundle(
         manifest.get("schema_version") != SCHEMA_VERSION
         or manifest.get("status") != "candidate_generated_not_graded"
         or manifest.get("operation") != expected_operation
+        or manifest.get("arm_id") != expected_arm_id
         or manifest.get("canonical_3dgs_execution_plan_digest")
         != expected_operation_request_digest
         or manifest.get("transport_bundle_digest")
@@ -467,7 +564,11 @@ def validate_canonical_3dgs_vast_output_bundle(
         != expected_allocator_admission_digest
         or allocator_admission.get("status") != "execute_ready"
         or allocator_admission.get("execution_adapter_id")
-        != "canonical_splatfacto_vast_v1"
+        != (
+            "canonical_postshot_aws_windows_v1"
+            if expected_arm_id == "postshot-primary"
+            else "canonical_splatfacto_vast_v1"
+        )
         or allocator_admission.get("operation_request_digest")
         != expected_operation_request_digest
         or allocator_admission.get("operation_input_bundle_digest")

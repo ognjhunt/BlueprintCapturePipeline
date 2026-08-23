@@ -37,9 +37,9 @@ from .reconstruction_isaac_worker_bundle import (
 
 
 def _canonical_worker_wheel_blockers(
-    receipt: Mapping[str, Any], *, canonical_splatfacto: bool
+    receipt: Mapping[str, Any], *, canonical_transport: bool
 ) -> list[str]:
-    if not canonical_splatfacto:
+    if not canonical_transport:
         return []
     required = (
         "worker_wheel_filename",
@@ -50,7 +50,7 @@ def _canonical_worker_wheel_blockers(
     return (
         []
         if all(receipt.get(field) is not None for field in required)
-        else ["canonical_splatfacto_worker_wheel_missing"]
+        else ["canonical_3dgs_worker_wheel_missing"]
     )
 
 
@@ -144,9 +144,11 @@ def prepare_reconstruction_paid_transport(
         "measurement_dlo_lab_canary",
         "measurement_chrono_dem_canary",
     } or operation in isaac_operations
-    canonical_splatfacto = (
-        admission.get("execution_adapter_id") == "canonical_splatfacto_vast_v1"
-    )
+    canonical_adapter = str(admission.get("execution_adapter_id") or "")
+    canonical_transport = canonical_adapter in {
+        "canonical_splatfacto_vast_v1",
+        "canonical_postshot_aws_windows_v1",
+    }
     if scientific:
         urls.append(("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)))
         if operation not in {
@@ -186,7 +188,7 @@ def prepare_reconstruction_paid_transport(
                     receipt = validate_measurement_dlo_lab_input_bundle_receipt(raw)
                 elif operation == "measurement_chrono_dem_canary":
                     receipt = validate_measurement_chrono_dem_input_bundle_receipt(raw)
-                elif canonical_splatfacto:
+                elif canonical_transport:
                     receipt = validate_canonical_3dgs_transport_receipt(raw)
                 else:
                     receipt = validate_reconstruction_gpu_operation_bundle_receipt(raw)
@@ -205,7 +207,7 @@ def prepare_reconstruction_paid_transport(
             else:
                 blockers.extend(
                     _canonical_worker_wheel_blockers(
-                        receipt, canonical_splatfacto=canonical_splatfacto
+                        receipt, canonical_transport=canonical_transport
                     )
                 )
                 bindings = (
@@ -233,7 +235,7 @@ def prepare_reconstruction_paid_transport(
                         ("operation_input_bundle_digest", "transport_bundle_digest"),
                         ("source_commit_sha", "source_commit_sha"),
                     )
-                    if canonical_splatfacto
+                    if canonical_transport
                     else (
                         ("operation", "operation"),
                         ("operation_request_digest", "operation_request_digest"),

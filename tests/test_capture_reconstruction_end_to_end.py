@@ -87,8 +87,17 @@ def _stage_as_uploaded_capture(tmp_path: Path) -> tuple[Path, list[float], str]:
             artifacts[str(path.relative_to(raw)).replace("\\", "/")] = hashlib.sha256(
                 path.read_bytes()
             ).hexdigest()
+    canonical_rows = "\n".join(
+        f"{relative}:{artifacts[relative]}" for relative in sorted(artifacts)
+    )
     (raw / "hashes.json").write_text(
-        json.dumps({"artifacts": artifacts}), encoding="utf-8"
+        json.dumps(
+            {
+                "bundle_sha256": hashlib.sha256(canonical_rows.encode()).hexdigest(),
+                "artifacts": artifacts,
+            }
+        ),
+        encoding="utf-8",
     )
 
     manifest = json.loads(
@@ -256,8 +265,17 @@ def _mutate_candidate_manifest(capture_root, mutate) -> str:
             artifacts[str(item.relative_to(raw)).replace("\\", "/")] = hashlib.sha256(
                 item.read_bytes()
             ).hexdigest()
+    canonical_rows = "\n".join(
+        f"{relative}:{artifacts[relative]}" for relative in sorted(artifacts)
+    )
     (raw / "hashes.json").write_text(
-        json.dumps({"artifacts": artifacts}), encoding="utf-8"
+        json.dumps(
+            {
+                "bundle_sha256": hashlib.sha256(canonical_rows.encode()).hexdigest(),
+                "artifacts": artifacts,
+            }
+        ),
+        encoding="utf-8",
     )
     return str(manifest.get("manifest_digest") or "")
 
@@ -399,9 +417,11 @@ def test_a_resumed_dispatch_cannot_allocate_a_second_instance(
         allocator=_allocator(calls),
     )
     dispatch_launch_request(**common)
-    with pytest.raises(Exception) as excinfo:
-        dispatch_launch_request(**common)
-    assert "paid_stage_already_completed" in str(excinfo.value)
+    resumed = dispatch_launch_request(**common)
+    assert resumed["status"] == "allocation_blocked"
+    assert resumed["blockers"] == [
+        "capture_reconstruction_previous_paid_attempt_not_completed"
+    ]
     assert len(calls) == 1
 
 

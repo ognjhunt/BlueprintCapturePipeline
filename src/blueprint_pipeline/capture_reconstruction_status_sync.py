@@ -22,10 +22,14 @@ Three rules hold it honest:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from .decision_evidence_contracts import canonical_digest
+from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 STATUS_SCHEMA_VERSION = "capture_reconstruction_status.v1"
 SYNC_RECEIPT_SCHEMA_VERSION = "capture_reconstruction_status_sync_receipt.v1"
@@ -38,6 +42,7 @@ TERMINAL_STATES = ("published", "abstained", "failed")
 RECONSTRUCTION_FIELD = "reconstruction"
 
 _DIGEST_PREFIX = "sha256:"
+WEBAPP_URL_ENV = "PIPELINE_CAPTURE_RECONSTRUCTION_WEBAPP_URL"
 
 
 class CaptureReconstructionStatusError(ValueError):
@@ -172,6 +177,76 @@ def sync_terminal_status(
     }
 
 
+def sync_terminal_status_to_webapp(
+    *,
+    status: Mapping[str, Any],
+    endpoint_url: str | None = None,
+    token: str | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Publish one terminal status through the signed production WebApp seam."""
+
+    payload = dict(status)
+    expected = canonical_digest(
+        {key: value for key, value in payload.items() if key != "status_digest"},
+        digest_field="status_digest",
+    )
+    if payload.get("status_digest") != expected:
+        raise CaptureReconstructionStatusError(
+            "capture_reconstruction_status_digest_mismatch"
+        )
+    base = str(endpoint_url or os.getenv(WEBAPP_URL_ENV) or "").strip()
+    secret = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    if not base or not secret:
+        raise CaptureReconstructionStatusError(
+            "capture_reconstruction_webapp_sync_not_configured"
+        )
+    capture_id = str(payload.get("capture_id") or "")
+    url = validated_https_sync_url(
+        base.rstrip("/") + "/" + capture_id + "/reconstruction"
+    )
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    outbound = urllib_request.Request(
+        url,
+        data=body,
+        headers=_pipeline_sync_headers(secret, body),
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(  # nosec B310 - validated HTTPS URL
+            outbound, timeout=max(0.1, timeout_seconds)
+        ) as response:
+            raw = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raise CaptureReconstructionStatusError(
+            f"capture_reconstruction_webapp_http_error:{exc.code}"
+        ) from exc
+    except (urllib_error.URLError, TimeoutError, ValueError) as exc:
+        raise CaptureReconstructionStatusError(
+            "capture_reconstruction_webapp_sync_failed:"
+            + type(exc).__name__
+        ) from exc
+    try:
+        receipt = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise CaptureReconstructionStatusError(
+            "capture_reconstruction_webapp_response_invalid"
+        ) from exc
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema_version") != SYNC_RECEIPT_SCHEMA_VERSION
+        or receipt.get("capture_id") != capture_id
+        or receipt.get("capture_digest") != payload.get("capture_digest")
+        or receipt.get("status_digest") != payload.get("status_digest")
+        or not isinstance(receipt.get("written"), bool)
+        or not isinstance(receipt.get("already_synced"), bool)
+    ):
+        raise CaptureReconstructionStatusError(
+            "capture_reconstruction_webapp_response_binding_mismatch"
+        )
+    return dict(receipt)
+
+
 def status_from_campaign(
     *,
     capture_id: str,
@@ -228,4 +303,6 @@ __all__ = [
     "build_terminal_status",
     "status_from_campaign",
     "sync_terminal_status",
+    "sync_terminal_status_to_webapp",
+    "WEBAPP_URL_ENV",
 ]

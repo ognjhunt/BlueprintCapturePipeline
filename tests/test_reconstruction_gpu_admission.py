@@ -334,11 +334,45 @@ def test_reconstruction_canary_fails_closed_on_authority_provider_and_evidence_d
         authority_id=None,
     )
     assert admission["status"] == "blocked"
-    assert "reconstruction_gpu_vast_first_required" in admission["blockers"]
+    assert "reconstruction_gpu_vast_provider_required" in admission["blockers"]
     assert "reconstruction_gpu_hidden_heldout_access_forbidden" in admission["blockers"]
     assert "reconstruction_gpu_provider_inventory_not_zero" in admission["blockers"]
     assert "reconstruction_gpu_explicit_budget_missing" in admission["blockers"]
     assert admission["provider_mutations_performed"] == 0
+
+
+def test_postshot_canary_requires_exact_aws_windows_adapter() -> None:
+    request = _request(
+        operation="trainer_canary",
+        requested_execution_adapter_id="canonical_postshot_aws_windows_v1",
+        expected_runtime_result_schema="canonical_3dgs_vast_runtime_result.v1",
+        retry_cap=0,
+    )
+    preflight = _preflight(provider="aws")
+    admission, bound = _build(
+        request=request,
+        preflight=preflight,
+        provider="aws",
+        execute=True,
+        retry_cap=0,
+        execution_adapter_id="canonical_postshot_aws_windows_v1",
+    )
+    assert admission["status"] == "execute_ready"
+    assert admission["provider"] == "aws"
+    assert admission["worker_platform"] == "windows"
+    assert admission["execution_adapter_id"] == "canonical_postshot_aws_windows_v1"
+    assert bound["provider_mutation_authorized"] is True
+
+    wrong_provider, _ = _build(
+        request=request,
+        preflight=_preflight(provider="vast"),
+        provider="vast",
+        execute=True,
+        retry_cap=0,
+        execution_adapter_id="canonical_postshot_aws_windows_v1",
+    )
+    assert wrong_provider["status"] == "blocked"
+    assert "reconstruction_gpu_aws_provider_required" in wrong_provider["blockers"]
 
 
 def test_execute_stays_blocked_until_vast_execution_adapter_is_qualified():

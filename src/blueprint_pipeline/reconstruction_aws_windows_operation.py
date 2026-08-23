@@ -23,6 +23,9 @@ The properties that matter are about money and evidence, not convenience:
 
 from __future__ import annotations
 
+import base64
+import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -32,6 +35,9 @@ from .common import ensure_dir, write_json
 SCHEMA_VERSION = "reconstruction_aws_windows_operation_execution.v1"
 PROVIDER = "aws"
 POLL_INTERVAL_SECONDS = 30.0
+TEARDOWN_POLL_INTERVAL_SECONDS = 15.0
+MAX_TEARDOWN_WAIT_SECONDS = 600.0
+MAX_TEARDOWN_INVENTORY_PROBES = 40
 
 #: States that mean the instance is gone as far as billing is concerned.
 _TERMINAL_INSTANCE_STATES = frozenset({"terminated", "shutting-down", "stopped"})
@@ -60,7 +66,12 @@ def _inventory_count(inventory: Mapping[str, Any] | None) -> int | None:
 
     if not isinstance(inventory, Mapping):
         return None
-    for key in ("billable_instance_count", "count", "instances_running"):
+    for key in (
+        "billable_instance_count",
+        "live_resource_count",
+        "count",
+        "instances_running",
+    ):
         value = inventory.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             return value
@@ -76,6 +87,13 @@ def run_reconstruction_aws_windows_operation(
     preflight: Mapping[str, Any],
     job_dir: str | Path,
     output_bundle_get_url: str,
+    input_bundle_get_url: str | None = None,
+    input_receipt_get_url: str | None = None,
+    input_receipt_file_digest: str | None = None,
+    output_bundle_put_url: str | None = None,
+    progress_put_url: str | None = None,
+    progress_get_url: str | None = None,
+    progress_observer: Callable[[Mapping[str, Any]], None] | None = None,
     provider: Any,
     allocator_admission: Mapping[str, Any],
     paid_resource_admission_grant: Any,
@@ -135,9 +153,97 @@ def run_reconstruction_aws_windows_operation(
         # one, so omitting it would make every launch return "blocked" rather
         # than run.  Passing it also keeps the paid-lane admission check on the
         # provider side, where the other lanes enforce it.
+        provider_request = dict(bound_request)
+        canonical_postshot = (
+            bound_request.get("execution_adapter_id")
+            == "canonical_postshot_aws_windows_v1"
+        )
+        if canonical_postshot and hasattr(provider, "build_request"):
+            from .gpu_render_providers import RenderLaunchSpec
+
+            required_transport = {
+                "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL": input_bundle_get_url,
+                "BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL": input_receipt_get_url,
+                "BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_FILE_DIGEST": input_receipt_file_digest,
+                "BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL": output_bundle_put_url,
+            }
+            missing = sorted(key for key, value in required_transport.items() if not value)
+            if missing:
+                raise ReconstructionAwsWindowsError(
+                    "aws_windows_canonical_transport_missing:" + ",".join(missing)
+                )
+            worker_environment = {
+                key: str(value) for key, value in required_transport.items()
+            }
+            if progress_put_url:
+                worker_environment["BLUEPRINT_RECONSTRUCTION_PROGRESS_PUT_URL"] = progress_put_url
+            worker_environment["BLUEPRINT_RECONSTRUCTION_CAPTURE_DIGEST"] = str(
+                bound_request.get("source_capture_digest")
+                or bound_request.get("capture_digest")
+                or ""
+            )
+            worker_environment.update(
+                {
+                    "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST": str(
+                        bound_request.get("operation_input_bundle_digest") or ""
+                    ),
+                    "BLUEPRINT_CANONICAL_ALLOCATOR_ADMISSION_B64": base64.b64encode(
+                        json.dumps(
+                            dict(allocator_admission),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).decode("ascii"),
+                    "BLUEPRINT_CANONICAL_AUTHORITY_ID": str(
+                        allocator_admission.get("authority_id") or ""
+                    ),
+                    "BLUEPRINT_CANONICAL_MAX_SPEND_USD": str(
+                        allocator_admission.get("max_spend_usd") or ""
+                    ),
+                    "BLUEPRINT_CANONICAL_HARD_TTL_SECONDS": str(hard_ttl_seconds),
+                    "BLUEPRINT_WORKER_HARD_TTL_SECONDS": str(hard_ttl_seconds),
+                    "BLUEPRINT_WORKER_IMAGE_DIGEST": str(
+                        bound_request.get("worker_image_digest") or ""
+                    ),
+                    "BLUEPRINT_SOURCE_COMMIT": str(
+                        bound_request.get("source_commit_sha") or ""
+                    ),
+                }
+            )
+            for key in (
+                "BLUEPRINT_POSTSHOT_LICENCE_GET_URL",
+                "BLUEPRINT_POSTSHOT_LICENCE_DELETE_URL",
+                "BLUEPRINT_POSTSHOT_RUNTIME_DIGEST",
+                "BLUEPRINT_POSTSHOT_RUNTIME_VERSION",
+                "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL",
+                "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL",
+                "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256",
+            ):
+                value = os.environ.get(key)
+                if value:
+                    worker_environment[key] = value
+            spec = RenderLaunchSpec(
+                name=f"{name_prefix}-{request_digest[7:19]}",
+                image=str(bound_request.get("worker_image_digest") or ""),
+                env=worker_environment,
+                bootstrap_argv=[],
+                entrypoint=[],
+                container_disk_gb=max(
+                    100,
+                    int(preflight.get("container_disk_bytes") or 0) // 1024**3,
+                ),
+                volume_gb=0,
+                max_hourly_rate_usd=float(
+                    preflight.get("on_demand_price_usd_per_hour") or 0
+                ),
+                min_gpu_ram_mb=24_000,
+                requires_rtx=False,
+            )
+            provider_request = provider.build_request(spec, root)
+
         launch = provider.launch(
             root,
-            dict(bound_request),
+            provider_request,
             cold=True,
             paid_resource_admission_grant=paid_resource_admission_grant,
         )
@@ -159,9 +265,26 @@ def run_reconstruction_aws_windows_operation(
             raise ReconstructionAwsWindowsError("aws_windows_launch_returned_no_instance_id")
 
         deadline = started + float(hard_ttl_seconds)
+        last_progress_digest = ""
         while True:
             state = provider.inspect(instance_id)
-            runtime_status = str(state.get("state") or state.get("status") or "")
+            runtime_status = str(
+                state.get("state")
+                or state.get("instance_status")
+                or state.get("status")
+                or ""
+            )
+            if progress_get_url and progress_observer is not None:
+                try:
+                    progress_path = root / "worker_progress.latest.json"
+                    output_fetcher(progress_get_url, progress_path)
+                    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+                    digest = str(progress.get("progress_digest") or "")
+                    if digest and digest != last_progress_digest:
+                        progress_observer(progress)
+                        last_progress_digest = digest
+                except Exception:  # noqa: BLE001 - absence means no new progress yet
+                    pass
             if runtime_status in _TERMINAL_INSTANCE_STATES:
                 # The instance ended on its own: either the work finished and
                 # its local deadline fired, or it died. Which one is decided by
@@ -177,9 +300,46 @@ def run_reconstruction_aws_windows_operation(
         destination = root / "output_bundle.zip"
         try:
             output_fetcher(output_bundle_get_url, destination)
-            validated = output_validator(
-                bundle_path=destination,
-                allocator_admission=allocator_admission,
+            canonical_postshot = (
+                bound_request.get("execution_adapter_id")
+                == "canonical_postshot_aws_windows_v1"
+            )
+            if canonical_postshot:
+                validated_value = output_validator(
+                    bundle_path=destination,
+                    expected_operation="trainer_canary",
+                    expected_operation_request_digest=bound_request.get(
+                        "operation_request_digest"
+                    ),
+                    expected_transport_bundle_digest=bound_request.get(
+                        "operation_input_bundle_digest"
+                    ),
+                    expected_reconstruction_dataset_digest=bound_request.get(
+                        "reconstruction_dataset_digest"
+                    ),
+                    expected_allocator_admission_digest=admission_digest,
+                    expected_worker_image_digest=bound_request.get(
+                        "worker_image_digest"
+                    ),
+                    expected_source_commit_sha=bound_request.get("source_commit_sha"),
+                    expected_arm_id="postshot-primary",
+                )
+            else:
+                validated_value = output_validator(
+                    bundle_path=destination,
+                    expected_operation="trainer_canary",
+                    expected_operation_request_digest=bound_request.get(
+                        "operation_request_digest"
+                    ),
+                    expected_worker_image_digest=bound_request.get(
+                        "worker_image_digest"
+                    ),
+                    expected_source_commit_sha=bound_request.get("source_commit_sha"),
+                )
+            validated = (
+                validated_value[0]
+                if isinstance(validated_value, tuple)
+                else validated_value
             )
             output_retrieved_before_teardown = True
         except Exception as exc:  # noqa: BLE001 - any retrieval failure is a blocker
@@ -194,12 +354,30 @@ def run_reconstruction_aws_windows_operation(
             except Exception as exc:  # noqa: BLE001
                 blockers.append(f"aws_windows_teardown_failed:{type(exc).__name__}")
             after = None
-            try:
-                after = provider.billable_inventory(name_prefix=name_prefix)
-            except Exception as exc:  # noqa: BLE001
-                blockers.append(f"aws_windows_provider_zero_after_unverifiable:{type(exc).__name__}")
-            after_count = _inventory_count(after)
+            after_count = None
+            teardown_deadline = clock() + min(
+                MAX_TEARDOWN_WAIT_SECONDS,
+                max(60.0, float(hard_ttl_seconds)),
+            )
+            for probe_index in range(MAX_TEARDOWN_INVENTORY_PROBES):
+                try:
+                    after = provider.billable_inventory(name_prefix=name_prefix)
+                except Exception as exc:  # noqa: BLE001
+                    blockers.append(
+                        "aws_windows_provider_zero_after_unverifiable:"
+                        f"{type(exc).__name__}"
+                    )
+                    break
+                after_count = _inventory_count(after)
+                if (
+                    after_count in {0, None}
+                    or probe_index == MAX_TEARDOWN_INVENTORY_PROBES - 1
+                    or clock() >= teardown_deadline
+                ):
+                    break
+                sleeper(TEARDOWN_POLL_INTERVAL_SECONDS)
             teardown["provider_zero_after_count"] = after_count
+            teardown["provider_zero_after"] = after
             if after_count is None:
                 blockers.append("aws_windows_provider_zero_after_unverifiable")
             elif after_count > 0:
