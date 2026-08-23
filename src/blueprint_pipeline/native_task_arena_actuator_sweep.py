@@ -28,6 +28,9 @@ from typing import Any
 
 
 SWEEP_SCHEMA_VERSION = "native_task_arena_actuator_posture_sweep.v1"
+CLOSE_POSTURE_SWEEP_SCHEMA_VERSION = (
+    "native_task_arena_contact_close_posture_sweep.v1"
+)
 
 #: Candidate wrist gain sets.  The shipped pair is included so the sweep
 #: measures the status quo alongside the alternatives rather than assuming it
@@ -99,6 +102,220 @@ def _grasp_frame_position(environment: Any) -> list[float] | None:
     if sample is None:
         return None
     return _finite_vector(sample.get("grasp_frame_position_world_m"), length=3)
+
+
+def _quaternion_angle_xyzw(left: Sequence[float], right: Sequence[float]) -> float:
+    a = _finite_vector(left, length=4)
+    b = _finite_vector(right, length=4)
+    if a is None or b is None:
+        return math.inf
+    a_norm = math.sqrt(sum(value * value for value in a))
+    b_norm = math.sqrt(sum(value * value for value in b))
+    if a_norm <= 0.0 or b_norm <= 0.0:
+        return math.inf
+    dot = abs(sum(x * y for x, y in zip(a, b)) / (a_norm * b_norm))
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
+def _task_pad_forces_n(sample: Mapping[str, Any] | None) -> dict[str, float]:
+    native = sample.get("native_readback") if isinstance(sample, Mapping) else None
+    instances = (
+        (native.get("contact_sensor_instance_readback") or {}).get(
+            "task_robot_contact"
+        )
+        if isinstance(native, Mapping)
+        else None
+    )
+    peaks: dict[str, float] = {}
+    for instance in instances or []:
+        if not isinstance(instance, Mapping):
+            continue
+        for force in instance.get("nonzero_filter_forces") or []:
+            if not isinstance(force, Mapping):
+                continue
+            path = str(force.get("filter_prim_path_expr") or "")
+            side = next(
+                (
+                    name
+                    for name in ("left_inner_finger", "right_inner_finger")
+                    if name in path
+                ),
+                None,
+            )
+            if side is None:
+                continue
+            try:
+                magnitude = float(force.get("force_magnitude_n") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(magnitude) and magnitude >= 0.0:
+                peaks[side] = max(peaks.get(side, 0.0), magnitude)
+    return peaks
+
+
+def run_contact_close_posture_sweep(
+    *,
+    environment: Any,
+    target_position_world_m: Sequence[float],
+    target_orientation_world_xyzw: Sequence[float],
+    postures: Sequence[Mapping[str, Any]],
+    preposition_joint_positions_rad: Sequence[float],
+    gripper_open_command: float,
+    gripper_closed_command: float,
+    max_joint_delta_rad: float,
+    max_joint_setpoint_lead_rad: float,
+    arrival_tolerance_m: float,
+    orientation_tolerance_rad: float,
+    bilateral_contact_minimum_force_n: float,
+    preposition_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+    settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+) -> dict[str, Any]:
+    """Physically measure every solved close branch before choosing one.
+
+    Off-sim continuity can prefer a mathematically short chain whose TCP is
+    extremely sensitive to a tiny tracking residual.  Each cell starts from
+    the same measured open posture, closes on one solved branch, and seals the
+    full selected -> commanded -> reached -> FK -> measured -> pad-force chain.
+    """
+
+    target = _finite_vector(target_position_world_m, length=3)
+    orientation = _finite_vector(target_orientation_world_xyzw, length=4)
+    preposition = _finite_vector(preposition_joint_positions_rad, length=7)
+    bounded = getattr(environment, "bounded_joint_action", None)
+    if target is None or orientation is None or preposition is None or not postures:
+        raise ActuatorSweepError(["contact_close_posture_sweep_inputs_invalid"])
+    if not callable(bounded):
+        return {
+            "schema_version": CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "runtime_missing_bounded_action",
+            "cells": [],
+        }
+
+    def _command(joints: Sequence[float], gripper: float) -> None:
+        action = bounded(
+            target_joint_positions_rad=list(joints),
+            gripper_command=float(gripper),
+            max_joint_delta_rad=float(max_joint_delta_rad),
+            max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+        )
+        environment.step([float(value) for value in action])
+
+    cells: list[dict[str, Any]] = []
+    for posture in postures:
+        commanded = _finite_vector(posture.get("joint_positions_rad"), length=7)
+        if commanded is None:
+            continue
+        environment.reset()
+        for _ in range(max(1, int(preposition_steps))):
+            _command(preposition, float(gripper_open_command))
+        bilateral_steps = 0
+        peak_pad_forces: dict[str, float] = {}
+        terminal_sample: Mapping[str, Any] | None = None
+        for _ in range(max(1, int(settle_steps))):
+            _command(commanded, float(gripper_closed_command))
+            terminal_sample = _grasp_frame_sample(environment)
+            forces = _task_pad_forces_n(terminal_sample)
+            for side, magnitude in forces.items():
+                peak_pad_forces[side] = max(
+                    peak_pad_forces.get(side, 0.0), magnitude
+                )
+            if all(
+                forces.get(side, 0.0) >= float(bilateral_contact_minimum_force_n)
+                for side in ("left_inner_finger", "right_inner_finger")
+            ):
+                bilateral_steps += 1
+        reached = _finite_vector(environment.read_arm_joint_positions(), length=7)
+        terminal_sample = terminal_sample or _grasp_frame_sample(environment)
+        measured = _finite_vector(
+            (terminal_sample or {}).get("grasp_frame_position_world_m"), length=3
+        )
+        measured_orientation = _finite_vector(
+            (terminal_sample or {}).get("grasp_frame_orientation_world_xyzw"),
+            length=4,
+        )
+        terminal_forces = _task_pad_forces_n(terminal_sample)
+        predictor = getattr(environment, "predict_grasp_frame_pose_world", None)
+        predicted = None
+        if reached is not None and callable(predictor):
+            try:
+                predicted = _finite_vector(
+                    predictor(reached, gripper_command=float(gripper_closed_command)),
+                    length=7,
+                )
+            except Exception:  # noqa: BLE001 - retain an explicit FK gap
+                predicted = None
+        distance = math.dist(measured, target) if measured is not None else None
+        orientation_error = (
+            _quaternion_angle_xyzw(measured_orientation, orientation)
+            if measured_orientation is not None
+            else None
+        )
+        admitted = bool(
+            distance is not None
+            and distance <= float(arrival_tolerance_m)
+            and orientation_error is not None
+            and orientation_error <= float(orientation_tolerance_rad)
+            and all(
+                terminal_forces.get(side, 0.0)
+                >= float(bilateral_contact_minimum_force_n)
+                for side in ("left_inner_finger", "right_inner_finger")
+            )
+        )
+        cells.append(
+            {
+                **{key: posture.get(key) for key in (
+                    "posture_index", "seed_index", "offsim_position_error_m",
+                    "minimum_joint_limit_margin_rad",
+                )},
+                "commanded_joint_positions_rad": commanded,
+                "reached_joint_positions_rad": reached,
+                "commanded_to_reached_joint_l2_rad": (
+                    math.sqrt(sum((a - b) ** 2 for a, b in zip(commanded, reached)))
+                    if reached is not None
+                    else None
+                ),
+                "predicted_grasp_frame_pose_world": predicted,
+                "fk_to_measured_tcp_error_m": (
+                    math.dist(predicted[:3], measured)
+                    if predicted is not None and measured is not None
+                    else None
+                ),
+                "measured_grasp_frame_position_world_m": measured,
+                "measured_grasp_frame_orientation_world_xyzw": measured_orientation,
+                "measured_distance_to_target_m": distance,
+                "measured_orientation_error_rad": orientation_error,
+                "terminal_task_contact_pad_forces_n": terminal_forces,
+                "peak_task_contact_pad_forces_n": peak_pad_forces,
+                "bilateral_contact_steps": bilateral_steps,
+                "admitted": admitted,
+            }
+        )
+    admitted_cells = [cell for cell in cells if cell["admitted"]]
+    measurable = [
+        cell for cell in cells if cell["measured_distance_to_target_m"] is not None
+    ]
+    best = min(
+        admitted_cells or measurable,
+        key=lambda cell: (
+            cell["measured_distance_to_target_m"],
+            cell.get("commanded_to_reached_joint_l2_rad") or math.inf,
+        ),
+        default=None,
+    )
+    environment.reset()
+    return {
+        "schema_version": CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
+        "status": "measured" if cells else "unavailable",
+        "cell_count": len(cells),
+        "cells": cells,
+        "best_cell": best,
+        "admitted_cell_count": len(admitted_cells),
+        "claim_boundary": (
+            "physics_measures_each_solved_close_branch;only_the_following_"
+            "deterministic_controls_episode_asserts_task_success"
+        ),
+    }
 
 
 def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[dict[str, Any]]:
@@ -344,6 +561,8 @@ __all__ = [
     "SWEEP_SCHEMA_VERSION",
     "candidate_postures",
     "run_actuator_posture_sweep",
+    "run_contact_close_posture_sweep",
+    "CLOSE_POSTURE_SWEEP_SCHEMA_VERSION",
 ]
 
 

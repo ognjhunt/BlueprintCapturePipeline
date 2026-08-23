@@ -5,10 +5,12 @@ import math
 import pytest
 
 from blueprint_pipeline.native_task_arena_actuator_sweep import (
+    CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
     DEFAULT_WRIST_GAIN_CANDIDATES,
     SWEEP_SCHEMA_VERSION,
     candidate_postures,
     run_actuator_posture_sweep,
+    run_contact_close_posture_sweep,
 )
 
 
@@ -143,6 +145,85 @@ def test_one_run_returns_a_gain_by_posture_surface() -> None:
         assert cell["measured_distance_to_target_m"] is not None
         assert "task_succeeded" not in cell
         assert "outcome" not in cell
+
+
+def test_close_sweep_measures_every_branch_and_admits_only_physical_grasp() -> None:
+    class _CloseEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def step(self, action):
+            self.joints = list(action[:7])
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def predict_grasp_frame_pose_world(self, joints, *, gripper_command=None):
+            del gripper_command
+            return [float(joints[0]), 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+        def read_task_sample(self):
+            good = abs(self.joints[0] - 0.2) < 1.0e-9 and self.gripper == 1.0
+            forces = []
+            if good:
+                forces = [
+                    {
+                        "filter_prim_path_expr": side,
+                        "force_magnitude_n": 1.0,
+                    }
+                    for side in ("left_inner_finger", "right_inner_finger")
+                ]
+            return {
+                "grasp_frame_position_world_m": [self.joints[0], 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    report = run_contact_close_posture_sweep(
+        environment=_CloseEnvironment(),
+        target_position_world_m=[0.2, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        postures=[
+            {"posture_index": 0, "seed_index": 3, "joint_positions_rad": [0.8] * 7},
+            {"posture_index": 1, "seed_index": 7, "joint_positions_rad": [0.2] * 7},
+        ],
+        preposition_joint_positions_rad=[0.0] * 7,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        preposition_steps=1,
+        settle_steps=2,
+    )
+
+    assert report["schema_version"] == CLOSE_POSTURE_SWEEP_SCHEMA_VERSION
+    assert report["cell_count"] == 2
+    assert report["admitted_cell_count"] == 1
+    assert report["best_cell"]["seed_index"] == 7
+    assert report["best_cell"]["admitted"] is True
+    assert report["best_cell"]["commanded_to_reached_joint_l2_rad"] == 0.0
+    assert report["best_cell"]["fk_to_measured_tcp_error_m"] == 0.0
 
 
 def test_the_sweep_separates_gains_that_can_track_from_gains_that_cannot() -> None:

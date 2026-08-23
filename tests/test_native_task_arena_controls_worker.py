@@ -1443,6 +1443,7 @@ def test_contact_close_compensates_measured_closed_pad_midpoint_travel() -> None
             original[2] + 1.15897110396e-05,
         ]
     )
+    assert close["arrival_target_position_world_m"] == pytest.approx(original)
     open_row = next(
         row
         for row in checked["scripted_positive_actions"]

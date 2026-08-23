@@ -938,6 +938,11 @@ def _with_closed_pad_midpoint_compensated_contact(
             target[index] - delta_world[index]
             for index in range(3)
         ]
+        # The compensated pose is a command-space target.  The sealed task
+        # target remains the arrival authority.  C56 exposed the distinction:
+        # moving this row without preserving the original arrival target moved
+        # the finish line by the same 13.56 mm we were compensating.
+        row["arrival_target_position_world_m"] = list(target)
         row["target_position_world_m"] = compensated
         row["hold_arm_joint_positions_during_gripper_transition"] = False
         original_targets.append(target)
@@ -2496,6 +2501,132 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "cells": [],
                 }
         result["contact_target_reachability_probe"] = reach_probe
+
+        # Use the last reset-isolated, zero-contact frontier cell: this is the
+        # exact physical open pose the episode will promote, not merely the
+        # off-sim branch that seeded the probe.
+        close_sweep_preposition = next(
+            (
+                cell.get("joint_positions_rad")
+                for cell in reversed(reach_probe.get("cells") or [])
+                if isinstance(cell, Mapping)
+                and int(cell.get("contact_steps") or 0) == 0
+                and isinstance(cell.get("joint_positions_rad"), list)
+            ),
+            seed_posture,
+        )
+
+        # C56 proved that off-sim chain continuity can select a mathematically
+        # valid close branch whose tiny 0.012 rad tracking residual amplifies
+        # into about 13 mm of TCP error.  Measure every solved close branch in
+        # the same PhysX runtime, from the same qualified open posture, before
+        # allowing one to become the held episode vector.
+        contact_close_row = next(
+            row
+            for row in effective_control_plan["scripted_positive_actions"]
+            if isinstance(row, Mapping)
+            and str(row.get("phase_id") or "") == "contact_close"
+        )
+        try:
+            from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                candidate_postures,
+                run_contact_close_posture_sweep,
+            )
+
+            close_posture_sweep = (
+                run_contact_close_posture_sweep(
+                    environment=episode_environment,
+                    target_position_world_m=contact_close_row.get(
+                        "arrival_target_position_world_m",
+                        contact_close_row["target_position_world_m"],
+                    ),
+                    target_orientation_world_xyzw=contact_close_row[
+                        "target_quaternion_world_xyzw"
+                    ],
+                    postures=candidate_postures(
+                        controls_global_ik, phase_id="contact_close"
+                    ),
+                    preposition_joint_positions_rad=close_sweep_preposition,
+                    gripper_open_command=float(gripper["open_command"]),
+                    gripper_closed_command=float(gripper["closed_command"]),
+                    max_joint_delta_rad=float(
+                        contact_close_row["max_joint_delta_rad"]
+                    ),
+                    max_joint_setpoint_lead_rad=float(
+                        contact_close_row["max_joint_setpoint_lead_rad"]
+                    ),
+                    arrival_tolerance_m=float(
+                        contact_close_row["arrival_tolerance_m"]
+                    ),
+                    orientation_tolerance_rad=float(
+                        contact_close_row.get(
+                            "arrival_orientation_tolerance_rad"
+                        )
+                        or 0.08
+                    ),
+                    bilateral_contact_minimum_force_n=float(
+                        contact_close_row[
+                            "bilateral_task_contact_minimum_force_n"
+                        ]
+                    ),
+                )
+                if close_sweep_preposition is not None
+                else {
+                    "schema_version": (
+                        "native_task_arena_contact_close_posture_sweep.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": "contact_open_posture_unsolved",
+                    "cells": [],
+                }
+            )
+        except BaseException as exc:  # noqa: BLE001 - retain diagnostic gap
+            close_posture_sweep = {
+                "schema_version": (
+                    "native_task_arena_contact_close_posture_sweep.v1"
+                ),
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "cells": [],
+            }
+        result["contact_close_posture_physics_sweep"] = close_posture_sweep
+        close_sweep_best = close_posture_sweep.get("best_cell") or {}
+        if (
+            close_sweep_best.get("admitted") is True
+            and isinstance(
+                close_sweep_best.get("commanded_joint_positions_rad"), list
+            )
+        ):
+            adopted_close = list(
+                close_sweep_best["commanded_joint_positions_rad"]
+            )
+            scripted_pose_joint_targets = [
+                (
+                    {**row, "joint_positions_rad": adopted_close}
+                    if str(row.get("phase_id") or "") == "contact_close"
+                    else row
+                )
+                for row in scripted_pose_joint_targets
+            ]
+            selected_control_plan, held_vectors = (
+                _with_held_solved_contact_vectors(
+                    control_plan=selected_control_plan,
+                    scripted_pose_joint_targets=scripted_pose_joint_targets,
+                )
+            )
+            result["held_solved_contact_vectors"] = held_vectors
+            effective_control_plan, branch_replay = (
+                _with_contact_entry_branch_replay(
+                    control_plan=selected_control_plan,
+                    scripted_pose_joint_targets=scripted_pose_joint_targets,
+                    task_spec=scene_plan["task_spec"],
+                    actuator_feasible_step_rad=actuator_feasible_step_vector,
+                )
+            )
+            result["contact_entry_branch_replay"] = branch_replay
+            result["contact_close_posture_sweep_adopted"] = True
+        else:
+            result["contact_close_posture_sweep_adopted"] = False
 
         # Adopt the calibrated posture only when physics says it is closer than
         # the one the model produced; otherwise the run keeps what it had.
