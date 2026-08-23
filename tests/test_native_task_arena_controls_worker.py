@@ -1444,10 +1444,17 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
         known_joints
     )
     assert entry["target_position_world_m"] == pytest.approx([0.5, 0.06, 0.4])
-    assert [row["target_position_world_m"][1] for row in frontier] == pytest.approx(
-        [0.07, 0.08, 0.09]
+    assert frontier == []
+    # The anchor is diagnostic evidence. It must not overwrite the posture
+    # whose direct execution this run exists to test.
+    assert contact["hold_solved_arm_joint_positions_rad"] == pytest.approx(
+        [0.9] * 7
     )
-    assert contact["hold_solved_arm_joint_positions_rad"] is None
+    assert receipt["frontier_phase_ids"] == [
+        MEASURED_CONTACT_ENTRY_PHASE_ID,
+        "contact_open",
+    ]
+    assert receipt["synthetic_frontier_rows_inserted"] == 0
     assert receipt["replaced_branch_replay_rows"] == 0
     assert derived["plan_digest"] == canonical_digest(
         derived, digest_field="plan_digest"
@@ -1495,6 +1502,14 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
 
     task = _branch_replay_task()
     plan = _branch_replay_plan(task)
+    original_contact = next(
+        row
+        for row in plan["scripted_positive_actions"]
+        if row["phase_id"] == "contact_open"
+    )
+    original_contact["hold_solved_arm_joint_positions_rad"] = [0.9] * 7
+    original_contact_maximum_steps = original_contact["maximum_steps"]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     targets = [
         {
             "phase_id": row["phase_id"],
@@ -1522,6 +1537,7 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
 
     derived, receipt = _with_measured_contact_frontier(
         control_plan=replayed,
+        reclaimed_contact_steps=replay_receipt["contact_phase_steps_reclaimed"],
         reachability_probe={
             "cells": [
                 {
@@ -1549,6 +1565,16 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
     assert new_rows[0]["mode"] == "ik_pose"
     assert new_rows[0]["hold_solved_arm_joint_positions_rad"] == [0.2] * 7
     assert receipt["replaced_branch_replay_rows"] == len(old_rows)
+    contact = next(
+        row
+        for row in derived["scripted_positive_actions"]
+        if row["phase_id"] == "contact_open"
+    )
+    assert contact["hold_solved_arm_joint_positions_rad"] == [0.9] * 7
+    assert contact["maximum_steps"] == original_contact_maximum_steps
+    assert receipt["restored_contact_steps"] == replay_receipt[
+        "contact_phase_steps_reclaimed"
+    ]
 
 
 def test_contact_anchor_is_derived_from_the_approach_line() -> None:

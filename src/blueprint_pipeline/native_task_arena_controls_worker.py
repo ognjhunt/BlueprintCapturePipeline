@@ -819,16 +819,24 @@ def _with_measured_contact_frontier(
     *,
     control_plan: Mapping[str, Any],
     reachability_probe: Mapping[str, Any],
+    reclaimed_contact_steps: int = 0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Enter contact from a posture already proven to work in PhysX.
 
     The reachability probe is stronger evidence than another off-sim solve: it
     records the commanded posture, reached joints, and measured grasp frame in
-    the same runtime as the episode.  Select the closest non-contact probe cell
-    that already clears the contact arrival gate, replay its joints, then walk
-    the remaining Cartesian offset in progressively smaller sealed phases.
-    The first failing phase becomes a measured frontier instead of one opaque
-    final-pose failure.
+    the same runtime as the episode. Select the closest non-contact probe cell
+    that already clears the contact arrival gate and replay its joints before
+    the original contact phase.
+
+    C48b showed why the measured cells must remain diagnostics rather than new
+    success gates. The 40 mm anchor and first 10 mm Cartesian increment both
+    passed, while the second increment failed and stopped the episode before
+    contact_open. More importantly, the frontier rewrite explicitly removed
+    contact_open's preflight-solved joint vector, so the run never tested the
+    hypothesis it was launched to test. Preserve that vector and go directly
+    from the measured-good anchor to the original phase. The original TCP
+    arrival gate remains the authority.
     """
 
     plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
@@ -939,6 +947,14 @@ def _with_measured_contact_frontier(
             and str(row.get("phase_id") or "") == "contact_open"
         )
         contact = actions[contact_index]
+        # The removed replay borrowed most of contact_open's settle budget.
+        # Once the replay rows are gone, return those steps to the phase that
+        # now has to traverse from the measured anchor to its solved posture.
+        restored = max(0, int(reclaimed_contact_steps))
+        if restored:
+            contact["maximum_steps"] = int(contact["maximum_steps"]) + restored
+    else:
+        restored = 0
     entry = dict(contact)
     entry.update(
         {
@@ -956,22 +972,9 @@ def _with_measured_contact_frontier(
             ),
         }
     )
-    frontier: list[dict[str, Any]] = []
-    for index, fraction in enumerate(MEASURED_CONTACT_FRONTIER_FRACTIONS, start=1):
-        row = dict(contact)
-        row.pop("hold_solved_arm_joint_positions_rad", None)
-        row.update(
-            {
-                "phase_id": f"{MEASURED_CONTACT_FRONTIER_PHASE_PREFIX}{index:02d}",
-                "target_position_world_m": [
-                    target[axis] + offset[axis] * fraction for axis in range(3)
-                ],
-                "maximum_steps": max(4, int(contact.get("maximum_steps") or 0)),
-            }
-        )
-        frontier.append(row)
-    contact.pop("hold_solved_arm_joint_positions_rad", None)
-    actions[contact_index:contact_index] = [entry, *frontier]
+    # Do not turn diagnostic samples into mandatory episode phases, and do not
+    # discard the exact contact posture selected by the global preflight.
+    actions[contact_index:contact_index] = [entry]
     plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
     receipt.update(
         {
@@ -987,9 +990,9 @@ def _with_measured_contact_frontier(
             ),
             "probe_joint_positions_rad": joints,
             "replaced_branch_replay_rows": replaced_branch_replay_rows,
-            "frontier_phase_ids": [
-                entry["phase_id"], *[row["phase_id"] for row in frontier], "contact_open"
-            ],
+            "restored_contact_steps": restored,
+            "frontier_phase_ids": [entry["phase_id"], "contact_open"],
+            "synthetic_frontier_rows_inserted": 0,
             "rewritten_control_plan_digest": plan["plan_digest"],
         }
     )
@@ -2143,6 +2146,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             _with_measured_contact_frontier(
                 control_plan=effective_control_plan,
                 reachability_probe=reach_probe,
+                reclaimed_contact_steps=int(
+                    result["contact_entry_branch_replay"].get(
+                        "contact_phase_steps_reclaimed"
+                    )
+                    or 0
+                ),
             )
         )
         result["measured_contact_frontier"] = measured_frontier

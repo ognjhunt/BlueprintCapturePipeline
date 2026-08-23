@@ -1834,16 +1834,17 @@ class NativeFrankaDifferentialIkServo:
             ):
                 return None
             hand_position_base, hand_quaternion_base = probes[0](joints)
-            offset_base = rotate_vector_xyzw(
-                hand_quaternion_base,
-                self._grasp_position_for_command(gripper_command),
-            )
-            grasp_position_base = [
-                float(hand_position_base[index]) + float(offset_base[index])
-                for index in range(3)
-            ]
-            grasp_quaternion_base = quaternion_multiply_xyzw(
-                hand_quaternion_base, self._body_to_grasp_quaternion
+            # The stock Pinocchio panda_hand frame is not the controlled body
+            # origin in the Robotiq Isaac articulation. C48b measured a
+            # constant 197 mm FK-to-PhysX gap when this path applied the live
+            # controlled-body offset directly to the model hand. Use the
+            # transform measured between the PINK hand and physical TCP at
+            # binding, exactly as the solver's own grasp-frame scoring does.
+            grasp_position_base, grasp_quaternion_base = (
+                self._pink_grasp_frame_for_hand_candidate(
+                    candidate_body_position_base_m=hand_position_base,
+                    candidate_body_quaternion_base_xyzw=hand_quaternion_base,
+                )
             )
             position_world, quaternion_world = pose_base_to_world(
                 position_base=grasp_position_base,
