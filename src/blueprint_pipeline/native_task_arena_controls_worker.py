@@ -24,6 +24,9 @@ from typing import Any
 from blueprint_pipeline.native_task_arena_branch_continuity import (
     select_continuous_branch_chain,
 )
+from blueprint_pipeline.native_franka_action_math import (
+    controlled_body_pose_for_rigid_grasp_frame_target,
+)
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
@@ -828,7 +831,8 @@ def _with_closed_pad_midpoint_compensated_contact(
     *,
     control_plan: Mapping[str, Any],
     gripper_convention: Mapping[str, Any],
-    grasp_approach_axis_body: Sequence[float],
+    current_controlled_body_pose_world: Sequence[float],
+    current_grasp_frame_pose_world: Sequence[float],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Author contact_close for the TCP the *closed* linkage actually has.
 
@@ -857,9 +861,14 @@ def _with_closed_pad_midpoint_compensated_contact(
     try:
         open_command = float(gripper_convention["open_command"])
         closed_command = float(gripper_convention["closed_command"])
-        axis = [float(value) for value in grasp_approach_axis_body]
+        current_body_pose = [
+            float(value) for value in current_controlled_body_pose_world
+        ]
+        current_grasp_pose = [
+            float(value) for value in current_grasp_frame_pose_world
+        ]
     except (KeyError, TypeError, ValueError):
-        receipt["reason"] = "gripper_convention_or_approach_axis_invalid"
+        receipt["reason"] = "gripper_convention_or_frame_pose_invalid"
         return plan, receipt
     if not isinstance(actions, list) or not isinstance(midpoint_by_command, Mapping):
         receipt["reason"] = "plan_or_pad_midpoints_invalid"
@@ -877,26 +886,21 @@ def _with_closed_pad_midpoint_compensated_contact(
 
     open_midpoint = _midpoint(open_command)
     closed_midpoint = _midpoint(closed_command)
-    axis_norm = math.dist(axis, [0.0, 0.0, 0.0]) if len(axis) == 3 else 0.0
-    if open_midpoint is None or closed_midpoint is None or axis_norm <= 1.0e-12:
+    if (
+        open_midpoint is None
+        or closed_midpoint is None
+        or len(current_body_pose) != 7
+        or len(current_grasp_pose) != 7
+        or not all(math.isfinite(value) for value in (*current_body_pose, *current_grasp_pose))
+    ):
         receipt["reason"] = "pad_midpoint_travel_unavailable"
         return plan, receipt
-    axis = [value / axis_norm for value in axis]
     delta_body = [
         closed_midpoint[index] - open_midpoint[index] for index in range(3)
     ]
-    travel = sum(delta_body[index] * axis[index] for index in range(3))
-    transverse = [
-        delta_body[index] - travel * axis[index] for index in range(3)
-    ]
-    transverse_m = math.dist(transverse, [0.0, 0.0, 0.0])
-    if (
-        not math.isfinite(travel)
-        or travel <= 0.0
-        or not math.isfinite(transverse_m)
-        or transverse_m > 0.001
-    ):
-        receipt["reason"] = "pad_midpoint_travel_not_approach_aligned"
+    travel_m = math.dist(delta_body, [0.0, 0.0, 0.0])
+    if not math.isfinite(travel_m) or not 1.0e-4 <= travel_m <= 0.05:
+        receipt["reason"] = "pad_midpoint_travel_out_of_bounds"
         return plan, receipt
 
     original_targets: list[list[float]] = []
@@ -914,14 +918,24 @@ def _with_closed_pad_midpoint_compensated_contact(
                 float(value)
                 for value in row["target_quaternion_world_xyzw"]
             ]
-            approach_world = _quaternion_axis_world_xyzw(
-                orientation, [0.0, 0.0, 1.0]
+            _, target_body_orientation = (
+                controlled_body_pose_for_rigid_grasp_frame_target(
+                    current_body_position_world_m=current_body_pose[:3],
+                    current_body_quaternion_world_xyzw=current_body_pose[3:7],
+                    current_grasp_frame_position_world_m=current_grasp_pose[:3],
+                    current_grasp_frame_quaternion_world_xyzw=current_grasp_pose[3:7],
+                    target_grasp_frame_position_world_m=target,
+                    target_grasp_frame_quaternion_world_xyzw=orientation,
+                )
+            )
+            delta_world = _quaternion_axis_world_xyzw(
+                target_body_orientation, delta_body
             )
         except (KeyError, TypeError, ValueError):
             receipt["reason"] = "contact_close_pose_invalid"
             return json.loads(json.dumps(dict(control_plan), allow_nan=False)), receipt
         compensated = [
-            target[index] - travel * approach_world[index]
+            target[index] - delta_world[index]
             for index in range(3)
         ]
         row["target_position_world_m"] = compensated
@@ -938,8 +952,7 @@ def _with_closed_pad_midpoint_compensated_contact(
             "status": "applied",
             "reason": None,
             "pad_midpoint_delta_controlled_body_m": delta_body,
-            "approach_travel_m": travel,
-            "transverse_travel_m": transverse_m,
+            "pad_midpoint_travel_m": travel_m,
             "original_target_positions_world_m": original_targets,
             "compensated_target_positions_world_m": compensated_targets,
             "derived_control_plan_digest": plan["plan_digest"],
@@ -2076,7 +2089,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _with_closed_pad_midpoint_compensated_contact(
                 control_plan=normalized_control_plan,
                 gripper_convention=gripper,
-                grasp_approach_axis_body=servo.grasp_approach_axis_body(),
+                current_controlled_body_pose_world=servo.current_body_pose_world(),
+                current_grasp_frame_pose_world=servo.current_grasp_frame_pose_world(),
             )
         )
         result["closed_pad_midpoint_compensation"] = closed_pad_compensation
