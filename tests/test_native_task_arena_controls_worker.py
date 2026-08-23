@@ -1355,6 +1355,65 @@ def test_a_contact_phase_commands_the_posture_its_preflight_solved() -> None:
     )
 
 
+def test_contact_close_compensates_measured_closed_pad_midpoint_travel() -> None:
+    """C54 lost its global close solution and scored a moving TCP.
+
+    The measured Robotiq pad midpoint advances along the grasp approach axis
+    while closing.  Make contact_close a distinct, compensated global-IK pose
+    so the *closed* measured midpoint lands on the authored grasp target.
+    """
+
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_closed_pad_midpoint_compensated_contact,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    source = next(
+        row
+        for row in plan["scripted_positive_actions"]
+        if row["phase_id"] == "contact_close"
+    )
+    original = list(source["target_position_world_m"])
+    derived, receipt = _with_closed_pad_midpoint_compensated_contact(
+        control_plan=plan,
+        gripper_convention={
+            "open_command": 0.0,
+            "closed_command": 1.0,
+            "pad_midpoint_controlled_body_m": {
+                "0.0": [0.1301, 0.0, 0.0],
+                "1.0": [0.14366, 0.0, 0.0],
+            },
+        },
+        grasp_approach_axis_body=[1.0, 0.0, 0.0],
+    )
+
+    assert receipt["status"] == "applied"
+    assert receipt["approach_travel_m"] == pytest.approx(0.01356)
+    checked = validate_task_control_plan(derived, task_spec=task)
+    close = next(
+        row
+        for row in checked["scripted_positive_actions"]
+        if row["phase_id"] == "contact_close"
+    )
+    # The fixture uses identity orientation, so grasp-frame +Z is world +Z.
+    assert close["target_position_world_m"] == pytest.approx(
+        [original[0], original[1], original[2] - 0.01356]
+    )
+    open_row = next(
+        row
+        for row in checked["scripted_positive_actions"]
+        if row["phase_id"] == "contact_open"
+    )
+    assert open_row["target_position_world_m"] == pytest.approx(original)
+    assert derived["plan_digest"] == canonical_digest(
+        derived, digest_field="plan_digest"
+    )
+
+
 def test_a_malformed_solved_vector_is_refused_not_ignored() -> None:
     """Silently dropping it would restore the defect it exists to fix."""
 
