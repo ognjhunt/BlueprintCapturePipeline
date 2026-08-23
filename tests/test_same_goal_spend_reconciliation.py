@@ -259,6 +259,38 @@ def test_native_arena_reconciles_provider_confirmed_zero_charge_absence(
     )["actual_total_usd"] == 0.0
 
 
+def test_native_arena_reconciles_a_proven_no_allocation_attempt(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "no-allocation")
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result["estimated_cost_usd"] = 0.0
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+    teardown = json.loads(fixture["teardown"].read_text(encoding="utf-8"))
+    teardown["vast_instance_ids"] = []
+    fixture["teardown"].write_text(json.dumps(teardown), encoding="utf-8")
+    zero = json.loads(fixture["zero"].read_text(encoding="utf-8"))
+    zero["inventory_scope"] = "no_provider_allocation"
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    fixture["zero"].write_text(json.dumps(zero), encoding="utf-8")
+
+    output, value = _materialize(
+        tmp_path / "no-allocation", "native_task_arena", fixture
+    )
+
+    assert value["total_cost_usd"] == 0.0
+    assert value["entries"][0]["provider_instance_id"] is None
+    assert value["entries"][0]["evidence_kind"] == "provider_zero_no_allocation"
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="native_task_arena",
+    )
+    assert binding["actual_total_usd"] == 0.0
+    assert binding["prior_terminal_attempts"][0]["provider_instance_id"] is None
+
+
 @pytest.mark.parametrize("mutation", ["total_changed", "grace_too_short"])
 def test_native_arena_refuses_ambiguous_zero_charge_absence(
     tmp_path: Path, mutation: str

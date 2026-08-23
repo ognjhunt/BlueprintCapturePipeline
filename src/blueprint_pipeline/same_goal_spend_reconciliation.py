@@ -20,6 +20,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .paid_attempt_authority import (
+    NO_PROVIDER_ALLOCATION_EVIDENCE_KIND,
     SAME_GOAL_ENTRY_SCHEMA,
     SAME_GOAL_RECONCILIATION_SCHEMA,
     SAME_GOAL_RECONCILIATION_STATUS,
@@ -422,7 +423,13 @@ def _entry(
     ):
         raise ValueError("same_goal_spend_terminal_or_zero_invalid")
 
-    teardown_ids = _instance_ids(teardown)
+    no_allocation = (
+        lane == "native_task_arena"
+        and teardown.get("vast_instance_ids") == []
+        and zero.get("inventory_scope") == "no_provider_allocation"
+        and float(estimated_cost) == 0.0
+    )
+    teardown_ids = [] if no_allocation else _instance_ids(teardown)
     results = billing.get("results")
     if not isinstance(results, list):
         raise ValueError("same_goal_spend_billing_results_invalid")
@@ -459,7 +466,31 @@ def _entry(
         _source("provider_billing_source_receipt", billing_source_path, billing_source),
     ]
     evidence_kind = "fully_bound_official_billing"
-    if len(candidates) == 1:
+    if no_allocation:
+        instance_id = None
+        cost_usd = 0.0
+        evidence_kind = NO_PROVIDER_ALLOCATION_EVIDENCE_KIND
+        cost_and_instance_bindings = [
+            {
+                "kind": "cost_usd",
+                "source_role": "terminal_result",
+                "json_path": _estimate_path,
+                "expected_value": estimated_cost,
+            },
+            {
+                "kind": "instance_ids_empty",
+                "source_role": "teardown_manifest",
+                "json_path": ["vast_instance_ids"],
+                "expected_value": [],
+            },
+            {
+                "kind": "no_provider_allocation",
+                "source_role": "provider_zero",
+                "json_path": ["inventory_scope"],
+                "expected_value": "no_provider_allocation",
+            },
+        ]
+    elif len(candidates) == 1:
         billing_index, instance_id, charge = candidates[0]
         amount = charge.get("amount")
         if (

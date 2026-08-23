@@ -22,6 +22,7 @@ SAME_GOAL_RECONCILIATION_STATUS = (
 ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
     "official_billing_zero_charge_absence_after_grace"
 )
+NO_PROVIDER_ALLOCATION_EVIDENCE_KIND = "provider_zero_no_allocation"
 ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
 JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA = (
     "joint_agent_same_goal_spend_lineage.v1"
@@ -160,6 +161,7 @@ def validate_same_goal_spend_reconciliation(
             not in {
                 "fully_bound_official_billing",
                 ZERO_CHARGE_ABSENCE_EVIDENCE_KIND,
+                NO_PROVIDER_ALLOCATION_EVIDENCE_KIND,
             }
             or not _finite(cost)
             or entry.get("continuing_spend_from_this_run") is not False
@@ -243,14 +245,33 @@ def validate_same_goal_spend_reconciliation(
         required = {
             "provider_zero",
             "continuing_spend",
-            "instance_id",
             "authority_digest",
             "bundle_sha256",
         }
-        if entry.get("evidence_kind") == "fully_bound_official_billing":
-            required.add("cost_usd")
+        evidence_kind = entry.get("evidence_kind")
+        if evidence_kind == NO_PROVIDER_ALLOCATION_EVIDENCE_KIND:
+            required.update(
+                {"cost_usd", "instance_ids_empty", "no_provider_allocation"}
+            )
+            result_source = reopened.get("terminal_result")
+            teardown_source = reopened.get("teardown_manifest")
+            zero_source = reopened.get("provider_zero")
+            if (
+                not isinstance(result_source, Mapping)
+                or not isinstance(teardown_source, Mapping)
+                or not isinstance(zero_source, Mapping)
+                or cost != 0.0
+                or entry.get("provider_instance_id") is not None
+                or teardown_source.get("vast_instance_ids") != []
+                or zero_source.get("inventory_scope") != "no_provider_allocation"
+            ):
+                raise ValueError("same_goal_spend_no_allocation_invalid")
+        elif evidence_kind == "fully_bound_official_billing":
+            required.update({"cost_usd", "instance_id"})
         else:
-            required.update({"pre_vast_total_usd", "post_vast_total_usd"})
+            required.update(
+                {"instance_id", "pre_vast_total_usd", "post_vast_total_usd"}
+            )
             pre_source = reopened.get("pre_attempt_provider_billing_source_receipt")
             post_source = reopened.get("provider_billing_source_receipt")
             result_source = reopened.get("terminal_result")
@@ -387,8 +408,14 @@ def bind_lane_prior_spend(
         billing_source = _read_json(
             billing_source_path, code="prior_billing_source_receipt_invalid"
         )
+        evidence_kind = entry.get("evidence_kind")
+        no_allocation = evidence_kind == NO_PROVIDER_ALLOCATION_EVIDENCE_KIND
         instance_id = entry.get("provider_instance_id")
-        if isinstance(instance_id, bool) or not isinstance(instance_id, int) or instance_id <= 0:
+        if not no_allocation and (
+            isinstance(instance_id, bool)
+            or not isinstance(instance_id, int)
+            or instance_id <= 0
+        ):
             raise ValueError("prior_provider_instance_id_invalid")
         linked_sources = [
             row
@@ -421,17 +448,23 @@ def bind_lane_prior_spend(
                 and int(single_instance_id) > 0
             ):
                 teardown_instance_ids = [int(single_instance_id)]
-        zero_charge_absence = (
-            entry.get("evidence_kind") == ZERO_CHARGE_ABSENCE_EVIDENCE_KIND
-        )
+        zero_charge_absence = evidence_kind == ZERO_CHARGE_ABSENCE_EVIDENCE_KIND
+        expected_charge_rows = 0 if zero_charge_absence or no_allocation else 1
         if (
             len(linked_sources) != 1
-            or len(charge_rows) != (0 if zero_charge_absence else 1)
+            or len(charge_rows) != expected_charge_rows
             or billing_source.get("status") != "reconciled"
             or teardown.get("status") not in {"completed", "PASS"}
             or teardown.get("continuing_spend_from_this_run", False) is not False
             or not isinstance(teardown_instance_ids, list)
-            or instance_id not in teardown_instance_ids
+            or (
+                no_allocation
+                and (
+                    teardown_instance_ids != []
+                    or zero.get("inventory_scope") != "no_provider_allocation"
+                )
+            )
+            or (not no_allocation and instance_id not in teardown_instance_ids)
             or zero.get(
                 "provider_zero_verified",
                 zero.get(
@@ -441,12 +474,10 @@ def bind_lane_prior_spend(
             )
             is not True
             or zero.get("continuing_spend_from_this_run", False) is not False
-            or (
-                zero_charge_absence
-                and float(entry["cost_usd"]) != 0.0
-            )
+            or ((zero_charge_absence or no_allocation) and float(entry["cost_usd"]) != 0.0)
             or (
                 not zero_charge_absence
+                and not no_allocation
                 and float(charge_rows[0].get("amount", -1))
                 != float(entry["cost_usd"])
             )
