@@ -239,6 +239,34 @@ else
   echo "WARNING: no source commit resolved; /api/live-pipeline/version stays 503" >&2
 fi
 
+# The production host intentionally retains one service virtualenv across
+# promoted checkouts. Merely moving that checkout does not install a newly
+# declared dependency, which would let the units restart on source they cannot
+# import. Keep the small control-plane-only delta hash-pinned and install it as
+# the unprivileged service owner before any worker wheel or unit is activated.
+RUNTIME_REQUIREMENTS="${REPO_ROOT}/deploy/systemd/production-control-plane-requirements.txt"
+RUNTIME_PYTHON="${REPO_ROOT}/.venv/bin/python"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  printf '[dry-run] synchronize hash-pinned production runtime requirements from %s\n' \
+    "${RUNTIME_REQUIREMENTS}"
+else
+  if [[ ! -x "${RUNTIME_PYTHON}" ]]; then
+    echo "ERROR: production service virtualenv is missing at ${RUNTIME_PYTHON}" >&2
+    exit 1
+  fi
+  if runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
+       'import importlib.metadata as m; raise SystemExit(m.version("rfc8785") != "0.1.4")'; then
+    echo "production runtime dependency rfc8785==0.1.4 already present"
+  else
+    run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -m pip install \
+      --disable-pip-version-check --no-deps --only-binary=:all: \
+      --require-hashes --requirement "${RUNTIME_REQUIREMENTS}"
+    run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
+      'import importlib.metadata as m; assert m.version("rfc8785") == "0.1.4"'
+    echo "installed and verified hash-pinned production runtime dependencies"
+  fi
+fi
+
 # Build the Windows worker package from the exact promoted commit and bind the
 # environment to that immutable release directory. The transport compiler also
 # verifies the wheel's embedded source digest before any provider mutation.

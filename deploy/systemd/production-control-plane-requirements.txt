@@ -1,0 +1,4 @@
+# Dependencies added to the long-lived production control-plane virtualenv at
+# promotion time. Hashes are the release artifacts recorded in uv.lock.
+rfc8785==0.1.4 \
+    --hash=sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48

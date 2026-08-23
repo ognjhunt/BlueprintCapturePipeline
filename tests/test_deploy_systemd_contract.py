@@ -236,6 +236,12 @@ def test_capture_reconstruction_queue_is_path_activated_and_automatically_execut
     assert 'WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"' in installer
     assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" in installer
     assert "REPLACED_BY_INSTALLER_EXACT_RELEASE_WHEEL" in env_example
+    runtime_requirements = _read("production-control-plane-requirements.txt")
+    assert "production-control-plane-requirements.txt" in installer
+    assert "--require-hashes" in installer
+    assert 'm.version("rfc8785") == "0.1.4"' in installer
+    assert "rfc8785==0.1.4" in runtime_requirements
+    assert "sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48" in runtime_requirements
 
 
 def test_control_plane_postcheck_pages_or_fails_blocked_manifests():
