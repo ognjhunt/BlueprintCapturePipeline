@@ -52,8 +52,18 @@ SUPPORTED_SCENARIO_RUNTIME_TARGETS = frozenset(
         "EventManager.reset.object_orientation.yaw",
         "EventManager.reset.external_camera.pose.position.x",
         "EventManager.reset.wrist_camera.pose.position.x",
+        "EventManager.reset.task_light.intensity_scale",
+        "EventManager.reset.task_subject_link_material.dynamic_friction",
     }
 )
+SCENARIO_RUNTIME_TARGET_UNITS = {
+    "EventManager.reset.object_start_position_m.y": "m",
+    "EventManager.reset.object_orientation.yaw": "degrees",
+    "EventManager.reset.external_camera.pose.position.x": "m",
+    "EventManager.reset.wrist_camera.pose.position.x": "m",
+    "EventManager.reset.task_light.intensity_scale": "ratio",
+    "EventManager.reset.task_subject_link_material.dynamic_friction": "coefficient",
+}
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION = (
     "native_articulated_graph_task_state_binding.v1"
@@ -688,6 +698,7 @@ def _scenario_parameter_rows(
         parameter_id = str(raw.get("parameter_id") or "")
         target = str(raw.get("runtime_target") or "")
         unit = str(raw.get("unit") or "")
+        selector = raw.get("runtime_selector")
         try:
             nominal = float(raw["nominal_value"])
             resolved = float(raw["resolved_value"])
@@ -701,15 +712,31 @@ def _scenario_parameter_rows(
         if (
             not parameter_id
             or parameter_id in seen
-            or unit not in {"m", "degrees"}
+            or unit != SCENARIO_RUNTIME_TARGET_UNITS[target]
             or not all(math.isfinite(item) for item in (nominal, resolved, tolerance))
             or tolerance <= 0.0
         ):
             errors.append(f"native_task_runtime_scenario_parameter_invalid:{index}")
             continue
+        if target == (
+            "EventManager.reset.task_subject_link_material.dynamic_friction"
+        ):
+            if (
+                not isinstance(selector, Mapping)
+                or set(selector) != {"task_link_id"}
+                or not str(selector.get("task_link_id") or "")
+                or nominal < 0.0
+                or resolved < 0.0
+            ):
+                errors.append(
+                    f"native_task_runtime_scenario_parameter_invalid:{index}"
+                )
+                continue
+        elif selector is not None:
+            errors.append(f"native_task_runtime_scenario_parameter_invalid:{index}")
+            continue
         seen.add(parameter_id)
-        rows.append(
-            {
+        row = {
                 "parameter_id": parameter_id,
                 "runtime_target": target,
                 "unit": unit,
@@ -717,7 +744,9 @@ def _scenario_parameter_rows(
                 "resolved_value": resolved,
                 "application_tolerance": tolerance,
             }
-        )
+        if selector is not None:
+            row["runtime_selector"] = dict(selector)
+        rows.append(row)
     return rows
 
 

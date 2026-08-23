@@ -591,6 +591,27 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() 
                 "expected_native_value": 0.02,
                 "camera_role": "external",
             },
+            {
+                "parameter_id": "light_intensity_scale",
+                "runtime_target": "EventManager.reset.task_light.intensity_scale",
+                "unit": "ratio",
+                "resolved_value": 0.9,
+                "application_tolerance": 1.0e-6,
+                "readback_kind": "task_light_intensity_scale",
+                "expected_native_value": 0.9,
+            },
+            {
+                "parameter_id": "object_dynamic_friction",
+                "runtime_target": (
+                    "EventManager.reset.task_subject_link_material.dynamic_friction"
+                ),
+                "unit": "coefficient",
+                "resolved_value": 0.45,
+                "application_tolerance": 1.0e-6,
+                "readback_kind": "task_subject_link_dynamic_friction",
+                "expected_native_value": 0.45,
+                "task_link_id": "door",
+            },
         ]
     }
     object.__setattr__(
@@ -599,14 +620,21 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() 
         {
             "cameras": {
                 "external": {"offset_position_m": [0.02, 0.0, 0.0]},
-            }
+            },
+            "scenario_parameters": {
+                "light_intensity_scale": {"observed_intensity_scale": 0.9},
+                "object_dynamic_friction": {
+                    "task_link_id": "door",
+                    "observed_dynamic_friction": 0.45,
+                },
+            },
         },
     )
 
     report = read_native_task_arena_scenario_parameters(built)
 
     assert report["passed"] is True
-    assert report["requested_parameter_count"] == 2
+    assert report["requested_parameter_count"] == 4
     assert all(row["passed"] for row in report["parameters"])
 
     built.native_configuration_readback["cameras"]["external"][

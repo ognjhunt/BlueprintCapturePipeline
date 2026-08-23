@@ -17,6 +17,7 @@ from tests.test_native_task_appearance_frame_alignment import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_scene_plan import (
     NativeTaskArenaScenePlanError,
+    _apply_scenario_parameters,
     _articulation_plan,
     materialize_native_task_arena_scene_plan,
 )
@@ -713,6 +714,107 @@ def test_non_integral_physics_control_ratio_is_rejected(tmp_path: Path) -> None:
         )
 
     assert excinfo.value.errors == ("native_task_arena_control_cadence_invalid",)
+
+
+def test_scenario_plan_binds_exact_link_material_and_light(tmp_path: Path) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+    asset = tmp_path / "washer.usda"
+    stage = Usd.Stage.CreateNew(str(asset))
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    material = UsdShade.Material.Define(stage, "/Asset/materials/door")
+    api = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    api.CreateDynamicFrictionAttr(0.5)
+    stage.GetRootLayer().Save()
+    objects = [
+        {
+            "name": "task_object",
+            "task_subject": True,
+            "pose_world": _pose(),
+            "reset_state": {"root_pose_world": _pose()},
+        }
+    ]
+    cameras = [_camera(role) for role in ("external", "wrist")]
+
+    applications = _apply_scenario_parameters(
+        objects=objects,
+        cameras=cameras,
+        task_object_asset_path=asset,
+        bindings=[
+            {
+                "parameter_id": "light_intensity_scale",
+                "runtime_target": "EventManager.reset.task_light.intensity_scale",
+                "unit": "ratio",
+                "nominal_value": 1.0,
+                "resolved_value": 0.9,
+                "application_tolerance": 1.0e-6,
+            },
+            {
+                "parameter_id": "object_dynamic_friction",
+                "runtime_target": (
+                    "EventManager.reset.task_subject_link_material.dynamic_friction"
+                ),
+                "runtime_selector": {"task_link_id": "door"},
+                "unit": "coefficient",
+                "nominal_value": 0.5,
+                "resolved_value": 0.45,
+                "application_tolerance": 1.0e-6,
+            },
+        ],
+    )
+
+    assert applications[0]["readback_kind"] == "task_light_intensity_scale"
+    assert applications[1]["readback_kind"] == (
+        "task_subject_link_dynamic_friction"
+    )
+    assert applications[1]["source_material_prim_path"] == (
+        "/Asset/materials/door"
+    )
+
+
+def test_scenario_plan_rejects_wrong_link_material_nominal(tmp_path: Path) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+    asset = tmp_path / "washer.usda"
+    stage = Usd.Stage.CreateNew(str(asset))
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    material = UsdShade.Material.Define(stage, "/Asset/materials/door")
+    UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDynamicFrictionAttr(0.5)
+    stage.GetRootLayer().Save()
+
+    with pytest.raises(NativeTaskArenaScenePlanError) as excinfo:
+        _apply_scenario_parameters(
+            objects=[
+                {
+                    "name": "task_object",
+                    "task_subject": True,
+                    "pose_world": _pose(),
+                    "reset_state": {"root_pose_world": _pose()},
+                }
+            ],
+            cameras=[_camera(role) for role in ("external", "wrist")],
+            task_object_asset_path=asset,
+            bindings=[
+                {
+                    "parameter_id": "object_dynamic_friction",
+                    "runtime_target": (
+                        "EventManager.reset.task_subject_link_material.dynamic_friction"
+                    ),
+                    "runtime_selector": {"task_link_id": "door"},
+                    "unit": "coefficient",
+                    "nominal_value": 0.4,
+                    "resolved_value": 0.45,
+                    "application_tolerance": 1.0e-6,
+                }
+            ],
+        )
+
+    assert excinfo.value.errors == (
+        "native_task_arena_scenario_nominal_mismatch:"
+        "EventManager.reset.task_subject_link_material.dynamic_friction",
+    )
 
 
 def test_runtime_contract_tamper_is_rejected(tmp_path: Path) -> None:

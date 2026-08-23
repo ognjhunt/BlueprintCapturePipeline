@@ -1004,6 +1004,59 @@ def test_runtime_contract_round_trip_and_tamper_rejection(tmp_path: Path) -> Non
     assert excinfo.value.errors == ("native_task_runtime_contract_digest_invalid",)
 
 
+def test_scenario_light_and_exact_link_material_bindings_are_sealed() -> None:
+    fixture = _articulated_fixture()
+    fixture["scenario_parameter_bindings"] = [
+        {
+            "parameter_id": "light_intensity_scale",
+            "runtime_target": "EventManager.reset.task_light.intensity_scale",
+            "unit": "ratio",
+            "nominal_value": 1.0,
+            "resolved_value": 0.9,
+            "application_tolerance": 1.0e-6,
+        },
+        {
+            "parameter_id": "object_dynamic_friction",
+            "runtime_target": (
+                "EventManager.reset.task_subject_link_material.dynamic_friction"
+            ),
+            "runtime_selector": {"task_link_id": "upper_door"},
+            "unit": "coefficient",
+            "nominal_value": 0.5,
+            "resolved_value": 0.45,
+            "application_tolerance": 1.0e-6,
+        },
+    ]
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    assert contract["scenario"]["parameter_bindings"] == fixture[
+        "scenario_parameter_bindings"
+    ]
+
+
+def test_scenario_material_binding_rejects_ambiguous_object_target() -> None:
+    fixture = _articulated_fixture()
+    fixture["scenario_parameter_bindings"] = [
+        {
+            "parameter_id": "object_dynamic_friction",
+            "runtime_target": "EventManager.reset.object_material.dynamic_friction",
+            "unit": "coefficient",
+            "nominal_value": 0.4,
+            "resolved_value": 0.45,
+            "application_tolerance": 1.0e-6,
+        }
+    ]
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert excinfo.value.errors == (
+        "native_task_runtime_scenario_target_unsupported:"
+        "EventManager.reset.object_material.dynamic_friction",
+    )
+
+
 def test_articulated_task_without_joint_binding_fails_before_gpu() -> None:
     fixture = _articulated_fixture()
     fixture["task_joint_bindings"] = []

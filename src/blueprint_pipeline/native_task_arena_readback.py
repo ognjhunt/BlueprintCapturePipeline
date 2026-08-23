@@ -660,6 +660,27 @@ def read_native_task_arena_scenario_parameters(
                     [f"native_task_arena_scenario_camera_readback_missing:{role}"]
                 ) from exc
             error = abs(observed - float(expected))
+        elif kind in {
+            "task_light_intensity_scale",
+            "task_subject_link_dynamic_friction",
+        }:
+            parameter_id = application["parameter_id"]
+            try:
+                native = configuration["scenario_parameters"][parameter_id]
+                if kind == "task_light_intensity_scale":
+                    observed = float(native["observed_intensity_scale"])
+                else:
+                    if native["task_link_id"] != application["task_link_id"]:
+                        raise KeyError("task_link_id")
+                    observed = float(native["observed_dynamic_friction"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    [
+                        "native_task_arena_scenario_configuration_readback_missing:"
+                        f"{parameter_id}"
+                    ]
+                ) from exc
+            error = abs(observed - float(expected))
         else:
             raise NativeTaskArenaReadbackError(
                 [f"native_task_arena_scenario_readback_kind_invalid:{kind}"]

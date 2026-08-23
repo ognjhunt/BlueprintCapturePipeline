@@ -9,6 +9,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_task_runtime_contract import (
     FROZEN_CANDIDATES,
+    SCENARIO_RUNTIME_TARGET_UNITS,
     SUPPORTED_SCENARIO_RUNTIME_TARGETS,
 )
 
@@ -28,6 +29,9 @@ REQUIRED_FAMILIES = frozenset(
 COUSIN_FAMILY = "admitted_object_cousin"
 COUSIN_BLOCKER = "admitted_object_cousin_identity_rights_and_bytes_unresolved"
 COUSIN_RUNTIME_TARGET = "AssetResolver.task_subject_asset_id"
+LEGACY_UNMATERIALIZED_RUNTIME_TARGET_UNITS = {
+    "EventManager.reset.object_material.dynamic_friction": "coefficient",
+}
 
 
 class DualTaskScenarioSuiteError(ValueError):
@@ -156,6 +160,55 @@ def validate_dual_task_scenario_suite(value: Mapping[str, Any]) -> dict[str, Any
                 errors.append("dual_task_scenario_cousin_admission_invalid")
         elif "execution_admission" in cell:
             errors.append("dual_task_scenario_admission_unexpected")
+        if family != COUSIN_FAMILY:
+            factors = cell.get("factor_records")
+            resolved_parameters = cell.get("resolved_parameters")
+            if isinstance(factors, list) and isinstance(resolved_parameters, Mapping):
+                factor_values: dict[str, Any] = {}
+                for factor_index, factor in enumerate(factors):
+                    if not isinstance(factor, Mapping):
+                        errors.append(
+                            f"dual_task_scenario_factor_invalid:{index}:{factor_index}"
+                        )
+                        continue
+                    parameter_id = str(factor.get("parameter_id") or "")
+                    target = str(factor.get("runtime_target") or "")
+                    selector = factor.get("runtime_selector")
+                    expected_unit = SCENARIO_RUNTIME_TARGET_UNITS.get(
+                        target,
+                        LEGACY_UNMATERIALIZED_RUNTIME_TARGET_UNITS.get(target),
+                    )
+                    if (
+                        not parameter_id
+                        or expected_unit is None
+                        or factor.get("unit") != expected_unit
+                        or "nominal_value" not in factor
+                        or "resolved_value" not in factor
+                        or "application_tolerance" not in factor
+                    ):
+                        errors.append(
+                            f"dual_task_scenario_factor_invalid:{index}:{factor_index}"
+                        )
+                        continue
+                    if target == (
+                        "EventManager.reset.task_subject_link_material.dynamic_friction"
+                    ):
+                        if (
+                            not isinstance(selector, Mapping)
+                            or set(selector) != {"task_link_id"}
+                            or not str(selector.get("task_link_id") or "")
+                        ):
+                            errors.append(
+                                "dual_task_scenario_material_selector_invalid:"
+                                f"{index}:{factor_index}"
+                            )
+                    elif selector is not None:
+                        errors.append(
+                            f"dual_task_scenario_factor_invalid:{index}:{factor_index}"
+                        )
+                    factor_values[parameter_id] = factor.get("resolved_value")
+                if factor_values != dict(resolved_parameters):
+                    errors.append(f"dual_task_scenario_resolved_parameters_invalid:{index}")
         if cell.get("scheduled_initially") is True and not (
             family == "canonical" or cell.get("powered_diagnostic") is True
         ):
