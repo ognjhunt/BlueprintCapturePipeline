@@ -268,6 +268,7 @@ def test_native_arena_reconciles_a_proven_no_allocation_attempt(
     result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     fixture["result"].write_text(json.dumps(result), encoding="utf-8")
     teardown = json.loads(fixture["teardown"].read_text(encoding="utf-8"))
+    teardown["status"] = "not_required_blueprint_bundle_preflight_blocked"
     teardown["vast_instance_ids"] = []
     fixture["teardown"].write_text(json.dumps(teardown), encoding="utf-8")
     zero = json.loads(fixture["zero"].read_text(encoding="utf-8"))
