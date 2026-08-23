@@ -2182,7 +2182,7 @@ def _run_task_control_episode(
                 solved_hold = row.get("hold_solved_arm_joint_positions_rad")
                 if held_arm_joint_positions is not None:
                     action = [*held_arm_joint_positions, command]
-                elif solved_hold is not None:
+                elif solved_hold is not None and current_strategy is None:
                     bounded = getattr(environment, "bounded_joint_action", None)
                     if not callable(bounded):
                         raise ControlEpisodeError(
@@ -2200,6 +2200,14 @@ def _run_task_control_episode(
                         ),
                     )
                 else:
+                    # The solved vector is the first-attempt branch anchor,
+                    # not a permanent override of measured recovery. C60
+                    # recorded a 14 mm miss, authored two non-zero Cartesian
+                    # correction biases, and then sent the identical solved
+                    # joints on all five attempts because this dispatch took
+                    # precedence unconditionally. Once a recovery strategy is
+                    # active, refine locally from the reached branch so the
+                    # measured correction actually reaches the robot.
                     action = environment.scripted_action_for_pose(
                         target_position_world_m=commanded_position,
                         target_quaternion_world_xyzw=row[
@@ -2440,6 +2448,13 @@ def _run_task_control_episode(
                 "termination_reason": termination_reason,
                 "target_reached": termination_reason == "stable_arrival",
                 "selected_joint_positions_rad": selected_joints,
+                "arm_command_source": (
+                    "solved_joint_target"
+                    if selected_joints is not None and current_strategy is None
+                    else "cartesian_recovery_from_solved_branch"
+                    if selected_joints is not None
+                    else "cartesian_pose_servo"
+                ),
                 "terminal_commanded_joint_positions_rad": terminal_commanded_joints,
                 "terminal_reached_joint_positions_rad": terminal_reached_joints,
                 "selected_to_commanded_joint_l2_rad": (
