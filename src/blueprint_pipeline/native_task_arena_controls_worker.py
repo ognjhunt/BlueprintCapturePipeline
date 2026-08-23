@@ -1412,6 +1412,60 @@ def _cross_direction(
     )
 
 
+def _contact_acquisition_axes(
+    *,
+    control_plan: Mapping[str, Any],
+    authored_open_target: Sequence[float],
+    authored_close_target: Sequence[float],
+    pad_centers: Mapping[str, Any] | None,
+) -> tuple[list[float] | None, list[float] | None, list[float] | None]:
+    """Resolve the scene-relative advance, jaw, and lateral search axes.
+
+    Contact-open and contact-close ordinarily share one TCP pose because the
+    gripper state is the only intended change between them.  Their difference
+    is therefore not a reliable approach direction.  The authored
+    approach-to-contact line is the authoritative geometric axis; retain the
+    open-to-close difference only as a compatibility fallback for older plans
+    that encoded a distinct close advance.
+    """
+
+    clear_side_offset = _contact_approach_anchor_offset(control_plan)
+    approach_axis = (
+        _unit_direction([-float(value) for value in clear_side_offset])
+        if clear_side_offset is not None
+        else None
+    )
+    if approach_axis is None:
+        try:
+            approach_axis = _unit_direction(
+                [
+                    float(authored_close_target[index])
+                    - float(authored_open_target[index])
+                    for index in range(3)
+                ]
+            )
+        except (IndexError, TypeError, ValueError):
+            approach_axis = None
+    jaw_axis = None
+    if isinstance(pad_centers, Mapping):
+        try:
+            jaw_axis = _unit_direction(
+                [
+                    float(pad_centers["left"][index])
+                    - float(pad_centers["right"][index])
+                    for index in range(3)
+                ]
+            )
+        except (KeyError, IndexError, TypeError, ValueError):
+            jaw_axis = None
+    lateral_axis = (
+        _cross_direction(approach_axis, jaw_axis)
+        if approach_axis is not None and jaw_axis is not None
+        else None
+    )
+    return approach_axis, jaw_axis, lateral_axis
+
+
 def _with_contact_acquisition_candidate(
     *, control_plan: Mapping[str, Any], sweep: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2908,12 +2962,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         open_target = [
             float(value) for value in contact_row["target_position_world_m"]
         ]
-        approach_axis = _unit_direction(
-            [
-                authored_close_target[index] - open_target[index]
-                for index in range(3)
-            ]
-        )
         pad_centers = (
             close_sweep_preposition_cell.get(
                 "measured_gripper_pad_centers_world_m"
@@ -2921,21 +2969,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if isinstance(close_sweep_preposition_cell, Mapping)
             else None
         )
-        jaw_axis = (
-            _unit_direction(
-                [
-                    float(pad_centers["left"][index])
-                    - float(pad_centers["right"][index])
-                    for index in range(3)
-                ]
-            )
-            if isinstance(pad_centers, Mapping)
-            else None
-        )
-        lateral_axis = (
-            _cross_direction(approach_axis, jaw_axis)
-            if approach_axis is not None and jaw_axis is not None
-            else None
+        approach_axis, jaw_axis, lateral_axis = _contact_acquisition_axes(
+            control_plan=effective_control_plan,
+            authored_open_target=open_target,
+            authored_close_target=authored_close_target,
+            pad_centers=pad_centers,
         )
         try:
             from blueprint_pipeline.native_task_arena_actuator_sweep import (

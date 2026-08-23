@@ -1732,6 +1732,35 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
     )
 
 
+def test_contact_acquisition_axes_use_authored_approach_when_open_and_close_share_pose() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _contact_acquisition_axes,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    rows = {
+        row["phase_id"]: row for row in plan["scripted_positive_actions"]
+    }
+    rows["approach"]["target_position_world_m"] = [0.5, 0.0, 0.4]
+    shared_contact = [0.5, 0.1, 0.4]
+    rows["contact_open"]["target_position_world_m"] = shared_contact
+    rows["contact_close"]["target_position_world_m"] = shared_contact
+
+    approach, jaw, lateral = _contact_acquisition_axes(
+        control_plan=plan,
+        authored_open_target=shared_contact,
+        authored_close_target=shared_contact,
+        pad_centers={
+            "left": [0.0, 0.0, 0.05],
+            "right": [0.0, 0.0, -0.05],
+        },
+    )
+
+    assert approach == pytest.approx([0.0, 1.0, 0.0])
+    assert jaw == pytest.approx([0.0, 0.0, 1.0])
+    assert lateral == pytest.approx([1.0, 0.0, 0.0])
+
+
 def test_contact_acquisition_refuses_nonadmitted_best_cell() -> None:
     from blueprint_pipeline.native_task_arena_controls_worker import (
         _with_contact_acquisition_candidate,
