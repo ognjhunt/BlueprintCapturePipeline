@@ -406,12 +406,24 @@ def _entry(
     _estimate_path, estimated_cost = _json_path(
         result, ("estimated_cost_usd",), ("cost_usd",)
     )
+    no_allocation = (
+        lane == "native_task_arena"
+        and teardown.get("vast_instance_ids") == []
+        and zero.get("inventory_scope") == "no_provider_allocation"
+        and not isinstance(estimated_cost, bool)
+        and isinstance(estimated_cost, (int, float))
+        and float(estimated_cost) == 0.0
+    )
+    teardown_status = str(teardown.get("status") or "")
     if (
         result.get("status")
         not in {"completed", "blocked", "sealed_completed_attempt", "sealed_blocked_attempt"}
         or continuing is not False
         or zero_confirmed is not True
-        or teardown.get("status") not in {"completed", "PASS"}
+        or (
+            teardown_status not in {"completed", "PASS"}
+            and not (no_allocation and teardown_status.startswith("not_required_"))
+        )
         or teardown.get("continuing_spend_from_this_run", False) is not False
         or zero.get("continuing_spend_from_this_run", False) is not False
         or isinstance(estimated_cost, bool)
@@ -423,12 +435,6 @@ def _entry(
     ):
         raise ValueError("same_goal_spend_terminal_or_zero_invalid")
 
-    no_allocation = (
-        lane == "native_task_arena"
-        and teardown.get("vast_instance_ids") == []
-        and zero.get("inventory_scope") == "no_provider_allocation"
-        and float(estimated_cost) == 0.0
-    )
     teardown_ids = [] if no_allocation else _instance_ids(teardown)
     results = billing.get("results")
     if not isinstance(results, list):

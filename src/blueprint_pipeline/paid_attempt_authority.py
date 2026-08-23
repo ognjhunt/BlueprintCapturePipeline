@@ -450,11 +450,17 @@ def bind_lane_prior_spend(
                 teardown_instance_ids = [int(single_instance_id)]
         zero_charge_absence = evidence_kind == ZERO_CHARGE_ABSENCE_EVIDENCE_KIND
         expected_charge_rows = 0 if zero_charge_absence or no_allocation else 1
+        teardown_status = str(teardown.get("status") or "")
         if (
             len(linked_sources) != 1
             or len(charge_rows) != expected_charge_rows
             or billing_source.get("status") != "reconciled"
-            or teardown.get("status") not in {"completed", "PASS"}
+            or (
+                teardown_status not in {"completed", "PASS"}
+                and not (
+                    no_allocation and teardown_status.startswith("not_required_")
+                )
+            )
             or teardown.get("continuing_spend_from_this_run", False) is not False
             or not isinstance(teardown_instance_ids, list)
             or (
