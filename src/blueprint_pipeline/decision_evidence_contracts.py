@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Mapping, Sequence
 
+import rfc8785
+
 
 TESTBED_SCHEMA_VERSION = "maintained_site_task_testbed.v1"
 DECISION_REQUEST_SCHEMA_VERSION = "decision_evidence_request.v1"
@@ -66,6 +68,29 @@ def canonical_digest(value: Mapping[str, Any], *, digest_field: str | None = Non
     if digest_field:
         normalized.pop(digest_field, None)
     return f"sha256:{hashlib.sha256(canonical_json(normalized).encode('utf-8')).hexdigest()}"
+
+
+def cross_runtime_canonical_json(value: Mapping[str, Any]) -> str:
+    """Canonicalize producer-owned JSON with ECMAScript number semantics.
+
+    Raw V3.2 candidate manifests cross Swift, Node.js, and Python. RFC 8785 is
+    the shared byte contract for that boundary; the broader Pipeline evidence
+    contracts retain their existing Python-owned canonicalization.
+    """
+
+    return rfc8785.dumps(dict(value)).decode("utf-8")
+
+
+def cross_runtime_canonical_digest(
+    value: Mapping[str, Any], *, digest_field: str | None = None
+) -> str:
+    normalized = dict(value)
+    if digest_field:
+        normalized.pop(digest_field, None)
+    return (
+        "sha256:"
+        + hashlib.sha256(cross_runtime_canonical_json(normalized).encode("utf-8")).hexdigest()
+    )
 
 
 def _clone(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -695,5 +720,7 @@ __all__ = [
     "PhysicalOutcomeJoin",
     "QualificationRecord",
     "canonical_digest",
+    "cross_runtime_canonical_digest",
+    "cross_runtime_canonical_json",
     "canonical_json",
 ]

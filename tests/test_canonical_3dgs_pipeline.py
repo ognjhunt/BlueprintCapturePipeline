@@ -42,7 +42,10 @@ from blueprint_pipeline.canonical_3dgs_evaluation import (
     compile_canonical_3dgs_proxy_hidden_evaluator_input,
     evaluate_canonical_3dgs_campaign,
 )
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 
 
 CAPTURE_DIGEST = "sha256:" + "a" * 64
@@ -411,7 +414,7 @@ def _canonical_v32_fixture(root: Path, frame_count: int = 8) -> list[float]:
             "candidate_manifest_proves_task_success": False,
         },
     }
-    candidate_manifest["manifest_digest"] = canonical_digest(
+    candidate_manifest["manifest_digest"] = cross_runtime_canonical_digest(
         candidate_manifest, digest_field="manifest_digest"
     )
     _write_json(root / "downstream_candidate_manifest.json", candidate_manifest)
