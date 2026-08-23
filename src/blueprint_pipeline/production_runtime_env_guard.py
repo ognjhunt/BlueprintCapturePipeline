@@ -6,6 +6,7 @@ import argparse
 import importlib
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -26,6 +27,56 @@ RUNTIME_SOURCE_REPO_ENV = "BLUEPRINT_PIPELINE_REPO"
 LAUNCH_PUBLIC_CATALOG_PATH_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
 
 SCHEMA_VERSION = "blueprint.production_runtime_env_guard.v1"
+
+CAPTURE_RECONSTRUCTION_RUNTIME_REQUIRED_ENV = (
+    "BLUEPRINT_REQUIRE_CAPTURE_RECONSTRUCTION_RUNTIME"
+)
+_PLACEHOLDER_MARKERS = ("REPLACE_WITH", "<chosen-", "<verified-", "<authorized-")
+_SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
+
+CAPTURE_RECONSTRUCTION_REQUIRED_VALUES = (
+    "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT",
+    "BLUEPRINT_CAPTURE_RECONSTRUCTION_PUBLICATION_BUCKET",
+    "BLUEPRINT_WINDOWS_WORKER_IMAGE_DIGEST",
+    "BLUEPRINT_POSTSHOT_RUNTIME_VERSION",
+    "BLUEPRINT_POSTSHOT_RUNTIME_DIGEST",
+    "BLUEPRINT_RECONSTRUCTION_CONTAINER_DISK_BYTES",
+    "PIPELINE_CAPTURE_RECONSTRUCTION_WEBAPP_URL",
+    "PIPELINE_SYNC_TOKEN",
+    "BLUEPRINT_AWS_REGION",
+    "BLUEPRINT_AWS_ACCOUNT_ID",
+    "BLUEPRINT_AWS_INSTANCE_TYPE",
+    "BLUEPRINT_AWS_AMI_ID",
+    "BLUEPRINT_AWS_SUBNET_ID",
+    "BLUEPRINT_AWS_SECURITY_GROUP_IDS",
+    "BLUEPRINT_AWS_WORKER_PLATFORM",
+    "BLUEPRINT_AWS_HOURLY_RATE_USD",
+    "BLUEPRINT_AWS_MAX_HOURLY_RATE_USD",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_PROFILE",
+)
+
+CAPTURE_RECONSTRUCTION_REQUIRED_FILES = (
+    "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL",
+    "BLUEPRINT_POSTSHOT_LICENSE_FILE",
+    "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_FILE",
+    "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_FILE",
+    "BLUEPRINT_WINDOWS_PYTHON_EMBED_FILE",
+    "BLUEPRINT_WINDOWS_NUMPY_WHEEL_FILE",
+    "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE",
+    "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE",
+    "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+)
+
+CAPTURE_RECONSTRUCTION_DIGEST_ENV = (
+    "BLUEPRINT_WINDOWS_WORKER_IMAGE_DIGEST",
+    "BLUEPRINT_POSTSHOT_RUNTIME_DIGEST",
+    "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256",
+    "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256",
+    "BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256",
+    "BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256",
+)
 
 REQUIRED_TRUE_FLAGS = (
     "PRIVACY_PIPELINE_ENABLED",
@@ -332,6 +383,94 @@ def _check_runtime_source_identity(
     return {**detail, "expected_source_root": str(expected), "status": "passed"}, []
 
 
+def _check_capture_reconstruction_runtime(
+    source: Mapping[str, str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Refuse to start the paid reconstruction dispatcher half-configured.
+
+    This check is opt-in because the same guard starts unrelated control-plane
+    units.  The reconstruction systemd unit opts in explicitly.  Exact asset
+    bytes are hashed again by the governed staging adapter immediately before
+    spend; this startup check keeps its one-minute timer inexpensive while
+    proving that every durable input is present, readable and non-placeholder.
+    """
+
+    required = parse_bool(
+        source.get(CAPTURE_RECONSTRUCTION_RUNTIME_REQUIRED_ENV), default=False
+    )
+    if not required:
+        return {"status": "not_required", "required": False}, []
+
+    blockers: list[str] = []
+    values: dict[str, dict[str, Any]] = {}
+    for name in CAPTURE_RECONSTRUCTION_REQUIRED_VALUES:
+        value = str(source.get(name) or "").strip()
+        placeholder = any(marker.lower() in value.lower() for marker in _PLACEHOLDER_MARKERS)
+        configured = bool(value) and not placeholder
+        values[name] = {"configured": configured, "placeholder": placeholder}
+        if not configured:
+            blockers.append(f"capture_reconstruction_runtime_unconfigured:{name}")
+
+    files: dict[str, dict[str, Any]] = {}
+    for name in CAPTURE_RECONSTRUCTION_REQUIRED_FILES:
+        raw = str(source.get(name) or "").strip()
+        path = Path(raw).expanduser() if raw else None
+        readable = bool(path and path.is_file() and os.access(path, os.R_OK))
+        nonempty = bool(readable and path and path.stat().st_size > 0)
+        files[name] = {
+            "configured": bool(raw),
+            "readable": readable,
+            "nonempty": nonempty,
+            "path": raw or None,
+        }
+        if not nonempty:
+            blockers.append(f"capture_reconstruction_runtime_file_unreadable:{name}")
+
+    digests: dict[str, dict[str, Any]] = {}
+    for name in CAPTURE_RECONSTRUCTION_DIGEST_ENV:
+        value = str(source.get(name) or "").strip().lower()
+        valid = bool(_SHA256_RE.fullmatch(value))
+        digests[name] = {"configured": bool(value), "valid_sha256": valid}
+        if not valid:
+            blockers.append(f"capture_reconstruction_runtime_digest_invalid:{name}")
+
+    webapp_url = str(source.get("PIPELINE_CAPTURE_RECONSTRUCTION_WEBAPP_URL") or "")
+    if not webapp_url.startswith("https://"):
+        blockers.append("capture_reconstruction_webapp_url_not_https")
+    if str(source.get("BLUEPRINT_AWS_WORKER_PLATFORM") or "").lower() != "windows":
+        blockers.append("capture_reconstruction_worker_platform_not_windows")
+
+    try:
+        hourly_rate = float(source.get("BLUEPRINT_AWS_HOURLY_RATE_USD") or 0)
+        hourly_cap = float(source.get("BLUEPRINT_AWS_MAX_HOURLY_RATE_USD") or 0)
+    except (TypeError, ValueError):
+        hourly_rate = 0.0
+        hourly_cap = 0.0
+    if hourly_rate <= 0 or hourly_cap <= 0 or hourly_rate > hourly_cap:
+        blockers.append("capture_reconstruction_aws_hourly_rate_invalid")
+
+    try:
+        disk_bytes = int(source.get("BLUEPRINT_RECONSTRUCTION_CONTAINER_DISK_BYTES") or 0)
+    except (TypeError, ValueError):
+        disk_bytes = 0
+    if disk_bytes < 100 * 1024**3:
+        blockers.append("capture_reconstruction_worker_disk_too_small")
+
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "required": True,
+        "values": values,
+        "files": files,
+        "digests": digests,
+        "webapp_https": webapp_url.startswith("https://"),
+        "worker_platform": str(source.get("BLUEPRINT_AWS_WORKER_PLATFORM") or "") or None,
+        "hourly_rate_usd": hourly_rate or None,
+        "hourly_rate_cap_usd": hourly_cap or None,
+        "worker_disk_bytes": disk_bytes or None,
+        "asset_bytes_rehashed_before_spend": True,
+    }, blockers
+
+
 def build_production_runtime_env_guard(
     env: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] | None = None,
@@ -384,6 +523,11 @@ def build_production_runtime_env_guard(
     runtime_source, runtime_source_blockers = _check_runtime_source_identity(source)
     blockers.extend(runtime_source_blockers)
 
+    capture_reconstruction, capture_reconstruction_blockers = (
+        _check_capture_reconstruction_runtime(source)
+    )
+    blockers.extend(capture_reconstruction_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -397,6 +541,7 @@ def build_production_runtime_env_guard(
         "launch_input_residency": residency,
         "paid_launch_lock_slots": lock_slots,
         "runtime_source_identity": runtime_source,
+        "capture_reconstruction_runtime": capture_reconstruction,
         "claim_boundary": (
             "This guard verifies production fail-closed runtime posture, that "
             "every control-plane entrypoint imports, that no spend-authority "

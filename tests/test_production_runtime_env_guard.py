@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from blueprint_pipeline.production_runtime_env_guard import (
+    _check_capture_reconstruction_runtime,
     _check_runtime_source_identity,
     build_production_runtime_env_guard,
 )
@@ -44,6 +45,101 @@ def _production_env() -> dict[str, str]:
         "PIPELINE_SYNC_REQUIRED": "true",
         "RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO": "true",
     }
+
+
+def test_capture_reconstruction_runtime_gate_is_scoped_to_its_dispatcher():
+    report, blockers = _check_capture_reconstruction_runtime(_production_env())
+
+    assert blockers == []
+    assert report["status"] == "not_required"
+    service = (
+        Path(__file__).parents[1]
+        / "deploy/systemd/blueprint-capture-reconstruction-dispatcher.service"
+    ).read_text(encoding="utf-8")
+    assert "Environment=BLUEPRINT_REQUIRE_CAPTURE_RECONSTRUCTION_RUNTIME=true" in service
+
+
+def test_capture_reconstruction_runtime_gate_blocks_incomplete_paid_lane():
+    report, blockers = _check_capture_reconstruction_runtime(
+        {"BLUEPRINT_REQUIRE_CAPTURE_RECONSTRUCTION_RUNTIME": "true"}
+    )
+
+    assert report["status"] == "blocked"
+    assert "capture_reconstruction_runtime_unconfigured:BLUEPRINT_AWS_AMI_ID" in blockers
+    assert (
+        "capture_reconstruction_runtime_file_unreadable:BLUEPRINT_POSTSHOT_LICENSE_FILE"
+        in blockers
+    )
+    assert "capture_reconstruction_webapp_url_not_https" in blockers
+
+
+def test_capture_reconstruction_runtime_gate_accepts_exact_complete_inputs(tmp_path):
+    required_files = {
+        "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL": "worker.whl",
+        "BLUEPRINT_POSTSHOT_LICENSE_FILE": "postshot.env",
+        "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_FILE": "driver.exe",
+        "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_FILE": "postshot.msi",
+        "BLUEPRINT_WINDOWS_PYTHON_EMBED_FILE": "python.zip",
+        "BLUEPRINT_WINDOWS_NUMPY_WHEEL_FILE": "numpy.whl",
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE": "access-key",
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE": "secret-key",
+        "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE": "bucket",
+        "AWS_SHARED_CREDENTIALS_FILE": "aws-credentials",
+    }
+    env = {
+        "BLUEPRINT_REQUIRE_CAPTURE_RECONSTRUCTION_RUNTIME": "true",
+        "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT": str(tmp_path / "policies"),
+        "BLUEPRINT_CAPTURE_RECONSTRUCTION_PUBLICATION_BUCKET": "blueprint-publication",
+        "BLUEPRINT_WINDOWS_WORKER_IMAGE_DIGEST": "sha256:" + "a" * 64,
+        "BLUEPRINT_POSTSHOT_RUNTIME_VERSION": "1.1.69",
+        "BLUEPRINT_POSTSHOT_RUNTIME_DIGEST": "sha256:" + "b" * 64,
+        "BLUEPRINT_RECONSTRUCTION_CONTAINER_DISK_BYTES": str(200 * 1024**3),
+        "PIPELINE_CAPTURE_RECONSTRUCTION_WEBAPP_URL": "https://tryblueprint.io/api/internal/pipeline/creator-captures",
+        "PIPELINE_SYNC_TOKEN": "not-a-real-test-secret",
+        "BLUEPRINT_AWS_REGION": "us-east-1",
+        "BLUEPRINT_AWS_ACCOUNT_ID": "111710313013",
+        "BLUEPRINT_AWS_INSTANCE_TYPE": "g5.xlarge",
+        "BLUEPRINT_AWS_AMI_ID": "ami-0123456789abcdef0",
+        "BLUEPRINT_AWS_SUBNET_ID": "subnet-0123456789abcdef0",
+        "BLUEPRINT_AWS_SECURITY_GROUP_IDS": "sg-0123456789abcdef0",
+        "BLUEPRINT_AWS_WORKER_PLATFORM": "windows",
+        "BLUEPRINT_AWS_HOURLY_RATE_USD": "1.19",
+        "BLUEPRINT_AWS_MAX_HOURLY_RATE_USD": "1.25",
+        "AWS_PROFILE": "blueprint-agent",
+        "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_SHA256": "1" * 64,
+        "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256": "2" * 64,
+        "BLUEPRINT_WINDOWS_PYTHON_EMBED_SHA256": "3" * 64,
+        "BLUEPRINT_WINDOWS_NUMPY_WHEEL_SHA256": "4" * 64,
+    }
+    for name, filename in required_files.items():
+        path = tmp_path / filename
+        path.write_bytes(b"exact-test-bytes")
+        env[name] = str(path)
+
+    report, blockers = _check_capture_reconstruction_runtime(env)
+
+    assert blockers == []
+    assert report["status"] == "ready"
+    assert report["asset_bytes_rehashed_before_spend"] is True
+
+
+def test_capture_reconstruction_runtime_gate_rejects_placeholder_http_and_bad_rate(tmp_path):
+    report, blockers = _check_capture_reconstruction_runtime(
+        {
+            "BLUEPRINT_REQUIRE_CAPTURE_RECONSTRUCTION_RUNTIME": "true",
+            "BLUEPRINT_AWS_AMI_ID": "REPLACE_WITH_WINDOWS_AMI_ID",
+            "PIPELINE_CAPTURE_RECONSTRUCTION_WEBAPP_URL": "http://example.invalid/status",
+            "BLUEPRINT_AWS_WORKER_PLATFORM": "linux",
+            "BLUEPRINT_AWS_HOURLY_RATE_USD": "2.00",
+            "BLUEPRINT_AWS_MAX_HOURLY_RATE_USD": "1.00",
+        }
+    )
+
+    assert report["status"] == "blocked"
+    assert "capture_reconstruction_runtime_unconfigured:BLUEPRINT_AWS_AMI_ID" in blockers
+    assert "capture_reconstruction_webapp_url_not_https" in blockers
+    assert "capture_reconstruction_worker_platform_not_windows" in blockers
+    assert "capture_reconstruction_aws_hourly_rate_invalid" in blockers
 
 
 def test_guard_blocks_a_ledger_stranded_at_a_previous_root():

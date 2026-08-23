@@ -39,6 +39,7 @@ Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true
 Environment=PIPELINE_SYNC_REQUIRED=true
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
+Environment=BLUEPRINT_REQUIRE_CAPTURE_RECONSTRUCTION_RUNTIME=true
 Environment=BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue
 Environment=BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs
 Environment=BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT=/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived
