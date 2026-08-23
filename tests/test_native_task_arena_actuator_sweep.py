@@ -522,6 +522,73 @@ def test_the_probe_records_targets_the_solver_cannot_reach() -> None:
     assert report["status"] == "measured"
 
 
+def test_the_probe_starts_each_cell_from_the_known_anchor_and_stops_on_force() -> None:
+    class _ContactFrontier(_SweepEnvironment):
+        def solve(self, target_position_world_m, seed_joint_positions_rad):
+            del seed_joint_positions_rad
+            return [
+                float(target_position_world_m[0]),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+
+        def step(self, action) -> None:
+            self.joints = [float(value) for value in action[:7]]
+
+        def read_task_sample(self):
+            force = 75.0 if self.joints[0] < 0.30 else 0.0
+            filtered = (
+                [
+                    {
+                        "filter_prim_path_expr": "/Robot/right_inner_finger",
+                        "force_magnitude_n": force,
+                    }
+                ]
+                if force
+                else []
+            )
+            return {
+                "grasp_frame_position_world_m": [self.joints[0], 0.0, 0.0],
+                "task_contact_active": bool(force),
+                "task_robot_contact_peak_force_n": force,
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": filtered}
+                        ]
+                    }
+                },
+            }
+
+    environment = _ContactFrontier()
+    report = _probe(
+        environment,
+        base_target_position_world_m=[0.29, 0.0, 0.0],
+        offsets_m=[[0.11, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        preposition_target_position_world_m=[0.40, 0.0, 0.0],
+        preposition_settle_steps=2,
+        settle_steps=4,
+        abort_contact_force_n=50.0,
+        max_joint_delta_rad=1.0,
+    )
+
+    clear, blocked = report["cells"]
+    assert report["preposition_target_position_world_m"] == [0.40, 0.0, 0.0]
+    assert environment.reset_count == 3  # two cells plus the final reset
+    assert clear["executed_steps"] == 4
+    assert clear["aborted_on_contact_force"] is False
+    assert blocked["executed_steps"] == 1
+    assert blocked["aborted_on_contact_force"] is True
+    assert blocked["peak_task_contact_force_n"] == pytest.approx(75.0)
+    assert blocked["peak_pad_contact_forces_n"] == {
+        "right_inner_finger": pytest.approx(75.0)
+    }
+
+
 def test_the_sweep_measures_the_model_versus_physics_gap() -> None:
     """C42 ruled out everything else; this is what was left, unmeasured.
 

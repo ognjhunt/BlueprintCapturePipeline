@@ -1084,6 +1084,32 @@ def _contact_approach_anchor_offset(
     return [distance * value / norm for value in clear_side]
 
 
+def _contact_frontier_offsets(
+    anchor_offset_m: Sequence[float], *, sample_count: int = 21
+) -> list[list[float]]:
+    """Walk the authored approach line from a proven anchor to contact."""
+
+    try:
+        anchor = [float(value) for value in anchor_offset_m]
+    except (TypeError, ValueError):
+        return []
+    if (
+        len(anchor) != 3
+        or not all(math.isfinite(value) for value in anchor)
+        or isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or sample_count < 2
+    ):
+        return []
+    return [
+        [
+            value * (sample_count - 1 - index) / (sample_count - 1)
+            for value in anchor
+        ]
+        for index in range(sample_count)
+    ]
+
+
 def _with_contact_entry_branch_replay(
     *,
     control_plan: Mapping[str, Any],
@@ -2063,7 +2089,50 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _announce("contact_target_reachability_probe")
         if anchor_admitted:
-            reach_probe = anchor_probe
+            # C50 closed the controller question: the exact selected posture
+            # was commanded, FK matched measured TCP to 1.34 micrometres, and
+            # the arm still stopped 22 mm short under 543 N of two-pad contact.
+            # Localize that collision frontier from the measured-clear anchor
+            # instead of spending another run on one endpoint. Cells are
+            # reset-isolated, stop at 50 N, and do not consume the scored task
+            # action budget.
+            frontier_offsets = _contact_frontier_offsets(anchor_offset or [])
+            preposition_target = [
+                float(contact_row["target_position_world_m"][axis])
+                + float(anchor_offset[axis])
+                for axis in range(3)
+            ]
+            try:
+                reach_probe = probe_target_reachability(
+                    environment=episode_environment,
+                    solve=_solve_contact,
+                    base_target_position_world_m=contact_row[
+                        "target_position_world_m"
+                    ],
+                    seed_joint_positions_rad=seed_posture,
+                    gripper_open_command=float(gripper["open_command"]),
+                    max_joint_delta_rad=float(
+                        contact_row["max_joint_delta_rad"]
+                    ),
+                    max_joint_setpoint_lead_rad=float(
+                        contact_row["max_joint_setpoint_lead_rad"]
+                    ),
+                    offsets_m=frontier_offsets,
+                    preposition_target_position_world_m=preposition_target,
+                    abort_contact_force_n=50.0,
+                )
+                reach_probe["diagnostic_kind"] = (
+                    "known_clear_anchor_to_authored_contact_force_frontier"
+                )
+            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                reach_probe = {
+                    "schema_version": (
+                        "native_task_arena_target_reachability_probe.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                    "cells": [],
+                }
         else:
             try:
                 reach_probe = (
