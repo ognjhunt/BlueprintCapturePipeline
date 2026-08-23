@@ -135,23 +135,41 @@ def _require_exact_clean_checkout(expected_commit: str) -> dict[str, Any]:
 
 
 def _provider_zero_receipt() -> dict[str, Any]:
+    # Paid GPU adapters in all three providers mint names in the governed
+    # ``blueprint-`` namespace. DigitalOcean also hosts the permanent
+    # ``paperclip-prod-01`` CPU control plane in the same account; account-wide
+    # droplet zero is therefore impossible and would block every Postshot run.
+    # The scoped API inventory still catches every Blueprint-managed paid
+    # worker without misclassifying standing production infrastructure as GPU
+    # spend.
+    managed_prefix = "blueprint-"
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     for name in ("runpod", "vast", "digitalocean"):
         try:
-            inventory = get_render_provider(name).billable_inventory(name_prefix="")
+            inventory = get_render_provider(name).billable_inventory(
+                name_prefix=managed_prefix
+            )
         except Exception as exc:  # noqa: BLE001 - unknown is not zero
             inventory = {"api_confirmed": False, "live_resource_count": None, "error_type": type(exc).__name__}
         passed = inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
         rows.append({
             "provider": name,
+            "inventory_scope": "blueprint_managed_paid_workers",
+            "name_prefix": managed_prefix,
             "zero": passed,
             "live_resource_count": inventory.get("live_resource_count"),
             "api_confirmed": inventory.get("api_confirmed") is True,
         })
         if not passed:
             blockers.append(f"capture_postshot_{name}_provider_zero_unproven")
-    return {"status": "passed" if not blockers else "blocked", "providers": rows, "blockers": blockers}
+    return {
+        "status": "passed" if not blockers else "blocked",
+        "inventory_scope": "blueprint_managed_paid_workers",
+        "name_prefix": managed_prefix,
+        "providers": rows,
+        "blockers": blockers,
+    }
 
 
 def _staging_kwargs() -> dict[str, Any]:

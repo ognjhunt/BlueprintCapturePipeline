@@ -146,3 +146,33 @@ def test_runtime_dependency_failure_removes_already_issued_urls(
             root=tmp_path / "runtime", expiration_seconds=5400
         )
     assert closed == ["nvidia-driver", "postshot-installer"]
+
+
+def test_non_aws_zero_check_scopes_out_permanent_control_plane(monkeypatch) -> None:
+    observed: list[tuple[str, str]] = []
+
+    class Provider:
+        def __init__(self, name: str):
+            self.name = name
+
+        def billable_inventory(self, *, name_prefix: str):
+            observed.append((self.name, name_prefix))
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+    monkeypatch.setattr(
+        allocator, "get_render_provider", lambda name: Provider(name)
+    )
+
+    receipt = allocator._provider_zero_receipt()
+
+    assert receipt["status"] == "passed"
+    assert receipt["inventory_scope"] == "blueprint_managed_paid_workers"
+    assert observed == [
+        ("runpod", "blueprint-"),
+        ("vast", "blueprint-"),
+        ("digitalocean", "blueprint-"),
+    ]
