@@ -1397,8 +1397,9 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
         "cells": [
             {
                 "status": "measured",
-                "offset_m": [0.0, -0.04, 0.0],
+                "offset_m": [0.0, 0.0, -0.04],
                 "joint_positions_rad": known_joints,
+                "joint_tracking_error_rad": 0.0002,
                 "measured_distance_to_requested_m": 0.0042,
                 "measured_grasp_frame_orientation_world_xyzw": [
                     0.0,
@@ -1410,8 +1411,9 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
             },
             {
                 "status": "measured",
-                "offset_m": [0.0, -0.02, 0.0],
+                "offset_m": [0.0, 0.0, -0.02],
                 "joint_positions_rad": [0.2] * 7,
+                "joint_tracking_error_rad": 0.0003,
                 "measured_distance_to_requested_m": 0.008,
                 "measured_grasp_frame_orientation_world_xyzw": [
                     0.0,
@@ -1432,6 +1434,7 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
     rows = checked["scripted_positive_actions"]
     entry = next(row for row in rows if row["phase_id"] == MEASURED_CONTACT_ENTRY_PHASE_ID)
     contact = next(row for row in rows if row["phase_id"] == "contact_open")
+    contact_close = next(row for row in rows if row["phase_id"] == "contact_close")
     frontier = [
         row
         for row in rows
@@ -1443,16 +1446,32 @@ def test_measured_contact_frontier_starts_from_observed_success() -> None:
     assert entry["hold_solved_arm_joint_positions_rad"] == pytest.approx(
         known_joints
     )
-    assert entry["target_position_world_m"] == pytest.approx([0.5, 0.06, 0.4])
+    assert entry["target_position_world_m"] == pytest.approx([0.5, 0.1, 0.36])
     assert frontier == []
-    # The anchor is diagnostic evidence. It must not overwrite the posture
-    # whose direct execution this run exists to test.
     assert contact["hold_solved_arm_joint_positions_rad"] == pytest.approx(
-        [0.9] * 7
+        known_joints
+    )
+    assert contact["target_position_world_m"] == pytest.approx([0.5, 0.1, 0.36])
+    assert contact_close["target_position_world_m"] == pytest.approx(
+        [0.5, 0.1, 0.36]
+    )
+    assert contact_close["hold_solved_arm_joint_positions_rad"] == pytest.approx(
+        known_joints
     )
     assert receipt["frontier_phase_ids"] == [
         MEASURED_CONTACT_ENTRY_PHASE_ID,
         "contact_open",
+        "contact_close",
+    ]
+    assert receipt["promoted_standoff_m"] == pytest.approx(0.04)
+    assert receipt["probe_clearance_axis_alignment_dot"] == pytest.approx(1.0)
+    assert receipt["rewritten_grasp_holding_phase_ids"] == [
+        "contact_open",
+        "contact_close",
+    ]
+    assert receipt["measured_joint_vector_bound_phase_ids"] == [
+        "contact_open",
+        "contact_close",
     ]
     assert receipt["synthetic_frontier_rows_inserted"] == 0
     assert receipt["replaced_branch_replay_rows"] == 0
@@ -1473,8 +1492,9 @@ def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
             "cells": [
                 {
                     "status": "measured",
-                    "offset_m": [0.0, -0.02, 0.0],
+                    "offset_m": [0.0, 0.0, -0.02],
                     "joint_positions_rad": [0.2] * 7,
+                    "joint_tracking_error_rad": 0.0002,
                     "measured_distance_to_requested_m": 0.008,
                     "measured_grasp_frame_orientation_world_xyzw": [
                         0.0,
@@ -1548,8 +1568,9 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
             "cells": [
                 {
                     "status": "measured",
-                    "offset_m": [0.0, -0.04, 0.0],
+                    "offset_m": [0.0, 0.0, -0.04],
                     "joint_positions_rad": [0.2] * 7,
+                    "joint_tracking_error_rad": 0.0002,
                     "measured_distance_to_requested_m": 0.004,
                     "measured_grasp_frame_orientation_world_xyzw": [
                         0.0,
@@ -1576,7 +1597,8 @@ def test_measured_anchor_replaces_the_old_contact_replay() -> None:
         for row in derived["scripted_positive_actions"]
         if row["phase_id"] == "contact_open"
     )
-    assert contact["hold_solved_arm_joint_positions_rad"] == [0.9] * 7
+    assert contact["hold_solved_arm_joint_positions_rad"] == [0.2] * 7
+    assert contact["target_position_world_m"] == pytest.approx([0.5, 0.1, 0.36])
     expected_anchor_steps = max(
         MEASURED_CONTACT_ENTRY_MAXIMUM_STEPS,
         replayed_contact["maximum_steps"],
