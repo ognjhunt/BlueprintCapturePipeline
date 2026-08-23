@@ -787,11 +787,17 @@ class _OffsetCartesianEnvironment(_CartesianEnvironment):
         return [*reached, 0.0, 0.0, 0.0, 0.0, gripper_command]
 
 
-class _OffsetSolvedJointCartesianEnvironment(_OffsetCartesianEnvironment):
+class _TrackingResidualSolvedJointEnvironment(_CartesianEnvironment):
+    TRACKING_RESIDUAL_RAD = 0.014
+
     def __init__(self, task_kind: str):
         super().__init__(task_kind)
         self.bounded_calls = []
-        self.cartesian_targets = []
+        self.commanded_joints = [0.0] * 7
+
+    def reset(self):
+        super().reset()
+        self.commanded_joints = [0.0] * 7
 
     def bounded_joint_action(self, **kwargs):
         self.bounded_calls.append(dict(kwargs))
@@ -800,9 +806,18 @@ class _OffsetSolvedJointCartesianEnvironment(_OffsetCartesianEnvironment):
             float(kwargs["gripper_command"]),
         ]
 
-    def scripted_action_for_pose(self, **kwargs):
-        self.cartesian_targets.append(list(kwargs["target_position_world_m"]))
-        return super().scripted_action_for_pose(**kwargs)
+    def step(self, action):
+        self.steps.append(list(action))
+        self.commanded_joints = [float(value) for value in action[:7]]
+        self.joints = list(self.commanded_joints)
+        self.gripper = float(action[7])
+        if self.gripper > 0.5:
+            self.joints[0] += self.TRACKING_RESIDUAL_RAD
+
+    def read_arm_dynamics_observation(self):
+        result = super().read_arm_dynamics_observation()
+        result["joint_position_target_rad"] = list(self.commanded_joints)
+        return result
 
 
 class _StuckCartesianEnvironment(_CartesianEnvironment):
@@ -923,7 +938,7 @@ def test_pose_phase_recovers_from_systematic_offset_within_one_run(
     )
 
 
-def test_solved_joint_anchor_yields_to_measured_cartesian_recovery(
+def test_solved_joint_anchor_compensates_measured_joint_tracking_residual(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A solved first attempt must not make every recovery attempt identical."""
@@ -931,12 +946,12 @@ def test_solved_joint_anchor_yields_to_measured_cartesian_recovery(
     _patched_media(monkeypatch)
     task = _task("articulated_open_close")
     plan = _recovery_plan(task)
-    solved = [0.914, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    solved = [0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     plan["scripted_positive_actions"][0][
         "hold_solved_arm_joint_positions_rad"
     ] = solved
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
-    environment = _OffsetSolvedJointCartesianEnvironment(
+    environment = _TrackingResidualSolvedJointEnvironment(
         "articulated_open_close"
     )
 
@@ -961,7 +976,7 @@ def test_solved_joint_anchor_yields_to_measured_cartesian_recovery(
     ]
     assert [row["arm_command_source"] for row in open_arrivals] == [
         "solved_joint_target",
-        "cartesian_recovery_from_solved_branch",
+        "joint_tracking_recovery_from_solved_branch",
     ]
     assert open_arrivals[0]["terminal_position_error_m"] == pytest.approx(0.014)
     assert open_arrivals[1]["terminal_position_error_m"] == pytest.approx(
@@ -969,7 +984,18 @@ def test_solved_joint_anchor_yields_to_measured_cartesian_recovery(
     )
     assert environment.bounded_calls
     assert environment.bounded_calls[0]["target_joint_positions_rad"] == solved
-    assert [0.886, 0.0, 0.0] in environment.cartesian_targets
+    assert environment.bounded_calls[-1]["target_joint_positions_rad"] == [
+        0.886,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert open_arrivals[1]["solved_joint_command_bias_rad"] == pytest.approx(
+        [-0.014, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    )
 
 
 def test_pose_phase_recovery_escalates_the_ladder_then_fails_sealed(

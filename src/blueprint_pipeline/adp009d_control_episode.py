@@ -2082,6 +2082,7 @@ def _run_task_control_episode(
     row_index = 0
     attempt_number = 1
     commanded_position_bias = [0.0, 0.0, 0.0]
+    solved_joint_command_bias = [0.0] * 7
     current_strategy: str | None = None
     attempt_history: list[dict[str, Any]] = []
     recovery_ladder = recovery_ladder_for_plan(plan)
@@ -2182,7 +2183,7 @@ def _run_task_control_episode(
                 solved_hold = row.get("hold_solved_arm_joint_positions_rad")
                 if held_arm_joint_positions is not None:
                     action = [*held_arm_joint_positions, command]
-                elif solved_hold is not None and current_strategy is None:
+                elif solved_hold is not None:
                     bounded = getattr(environment, "bounded_joint_action", None)
                     if not callable(bounded):
                         raise ControlEpisodeError(
@@ -2192,7 +2193,12 @@ def _run_task_control_episode(
                             ]
                         )
                     action = bounded(
-                        target_joint_positions_rad=list(solved_hold),
+                        target_joint_positions_rad=[
+                            float(value) + float(bias)
+                            for value, bias in zip(
+                                solved_hold, solved_joint_command_bias
+                            )
+                        ],
                         gripper_command=command,
                         max_joint_delta_rad=float(row["max_joint_delta_rad"]),
                         max_joint_setpoint_lead_rad=float(
@@ -2200,14 +2206,6 @@ def _run_task_control_episode(
                         ),
                     )
                 else:
-                    # The solved vector is the first-attempt branch anchor,
-                    # not a permanent override of measured recovery. C60
-                    # recorded a 14 mm miss, authored two non-zero Cartesian
-                    # correction biases, and then sent the identical solved
-                    # joints on all five attempts because this dispatch took
-                    # precedence unconditionally. Once a recovery strategy is
-                    # active, refine locally from the reached branch so the
-                    # measured correction actually reaches the robot.
                     action = environment.scripted_action_for_pose(
                         target_position_world_m=commanded_position,
                         target_quaternion_world_xyzw=row[
@@ -2451,9 +2449,14 @@ def _run_task_control_episode(
                 "arm_command_source": (
                     "solved_joint_target"
                     if selected_joints is not None and current_strategy is None
-                    else "cartesian_recovery_from_solved_branch"
+                    else "joint_tracking_recovery_from_solved_branch"
                     if selected_joints is not None
                     else "cartesian_pose_servo"
+                ),
+                "solved_joint_command_bias_rad": (
+                    list(solved_joint_command_bias)
+                    if selected_joints is not None
+                    else None
                 ),
                 "terminal_commanded_joint_positions_rad": terminal_commanded_joints,
                 "terminal_reached_joint_positions_rad": terminal_reached_joints,
@@ -2487,13 +2490,48 @@ def _run_task_control_episode(
                 attempt_history.append(
                     {"strategy": current_strategy, "error_m": terminal_error}
                 )
-                next_strategy = _next_recovery_strategy(
-                    attempt_history,
-                    ladder=recovery_ladder,
-                    arrival_tolerance_m=float(row["arrival_tolerance_m"]),
-                    remaining_attempts=(
-                        TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS - attempt_number
-                    ),
+                selected_tracking_error = (
+                    math.dist(selected_joints, terminal_reached_joints)
+                    if selected_joints is not None
+                    else None
+                )
+                if (
+                    selected_joints is not None
+                    and not hold_arm_during_gripper_transition
+                    and attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
+                    and selected_tracking_error is not None
+                    and selected_tracking_error > 1.0e-4
+                ):
+                    # C60 proved the selected posture's own FK is inside the
+                    # contact gate while the actuator settles about 0.011 rad
+                    # away. C61 then proved a Cartesian retry abandons that
+                    # good branch by 0.56--1.62 rad and worsens the TCP miss.
+                    # Compensate the measured actuator residual in joint
+                    # space instead: if command q settles at q+e, command
+                    # q-e next. The bounded joint seam still clips every
+                    # target to the live limits and lead budget.
+                    solved_joint_command_bias = [
+                        float(bias) + float(selected) - float(reached)
+                        for bias, selected, reached in zip(
+                            solved_joint_command_bias,
+                            selected_joints,
+                            terminal_reached_joints,
+                        )
+                    ]
+                    current_strategy = "measured_joint_tracking_compensation"
+                    attempt_number += 1
+                    continue
+                next_strategy = (
+                    None
+                    if selected_joints is not None
+                    else _next_recovery_strategy(
+                        attempt_history,
+                        ladder=recovery_ladder,
+                        arrival_tolerance_m=float(row["arrival_tolerance_m"]),
+                        remaining_attempts=(
+                            TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS - attempt_number
+                        ),
+                    )
                 )
                 if (
                     attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
@@ -2657,6 +2695,7 @@ def _run_task_control_episode(
         row_index += 1
         attempt_number = 1
         commanded_position_bias = [0.0, 0.0, 0.0]
+        solved_joint_command_bias = [0.0] * 7
         current_strategy = None
         attempt_history = []
     terminal = _persist_observation(
