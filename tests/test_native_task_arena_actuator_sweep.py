@@ -226,6 +226,51 @@ def test_close_sweep_measures_every_branch_and_admits_only_physical_grasp() -> N
     assert report["best_cell"]["fk_to_measured_tcp_error_m"] == 0.0
 
 
+def test_close_sweep_isolates_one_bad_branch_instead_of_losing_the_surface() -> None:
+    class _OneBadBranch(_SweepEnvironment):
+        def step(self, action):
+            if float(action[0]) > 0.7:
+                raise TypeError(
+                    "float() argument must be a string or a real number, not 'NoneType'"
+                )
+            self.joints = [float(value) for value in action[:7]]
+
+        def read_task_sample(self):
+            return {
+                "grasp_frame_position_world_m": [self.joints[0], 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+
+        def predict_grasp_frame_pose_world(self, joints, *, gripper_command=None):
+            del gripper_command
+            return [float(joints[0]), 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+    report = run_contact_close_posture_sweep(
+        environment=_OneBadBranch(),
+        target_position_world_m=[0.2, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        postures=[
+            {"posture_index": 0, "joint_positions_rad": [0.8] * 7},
+            {"posture_index": 1, "joint_positions_rad": [0.2] * 7},
+        ],
+        preposition_joint_positions_rad=[0.0] * 7,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        preposition_steps=1,
+        settle_steps=2,
+    )
+
+    assert report["cell_count"] == 2
+    assert report["cells"][0]["status"] == "cell_error"
+    assert report["cells"][0]["error"].startswith("close:TypeError:")
+    assert report["cells"][1]["measured_distance_to_target_m"] == 0.0
+
+
 def test_the_sweep_separates_gains_that_can_track_from_gains_that_cannot() -> None:
     """The shipped stiffness is measurably the worst cell, not a guess."""
 
