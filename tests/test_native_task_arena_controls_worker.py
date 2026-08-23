@@ -1661,6 +1661,101 @@ def test_measured_contact_frontier_refuses_unproven_probe_cells() -> None:
     assert derived == plan
 
 
+def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> None:
+    from blueprint_pipeline.adp009d_control_episode import (
+        validate_task_control_plan,
+    )
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_acquisition_candidate,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    original_close = next(
+        row
+        for row in plan["scripted_positive_actions"]
+        if row["phase_id"] == "contact_close"
+    )
+    original_close["require_bilateral_task_contact"] = True
+    original_close["bilateral_task_contact_minimum_force_n"] = 0.5
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    reached_open = [0.11, -0.22, 0.33, -0.44, 0.55, -0.66, 0.77]
+
+    derived, receipt = _with_contact_acquisition_candidate(
+        control_plan=plan,
+        sweep={
+            "status": "measured",
+            "best_cell": {
+                "cell_index": 17,
+                "admitted": True,
+                "candidate_target_position_world_m": [0.501, 0.096, 0.402],
+                "reached_open_joint_positions_rad": reached_open,
+                "approach_offset_m": -0.005,
+                "jaw_offset_m": 0.006,
+                "lateral_offset_m": 0.0,
+            },
+        },
+    )
+
+    checked = validate_task_control_plan(derived, task_spec=task)
+    rows = {
+        row["phase_id"]: row for row in checked["scripted_positive_actions"]
+    }
+    contact_open = rows["contact_open"]
+    contact_close = rows["contact_close"]
+
+    assert receipt["status"] == "applied"
+    assert receipt["adopted_cell_index"] == 17
+    assert contact_open["target_position_world_m"] == pytest.approx(
+        [0.501, 0.096, 0.402]
+    )
+    assert contact_open["arrival_target_position_world_m"] == pytest.approx(
+        [0.501, 0.096, 0.402]
+    )
+    assert contact_open["hold_solved_arm_joint_positions_rad"] == pytest.approx(
+        reached_open
+    )
+    assert contact_open["gripper_state"] == "open"
+    assert contact_close[
+        "hold_arm_joint_positions_during_gripper_transition"
+    ] is True
+    assert contact_close["hold_solved_arm_joint_positions_rad"] == pytest.approx(
+        reached_open
+    )
+    assert contact_close["require_bilateral_task_contact"] is True
+    assert contact_close[
+        "bilateral_task_contact_minimum_force_n"
+    ] == pytest.approx(0.5)
+    assert derived["plan_digest"] != plan["plan_digest"]
+    assert derived["plan_digest"] == canonical_digest(
+        derived, digest_field="plan_digest"
+    )
+
+
+def test_contact_acquisition_refuses_nonadmitted_best_cell() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_acquisition_candidate,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    derived, receipt = _with_contact_acquisition_candidate(
+        control_plan=plan,
+        sweep={
+            "status": "measured",
+            "best_cell": {
+                "cell_index": 0,
+                "admitted": False,
+                "candidate_target_position_world_m": [0.5, 0.1, 0.4],
+                "reached_open_joint_positions_rad": [0.1] * 7,
+            },
+        },
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "no_physics_admitted_contact_acquisition_cell"
+    assert derived == plan
+
+
 def test_measured_anchor_replaces_the_old_contact_replay() -> None:
     from blueprint_pipeline.native_task_arena_controls_worker import (
         CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID,

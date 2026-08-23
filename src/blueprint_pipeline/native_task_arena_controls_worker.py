@@ -1387,6 +1387,136 @@ def _quaternion_angle_xyzw(
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
 
+def _unit_direction(values: Sequence[float]) -> list[float] | None:
+    try:
+        vector = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    if len(vector) != 3 or not all(math.isfinite(value) for value in vector):
+        return None
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm <= 1.0e-9:
+        return None
+    return [value / norm for value in vector]
+
+
+def _cross_direction(
+    left: Sequence[float], right: Sequence[float]
+) -> list[float] | None:
+    return _unit_direction(
+        [
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        ]
+    )
+
+
+def _with_contact_acquisition_candidate(
+    *, control_plan: Mapping[str, Any], sweep: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replay a physics-qualified open advance, then close without arm motion."""
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    receipt: dict[str, Any] = {
+        "schema_version": "native_task_controls_contact_acquisition_adoption.v1",
+        "status": "not_applied",
+        "reason": None,
+        "source_control_plan_digest": plan.get("plan_digest"),
+    }
+    best = sweep.get("best_cell")
+    actions = plan.get("scripted_positive_actions")
+    if not isinstance(best, Mapping) or best.get("admitted") is not True:
+        receipt["reason"] = "no_physics_admitted_contact_acquisition_cell"
+        return plan, receipt
+    if not isinstance(actions, list):
+        receipt["reason"] = "scripted_positive_actions_invalid"
+        return plan, receipt
+    try:
+        target = [
+            float(value)
+            for value in best["candidate_target_position_world_m"]
+        ]
+        joints = [
+            float(value)
+            for value in best["reached_open_joint_positions_rad"]
+        ]
+    except (KeyError, TypeError, ValueError):
+        receipt["reason"] = "admitted_cell_replay_values_invalid"
+        return plan, receipt
+    if (
+        len(target) != 3
+        or len(joints) != 7
+        or not all(math.isfinite(value) for value in [*target, *joints])
+    ):
+        receipt["reason"] = "admitted_cell_replay_values_invalid"
+        return plan, receipt
+
+    contact_open = next(
+        (
+            row
+            for row in actions
+            if isinstance(row, dict)
+            and row.get("mode") == "ik_pose"
+            and str(row.get("phase_id") or "") == "contact_open"
+        ),
+        None,
+    )
+    contact_close = next(
+        (
+            row
+            for row in actions
+            if isinstance(row, dict)
+            and row.get("mode") == "ik_pose"
+            and str(row.get("phase_id") or "") == "contact_close"
+        ),
+        None,
+    )
+    if contact_open is None or contact_close is None:
+        receipt["reason"] = "contact_phase_missing"
+        return plan, receipt
+
+    # The preceding measured branch-replay row remains the known-clear anchor.
+    # Contact-open now performs only the open-jaw advance the sweep qualified.
+    contact_open["target_position_world_m"] = list(target)
+    contact_open["arrival_target_position_world_m"] = list(target)
+    contact_open["hold_solved_arm_joint_positions_rad"] = list(joints)
+    contact_open["gripper_state"] = "open"
+
+    # Close from the pose the episode itself physically reached, not from a
+    # second IK posture.  The episode seam snapshots those joints on entry and
+    # keeps its native TCP, orientation, and bilateral-contact gates intact.
+    contact_close["target_position_world_m"] = list(target)
+    contact_close["arrival_target_position_world_m"] = list(target)
+    contact_close["target_quaternion_world_xyzw"] = list(
+        contact_open["target_quaternion_world_xyzw"]
+    )
+    contact_close["hold_arm_joint_positions_during_gripper_transition"] = True
+    contact_close["hold_solved_arm_joint_positions_rad"] = list(joints)
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    receipt.update(
+        {
+            "status": "applied",
+            "reason": None,
+            "adopted_cell_index": int(best["cell_index"]),
+            "adopted_target_position_world_m": target,
+            "adopted_open_joint_positions_rad": joints,
+            "adopted_offsets_m": {
+                "approach": float(best["approach_offset_m"]),
+                "jaw": float(best["jaw_offset_m"]),
+                "lateral": float(best["lateral_offset_m"]),
+            },
+            "derived_control_plan_digest": plan["plan_digest"],
+            "claim_boundary": (
+                "replays_only_a_physics_admitted_open_advance_and_holds_the_"
+                "episode_reached_arm_joints_while_closing;native_bilateral_"
+                "contact_and_task_outcome_gates_remain_authoritative"
+            ),
+        }
+    )
+    return plan, receipt
+
+
 def _contact_approach_anchor_offset(
     control_plan: Mapping[str, Any],
     *,
@@ -2540,15 +2670,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Use the last reset-isolated, zero-contact frontier cell: this is the
         # exact physical open pose the episode will promote, not merely the
         # off-sim branch that seeded the probe.
-        close_sweep_preposition = next(
+        close_sweep_preposition_cell = next(
             (
-                cell.get("joint_positions_rad")
+                cell
                 for cell in reversed(reach_probe.get("cells") or [])
                 if isinstance(cell, Mapping)
                 and int(cell.get("contact_steps") or 0) == 0
                 and isinstance(cell.get("joint_positions_rad"), list)
             ),
-            seed_posture,
+            None,
+        )
+        close_sweep_preposition = (
+            close_sweep_preposition_cell.get("joint_positions_rad")
+            if isinstance(close_sweep_preposition_cell, Mapping)
+            else seed_posture
         )
 
         # C56 proved that off-sim chain continuity can select a mathematically
@@ -2755,6 +2890,130 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ],
             }
         result["control_plan_digest"] = effective_control_plan["plan_digest"]
+
+        # Search the missing transition dimension in one loaded scene.  The
+        # earlier close sweep changed the arm target and gripper state at the
+        # same time; C53 and C63 therefore bracketed two one-finger failures
+        # without ever testing the ordinary manipulation sequence: advance
+        # open, freeze the physically reached arm posture, then close.  The
+        # measured approach and jaw axes make the 5x5x5 grid scene-relative.
+        _announce("contact_acquisition_sweep")
+        authored_close_target = [
+            float(value)
+            for value in contact_close_row.get(
+                "arrival_target_position_world_m",
+                contact_close_row["target_position_world_m"],
+            )
+        ]
+        open_target = [
+            float(value) for value in contact_row["target_position_world_m"]
+        ]
+        approach_axis = _unit_direction(
+            [
+                authored_close_target[index] - open_target[index]
+                for index in range(3)
+            ]
+        )
+        pad_centers = (
+            close_sweep_preposition_cell.get(
+                "measured_gripper_pad_centers_world_m"
+            )
+            if isinstance(close_sweep_preposition_cell, Mapping)
+            else None
+        )
+        jaw_axis = (
+            _unit_direction(
+                [
+                    float(pad_centers["left"][index])
+                    - float(pad_centers["right"][index])
+                    for index in range(3)
+                ]
+            )
+            if isinstance(pad_centers, Mapping)
+            else None
+        )
+        lateral_axis = (
+            _cross_direction(approach_axis, jaw_axis)
+            if approach_axis is not None and jaw_axis is not None
+            else None
+        )
+        try:
+            from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                run_contact_acquisition_sweep,
+            )
+
+            contact_acquisition = (
+                run_contact_acquisition_sweep(
+                    environment=episode_environment,
+                    authored_target_position_world_m=authored_close_target,
+                    target_orientation_world_xyzw=contact_close_row[
+                        "target_quaternion_world_xyzw"
+                    ],
+                    preposition_joint_positions_rad=close_sweep_preposition,
+                    approach_axis_world=approach_axis,
+                    jaw_axis_world=jaw_axis,
+                    lateral_axis_world=lateral_axis,
+                    gripper_open_command=gripper["open_command"],
+                    gripper_closed_command=gripper["closed_command"],
+                    max_joint_delta_rad=contact_close_row[
+                        "max_joint_delta_rad"
+                    ],
+                    max_joint_setpoint_lead_rad=contact_close_row[
+                        "max_joint_setpoint_lead_rad"
+                    ],
+                    orientation_tolerance_rad=(
+                        contact_close_row.get(
+                            "arrival_orientation_tolerance_rad"
+                        )
+                        or 0.08
+                    ),
+                    bilateral_contact_minimum_force_n=(
+                        close_contact_threshold
+                    ),
+                )
+                if (
+                    close_sweep_preposition is not None
+                    and approach_axis is not None
+                    and jaw_axis is not None
+                    and lateral_axis is not None
+                )
+                else {
+                    "schema_version": (
+                        "native_task_arena_contact_acquisition_sweep.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": "contact_acquisition_basis_unresolved",
+                    "cells": [],
+                }
+            )
+        except BaseException as exc:  # noqa: BLE001 - diagnostic only
+            contact_acquisition = {
+                "schema_version": (
+                    "native_task_arena_contact_acquisition_sweep.v1"
+                ),
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "cells": [],
+            }
+        result["contact_acquisition_sweep"] = contact_acquisition
+        effective_control_plan, contact_acquisition_adoption = (
+            _with_contact_acquisition_candidate(
+                control_plan=effective_control_plan,
+                sweep=contact_acquisition,
+            )
+        )
+        result["contact_acquisition_adoption"] = (
+            contact_acquisition_adoption
+        )
+        result["control_plan_digest"] = effective_control_plan["plan_digest"]
+        _announce(
+            "contact_acquisition_sweep",
+            (
+                "completed"
+                if contact_acquisition.get("status") == "measured"
+                else "blocked"
+            ),
+        )
         _announce(
             "contact_posture_actuator_sweep",
             (
