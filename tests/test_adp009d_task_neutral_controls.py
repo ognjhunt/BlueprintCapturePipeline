@@ -787,6 +787,24 @@ class _OffsetCartesianEnvironment(_CartesianEnvironment):
         return [*reached, 0.0, 0.0, 0.0, 0.0, gripper_command]
 
 
+class _OffsetSolvedJointCartesianEnvironment(_OffsetCartesianEnvironment):
+    def __init__(self, task_kind: str):
+        super().__init__(task_kind)
+        self.bounded_calls = []
+        self.cartesian_targets = []
+
+    def bounded_joint_action(self, **kwargs):
+        self.bounded_calls.append(dict(kwargs))
+        return [
+            *[float(value) for value in kwargs["target_joint_positions_rad"]],
+            float(kwargs["gripper_command"]),
+        ]
+
+    def scripted_action_for_pose(self, **kwargs):
+        self.cartesian_targets.append(list(kwargs["target_position_world_m"]))
+        return super().scripted_action_for_pose(**kwargs)
+
+
 class _StuckCartesianEnvironment(_CartesianEnvironment):
     """The arm parks at one wrong pose no matter what is commanded."""
 
@@ -903,6 +921,55 @@ def test_pose_phase_recovers_from_systematic_offset_within_one_run(
     assert open_arrivals[1]["terminal_position_error_m"] == pytest.approx(
         0.0, abs=1.0e-9
     )
+
+
+def test_solved_joint_anchor_yields_to_measured_cartesian_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A solved first attempt must not make every recovery attempt identical."""
+
+    _patched_media(monkeypatch)
+    task = _task("articulated_open_close")
+    plan = _recovery_plan(task)
+    solved = [0.914, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    plan["scripted_positive_actions"][0][
+        "hold_solved_arm_joint_positions_rad"
+    ] = solved
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    environment = _OffsetSolvedJointCartesianEnvironment(
+        "articulated_open_close"
+    )
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    open_arrivals = [
+        row for row in positive["phase_arrivals"] if row["phase_id"] == "open"
+    ]
+    assert [row["arm_command_source"] for row in open_arrivals] == [
+        "solved_joint_target",
+        "cartesian_recovery_from_solved_branch",
+    ]
+    assert open_arrivals[0]["terminal_position_error_m"] == pytest.approx(0.014)
+    assert open_arrivals[1]["terminal_position_error_m"] == pytest.approx(
+        0.0, abs=1.0e-9
+    )
+    assert environment.bounded_calls
+    assert environment.bounded_calls[0]["target_joint_positions_rad"] == solved
+    assert [0.886, 0.0, 0.0] in environment.cartesian_targets
 
 
 def test_pose_phase_recovery_escalates_the_ladder_then_fails_sealed(
