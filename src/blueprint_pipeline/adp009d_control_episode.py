@@ -1794,6 +1794,21 @@ def validate_task_control_plan(
                 len(held_joints) == 7
                 and all(math.isfinite(value) for value in held_joints)
             )
+            physx_preferred_raw = raw.get(
+                "physx_dls_preferred_posture_joint_positions_rad"
+            )
+            try:
+                physx_preferred_joints = (
+                    None
+                    if physx_preferred_raw is None
+                    else [float(value) for value in physx_preferred_raw]
+                )
+            except (TypeError, ValueError):
+                physx_preferred_joints = []
+            physx_preferred_valid = physx_preferred_joints is None or (
+                len(physx_preferred_joints) == 7
+                and all(math.isfinite(value) for value in physx_preferred_joints)
+            )
             hold_arm_during_gripper_transition = (
                 raw.get("hold_arm_joint_positions_during_gripper_transition")
                 is True
@@ -1880,6 +1895,16 @@ def validate_task_control_plan(
                 or max_joint_setpoint_lead_rad < max_joint_delta_rad
                 or not math.isfinite(max_joint_setpoint_lead_rad)
                 or not held_valid
+                or not physx_preferred_valid
+                or (
+                    held_joints is not None
+                    and physx_preferred_joints is not None
+                )
+                or (
+                    physx_preferred_joints is not None
+                    and (phase_id, gripper_state)
+                    != ("contact_close", "closed")
+                )
             ):
                 errors.append(f"task_control_scripted_pose_invalid:{index}")
             else:
@@ -1891,6 +1916,9 @@ def validate_task_control_plan(
                         "arrival_target_position_world_m": arrival_position,
                         "target_quaternion_world_xyzw": quaternion,
                         "hold_solved_arm_joint_positions_rad": held_joints,
+                        "physx_dls_preferred_posture_joint_positions_rad": (
+                            physx_preferred_joints
+                        ),
                         "gripper_state": gripper_state,
                         "minimum_steps": minimum_steps,
                         "maximum_steps": maximum_steps,
@@ -2212,16 +2240,28 @@ def _run_task_control_episode(
                         ),
                     )
                 else:
-                    action = environment.scripted_action_for_pose(
-                        target_position_world_m=commanded_position,
-                        target_quaternion_world_xyzw=row[
+                    pose_action_kwargs = {
+                        "target_position_world_m": commanded_position,
+                        "target_quaternion_world_xyzw": row[
                             "target_quaternion_world_xyzw"
                         ],
-                        gripper_command=command,
-                        max_joint_delta_rad=float(row["max_joint_delta_rad"]),
-                        max_joint_setpoint_lead_rad=float(
+                        "gripper_command": command,
+                        "max_joint_delta_rad": float(
+                            row["max_joint_delta_rad"]
+                        ),
+                        "max_joint_setpoint_lead_rad": float(
                             row["max_joint_setpoint_lead_rad"]
                         ),
+                    }
+                    physx_preferred = row.get(
+                        "physx_dls_preferred_posture_joint_positions_rad"
+                    )
+                    if physx_preferred is not None:
+                        pose_action_kwargs[
+                            "preferred_posture_joint_positions_rad"
+                        ] = physx_preferred
+                    action = environment.scripted_action_for_pose(
+                        **pose_action_kwargs
                     )
             elif "isaac_action" in row:
                 action = row["isaac_action"]
@@ -2457,6 +2497,11 @@ def _run_task_control_episode(
                     if selected_joints is not None and current_strategy is None
                     else "joint_tracking_recovery_from_solved_branch"
                     if selected_joints is not None
+                    else "live_physx_dls_with_preferred_posture"
+                    if row.get(
+                        "physx_dls_preferred_posture_joint_positions_rad"
+                    )
+                    is not None
                     else "cartesian_pose_servo"
                 ),
                 "solved_joint_command_bias_rad": (

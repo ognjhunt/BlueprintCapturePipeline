@@ -223,6 +223,19 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
         0.0,
         1.0,
     ]
+    diagnostic_action = adapter.kwargs["scripted_pose_action_callback"](
+        target_position_world_m=[1.1, 2.0, 3.0],
+        target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        gripper_command=1.0,
+        max_joint_delta_rad=0.03,
+        max_joint_setpoint_lead_rad=0.2,
+        preferred_posture_joint_positions_rad=[0.1] * 7,
+    )
+    assert diagnostic_action == [0.5] * 7 + [1.0]
+    assert servo.calls[-1]["backend"] == "physx_dls"
+    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [
+        0.1
+    ] * 7
 
 
 def test_articulated_factory_requires_native_task_readback() -> None:

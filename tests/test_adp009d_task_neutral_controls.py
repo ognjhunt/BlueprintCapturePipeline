@@ -528,6 +528,75 @@ def test_task_neutral_control_dispatches_solved_vector_through_bounded_seam(
     assert arrival["terminal_fk_status"] == "measured"
 
 
+def test_task_neutral_control_dispatches_physics_admitted_close_through_live_dls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+
+    class _LiveDlsEnvironment(_CartesianEnvironment):
+        def __init__(self):
+            super().__init__("articulated_open_close")
+            self.pose_calls = []
+
+        def scripted_action_for_pose(self, **kwargs):
+            self.pose_calls.append(dict(kwargs))
+            preferred = kwargs.pop(
+                "preferred_posture_joint_positions_rad", None
+            )
+            if preferred is not None:
+                assert preferred == [0.1] * 7
+            return super().scripted_action_for_pose(**kwargs)
+
+    task = _task("articulated_open_close")
+    plan = _cartesian_articulated_plan(task)
+    close = plan["scripted_positive_actions"][0]
+    close["phase_id"] = "contact_close"
+    close["physx_dls_preferred_posture_joint_positions_rad"] = [0.1] * 7
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    environment = _LiveDlsEnvironment()
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    assert environment.pose_calls
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    close_arrival = next(
+        row
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "contact_close"
+    )
+    assert close_arrival["arm_command_source"] == (
+        "live_physx_dls_with_preferred_posture"
+    )
+
+
 def test_task_neutral_control_refuses_missing_solved_joint_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
