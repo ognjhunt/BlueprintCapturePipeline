@@ -48,7 +48,6 @@ from .wam_provider_object_store import (
 
 RESULT_SCHEMA_VERSION = "native_task_arena_warm_vast_run.v1"
 DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-controls"
-MINIMUM_REMOTE_TIMEOUT_SECONDS = 600
 POLL_SECONDS = 10
 DEFAULT_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 VAST_SSH_IDENTITY_FILE_ENV = "BLUEPRINT_VAST_SSH_IDENTITY_FILE"
@@ -551,10 +550,13 @@ def _execute_staged_warm_attempt(
         }
     output_zip = job / "vast_provider_runtime_output.zip"
     remaining_seconds = float(session["watchdog_deadline_epoch"]) - time.time() - 120
-    timeout_seconds = max(
-        MINIMUM_REMOTE_TIMEOUT_SECONDS,
-        min(1800, int(remaining_seconds)),
-    )
+    # A retained controls run is allowed to use the window already bounded by
+    # its independent watchdog.  C69 proved that a separate 1,800 s poll cap
+    # can expire while the healthy worker is still evaluating its preregistered
+    # cells, stranding a valid result after the allocator stops listening.
+    # Leave the watchdog's 120 s teardown margin intact and wait for the rest
+    # of that authorized window instead of imposing a second, shorter TTL.
+    timeout_seconds = max(1, int(remaining_seconds))
     started = time.monotonic()
     output_ready = _download_when_ready(
         url=output_get_url,

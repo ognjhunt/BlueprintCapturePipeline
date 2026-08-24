@@ -291,6 +291,56 @@ def test_failed_warm_dispatch_fails_before_output_poll(
     ]
 
 
+def test_warm_output_poll_uses_watchdog_window_not_arbitrary_half_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared, _receipt = _prepared(tmp_path)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    for name in (
+        "provider_bundle_url.txt",
+        "provider_output_put_url.txt",
+        "provider_output_get_url.txt",
+    ):
+        (staging / name).write_text("https://objects.example/value\n")
+    session = _session(prepared)
+    session["watchdog_deadline_epoch"] = NOW + 7200
+    observed: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        warm_vast,
+        "_dispatch_warm_script_over_ssh",
+        lambda **_kwargs: {"status": "completed", "blockers": []},
+    )
+
+    def fake_download(*, deadline_monotonic, **_kwargs):
+        observed["deadline_monotonic"] = deadline_monotonic
+        return False
+
+    monkeypatch.setattr(warm_vast, "_download_when_ready", fake_download)
+    monkeypatch.setattr(
+        warm_vast,
+        "_fetch_warm_runtime_log_over_ssh",
+        lambda **_kwargs: ({"status": "completed"}, ""),
+    )
+    monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
+    monkeypatch.setattr(warm_vast.time, "monotonic", lambda: 100.0)
+
+    result = warm_vast._execute_staged_warm_attempt(
+        job=tmp_path / "job",
+        staging_dir=staging,
+        prepared_bundle=prepared,
+        session=session,
+        instance_id=123,
+        api_key="secret",
+    )
+
+    assert observed["deadline_monotonic"] == 100.0 + 7200 - 120
+    assert result["extracted"]["blockers"] == [
+        "native_task_arena_warm_output_timeout"
+    ]
+
+
 def test_close_accepts_provider_404_as_observed_absence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
