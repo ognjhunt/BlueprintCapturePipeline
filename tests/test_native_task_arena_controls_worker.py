@@ -1784,6 +1784,7 @@ def test_contact_acquisition_progress_is_atomic_and_timeout_harvestable(
                 "left_inner_finger": 1.2,
                 "right_inner_finger": 1.1,
             },
+            "terminal_distance_to_candidate_target_m": 0.004,
             "terminal_distance_to_authored_target_m": 0.004,
             "terminal_orientation_error_rad": 0.05,
         },

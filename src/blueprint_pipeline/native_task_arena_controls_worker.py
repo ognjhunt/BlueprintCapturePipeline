@@ -208,7 +208,7 @@ def _announce_contact_acquisition_cell(progress: Mapping[str, Any]) -> None:
         f"b={int(cell.get('maximum_consecutive_bilateral_steps') or 0)}:"
         f"lf={_number(forces.get('left_inner_finger'))}:"
         f"rf={_number(forces.get('right_inner_finger'))}:"
-        f"d={_number(cell.get('terminal_distance_to_authored_target_m'))}:"
+        f"d={_number(cell.get('terminal_distance_to_candidate_target_m'))}:"
         f"o={_number(cell.get('terminal_orientation_error_rad'))}",
         flush=True,
     )
@@ -3057,6 +3057,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ],
                     max_joint_setpoint_lead_rad=contact_close_row[
                         "max_joint_setpoint_lead_rad"
+                    ],
+                    arrival_tolerance_m=contact_close_row[
+                        "arrival_tolerance_m"
                     ],
                     orientation_tolerance_rad=(
                         contact_close_row.get(

@@ -202,6 +202,7 @@ def run_contact_acquisition_sweep(
     gripper_closed_command: Any,
     max_joint_delta_rad: Any,
     max_joint_setpoint_lead_rad: Any,
+    arrival_tolerance_m: Any,
     orientation_tolerance_rad: Any,
     bilateral_contact_minimum_force_n: Any,
     approach_offsets_m: Sequence[float] = DEFAULT_CONTACT_APPROACH_OFFSETS_M,
@@ -256,6 +257,7 @@ def run_contact_acquisition_sweep(
         closed_command = float(gripper_closed_command)
         joint_delta = float(max_joint_delta_rad)
         setpoint_lead = float(max_joint_setpoint_lead_rad)
+        arrival_tolerance = float(arrival_tolerance_m)
         orientation_tolerance = float(orientation_tolerance_rad)
         contact_threshold = float(bilateral_contact_minimum_force_n)
         stability_required = int(bilateral_stability_steps)
@@ -269,6 +271,7 @@ def run_contact_acquisition_sweep(
         closed_command,
         joint_delta,
         setpoint_lead,
+        arrival_tolerance,
         orientation_tolerance,
         contact_threshold,
     )
@@ -413,8 +416,15 @@ def run_contact_acquisition_sweep(
                 if terminal_orientation is not None
                 else None
             )
+            candidate_distance = (
+                math.dist(terminal_position, candidate_target)
+                if terminal_position is not None
+                else None
+            )
             admitted = bool(
                 terminal_position is not None
+                and candidate_distance is not None
+                and candidate_distance <= arrival_tolerance
                 and terminal_bilateral
                 and maximum_consecutive_bilateral >= stability_required
                 and orientation_error is not None
@@ -443,6 +453,9 @@ def run_contact_acquisition_sweep(
                     ),
                     "peak_open_advance_pad_forces_n": peak_advance_forces,
                     "terminal_position_world_m": terminal_position,
+                    "terminal_distance_to_candidate_target_m": (
+                        candidate_distance
+                    ),
                     "terminal_distance_to_authored_target_m": (
                         math.dist(terminal_position, target)
                         if terminal_position is not None
