@@ -18,6 +18,7 @@ from blueprint_pipeline.adp009d_policy_runtime_smoke_bundle import (
 from blueprint_pipeline.adp009d_policy_runtime_smoke_worker import (
     seal_policy_runtime_smoke,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
     _probe_shell_script,
@@ -26,6 +27,45 @@ from blueprint_pipeline.wam_compute_providers import WamComputeLaunchSpec
 
 
 COMMIT = "1" * 40
+MEASUREMENT_PATH = (
+    Path(__file__).parents[1]
+    / "docs/arm_decision_proof_v1/evidence/"
+    "adp009d_scene_840920_policy_runtime_smokes_2026-08-24.json"
+)
+
+
+def test_committed_runtime_smoke_measurement_is_complete_and_claim_bounded() -> None:
+    measurement = json.loads(MEASUREMENT_PATH.read_text(encoding="utf-8"))
+
+    assert measurement["status"] == "completed"
+    assert measurement["implementation_commit"] == (
+        "9eb577df976846167f430b04a4cb6d99223a463f"
+    )
+    assert measurement["candidate_order"] == ["pi05_droid", "groot_n17_droid"]
+    assert measurement["evidence_digest"] == canonical_digest(
+        measurement, digest_field="evidence_digest"
+    )
+    assert measurement["blockers"] == []
+    assert measurement["controls_boundary"] == {
+        "controls_requested": False,
+        "controls_executed": False,
+        "protected_vast_instance_ids": [48504082, 48517557],
+        "protected_instances_contacted": False,
+    }
+    assert measurement["claim_boundary"]["task_scene_loaded"] is False
+    assert measurement["claim_boundary"]["actions_executed"] is False
+    assert measurement["claim_boundary"]["task_success_claimed"] is False
+    assert measurement["provider_closeout"][
+        "provider_zero_confirmed_for_every_smoke"
+    ] is True
+    for candidate in measurement["candidate_measurements"]:
+        assert candidate["round_trip_completed"] is True
+        assert candidate["synthetic_observation_query_count"] == 1
+        assert candidate["local_checkpoint_verified"] is True
+        assert candidate["server_stopped_after_round_trip"] is True
+        assert candidate["provider_zero_confirmed"] is True
+        assert candidate["all_staged_objects_absent"] is True
+        assert candidate["blockers"] == []
 
 
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
