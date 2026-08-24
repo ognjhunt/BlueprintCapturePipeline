@@ -52,16 +52,23 @@ DEFAULT_WRIST_GAIN_CANDIDATES: tuple[tuple[float, float], ...] = (
 #: sweep stays inside seconds.
 DEFAULT_CELL_SETTLE_STEPS = 45
 
-# The authored close pose is the deepest point.  Search progressively farther
-# behind it, where an open jaw can clear the door face before closing.  Five
-# values on each of the approach, jaw, and lateral axes represent 125 physical
-# cells in one loaded scene instead of 125 provider launches.
+# Search both sides of the authored close pose.  Treating the authored point as
+# the deepest admissible point was an unmeasured assumption: the 840920 contact
+# map showed its closest authored-target poses at zero approach offset while
+# every negative-only slice moved farther away.  A one-sided grid therefore
+# could not test the missing half-space that the evidence pointed toward.
+# Nine approach values and five values on each transverse axis represent 225
+# physical cells in one loaded scene instead of 225 provider launches.
 DEFAULT_CONTACT_APPROACH_OFFSETS_M: tuple[float, ...] = (
     -0.020,
     -0.015,
     -0.010,
     -0.005,
     0.0,
+    0.005,
+    0.010,
+    0.015,
+    0.020,
 )
 DEFAULT_CONTACT_TRANSVERSE_OFFSETS_M: tuple[float, ...] = (
     -0.012,
