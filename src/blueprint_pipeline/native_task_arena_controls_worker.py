@@ -145,6 +145,71 @@ def _contact_close_sweep_minimum_force_n(
     return threshold
 
 
+def _solve_closed_contact_on_reference_branch(
+    *,
+    servo: Any,
+    contact_close_row: Mapping[str, Any],
+    target_position_world_m: Sequence[float],
+    reference_joint_positions_rad: Sequence[float],
+) -> list[float] | None:
+    """Refine a measured close miss without changing IK branches.
+
+    The general multistart scorer normally prefers any solution above its
+    0.05 rad comfort margin before considering joint travel. That is useful
+    in free space and wrong for a physical residual correction: C72 measured
+    one close branch, then its correction jumped to a distant high-margin
+    branch and turned a 14--22 mm miss into a 60--222 mm miss. Making the
+    required safety floor the preferred floor makes the solver's next key --
+    distance from this measured branch -- authoritative here.
+    """
+
+    required_margin = CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
+    solved = servo.solve_grasp_target_multistart(
+        target_position_world_m=list(target_position_world_m),
+        target_grasp_frame_quaternion_world_xyzw=contact_close_row[
+            "target_quaternion_world_xyzw"
+        ],
+        preferred_seeds=[list(reference_joint_positions_rad)],
+        reference_joint_positions_rad=list(reference_joint_positions_rad),
+        position_tolerance_m=contact_close_row["arrival_tolerance_m"],
+        orientation_tolerance_rad=(
+            contact_close_row.get("arrival_orientation_tolerance_rad") or 0.08
+        ),
+        preferred_minimum_joint_limit_margin_rad=required_margin,
+        required_minimum_joint_limit_margin_rad=required_margin,
+    )
+    selected = solved.get("selected") if isinstance(solved, Mapping) else None
+    joints = (
+        selected.get("joint_positions_rad")
+        if isinstance(selected, Mapping)
+        else None
+    )
+    if not isinstance(joints, Sequence) or isinstance(joints, (str, bytes)):
+        return None
+    try:
+        values = [float(value) for value in joints]
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 7 or not all(math.isfinite(value) for value in values):
+        return None
+    lead = contact_close_row.get("max_joint_setpoint_lead_rad")
+    if lead is not None:
+        try:
+            maximum_lead = float(lead)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(maximum_lead) or maximum_lead <= 0.0:
+            return None
+        if any(
+            abs(value - reference) > maximum_lead
+            for value, reference in zip(
+                values, reference_joint_positions_rad, strict=True
+            )
+        ):
+            return None
+    return values
+
+
 def _persist(output: Path, result: dict[str, Any]) -> None:
     # Normalise before digesting. This runs from a `finally`, and
     # `_canonical_digest` refuses values json cannot encode -- a stray warp
@@ -2848,31 +2913,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         def _solve_closed_contact(target_position, seed_joints):
-            solved = servo.solve_grasp_target_multistart(
-                target_position_world_m=list(target_position),
-                target_grasp_frame_quaternion_world_xyzw=contact_close_row[
-                    "target_quaternion_world_xyzw"
-                ],
-                preferred_seeds=[list(seed_joints)],
-                reference_joint_positions_rad=list(seed_joints),
-                position_tolerance_m=contact_close_row[
-                    "arrival_tolerance_m"
-                ],
-                orientation_tolerance_rad=(
-                    contact_close_row.get(
-                        "arrival_orientation_tolerance_rad"
-                    )
-                    or 0.08
-                ),
-                preferred_minimum_joint_limit_margin_rad=0.05,
-                required_minimum_joint_limit_margin_rad=(
-                    CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
-                ),
+            return _solve_closed_contact_on_reference_branch(
+                servo=servo,
+                contact_close_row=contact_close_row,
+                target_position_world_m=target_position,
+                reference_joint_positions_rad=seed_joints,
             )
-            selected = (solved or {}).get("selected")
-            if not isinstance(selected, Mapping):
-                return None
-            return selected.get("joint_positions_rad")
 
         try:
             from blueprint_pipeline.native_task_arena_actuator_sweep import (
@@ -2942,6 +2988,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "reason": f"{type(exc).__name__}:{exc}",
                 "cells": [],
             }
+        close_posture_sweep["calibration_solver_selection_policy"] = (
+            "minimum_joint_travel_from_measured_branch_subject_to_required_"
+            "joint_limit_margin"
+        )
         result["contact_close_posture_physics_sweep"] = close_posture_sweep
         close_sweep_best = close_posture_sweep.get("best_cell") or {}
         if (

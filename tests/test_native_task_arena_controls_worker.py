@@ -20,6 +20,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _parallel_jaw_equivalent_control_plan,
     _parallel_jaw_equivalent_quaternion_xyzw,
     _select_parallel_jaw_control_plan,
+    _solve_closed_contact_on_reference_branch,
     _verified_runtime_inputs,
 )
 
@@ -39,6 +40,66 @@ def test_close_sweep_refuses_a_contact_force_gate_mismatch() -> None:
             contact_close_row={"bilateral_task_contact_minimum_force_n": 0.4},
             task_state_binding={"task_contact_minimum_force_n": 0.5},
         )
+
+
+def test_closed_contact_calibration_keeps_the_measured_ik_branch() -> None:
+    class _Servo:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            self.kwargs = kwargs
+            return {
+                "selected": {
+                    "joint_positions_rad": [0.25] * 7,
+                    "minimum_joint_limit_margin_rad": 0.006,
+                }
+            }
+
+    servo = _Servo()
+    reference = [0.1] * 7
+    result = _solve_closed_contact_on_reference_branch(
+        servo=servo,
+        contact_close_row={
+            "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "arrival_tolerance_m": 0.005,
+            "arrival_orientation_tolerance_rad": 0.08,
+            "max_joint_setpoint_lead_rad": 1.0,
+        },
+        target_position_world_m=[1.0, 2.0, 3.0],
+        reference_joint_positions_rad=reference,
+    )
+
+    assert result == [0.25] * 7
+    assert servo.kwargs["preferred_seeds"] == [reference]
+    assert servo.kwargs["reference_joint_positions_rad"] == reference
+    assert servo.kwargs[
+        "preferred_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.005)
+    assert servo.kwargs[
+        "required_minimum_joint_limit_margin_rad"
+    ] == pytest.approx(0.005)
+
+
+def test_closed_contact_calibration_refuses_a_nonlocal_branch_jump() -> None:
+    class _Servo:
+        def solve_grasp_target_multistart(self, **kwargs):
+            del kwargs
+            return {"selected": {"joint_positions_rad": [2.0] * 7}}
+
+    result = _solve_closed_contact_on_reference_branch(
+        servo=_Servo(),
+        contact_close_row={
+            "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "arrival_tolerance_m": 0.005,
+            "arrival_orientation_tolerance_rad": 0.08,
+            "max_joint_setpoint_lead_rad": 1.0,
+        },
+        target_position_world_m=[1.0, 2.0, 3.0],
+        reference_joint_positions_rad=[0.0] * 7,
+    )
+
+    assert result is None
 
 
 def test_controls_multistart_solves_missing_exact_pose_and_reuses_duplicates() -> None:
