@@ -26,7 +26,10 @@ if [[ ! -x $runtime_python ]]; then
   exit 66
 fi
 
-scratch_root=$(mktemp -d "${TMPDIR:-/private/tmp}/blueprint-canonical-worker-build.XXXXXX")
+# /private/tmp exists on macOS, but a Linux production host may have no such
+# directory or may expose it as root-only.  POSIX systems universally provide
+# /tmp for this purpose, while an explicit TMPDIR still wins when configured.
+scratch_root=$(mktemp -d "${TMPDIR:-/tmp}/blueprint-canonical-worker-build.XXXXXX")
 cleanup() {
   rm -rf "$scratch_root"
 }
