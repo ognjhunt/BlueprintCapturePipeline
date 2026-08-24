@@ -2003,6 +2003,19 @@ class NativeFrankaDifferentialIkServo:
                 "seeds": [],
             }
         extra = [row for row in (global_seeds.get("seeds") or []) if len(row) == 7]
+        # A failed 128-start global search used to throw every terminal
+        # configuration away, leaving the later physics matrix to repeat only
+        # the local tracker's original basins.  When no global configuration
+        # already passed, let the same local solver refine the closest distinct
+        # terminal configurations.  They remain attempts, not solutions; all
+        # existing solve, margin, arrival, collision and contact gates decide
+        # whether anything may execute.
+        if not extra:
+            extra = [
+                row
+                for row in (global_seeds.get("near_feasible_seeds") or [])
+                if len(row) == 7
+            ]
         if extra:
             seeds = [*extra, *seeds]
         reference = [float(value) for value in reference_joint_positions_rad]
