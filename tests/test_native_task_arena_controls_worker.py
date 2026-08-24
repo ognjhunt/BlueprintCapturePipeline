@@ -17,6 +17,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _bounded_orientation_reference_seeds,
     _canonical_digest,
     _contact_close_sweep_minimum_force_n,
+    _contact_authoritative_targets,
     _construction_global_ik_joint_targets,
     _control_plan_global_ik_joint_targets,
     _dispatch_physics_admitted_jaw_variant,
@@ -251,6 +252,83 @@ def test_contact_open_fallback_preserves_variant_specific_scoring_targets() -> N
     assert by_variant["parallel_jaw_equivalent"][
         "authoritative_target_quaternion_world_xyzw"
     ] == pytest.approx([0.0, 2**-0.5, 2**-0.5, 0.0])
+
+
+def test_contact_open_fallback_accepts_normalized_none_arrival_override() -> None:
+    """Validated plans use None when no separate arrival target was authored."""
+
+    target = [1.0, 2.0, 3.0]
+    quaternion = [0.0, 0.0, 0.0, 1.0]
+    rows = _fallback_contact_open_postures(
+        {
+            "variants": [
+                {
+                    "variant_id": "normalized_nominal",
+                    "global_ik_preflight": {
+                        "phases": [
+                            {
+                                "phase_id": "contact_open",
+                                "selected": None,
+                                "attempts": [
+                                    {
+                                        "solved": False,
+                                        "joint_positions_rad": [0.1] * 7,
+                                        "position_error_m": 0.004,
+                                        "orientation_error_rad": 0.07,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        control_plan={
+            "scripted_positive_actions": [
+                {
+                    "phase_id": "contact_open",
+                    "mode": "ik_pose",
+                    "target_position_world_m": target,
+                    # This is the normalized representation of an omitted
+                    # optional override, not an invalid scientific target.
+                    "arrival_target_position_world_m": None,
+                    "target_quaternion_world_xyzw": quaternion,
+                    "arrival_target_quaternion_world_xyzw": None,
+                }
+            ],
+            "plan_digest": "sha256:" + "a" * 64,
+        },
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["candidate_command_target_position_world_m"] == target
+    assert rows[0]["authoritative_target_position_world_m"] == target
+    assert rows[0]["candidate_command_target_quaternion_world_xyzw"] == quaternion
+    assert rows[0]["authoritative_target_quaternion_world_xyzw"] == quaternion
+
+
+@pytest.mark.parametrize("explicit_none", [False, True])
+def test_sweep_authority_uses_command_target_without_arrival_override(
+    explicit_none: bool,
+) -> None:
+    """Missing and normalized-null overrides have identical gate semantics."""
+
+    target = [1.0, 2.0, 3.0]
+    quaternion = [0.0, 0.0, 0.0, 1.0]
+    row = {
+        "target_position_world_m": target,
+        "target_quaternion_world_xyzw": quaternion,
+    }
+    if explicit_none:
+        row["arrival_target_position_world_m"] = None
+        row["arrival_target_quaternion_world_xyzw"] = None
+
+    authoritative_position, authoritative_quaternion = (
+        _contact_authoritative_targets(row)
+    )
+
+    assert authoritative_position == target
+    assert authoritative_quaternion == quaternion
 
 
 def test_bounded_orientation_seeds_prioritize_bound_physics_reference() -> None:

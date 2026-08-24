@@ -2132,6 +2132,20 @@ def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
     return None
 
 
+def _contact_authoritative_targets(
+    target_row: Mapping[str, Any],
+) -> tuple[list[Any], list[Any]]:
+    """Resolve optional arrival overrides exactly as the episode does."""
+
+    position = target_row.get("arrival_target_position_world_m")
+    if position is None:
+        position = target_row["target_position_world_m"]
+    quaternion = target_row.get("arrival_target_quaternion_world_xyzw")
+    if quaternion is None:
+        quaternion = target_row["target_quaternion_world_xyzw"]
+    return list(position), list(quaternion)
+
+
 def _fallback_contact_open_postures(
     jaw_selection: Mapping[str, Any],
     *,
@@ -2206,6 +2220,9 @@ def _fallback_contact_open_postures(
                 "posture_source": "jaw_variant_global_ik",
             }
             if isinstance(target_row, Mapping):
+                authoritative_position, authoritative_quaternion = (
+                    _contact_authoritative_targets(target_row)
+                )
                 row.update(
                     {
                         "candidate_command_target_position_world_m": list(
@@ -2214,17 +2231,11 @@ def _fallback_contact_open_postures(
                         "candidate_command_target_quaternion_world_xyzw": list(
                             target_row["target_quaternion_world_xyzw"]
                         ),
-                        "authoritative_target_position_world_m": list(
-                            target_row.get(
-                                "arrival_target_position_world_m",
-                                target_row["target_position_world_m"],
-                            )
+                        "authoritative_target_position_world_m": (
+                            authoritative_position
                         ),
-                        "authoritative_target_quaternion_world_xyzw": list(
-                            target_row.get(
-                                "arrival_target_quaternion_world_xyzw",
-                                target_row["target_quaternion_world_xyzw"],
-                            )
+                        "authoritative_target_quaternion_world_xyzw": (
+                            authoritative_quaternion
                         ),
                     }
                 )
@@ -3659,14 +3670,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             and str(row.get("phase_id") or "") == "contact_open"
         )
         contact_quaternion = contact_row["target_quaternion_world_xyzw"]
-        contact_authoritative_position = contact_row.get(
-            "arrival_target_position_world_m",
-            contact_row["target_position_world_m"],
-        )
-        contact_authoritative_quaternion = contact_row.get(
-            "arrival_target_quaternion_world_xyzw",
-            contact_quaternion,
-        )
+        (
+            contact_authoritative_position,
+            contact_authoritative_quaternion,
+        ) = _contact_authoritative_targets(contact_row)
         contact_tolerance = float(contact_row["arrival_tolerance_m"])
         contact_orientation_tolerance = float(
             contact_row.get("arrival_orientation_tolerance_rad") or 0.08
