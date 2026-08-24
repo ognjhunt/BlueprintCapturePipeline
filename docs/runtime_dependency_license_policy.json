@@ -1056,6 +1056,14 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution license classifier"
     },
+    "rfc8785==0.1.4": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-23",
+      "expires_on": "2027-08-23",
+      "source": "PyPI 0.1.4 Apache Software License classifier and publisher v0.1.4 LICENSE retrieved 2026-08-23"
+    },
     "rich==15.0.0": {
       "license_expression": "MIT",
       "approved": true,
