@@ -19,6 +19,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
+    _entrypoint,
     build_native_task_arena_bundle,
 )
 from blueprint_pipeline.native_task_arena_construction_bundle import (
@@ -776,6 +777,35 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
             implementation_commit="d" * 40,
         )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_policy_provisioning_shell_failures_retain_typed_media_gap(
+    candidate_id: str,
+) -> None:
+    """Shell-side failures bypass the policy worker's normal result finalizer."""
+
+    entrypoint = _entrypoint(
+        expected_output_filename="native_task_arena_policy_result.v1.json",
+        expected_result_schema="native_task_arena_policy_result.v1",
+        runtime_source_packet_required=True,
+        policy_provisioning_script_name=(
+            f"adp009d_policy_provisioning.{candidate_id}.sh"
+        ),
+    )
+
+    for reason in (
+        "native_task_runtime_source_provisioning_failed",
+        "native_task_arena_policy_provisioning_failed",
+    ):
+        blocker = f'"blockers": ["{reason}"]'
+        start = entrypoint.index(blocker)
+        result_writer = entrypoint[
+            start : entrypoint.index("provider_zero_required_after_return", start)
+        ]
+        assert '"status": "unavailable_before_first_observation"' in result_writer
+        assert '"type": "before_first_observation"' in result_writer
+        assert f'"reason": "{reason}"' in result_writer
 
 
 def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
