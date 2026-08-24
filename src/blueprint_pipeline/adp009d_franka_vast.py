@@ -52,6 +52,10 @@ def run_adp009d_native_microcheck_vast(
     """Run one zero-retry native infrastructure check through the shared transport."""
 
     max_compute_cap = controls_only_max_compute_cap(prepared_bundle)
+    policy_runtime_smoke = (
+        prepared_bundle.get("execution_mode")
+        == "outcome_blind_policy_runtime_smoke"
+    )
 
     return run_arena_native_control_vast(
         approval_path=".",
@@ -66,18 +70,25 @@ def run_adp009d_native_microcheck_vast(
         expected_output_filename="adp009d_native_microcheck.json",
         container_image=DEFAULT_IMAGE,
         provider_bundle_kind=(
-            "adp009d_articulated_native"
+            "adp009d_policy_runtime_smoke"
+            if policy_runtime_smoke
+            else "adp009d_articulated_native"
             if prepared_bundle.get("diagnostic_kind")
             == "blank_stage_articulated_asset"
             else "adp009d_isaac"
         ),
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
-        instance_label_prefix="blueprint-adp009d-",
+        instance_label_prefix=(
+            "blueprint-adp009d-policy-smoke-"
+            if policy_runtime_smoke
+            else "blueprint-adp009d-"
+        ),
         blocker_prefix="adp009d",
         min_gpu_ram_mb=46_000,
         max_compute_cap=max_compute_cap,
         require_independent_watchdog=True,
+        enable_isaac_smoke=True,
         forward_hf_token=authorize_gated_backbone,
         allowed_active_instance_ids=allowed_active_instance_ids,
         candidate_policy_query_expected=bool(

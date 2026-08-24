@@ -1,0 +1,119 @@
+{
+  "schema_version": "adp009d_policy_runtime_smoke_measurement.v1",
+  "generated_at": "2026-08-24T03:07:28.581372+00:00",
+  "program_id": "arm-decision-proof-v1",
+  "scene_id": "840920",
+  "task_id": "task_a_washer_door_open",
+  "implementation_commit": "9eb577df976846167f430b04a4cb6d99223a463f",
+  "status": "completed",
+  "execution_mode": "outcome_blind_policy_runtime_smoke",
+  "candidate_order": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "candidate_measurements": [
+    {
+      "candidate_id": "pi05_droid",
+      "source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+      "checkpoint_inventory_digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+      "checkpoint_object_manifest_sha256": "sha256:1e9e5a53c6bb4cebbbfc23903249126ce5fc0a7ad421c3212e4a4497ff6857d5",
+      "checkpoint_generation_manifest_sha256": "sha256:385e9e318d92062e60e2d055296bb90b1ee8db0e0ab5233442382a7a861f81d6",
+      "checkpoint_object_count": 27,
+      "checkpoint_total_bytes": 12434530837,
+      "local_checkpoint_verified": true,
+      "transport": "openpi_websocket",
+      "synthetic_observation_query_count": 1,
+      "round_trip_completed": true,
+      "action_chunk_shape": [
+        15,
+        8
+      ],
+      "readiness_seconds": 78.145,
+      "server_stopped_after_round_trip": true,
+      "bundle_sha256": "sha256:396dffada8a09b2fbc90f43cf2177aa7008b69fc93b8cc81c125888da25d5f15",
+      "protocol_digest": "sha256:9c61744b4b20484c05c1d8d3d5567811cd6000e21ed80831289ae925aa06bed2",
+      "smoke_receipt_digest": "sha256:367315c38fbaa929abcc09b4f3904c525a01bef977889f7cde90e59c3d018b86",
+      "server_receipt_sha256": "sha256:42955e70020a951caf26faa8197b669ebe1c700ddc873e6b26dcbfc88830dd54",
+      "adapter_result_sha256": "sha256:794161dac3578597daa0157e1dd702cc6d5950d05c0682ca02973e1c51f0e823",
+      "teardown_manifest_sha256": "sha256:89e007d547432d794df4b470100ef5eb81b83b404f70faf1091618917c56cee2",
+      "vast_instance_id": 48521442,
+      "estimated_cost_usd": 0.156778,
+      "provider_zero_confirmed": true,
+      "all_staged_objects_absent": true,
+      "blockers": []
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "source_revision": "b9955401d50c92a29258732e3ad6ccd579f1bdc0",
+      "checkpoint_model_id": "nvidia/GR00T-N1.7-DROID",
+      "checkpoint_revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+      "checkpoint_inventory_digest": "sha256:5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd",
+      "checkpoint_files_sha256": "sha256:4078c627773b31fd219bcfceb92bc564d19b27397308fd07eabd34a23dab5590",
+      "checkpoint_file_count": 17,
+      "checkpoint_total_bytes": 6914267987,
+      "gated_backbone_model_id": "nvidia/Cosmos-Reason2-2B",
+      "gated_backbone_revision": "9ce19a195e423419c349abfc86fd07178b230561",
+      "gated_backbone_access_status": "authorized",
+      "local_checkpoint_verified": true,
+      "transport": "groot_zmq",
+      "synthetic_observation_query_count": 1,
+      "round_trip_completed": true,
+      "native_action_chunk_shape": [
+        40,
+        17
+      ],
+      "adapted_action_chunk_shape": [
+        40,
+        8
+      ],
+      "execution_projection_shape": [
+        8,
+        8
+      ],
+      "native_action_chunk_sha256": "sha256:0871e1f7b0921eeae85ce10830428751bf1dfc3a99603831555ca6d40f4f8b00",
+      "readiness_seconds": 25.445,
+      "server_stopped_after_round_trip": true,
+      "bundle_sha256": "sha256:d2d6fb58d6395d8b5f85a5104b8307a741d6405a0cb41090473d09c0d36c52ea",
+      "protocol_digest": "sha256:b03570a17464687016d621586465cdec83199e5bc9c779a5e70735ef983930a8",
+      "smoke_receipt_digest": "sha256:901733ee3649cfec817386a2b3fcc1d63daa73d0f6026b192a0d6d4d3e6768a8",
+      "server_receipt_sha256": "sha256:b57357d7e191e2bcc3389b89f308e43e393e31d74286c92e464404fc99706201",
+      "adapter_result_sha256": "sha256:bc05c569d93ffc94169ec7f2d16ecb696cce278d89ef4687fee6ea06f9c6a032",
+      "teardown_manifest_sha256": "sha256:3bff7e6bc6fa1a38d04e140d204dbea2c681727d9a960e9920af88a000aab6bf",
+      "vast_instance_id": 48522368,
+      "estimated_cost_usd": 0.080923,
+      "provider_zero_confirmed": true,
+      "all_staged_objects_absent": true,
+      "blockers": []
+    }
+  ],
+  "total_estimated_cost_usd": 0.237701,
+  "controls_boundary": {
+    "controls_requested": false,
+    "controls_executed": false,
+    "protected_vast_instance_ids": [
+      48504082,
+      48517557
+    ],
+    "protected_instances_contacted": false
+  },
+  "claim_boundary": {
+    "claim_ceiling": "development_only_runtime_smoke",
+    "real_checkpoint_inference_observed": true,
+    "synthetic_static_observation_only": true,
+    "task_scene_loaded": false,
+    "actions_executed": false,
+    "candidate_outcomes_accessed": false,
+    "policy_ranking": false,
+    "task_success_claimed": false,
+    "physical_robot_execution": false
+  },
+  "provider_closeout": {
+    "all_policy_smoke_instances_destroyed": true,
+    "provider_zero_confirmed_for_every_smoke": true,
+    "all_staged_objects_absent": true,
+    "continuing_spend": false
+  },
+  "blockers": [],
+  "evidence_digest": "sha256:e8cec8a9c753f7a5e87d387ce1a8bbd5ba2426de90b63e995670a2dfb183ad95"
+}

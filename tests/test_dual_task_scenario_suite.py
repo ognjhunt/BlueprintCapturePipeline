@@ -51,6 +51,13 @@ def test_checked_dual_task_suites_freeze_same_candidates_and_all_families() -> N
         assert cousin["resolved_parameters"] == {}
         assert cousin["factor_records"] == []
         assert cousin["applied_parameter_readback_required"] is False
+    task_a_physics = next(
+        cell for cell in task_a["cells"] if cell["family"] == "bounded_physics"
+    )
+    assert task_a_physics["factor_records"][0]["runtime_selector"] == {
+        "task_link_id": "door"
+    }
+    assert task_a_physics["factor_records"][0]["nominal_value"] == 0.5
 
 
 def test_suite_rejects_outcome_leakage_or_initial_matrix_expansion() -> None:

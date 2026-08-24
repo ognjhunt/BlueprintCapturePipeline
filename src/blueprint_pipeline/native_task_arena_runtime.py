@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
@@ -53,6 +55,170 @@ class NativeTaskArenaRuntimeError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def build_task_subject_link_dynamic_friction_override(
+    source_usd: str | Path, *, task_link_id: str, value: float
+) -> dict[str, Any]:
+    """Create a derived USD override before PhysX imports the task asset.
+
+    Scene 840920 is an articulation with several independently authored
+    materials.  A generic "object friction" write is therefore unsafe.  This
+    helper authors only ``<default prim>/materials/<link id>`` into a temporary
+    root layer that sublayers the immutable packet asset.  The original bytes
+    stay untouched and PhysX sees the override during initial import, rather
+    than receiving a USD edit after its material tables were already built.
+    """
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_scenario_material_value_invalid"]
+        ) from exc
+    if not math.isfinite(number) or number < 0.0:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_scenario_material_value_invalid"]
+        )
+    source = Path(source_usd).expanduser().resolve()
+    fd, raw_destination = tempfile.mkstemp(
+        prefix="blueprint-task-material-", suffix=".usda"
+    )
+    os.close(fd)
+    destination = Path(raw_destination)
+    destination.unlink()
+    try:
+        from pxr import Usd, UsdPhysics
+
+        source_stage = Usd.Stage.Open(str(source))
+        source_default = source_stage.GetDefaultPrim()
+        if not source_default:
+            raise RuntimeError("source_default_prim_missing")
+        root_path = str(source_default.GetPath())
+        source_material = source_stage.GetPrimAtPath(
+            f"{root_path}/materials/{task_link_id}"
+        )
+        before = float(
+            UsdPhysics.MaterialAPI(source_material).GetDynamicFrictionAttr().Get()
+        )
+        derived = Usd.Stage.CreateNew(str(destination))
+        derived.GetRootLayer().subLayerPaths = [str(source)]
+        material = derived.OverridePrim(f"{root_path}/materials/{task_link_id}")
+        attribute = UsdPhysics.MaterialAPI(material).GetDynamicFrictionAttr()
+        attribute.Set(number)
+        derived.SetDefaultPrim(derived.GetPrimAtPath(root_path))
+        derived.GetRootLayer().Save()
+        verified = Usd.Stage.Open(str(destination))
+        after = float(
+            UsdPhysics.MaterialAPI(
+                verified.GetPrimAtPath(f"{root_path}/materials/{task_link_id}")
+            )
+            .GetDynamicFrictionAttr()
+            .Get()
+        )
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        destination.unlink(missing_ok=True)
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_scenario_material_application_failed:"
+                f"{task_link_id}"
+            ]
+        ) from exc
+    if not math.isclose(after, number, rel_tol=0.0, abs_tol=1.0e-6):
+        destination.unlink(missing_ok=True)
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_scenario_material_application_failed:"
+                f"{task_link_id}"
+            ]
+        )
+    return {
+        "task_link_id": task_link_id,
+        "source_usd": str(source),
+        "derived_usd": str(destination),
+        "source_dynamic_friction": before,
+        "observed_dynamic_friction": after,
+        "derived_usd_sha256": "sha256:" + hashlib.sha256(
+            destination.read_bytes()
+        ).hexdigest(),
+    }
+
+
+def read_task_subject_link_dynamic_friction(
+    stage: Any, *, runtime_name: str, task_link_id: str
+) -> dict[str, Any]:
+    """Read the exact spawned material paths after native scene creation."""
+
+    suffix = f"/{runtime_name}/materials/{task_link_id}"
+    try:
+        from pxr import UsdPhysics
+
+        observations = [
+            {
+                "prim_path": str(prim.GetPath()),
+                "observed_dynamic_friction": float(
+                    UsdPhysics.MaterialAPI(prim).GetDynamicFrictionAttr().Get()
+                ),
+            }
+            for prim in stage.Traverse()
+            if str(prim.GetPath()).endswith(suffix)
+        ]
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_scenario_material_readback_failed:"
+                f"{task_link_id}"
+            ]
+        ) from exc
+    values = [row["observed_dynamic_friction"] for row in observations]
+    if not observations or not all(math.isfinite(value) for value in values):
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_scenario_material_readback_failed:"
+                f"{task_link_id}"
+            ]
+        )
+    if any(
+        not math.isclose(value, values[0], rel_tol=0.0, abs_tol=1.0e-6)
+        for value in values[1:]
+    ):
+        raise NativeTaskArenaRuntimeError(
+            [
+                "native_task_arena_scenario_material_readback_diverged:"
+                f"{task_link_id}"
+            ]
+        )
+    return {
+        "runtime_name": runtime_name,
+        "task_link_id": task_link_id,
+        "observed_dynamic_friction": values[0],
+        "material_prim_paths": [row["prim_path"] for row in observations],
+    }
+
+
+def read_task_light_intensity_scale(
+    stage: Any, *, nominal_intensity: float
+) -> dict[str, Any]:
+    """Read the spawned DomeLight intensity instead of trusting its config."""
+
+    try:
+        nominal = float(nominal_intensity)
+        prim = stage.GetPrimAtPath("/World/Light")
+        observed = float(prim.GetAttribute("inputs:intensity").Get())
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_scenario_light_readback_failed"]
+        ) from exc
+    if not math.isfinite(nominal) or nominal <= 0.0 or not math.isfinite(observed):
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_scenario_light_readback_failed"]
+        )
+    return {
+        "prim_path": "/World/Light",
+        "nominal_intensity": nominal,
+        "observed_intensity": observed,
+        "observed_intensity_scale": observed / nominal,
+    }
 
 
 @dataclass(frozen=True)
@@ -746,6 +912,30 @@ def build_native_task_arena_environment(
 
     plan = _validated_plan(scene_plan)
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
+    scenario_applications = list(
+        (plan.get("scenario") or {}).get("parameter_applications") or []
+    )
+    material_override_readbacks: dict[str, dict[str, Any]] = {}
+    for application in scenario_applications:
+        if application.get("readback_kind") != (
+            "task_subject_link_dynamic_friction"
+        ):
+            continue
+        subject = next(
+            (row for row in runtime_objects if row.get("task_subject") is True),
+            None,
+        )
+        if subject is None:
+            raise NativeTaskArenaRuntimeError(
+                ["native_task_arena_scenario_material_asset_missing"]
+            )
+        override = build_task_subject_link_dynamic_friction_override(
+            subject["usd_path"],
+            task_link_id=application["task_link_id"],
+            value=float(application["expected_native_value"]),
+        )
+        subject["usd_path"] = override["derived_usd"]
+        material_override_readbacks[application["parameter_id"]] = override
 
     from blueprint_pipeline.native_task_arena_preconstruction import (
         prepare_native_task_arena_preconstruction,
@@ -1060,12 +1250,27 @@ def build_native_task_arena_environment(
         )
     )
 
+    light_application = next(
+        (
+            row
+            for row in scenario_applications
+            if row.get("readback_kind") == "task_light_intensity_scale"
+        ),
+        None,
+    )
+    light_intensity_scale = (
+        float(light_application["expected_native_value"])
+        if light_application is not None
+        else 1.0
+    )
+    nominal_light_intensity = 1500.0
     assets.append(
         SpawnerObject(
             name="light",
             prim_path="/World/Light",
             spawner_cfg=sim_utils.DomeLightCfg(
-                color=(0.75, 0.75, 0.75), intensity=1500.0
+                color=(0.75, 0.75, 0.75),
+                intensity=nominal_light_intensity * light_intensity_scale,
             ),
         )
     )
@@ -1123,6 +1328,52 @@ def build_native_task_arena_environment(
         ),
     )
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
+    scenario_native_readback: dict[str, Any] = {}
+    if light_application is not None or any(
+        row.get("readback_kind") == "task_subject_link_dynamic_friction"
+        for row in scenario_applications
+    ):
+        try:
+            import omni.usd
+
+            stage = omni.usd.get_context().get_stage()
+        except (AttributeError, ImportError) as exc:
+            raise NativeTaskArenaRuntimeError(
+                ["native_task_arena_scenario_stage_missing"]
+            ) from exc
+        if light_application is not None:
+            scenario_native_readback[light_application["parameter_id"]] = (
+                read_task_light_intensity_scale(
+                    stage, nominal_intensity=nominal_light_intensity
+                )
+            )
+        for application in scenario_applications:
+            if application.get("readback_kind") != (
+                "task_subject_link_dynamic_friction"
+            ):
+                continue
+            observed = read_task_subject_link_dynamic_friction(
+                stage,
+                runtime_name=application["runtime_name"],
+                task_link_id=application["task_link_id"],
+            )
+            expected = float(application["expected_native_value"])
+            if not math.isclose(
+                observed["observed_dynamic_friction"],
+                expected,
+                rel_tol=0.0,
+                abs_tol=float(application["application_tolerance"]),
+            ):
+                raise NativeTaskArenaRuntimeError(
+                    [
+                        "native_task_arena_scenario_material_readback_mismatch:"
+                        f"{application['task_link_id']}"
+                    ]
+                )
+            scenario_native_readback[application["parameter_id"]] = {
+                **material_override_readbacks[application["parameter_id"]],
+                **observed,
+            }
     return NativeTaskArenaEnvironment(
         env=env,
         cfg=cfg,
@@ -1133,6 +1384,7 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
+            "scenario_parameters": scenario_native_readback,
             # Never silent: an asset spawned with its authored kinematic base
             # made dynamic and grounded is recorded, so a reader can see the
             # adaptation that made the articulation representable.
@@ -1146,4 +1398,7 @@ __all__ = [
     "NativeTaskArenaRuntimeError",
     "build_native_task_arena_environment",
     "camera_runtime_parameters",
+    "build_task_subject_link_dynamic_friction_override",
+    "read_task_subject_link_dynamic_friction",
+    "read_task_light_intensity_scale",
 ]

@@ -1,0 +1,340 @@
+{
+  "schema_version": "adp009d_scene_policy_readiness.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "day_gate": "day-28",
+  "scene_id": "840920",
+  "task_id": "task_a_washer_door_open",
+  "robot_id": "franka",
+  "claim_ceiling": "development_only",
+  "outcome_blind": true,
+  "learned_policy_outcomes_observed": false,
+  "provider_execution_performed": false,
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "task_freeze_digest": "sha256:fa3f422fb595badb3bedd11c56e4732a088bfff112b80b1f65d0c53d1927baa3",
+  "scenario_suite_digest": "sha256:5adcfd1b9c96da80aff16d49c004591db0347442c4298a763e7d916a10b40e34",
+  "candidates": [
+    {
+      "candidate_id": "pi05_droid",
+      "model_family": "Physical Intelligence openpi",
+      "model_name": "pi0.5-DROID Polaris joint-position",
+      "source": {
+        "repository": "https://github.com/Physical-Intelligence/openpi",
+        "revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+        "tree": "a7f18af2745255b5fa98c86d6031f858bf73d1be",
+        "license": "Apache-2.0 with embedded Gemma components subject to LICENSE_GEMMA.txt"
+      },
+      "checkpoint": {
+        "repository": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "inventory_digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "object_manifest_sha256": "sha256:1e9e5a53c6bb4cebbbfc23903249126ce5fc0a7ad421c3212e4a4497ff6857d5",
+        "generation_manifest_sha256": "sha256:385e9e318d92062e60e2d055296bb90b1ee8db0e0ab5233442382a7a861f81d6",
+        "publisher_inventory_file_sha256": "sha256:df3a335daeff5ac556e0370a9bf3003397a5b7acbe568e7d474b8c99ce63e774",
+        "object_count": 27,
+        "total_bytes": 12434530837,
+        "anonymous_listing_observed": true,
+        "locally_materialized": false,
+        "provider_retrieval_path_ready": true,
+        "checkpoint_specific_terms_bound": true,
+        "rights_provenance": {
+          "publisher_model_release": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/README.md",
+          "apache_license": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/LICENSE",
+          "gemma_terms": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/LICENSE_GEMMA.txt",
+          "exact_checkpoint_config": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/src/openpi/training/misc/polaris_config.py"
+        },
+        "redistribution_status": "permitted_subject_to_Apache-2.0_and_Gemma_terms_not_required_by_Blueprint_provider_bundle",
+        "provider_use_status": "inference_and_remote_provider_use_allowed_subject_to_Gemma_terms_and_prohibited_use_policy",
+        "checkpoint_ready": true,
+        "missing_secrets_or_gated_access": []
+      },
+      "runtime_dependencies": {
+        "operating_system": "Linux",
+        "python": ">=3.11",
+        "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+        "jax": "0.5.3 CUDA 12",
+        "torch": "2.7.1",
+        "transformers": "4.53.2",
+        "transport": "OpenPI websocket policy server"
+      },
+      "policy_input_schema": {
+        "camera_ids": [
+          "task_a_external",
+          "task_a_wrist"
+        ],
+        "camera_keys": [
+          "observation/exterior_image_1_left",
+          "observation/wrist_image_left"
+        ],
+        "image_shape": [
+          224,
+          224,
+          3
+        ],
+        "image_dtype_format": "uint8_HWC_RGB_lossless_source_retained",
+        "frame_history": [
+          0
+        ],
+        "joint_position": "float32[7]_radians_franka_joint1_to_joint7",
+        "gripper_position": "float32[1]_measured_DROID_normalized",
+        "instruction": "prompt_utf8"
+      },
+      "policy_output_schema": {
+        "native_shape": [
+          15,
+          8
+        ],
+        "action_space": "joint_position",
+        "executed_rows": 8,
+        "frequency_hz": 15,
+        "joint_order": [
+          "panda_joint1",
+          "panda_joint2",
+          "panda_joint3",
+          "panda_joint4",
+          "panda_joint5",
+          "panda_joint6",
+          "panda_joint7"
+        ],
+        "gripper_convention": "DROID_absolute_position_binarized_above_0.5"
+      },
+      "action_adapter": "OpenPIDroidPolicyClient_to_DroidActionExecutionAdapter_to_NativeFrankaDifferentialIkServo",
+      "observation_adapter_ready": true,
+      "action_adapter_ready": true,
+      "malformed_output_fails_closed": true,
+      "candidate_can_grade_itself": false,
+      "rights_ready": true,
+      "bundle_build_status": "production_builder_rehearsed_real_bundle_waits_for_controls",
+      "terminal_rehearsal_status": "passed_with_identity_bound_fixture_bundle",
+      "claim_ceiling": "development_only"
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "model_family": "NVIDIA Isaac GR00T",
+      "model_name": "GR00T N1.7 DROID",
+      "source": {
+        "repository": "https://github.com/NVIDIA/Isaac-GR00T",
+        "revision": "b9955401d50c92a29258732e3ad6ccd579f1bdc0",
+        "tree": "09c80a5529da315117ed962d5d6b794c981d5e72",
+        "license": "Apache-2.0"
+      },
+      "checkpoint": {
+        "repository": "https://huggingface.co/nvidia/GR00T-N1.7-DROID",
+        "revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+        "inventory_digest": "sha256:5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd",
+        "weight_sha256": [
+          "sha256:68d885c9684bb7d4781389873e4b7d33202b5618e70a83f2e78187a5fb839202",
+          "sha256:aa4c6e553ea8454500354352368bcbb7e4f0fb32a9816b20d5b25c231f13a8fd"
+        ],
+        "file_count": 17,
+        "total_bytes": 6914267987,
+        "public_revision_observed": true,
+        "locally_materialized": false,
+        "provider_retrieval_path_ready": true,
+        "license": "NVIDIA Open Model License",
+        "redistribution_status": "do_not_redistribute_in_Blueprint_artifacts_without_separate_terms_review",
+        "provider_use_status": "commercial_and_noncommercial_use_allowed_by_publisher_terms",
+        "gated_backbone": {
+          "model_id": "nvidia/Cosmos-Reason2-2B",
+          "revision": "9ce19a195e423419c349abfc86fd07178b230561",
+          "listing_digest": "sha256:4d7a4a9695431fba3a158d34897a80bb9d21350a4f08279945ce09473f9ed8cf",
+          "access_probe_status": "authorized",
+          "access_probe_receipt_digest": "sha256:7fa9a5968d32deb8fdf9179fe6e037a72de4b81af475dc8c4a1afd444d135ae2",
+          "secret_material_recorded": false
+        },
+        "checkpoint_ready": true,
+        "missing_secrets_or_gated_access": []
+      },
+      "runtime_dependencies": {
+        "operating_system": "Linux",
+        "source_revision": "b9955401d50c92a29258732e3ad6ccd579f1bdc0",
+        "transport": "NVIDIA PolicyClient ZMQ",
+        "checkpoint_loader": "huggingface_hub revision-pinned snapshot",
+        "gated_backbone_access_required": true
+      },
+      "policy_input_schema": {
+        "camera_ids": [
+          "task_a_external",
+          "task_a_wrist"
+        ],
+        "camera_keys": [
+          "video.exterior_image_1_left",
+          "video.wrist_image_left"
+        ],
+        "transport_image_shape": [
+          180,
+          320,
+          3
+        ],
+        "image_dtype_format": "uint8_HWC_RGB_lossless_source_retained",
+        "frame_history": [
+          -15,
+          0
+        ],
+        "eef_state": "float32[9]_DROID_TFG_position_plus_rotation6d",
+        "joint_position": "float32[7]_radians_franka_joint1_to_joint7",
+        "gripper_position": "float32[1]_measured_DROID_normalized",
+        "instruction": "annotation.language.language_instruction"
+      },
+      "policy_output_schema": {
+        "native_shape": [
+          40,
+          17
+        ],
+        "components": [
+          "eef_9d",
+          "gripper_position",
+          "joint_position_7d"
+        ],
+        "executed_projection_shape": [
+          8,
+          8
+        ],
+        "action_space": "joint_position",
+        "frequency_hz": 15,
+        "joint_order": [
+          "panda_joint1",
+          "panda_joint2",
+          "panda_joint3",
+          "panda_joint4",
+          "panda_joint5",
+          "panda_joint6",
+          "panda_joint7"
+        ],
+        "gripper_convention": "DROID_absolute_position_binarized_above_0.5",
+        "nonexecuted_eef_components_retained": true
+      },
+      "action_adapter": "GrootN17DroidPolicyClient_joint_projection_to_DroidActionExecutionAdapter_to_NativeFrankaDifferentialIkServo",
+      "observation_adapter_ready": true,
+      "action_adapter_ready": true,
+      "malformed_output_fails_closed": true,
+      "candidate_can_grade_itself": false,
+      "rights_ready": true,
+      "bundle_build_status": "production_builder_rehearsed_real_bundle_waits_for_controls",
+      "terminal_rehearsal_status": "passed_with_identity_bound_fixture_bundle",
+      "claim_ceiling": "development_only"
+    }
+  ],
+  "shared_observation_contract": {
+    "source_camera_ids": [
+      "task_a_external",
+      "task_a_wrist"
+    ],
+    "review_only_camera_id": "task_a_overview_review_only",
+    "source_resolution": "exact_calibrated_live_native_camera_resolution_bound_by_scene_plan",
+    "source_format": "uint8_HWC_RGB",
+    "control_frequency_hz": 15,
+    "physics_frequency_hz": 120,
+    "control_decimation": 8,
+    "maximum_action_steps": 400,
+    "proprioception": [
+      "franka_joint_position_rad[7]",
+      "measured_gripper_position_DROID_normalized[1]",
+      "DROID_TFG_eef_9d_for_groot_only"
+    ]
+  },
+  "shared_action_contract": {
+    "executed_representation": "absolute_joint_position_7d_plus_absolute_gripper_position_1d",
+    "normalization": "publisher_checkpoint_decode_then_finite_shape_and_native_joint_limit_validation",
+    "bounds": "sealed_Franka_joint_limits_plus_measured_gripper_calibration",
+    "frequency_hz": 15,
+    "executed_horizon_rows": 8,
+    "actuated_dofs": [
+      "panda_joint1",
+      "panda_joint2",
+      "panda_joint3",
+      "panda_joint4",
+      "panda_joint5",
+      "panda_joint6",
+      "panda_joint7",
+      "Robotiq_2F_85_gripper"
+    ],
+    "unexpected_or_non_task_joint_control_forbidden": true,
+    "nonfinite_or_malformed_output_fails_closed": true
+  },
+  "scenario_matrix": {
+    "cell_count": 7,
+    "shared_candidate_cell_count": 7,
+    "seeds": [
+      3101,
+      3102
+    ],
+    "families": [
+      "canonical",
+      "placement_approach",
+      "illumination",
+      "camera_sensor",
+      "bounded_physics",
+      "admitted_object_cousin",
+      "held_out_composed"
+    ],
+    "initial_execution_order": [
+      "840920_task_a_canonical",
+      "840920_task_a_camera_dx"
+    ],
+    "optional_cousin_cell_status": "unscheduled_blocked_not_required_no_admitted_cousin",
+    "identical_resolved_cells_and_seeds_for_both_candidates": true,
+    "sealed_task_object_unchanged": true
+  },
+  "episode_evidence_contract": {
+    "lossless_policy_frames_required": true,
+    "digest_bound_frame_manifest_required": true,
+    "derived_review_video_required": true,
+    "typed_pre_observation_media_gap_required": true,
+    "deterministic_simulator_success_source_required": true,
+    "policy_self_grading_forbidden": true
+  },
+  "controls_predecessor": {
+    "status": "waiting",
+    "blocker_code": "authoritative_controls_positive_receipt_missing",
+    "required_schema": "native_task_arena_control_result.v1",
+    "required_status": "completed",
+    "required_qualification": "controls_qualified",
+    "required_pair_fields": [
+      "cell_id",
+      "task_spec_digest",
+      "cell_admitted_for_policy_execution",
+      "policy_execution_blockers",
+      "candidate_policy_queried",
+      "pair_digest"
+    ],
+    "required_semantic_controls": {
+      "zero_action_negative": "never_moved",
+      "deterministic_scripted_positive": "task_success"
+    },
+    "receipt_digest": null,
+    "bypass_permitted": false
+  },
+  "precontrol_build": {
+    "policy_execution_spec_builder": "ready_requires_controls_result_digest_and_control_pair_digest",
+    "policy_execution_spec_builder_entrypoint": "scripts/materialize_native_task_arena_policy_execution_spec.py",
+    "provider_bundle_builder": "ready_requires_completed_controls_result",
+    "provider_bundle_builder_entrypoint": "python -m blueprint_pipeline.native_task_arena_policy_bundle",
+    "worker": "ready",
+    "launch_profile_builder": "ready_requires_bundle_and_controls_result",
+    "launch_profile_builder_entrypoint": "scripts/build_native_task_arena_live_profile.py policy",
+    "terminal_rehearsal_entrypoint": "scripts/rehearse_lane_terminal_contract.py",
+    "real_scene_bundle_built": false,
+    "unpublished_launch_profiles_built": false,
+    "reason_unbuilt": "controls_positive_receipt_identity_does_not_exist_yet",
+    "missing_controls_is_expected_predecessor_not_build_defect": true
+  },
+  "terminal_contract": {
+    "retry_cap": 0,
+    "teardown_required": true,
+    "provider_zero_required": true,
+    "webapp_sync_required": true,
+    "controls_predecessor_required": true,
+    "candidate_identity_required": true
+  },
+  "external_blockers": [],
+  "shortest_blocker_chain": [
+    "authoritative native_task_arena_control_result.v1 receipt proves zero-action negative and deterministic scripted-positive controls",
+    "policy bundles and unpublished development-only launch profiles bind that receipt and its admitted control-pair digest"
+  ],
+  "verdict": "READY_WAITING_ONLY_FOR_CONTROLS",
+  "readiness_digest": "sha256:d21ea0c32dafe03478ef3119fc45bf12a2ec1c9c9ed3cf0f90d25c2010db705b"
+}

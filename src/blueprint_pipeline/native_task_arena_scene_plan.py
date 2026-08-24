@@ -319,6 +319,7 @@ def _apply_scenario_parameters(
     objects: list[dict[str, Any]],
     cameras: list[dict[str, Any]],
     bindings: list[dict[str, Any]],
+    task_object_asset_path: Path | None,
 ) -> list[dict[str, Any]]:
     applications: list[dict[str, Any]] = []
     subject = next(row for row in objects if row.get("task_subject") is True)
@@ -384,6 +385,60 @@ def _apply_scenario_parameters(
                 readback_kind="camera_offset_position_x_m",
                 expected_native_value=camera["frame_from_camera_matrix"][3],
                 camera_role=role,
+            )
+        elif target == "EventManager.reset.task_light.intensity_scale":
+            if abs(float(binding["nominal_value"]) - 1.0) > float(
+                binding["application_tolerance"]
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    [f"native_task_arena_scenario_nominal_mismatch:{target}"]
+                )
+            application.update(
+                readback_kind="task_light_intensity_scale",
+                expected_native_value=float(binding["resolved_value"]),
+                nominal_native_intensity=1500.0,
+            )
+        elif target == (
+            "EventManager.reset.task_subject_link_material.dynamic_friction"
+        ):
+            selector = binding["runtime_selector"]
+            link_id = str(selector["task_link_id"])
+            if task_object_asset_path is None:
+                raise NativeTaskArenaScenePlanError(
+                    ["native_task_arena_scenario_material_asset_missing"]
+                )
+            try:
+                from pxr import Usd, UsdPhysics
+
+                stage = Usd.Stage.Open(str(task_object_asset_path))
+                root_path = str(stage.GetDefaultPrim().GetPath())
+                material_prim = stage.GetPrimAtPath(
+                    f"{root_path}/materials/{link_id}"
+                )
+                base = float(
+                    UsdPhysics.MaterialAPI(material_prim)
+                    .GetDynamicFrictionAttr()
+                    .Get()
+                )
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaScenePlanError(
+                    [
+                        "native_task_arena_scenario_material_missing:"
+                        f"{link_id}"
+                    ]
+                ) from exc
+            if abs(base - float(binding["nominal_value"])) > float(
+                binding["application_tolerance"]
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    [f"native_task_arena_scenario_nominal_mismatch:{target}"]
+                )
+            application.update(
+                readback_kind="task_subject_link_dynamic_friction",
+                expected_native_value=float(binding["resolved_value"]),
+                runtime_name=subject["name"],
+                task_link_id=link_id,
+                source_material_prim_path=f"{root_path}/materials/{link_id}",
             )
         else:  # Contract validation owns the supported-target allowlist.
             raise NativeTaskArenaScenePlanError(
@@ -1158,17 +1213,6 @@ def materialize_native_task_arena_scene_plan(
         published_asset_directory=published_asset_directory,
     )
     cameras = json.loads(json.dumps(contract["cameras"]))
-    scenario_parameter_applications = _apply_scenario_parameters(
-        objects=objects,
-        cameras=cameras,
-        bindings=list(contract["scenario"].get("parameter_bindings") or []),
-    )
-    effective_contract = json.loads(json.dumps(contract))
-    staged_by_asset_id = {row["asset_id"]: row for row in objects}
-    for row in effective_contract["objects"]:
-        staged = staged_by_asset_id[row["asset_id"]]
-        row["pose_world"] = staged["pose_world"]
-        row["reset_state"] = staged["reset_state"]
     task_object_asset_path = next(
         (
             asset_directory / str(row["filename"])
@@ -1177,6 +1221,18 @@ def materialize_native_task_arena_scene_plan(
         ),
         None,
     )
+    scenario_parameter_applications = _apply_scenario_parameters(
+        objects=objects,
+        cameras=cameras,
+        bindings=list(contract["scenario"].get("parameter_bindings") or []),
+        task_object_asset_path=task_object_asset_path,
+    )
+    effective_contract = json.loads(json.dumps(contract))
+    staged_by_asset_id = {row["asset_id"]: row for row in objects}
+    for row in effective_contract["objects"]:
+        staged = staged_by_asset_id[row["asset_id"]]
+        row["pose_world"] = staged["pose_world"]
+        row["reset_state"] = staged["reset_state"]
     scene_collision_asset_path = next(
         (
             asset_directory / str(row["filename"])

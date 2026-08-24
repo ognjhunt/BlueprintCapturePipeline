@@ -14,6 +14,9 @@ from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
     build_native_task_arena_environment,
     camera_runtime_parameters,
+    build_task_subject_link_dynamic_friction_override,
+    read_task_subject_link_dynamic_friction,
+    read_task_light_intensity_scale,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -1283,3 +1286,73 @@ def test_every_object_spawns_with_the_plan_xyzw_orientation(
         ), row["semantic_role"]
         checked += 1
     assert checked >= 2, "expected several placed objects to verify"
+
+
+def test_exact_link_material_override_precedes_native_import_and_is_scoped(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+    source = tmp_path / "washer.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    door = UsdShade.Material.Define(stage, "/Asset/materials/door")
+    UsdPhysics.MaterialAPI.Apply(door.GetPrim()).CreateDynamicFrictionAttr(0.5)
+    unrelated = UsdShade.Material.Define(stage, "/Asset/materials/drum")
+    UsdPhysics.MaterialAPI.Apply(unrelated.GetPrim()).CreateDynamicFrictionAttr(0.4)
+    stage.GetRootLayer().Save()
+
+    result = build_task_subject_link_dynamic_friction_override(
+        source,
+        task_link_id="door",
+        value=0.45,
+    )
+
+    assert result["observed_dynamic_friction"] == pytest.approx(0.45)
+    assert result["derived_usd_sha256"].startswith("sha256:")
+    original = Usd.Stage.Open(str(source))
+    assert UsdPhysics.MaterialAPI(
+        original.GetPrimAtPath("/Asset/materials/door")
+    ).GetDynamicFrictionAttr().Get() == pytest.approx(0.5)
+    derived = Usd.Stage.Open(result["derived_usd"])
+    assert UsdPhysics.MaterialAPI(
+        derived.GetPrimAtPath("/Asset/materials/door")
+    ).GetDynamicFrictionAttr().Get() == pytest.approx(0.45)
+    assert UsdPhysics.MaterialAPI(
+        derived.GetPrimAtPath("/Asset/materials/drum")
+    ).GetDynamicFrictionAttr().Get() == pytest.approx(0.4)
+    Path(result["derived_usd"]).unlink()
+
+
+def test_exact_spawned_link_material_readback_covers_every_environment() -> None:
+    from pxr import Usd, UsdPhysics, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    for environment in ("env_0", "env_1"):
+        material = UsdShade.Material.Define(
+            stage, f"/World/envs/{environment}/task_object/materials/door"
+        )
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDynamicFrictionAttr(
+            0.45
+        )
+
+    result = read_task_subject_link_dynamic_friction(
+        stage, runtime_name="task_object", task_link_id="door"
+    )
+
+    assert result["observed_dynamic_friction"] == pytest.approx(0.45)
+    assert len(result["material_prim_paths"]) == 2
+
+
+def test_task_light_readback_uses_spawned_usd_attribute() -> None:
+    from pxr import Sdf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    prim = UsdGeom.Xform.Define(stage, "/World/Light").GetPrim()
+    prim.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(1350.0)
+
+    result = read_task_light_intensity_scale(stage, nominal_intensity=1500.0)
+
+    assert result["observed_intensity"] == pytest.approx(1350.0)
+    assert result["observed_intensity_scale"] == pytest.approx(0.9)

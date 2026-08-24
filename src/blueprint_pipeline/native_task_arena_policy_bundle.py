@@ -6,6 +6,7 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +222,158 @@ def materialize_native_task_policy_execution_spec(
     return validated
 
 
+def build_native_task_policy_execution_spec(
+    *,
+    candidate_id: str,
+    scene_plan_path: str | Path,
+    construction_result_path: str | Path,
+    control_result_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Derive and seal one candidate spec from authoritative predecessors.
+
+    This is the provider-free bridge between a completed controls receipt and
+    the policy bundle builder.  Callers choose only one of the already-frozen
+    candidates; task, cell, prompt, query budget, checkpoint identity, and all
+    predecessor digests are derived here instead of being copied by hand.
+    """
+
+    scene = _read(scene_plan_path, error="native_task_policy_scene_plan_invalid")
+    construction = _read(
+        construction_result_path,
+        error="native_task_policy_construction_result_invalid",
+    )
+    controls = _read(
+        control_result_path, error="native_task_policy_control_result_invalid"
+    )
+    pair = controls.get("control_pair") or {}
+    task_spec = scene.get("task_spec") or {}
+    scene_digest = scene.get("plan_digest")
+    construction_digest = construction.get("result_digest")
+    control_digest = controls.get("result_digest")
+    pair_digest = pair.get("pair_digest") if isinstance(pair, Mapping) else None
+    cell_id = (scene.get("scenario") or {}).get("cell_id")
+    errors: list[str] = []
+    if (
+        scene.get("schema_version") != "native_task_arena_scene_plan.v1"
+        or scene_digest != canonical_digest(scene, digest_field="plan_digest")
+        or not isinstance(task_spec, Mapping)
+        or not str(scene.get("task_id") or "")
+        or not str(cell_id or "")
+        or not str(task_spec.get("prompt") or "")
+    ):
+        errors.append("native_task_policy_scene_plan_invalid")
+    if (
+        construction.get("schema_version")
+        != "native_task_arena_construction_result.v1"
+        or construction.get("status") != "completed"
+        or construction.get("construction_gate_qualified") is not True
+        or construction.get("scene_plan_digest") != scene_digest
+        or construction_digest
+        != canonical_digest(construction, digest_field="result_digest")
+    ):
+        errors.append("native_task_policy_construction_not_qualified")
+    if (
+        controls.get("schema_version") != "native_task_arena_control_result.v1"
+        or controls.get("status") != "completed"
+        or controls.get("controls_qualified") is not True
+        or controls.get("candidate_policy_queried") is not False
+        or controls.get("scene_plan_digest") != scene_digest
+        or controls.get("construction_result_digest") != construction_digest
+        or control_digest != canonical_digest(controls, digest_field="result_digest")
+        or not isinstance(pair, Mapping)
+        or pair.get("schema_version") != "adp_task_control_pair.v1"
+        or pair.get("cell_id") != cell_id
+        or pair.get("task_spec_digest") != canonical_digest(task_spec)
+        or pair.get("cell_admitted_for_policy_execution") is not True
+        or pair.get("policy_execution_blockers") != []
+        or pair.get("candidate_policy_queried") is not False
+        or pair_digest != canonical_digest(pair, digest_field="pair_digest")
+    ):
+        errors.append("native_task_policy_controls_not_qualified")
+    if candidate_id not in FROZEN_CANDIDATES:
+        errors.append("native_task_policy_candidate_invalid")
+    if errors:
+        raise ValueError(";".join(sorted(set(errors))))
+
+    if candidate_id == "pi05_droid":
+        from .openpi_droid_policy_runtime import OpenPIDroidPolicySpec
+
+        inventory = _read(
+            OPENPI_CHECKPOINT_INVENTORY_PATH,
+            error="native_task_policy_openpi_checkpoint_inventory_invalid",
+        )
+        entries = [
+            row
+            for row in inventory.get("entries") or []
+            if isinstance(row, Mapping)
+            and row.get("policy_id") == "pi05_droid_jointpos_polaris"
+        ]
+        if len(entries) != 1:
+            raise ValueError("native_task_policy_openpi_checkpoint_inventory_invalid")
+        entry = entries[0]
+        policy = OpenPIDroidPolicySpec(
+            policy_id="pi05_droid_jointpos_polaris",
+            config_name="pi05_droid_jointpos_polaris",
+            checkpoint_uri=str(entry.get("checkpoint_uri") or ""),
+            checkpoint_object_manifest_sha256=str(
+                entry.get("legacy_object_manifest_sha256") or ""
+            ),
+            checkpoint_generation_manifest_sha256=str(
+                entry.get("generation_manifest_sha256") or ""
+            ),
+            checkpoint_inventory_sha256=str(
+                inventory.get("inventory_sha256") or ""
+            ),
+            checkpoint_object_count=int(entry.get("object_count") or 0),
+            checkpoint_size_bytes=int(entry.get("size_bytes") or 0),
+            action_space="joint_position",
+            action_chunk_rows=15,
+        )
+        policy.validate()
+        endpoint = {
+            "host": "127.0.0.1",
+            "port": 8000,
+            "credential_env": "BLUEPRINT_PI05_API_KEY",
+        }
+        identity = {"identity_verified": True}
+    else:
+        from .groot_n17_droid_policy_runtime import GrootN17DroidPolicySpec
+
+        policy = GrootN17DroidPolicySpec()
+        policy.validate()
+        endpoint = {
+            "host": "127.0.0.1",
+            "port": 5555,
+            "credential_env": "BLUEPRINT_GROOT_API_TOKEN",
+        }
+        identity = dict(GROOT_RUNTIME_IDENTITY_DECLARATION)
+
+    request = {
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
+        "candidate_id": candidate_id,
+        "task_id": scene["task_id"],
+        "cell_id": cell_id,
+        "prompt": task_spec["prompt"],
+        "scene_plan_digest": scene_digest,
+        "construction_result_digest": construction_digest,
+        "control_result_digest": control_digest,
+        "control_pair_digest": pair_digest,
+        "policy_endpoint": endpoint,
+        "policy_spec": asdict(policy),
+        "policy_identity_receipt": identity,
+        "max_policy_queries": maximum_policy_queries_for_task_spec(
+            task_spec, open_loop_horizon=policy.open_loop_horizon
+        ),
+        "open_loop_horizon": policy.open_loop_horizon,
+        "overview_camera_policy_input": False,
+        "policy_may_grade_itself": False,
+    }
+    return materialize_native_task_policy_execution_spec(
+        request=request, output_path=output_path
+    )
+
+
 def build_native_task_arena_policy_bundle(
     *,
     job_dir: str | Path,
@@ -416,6 +569,7 @@ __all__ = [
     "RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",
     "build_native_task_arena_policy_bundle",
+    "build_native_task_policy_execution_spec",
     "load_verified_native_task_arena_policy_bundle",
     "materialize_native_task_policy_execution_spec",
     "validate_native_task_policy_execution_spec",

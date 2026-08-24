@@ -47,6 +47,12 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import _terminal_evide
 
 SCHEMA_VERSION = "lane_terminal_contract_rehearsal.v1"
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
+LANE_LAYOUT_DELEGATES = {
+    # The native Task Arena construction/controls/policy adapters all call the
+    # same shared transport; provider evidence is laid out by that transport,
+    # not by the thin candidate adapter.
+    "native_task_arena_vast.py": "adp_isaac_lab_arena_vast.py",
+}
 
 #: A result shaped like one a lane produces after a provider actually ran. The
 #: cost is what tells the sealer this was not a dry run -- the distinction the
@@ -98,6 +104,9 @@ def lane_seals_under_a_nested_attempt(module: str) -> bool:
             # unreadable (or treating ``root`` as nested) made the no-spend
             # rehearsal reject the semantic-teacher lane before launch.
             return ast.unparse(node.value.left) not in {"job", "root"}
+    delegate = LANE_LAYOUT_DELEGATES.get(module)
+    if delegate is not None:
+        return lane_seals_under_a_nested_attempt(delegate)
     raise LaneRehearsalError(f"lane_provider_run_root_not_found:{module}")
 
 

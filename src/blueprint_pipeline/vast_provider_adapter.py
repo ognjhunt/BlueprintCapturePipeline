@@ -337,6 +337,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "isaac",
         "adp_simready_isaac",
         "adp_arena",
+        "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
@@ -347,6 +348,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
     if provider_bundle_kind in {
         "adp_simready_isaac",
+        "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
@@ -2167,6 +2169,12 @@ def _blueprint_bundle_preflight(
         "provider_runtime/assets/sage_collision.usd",
         "provider_runtime/assets/sage_collision_overlay.usda",
     }
+    adp009d_policy_runtime_smoke_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp009d_policy_runtime_smoke_worker.py",
+        "provider_runtime/adp009d_policy_runtime_smoke_manifest.json",
+        "provider_runtime/adp009d_policy_server_worker.py",
+    }
     adp009d_articulated_native_required_entries = {
         "provider_runtime/run_adp_arena_provider_runtime.sh",
         "provider_runtime/adp_arena_provider_manifest.json",
@@ -2325,6 +2333,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_policy_runtime_smoke":
+        required_entries = adp009d_policy_runtime_smoke_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp009d_policy_runtime_smoke_worker.py"
+        readiness_name = "adp009d_policy_runtime_smoke_manifest.json"
     elif provider_bundle_kind == "adp009d_articulated_native":
         required_entries = adp009d_articulated_native_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
@@ -2439,6 +2452,7 @@ def _blueprint_bundle_preflight(
             "unitree_groot_n17_sonic",
             "adp_simpler",
             "adp_arena",
+            "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
@@ -3378,6 +3392,7 @@ def _resolve_launch_mode(
             "unitree_unifolm",
             "adp_simpler",
             "adp_arena",
+            "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
@@ -4018,6 +4033,7 @@ def _probe_shell_script(
             )
         elif provider_bundle_kind in {
             "adp_arena",
+            "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",

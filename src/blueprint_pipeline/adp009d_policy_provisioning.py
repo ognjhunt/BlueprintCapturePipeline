@@ -45,6 +45,7 @@ from .adp009d_policy_server_worker import (
     TRANSPORT_OPENPI_WEBSOCKET,
 )
 from .decision_evidence_contracts import canonical_digest
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_DEVICE
 
 PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
 
@@ -206,7 +207,9 @@ POLICY_EXECUTION_SPEC_STAGED_NAME = "adp009d_policy_execution_spec.json"
 CHECKPOINT_INVENTORY_STAGED_NAME = "adp009d_openpi_checkpoint_inventory.json"
 
 
-def build_provisioning_script(candidate_id: str) -> str:
+def build_provisioning_script(
+    candidate_id: str, *, stop_after_round_trip: bool = False
+) -> str:
     """Emit the worker-side provisioning script for one candidate."""
 
     if candidate_id not in EXPECTED_CANDIDATES:
@@ -238,6 +241,9 @@ def build_provisioning_script(candidate_id: str) -> str:
         "unset HF_TOKEN HUGGINGFACE_HUB_TOKEN HUGGING_FACE_HUB_TOKEN || true"
     )
     gated_backbone = ""
+    server_lifecycle_arg = (
+        " \\\n  --stop-after-round-trip" if stop_after_round_trip else ""
+    )
     if candidate_id == "groot_n17_droid":
         credential_contract = f'''case "${{{GATED_BACKBONE_AUTH_ENV}:-false}}" in
   1|true|TRUE|yes|YES)
@@ -294,6 +300,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_gated_backbon
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
+export BLUEPRINT_NATIVE_TASK_ARENA_DEVICE="{NATIVE_TASK_ARENA_DEVICE}"
 
 # The policy environment is built BESIDE Isaac's interpreter, never by mutating
 # it: a pip resolve against Isaac's own CPython is how you get an Isaac that no
@@ -375,7 +382,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:starte
   --python "{venv_root}/bin/python" \
   --host {POLICY_HOST} \
   --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \
-  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"{server_identity_arg}
+  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"{server_identity_arg}{server_lifecycle_arg}
 
 echo "BLUEPRINT_ADP009D_POLICY_PROVISIONED:{candidate_id}"
 """

@@ -55,6 +55,14 @@ def _load():
 
 builder = _load()
 
+_REHEARSAL_SPEC = importlib.util.spec_from_file_location(
+    "rehearse_native_task_arena_terminal",
+    REPO_ROOT / "scripts/rehearse_lane_terminal_contract.py",
+)
+rehearsal = importlib.util.module_from_spec(_REHEARSAL_SPEC)
+assert _REHEARSAL_SPEC.loader is not None
+_REHEARSAL_SPEC.loader.exec_module(rehearsal)
+
 
 def _sha(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
@@ -769,11 +777,31 @@ def test_the_shared_controls_are_present(lane, link: str) -> None:
 
     assert profile["required_controls"]["provider_zero_required"] is True
     assert profile["required_controls"]["teardown_required"] is True
+    assert profile["required_controls"]["webapp_status_sync_required"] is True
+    assert profile["webapp_sync"] == {"max_attempts": 20}
     assert profile["allocator"]["retry_cap"] == 0
     assert sorted(profile["terminal_contract"]["required_path_fields"]) == [
         "artifact_manifest_path",
         "teardown_manifest_path",
     ]
+
+
+def test_policy_profile_terminal_contract_rehearses_without_provider(
+    lane, tmp_path: Path
+) -> None:
+    profile_path = tmp_path / "unpublished-policy-profile.json"
+    write_json(profile_path, _build(lane, "policy"))
+
+    receipt = rehearsal.rehearse_lane_terminal_contract(
+        profile_path=profile_path,
+        lane_module="native_task_arena_vast.py",
+        lane="native-task-arena-policy",
+    )
+
+    assert receipt["status"] == "would_pass"
+    assert receipt["blockers"] == []
+    assert receipt["provider_mutation_performed"] is False
+    assert receipt["paid_resource_allocated"] is False
 
 
 def test_vast_geolocation_preference_is_digest_bound_to_the_profile(lane) -> None:

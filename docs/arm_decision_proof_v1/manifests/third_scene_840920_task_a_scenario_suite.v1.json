@@ -108,10 +108,13 @@
       "factor_records": [
         {
           "application_tolerance": 1e-06,
-          "nominal_value": 0.4,
+          "nominal_value": 0.5,
           "parameter_id": "object_dynamic_friction",
           "resolved_value": 0.45,
-          "runtime_target": "EventManager.reset.object_material.dynamic_friction",
+          "runtime_selector": {
+            "task_link_id": "door"
+          },
+          "runtime_target": "EventManager.reset.task_subject_link_material.dynamic_friction",
           "unit": "coefficient"
         }
       ],
@@ -193,7 +196,7 @@
   "scene_id": "840920",
   "schema_version": "third_scene_task_scenario_suite.v1",
   "shared_scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
-  "suite_digest": "sha256:975b39c09cab59c6b264468547ce1de05ee1e132eb4af94609c75d1cf1e10906",
+  "suite_digest": "sha256:5adcfd1b9c96da80aff16d49c004591db0347442c4298a763e7d916a10b40e34",
   "task_freeze_digest": "sha256:fa3f422fb595badb3bedd11c56e4732a088bfff112b80b1f65d0c53d1927baa3",
   "task_id": "task_a_washer_door_open"
 }
