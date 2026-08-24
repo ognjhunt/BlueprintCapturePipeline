@@ -38,7 +38,19 @@ source_root="$scratch_root/source"
 wheel_root="$scratch_root/wheel"
 mkdir -p "$source_root" "$wheel_root"
 git -C "$repo_root" archive "$resolved_commit" | tar -x -C "$source_root"
-(cd "$source_root" && uv build --wheel --out-dir "$wheel_root" >/dev/null)
+# Build with the production virtualenv instead of assuming a developer `uv`
+# executable is installed on the host.  The installer already proves this
+# interpreter and its setuptools/wheel backend exist.  SOURCE_DATE_EPOCH keeps
+# repeat builds of the same immutable commit byte-identical.
+source_date_epoch=$(git -C "$repo_root" show -s --format=%ct "$resolved_commit")
+(cd "$source_root" && \
+  SOURCE_DATE_EPOCH="$source_date_epoch" \
+  "$runtime_python" -m pip wheel \
+    --disable-pip-version-check \
+    --no-build-isolation \
+    --no-deps \
+    --wheel-dir "$wheel_root" \
+    . >/dev/null)
 
 shopt -s nullglob
 wheels=("$wheel_root"/*.whl)
