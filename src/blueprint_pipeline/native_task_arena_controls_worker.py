@@ -2706,6 +2706,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 task_readback=readback,
                 to_tensor=_to_tensor,
                 scripted_pose_joint_targets=scripted_pose_joint_targets,
+                scripted_pose_phase_targets=[
+                    row
+                    for row in effective_control_plan[
+                        "scripted_positive_actions"
+                    ]
+                    if isinstance(row, Mapping) and row.get("mode") == "ik_pose"
+                ],
             )
         )
         if graph_rigid:

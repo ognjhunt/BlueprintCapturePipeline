@@ -74,6 +74,7 @@ def build_native_task_episode_environment(
     task_readback: Any | None,
     to_tensor: Any,
     scripted_pose_joint_targets: Sequence[Mapping[str, Any]] | None = None,
+    scripted_pose_phase_targets: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[IsaacEpisodeAdapter, dict[str, Any]]:
     """Create the shared control/policy adapter from native Arena readbacks."""
 
@@ -215,6 +216,53 @@ def build_native_task_episode_environment(
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_joint_target_servo_invalid"]
         )
+
+    # A precision phase remains a live-PhysX-DLS phase even when the optional
+    # off-sim PINK preflight could not supply a posture seed.  C79 introduced
+    # that fail-open preflight policy, but pose dispatch previously inferred
+    # precision authority only from *solved* joint-target rows.  With no row,
+    # the callback silently fell back to PINK -- the exact veto C79 intended
+    # to remove.  Bind phase authority independently from optional seeds.
+    precision_phase_target_rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(scripted_pose_phase_targets or []):
+        try:
+            phase_id = str(raw["phase_id"])
+            position = [float(value) for value in raw["target_position_world_m"]]
+            quaternion = [
+                float(value) for value in raw["target_quaternion_world_xyzw"]
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                [f"native_task_episode_scripted_phase_target_invalid:{index}"]
+            ) from exc
+        if (
+            not phase_id
+            or len(position) != 3
+            or len(quaternion) != 4
+            or not all(math.isfinite(value) for value in [*position, *quaternion])
+        ):
+            raise NativeTaskEpisodeEnvironmentError(
+                [f"native_task_episode_scripted_phase_target_invalid:{index}"]
+            )
+        if phase_id not in PHYSX_DLS_PRECISION_PHASE_IDS:
+            continue
+        precision_phase_target_rows.append(
+            {
+                "phase_id": phase_id,
+                "target_position_world_m": position,
+                "target_quaternion_world_xyzw": quaternion,
+            }
+        )
+    declared_precision_phase_ids = {
+        row["phase_id"]
+        for row in [*joint_target_rows, *precision_phase_target_rows]
+        if row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
+    }
+    seeded_precision_phase_ids = {
+        row["phase_id"]
+        for row in joint_target_rows
+        if row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
+    }
 
     def reset() -> None:
         env.reset(seed=seed)
@@ -371,6 +419,7 @@ def build_native_task_episode_environment(
         return [float(value) for value in action]
 
     def scripted_pose_action(**kwargs: Any) -> list[float]:
+        phase_id = str(kwargs.get("phase_id") or "")
         quaternion = kwargs.get("target_quaternion_world_xyzw")
         resolved_quaternion = reset_orientation if quaternion is None else quaternion
         pose_key = (
@@ -421,6 +470,13 @@ def build_native_task_episode_environment(
                 preferred_posture_joint_positions_rad=joint_target[
                     "joint_positions_rad"
                 ],
+                **common,
+            )
+        elif phase_id in PHYSX_DLS_PRECISION_PHASE_IDS:
+            action, _diagnostic = servo.action_for_grasp_target_physx_dls(
+                target_position_world_m=kwargs["target_position_world_m"],
+                target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                preferred_posture_joint_positions_rad=None,
                 **common,
             )
         elif joint_target is not None:
@@ -497,20 +553,35 @@ def build_native_task_episode_environment(
                 row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
                 for row in joint_target_rows
             )
+            else "live_physx_jacobian_precision_servo_without_offsim_posture_seed"
+            if precision_phase_target_rows
             else "construction_global_ik_joint_target_with_native_pose_fallback"
             if joint_target_rows
             else "native_franka_differential_ik_servo"
         ),
         "cartesian_contact_phase_ids": sorted(
-            row["phase_id"]
-            for row in joint_target_rows
-            if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+            {
+                row["phase_id"]
+                for row in [*joint_target_rows, *precision_phase_target_rows]
+                if row["phase_id"] in CARTESIAN_CONTACT_PHASE_IDS
+            }
         ),
         "cartesian_contact_physx_dls_phase_ids": sorted(
-            row["phase_id"]
-            for row in joint_target_rows
-            if row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
+            declared_precision_phase_ids
         ),
+        "cartesian_contact_phase_controller_bindings": [
+            {
+                "phase_id": phase_id,
+                "controller": "live_physx_full_pose_dls",
+                "preferred_posture_source": (
+                    "selected_global_ik_joint_target"
+                    if phase_id in seeded_precision_phase_ids
+                    else None
+                ),
+                "recovery_target_bias_preserves_controller": True,
+            }
+            for phase_id in sorted(declared_precision_phase_ids)
+        ],
         "cartesian_contact_posture_source": (
             "selected_global_ik_joint_target_projected_through_live_physx_"
             "full_pose_jacobian_nullspace"
@@ -518,41 +589,38 @@ def build_native_task_episode_environment(
                 row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
                 for row in joint_target_rows
             )
+            else "no_offsim_posture_seed_live_physx_full_pose_dls"
+            if precision_phase_target_rows
             else None
         ),
         "cartesian_precision_joint_limit_avoidance_source": (
             "isaaclab_pink_combined_task_jacobian_nullspace_projection"
             if any(
                 row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
-                for row in joint_target_rows
+                for row in [*joint_target_rows, *precision_phase_target_rows]
             )
             else None
         ),
         "cartesian_contact_posture_nullspace_gain": (
             PHYSX_DLS_POSTURE_NULLSPACE_GAIN
-            if any(
-                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
-                for row in joint_target_rows
-            )
+            if seeded_precision_phase_ids
             else None
         ),
         "cartesian_precision_joint_limit_avoidance_gain": (
             PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN
             if any(
                 row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
-                for row in joint_target_rows
+                for row in [*joint_target_rows, *precision_phase_target_rows]
             )
             else None
         ),
         "cartesian_precision_joint_limit_avoidance_margin_rad": (
             PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD
-            if any(
-                row["phase_id"] in PHYSX_DLS_PRECISION_PHASE_IDS
-                for row in joint_target_rows
-            )
+            if declared_precision_phase_ids
             else None
         ),
         "scripted_pose_joint_targets": joint_target_rows,
+        "scripted_pose_precision_phase_targets": precision_phase_target_rows,
         "joint_wrench_source": "IsaacLab JointWrenchSensor force+torque",
         "joint_wrench_convention": "incoming_joint_frame",
         "controlled_body_orientation_source": "native_body_pose_readback",

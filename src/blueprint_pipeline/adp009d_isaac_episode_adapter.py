@@ -1108,6 +1108,7 @@ class IsaacEpisodeAdapter:
     def scripted_action_for_pose(
         self,
         *,
+        phase_id: str | None = None,
         target_position_world_m: Sequence[float],
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
@@ -1134,6 +1135,8 @@ class IsaacEpisodeAdapter:
             "gripper_command": float(gripper_command),
             "max_joint_delta_rad": float(max_joint_delta_rad),
         }
+        if phase_id is not None:
+            common["phase_id"] = str(phase_id)
         if preferred_posture_joint_positions_rad is not None:
             preferred = [
                 float(value)

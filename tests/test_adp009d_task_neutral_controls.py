@@ -239,12 +239,14 @@ class _CartesianEnvironment(_Environment):
     def scripted_action_for_pose(
         self,
         *,
+        phase_id=None,
         target_position_world_m,
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ):
+        assert phase_id is not None
         del target_quaternion_world_xyzw
         assert max_joint_delta_rad == pytest.approx(0.03)
         assert max_joint_setpoint_lead_rad == pytest.approx(0.2)
@@ -930,12 +932,14 @@ class _OffsetCartesianEnvironment(_CartesianEnvironment):
     def scripted_action_for_pose(
         self,
         *,
+        phase_id=None,
         target_position_world_m,
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ):
+        assert phase_id is not None
         del target_quaternion_world_xyzw
         del max_joint_delta_rad, max_joint_setpoint_lead_rad
         reached = [
@@ -1227,12 +1231,14 @@ class _ConvergingCartesianEnvironment(_CartesianEnvironment):
     def scripted_action_for_pose(
         self,
         *,
+        phase_id=None,
         target_position_world_m,
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ):
+        assert phase_id is not None
         del target_quaternion_world_xyzw
         del max_joint_delta_rad, max_joint_setpoint_lead_rad
         command = tuple(float(value) for value in target_position_world_m)
@@ -1450,12 +1456,14 @@ class _BestFirstThenWorseEnvironment(_CartesianEnvironment):
     def scripted_action_for_pose(
         self,
         *,
+        phase_id=None,
         target_position_world_m,
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ):
+        assert phase_id is not None
         del target_quaternion_world_xyzw
         del max_joint_delta_rad, max_joint_setpoint_lead_rad
         command = tuple(float(value) for value in target_position_world_m)

@@ -435,12 +435,14 @@ class _RigidControlEnvironment:
     def scripted_action_for_pose(
         self,
         *,
+        phase_id=None,
         target_position_world_m,
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
         max_joint_setpoint_lead_rad,
     ) -> list[float]:
+        assert phase_id is not None
         assert target_quaternion_world_xyzw is not None
         assert max_joint_delta_rad == pytest.approx(MAX_JOINT_DELTA_RAD)
         assert max_joint_setpoint_lead_rad == pytest.approx(
