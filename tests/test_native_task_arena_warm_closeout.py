@@ -33,6 +33,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         tmp_path / "watchdog.json",
         {
             "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+            "provider": "vast",
             "status": "provider_terminal",
             "completed_at": "2026-08-22T06:52:00+00:00",
             "provider_absence_confirmed": True,
@@ -101,6 +102,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "status": "ready",
                 "instance_id": 42,
                 "continuing_spend": True,
+                "watchdog_pid": 100,
+                "watchdog_deadline_epoch": 2_000.0,
+                "watchdog_out_dir": str(watchdog_path.parent),
+                "watchdog_pod_name_prefix": "blueprint-original-",
             },
             "adapter_result_path": str(adapter_path),
             "teardown_manifest_path": str(teardown_path),
@@ -156,5 +161,113 @@ def test_refuses_nonterminal_watchdog(tmp_path: Path) -> None:
             authority_path=authority,
             retained_result_path=retained,
             provider_zero_guard_path=guard,
+            output_dir=tmp_path / "closeout",
+        )
+
+
+def test_materializes_after_exact_watchdog_supersession(tmp_path: Path) -> None:
+    authority, retained, guard = _fixture(tmp_path)
+    retained_value = json.loads(retained.read_text())
+    original_watchdog = Path(retained_value["watchdog_receipt_path"])
+    _write(
+        original_watchdog,
+        {
+            "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+            "status": "armed",
+            "provider": "vast",
+            "pid": 100,
+            "deadline_epoch": 2_000.0,
+            "watchdog_out_dir": str(original_watchdog.parent),
+            "pod_name_prefix": "blueprint-original-",
+        },
+    )
+    successor_dir = tmp_path / "successor" / "independent_vast_watchdog"
+    successor_dir.mkdir(parents=True)
+    (successor_dir / "started_vast_instance_id.txt").write_text(
+        "42\n", encoding="utf-8"
+    )
+    successor_watchdog = _write(
+        successor_dir / "groot_oscar_runpod_canary_watchdog.json",
+        {
+            "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+            "status": "provider_terminal",
+            "provider": "vast",
+            "pid": 200,
+            "deadline_epoch": 3_000.0,
+            "watchdog_out_dir": str(successor_dir),
+            "completed_at": "2026-08-22T06:52:00+00:00",
+            "provider_absence_confirmed": True,
+            "final_inventory": {"api_confirmed": True, "live_resource_count": 0},
+            "recorded_vast_instance_teardown": {
+                "instance_id": 42,
+                "provider_absence_confirmed": True,
+            },
+            "terminations": [{"instance_id": 42, "status": "absent"}],
+        },
+    )
+    inspection = {
+        "api_confirmed": True,
+        "instance_id": "42",
+        "actual_status": "running",
+    }
+    supersession = _write(
+        tmp_path / "successor" / "vast_independent_watchdog_supersession.json",
+        {
+            "schema_version": "vast_independent_watchdog_supersession.v1",
+            "status": "superseded",
+            "instance_id": 42,
+            "predecessor_watchdog_pid": 100,
+            "predecessor_watchdog_deadline_epoch": 2_000.0,
+            "predecessor_watchdog_retired": True,
+            "successor_watchdog_pid": 200,
+            "successor_watchdog_deadline_epoch": 3_000.0,
+            "successor_watchdog_out_dir": str(successor_dir),
+            "provider_inspect_before": inspection,
+            "provider_inspect_successor_armed": inspection,
+            "provider_inspect_after_transfer": inspection,
+            "provider_instance_running_after_transfer": True,
+        },
+    )
+
+    receipt = materialize_expired_warm_closeout(
+        authority_path=authority,
+        retained_result_path=retained,
+        provider_zero_guard_path=guard,
+        watchdog_supersession_path=supersession,
+        successor_watchdog_path=successor_watchdog,
+        output_dir=tmp_path / "closeout",
+    )
+
+    assert receipt["status"] == "completed"
+    assert receipt["watchdog_supersession"]["path"] == str(supersession)
+
+
+def test_refuses_supersession_bound_to_different_instance(tmp_path: Path) -> None:
+    authority, retained, guard = _fixture(tmp_path)
+    successor_dir = tmp_path / "successor" / "independent_vast_watchdog"
+    successor_dir.mkdir(parents=True)
+    (successor_dir / "started_vast_instance_id.txt").write_text(
+        "42\n", encoding="utf-8"
+    )
+    successor = _write(
+        successor_dir / "groot_oscar_runpod_canary_watchdog.json",
+        {"schema_version": "groot_oscar_runpod_canary_watchdog.v1"},
+    )
+    supersession = _write(
+        tmp_path / "supersession.json",
+        {
+            "schema_version": "vast_independent_watchdog_supersession.v1",
+            "status": "superseded",
+            "instance_id": 99,
+        },
+    )
+
+    with pytest.raises(ValueError, match="expired_warm_closeout_invalid"):
+        materialize_expired_warm_closeout(
+            authority_path=authority,
+            retained_result_path=retained,
+            provider_zero_guard_path=guard,
+            watchdog_supersession_path=supersession,
+            successor_watchdog_path=successor,
             output_dir=tmp_path / "closeout",
         )
