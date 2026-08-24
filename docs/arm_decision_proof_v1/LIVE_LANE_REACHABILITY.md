@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **33 dispatched, 17 website-reachable, 16 named
+Current executable inventory: **34 dispatched, 18 website-reachable, 16 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -51,14 +51,19 @@ attempt completed. Production proof additionally requires:
 | `native-task-arena-construction` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-controls` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy` | `build_native_task_arena_live_profile.py` |
+| `native-task-arena-policy-diagnostic` | `build_native_task_arena_live_profile.py` |
 | `new-site-diagnostic-canary` | `build_new_site_diagnostic_canary_live_profile.py` |
 | `new-site-native-camera` | `build_new_site_native_camera_live_profile.py` |
 | `reconstruction-worker-smoke` | `build_reconstruction_worker_smoke_live_profile.py` |
 | `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
 | `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
 
-The three `native-task-arena-*` rows are ordered stages of one chain, not
-three independent campaigns. Likewise, the appearance path is ordered:
+The construction, controls, and qualified policy rows are ordered stages of
+one chain, not independent campaigns. The policy-diagnostic row is a separately
+labeled development-only escape hatch: it requires qualified construction and
+a separately passed zero-action negative, starts from the canonical reset, and
+cannot score, rank, qualify, or admit either candidate while the scripted
+positive remains unqualified. Likewise, the appearance path is ordered:
 
 `adp-artifixer3d-exact-support` -> `adp-paired-target-native-import`
 
