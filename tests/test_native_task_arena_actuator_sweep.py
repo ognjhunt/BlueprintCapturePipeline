@@ -7,6 +7,7 @@ import pytest
 from blueprint_pipeline.native_task_arena_actuator_sweep import (
     CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
     CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
+    DEFAULT_CONTACT_APPROACH_OFFSETS_M,
     DEFAULT_WRIST_GAIN_CANDIDATES,
     SWEEP_SCHEMA_VERSION,
     candidate_postures,
@@ -319,7 +320,7 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
     )
 
     assert report["schema_version"] == CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION
-    assert report["represented_cell_count"] == 125
+    assert report["represented_cell_count"] == 225
     assert report["executed_cell_count"] == 1
     assert report["admitted_cell_count"] == 1
     assert report["best_cell"]["admitted"] is True
@@ -355,6 +356,20 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
     assert progress[0]["admitted_cell_count"] == 1
     assert progress[0]["last_cell"]["cell_index"] == 0
     assert progress[-1]["best_cell"]["admitted"] is True
+
+
+def test_contact_acquisition_default_approach_grid_is_symmetric() -> None:
+    assert DEFAULT_CONTACT_APPROACH_OFFSETS_M == (
+        -0.020,
+        -0.015,
+        -0.010,
+        -0.005,
+        0.0,
+        0.005,
+        0.010,
+        0.015,
+        0.020,
+    )
 
 
 def test_contact_acquisition_closes_at_first_task_pad_contact() -> None:
