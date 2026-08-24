@@ -88,7 +88,7 @@ def run_adp009d_native_microcheck_vast(
         min_gpu_ram_mb=46_000,
         max_compute_cap=max_compute_cap,
         require_independent_watchdog=True,
-        enable_isaac_smoke=not policy_runtime_smoke,
+        enable_isaac_smoke=True,
         forward_hf_token=authorize_gated_backbone,
         allowed_active_instance_ids=allowed_active_instance_ids,
         candidate_policy_query_expected=bool(

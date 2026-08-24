@@ -337,6 +337,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "isaac",
         "adp_simready_isaac",
         "adp_arena",
+        "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
@@ -347,6 +348,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
     if provider_bundle_kind in {
         "adp_simready_isaac",
+        "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",

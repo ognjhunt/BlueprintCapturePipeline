@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.adp009d_native_microcheck_bundle import PROBE_KIND
 from blueprint_pipeline.adp009d_policy_provisioning import (
@@ -89,7 +90,7 @@ def test_vast_provider_accepts_and_routes_policy_runtime_smoke_bundle(
         job_dir=tmp_path / "preflight",
         generated_at="2026-08-24T00:00:00Z",
         enable_blueprint_bundle=True,
-        enable_isaac_smoke=False,
+        enable_isaac_smoke=True,
         provider_bundle_kind=spec.provider_bundle_kind,
         bundle_path=Path(spec.bundle_path),
         provider_bundle_url="https://staging.example/bundle.zip",
@@ -101,11 +102,39 @@ def test_vast_provider_accepts_and_routes_policy_runtime_smoke_bundle(
     script = _probe_shell_script(
         "https://heartbeat.example",
         enable_blueprint_bundle=True,
-        enable_isaac_smoke=False,
+        enable_isaac_smoke=True,
         provider_bundle_kind=spec.provider_bundle_kind,
     )
     assert "run_adp_arena_provider_runtime.sh" in script
     assert "adp_arena_provider_runtime_output.zip" in script
+    assert "BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP" in script
+    assert "wp.get_devices()" in script
+
+
+def test_policy_runtime_smoke_uses_isaac_cuda_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        franka_vast,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+
+    result = franka_vast.run_adp009d_native_microcheck_vast(
+        job_dir="job",
+        prepared_bundle={
+            "status": "ready",
+            "execution_mode": "outcome_blind_policy_runtime_smoke",
+            "policy_candidate_id": "pi05_droid",
+        },
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert observed["provider_bundle_kind"] == "adp009d_policy_runtime_smoke"
+    assert observed["enable_isaac_smoke"] is True
 
 
 def _server_receipt(**updates: object) -> dict[str, object]:
