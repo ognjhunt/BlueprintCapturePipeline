@@ -10,6 +10,7 @@ systemd spend guard has written a fresh
 
 - a current, complete USD billing reconciliation for RunPod, Vast, and
   DigitalOcean;
+- official billing coverage for the specific provider the launch will mutate;
 - the conservative allocation-ledger total;
 - `effective_spend_usd` equal to the larger of billing and allocation totals;
 - `effective_spend_usd < 5000`, or a valid short-lived override;
@@ -43,7 +44,8 @@ by `BLUEPRINT_GPU_BILLING_EXPORT` with this shape:
 }
 ```
 
-AWS coverage is read-only and account-bound. The canonical AWS profile must
+AWS coverage is read-only and account-bound. An AWS launch requires the
+canonical AWS profile to
 allow `sts:GetCallerIdentity` and `ce:GetCostAndUsage`; the reconciler signs the
 fixed STS and Cost Explorer endpoints, retains their exact response bytes, and
 refuses an account mismatch. Cost Explorer refreshes at least daily, so live
@@ -51,7 +53,14 @@ inventory plus the independent watchdog remains the immediate zero-resource
 authority while the official billing export supplies cumulative spend evidence.
 
 The guard rejects a file older than 24 hours, a future timestamp, another
-currency/scope/schema, negative/non-numeric totals, or any omitted provider.
+currency/scope/schema, negative/non-numeric totals, or omission of any original
+cohort provider (RunPod, Vast, or DigitalOcean). A newly configured provider may
+be absent while its official billing API is unavailable, but that provider is
+recorded as uncovered and remains fail-closed at the shared pre-spend
+chokepoint. Its absence does not block a covered provider. The reconciler still
+attempts optional AWS billing and retains the failure plus any successful
+account-identity response; `--require-provider aws` makes an AWS-specific
+refresh all-or-nothing.
 The resulting artifact records the billing input digest and basename, not an
 absolute runner path. Supplying this file is external billing evidence; the
 repository does not manufacture it.

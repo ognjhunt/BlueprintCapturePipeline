@@ -245,6 +245,75 @@ def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
     assert export.read_text(encoding="utf-8") == "sentinel\n"
 
 
+def test_optional_aws_billing_failure_refreshes_base_provider_export(
+    tmp_path: Path,
+) -> None:
+    class CostExplorerDeniedTransport(_Transport):
+        def __call__(self, request, timeout: float) -> bytes:
+            if urlsplit(request.full_url).netloc == "ce.us-east-1.amazonaws.com":
+                raise ProviderBillingReconciliationError(
+                    "provider_billing_request_failed"
+                )
+            return super().__call__(request, timeout)
+
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "provider_billing_export.json"
+    result = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=export,
+        audit_root=tmp_path / "audit",
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW,
+        transport=CostExplorerDeniedTransport(),
+        **_aws_kwargs(secrets),
+    )
+
+    assert result["status"] == "reconciled"
+    assert result["covered_provider_ids"] == ["digitalocean", "runpod", "vast"]
+    assert result["uncovered_provider_ids"] == ["aws"]
+    assert result["optional_provider_failures"] == {
+        "aws": "provider_billing_request_failed"
+    }
+    assert set(json.loads(export.read_text())["provider_totals_usd"]) == {
+        "runpod",
+        "vast",
+        "digitalocean",
+    }
+    receipt = json.loads(Path(result["source_receipt_path"]).read_text())
+    assert receipt["uncovered_provider_ids"] == ["aws"]
+    assert any(row["provider"] == "aws" for row in receipt["sources"])
+
+
+def test_required_aws_billing_failure_preserves_prior_export(tmp_path: Path) -> None:
+    class CostExplorerDeniedTransport(_Transport):
+        def __call__(self, request, timeout: float) -> bytes:
+            if urlsplit(request.full_url).netloc == "ce.us-east-1.amazonaws.com":
+                raise ProviderBillingReconciliationError(
+                    "provider_billing_request_failed"
+                )
+            return super().__call__(request, timeout)
+
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "provider_billing_export.json"
+    export.write_text("sentinel\n", encoding="utf-8")
+    with pytest.raises(
+        ProviderBillingReconciliationError,
+        match="provider_billing_request_failed",
+    ):
+        reconcile_provider_billing(
+            secrets_dir=secrets,
+            billing_export_path=export,
+            audit_root=tmp_path / "audit",
+            start_at="2026-01-01T00:00:00Z",
+            now=NOW,
+            transport=CostExplorerDeniedTransport(),
+            required_providers=("aws",),
+            **_aws_kwargs(secrets),
+        )
+
+    assert export.read_text(encoding="utf-8") == "sentinel\n"
+
+
 def test_accepts_digitalocean_daily_balance_after_24_hour_boundary(
     tmp_path: Path,
 ) -> None:
