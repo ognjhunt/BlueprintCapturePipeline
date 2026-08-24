@@ -57,7 +57,12 @@ RESULT_SCHEMA_VERSION = "wam_compute_run_result.v1"
 DEFAULT_PROVIDER_ORDER = ("deepinfra", "runpod", "vast")
 PROVIDER_ORDER_ENV = "BLUEPRINT_WAM_COMPUTE_PROVIDER_ORDER"
 VAST_WAM_PAID_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH"
-PROVIDER_BUNDLE_KINDS = ("wam", "unitree_unifolm", "unitree_groot_n17_sonic")
+PROVIDER_BUNDLE_KINDS = (
+    "wam",
+    "unitree_unifolm",
+    "unitree_groot_n17_sonic",
+    "adp009d_policy_runtime_smoke",
+)
 DEEPINFRA_PROVIDER_NAME = "deepinfra"
 DEEPINFRA_MODEL_ID = "nvidia/Cosmos3-Nano"
 DEEPINFRA_API_BASE_URL_ENV = "BLUEPRINT_DEEPINFRA_API_BASE_URL"

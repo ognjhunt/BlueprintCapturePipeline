@@ -17,6 +17,11 @@ from blueprint_pipeline.adp009d_policy_runtime_smoke_bundle import (
 from blueprint_pipeline.adp009d_policy_runtime_smoke_worker import (
     seal_policy_runtime_smoke,
 )
+from blueprint_pipeline.vast_provider_adapter import (
+    _blueprint_bundle_preflight,
+    _probe_shell_script,
+)
+from blueprint_pipeline.wam_compute_providers import WamComputeLaunchSpec
 
 
 COMMIT = "1" * 40
@@ -61,6 +66,46 @@ def test_bundle_is_one_query_outcome_blind_and_stops_server(
 
 def test_normal_episode_provisioning_keeps_server_running() -> None:
     assert "--stop-after-round-trip" not in build_provisioning_script("pi05_droid")
+
+
+def test_vast_provider_accepts_and_routes_policy_runtime_smoke_bundle(
+    tmp_path: Path,
+) -> None:
+    receipt = build_policy_runtime_smoke_bundle(
+        job_dir=tmp_path / "bundle",
+        candidate_id="pi05_droid",
+        implementation_commit=COMMIT,
+        generated_at="2026-08-24T00:00:00Z",
+    )
+
+    spec = WamComputeLaunchSpec(
+        name="policy-smoke-pi05",
+        bundle_path=receipt["bundle_path"],
+        provider_bundle_kind="adp009d_policy_runtime_smoke",
+        expected_video_count=0,
+    )
+    assert spec.provider_bundle_kind == "adp009d_policy_runtime_smoke"
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="2026-08-24T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind=spec.provider_bundle_kind,
+        bundle_path=Path(spec.bundle_path),
+        provider_bundle_url="https://staging.example/bundle.zip",
+        provider_output_put_url="https://staging.example/output.zip",
+    )
+    assert preflight["status"] == "passed"
+    assert preflight["missing_zip_entries"] == []
+
+    script = _probe_shell_script(
+        "https://heartbeat.example",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind=spec.provider_bundle_kind,
+    )
+    assert "run_adp_arena_provider_runtime.sh" in script
+    assert "adp_arena_provider_runtime_output.zip" in script
 
 
 def _server_receipt(**updates: object) -> dict[str, object]:
