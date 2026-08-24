@@ -44,6 +44,10 @@ from blueprint_pipeline.native_task_arena_policy_bundle import (
     PROBE_KIND as POLICY_PROBE_KIND,
     load_verified_native_task_arena_policy_bundle,
 )
+from blueprint_pipeline.native_task_arena_policy_diagnostic_bundle import (
+    PROBE_KIND as POLICY_DIAGNOSTIC_PROBE_KIND,
+    load_verified_native_task_arena_policy_diagnostic_bundle,
+)
 from blueprint_pipeline.native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
 )
@@ -113,12 +117,25 @@ LINKS: dict[str, ArenaLink] = {
             "policy_execution_spec": "--native-task-arena-policy-execution-spec",
         },
     ),
+    "policy-diagnostic": ArenaLink(
+        POLICY_DIAGNOSTIC_PROBE_KIND,
+        "arena-policy-diagnostic-live",
+        "arena-policy-diagnostic-job",
+        {
+            "construction_result": "--native-task-arena-construction-result",
+            "control_result": "--native-task-arena-control-result",
+            "policy_execution_spec": "--native-task-arena-policy-execution-spec",
+        },
+    ),
 }
 
 BUNDLE_LOADERS = {
     CONSTRUCTION_PROBE_KIND: load_verified_native_task_arena_construction_bundle,
     CONTROLS_PROBE_KIND: load_verified_native_task_arena_controls_bundle,
     POLICY_PROBE_KIND: load_verified_native_task_arena_policy_bundle,
+    POLICY_DIAGNOSTIC_PROBE_KIND: (
+        load_verified_native_task_arena_policy_diagnostic_bundle
+    ),
 }
 
 
@@ -160,6 +177,7 @@ def _lane_blockers(
 ):
     def blockers(context: LaneLiveProfileContext) -> list[str]:
         found: list[str] = []
+        diagnostic = link.probe_kind == POLICY_DIAGNOSTIC_PROBE_KIND
         if not 0 < context.max_hourly_rate_usd <= context.max_spend_usd:
             found.append("native_task_arena_budget_invalid")
         receipt = context.receipt
@@ -313,11 +331,9 @@ def _lane_blockers(
                     control_path,
                     error="native_task_arena_control_result_invalid",
                 )
-                if (
+                qualified_control_invalid = (
                     controls.get("schema_version")
                     != "native_task_arena_control_result.v1"
-                    or controls.get("status") != "completed"
-                    or controls.get("controls_qualified") is not True
                     or controls.get("scene_plan_digest")
                     != scene_plan.get("plan_digest")
                     or controls.get("construction_result_digest")
@@ -328,7 +344,30 @@ def _lane_blockers(
                         "native_task_arena_control_result.v1.json"
                     )
                     != file_digest(control_path)
-                ):
+                )
+                if diagnostic:
+                    pair = controls.get("control_pair") or {}
+                    zero_action_passed = any(
+                        isinstance(row, Mapping)
+                        and row.get("control_id") == "zero_action_negative"
+                        and row.get("control_passed") is True
+                        and row.get("observed_outcome") == "never_moved"
+                        for row in pair.get("controls") or []
+                    )
+                    qualified_control_invalid = bool(
+                        qualified_control_invalid
+                        or controls.get("status") not in {"blocked", "completed"}
+                        or controls.get("controls_qualified") is not False
+                        or pair.get("cell_admitted_for_policy_execution") is not False
+                        or not zero_action_passed
+                    )
+                else:
+                    qualified_control_invalid = bool(
+                        qualified_control_invalid
+                        or controls.get("status") != "completed"
+                        or controls.get("controls_qualified") is not True
+                    )
+                if qualified_control_invalid:
                     raise ValueError("native_task_arena_control_result_invalid")
             except (OSError, ValueError, json.JSONDecodeError):
                 found.append("native_task_arena_control_result_invalid")
@@ -662,7 +701,7 @@ def build_native_task_arena_live_profile(
         raise TaskEvaluationLaunchError(
             f"native_task_arena_predecessor_required:{','.join(sorted(missing))}"
         )
-    if link == "policy":
+    if link in {"policy", "policy-diagnostic"}:
         try:
             policy_request = _read_mapping(
                 Path(policy_execution_spec_path).expanduser().resolve(),

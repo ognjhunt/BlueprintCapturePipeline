@@ -33,6 +33,7 @@ GROOT_RUNTIME_IDENTITY_DECLARATION = {
     "status": "runtime_measurement_required",
     "relative_path": GROOT_RUNTIME_IDENTITY_FILENAME,
 }
+QUALIFIED_EXECUTION_AUTHORITY = "qualified_controls_evaluation"
 OPENPI_CHECKPOINT_INVENTORY_PATH = (
     Path(__file__).resolve().parents[2]
     / "docs/experiments/policy_ranking_thesis_20260726/"
@@ -108,6 +109,11 @@ def validate_native_task_policy_execution_spec(
     payload = json.loads(json.dumps(value))
     errors: list[str] = []
     candidate = str(payload.get("candidate_id") or "")
+    if payload.get("execution_authority") not in (
+        None,
+        QUALIFIED_EXECUTION_AUTHORITY,
+    ):
+        errors.append("native_task_policy_execution_authority_invalid")
     endpoint = payload.get("policy_endpoint")
     if payload.get("schema_version") != EXECUTION_SPEC_SCHEMA_VERSION:
         errors.append("native_task_policy_execution_spec_schema_invalid")
@@ -296,6 +302,39 @@ def build_native_task_policy_execution_spec(
     if errors:
         raise ValueError(";".join(sorted(set(errors))))
 
+    policy, endpoint, identity = _candidate_runtime_binding(candidate_id)
+
+    request = {
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
+        "candidate_id": candidate_id,
+        "task_id": scene["task_id"],
+        "cell_id": cell_id,
+        "prompt": task_spec["prompt"],
+        "scene_plan_digest": scene_digest,
+        "construction_result_digest": construction_digest,
+        "control_result_digest": control_digest,
+        "control_pair_digest": pair_digest,
+        "policy_endpoint": endpoint,
+        "policy_spec": asdict(policy),
+        "policy_identity_receipt": identity,
+        "max_policy_queries": maximum_policy_queries_for_task_spec(
+            task_spec, open_loop_horizon=policy.open_loop_horizon
+        ),
+        "open_loop_horizon": policy.open_loop_horizon,
+        "overview_camera_policy_input": False,
+        "policy_may_grade_itself": False,
+        "execution_authority": QUALIFIED_EXECUTION_AUTHORITY,
+    }
+    return materialize_native_task_policy_execution_spec(
+        request=request, output_path=output_path
+    )
+
+
+def _candidate_runtime_binding(
+    candidate_id: str,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """Return the frozen runtime binding without inspecting outcome receipts."""
+
     if candidate_id == "pi05_droid":
         from .openpi_droid_policy_runtime import OpenPIDroidPolicySpec
 
@@ -331,13 +370,13 @@ def build_native_task_policy_execution_spec(
             action_chunk_rows=15,
         )
         policy.validate()
-        endpoint = {
+        endpoint: dict[str, Any] = {
             "host": "127.0.0.1",
             "port": 8000,
             "credential_env": "BLUEPRINT_PI05_API_KEY",
         }
-        identity = {"identity_verified": True}
-    else:
+        identity: dict[str, Any] = {"identity_verified": True}
+    elif candidate_id == "groot_n17_droid":
         from .groot_n17_droid_policy_runtime import GrootN17DroidPolicySpec
 
         policy = GrootN17DroidPolicySpec()
@@ -348,30 +387,9 @@ def build_native_task_policy_execution_spec(
             "credential_env": "BLUEPRINT_GROOT_API_TOKEN",
         }
         identity = dict(GROOT_RUNTIME_IDENTITY_DECLARATION)
-
-    request = {
-        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
-        "candidate_id": candidate_id,
-        "task_id": scene["task_id"],
-        "cell_id": cell_id,
-        "prompt": task_spec["prompt"],
-        "scene_plan_digest": scene_digest,
-        "construction_result_digest": construction_digest,
-        "control_result_digest": control_digest,
-        "control_pair_digest": pair_digest,
-        "policy_endpoint": endpoint,
-        "policy_spec": asdict(policy),
-        "policy_identity_receipt": identity,
-        "max_policy_queries": maximum_policy_queries_for_task_spec(
-            task_spec, open_loop_horizon=policy.open_loop_horizon
-        ),
-        "open_loop_horizon": policy.open_loop_horizon,
-        "overview_camera_policy_input": False,
-        "policy_may_grade_itself": False,
-    }
-    return materialize_native_task_policy_execution_spec(
-        request=request, output_path=output_path
-    )
+    else:
+        raise ValueError("native_task_policy_candidate_invalid")
+    return policy, endpoint, identity
 
 
 def build_native_task_arena_policy_bundle(

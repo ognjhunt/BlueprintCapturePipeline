@@ -15,6 +15,9 @@ from .native_task_arena_controls_bundle import (
     RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
 )
 from .native_task_arena_policy_bundle import RESULT_FILENAME as POLICY_RESULT_FILENAME
+from .native_task_arena_policy_diagnostic_bundle import (
+    RESULT_FILENAME as POLICY_DIAGNOSTIC_RESULT_FILENAME,
+)
 from .native_task_arena_runtime_preflight_bundle import (
     RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
     RESULT_SCHEMA_VERSION as RUNTIME_PREFLIGHT_RESULT_SCHEMA_VERSION,
@@ -292,14 +295,88 @@ def run_native_task_arena_policy_vast(
 ) -> dict[str, Any]:
     """Run one admitted candidate through the same zero-retry Vast transport."""
 
+    return _run_native_task_arena_policy_vast(
+        job_dir=job_dir,
+        prepared_bundle=prepared_bundle,
+        paid_resource_admission_grant=paid_resource_admission_grant,
+        execute=execute,
+        machine_avoidlist_path=machine_avoidlist_path,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        allowed_active_instance_ids=allowed_active_instance_ids,
+        paid_attempt_authority=paid_attempt_authority,
+        authorize_gated_backbone=authorize_gated_backbone,
+        expected_execution_mode="policy",
+        expected_output_filename=POLICY_RESULT_FILENAME,
+        label_prefix="blueprint-native-task-policy-",
+        blocker_prefix="native_task_arena_policy",
+    )
+
+
+def run_native_task_arena_policy_diagnostic_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    machine_avoidlist_path: str | Path | None = None,
+    max_hourly_rate_usd: float = 0.80,
+    hard_cap_usd: float = 1.00,
+    hard_ttl_seconds: int = 5_400,
+    allowed_active_instance_ids: Sequence[int] = (),
+    paid_attempt_authority: Mapping[str, Any] | None = None,
+    authorize_gated_backbone: bool = False,
+) -> dict[str, Any]:
+    """Run a canonical policy diagnostic that is ineligible for scoring."""
+
+    return _run_native_task_arena_policy_vast(
+        job_dir=job_dir,
+        prepared_bundle=prepared_bundle,
+        paid_resource_admission_grant=paid_resource_admission_grant,
+        execute=execute,
+        machine_avoidlist_path=machine_avoidlist_path,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        allowed_active_instance_ids=allowed_active_instance_ids,
+        paid_attempt_authority=paid_attempt_authority,
+        authorize_gated_backbone=authorize_gated_backbone,
+        expected_execution_mode="policy_diagnostic",
+        expected_output_filename=POLICY_DIAGNOSTIC_RESULT_FILENAME,
+        label_prefix="blueprint-native-task-policy-diagnostic-",
+        blocker_prefix="native_task_arena_policy_diagnostic",
+    )
+
+
+def _run_native_task_arena_policy_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    machine_avoidlist_path: str | Path | None,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+    allowed_active_instance_ids: Sequence[int],
+    paid_attempt_authority: Mapping[str, Any] | None,
+    authorize_gated_backbone: bool,
+    expected_execution_mode: str,
+    expected_output_filename: str,
+    label_prefix: str,
+    blocker_prefix: str,
+) -> dict[str, Any]:
+
     candidate = str(prepared_bundle.get("policy_candidate_id") or "")
     if (
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
-        or prepared_bundle.get("execution_mode") != "policy"
+        or prepared_bundle.get("execution_mode") != expected_execution_mode
         or candidate not in {"pi05_droid", "groot_n17_droid"}
         or prepared_bundle.get("candidate_policy_queried") is not False
-        or prepared_bundle.get("expected_output_filename") != POLICY_RESULT_FILENAME
+        or prepared_bundle.get("expected_output_filename")
+        != expected_output_filename
     ):
         raise ValueError("native_task_arena_policy_prepared_bundle_contract_invalid")
     job = Path(job_dir).expanduser().resolve()
@@ -342,13 +419,13 @@ def run_native_task_arena_policy_vast(
         max_hourly_rate_usd=max_hourly_rate_usd,
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
-        expected_output_filename=POLICY_RESULT_FILENAME,
+        expected_output_filename=expected_output_filename,
         container_image=str(prepared_bundle["container_image"]),
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy/{candidate}",
-        instance_label_prefix="blueprint-native-task-policy-",
-        blocker_prefix="native_task_arena_policy",
+        instance_label_prefix=label_prefix,
+        blocker_prefix=blocker_prefix,
         min_gpu_ram_mb=46_000,
         allowed_active_instance_ids=allowed_ids,
         vast_launch_lock_file=(
@@ -374,4 +451,5 @@ __all__ = [
     "run_native_task_arena_runtime_preflight_vast",
     "run_native_task_arena_controls_vast",
     "run_native_task_arena_policy_vast",
+    "run_native_task_arena_policy_diagnostic_vast",
 ]

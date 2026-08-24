@@ -590,6 +590,7 @@ def run_policy_episode(
     open_loop_horizon: int = DROID_OPEN_LOOP_HORIZON,
     media_output_dir: str | Path | None = None,
     episode_id: str | None = None,
+    scoring_authorized: bool = True,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -975,12 +976,22 @@ def run_policy_episode(
     if step_index - settle_start_index < int(settle_window_samples):
         raise PolicyEpisodeError([BLOCKER_NO_SETTLE_WINDOW])
 
-    phase_started = time.monotonic()
-    score = score_task_episode_from_spec(
-        task_spec=resolved_task_spec,
-        samples=samples,
-    )
-    timings_seconds["deterministic_scoring"] += time.monotonic() - phase_started
+    if scoring_authorized:
+        phase_started = time.monotonic()
+        score = score_task_episode_from_spec(
+            task_spec=resolved_task_spec,
+            samples=samples,
+        )
+        timings_seconds["deterministic_scoring"] += time.monotonic() - phase_started
+    else:
+        score = {
+            "status": "not_scored",
+            "blockers": ["unqualified_controls_policy_diagnostic"],
+            "claim_boundary": (
+                "policy actions and simulator observations retained; task outcome "
+                "not scored, ranked, or qualified"
+            ),
+        }
     motion_evidence, commanded_action_magnitudes = _motion_and_command_evidence(
         joint_trace=joint_trace,
         commanded_actions=commanded_actions,
@@ -1108,6 +1119,7 @@ def run_policy_episode(
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "score": score,
         "candidate_policy_queried": True,
+        "scoring_authorized": bool(scoring_authorized),
         "episode_id": episode_id,
         "visual_evidence": visual_evidence,
         "media_artifacts": media_artifacts,

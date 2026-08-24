@@ -26,6 +26,10 @@ SCENE = "840920"
 COMMIT = "c" * 40
 TASKS = ("task_a_washer_door_open", "task_b_notebook_relocation")
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "supervise_scene_strict_family_ledger.py"
+REACHABILITY = (
+    Path(__file__).resolve().parents[1]
+    / "docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md"
+)
 
 
 def _sha(path: Path) -> str:
@@ -509,11 +513,18 @@ def scene_840920_host_layout_fixture(
     return evidence, launches, roots, billings
 
 
-def test_denominator_is_derived_as_fifteen_from_seventeen_reachable_probes() -> None:
+def test_denominator_excludes_diagnostic_from_eighteen_reachable_probes() -> None:
     families, derivation = derive_governed_families()
 
     assert len(families) == 15
-    assert derivation["website_reachable_probe_count"] == 17
+    assert derivation["website_reachable_probe_count"] == 18
+    assert derivation["family_probe_count"] == 17
+    assert derivation["non_family_reachable_probe_kinds"] == [
+        "native-task-arena-policy-diagnostic"
+    ]
+    assert "native-task-arena-policy-diagnostic" not in {
+        probe for family in families for probe in family.probe_kinds
+    }
     assert len(next(row for row in families if row.family_id == "native_task_arena").probe_kinds) == 3
     assert len(
         next(
@@ -522,6 +533,40 @@ def test_denominator_is_derived_as_fifteen_from_seventeen_reachable_probes() -> 
             if row.family_id == "artifixer3d_paired_native_import"
         ).probe_kinds
     ) == 2
+
+
+def test_reachable_diagnostic_is_required_but_cannot_be_replaced(
+    tmp_path: Path,
+) -> None:
+    source = REACHABILITY.read_text(encoding="utf-8")
+    diagnostic = (
+        "| `native-task-arena-policy-diagnostic` | "
+        "`build_native_task_arena_live_profile.py` |"
+    )
+    assert diagnostic in source
+
+    missing = tmp_path / "missing-diagnostic.md"
+    missing.write_text(source.replace(diagnostic + "\n", ""), encoding="utf-8")
+    with pytest.raises(
+        SceneStrictFamilyError,
+        match="missing=\\['native-task-arena-policy-diagnostic'\\]",
+    ):
+        derive_governed_families(missing)
+
+    replaced = tmp_path / "replaced-diagnostic.md"
+    replaced.write_text(
+        source.replace(
+            diagnostic,
+            "| `native-task-arena-policy-score-preview` | "
+            "`build_native_task_arena_live_profile.py` |",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        SceneStrictFamilyError,
+        match="unexpected=\\['native-task-arena-policy-score-preview'\\]",
+    ):
+        derive_governed_families(replaced)
 
 
 def test_supervise_scene_strict_family_ledger_cli_delegates_to_read_only_module() -> None:

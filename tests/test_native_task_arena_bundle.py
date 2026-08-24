@@ -54,6 +54,7 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
 )
 from blueprint_pipeline.native_task_arena_vast import (
     run_native_task_arena_controls_vast,
+    run_native_task_arena_policy_diagnostic_vast,
     run_native_task_arena_policy_vast,
     run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
@@ -1909,6 +1910,13 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
             "policy",
             "native_task_arena_policy_result.v1.json",
             "blueprint-native-task-policy-",
+            "pi05_droid",
+        ),
+        (
+            run_native_task_arena_policy_diagnostic_vast,
+            "policy_diagnostic",
+            "native_task_arena_policy_diagnostic_result.v1.json",
+            "blueprint-native-task-policy-diagnostic-",
             "pi05_droid",
         ),
     ),

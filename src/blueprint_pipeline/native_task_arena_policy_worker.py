@@ -15,6 +15,15 @@ from typing import Any
 
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
 RESULT_FILENAME = "native_task_arena_policy_result.v1.json"
+DIAGNOSTIC_RESULT_SCHEMA_VERSION = "native_task_arena_policy_diagnostic_result.v1"
+DIAGNOSTIC_RESULT_FILENAME = "native_task_arena_policy_diagnostic_result.v1.json"
+DIAGNOSTIC_EXECUTION_AUTHORITY = (
+    "development_only_unqualified_controls_canonical_diagnostic"
+)
+DIAGNOSTIC_CLAIM_CEILING = (
+    "development_only_policy_motion_diagnostic_not_scoring_not_ranking_"
+    "not_qualification"
+)
 GROOT_RUNTIME_IDENTITY_FILENAME = (
     "adp009d_groot_worker_identity.groot_n17_droid.json"
 )
@@ -133,6 +142,7 @@ def _admission_binding_mismatches(
     construction: Mapping[str, Any],
     controls: Mapping[str, Any],
     scene_plan: Mapping[str, Any],
+    diagnostic: bool = False,
 ) -> list[str]:
     """Name every disagreeing admission relation instead of one opaque blocker.
 
@@ -173,17 +183,58 @@ def _admission_binding_mismatches(
         for relation, left, right in digests
         if not _bound_digest(left) or not _bound_digest(right) or left != right
     )
-    qualifications = (
+    qualifications = [
         (
             "construction_gate_qualified",
             construction.get("construction_gate_qualified"),
         ),
-        ("controls_qualified", controls.get("controls_qualified")),
-        (
-            "control_pair_cell_admitted_for_policy_execution",
-            pair.get("cell_admitted_for_policy_execution"),
-        ),
-    )
+    ]
+    if diagnostic:
+        qualifications.extend(
+            [
+                ("diagnostic_controls_unqualified", controls.get("controls_qualified") is False),
+                (
+                    "diagnostic_control_pair_not_admitted",
+                    pair.get("cell_admitted_for_policy_execution") is False,
+                ),
+                (
+                    "diagnostic_execution_authority",
+                    spec.get("execution_authority") == DIAGNOSTIC_EXECUTION_AUTHORITY,
+                ),
+                (
+                    "diagnostic_claim_ceiling",
+                    spec.get("claim_ceiling") == DIAGNOSTIC_CLAIM_CEILING,
+                ),
+                ("diagnostic_canonical_reset", spec.get("initial_state") == "canonical_scene_reset"),
+                ("diagnostic_scoring_forbidden", spec.get("scientific_scoring_permitted") is False),
+                ("diagnostic_ranking_forbidden", spec.get("ranking_permitted") is False),
+                ("diagnostic_qualification_forbidden", spec.get("qualification_permitted") is False),
+            ]
+        )
+        zero_rows = pair.get("controls") or []
+        qualifications.append(
+            (
+                "diagnostic_zero_action_negative_separate",
+                spec.get("zero_action_negative_bound_separately") is True
+                and any(
+                    isinstance(row, Mapping)
+                    and row.get("control_id") == "zero_action_negative"
+                    and row.get("control_passed") is True
+                    and row.get("observed_outcome") == "never_moved"
+                    for row in zero_rows
+                ),
+            )
+        )
+    else:
+        qualifications.extend(
+            [
+                ("controls_qualified", controls.get("controls_qualified")),
+                (
+                    "control_pair_cell_admitted_for_policy_execution",
+                    pair.get("cell_admitted_for_policy_execution"),
+                ),
+            ]
+        )
     mismatched.extend(
         relation for relation, value in qualifications if value is not True
     )
@@ -289,9 +340,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
         or runtime.parent / "runtime_output"
     ).resolve()
-    output = output_root / RESULT_FILENAME
+    try:
+        initial_manifest = json.loads(
+            (runtime / "adp_arena_provider_manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        initial_manifest = {}
+    diagnostic = initial_manifest.get("execution_mode") == "policy_diagnostic"
+    output = output_root / (
+        DIAGNOSTIC_RESULT_FILENAME if diagnostic else RESULT_FILENAME
+    )
     result: dict[str, Any] = {
-        "schema_version": RESULT_SCHEMA_VERSION,
+        "schema_version": (
+            DIAGNOSTIC_RESULT_SCHEMA_VERSION if diagnostic else RESULT_SCHEMA_VERSION
+        ),
         "status": "blocked",
         "blockers": [],
         "phase_reached": "start",
@@ -301,16 +363,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ranking_eligible": False,
         "provider_zero_required_after_return": True,
         "simulator_execution_is_not_physical_truth": True,
+        "execution_mode": "policy_diagnostic" if diagnostic else "policy",
+        "claim_ceiling": DIAGNOSTIC_CLAIM_CEILING if diagnostic else None,
     }
     simulation_app = None
     try:
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-        manifest = json.loads(
-            (runtime / "adp_arena_provider_manifest.json").read_text(encoding="utf-8")
-        )
+        manifest = initial_manifest
         if (
             manifest.get("schema_version") != "native_task_arena_provider_bundle.v1"
-            or manifest.get("execution_mode") != "policy"
+            or manifest.get("execution_mode")
+            != ("policy_diagnostic" if diagnostic else "policy")
             or manifest.get("policy_candidate_id") not in {
                 "pi05_droid",
                 "groot_n17_droid",
@@ -348,6 +411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             construction=construction,
             controls=controls,
             scene_plan=scene_plan,
+            diagnostic=diagnostic,
         )
         if admission_mismatches:
             raise RuntimeError(
@@ -480,17 +544,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             media_output_dir=output_root / "episodes",
             episode_id=episode_id,
+            scoring_authorized=not diagnostic,
         )
         result["candidate_policy_queried"] = True
         result["episode"] = episode
-        result["policy_outcome_interpretable"] = bool(
-            episode["motion_evidence"]["policy_outcome_interpretable"]
-        )
-        result["scientific_outcome_admitted"] = bool(
-            result["policy_outcome_interpretable"]
-            and episode["score"].get("status") == "scored"
-        )
-        result["ranking_eligible"] = result["scientific_outcome_admitted"]
+        if diagnostic:
+            result["policy_outcome_interpretable"] = False
+            result["scientific_outcome_admitted"] = False
+            result["ranking_eligible"] = False
+            result["diagnostic_motion_observed"] = bool(
+                episode["motion_evidence"]["arm_moved"]
+            )
+        else:
+            result["policy_outcome_interpretable"] = bool(
+                episode["motion_evidence"]["policy_outcome_interpretable"]
+            )
+            result["scientific_outcome_admitted"] = bool(
+                result["policy_outcome_interpretable"]
+                and episode["score"].get("status") == "scored"
+            )
+            result["ranking_eligible"] = result["scientific_outcome_admitted"]
         result["status"] = "completed"
         result["phase_reached"] = "episode_complete"
     except BaseException as exc:  # noqa: BLE001 - retain every paid failure

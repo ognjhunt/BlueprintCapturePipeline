@@ -45,7 +45,10 @@ from .vast_official_billing_extractor import (
 SCHEMA_VERSION = "scene_strict_family_checkpoint.v1"
 CHAIN_SCHEMA_VERSION = "scene_strict_family_checkpoint_chain.v1"
 AI_REVIEW_PROBE_KIND = "non-probe:openai-sam31-visual-review"
-EXPECTED_WEBSITE_PROBE_COUNT = 17
+POLICY_DIAGNOSTIC_PROBE_KIND = "native-task-arena-policy-diagnostic"
+NON_FAMILY_REACHABLE_PROBE_KINDS = frozenset({POLICY_DIAGNOSTIC_PROBE_KIND})
+EXPECTED_WEBSITE_PROBE_COUNT = 18
+EXPECTED_FAMILY_PROBE_COUNT = 17
 EXPECTED_FAMILY_COUNT = 15
 MAX_EVIDENCE_JSON_BYTES = 32 * 1024 * 1024
 MAX_SCENE_LAUNCHES = 4096
@@ -462,7 +465,12 @@ def _billing_evidence_index(paths: Sequence[Path]) -> dict[str, tuple[Path, ...]
 def derive_governed_families(
     reachability_path: str | Path | None = None,
 ) -> tuple[tuple[FamilySpec, ...], dict[str, Any]]:
-    """Derive the strict 15-family set from the live 17-probe inventory."""
+    """Derive 15 scientific families from the live 18-probe inventory.
+
+    Development-only diagnostics remain part of the website reachability
+    contract, but they cannot create a scientific family or expand the
+    completion denominator.
+    """
 
     source = Path(reachability_path or _default_reachability_path()).resolve()
     text = source.read_text(encoding="utf-8")
@@ -478,11 +486,15 @@ def derive_governed_families(
         for probe in family.probe_kinds
         if probe != AI_REVIEW_PROBE_KIND
     }
+    if len(expected) != EXPECTED_FAMILY_PROBE_COUNT:
+        raise SceneStrictFamilyError("strict_family_probe_denominator_mismatch")
+    expected_reachable = expected | set(NON_FAMILY_REACHABLE_PROBE_KINDS)
     actual = set(probes)
-    if len(probes) != EXPECTED_WEBSITE_PROBE_COUNT or actual != expected:
+    if len(probes) != EXPECTED_WEBSITE_PROBE_COUNT or actual != expected_reachable:
         raise SceneStrictFamilyError(
             "strict_family_probe_inventory_mismatch:"
-            f"missing={sorted(expected - actual)}:unexpected={sorted(actual - expected)}"
+            f"missing={sorted(expected_reachable - actual)}:"
+            f"unexpected={sorted(actual - expected_reachable)}"
         )
     if len(_FAMILY_ORDER) != EXPECTED_FAMILY_COUNT:
         raise SceneStrictFamilyError("strict_family_denominator_mismatch")
@@ -491,6 +503,11 @@ def derive_governed_families(
         "reachability_sha256": _sha256_file(source),
         "website_reachable_probe_count": len(probes),
         "website_reachable_probe_kinds": list(probes),
+        "family_probe_count": len(expected),
+        "family_probe_kinds": sorted(expected),
+        "non_family_reachable_probe_kinds": sorted(
+            NON_FAMILY_REACHABLE_PROBE_KINDS
+        ),
         "grouping_rules": {
             "native_task_arena": list(_FAMILY_ORDER[11].probe_kinds),
             "artifixer3d_paired_native_import": list(_FAMILY_ORDER[5].probe_kinds),
@@ -1678,6 +1695,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "AI_REVIEW_PROBE_KIND",
     "EXPECTED_FAMILY_COUNT",
+    "NON_FAMILY_REACHABLE_PROBE_KINDS",
+    "POLICY_DIAGNOSTIC_PROBE_KIND",
     "FamilySpec",
     "SceneStrictFamilyError",
     "audit_scene_families",

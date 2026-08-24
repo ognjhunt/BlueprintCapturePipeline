@@ -179,6 +179,11 @@ from .native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
     load_verified_native_task_arena_policy_bundle,
 )
+from .native_task_arena_policy_diagnostic_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
+    build_native_task_arena_policy_diagnostic_bundle,
+    load_verified_native_task_arena_policy_diagnostic_bundle,
+)
 from .native_task_arena_runtime_preflight_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
     build_native_task_arena_runtime_preflight_bundle,
@@ -187,6 +192,7 @@ from .native_task_arena_runtime_preflight_bundle import (
 from .native_task_arena_vast import (
     run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
+    run_native_task_arena_policy_diagnostic_vast,
     run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
 )
@@ -1560,6 +1566,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -4973,12 +4980,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
         }:
             preflight_requested = (
                 args.probe_kind == NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND
             )
             controls_requested = args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
             policy_requested = args.probe_kind == NATIVE_TASK_ARENA_POLICY_PROBE_KIND
+            policy_diagnostic_requested = (
+                args.probe_kind == NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND
+            )
+            any_policy_requested = policy_requested or policy_diagnostic_requested
             warm_attach_requested = bool(args.native_task_arena_warm_session)
             missing = [
                 name
@@ -4989,13 +5001,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not getattr(args, name, None)
             ]
-            if (controls_requested or policy_requested) and not (
+            if (controls_requested or any_policy_requested) and not (
                 args.native_task_arena_construction_result
             ):
                 missing.append("native_task_arena_construction_result")
-            if policy_requested and not args.native_task_arena_control_result:
+            if any_policy_requested and not args.native_task_arena_control_result:
                 missing.append("native_task_arena_control_result")
-            if policy_requested and not args.native_task_arena_policy_execution_spec:
+            if any_policy_requested and not args.native_task_arena_policy_execution_spec:
                 missing.append("native_task_arena_policy_execution_spec")
             if warm_attach_requested and not controls_requested:
                 missing.append("native_task_arena_warm_attach_requires_controls")
@@ -5023,7 +5035,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("native_task_arena_allowed_active_instance_id_invalid")
             native_policy_execution_spec: dict[str, Any] | None = None
             gated_backbone_access: dict[str, Any] | None = None
-            if policy_requested and args.native_task_arena_policy_execution_spec:
+            if any_policy_requested and args.native_task_arena_policy_execution_spec:
                 try:
                     native_policy_execution_spec = json.loads(
                         Path(args.native_task_arena_policy_execution_spec).read_text(
@@ -5085,6 +5097,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bundle_loader = (
                             load_verified_native_task_arena_runtime_preflight_bundle
                             if preflight_requested
+                            else load_verified_native_task_arena_policy_diagnostic_bundle
+                            if policy_diagnostic_requested
                             else load_verified_native_task_arena_policy_bundle
                             if policy_requested
                             else load_verified_native_task_arena_controls_bundle
@@ -5115,6 +5129,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 **bundle_kwargs
                             )
                             if preflight_requested
+                            else build_native_task_arena_policy_diagnostic_bundle(
+                                **bundle_kwargs,
+                                construction_result_path=(
+                                    args.native_task_arena_construction_result
+                                ),
+                                control_result_path=(args.native_task_arena_control_result),
+                                policy_execution_spec=native_policy_execution_spec,
+                            )
+                            if policy_diagnostic_requested
                             else build_native_task_arena_policy_bundle(
                                 **bundle_kwargs,
                                 construction_result_path=(
@@ -5227,6 +5250,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "execution_mode": (
                     "runtime_preflight"
                     if preflight_requested
+                    else "policy_diagnostic"
+                    if policy_diagnostic_requested
                     else "policy"
                     if policy_requested
                     else "controls"
@@ -5246,7 +5271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if native_warm_session
                     else None
                 ),
-                "candidate_policy_queried": policy_requested,
+                "candidate_policy_queried": any_policy_requested,
                 "policy_candidate_id": (
                     prepared_bundle.get("policy_candidate_id") if prepared_bundle else None
                 ),
@@ -5299,7 +5324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "private_data_uploaded": True,
                     "raw_dataset_bytes_uploaded": False,
-                    "candidate_policy_queried": policy_requested,
+                    "candidate_policy_queried": any_policy_requested,
                     "gated_backbone_access": gated_backbone_access,
                     "physical_outcome_values_uploaded": False,
                     "explicit_concurrent_gpu_authority_bound": bool(
@@ -5353,6 +5378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_native = (
                     run_native_task_arena_runtime_preflight_vast
                     if preflight_requested
+                    else run_native_task_arena_policy_diagnostic_vast
+                    if policy_diagnostic_requested
                     else run_native_task_arena_policy_vast
                     if policy_requested
                     else run_native_task_arena_controls_vast
@@ -5374,7 +5401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 if not preflight_requested:
                     run_kwargs["paid_attempt_authority"] = native_authority
-                if policy_requested:
+                if any_policy_requested:
                     run_kwargs["authorize_gated_backbone"] = bool(
                         args.adp009d_authorize_gated_backbone
                     )

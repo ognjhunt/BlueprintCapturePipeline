@@ -137,6 +137,7 @@ def _provider_bundle(
         "construction": "construction_canary",
         "controls": "controls",
         "policy": "policy",
+        "policy-diagnostic": "policy_diagnostic",
     }[link]
     bound_names = {
         "construction": (),
@@ -145,6 +146,12 @@ def _provider_bundle(
             "adp_task_control_plan.v1.json",
         ),
         "policy": (
+            "native_task_arena_construction_result.v1.json",
+            "native_task_arena_control_result.v1.json",
+            "native_task_arena_policy_execution_spec.v1.json",
+            "openpi_polaris_checkpoint_inventory.json",
+        ),
+        "policy-diagnostic": (
             "native_task_arena_construction_result.v1.json",
             "native_task_arena_control_result.v1.json",
             "native_task_arena_policy_execution_spec.v1.json",
@@ -179,12 +186,12 @@ def _provider_bundle(
                 }
                 for name in POLICY_RUNTIME_ROOT_MODULE_NAMES
             ]
-            if link == "policy"
+            if link in {"policy", "policy-diagnostic"}
             else []
         ),
         "policy_provisioning_script": (
             "adp009d_policy_provisioning.pi05_droid.sh"
-            if link == "policy"
+            if link in {"policy", "policy-diagnostic"}
             else None
         ),
         "policy_provisioning": (
@@ -193,7 +200,7 @@ def _provider_bundle(
                 "size_bytes": 1,
                 "sha256": "sha256:" + "9" * 64,
             }
-            if link == "policy"
+            if link in {"policy", "policy-diagnostic"}
             else None
         ),
         "bound_runtime_inputs": [
@@ -223,8 +230,13 @@ def _provider_bundle(
             "construction": "native_task_arena_construction_result.v1.json",
             "controls": "native_task_arena_control_result.v1.json",
             "policy": "native_task_arena_policy_result.v1.json",
+            "policy-diagnostic": (
+                "native_task_arena_policy_diagnostic_result.v1.json"
+            ),
         }[link],
-        "policy_candidate_id": "pi05_droid" if link == "policy" else None,
+        "policy_candidate_id": (
+            "pi05_droid" if link in {"policy", "policy-diagnostic"} else None
+        ),
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "packet_bytes_mutated": False,
@@ -487,6 +499,30 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         control_value, digest_field="result_digest"
     )
     write_json(control, control_value)
+    diagnostic_control = tmp_path / "diagnostic_control_result.json"
+    diagnostic_control_value = json.loads(json.dumps(control_value))
+    diagnostic_control_value["status"] = "blocked"
+    diagnostic_control_value["controls_qualified"] = False
+    diagnostic_control_value["control_pair"].update(
+        {
+            "cell_admitted_for_policy_execution": False,
+            "controls": [
+                {
+                    "control_id": "zero_action_negative",
+                    "control_passed": True,
+                    "observed_outcome": "never_moved",
+                    "receipt_digest": "sha256:" + "8" * 64,
+                }
+            ],
+        }
+    )
+    diagnostic_control_value["control_pair"]["pair_digest"] = canonical_digest(
+        diagnostic_control_value["control_pair"], digest_field="pair_digest"
+    )
+    diagnostic_control_value["result_digest"] = canonical_digest(
+        diagnostic_control_value, digest_field="result_digest"
+    )
+    write_json(diagnostic_control, diagnostic_control_value)
     policy_spec = tmp_path / "policy_execution_spec.json"
     policy_value = {
         "schema_version": "native_task_arena_policy_execution_spec.v1",
@@ -502,6 +538,31 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         policy_value, digest_field="execution_spec_digest"
     )
     write_json(policy_spec, policy_value)
+    diagnostic_policy_spec = tmp_path / "policy_diagnostic_execution_spec.json"
+    diagnostic_policy_value = json.loads(json.dumps(policy_value))
+    diagnostic_policy_value.update(
+        {
+            "control_result_digest": diagnostic_control_value["result_digest"],
+            "control_pair_digest": diagnostic_control_value["control_pair"]["pair_digest"],
+            "execution_authority": (
+                "development_only_unqualified_controls_canonical_diagnostic"
+            ),
+            "claim_ceiling": (
+                "development_only_policy_motion_diagnostic_not_scoring_not_ranking_"
+                "not_qualification"
+            ),
+            "initial_state": "canonical_scene_reset",
+            "controls_qualified": False,
+            "zero_action_negative_bound_separately": True,
+            "scientific_scoring_permitted": False,
+            "ranking_permitted": False,
+            "qualification_permitted": False,
+        }
+    )
+    diagnostic_policy_value["execution_spec_digest"] = canonical_digest(
+        diagnostic_policy_value, digest_field="execution_spec_digest"
+    )
+    write_json(diagnostic_policy_spec, diagnostic_policy_value)
     bound_paths = {
         "native_task_arena_construction_result.v1.json": construction,
         "native_task_arena_control_result.v1.json": control,
@@ -510,6 +571,16 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     bundle_receipts = {}
     authorities = {}
     for link in builder.LINKS:
+        link_bound_paths = dict(bound_paths)
+        if link == "policy-diagnostic":
+            link_bound_paths.update(
+                {
+                    "native_task_arena_control_result.v1.json": diagnostic_control,
+                    "native_task_arena_policy_execution_spec.v1.json": (
+                        diagnostic_policy_spec
+                    ),
+                }
+            )
         bundle_receipt = _provider_bundle(
             tmp_path / f"{link}-bundle",
             link=link,
@@ -517,7 +588,7 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             runtime_source_digest=runtime_source["receipt_digest"],
             request_digest=request["request_digest"],
             scene_plan_digest=scene_plan["plan_digest"],
-            bound_paths=bound_paths,
+            bound_paths=link_bound_paths,
         )
         bundle_receipts[link] = bundle_receipt
         authorities[link] = _attempt_authority(
@@ -542,6 +613,8 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "construction": construction,
         "control": control,
         "policy_spec": policy_spec,
+        "diagnostic_control": diagnostic_control,
+        "diagnostic_policy_spec": diagnostic_policy_spec,
     }
 
 
@@ -557,11 +630,16 @@ def _build(lane, link: str, **overrides):
         "expected_scene_id": SCENE_ID,
         "expected_task_id": TASK_ID,
     }
-    if link in {"controls", "policy"}:
+    if link in {"controls", "policy", "policy-diagnostic"}:
         arguments["construction_result_path"] = lane["construction"]
-    if link == "policy":
-        arguments["control_result_path"] = lane["control"]
-        arguments["policy_execution_spec_path"] = lane["policy_spec"]
+    if link in {"policy", "policy-diagnostic"}:
+        diagnostic = link == "policy-diagnostic"
+        arguments["control_result_path"] = lane[
+            "diagnostic_control" if diagnostic else "control"
+        ]
+        arguments["policy_execution_spec_path"] = lane[
+            "diagnostic_policy_spec" if diagnostic else "policy_spec"
+        ]
     arguments.update(overrides)
     return builder.build_native_task_arena_live_profile(**arguments)
 
@@ -572,6 +650,7 @@ def _build(lane, link: str, **overrides):
         ("construction", "native-task-arena-construction"),
         ("controls", "native-task-arena-controls"),
         ("policy", "native-task-arena-policy"),
+        ("policy-diagnostic", "native-task-arena-policy-diagnostic"),
     ],
 )
 def test_each_link_routes_its_own_probe_kind(lane, link: str, probe_kind: str) -> None:

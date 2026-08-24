@@ -39,6 +39,7 @@ RESULT_SCHEMA_BY_MODE = {
     "construction_canary": "native_task_arena_construction_result.v1",
     "controls": "native_task_arena_control_result.v1",
     "policy": "native_task_arena_policy_result.v1",
+    "policy_diagnostic": "native_task_arena_policy_diagnostic_result.v1",
 }
 POLICY_RUNTIME_ROOT_MODULE_NAMES = (
     "adp009d_checkpoint_fetch_worker.py",
@@ -399,11 +400,13 @@ def build_native_task_arena_bundle(
         "construction_canary",
         "controls",
         "policy",
+        "policy_diagnostic",
     }:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_execution_mode_invalid"]
         )
-    if (execution_mode == "policy") is not bool(str(policy_candidate_id or "").strip()):
+    is_policy_mode = execution_mode in {"policy", "policy_diagnostic"}
+    if is_policy_mode is not bool(str(policy_candidate_id or "").strip()):
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_policy_binding_invalid"]
         )
@@ -489,7 +492,7 @@ def build_native_task_arena_bundle(
     runtime_root_rows: list[dict[str, Any]] = []
     policy_provisioning_script_name: str | None = None
     policy_provisioning_record: dict[str, Any] | None = None
-    if execution_mode == "policy":
+    if is_policy_mode:
         from .adp009d_policy_provisioning import (
             CHECKPOINT_INVENTORY_STAGED_NAME,
             POLICY_EXECUTION_SPEC_STAGED_NAME,
