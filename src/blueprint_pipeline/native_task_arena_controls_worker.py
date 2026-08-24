@@ -2092,6 +2092,22 @@ def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
     return None
 
 
+def _phase_is_solved_or_bound(
+    global_ik: Mapping[str, Any], *, phase_id: str
+) -> bool:
+    phases = global_ik.get("phases")
+    if not isinstance(phases, list):
+        return False
+    for phase in phases:
+        if not isinstance(phase, Mapping) or phase.get("phase_id") != phase_id:
+            continue
+        return (
+            phase.get("status") == "reused_bound_pose_solution"
+            or isinstance(phase.get("selected"), Mapping)
+        )
+    return False
+
+
 def _select_parallel_jaw_control_plan(
     *,
     servo: Any,
@@ -2116,16 +2132,21 @@ def _select_parallel_jaw_control_plan(
             reference_seeds=reference_seeds,
         )
         margin = _contact_open_joint_margin(preflight)
+        contact_phases_solved_or_bound = all(
+            _phase_is_solved_or_bound(preflight, phase_id=phase_id)
+            for phase_id in HOLD_SOLVED_VECTOR_PHASE_IDS
+        )
         admissible = (
-            preflight.get("status") == "all_unique_poses_solved_or_bound"
+            contact_phases_solved_or_bound
             and margin is not None
-            and margin >= 0.0
+            and margin >= CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
         )
         row = {
             "variant_id": variant_id,
             "control_plan_digest": plan.get("plan_digest"),
             "all_unique_poses_solved_or_bound": preflight.get("status")
             == "all_unique_poses_solved_or_bound",
+            "contact_phases_solved_or_bound": contact_phases_solved_or_bound,
             "contact_open_minimum_joint_limit_margin_rad": margin,
             "admissible": admissible,
             "global_ik_preflight": preflight,
@@ -2154,15 +2175,16 @@ def _select_parallel_jaw_control_plan(
         "selected_control_plan_digest": plan.get("plan_digest"),
         "selected_contact_open_minimum_joint_limit_margin_rad": margin,
         "selection_rule": (
-            "all_phases_solved_then_maximise_contact_open_joint_limit_margin_"
-            "then_prefer_normalized_nominal"
+            "contact_open_and_contact_close_solved_or_bound_then_maximise_"
+            "contact_open_joint_limit_margin_then_prefer_normalized_nominal"
         ),
         "variants": variants,
         "provider_mutation_performed": False,
         "physics_steps_performed": 0,
         "claim_boundary": (
-            "off_sim_multistart_branch_selection_only;native_controls_remain_"
-            "the_arrival_contact_dynamics_and_task_outcome_authority"
+            "off_sim_contact_branch_selection_only;non_contact_poses_without_"
+            "global_ik_remain_live_dls_controls;native_arrival_contact_"
+            "dynamics_and_task_outcome_gates_remain_authoritative"
         ),
     }
     return plan, targets, {**receipt, "selected_global_ik_preflight": preflight}
@@ -2626,8 +2648,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "controls_global_ik_preflight",
             (
                 "completed"
-                if controls_global_ik["status"]
-                == "all_unique_poses_solved_or_bound"
+                if jaw_selection.get("status")
+                == "selected_before_physics_motion"
                 else "blocked"
             ),
         )
