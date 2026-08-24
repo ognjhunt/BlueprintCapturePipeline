@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
+import inspect
 import json
 from pathlib import Path
+import textwrap
 
 import pytest
 
@@ -28,6 +31,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _synthetic_post_phase5_checkpoint,
     _verified_runtime_inputs,
     _with_live_physx_dls_contact_close,
+    main,
 )
 
 
@@ -1106,6 +1110,38 @@ def test_downstream_diagnostic_request_is_default_off_and_digest_bound(
                 "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json": path
             }
         )
+
+
+def test_requested_downstream_diagnostic_exits_before_unrelated_controls_work() -> None:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(main)))
+    requested_branch = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "downstream_diagnostic_request" in ast.unparse(node.test)
+        and "enabled" in ast.unparse(node.test)
+        and "is True" in ast.unparse(node.test)
+    )
+    assert any(isinstance(node, ast.Return) for node in requested_branch.body)
+
+    forbidden_calls = {
+        "run_downstream_phase_posture_matrix",
+        "run_actuator_posture_sweep",
+        "run_contact_close_posture_sweep",
+        "run_contact_acquisition_sweep",
+        "run_task_neutral_controls",
+    }
+    call_lines = {
+        node.func.id: node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in forbidden_calls
+    }
+    assert set(call_lines) == forbidden_calls
+    assert all(
+        line > requested_branch.end_lineno for line in call_lines.values()
+    )
 
 
 class _BaseRigidEnvironment:

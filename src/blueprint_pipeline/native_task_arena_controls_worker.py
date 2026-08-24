@@ -2527,6 +2527,70 @@ def _synthetic_post_phase5_checkpoint(
     return checkpoint
 
 
+def _run_requested_synthetic_post_phase5_downstream_diagnostic(
+    *,
+    episode_environment: Any,
+    scene_plan: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+    global_ik: Mapping[str, Any],
+    scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
+    gripper: Mapping[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    """Run the opt-in continuous suffix probe and no other controls work."""
+
+    checkpoint = _synthetic_post_phase5_checkpoint(
+        control_plan=control_plan,
+        global_ik=global_ik,
+        scripted_pose_joint_targets=scripted_pose_joint_targets,
+        task_spec=scene_plan["task_spec"],
+    )
+    if checkpoint is None:
+        return {
+            "schema_version": (
+                "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+            ),
+            "status": "unavailable",
+            "reason": "no_contact_pose_candidate_inside_unchanged_gates",
+            "phase5_qualified": False,
+            "qualification_effect": "none",
+            "physics_steps_performed": 0,
+            "claim_boundary": (
+                "diagnostic_refusal_only;does_not_qualify_phase5_any_"
+                "downstream_phase_policy_admission_or_task_success"
+            ),
+        }
+    try:
+        from blueprint_pipeline.adp009d_control_episode import (
+            run_synthetic_post_phase5_downstream_diagnostic,
+        )
+
+        return run_synthetic_post_phase5_downstream_diagnostic(
+            environment=episode_environment,
+            task_spec=scene_plan["task_spec"],
+            control_plan=control_plan,
+            checkpoint=checkpoint,
+            gripper_open_command=float(gripper["open_command"]),
+            gripper_closed_command=float(gripper["closed_command"]),
+            output_dir=output_root / "downstream_continuous_diagnostic",
+        )
+    except BaseException as exc:  # noqa: BLE001 - retain diagnostic gap
+        return {
+            "schema_version": (
+                "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+            ),
+            "status": "unavailable",
+            "reason": f"{type(exc).__name__}:{exc}",
+            "phase5_qualified": False,
+            "qualification_effect": "none",
+            "physics_steps_performed": 0,
+            "claim_boundary": (
+                "diagnostic_gap_only;continuous_controls_and_all_"
+                "qualification_gates_unchanged"
+            ),
+        }
+
+
 def _physics_admitted_contact_open_cell(
     sweep: Mapping[str, Any],
     *,
@@ -3232,6 +3296,79 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
 
+        # This immutable opt-in is a separate, development-only probe.  C74
+        # already sealed the reset-isolated 134-cell matrix, so repeating that
+        # matrix (or any Phase-4/5 sweep) would only delay the one new causal
+        # question: can the unchanged phases 6--11 execute continuously from a
+        # safe, gate-filtered synthetic post-Phase-5 boundary?  Terminate after
+        # sealing this receipt so the probe can never drift into controls
+        # qualification or add work to the ordinary controls lane.
+        if downstream_diagnostic_request.get("enabled") is True:
+            _announce("synthetic_post_phase5_downstream_diagnostic")
+            downstream_diagnostic = (
+                _run_requested_synthetic_post_phase5_downstream_diagnostic(
+                    episode_environment=episode_environment,
+                    scene_plan=scene_plan,
+                    control_plan=effective_control_plan,
+                    global_ik=controls_global_ik,
+                    scripted_pose_joint_targets=(
+                        scripted_pose_joint_targets
+                    ),
+                    gripper=gripper,
+                    output_root=output_root,
+                )
+            )
+            result["synthetic_post_phase5_downstream_diagnostic"] = (
+                downstream_diagnostic
+            )
+            result["downstream_phase_posture_matrix"] = {
+                "schema_version": (
+                    "native_task_arena_downstream_phase_posture_matrix.v1"
+                ),
+                "status": "not_run",
+                "reason": (
+                    "separate_continuous_downstream_diagnostic_mode"
+                ),
+                "represented_configuration_count": 0,
+                "executed_cell_count": 0,
+                "phase_reports": [],
+                "claim_boundary": "c74_matrix_not_repeated",
+            }
+            result.update(
+                {
+                    "controls_qualified": False,
+                    "qualification_effect": "none",
+                    "development_only": True,
+                    "diagnostic_only": True,
+                    "phase5_qualified": False,
+                    "phase_reached": (
+                        "synthetic_post_phase5_downstream_diagnostic_complete"
+                    ),
+                }
+            )
+            diagnostic_measured = (
+                downstream_diagnostic.get("status") == "measured"
+            )
+            if diagnostic_measured:
+                result["status"] = "diagnostic_completed"
+            else:
+                reason = str(
+                    downstream_diagnostic.get("reason")
+                    or downstream_diagnostic.get("status")
+                    or "unknown"
+                )
+                result["blockers"].append(
+                    "synthetic_post_phase5_downstream_diagnostic_failed:"
+                    + reason
+                )
+                result["blockers"] = sorted(set(result["blockers"]))
+                result["status"] = "blocked"
+            _announce(
+                "synthetic_post_phase5_downstream_diagnostic",
+                "completed" if diagnostic_measured else "blocked",
+            )
+            return 0 if diagnostic_measured else 1
+
         # A missing off-sim contact-open seed is precisely the condition that
         # needs the live controller as authority.  Running the 134-cell
         # phases-6--11 diagnostic first would spend most of the retained-worker
@@ -3321,84 +3458,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         _announce("synthetic_post_phase5_downstream_diagnostic")
-        if downstream_diagnostic_request.get("enabled") is not True:
-            downstream_diagnostic = {
-                "schema_version": (
-                    "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
-                ),
-                "status": "not_requested",
-                "reason": "immutable_bundle_request_absent",
-                "phase5_qualified": False,
-                "qualification_effect": "none",
-                "physics_steps_performed": 0,
-                "claim_boundary": (
-                    "default_off;ordinary_controls_execution_unchanged"
-                ),
-            }
-        else:
-            downstream_checkpoint = _synthetic_post_phase5_checkpoint(
-                control_plan=effective_control_plan,
-                global_ik=controls_global_ik,
-                scripted_pose_joint_targets=scripted_pose_joint_targets,
-                task_spec=scene_plan["task_spec"],
-            )
-            if downstream_checkpoint is None:
-                downstream_diagnostic = {
-                    "schema_version": (
-                        "adp_task_synthetic_post_phase5_downstream_"
-                        "diagnostic.v1"
-                    ),
-                    "status": "unavailable",
-                    "reason": (
-                        "no_contact_pose_candidate_inside_unchanged_gates"
-                    ),
-                    "phase5_qualified": False,
-                    "qualification_effect": "none",
-                    "claim_boundary": (
-                        "diagnostic_refusal_only;does_not_qualify_phase5_"
-                        "any_downstream_phase_policy_admission_or_task_"
-                        "success"
-                    ),
-                }
-            else:
-                try:
-                    from blueprint_pipeline.adp009d_control_episode import (
-                        run_synthetic_post_phase5_downstream_diagnostic,
-                    )
-
-                    downstream_diagnostic = (
-                        run_synthetic_post_phase5_downstream_diagnostic(
-                            environment=episode_environment,
-                            task_spec=scene_plan["task_spec"],
-                            control_plan=effective_control_plan,
-                            checkpoint=downstream_checkpoint,
-                            gripper_open_command=float(
-                                gripper["open_command"]
-                            ),
-                            gripper_closed_command=float(
-                                gripper["closed_command"]
-                            ),
-                            output_dir=(
-                                output_root
-                                / "downstream_continuous_diagnostic"
-                            ),
-                        )
-                    )
-                except BaseException as exc:  # noqa: BLE001 - diagnostic only
-                    downstream_diagnostic = {
-                        "schema_version": (
-                            "adp_task_synthetic_post_phase5_downstream_"
-                            "diagnostic.v1"
-                        ),
-                        "status": "unavailable",
-                        "reason": f"{type(exc).__name__}:{exc}",
-                        "phase5_qualified": False,
-                        "qualification_effect": "none",
-                        "claim_boundary": (
-                            "diagnostic_gap_only;continuous_controls_and_"
-                            "all_qualification_gates_unchanged"
-                        ),
-                    }
+        downstream_diagnostic = {
+            "schema_version": (
+                "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+            ),
+            "status": "not_requested",
+            "reason": "immutable_bundle_request_absent",
+            "phase5_qualified": False,
+            "qualification_effect": "none",
+            "physics_steps_performed": 0,
+            "claim_boundary": (
+                "default_off;ordinary_controls_execution_unchanged"
+            ),
+        }
         result["synthetic_post_phase5_downstream_diagnostic"] = (
             downstream_diagnostic
         )
