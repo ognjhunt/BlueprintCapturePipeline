@@ -188,6 +188,122 @@ def test_watchdog_exact_instance_handoff_is_atomic_and_private(tmp_path: Path) -
     assert not path.with_suffix(".tmp").exists()
 
 
+def test_watchdog_supersession_proves_successor_before_retiring_predecessor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    predecessor_pid = 9876
+    predecessor_alive = True
+    events: list[str] = []
+
+    def fake_pid_alive(pid: int) -> bool:
+        if pid == predecessor_pid:
+            return predecessor_alive
+        return True
+
+    def fake_kill(pid: int, sig: int) -> None:
+        nonlocal predecessor_alive
+        assert pid == predecessor_pid
+        assert sig != 0
+        events.append("predecessor_retired")
+        predecessor_alive = False
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict[str, Any]:
+            assert instance_id == "48527937"
+            events.append("provider_inspected")
+            return {
+                "status": "observed",
+                "provider": "vast",
+                "instance_id": instance_id,
+                "actual_status": "running",
+                "api_confirmed": True,
+            }
+
+    predecessor_dir = tmp_path / "predecessor"
+    predecessor_dir.mkdir()
+    control.write_started_vast_instance_id(
+        predecessor_dir / "started_vast_instance_id.txt", 48527937
+    )
+    predecessor = {
+        "status": "retained_until_hard_ttl",
+        "watchdog_pid": predecessor_pid,
+        "watchdog_deadline_epoch": time.time() + 120,
+        "watchdog_out_dir": str(predecessor_dir),
+    }
+    monkeypatch.setattr(control, "_pid_alive", fake_pid_alive)
+    monkeypatch.setattr(control.os, "kill", fake_kill)
+
+    receipt, successor = control.supersede_independent_vast_watchdog(
+        job_dir=tmp_path / "successor",
+        predecessor_handoff=predecessor,
+        instance_id=48527937,
+        max_live_minutes=5,
+        generated_at="2026-08-24T06:00:00+00:00",
+        pod_name_prefix="blueprint-adp-arena-controls-renewal-",
+        provider_factory=lambda _name: Provider(),
+    )
+
+    assert receipt["status"] == "superseded"
+    assert receipt["predecessor_watchdog_retired"] is True
+    assert receipt["provider_instance_running_after_transfer"] is True
+    assert receipt["provider_mutations_performed"] == 0
+    assert successor is not None
+    assert successor.started_instance_id_path.read_text(encoding="utf-8") == "48527937\n"
+    assert events == [
+        "provider_inspected",
+        "provider_inspected",
+        "predecessor_retired",
+        "provider_inspected",
+    ]
+
+
+def test_watchdog_supersession_leaves_predecessor_when_instance_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    predecessor_dir = tmp_path / "predecessor"
+    predecessor_dir.mkdir()
+    control.write_started_vast_instance_id(
+        predecessor_dir / "started_vast_instance_id.txt", 48527937
+    )
+    predecessor = {
+        "status": "retained_until_hard_ttl",
+        "watchdog_pid": 9876,
+        "watchdog_deadline_epoch": time.time() + 120,
+        "watchdog_out_dir": str(predecessor_dir),
+    }
+    monkeypatch.setattr(control, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        control.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("successor must not be armed"),
+    )
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict[str, Any]:
+            return {
+                "status": "observed",
+                "provider": "vast",
+                "instance_id": instance_id,
+                "actual_status": "loading",
+                "api_confirmed": True,
+            }
+
+    receipt, successor = control.supersede_independent_vast_watchdog(
+        job_dir=tmp_path / "successor",
+        predecessor_handoff=predecessor,
+        instance_id=48527937,
+        max_live_minutes=5,
+        generated_at="2026-08-24T06:00:00+00:00",
+        pod_name_prefix="blueprint-adp-arena-controls-renewal-",
+        provider_factory=lambda _name: Provider(),
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == ["successor_watchdog_instance_not_running"]
+    assert successor is None
+
+
 def test_watchdog_process_start_failure_blocks_before_allocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
