@@ -16,6 +16,7 @@ from .native_task_arena_paid_authority import AUTHORITY_SCHEMA_VERSION
 
 CLOSEOUT_SCHEMA_VERSION = "native_task_arena_expired_warm_closeout.v1"
 WATCHDOG_SCHEMA_VERSION = "groot_oscar_runpod_canary_watchdog.v1"
+WATCHDOG_SUPERSESSION_SCHEMA_VERSION = "vast_independent_watchdog_supersession.v1"
 
 
 def _sha256(path: Path) -> str:
@@ -57,6 +58,8 @@ def materialize_expired_warm_closeout(
     retained_result_path: str | Path,
     provider_zero_guard_path: str | Path,
     output_dir: str | Path,
+    watchdog_supersession_path: str | Path | None = None,
+    successor_watchdog_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Derive terminal records only after the retained worker is proven absent.
 
@@ -75,15 +78,37 @@ def materialize_expired_warm_closeout(
     teardown_file = _bound_path(
         retained.get("teardown_manifest_path"), code="expired_warm_teardown_unbound"
     )
-    watchdog_file = _bound_path(
+    retained_watchdog_file = _bound_path(
         retained.get("watchdog_receipt_path"), code="expired_warm_watchdog_unbound"
     )
+    supersession_file: Path | None = None
+    supersession: dict[str, Any] | None = None
+    if watchdog_supersession_path is not None or successor_watchdog_path is not None:
+        if watchdog_supersession_path is None or successor_watchdog_path is None:
+            raise ValueError("native_task_arena_expired_warm_closeout_invalid")
+        supersession_file = Path(watchdog_supersession_path).expanduser().resolve()
+        watchdog_file = Path(successor_watchdog_path).expanduser().resolve()
+        if (
+            supersession_file.is_symlink()
+            or not supersession_file.is_file()
+            or watchdog_file.is_symlink()
+            or not watchdog_file.is_file()
+        ):
+            raise ValueError("native_task_arena_expired_warm_closeout_invalid")
+        supersession = _read(
+            supersession_file, "expired_warm_watchdog_supersession_unreadable"
+        )
+    else:
+        watchdog_file = retained_watchdog_file
     guard_file = Path(provider_zero_guard_path).expanduser().resolve()
     cleanup_file = _bound_path(
         retained.get("object_store_cleanup_path"), code="expired_warm_cleanup_unbound"
     )
     adapter = _read(adapter_file, "expired_warm_adapter_unreadable")
     teardown = _read(teardown_file, "expired_warm_teardown_unreadable")
+    retained_watchdog = _read(
+        retained_watchdog_file, "expired_warm_watchdog_unreadable"
+    )
     watchdog = _read(watchdog_file, "expired_warm_watchdog_unreadable")
     guard = _read(guard_file, "expired_warm_provider_zero_guard_unreadable")
     cleanup = _read(cleanup_file, "expired_warm_cleanup_unreadable")
@@ -107,6 +132,65 @@ def materialize_expired_warm_closeout(
         )
     except ValueError:
         guard_after_watchdog = False
+    supersession_valid = supersession is None
+    if supersession is not None:
+        successor_out_dir = Path(
+            str(supersession.get("successor_watchdog_out_dir") or "")
+        ).expanduser()
+        provider_inspections = (
+            supersession.get("provider_inspect_before"),
+            supersession.get("provider_inspect_successor_armed"),
+            supersession.get("provider_inspect_after_transfer"),
+        )
+        try:
+            successor_deadline_is_later = float(
+                supersession.get("successor_watchdog_deadline_epoch") or 0
+            ) > float(supersession.get("predecessor_watchdog_deadline_epoch") or 0)
+            successor_started_id_matches = (
+                (successor_out_dir / "started_vast_instance_id.txt")
+                .read_text(encoding="utf-8")
+                .strip()
+                == str(instance_id)
+            )
+        except (OSError, UnicodeError, TypeError, ValueError, OverflowError):
+            successor_deadline_is_later = False
+            successor_started_id_matches = False
+        supersession_valid = bool(
+            supersession.get("schema_version")
+            == WATCHDOG_SUPERSESSION_SCHEMA_VERSION
+            and supersession.get("status") == "superseded"
+            and supersession.get("instance_id") == instance_id
+            and supersession.get("predecessor_watchdog_pid")
+            == warm_session.get("watchdog_pid")
+            and supersession.get("predecessor_watchdog_deadline_epoch")
+            == warm_session.get("watchdog_deadline_epoch")
+            and supersession.get("predecessor_watchdog_retired") is True
+            and supersession.get("successor_watchdog_pid") == watchdog.get("pid")
+            and supersession.get("successor_watchdog_deadline_epoch")
+            == watchdog.get("deadline_epoch")
+            and successor_deadline_is_later
+            and successor_out_dir.is_absolute()
+            and successor_out_dir.resolve() == watchdog_file.parent
+            and watchdog.get("watchdog_out_dir") == str(successor_out_dir.resolve())
+            and retained_watchdog.get("schema_version") == WATCHDOG_SCHEMA_VERSION
+            and retained_watchdog.get("pid") == warm_session.get("watchdog_pid")
+            and retained_watchdog.get("deadline_epoch")
+            == warm_session.get("watchdog_deadline_epoch")
+            and retained_watchdog.get("watchdog_out_dir")
+            == warm_session.get("watchdog_out_dir")
+            and retained_watchdog.get("pod_name_prefix")
+            == warm_session.get("watchdog_pod_name_prefix")
+            and supersession.get("provider_instance_running_after_transfer") is True
+            and all(
+                isinstance(row, Mapping)
+                and row.get("api_confirmed") is True
+                and str(row.get("instance_id") or "") == str(instance_id)
+                and str(row.get("actual_status") or "").lower()
+                in {"running", "active"}
+                for row in provider_inspections
+            )
+            and successor_started_id_matches
+        )
     if (
         authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or authority.get("authorization_digest")
@@ -131,6 +215,7 @@ def materialize_expired_warm_closeout(
         or teardown.get("vast_instance_ids") != [instance_id]
         or teardown.get("continuing_spend_from_this_run") is not True
         or watchdog.get("schema_version") != WATCHDOG_SCHEMA_VERSION
+        or watchdog.get("provider") != "vast"
         or watchdog.get("status") != "provider_terminal"
         or watchdog.get("provider_absence_confirmed") is not True
         or not isinstance(final_inventory, Mapping)
@@ -154,6 +239,7 @@ def materialize_expired_warm_closeout(
         or guard_rows.get("vast", {}).get("status") != "succeeded"
         or guard_rows.get("vast", {}).get("row_count") != 0
         or not guard_after_watchdog
+        or not supersession_valid
     ):
         raise ValueError("native_task_arena_expired_warm_closeout_invalid")
 
@@ -235,7 +321,10 @@ def materialize_expired_warm_closeout(
                 "retained_result": _record(retained_result_file),
                 "retained_adapter": _record(adapter_file),
                 "retained_teardown": _record(teardown_file),
-                "independent_watchdog": _record(watchdog_file),
+            "independent_watchdog": _record(watchdog_file),
+            "watchdog_supersession": (
+                _record(supersession_file) if supersession_file is not None else None
+            ),
                 "provider_zero_guard": _record(guard_file),
                 "provider_mutation_performed": False,
             },
@@ -254,6 +343,9 @@ def materialize_expired_warm_closeout(
         "terminal_adapter": _record(terminal_adapter_path),
         "terminal_teardown": _record(terminal_teardown_path),
         "independent_watchdog": _record(watchdog_file),
+        "watchdog_supersession": (
+            _record(supersession_file) if supersession_file is not None else None
+        ),
         "terminal_watchdog": _record(terminal_watchdog_path),
         "provider_zero_guard": _record(guard_file),
         "provider_instance_id": instance_id,
