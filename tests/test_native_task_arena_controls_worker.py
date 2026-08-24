@@ -1816,6 +1816,7 @@ def test_contact_acquisition_progress_is_atomic_and_timeout_harvestable(
     marker = capsys.readouterr().out.strip()
     assert marker.startswith("BLUEPRINT_CONTACT_ACQUISITION_PROGRESS:CELL:i=7:")
     assert ":ok=1:b=2:lf=1.2:rf=1.1:d=0.004:o=0.05" in marker
+    assert marker.endswith(":ad=0.004")
 
 
 def test_contact_acquisition_refuses_nonadmitted_best_cell() -> None:
