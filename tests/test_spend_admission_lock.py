@@ -240,6 +240,56 @@ def test_uncovered_existing_provider_does_not_block_vast_launch() -> None:
         )
     )
 
+
+def test_unavailable_digitalocean_inventory_does_not_block_vast_launch() -> None:
+    billing = _billing(42.0)
+    billing["provider_totals_usd"] = {
+        "runpod": 42.0,
+        "vast": 0.0,
+    }
+    inventory = _inventory()
+    digitalocean = inventory[-1]
+    digitalocean["status"] = "failed"
+    digitalocean["blockers"] = ["digitalocean_inventory_query_failed"]
+    evidence = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0),
+        billing_reconciliation=billing,
+        instances=[],
+        reap_results=[],
+        inventory_results=inventory,
+        override_path=None,
+        now=NOW,
+    )
+
+    assert evidence["status"] == "open"
+    assert evidence["admission_allowed"] is True
+    assert evidence["provider_admission"]["vast"] == {  # type: ignore[index]
+        "admission_allowed": True,
+        "blockers": [],
+    }
+    assert evidence["provider_admission"]["digitalocean"] == {  # type: ignore[index]
+        "admission_allowed": False,
+        "blockers": [
+            "provider_inventory:digitalocean:digitalocean_inventory_query_failed",
+            "provider_inventory_not_succeeded:digitalocean",
+            "billing_reconciliation_provider_uncovered:digitalocean",
+        ],
+    }
+    assert validate_spend_admission_lock(
+        evidence,
+        now=NOW,
+        required_provider="vast",
+    ) == []
+    assert (
+        "spend_admission_lock_required_provider_inventory_unavailable:digitalocean"
+        in validate_spend_admission_lock(
+            evidence,
+            now=NOW,
+            required_provider="digitalocean",
+        )
+    )
+
+
 def test_paid_chokepoint_binds_billing_coverage_to_launch_provider() -> None:
     now = datetime.now(timezone.utc)
     evidence = build_spend_admission_lock(
@@ -353,10 +403,18 @@ def test_chokepoint_recomputes_billing_inventory_and_claim_contracts() -> None:
         "billing_export_is_external_input_not_live_api_proof"
     ] = False
 
-    blockers = validate_spend_admission_lock(evidence, now=NOW)
+    blockers = validate_spend_admission_lock(
+        evidence,
+        now=NOW,
+        required_provider="runpod",
+    )
 
     assert "spend_admission_lock_billing_stale_or_invalid_time" in blockers
-    assert any("provider_inventory_not_succeeded:runpod" in item for item in blockers)
+    assert (
+        "spend_admission_lock_required_provider_inventory_unavailable:runpod"
+        in blockers
+    )
+    assert "spend_admission_lock_provider_admission_mismatch:runpod" in blockers
     assert "spend_admission_lock_claim_boundary_invalid" in blockers
 
 
