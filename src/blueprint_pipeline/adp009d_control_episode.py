@@ -2986,8 +2986,8 @@ def run_synthetic_post_phase5_downstream_diagnostic(
     """Execute phases 6--11 continuously from a synthetic Phase-5 boundary.
 
     The checkpoint deliberately does *not* assert that a grasp was achieved.
-    It injects caller-identified arm and task joints, then physically commands
-    the closed gripper through the same bounded action seam before replaying
+    It injects a digest-bound, gate-filtered arm and task state, then physically
+    commands the closed gripper through the same bounded seam before replaying
     the unchanged downstream suffix.  It therefore breaks the debugging
     dependency on Phase 5 without qualifying Phase 5, a policy cell, any
     downstream phase, or task success.
@@ -3023,7 +3023,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
         or frozen_checkpoint.get("gripper_state") != "closed"
         or frozen_checkpoint.get("phase5_qualified") is not False
         or frozen_checkpoint.get("initialization_authority")
-        != "caller_provided_synthetic_diagnostic_state"
+        != "runtime_derived_from_gate_qualified_offsim_contact_close"
         or frozen_checkpoint.get("checkpoint_digest")
         != canonical_digest(
             frozen_checkpoint, digest_field="checkpoint_digest"

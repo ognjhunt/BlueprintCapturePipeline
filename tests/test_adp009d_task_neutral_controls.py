@@ -392,7 +392,7 @@ def _synthetic_post_phase5_checkpoint() -> dict:
         "gripper_state": "closed",
         "phase5_qualified": False,
         "initialization_authority": (
-            "caller_provided_synthetic_diagnostic_state"
+            "runtime_derived_from_gate_qualified_offsim_contact_close"
         ),
         "checkpoint_digest": "",
     }

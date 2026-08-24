@@ -15,6 +15,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _construction_global_ik_joint_targets,
     _control_plan_global_ik_joint_targets,
     _dispatch_physics_admitted_jaw_variant,
+    _downstream_diagnostic_request,
     _fallback_contact_open_postures,
     _input_binding_mismatches,
     _load_and_verify_manifest,
@@ -38,6 +39,8 @@ def test_downstream_checkpoint_is_synthetic_and_selects_continuous_branch() -> N
                 "mode": "ik_pose",
                 "target_position_world_m": [1.0, 2.0, 3.0],
                 "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
                 "expected_joint_positions": {"door": 0.0, "latch": 0.0},
             },
             {
@@ -57,11 +60,13 @@ def test_downstream_checkpoint_is_synthetic_and_selects_continuous_branch() -> N
                         "solved": False,
                         "joint_positions_rad": [0.2] * 7,
                         "position_error_m": 0.004,
+                        "orientation_error_rad": 0.07,
                     },
                     {
                         "solved": False,
                         "joint_positions_rad": [0.8] * 7,
                         "position_error_m": 0.001,
+                        "orientation_error_rad": 0.07,
                     },
                 ],
             }
@@ -79,7 +84,6 @@ def test_downstream_checkpoint_is_synthetic_and_selects_continuous_branch() -> N
                 "joint_positions_rad": [0.25] * 7,
             }
         ],
-        jaw_selection={"variants": []},
         task_spec={"joint_reset_positions_rad": {"door": 0.0}},
     )
 
@@ -106,6 +110,8 @@ def test_downstream_checkpoint_refuses_missing_task_joint_state() -> None:
                         "mode": "ik_pose",
                         "target_position_world_m": [1.0, 2.0, 3.0],
                         "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                        "arrival_tolerance_m": 0.005,
+                        "arrival_orientation_tolerance_rad": 0.08,
                         "hold_solved_arm_joint_positions_rad": [0.2] * 7,
                     },
                     {
@@ -118,8 +124,52 @@ def test_downstream_checkpoint_refuses_missing_task_joint_state() -> None:
             },
             global_ik={"phases": []},
             scripted_pose_joint_targets=[],
-            jaw_selection={"variants": []},
             task_spec={},
+        )
+        is None
+    )
+
+
+def test_downstream_checkpoint_refuses_contact_pose_outside_unchanged_gate() -> None:
+    plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_close",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
+                "expected_joint_positions": {"door": 0.0},
+            },
+            {
+                "phase_id": "joint_path_01",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.1, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        ]
+    }
+    assert (
+        _synthetic_post_phase5_checkpoint(
+            control_plan=plan,
+            global_ik={
+                "phases": [
+                    {
+                        "phase_id": "contact_close",
+                        "attempts": [
+                            {
+                                "solved": False,
+                                "joint_positions_rad": [0.2] * 7,
+                                "position_error_m": 0.0044,
+                                "orientation_error_rad": 0.087,
+                            }
+                        ],
+                    }
+                ]
+            },
+            scripted_pose_joint_targets=[],
+            task_spec={"joint_reset_positions_rad": {"door": 0.0}},
         )
         is None
     )
@@ -1015,6 +1065,47 @@ def test_controls_runtime_inputs_reverify_every_byte(tmp_path: Path) -> None:
     (inputs / "adp_task_control_plan.v1.json").write_text("tampered\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="identity_mismatch"):
         _verified_runtime_inputs(tmp_path, {"bound_runtime_inputs": rows})
+
+
+def test_downstream_diagnostic_request_is_default_off_and_digest_bound(
+    tmp_path: Path,
+) -> None:
+    assert _downstream_diagnostic_request({}) == {
+        "status": "not_requested",
+        "enabled": False,
+        "provider_mutation_performed": False,
+    }
+    request = {
+        "schema_version": (
+            "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1"
+        ),
+        "enabled": True,
+        "development_only": True,
+        "qualification_effect": "none",
+        "request_digest": "",
+    }
+    request["request_digest"] = _canonical_digest(
+        request, field="request_digest"
+    )
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+
+    checked = _downstream_diagnostic_request(
+        {
+            "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json": path
+        }
+    )
+    assert checked["status"] == "requested"
+    assert checked["request_digest"] == request["request_digest"]
+
+    request["qualification_effect"] = "qualify"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="diagnostic_request_invalid"):
+        _downstream_diagnostic_request(
+            {
+                "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json": path
+            }
+        )
 
 
 class _BaseRigidEnvironment:

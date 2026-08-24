@@ -31,6 +31,9 @@ from blueprint_pipeline.native_franka_action_math import (
 
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
+DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME = (
+    "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json"
+)
 POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
 # C25 proved that pose reachability alone is not enough for contact.  The
 # nominal jaw branch reached the 5 mm off-sim pose gate with panda_joint5 only
@@ -329,9 +332,46 @@ def _verified_runtime_inputs(
         "native_task_arena_construction_result.v1.json",
         "adp_task_control_plan.v1.json",
     }
-    if set(verified) != required:
+    if set(verified) not in (
+        required,
+        {*required, DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME},
+    ):
         raise RuntimeError("native_task_controls_runtime_inputs_incomplete")
     return verified
+
+
+def _downstream_diagnostic_request(
+    inputs: Mapping[str, Path],
+) -> dict[str, Any]:
+    """Validate the optional immutable opt-in; absence is always default-off."""
+
+    path = inputs.get(DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME)
+    if path is None:
+        return {
+            "status": "not_requested",
+            "enabled": False,
+            "provider_mutation_performed": False,
+        }
+    try:
+        request = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "native_task_controls_downstream_diagnostic_request_invalid"
+        ) from exc
+    if (
+        not isinstance(request, Mapping)
+        or request.get("schema_version")
+        != "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1"
+        or request.get("enabled") is not True
+        or request.get("development_only") is not True
+        or request.get("qualification_effect") != "none"
+        or request.get("request_digest")
+        != _canonical_digest(request, field="request_digest")
+    ):
+        raise RuntimeError(
+            "native_task_controls_downstream_diagnostic_request_invalid"
+        )
+    return {**dict(request), "status": "requested"}
 
 
 def _bound_digest(value: Any) -> bool:
@@ -2276,16 +2316,15 @@ def _synthetic_post_phase5_checkpoint(
     control_plan: Mapping[str, Any],
     global_ik: Mapping[str, Any],
     scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
-    jaw_selection: Mapping[str, Any],
     task_spec: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Choose a traceable synthetic boundary for phases 6--11 diagnostics.
 
-    Prefer the exact contact-close branch already selected for execution.  If
-    the local solver supplied no selected contact branch, retain its explicit
-    terminal hypotheses and choose the one with the smallest joint-space hop
-    to the first door-motion phase.  This state is an initialization proposal,
-    never evidence that Phase 5 succeeded.
+    Only a terminal contact-close hypothesis already inside the unchanged
+    position and orientation gates may become a checkpoint.  Joint continuity
+    ranks that admitted set; it can never rescue an out-of-gate pose.  This
+    state remains an initialization proposal, never evidence that Phase 5
+    succeeded.
     """
 
     actions = control_plan.get("scripted_positive_actions")
@@ -2300,6 +2339,20 @@ def _synthetic_post_phase5_checkpoint(
     first_downstream = rows.get("joint_path_01")
     if not isinstance(contact, Mapping) or not isinstance(
         first_downstream, Mapping
+    ):
+        return None
+    try:
+        contact_position_tolerance_m = float(contact["arrival_tolerance_m"])
+        contact_orientation_tolerance_rad = float(
+            contact["arrival_orientation_tolerance_rad"]
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(contact_position_tolerance_m)
+        or contact_position_tolerance_m <= 0.0
+        or not math.isfinite(contact_orientation_tolerance_rad)
+        or contact_orientation_tolerance_rad <= 0.0
     ):
         return None
 
@@ -2335,7 +2388,18 @@ def _synthetic_post_phase5_checkpoint(
         margin_rad: Any = None,
     ) -> None:
         values = _joints(joints)
-        if values is None:
+        try:
+            position_error = float(position_error_m)
+            orientation_error = float(orientation_error_rad)
+        except (TypeError, ValueError):
+            return
+        if (
+            values is None
+            or not math.isfinite(position_error)
+            or not math.isfinite(orientation_error)
+            or position_error > contact_position_tolerance_m
+            or orientation_error > contact_orientation_tolerance_rad
+        ):
             return
         key = tuple(round(value, 8) for value in values)
         if any(row["key"] == key for row in candidates):
@@ -2345,17 +2409,12 @@ def _synthetic_post_phase5_checkpoint(
                 "key": key,
                 "joint_positions_rad": values,
                 "source": source,
-                "position_error_m": position_error_m,
-                "orientation_error_rad": orientation_error_rad,
+                "position_error_m": position_error,
+                "orientation_error_rad": orientation_error,
                 "minimum_joint_limit_margin_rad": margin_rad,
             }
         )
 
-    _append_candidate(
-        contact.get("hold_solved_arm_joint_positions_rad"),
-        source="contact_close_plan_selected_joint_hold",
-    )
-    contact_pose = _pose_key(contact)
     first_downstream_pose = _pose_key(first_downstream)
     first_downstream_joints = _joints(
         first_downstream.get("hold_solved_arm_joint_positions_rad")
@@ -2369,43 +2428,19 @@ def _synthetic_post_phase5_checkpoint(
             first_downstream_pose is not None and key == first_downstream_pose
         ):
             first_downstream_joints = _joints(row.get("joint_positions_rad"))
-        if phase_id == "contact_close" or (
-            contact_pose is not None and key == contact_pose
-        ):
-            _append_candidate(
-                row.get("joint_positions_rad"),
-                source="global_ik_selected_contact_pose",
-                position_error_m=row.get("position_error_m"),
-                orientation_error_rad=row.get("orientation_error_rad"),
-                margin_rad=row.get("minimum_joint_limit_margin_rad"),
-            )
 
     from blueprint_pipeline.native_task_arena_actuator_sweep import (
         candidate_postures,
     )
 
-    for phase_id in ("contact_close", "contact_open"):
-        for posture in candidate_postures(
-            global_ik,
-            phase_id=phase_id,
-            include_unsolved_attempts=True,
-        ):
-            _append_candidate(
-                posture.get("joint_positions_rad"),
-                source=f"global_ik_terminal_{phase_id}",
-                position_error_m=posture.get("offsim_position_error_m"),
-                orientation_error_rad=posture.get(
-                    "offsim_orientation_error_rad"
-                ),
-                margin_rad=posture.get("minimum_joint_limit_margin_rad"),
-            )
-    for posture in _fallback_contact_open_postures(jaw_selection):
+    for posture in candidate_postures(
+        global_ik,
+        phase_id="contact_close",
+        include_unsolved_attempts=True,
+    ):
         _append_candidate(
             posture.get("joint_positions_rad"),
-            source=(
-                "jaw_variant_terminal_contact_open:"
-                f"{posture.get('variant_id')}"
-            ),
+            source="global_ik_gate_qualified_terminal_contact_close",
             position_error_m=posture.get("offsim_position_error_m"),
             orientation_error_rad=posture.get("offsim_orientation_error_rad"),
             margin_rad=posture.get("minimum_joint_limit_margin_rad"),
@@ -2467,14 +2502,23 @@ def _synthetic_post_phase5_checkpoint(
         "gripper_state": "closed",
         "phase5_qualified": False,
         "initialization_authority": (
-            "caller_provided_synthetic_diagnostic_state"
+            "runtime_derived_from_gate_qualified_offsim_contact_close"
         ),
         "selected_candidate_source": selected["source"],
         "candidate_count": len(candidates),
         "selection_rule": (
-            "minimum_max_joint_hop_to_joint_path_01_then_pose_error_then_"
-            "joint_limit_margin"
+            "unchanged_contact_position_and_orientation_gates_then_minimum_"
+            "max_joint_hop_to_joint_path_01_then_pose_error_then_joint_"
+            "limit_margin"
         ),
+        "contact_position_tolerance_m": contact_position_tolerance_m,
+        "contact_orientation_tolerance_rad": (
+            contact_orientation_tolerance_rad
+        ),
+        "selected_offsim_position_error_m": selected["position_error_m"],
+        "selected_offsim_orientation_error_rad": selected[
+            "orientation_error_rad"
+        ],
         "checkpoint_digest": "",
     }
     checkpoint["checkpoint_digest"] = _canonical_digest(
@@ -2893,6 +2937,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("input_verification")
         manifest = _load_and_verify_manifest(runtime)
         inputs = _verified_runtime_inputs(runtime, manifest)
+        downstream_diagnostic_request = _downstream_diagnostic_request(inputs)
+        result["synthetic_post_phase5_downstream_diagnostic_request"] = (
+            downstream_diagnostic_request
+        )
         packet = runtime / "native_task_packet"
         packet_receipt = json.loads(
             (packet / "native_task_arena_packet_receipt.v1.json").read_text(
@@ -3273,63 +3321,84 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         _announce("synthetic_post_phase5_downstream_diagnostic")
-        downstream_checkpoint = _synthetic_post_phase5_checkpoint(
-            control_plan=effective_control_plan,
-            global_ik=controls_global_ik,
-            scripted_pose_joint_targets=scripted_pose_joint_targets,
-            jaw_selection=jaw_selection,
-            task_spec=scene_plan["task_spec"],
-        )
-        if downstream_checkpoint is None:
+        if downstream_diagnostic_request.get("enabled") is not True:
             downstream_diagnostic = {
                 "schema_version": (
                     "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
                 ),
-                "status": "unavailable",
-                "reason": "synthetic_post_phase5_checkpoint_unresolved",
+                "status": "not_requested",
+                "reason": "immutable_bundle_request_absent",
                 "phase5_qualified": False,
                 "qualification_effect": "none",
+                "physics_steps_performed": 0,
                 "claim_boundary": (
-                    "diagnostic_gap_only;does_not_qualify_phase5_any_"
-                    "downstream_phase_policy_admission_or_task_success"
+                    "default_off;ordinary_controls_execution_unchanged"
                 ),
             }
         else:
-            try:
-                from blueprint_pipeline.adp009d_control_episode import (
-                    run_synthetic_post_phase5_downstream_diagnostic,
-                )
-
-                downstream_diagnostic = (
-                    run_synthetic_post_phase5_downstream_diagnostic(
-                        environment=episode_environment,
-                        task_spec=scene_plan["task_spec"],
-                        control_plan=effective_control_plan,
-                        checkpoint=downstream_checkpoint,
-                        gripper_open_command=float(gripper["open_command"]),
-                        gripper_closed_command=float(
-                            gripper["closed_command"]
-                        ),
-                        output_dir=(
-                            output_root / "downstream_continuous_diagnostic"
-                        ),
-                    )
-                )
-            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+            downstream_checkpoint = _synthetic_post_phase5_checkpoint(
+                control_plan=effective_control_plan,
+                global_ik=controls_global_ik,
+                scripted_pose_joint_targets=scripted_pose_joint_targets,
+                task_spec=scene_plan["task_spec"],
+            )
+            if downstream_checkpoint is None:
                 downstream_diagnostic = {
                     "schema_version": (
                         "adp_task_synthetic_post_phase5_downstream_"
                         "diagnostic.v1"
                     ),
                     "status": "unavailable",
-                    "reason": f"{type(exc).__name__}:{exc}",
+                    "reason": (
+                        "no_contact_pose_candidate_inside_unchanged_gates"
+                    ),
                     "phase5_qualified": False,
                     "qualification_effect": "none",
                     "claim_boundary": (
-                        "diagnostic_gap_only;continuous_controls_and_all_"
-                        "qualification_gates_unchanged"
+                        "diagnostic_refusal_only;does_not_qualify_phase5_"
+                        "any_downstream_phase_policy_admission_or_task_"
+                        "success"
                     ),
                 }
+            else:
+                try:
+                    from blueprint_pipeline.adp009d_control_episode import (
+                        run_synthetic_post_phase5_downstream_diagnostic,
+                    )
+
+                    downstream_diagnostic = (
+                        run_synthetic_post_phase5_downstream_diagnostic(
+                            environment=episode_environment,
+                            task_spec=scene_plan["task_spec"],
+                            control_plan=effective_control_plan,
+                            checkpoint=downstream_checkpoint,
+                            gripper_open_command=float(
+                                gripper["open_command"]
+                            ),
+                            gripper_closed_command=float(
+                                gripper["closed_command"]
+                            ),
+                            output_dir=(
+                                output_root
+                                / "downstream_continuous_diagnostic"
+                            ),
+                        )
+                    )
+                except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                    downstream_diagnostic = {
+                        "schema_version": (
+                            "adp_task_synthetic_post_phase5_downstream_"
+                            "diagnostic.v1"
+                        ),
+                        "status": "unavailable",
+                        "reason": f"{type(exc).__name__}:{exc}",
+                        "phase5_qualified": False,
+                        "qualification_effect": "none",
+                        "claim_boundary": (
+                            "diagnostic_gap_only;continuous_controls_and_"
+                            "all_qualification_gates_unchanged"
+                        ),
+                    }
         result["synthetic_post_phase5_downstream_diagnostic"] = (
             downstream_diagnostic
         )

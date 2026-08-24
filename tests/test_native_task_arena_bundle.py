@@ -1103,6 +1103,50 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
 
+def test_downstream_diagnostic_is_default_off_and_requires_immutable_bundle_opt_in(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    common = {
+        "packet_dir": packet,
+        "construction_result_path": construction,
+        "runtime_source_packet_receipt": _runtime_source_packet(tmp_path),
+        "implementation_commit": "c" * 40,
+        "generated_at": "fixed",
+    }
+    ordinary = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "ordinary-controls", **common
+    )
+    diagnostic = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "diagnostic-controls",
+        enable_synthetic_post_phase5_downstream_diagnostic=True,
+        **common,
+    )
+
+    request_member = (
+        "provider_runtime/runtime_inputs/"
+        + controls_bundle_module.DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME
+    )
+    with zipfile.ZipFile(ordinary["bundle_path"]) as archive:
+        assert request_member not in archive.namelist()
+    with zipfile.ZipFile(diagnostic["bundle_path"]) as archive:
+        assert request_member in archive.namelist()
+        request = json.loads(archive.read(request_member))
+    assert request["enabled"] is True
+    assert request["development_only"] is True
+    assert request["qualification_effect"] == "none"
+    assert request["request_digest"] == canonical_digest(
+        request, digest_field="request_digest"
+    )
+    loaded = load_verified_native_task_arena_controls_bundle(
+        tmp_path
+        / "diagnostic-controls/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit="c" * 40,
+    )
+    assert loaded["bundle_sha256"] == diagnostic["bundle_sha256"]
+
+
 def test_bundle_is_deterministic_for_one_sealed_packet(tmp_path: Path) -> None:
     packet = _packet(tmp_path, scene_id="840796")
     worker = tmp_path / "worker.py"

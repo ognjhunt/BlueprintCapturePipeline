@@ -19,6 +19,9 @@ PROBE_KIND = "native-task-arena-controls"
 PROVIDER_BUNDLE_KIND = "native_task_arena"
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
+DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME = (
+    "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json"
+)
 
 def controls_runtime_sources() -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
@@ -43,6 +46,7 @@ def build_native_task_arena_controls_bundle(
     runtime_source_packet_receipt: str | Path,
     implementation_commit: str,
     generated_at: str | None = None,
+    enable_synthetic_post_phase5_downstream_diagnostic: bool = False,
 ) -> dict[str, Any]:
     """Bind a qualified construction receipt to zero and positive controls."""
 
@@ -66,6 +70,32 @@ def build_native_task_arena_controls_bundle(
             json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        bound_runtime_inputs: dict[str, Path] = {
+            "native_task_arena_construction_result.v1.json": construction_path,
+            "adp_task_control_plan.v1.json": frozen_plan,
+        }
+        if enable_synthetic_post_phase5_downstream_diagnostic:
+            request: dict[str, Any] = {
+                "schema_version": (
+                    "adp_task_synthetic_post_phase5_downstream_"
+                    "diagnostic_request.v1"
+                ),
+                "enabled": True,
+                "development_only": True,
+                "qualification_effect": "none",
+                "request_digest": "",
+            }
+            request["request_digest"] = canonical_digest(
+                request, digest_field="request_digest"
+            )
+            request_path = Path(raw) / DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME
+            request_path.write_text(
+                json.dumps(request, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            bound_runtime_inputs[DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME] = (
+                request_path
+            )
         return build_native_task_arena_bundle(
             job_dir=job_dir,
             packet_dir=packet,
@@ -79,10 +109,7 @@ def build_native_task_arena_controls_bundle(
             execution_mode="controls",
             expected_output_filename=RESULT_FILENAME,
             container_image=NATIVE_TASK_ARENA_IMAGE,
-            bound_runtime_inputs={
-                "native_task_arena_construction_result.v1.json": construction_path,
-                "adp_task_control_plan.v1.json": frozen_plan,
-            },
+            bound_runtime_inputs=bound_runtime_inputs,
             generated_at=generated_at,
         )
 
@@ -127,10 +154,17 @@ def load_verified_native_task_arena_controls_bundle(
         or receipt.get("candidate_policy_queried") is not False
         or receipt.get("expected_output_filename") != RESULT_FILENAME
         or input_names
-        != {
-            "native_task_arena_construction_result.v1.json",
-            "adp_task_control_plan.v1.json",
-        }
+        not in (
+            {
+                "native_task_arena_construction_result.v1.json",
+                "adp_task_control_plan.v1.json",
+            },
+            {
+                "native_task_arena_construction_result.v1.json",
+                "adp_task_control_plan.v1.json",
+                DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME,
+            },
+        )
     ):
         errors.append("native_task_arena_controls_bundle_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
@@ -163,6 +197,7 @@ def load_verified_native_task_arena_controls_bundle(
 
 __all__ = [
     "CONTROLS_RUNTIME_MODULE_NAMES",
+    "DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "RESULT_FILENAME",
@@ -196,6 +231,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-source-packet-receipt", dest="runtime_source_packet_receipt", required=True)
     parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
     parser.add_argument("--generated-at", dest="generated_at")
+    parser.add_argument(
+        "--enable-synthetic-post-phase5-downstream-diagnostic",
+        action="store_true",
+        help=(
+            "Seal a development-only, non-qualifying phases 6-11 diagnostic "
+            "request into this bundle"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -206,6 +249,9 @@ def main(argv: list[str] | None = None) -> int:
             runtime_source_packet_receipt=args.runtime_source_packet_receipt,
             implementation_commit=args.implementation_commit,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
+            enable_synthetic_post_phase5_downstream_diagnostic=(
+                args.enable_synthetic_post_phase5_downstream_diagnostic
+            ),
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(
