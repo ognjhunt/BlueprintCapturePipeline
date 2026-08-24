@@ -238,6 +238,11 @@ def test_capture_reconstruction_queue_is_path_activated_and_automatically_execut
     ).read_text(encoding="utf-8")
     assert '${TMPDIR:-/tmp}/blueprint-canonical-worker-build.XXXXXX' in worker_builder
     assert '${TMPDIR:-/private/tmp}' not in worker_builder
+    assert '"$runtime_python" -m pip wheel' in worker_builder
+    assert "--no-build-isolation" in worker_builder
+    assert "--no-deps" in worker_builder
+    assert 'SOURCE_DATE_EPOCH="$source_date_epoch"' in worker_builder
+    assert "uv build" not in worker_builder
     assert 'WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"' in installer
     assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" in installer
     assert "REPLACED_BY_INSTALLER_EXACT_RELEASE_WHEEL" in env_example
