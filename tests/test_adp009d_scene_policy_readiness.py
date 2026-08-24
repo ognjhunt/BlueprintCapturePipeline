@@ -7,7 +7,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_scene_policy_readiness import (
     CONTROLS_PREDECESSOR,
-    PI05_RIGHTS_BLOCKER,
+    READY_VERDICT,
     ScenePolicyReadinessError,
     load_scene_policy_readiness,
     validate_scene_policy_readiness,
@@ -24,11 +24,12 @@ def _values() -> tuple[dict, dict]:
     return json.loads(REPORT.read_text()), json.loads(SCENARIO.read_text())
 
 
-def test_committed_scene_policy_readiness_has_one_external_blocker() -> None:
+def test_committed_scene_policy_readiness_waits_only_for_controls() -> None:
     report = load_scene_policy_readiness(REPORT, scenario_suite_path=SCENARIO)
 
     assert report["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
-    assert report["external_blockers"] == [PI05_RIGHTS_BLOCKER]
+    assert report["external_blockers"] == []
+    assert report["verdict"] == READY_VERDICT
     assert report["controls_predecessor"]["blocker_code"] == CONTROLS_PREDECESSOR
     assert report["controls_predecessor"]["required_schema"] == (
         "native_task_arena_control_result.v1"
@@ -39,6 +40,7 @@ def test_committed_scene_policy_readiness_has_one_external_blocker() -> None:
     assert all(
         candidate["observation_adapter_ready"]
         and candidate["action_adapter_ready"]
+        and candidate["rights_ready"]
         and candidate["candidate_can_grade_itself"] is False
         for candidate in report["candidates"]
     )
@@ -60,6 +62,21 @@ def test_readiness_rejects_floating_checkpoint_or_controls_bypass() -> None:
         in excinfo.value.errors
     )
     assert "scene_policy_readiness_controls_predecessor_invalid" in excinfo.value.errors
+
+
+def test_readiness_rejects_candidate_whose_rights_are_not_ready() -> None:
+    report, scenario = _values()
+    report["candidates"][0]["rights_ready"] = False
+    report["readiness_digest"] = canonical_digest(
+        report, digest_field="readiness_digest"
+    )
+
+    with pytest.raises(ScenePolicyReadinessError) as excinfo:
+        validate_scene_policy_readiness(report, scenario_suite=scenario)
+
+    assert "scene_policy_readiness_pi05_droid_rights_ready_invalid" in (
+        excinfo.value.errors
+    )
 
 
 def test_readiness_rejects_a_scenario_target_without_runtime_application() -> None:

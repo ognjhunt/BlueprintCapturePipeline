@@ -25,7 +25,7 @@
         "repository": "https://github.com/Physical-Intelligence/openpi",
         "revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
         "tree": "a7f18af2745255b5fa98c86d6031f858bf73d1be",
-        "license": "Apache-2.0"
+        "license": "Apache-2.0 with embedded Gemma components subject to LICENSE_GEMMA.txt"
       },
       "checkpoint": {
         "repository": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
@@ -39,10 +39,16 @@
         "anonymous_listing_observed": true,
         "locally_materialized": false,
         "provider_retrieval_path_ready": true,
-        "checkpoint_specific_terms_bound": false,
-        "redistribution_status": "forbidden_until_checkpoint_specific_terms_are_bound",
-        "provider_use_status": "not_admitted_until_checkpoint_specific_terms_are_bound",
-        "checkpoint_ready": false,
+        "checkpoint_specific_terms_bound": true,
+        "rights_provenance": {
+          "publisher_model_release": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/README.md",
+          "apache_license": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/LICENSE",
+          "gemma_terms": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/LICENSE_GEMMA.txt",
+          "exact_checkpoint_config": "https://github.com/Physical-Intelligence/openpi/blob/15a9616a00943ada6c20a0f158e3adb39df2ccac/src/openpi/training/misc/polaris_config.py"
+        },
+        "redistribution_status": "permitted_subject_to_Apache-2.0_and_Gemma_terms_not_required_by_Blueprint_provider_bundle",
+        "provider_use_status": "inference_and_remote_provider_use_allowed_subject_to_Gemma_terms_and_prohibited_use_policy",
+        "checkpoint_ready": true,
         "missing_secrets_or_gated_access": []
       },
       "runtime_dependencies": {
@@ -100,8 +106,8 @@
       "action_adapter_ready": true,
       "malformed_output_fails_closed": true,
       "candidate_can_grade_itself": false,
-      "rights_ready": false,
-      "bundle_build_status": "production_builder_rehearsed_real_bundle_waits_for_controls_and_rights",
+      "rights_ready": true,
+      "bundle_build_status": "production_builder_rehearsed_real_bundle_waits_for_controls",
       "terminal_rehearsal_status": "passed_with_identity_bound_fixture_bundle",
       "claim_ceiling": "development_only"
     },
@@ -320,14 +326,11 @@
     "controls_predecessor_required": true,
     "candidate_identity_required": true
   },
-  "external_blockers": [
-    "pi05_droid_checkpoint_specific_terms_missing"
-  ],
+  "external_blockers": [],
   "shortest_blocker_chain": [
-    "authorized_human_or_publisher_binds_checkpoint-specific use terms to gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
-    "rights receipt admits provider use without redistributing checkpoint bytes",
-    "readiness seal is regenerated with pi05_droid rights_ready=true"
+    "authoritative native_task_arena_control_result.v1 receipt proves zero-action negative and deterministic scripted-positive controls",
+    "policy bundles and unpublished development-only launch profiles bind that receipt and its admitted control-pair digest"
   ],
-  "verdict": "BLOCKED",
-  "readiness_digest": "sha256:4d4b3bca8af730f7f88c8a09df6df1b812017819f3f3332cd8d5e7490aa17601"
+  "verdict": "READY_WAITING_ONLY_FOR_CONTROLS",
+  "readiness_digest": "sha256:5b496fedd88744db642af1027df9170f16d0ce5b0b4846b1ba47becf29e2c4f7"
 }

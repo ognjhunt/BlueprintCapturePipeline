@@ -3,8 +3,8 @@
 This contract is intentionally upstream of a policy bundle.  A real policy
 bundle must consume a completed controls-positive receipt, whose digest does
 not exist yet.  The readiness seal proves everything that can be proved before
-that predecessor arrives while keeping missing rights separate from the
-expected controls wait.
+that predecessor arrives and fails closed if either frozen candidate is not
+rights-admitted and runnable.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ SCHEMA_VERSION = "adp009d_scene_policy_readiness.v1"
 SCENE_ID = "840920"
 TASK_ID = "task_a_washer_door_open"
 CONTROLS_PREDECESSOR = "authoritative_controls_positive_receipt_missing"
-PI05_RIGHTS_BLOCKER = "pi05_droid_checkpoint_specific_terms_missing"
+READY_VERDICT = "READY_WAITING_ONLY_FOR_CONTROLS"
 
 
 class ScenePolicyReadinessError(ValueError):
@@ -116,6 +116,7 @@ def validate_scene_policy_readiness(
                 f"scene_policy_readiness_{candidate_id}_checkpoint_invalid"
             )
         for field in (
+            "rights_ready",
             "observation_adapter_ready",
             "action_adapter_ready",
             "malformed_output_fails_closed",
@@ -139,9 +140,9 @@ def validate_scene_policy_readiness(
         or controls.get("bypass_permitted") is not False
     ):
         errors.append("scene_policy_readiness_controls_predecessor_invalid")
-    if payload.get("external_blockers") != [PI05_RIGHTS_BLOCKER]:
+    if payload.get("external_blockers") != []:
         errors.append("scene_policy_readiness_external_blocker_invalid")
-    if payload.get("verdict") != "BLOCKED":
+    if payload.get("verdict") != READY_VERDICT:
         errors.append("scene_policy_readiness_verdict_invalid")
 
     terminal = _mapping(payload.get("terminal_contract"))
@@ -227,7 +228,7 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "CONTROLS_PREDECESSOR",
-    "PI05_RIGHTS_BLOCKER",
+    "READY_VERDICT",
     "SCHEMA_VERSION",
     "ScenePolicyReadinessError",
     "load_scene_policy_readiness",
