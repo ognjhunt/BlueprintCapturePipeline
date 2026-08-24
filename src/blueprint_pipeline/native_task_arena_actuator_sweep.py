@@ -175,6 +175,103 @@ def _task_pad_forces_n(sample: Mapping[str, Any] | None) -> dict[str, float]:
     return peaks
 
 
+def _task_pad_force_vectors_world_n(
+    sample: Mapping[str, Any] | None,
+) -> dict[str, list[float]]:
+    """Return the strongest attributed world-force vector for each pad."""
+
+    native = sample.get("native_readback") if isinstance(sample, Mapping) else None
+    instances = (
+        (native.get("contact_sensor_instance_readback") or {}).get(
+            "task_robot_contact"
+        )
+        if isinstance(native, Mapping)
+        else None
+    )
+    vectors: dict[str, list[float]] = {}
+    magnitudes: dict[str, float] = {}
+    for instance in instances or []:
+        if not isinstance(instance, Mapping):
+            continue
+        for force in instance.get("nonzero_filter_forces") or []:
+            if not isinstance(force, Mapping):
+                continue
+            path = str(force.get("filter_prim_path_expr") or "")
+            side = next(
+                (
+                    name
+                    for name in ("left_inner_finger", "right_inner_finger")
+                    if name in path
+                ),
+                None,
+            )
+            vector = _finite_vector(force.get("force_world_n"), length=3)
+            if side is None or vector is None:
+                continue
+            magnitude = math.sqrt(sum(value * value for value in vector))
+            if magnitude > magnitudes.get(side, -1.0):
+                magnitudes[side] = magnitude
+                vectors[side] = vector
+    return vectors
+
+
+def _pad_force_axis_evidence(
+    vectors: Mapping[str, Sequence[float]],
+    *,
+    approach_axis: Sequence[float],
+    jaw_axis: Sequence[float],
+    lateral_axis: Sequence[float],
+    contact_threshold_n: float,
+) -> dict[str, Any]:
+    """Distinguish an opposed pinch from two pads pushing the same surface."""
+
+    axes = {
+        "approach": approach_axis,
+        "jaw": jaw_axis,
+        "lateral": lateral_axis,
+    }
+    projections = {
+        side: {
+            name: sum(
+                float(value) * float(axis[index])
+                for index, value in enumerate(vector)
+            )
+            for name, axis in axes.items()
+        }
+        for side, vector in vectors.items()
+    }
+    left = projections.get("left_inner_finger")
+    right = projections.get("right_inner_finger")
+    opposed_jaw_force = 0.0
+    same_direction_approach_force = 0.0
+    if left is not None and right is not None:
+        if left["jaw"] * right["jaw"] < 0.0:
+            opposed_jaw_force = min(abs(left["jaw"]), abs(right["jaw"]))
+        if left["approach"] * right["approach"] > 0.0:
+            same_direction_approach_force = min(
+                abs(left["approach"]), abs(right["approach"])
+            )
+    return {
+        "pad_force_vectors_world_n": {
+            side: [float(value) for value in vector]
+            for side, vector in vectors.items()
+        },
+        "axis_projections_n": projections,
+        "opposed_jaw_force_min_n": opposed_jaw_force,
+        "opposed_jaw_contact_active": (
+            opposed_jaw_force >= float(contact_threshold_n)
+        ),
+        "same_direction_approach_force_min_n": same_direction_approach_force,
+        "same_direction_approach_contact_active": (
+            same_direction_approach_force >= float(contact_threshold_n)
+        ),
+        "claim_boundary": (
+            "diagnostic_force_direction_only;does_not_replace_native_contact_"
+            "or_task_outcome_gates"
+        ),
+    }
+
+
 def _unit_vector(values: Any) -> list[float] | None:
     vector = _finite_vector(values, length=3)
     if vector is None:
@@ -490,6 +587,8 @@ def run_contact_acquisition_sweep(
             close_gripper_widths: list[float] = []
             first_bilateral_close_step = None
             last_bilateral_close_step = None
+            best_bilateral_force_evidence: dict[str, Any] | None = None
+            best_bilateral_force_score = -1.0
             close_phase_gate_triggered = False
             executed_close_steps = 0
             terminal_sample: Mapping[str, Any] | None = None
@@ -505,6 +604,13 @@ def run_contact_acquisition_sweep(
                 ):
                     close_gripper_widths.append(float(measured_width))
                 forces = _task_pad_forces_n(terminal_sample)
+                force_axis_evidence = _pad_force_axis_evidence(
+                    _task_pad_force_vectors_world_n(terminal_sample),
+                    approach_axis=approach,
+                    jaw_axis=jaw,
+                    lateral_axis=lateral,
+                    contact_threshold_n=contact_threshold,
+                )
                 for side, magnitude in forces.items():
                     peak_close_forces[side] = max(
                         peak_close_forces.get(side, 0.0), magnitude
@@ -520,6 +626,17 @@ def run_contact_acquisition_sweep(
                     if first_bilateral_close_step is None:
                         first_bilateral_close_step = close_step_index
                     last_bilateral_close_step = close_step_index
+                    bilateral_force_score = min(
+                        forces.get("left_inner_finger", 0.0),
+                        forces.get("right_inner_finger", 0.0),
+                    )
+                    if bilateral_force_score > best_bilateral_force_score:
+                        best_bilateral_force_score = bilateral_force_score
+                        best_bilateral_force_evidence = {
+                            "close_step_index": close_step_index,
+                            "minimum_pad_force_n": bilateral_force_score,
+                            **force_axis_evidence,
+                        }
                 maximum_consecutive_bilateral = max(
                     maximum_consecutive_bilateral,
                     consecutive_bilateral,
@@ -574,6 +691,13 @@ def run_contact_acquisition_sweep(
                 length=4,
             )
             terminal_forces = _task_pad_forces_n(terminal_sample)
+            terminal_force_axis_evidence = _pad_force_axis_evidence(
+                _task_pad_force_vectors_world_n(terminal_sample),
+                approach_axis=approach,
+                jaw_axis=jaw,
+                lateral_axis=lateral,
+                contact_threshold_n=contact_threshold,
+            )
             terminal_joints = _finite_vector(
                 environment.read_arm_joint_positions(), length=7
             )
@@ -683,6 +807,12 @@ def run_contact_acquisition_sweep(
                     ),
                     "terminal_orientation_error_rad": orientation_error,
                     "terminal_task_contact_pad_forces_n": terminal_forces,
+                    "terminal_contact_force_axis_evidence": (
+                        terminal_force_axis_evidence
+                    ),
+                    "best_bilateral_force_evidence": (
+                        best_bilateral_force_evidence
+                    ),
                     "terminal_reached_joint_positions_rad": terminal_joints,
                     "terminal_maximum_joint_drift_from_frozen_rad": (
                         max(
