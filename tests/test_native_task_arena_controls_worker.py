@@ -1802,6 +1802,10 @@ def test_contact_acquisition_progress_is_atomic_and_timeout_harvestable(
             "terminal_distance_to_candidate_target_m": 0.004,
             "terminal_distance_to_authored_target_m": 0.004,
             "terminal_orientation_error_rad": 0.05,
+            "best_bilateral_force_evidence": {
+                "opposed_jaw_force_min_n": 0.9,
+                "same_direction_approach_force_min_n": 0.1,
+            },
         },
     }
     output = tmp_path / "contact_acquisition_sweep.progress.v1.json"
@@ -1816,7 +1820,7 @@ def test_contact_acquisition_progress_is_atomic_and_timeout_harvestable(
     marker = capsys.readouterr().out.strip()
     assert marker.startswith("BLUEPRINT_CONTACT_ACQUISITION_PROGRESS:CELL:i=7:")
     assert ":ok=1:b=2:lf=1.2:rf=1.1:d=0.004:o=0.05" in marker
-    assert marker.endswith(":ad=0.004")
+    assert marker.endswith(":ad=0.004:pj=0.9:fa=0.1")
 
 
 def test_contact_acquisition_refuses_nonadmitted_best_cell() -> None:

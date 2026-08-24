@@ -210,7 +210,11 @@ def _announce_contact_acquisition_cell(progress: Mapping[str, Any]) -> None:
         f"rf={_number(forces.get('right_inner_finger'))}:"
         f"d={_number(cell.get('terminal_distance_to_candidate_target_m'))}:"
         f"o={_number(cell.get('terminal_orientation_error_rad'))}:"
-        f"ad={_number(cell.get('terminal_distance_to_authored_target_m'))}",
+        f"ad={_number(cell.get('terminal_distance_to_authored_target_m'))}:"
+        "pj="
+        f"{_number((cell.get('best_bilateral_force_evidence') or {}).get('opposed_jaw_force_min_n'))}:"
+        "fa="
+        f"{_number((cell.get('best_bilateral_force_evidence') or {}).get('same_direction_approach_force_min_n'))}",
         flush=True,
     )
 

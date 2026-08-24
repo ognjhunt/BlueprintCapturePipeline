@@ -269,6 +269,11 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
                     {
                         "filter_prim_path_expr": side,
                         "force_magnitude_n": 1.0,
+                        "force_world_n": [
+                            0.0,
+                            1.0 if side == "left_inner_finger" else -1.0,
+                            0.0,
+                        ],
                     }
                     for side in ("left_inner_finger", "right_inner_finger")
                 ]
@@ -326,6 +331,10 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
     ]
     assert report["best_cell"]["executed_close_steps"] == 2
     assert report["best_cell"]["close_phase_gate_triggered"] is True
+    force_evidence = report["best_cell"]["best_bilateral_force_evidence"]
+    assert force_evidence["opposed_jaw_contact_active"] is True
+    assert force_evidence["opposed_jaw_force_min_n"] == 1.0
+    assert force_evidence["same_direction_approach_contact_active"] is False
     assert report["best_cell"]["reached_open_joint_positions_rad"][:3] == [
         0.9,
         0.0,
@@ -574,6 +583,7 @@ def test_contact_acquisition_rejects_bilateral_contact_outside_arrival_gate() ->
                     {
                         "filter_prim_path_expr": side,
                         "force_magnitude_n": 1.0,
+                        "force_world_n": [1.0, 0.0, 0.0],
                     }
                     for side in ("left_inner_finger", "right_inner_finger")
                 ]
@@ -618,6 +628,10 @@ def test_contact_acquisition_rejects_bilateral_contact_outside_arrival_gate() ->
     assert report["executed_cell_count"] == 1
     assert report["admitted_cell_count"] == 0
     assert report["cells"][0]["terminal_bilateral_task_contact_active"] is True
+    force_evidence = report["cells"][0]["best_bilateral_force_evidence"]
+    assert force_evidence["opposed_jaw_contact_active"] is False
+    assert force_evidence["same_direction_approach_contact_active"] is True
+    assert force_evidence["same_direction_approach_force_min_n"] == 1.0
     assert report["cells"][0][
         "terminal_distance_to_candidate_target_m"
     ] == pytest.approx(0.010)
