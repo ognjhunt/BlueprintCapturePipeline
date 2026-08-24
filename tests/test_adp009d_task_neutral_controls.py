@@ -7,6 +7,8 @@ import pytest
 
 from blueprint_pipeline.adp009d_control_episode import (
     ControlEpisodeError,
+    TASK_DOWNSTREAM_DIAGNOSTIC_SCHEMA_VERSION,
+    run_synthetic_post_phase5_downstream_diagnostic,
     run_task_neutral_controls,
 )
 from blueprint_pipeline.adp009d_physics_backend_comparison import (
@@ -310,6 +312,287 @@ class _BilateralContactCartesianEnvironment(_CartesianEnvironment):
             }
         }
         return sample
+
+
+class _DownstreamDiagnosticEnvironment(_SolvedJointCartesianEnvironment):
+    def __init__(self):
+        super().__init__("articulated_open_close")
+        self.checkpoint_resets = []
+
+    def joint_limits(self):
+        return [[-2.0, 2.0] for _ in range(7)]
+
+    def reset_to_diagnostic_checkpoint(
+        self, *, arm_joint_positions_rad, task_joint_positions_rad
+    ):
+        self.reset()
+        self.joints = [float(value) for value in arm_joint_positions_rad]
+        self.checkpoint_resets.append(
+            {
+                "arm": list(self.joints),
+                "task": dict(task_joint_positions_rad),
+            }
+        )
+
+
+def _downstream_diagnostic_plan(task: dict) -> dict:
+    def phase(phase_id: str, target: list[float], gripper_state: str) -> dict:
+        return {
+            "phase_id": phase_id,
+            "mode": "ik_pose",
+            "target_position_world_m": target,
+            "target_quaternion_world_xyzw": None,
+            "gripper_state": gripper_state,
+            "minimum_steps": 1,
+            "maximum_steps": 2,
+            "arrival_tolerance_m": 1.0e-6,
+            "arrival_stability_steps": 1,
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.2,
+        }
+
+    task["maximum_action_steps"] = 20
+    contact_close = phase("contact_close", [0.0, 0.0, 0.0], "closed")
+    contact_close["expected_joint_positions"] = {
+        "refrigerator_upper_door_hinge": 0.0,
+        "refrigerator_lower_door_hinge": 0.0,
+    }
+    rows = [
+        contact_close,
+        phase("joint_path_01", [0.2, 0.0, 0.0], "closed"),
+        phase("joint_path_02", [0.4, 0.0, 0.0], "closed"),
+        phase("joint_path_03", [0.6, 0.0, 0.0], "closed"),
+        phase("joint_path_04", [0.9, 0.0, 0.0], "closed"),
+        phase("release", [0.9, 0.0, 0.0], "open"),
+        phase("retreat", [0.9, 1.0, 0.0], "open"),
+    ]
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "articulated-downstream-diagnostic",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "d" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": rows,
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def _synthetic_post_phase5_checkpoint() -> dict:
+    checkpoint = {
+        "schema_version": "adp_task_synthetic_post_phase5_checkpoint.v1",
+        "source_phase_id": "contact_close",
+        "arm_joint_positions_rad": [0.0] * 7,
+        "task_joint_positions_rad": {
+            "refrigerator_upper_door_hinge": 0.0,
+            "refrigerator_lower_door_hinge": 0.0,
+        },
+        "gripper_state": "closed",
+        "phase5_qualified": False,
+        "initialization_authority": (
+            "runtime_derived_from_gate_qualified_offsim_contact_close"
+        ),
+        "checkpoint_digest": "",
+    }
+    checkpoint["checkpoint_digest"] = canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+    return checkpoint
+
+
+def test_synthetic_checkpoint_executes_downstream_suffix_without_qualifying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    plan = _downstream_diagnostic_plan(task)
+    environment = _DownstreamDiagnosticEnvironment()
+
+    receipt = run_synthetic_post_phase5_downstream_diagnostic(
+        environment=environment,
+        task_spec=task,
+        control_plan=plan,
+        checkpoint=_synthetic_post_phase5_checkpoint(),
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        checkpoint_settle_steps=2,
+        output_dir=tmp_path,
+    )
+
+    assert receipt["schema_version"] == TASK_DOWNSTREAM_DIAGNOSTIC_SCHEMA_VERSION
+    assert receipt["continuous_suffix_executed"] is True
+    assert receipt["all_pose_gates_reached"] is True
+    assert receipt["synthetic_checkpoint_task_succeeded"] is True
+    assert receipt["control_passed"] is False
+    assert receipt["qualification_allowed"] is False
+    assert receipt["qualification_effect"] == "none"
+    assert receipt["phase5_qualified"] is False
+    assert "synthetic_checkpoint_diagnostic_not_qualifying" in receipt[
+        "blockers"
+    ]
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert environment.checkpoint_resets == [
+        {
+            "arm": [0.0] * 7,
+            "task": {
+                "refrigerator_upper_door_hinge": 0.0,
+                "refrigerator_lower_door_hinge": 0.0,
+            },
+        }
+    ]
+    checkpoint_actions = [
+        row
+        for row in receipt["action_trace"]
+        if row["phase_id"] == "synthetic_post_phase5_checkpoint_settle"
+    ]
+    assert len(checkpoint_actions) == 2
+    assert all(row["isaac_action"][-1] == 1.0 for row in checkpoint_actions)
+    assert receipt["executed_phase_ids"] == [
+        "joint_path_01",
+        "joint_path_02",
+        "joint_path_03",
+        "joint_path_04",
+        "release",
+        "retreat",
+    ]
+    assert all(
+        "terminal_commanded_joint_positions_rad" in row
+        and "terminal_reached_joint_positions_rad" in row
+        and "terminal_fk_to_measured_tcp_error_m" in row
+        for row in receipt["phase_arrivals"]
+    )
+    assert (
+        tmp_path
+        / "adp_task_synthetic_post_phase5_downstream_diagnostic.v1.json"
+    ).is_file()
+    frozen_plan = __import__("json").loads(
+        (tmp_path / "adp_task_control_plan.v1.json").read_text()
+    )
+    assert frozen_plan["scripted_positive_actions"][0][
+        "expected_joint_positions"
+    ] == {
+        "refrigerator_upper_door_hinge": 0.0,
+        "refrigerator_lower_door_hinge": 0.0,
+    }
+
+
+def test_synthetic_checkpoint_refuses_any_phase5_qualification_claim(
+    tmp_path: Path,
+) -> None:
+    task = _task("articulated_open_close")
+    plan = _downstream_diagnostic_plan(task)
+    checkpoint = _synthetic_post_phase5_checkpoint()
+    checkpoint["phase5_qualified"] = True
+    checkpoint["checkpoint_digest"] = canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+
+    with pytest.raises(
+        ControlEpisodeError,
+        match="downstream_diagnostic_checkpoint_contract_invalid",
+    ):
+        run_synthetic_post_phase5_downstream_diagnostic(
+            environment=_DownstreamDiagnosticEnvironment(),
+            task_spec=task,
+            control_plan=plan,
+            checkpoint=checkpoint,
+            gripper_open_command=0.0,
+            gripper_closed_command=1.0,
+            output_dir=tmp_path,
+        )
+
+
+def test_synthetic_checkpoint_refuses_unreachable_arm_joint_state(
+    tmp_path: Path,
+) -> None:
+    task = _task("articulated_open_close")
+    plan = _downstream_diagnostic_plan(task)
+    checkpoint = _synthetic_post_phase5_checkpoint()
+    checkpoint["arm_joint_positions_rad"][4] = 2.1
+    checkpoint["checkpoint_digest"] = canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+    environment = _DownstreamDiagnosticEnvironment()
+
+    with pytest.raises(
+        ControlEpisodeError,
+        match="downstream_diagnostic_arm_checkpoint_out_of_bounds",
+    ):
+        run_synthetic_post_phase5_downstream_diagnostic(
+            environment=environment,
+            task_spec=task,
+            control_plan=plan,
+            checkpoint=checkpoint,
+            gripper_open_command=0.0,
+            gripper_closed_command=1.0,
+            output_dir=tmp_path,
+        )
+    assert environment.checkpoint_resets == []
+
+
+def test_synthetic_checkpoint_does_not_move_from_unsafe_injected_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+
+    class _UnsafeEnvironment(_DownstreamDiagnosticEnvironment):
+        def read_task_sample(self):
+            sample = super().read_task_sample()
+            sample["robot_collision_failure"] = True
+            return sample
+
+    task = _task("articulated_open_close")
+    environment = _UnsafeEnvironment()
+    receipt = run_synthetic_post_phase5_downstream_diagnostic(
+        environment=environment,
+        task_spec=task,
+        control_plan=_downstream_diagnostic_plan(task),
+        checkpoint=_synthetic_post_phase5_checkpoint(),
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert receipt["action_trace"] == []
+    assert receipt["continuous_suffix_executed"] is False
+    assert receipt["unsafe_state_observed"] is True
+    assert receipt["phase_execution_blocker"] == (
+        "synthetic_checkpoint_initial_state_unsafe"
+    )
 
 
 @pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
