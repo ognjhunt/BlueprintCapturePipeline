@@ -1859,7 +1859,6 @@ def validate_task_control_plan(
                     require_bilateral_task_contact
                     and (
                         (phase_id, gripper_state) != ("contact_close", "closed")
-                        or hold_arm_during_gripper_transition
                         or bilateral_threshold is None
                         or not math.isfinite(bilateral_threshold)
                         or bilateral_threshold <= 0.0
