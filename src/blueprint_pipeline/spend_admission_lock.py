@@ -341,9 +341,8 @@ def build_spend_admission_lock(
     billing_provider_set = (
         set(billing_totals) if isinstance(billing_totals, Mapping) else set()
     )
-    if (
-        not REQUIRED_BILLING_PROVIDERS.issubset(billing_provider_set)
-        or not billing_provider_set.issubset(inventory_provider_set)
+    if not billing_provider_set or not billing_provider_set.issubset(
+        inventory_provider_set
     ):
         blockers.append("billing_reconciliation_provider_coverage_incomplete")
     covered_provider_ids = sorted(billing_provider_set & inventory_provider_set)
@@ -561,9 +560,8 @@ def validate_spend_admission_lock(
         if isinstance(item, Mapping)
     }
     billing_provider_set = set(totals) if isinstance(totals, Mapping) else set()
-    if (
-        not REQUIRED_BILLING_PROVIDERS.issubset(billing_provider_set)
-        or not billing_provider_set.issubset(inventory_provider_set)
+    if not billing_provider_set or not billing_provider_set.issubset(
+        inventory_provider_set
     ):
         blockers.append("spend_admission_lock_billing_provider_coverage_incomplete")
     provider = str(required_provider or "").strip()
