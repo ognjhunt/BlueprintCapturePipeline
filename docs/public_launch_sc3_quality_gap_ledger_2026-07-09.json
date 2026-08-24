@@ -12236,7 +12236,7 @@
             {
               "artifact_id": "RUN-19-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:1d74082d224046345bd1263e03f78b97db40393bead38bb1af9eabacd6dba594",
+              "sha256": "sha256:095d207ca49ee2188b44ac17610e1a8be7b7fa5d35a35221755160aea89a981a",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12496,7 +12496,7 @@
             {
               "artifact_id": "RUN-21-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:1d74082d224046345bd1263e03f78b97db40393bead38bb1af9eabacd6dba594",
+              "sha256": "sha256:095d207ca49ee2188b44ac17610e1a8be7b7fa5d35a35221755160aea89a981a",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12626,7 +12626,7 @@
             {
               "artifact_id": "RUN-22-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:1d74082d224046345bd1263e03f78b97db40393bead38bb1af9eabacd6dba594",
+              "sha256": "sha256:095d207ca49ee2188b44ac17610e1a8be7b7fa5d35a35221755160aea89a981a",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12756,7 +12756,7 @@
             {
               "artifact_id": "RUN-23-AC-01-EV-02",
               "path": "docs/PAID_SPEND_ADMISSION_LOCK.md",
-              "sha256": "sha256:49ac877e6af9c1d6d81410956e7c1a29bacba15200425b46f6ce0917857e2fc2",
+              "sha256": "sha256:b5aa60efc9d2b2227823a2b6d595444652418975947b4b3804eefe05ec0f607d",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
