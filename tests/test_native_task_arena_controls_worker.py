@@ -14,16 +14,102 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _contact_close_sweep_minimum_force_n,
     _construction_global_ik_joint_targets,
     _control_plan_global_ik_joint_targets,
+    _fallback_contact_open_postures,
     _input_binding_mismatches,
     _load_and_verify_manifest,
     _normalized_control_plan_for_execution,
     _parallel_jaw_equivalent_control_plan,
     _parallel_jaw_equivalent_quaternion_xyzw,
+    _physics_admitted_contact_open_cell,
     _select_parallel_jaw_control_plan,
     _solve_closed_contact_on_reference_branch,
     _verified_runtime_inputs,
     _with_live_physx_dls_contact_close,
 )
+
+
+def test_contact_open_fallback_measures_both_variants_and_deduplicates_postures() -> None:
+    def _preflight(*rows):
+        return {
+            "phases": [
+                {
+                    "phase_id": "contact_open",
+                    "attempts": list(rows),
+                    "selected": None,
+                }
+            ]
+        }
+
+    duplicate = {
+        "solved": False,
+        "seed_index": 0,
+        "joint_positions_rad": [0.1] * 7,
+        "position_error_m": 0.0043,
+        "orientation_error_rad": 0.086,
+    }
+    rows = _fallback_contact_open_postures(
+        {
+            "variants": [
+                {
+                    "variant_id": "normalized_nominal",
+                    "global_ik_preflight": _preflight(duplicate),
+                },
+                {
+                    "variant_id": "parallel_jaw_equivalent",
+                    "global_ik_preflight": _preflight(
+                        duplicate,
+                        {
+                            **duplicate,
+                            "seed_index": 1,
+                            "joint_positions_rad": [0.2] * 7,
+                        },
+                    ),
+                },
+            ]
+        }
+    )
+
+    assert len(rows) == 2
+    assert {row["joint_positions_rad"][0] for row in rows} == {0.1, 0.2}
+    assert rows[0]["variant_id"] == "normalized_nominal"
+
+
+def test_contact_open_physics_adoption_keeps_every_gate_fail_closed() -> None:
+    base = {
+        "measured_distance_to_target_m": 0.004,
+        "measured_orientation_error_rad": 0.07,
+        "commanded_joint_positions_rad": [0.2] * 7,
+        "joint_tracking_error_rad": 0.001,
+        "joint_limit_violation": False,
+        "robot_collision_failure": False,
+        "scene_collision_failure": False,
+        "task_contact_active": False,
+    }
+    selected = _physics_admitted_contact_open_cell(
+        {"cells": [base]},
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+    )
+    assert selected is not None
+    assert selected["pose_gate_passed"] is True
+
+    for failed_field, failed_value in (
+        ("measured_distance_to_target_m", 0.0051),
+        ("measured_orientation_error_rad", 0.0801),
+        ("joint_limit_violation", True),
+        ("robot_collision_failure", True),
+        ("scene_collision_failure", True),
+        ("task_contact_active", True),
+    ):
+        failed = {**base, failed_field: failed_value}
+        assert (
+            _physics_admitted_contact_open_cell(
+                {"cells": [failed]},
+                position_tolerance_m=0.005,
+                orientation_tolerance_rad=0.08,
+            )
+            is None
+        )
 
 
 def test_close_sweep_uses_task_contact_force_before_plan_row_is_compiled() -> None:
