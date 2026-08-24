@@ -91,6 +91,7 @@ def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
         "construction_canary",
         "controls",
         "policy",
+        "policy_diagnostic",
     }
 
 

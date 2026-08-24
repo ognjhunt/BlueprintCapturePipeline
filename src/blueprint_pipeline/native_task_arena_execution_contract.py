@@ -93,6 +93,15 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "openpi_droid_policy_runtime.py",
 )
 
+POLICY_RUNTIME_MODULE_NAMES = tuple(
+    sorted(
+        {
+            *CONTROLS_RUNTIME_MODULE_NAMES,
+            *POLICY_EXTRA_RUNTIME_MODULE_NAMES,
+        }
+    )
+)
+
 
 @dataclass(frozen=True)
 class NativeTaskArenaExecutionContract:
@@ -116,14 +125,14 @@ EXECUTION_MODE_CONTRACTS = {
     ),
     "policy": NativeTaskArenaExecutionContract(
         expected_output_filename="native_task_arena_policy_result.v1.json",
-        runtime_module_names=tuple(
-            sorted(
-                {
-                    *CONTROLS_RUNTIME_MODULE_NAMES,
-                    *POLICY_EXTRA_RUNTIME_MODULE_NAMES,
-                }
-            )
+        runtime_module_names=POLICY_RUNTIME_MODULE_NAMES,
+        policy_candidate_required=True,
+    ),
+    "policy_diagnostic": NativeTaskArenaExecutionContract(
+        expected_output_filename=(
+            "native_task_arena_policy_diagnostic_result.v1.json"
         ),
+        runtime_module_names=POLICY_RUNTIME_MODULE_NAMES,
         policy_candidate_required=True,
     ),
 }
@@ -267,6 +276,7 @@ __all__ = [
     "NATIVE_TASK_ARENA_POLICY_CANDIDATES",
     "NativeTaskArenaExecutionContract",
     "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
+    "POLICY_RUNTIME_MODULE_NAMES",
     "RUNTIME_PREFLIGHT_MODULE_NAMES",
     "native_task_arena_execution_transport_completed",
     "required_archive_entries",
