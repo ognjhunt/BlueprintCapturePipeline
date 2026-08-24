@@ -212,6 +212,7 @@ from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
     build_native_microcheck_bundle_isolated as build_native_microcheck_bundle,
 )
+from .adp009d_policy_runtime_smoke_bundle import build_policy_runtime_smoke_bundle
 from .articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_bundle,
 )
@@ -1309,9 +1310,8 @@ def _run_reconstruction_gpu_canary(
                 Path(args.adapter_output).expanduser().resolve().parent
                 / "aws_preflight",
             )
-            capacity_probe = lambda _request: provider.capacity_preflight(
-                aws_probe_request
-            )
+            def capacity_probe(_request: Mapping[str, Any]) -> Mapping[str, Any]:
+                return provider.capacity_preflight(aws_probe_request)
         refreshed = collect_reconstruction_vast_preflight(
             name_prefix=getattr(
                 args,
@@ -1762,6 +1762,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Frozen candidate whose checkpoint and policy environment the worker "
             "should provision.  Omit for a micro-check with no policy."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-policy-runtime-smoke",
+        action="store_true",
+        help=(
+            "Run exactly one synthetic, outcome-blind inference for one frozen "
+            "ADP-009D candidate. No task scene, controls, scoring, or action "
+            "execution is admitted."
         ),
     )
     gpu.add_argument(
@@ -5388,6 +5397,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == ADP009D_NATIVE_MICROCHECK_PROBE_KIND:
+            policy_runtime_smoke_requested = bool(
+                args.adp009d_policy_runtime_smoke
+            )
             articulated_native_requested = bool(
                 args.adp009d_articulated_diagnostic_asset
                 or args.adp009d_articulated_diagnostic_request
@@ -5395,12 +5407,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             missing = [
                 name
                 for name in (
-                    "adp009d_harness_manifest",
-                    "adp_job_dir",
+                    ("adp_job_dir",)
+                    if policy_runtime_smoke_requested
+                    else ("adp009d_harness_manifest", "adp_job_dir")
                 )
                 if not getattr(args, name, None)
             ]
-            if articulated_native_requested:
+            if policy_runtime_smoke_requested:
+                pass
+            elif articulated_native_requested:
                 missing.extend(
                     name
                     for name in (
@@ -5441,6 +5456,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp009d_execution_mode_missing")
             elif args.adp009d_diagnostic_only and execution_modes != 1:
                 blockers.append("adp009d_execution_modes_conflict")
+            if policy_runtime_smoke_requested:
+                if len(selected_candidates) != 1:
+                    blockers.append(
+                        "adp009d_policy_runtime_smoke_requires_one_candidate"
+                    )
+                elif not selected_candidates.issubset(
+                    {"pi05_droid", "groot_n17_droid"}
+                ):
+                    blockers.append(
+                        "adp009d_policy_runtime_smoke_candidate_invalid"
+                    )
+                if (
+                    args.adp009d_controls
+                    or args.adp009d_diagnostic_only
+                    or articulated_native_requested
+                    or args.adp009d_scenario_instance
+                    or args.adp009d_approved_can
+                    or args.adp009d_sage_collision
+                    or args.adp009d_aura_particlefield
+                ):
+                    blockers.append(
+                        "adp009d_policy_runtime_smoke_task_inputs_forbidden"
+                    )
             if articulated_native_requested and not args.adp009d_diagnostic_only:
                 blockers.append("adp009d_articulated_native_requires_diagnostic_only")
             if articulated_native_requested and (selected_candidates or args.adp009d_controls):
@@ -5524,7 +5562,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             if not blockers:
                 try:
-                    if articulated_native_requested:
+                    if policy_runtime_smoke_requested:
+                        prepared_bundle = build_policy_runtime_smoke_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            candidate_id=next(iter(selected_candidates)),
+                            implementation_commit=str(
+                                control_identity["orchestrator_source_commit"]
+                            ),
+                        )
+                    elif articulated_native_requested:
                         prepared_bundle = build_articulated_native_diagnostic_bundle(
                             job_dir=Path(args.adp_job_dir) / "bundle",
                             asset_path=args.adp009d_articulated_diagnostic_asset,
@@ -5563,7 +5609,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
                 "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
-                "candidate_policy_queried": False,
+                "candidate_policy_queried": policy_runtime_smoke_requested,
+                "outcome_blind_policy_runtime_smoke": policy_runtime_smoke_requested,
                 "physics_backend": args.adp009d_physics_backend,
                 "physics_backend_profile_digest": physics_backend_profile[
                     "profile_digest"
@@ -5629,7 +5676,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "retry_cap": 0,
                     "authority": "user_authorized_bounded_gpu_compute_in_goal_scope",
                     "private_data_uploaded": False,
-                    "candidate_policy_queried": False,
+                    "candidate_policy_queried": policy_runtime_smoke_requested,
                     "physical_outcome_values_uploaded": False,
                     "explicit_concurrent_gpu_authority_bound": bool(
                         args.adp_allowed_active_vast_instance_id
