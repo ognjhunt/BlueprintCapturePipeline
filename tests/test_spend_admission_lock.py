@@ -59,6 +59,19 @@ def _inventory() -> list[dict[str, object]]:
     ]
 
 
+def _inventory_with_aws() -> list[dict[str, object]]:
+    return _inventory() + [
+        {
+            "provider": "aws",
+            "status": "succeeded",
+            "required": True,
+            "credential_present": True,
+            "row_count": 0,
+            "blockers": [],
+        }
+    ]
+
+
 def _fleet(total: float, *, blocked_for_total: bool = False) -> dict[str, object]:
     return {
         "status": "blocked" if blocked_for_total else "passed",
@@ -141,6 +154,93 @@ def test_below_threshold_opens_admission_without_page() -> None:
     assert evidence["threshold_crossed"] is False
     assert evidence["page_event"]["required"] is False  # type: ignore[index]
     assert validate_spend_admission_lock(evidence, now=NOW) == []
+
+
+def test_new_uncovered_provider_does_not_block_covered_provider() -> None:
+    evidence = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0),
+        billing_reconciliation=_billing(42.0),
+        instances=[],
+        reap_results=[],
+        inventory_results=_inventory_with_aws(),
+        override_path=None,
+        now=NOW,
+    )
+
+    assert evidence["status"] == "open"
+    assert evidence["admission_allowed"] is True
+    assert evidence["billing_covered_provider_ids"] == [
+        "digitalocean",
+        "runpod",
+        "vast",
+    ]
+    assert evidence["billing_uncovered_provider_ids"] == ["aws"]
+    assert evidence["provider_admission"]["vast"] == {  # type: ignore[index]
+        "admission_allowed": True,
+        "blockers": [],
+    }
+    assert evidence["provider_admission"]["aws"] == {  # type: ignore[index]
+        "admission_allowed": False,
+        "blockers": ["billing_reconciliation_provider_uncovered:aws"],
+    }
+    assert validate_spend_admission_lock(
+        evidence,
+        now=NOW,
+        required_provider="vast",
+    ) == []
+    assert (
+        "spend_admission_lock_required_provider_billing_missing:aws"
+        in validate_spend_admission_lock(
+            evidence,
+            now=NOW,
+            required_provider="aws",
+        )
+    )
+
+
+def test_paid_chokepoint_binds_billing_coverage_to_launch_provider() -> None:
+    now = datetime.now(timezone.utc)
+    evidence = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0),
+        billing_reconciliation=_billing(42.0, now=now),
+        instances=[],
+        reap_results=[],
+        inventory_results=_inventory_with_aws(),
+        override_path=None,
+        now=now,
+    )
+    vast_kwargs = _preflight_kwargs()
+    vast_kwargs["provider"] = "vast"
+    assert require_pre_spend_preflight(
+        **vast_kwargs,
+        spend_admission_lock=evidence,
+    )["status"] == "PASS"
+
+    aws_kwargs = _preflight_kwargs()
+    aws_kwargs["provider"] = "aws"
+    with pytest.raises(PreSpendPreflightBlocked) as blocked:
+        require_pre_spend_preflight(
+            **aws_kwargs,
+            spend_admission_lock=evidence,
+        )
+    assert any(
+        blocker.endswith("required_provider_billing_missing:aws")
+        for blocker in blocked.value.preflight["blockers"]
+    )
+
+
+def test_provider_coverage_receipt_tamper_is_rejected() -> None:
+    evidence = _lock(42.0)
+    evidence["billing_covered_provider_ids"] = ["vast"]
+
+    assert (
+        "spend_admission_lock_billing_covered_providers_mismatch"
+        in validate_spend_admission_lock(
+            evidence,
+            now=NOW,
+            required_provider="vast",
+        )
+    )
 
 
 @pytest.mark.parametrize("total", [HARD_STOP_USD, HARD_STOP_USD + 0.01])

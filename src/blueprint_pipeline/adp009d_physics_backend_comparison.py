@@ -1061,7 +1061,11 @@ def build_newton_canary_admission(
     except ImportError:  # pragma: no cover - control-plane builder is package-only
         from spend_admission_lock import validate_spend_admission_lock
 
-    if validate_spend_admission_lock(spend_admission_lock, now=current):
+    if validate_spend_admission_lock(
+        spend_admission_lock,
+        now=current,
+        required_provider="vast",
+    ):
         raise PhysicsBackendContractError("adp009d_newton_spend_admission_invalid")
     if any(
         isinstance(item, bool) or not isinstance(item, int) or item <= 0

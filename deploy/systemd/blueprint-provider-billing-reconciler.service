@@ -36,8 +36,10 @@ LimitNOFILE=65536
 MemoryMax=8G
 CPUQuota=200%
 TimeoutStartSec=5m
-# The billing export feeds provider-zero admission, so it follows the same
-# immutable Task Evaluation release identity as the guard.
+# The billing export feeds provider-scoped admission, so it follows the same
+# immutable Task Evaluation release identity as the guard. The reconciler's
+# default required scope is RunPod/Vast/DigitalOcean; optional AWS is attempted
+# and audited but cannot block those providers or authorize an AWS launch.
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets

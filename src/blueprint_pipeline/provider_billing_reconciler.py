@@ -35,6 +35,7 @@ BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
 BILLING_SCOPE = "blueprint_beta_100_user_cohort"
 PROVIDERS = ("runpod", "vast", "digitalocean", "aws")
+BASE_REQUIRED_PROVIDERS = frozenset({"runpod", "vast", "digitalocean"})
 RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
 VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
@@ -509,6 +510,7 @@ def reconcile_provider_billing(
     aws_credentials_file: str | Path | None = None,
     aws_profile: str | None = None,
     aws_credentials: Any | None = None,
+    required_providers: Sequence[str] = (),
 ) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     start = _parse_time(start_at, field="cohort_start_at")
@@ -520,15 +522,10 @@ def reconcile_provider_billing(
         "vast": _read_secret(secret_root / "vast_api_key"),
         "digitalocean": _read_secret(secret_root / "digitalocean_api_token"),
     }
-    credentials_path = _validate_secret_file(
-        Path(aws_credentials_file or secret_root / "aws_agent_credentials").expanduser().resolve()
-    )
-    account_id = str(aws_account_id or os.environ.get("BLUEPRINT_AWS_ACCOUNT_ID") or "")
-    profile = str(aws_profile or os.environ.get("AWS_PROFILE") or "")
-    credentials = aws_credentials or _aws_credentials(
-        credentials_file=credentials_path,
-        profile=profile,
-    )
+    requested_required = {str(provider).strip() for provider in required_providers}
+    if not requested_required.issubset(PROVIDERS):
+        raise ProviderBillingReconciliationError("required_provider_invalid")
+    required_provider_ids = BASE_REQUIRED_PROVIDERS | requested_required
     audit_rows: list[dict[str, Any]] = []
     totals = {
         "runpod": _runpod_total(
@@ -555,7 +552,23 @@ def reconcile_provider_billing(
             transport=transport,
             audit_rows=audit_rows,
         ),
-        "aws": _aws_total(
+    }
+    optional_provider_failures: dict[str, str] = {}
+    try:
+        credentials_path = _validate_secret_file(
+            Path(
+                aws_credentials_file or secret_root / "aws_agent_credentials"
+            ).expanduser().resolve()
+        )
+        account_id = str(
+            aws_account_id or os.environ.get("BLUEPRINT_AWS_ACCOUNT_ID") or ""
+        )
+        profile = str(aws_profile or os.environ.get("AWS_PROFILE") or "")
+        credentials = aws_credentials or _aws_credentials(
+            credentials_file=credentials_path,
+            profile=profile,
+        )
+        totals["aws"] = _aws_total(
             account_id=account_id,
             credentials=credentials,
             start_at=start,
@@ -563,9 +576,21 @@ def reconcile_provider_billing(
             timeout=timeout,
             transport=transport,
             audit_rows=audit_rows,
-        ),
-    }
+        )
+    except ProviderBillingReconciliationError as exc:
+        error = str(exc)
+        security_blockers = (
+            "secret_symlink_forbidden:",
+            "secret_file_invalid:",
+            "secret_file_writable_by_group_or_world:",
+            "aws_billing_account_identity_mismatch",
+        )
+        if "aws" in required_provider_ids or error.startswith(security_blockers):
+            raise
+        optional_provider_failures["aws"] = error
     totals = {provider: round(value, 6) for provider, value in totals.items()}
+    covered_provider_ids = sorted(totals)
+    uncovered_provider_ids = sorted(set(PROVIDERS) - set(totals))
     generated_at = current.isoformat()
     audit_directory = Path(audit_root).expanduser().resolve() / current.strftime(
         "%Y%m%dT%H%M%S.%fZ"
@@ -585,6 +610,10 @@ def reconcile_provider_billing(
         "cohort_start_at": start.isoformat(),
         "cohort_end_at": generated_at,
         "provider_totals_usd": totals,
+        "required_provider_ids": sorted(required_provider_ids),
+        "covered_provider_ids": covered_provider_ids,
+        "uncovered_provider_ids": uncovered_provider_ids,
+        "optional_provider_failures": optional_provider_failures,
         "sources": source_rows,
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
@@ -608,6 +637,10 @@ def reconcile_provider_billing(
         "status": "reconciled",
         "generated_at": generated_at,
         "provider_totals_usd": totals,
+        "required_provider_ids": sorted(required_provider_ids),
+        "covered_provider_ids": covered_provider_ids,
+        "uncovered_provider_ids": uncovered_provider_ids,
+        "optional_provider_failures": optional_provider_failures,
         "billing_export_path": str(export_path),
         "billing_export_digest": _digest_bytes(export_path.read_bytes()),
         "source_receipt_path": str(source_path),
@@ -629,6 +662,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--aws-credentials-file", default=os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
     )
     parser.add_argument("--aws-profile", default=os.environ.get("AWS_PROFILE"))
+    parser.add_argument(
+        "--require-provider",
+        action="append",
+        default=[],
+        choices=PROVIDERS,
+        help=(
+            "make this provider mandatory for the refresh; the original "
+            "RunPod/Vast/DigitalOcean cohort is always mandatory"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         result = reconcile_provider_billing(
@@ -640,6 +683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             aws_account_id=args.aws_account_id,
             aws_credentials_file=args.aws_credentials_file,
             aws_profile=args.aws_profile,
+            required_providers=args.require_provider,
         )
     except (OSError, ProviderBillingReconciliationError) as exc:
         print(

@@ -159,6 +159,7 @@ def require_pre_spend_preflight(
         validate_spend_admission_lock(
             admission_evidence,
             now=datetime.now(timezone.utc),
+            required_provider=provider,
         )
         if admission_required
         else []
@@ -177,6 +178,13 @@ def require_pre_spend_preflight(
         "hard_stop_usd": admission_evidence.get("hard_stop_usd"),
         "effective_spend_usd": admission_evidence.get("effective_spend_usd"),
         "threshold_crossed": admission_evidence.get("threshold_crossed"),
+        "required_provider": provider,
+        "billing_covered_provider_ids": admission_evidence.get(
+            "billing_covered_provider_ids"
+        ),
+        "billing_uncovered_provider_ids": admission_evidence.get(
+            "billing_uncovered_provider_ids"
+        ),
         "override_id": _mapping(admission_evidence.get("override")).get(
             "override_id"
         ),

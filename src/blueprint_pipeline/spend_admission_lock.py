@@ -338,8 +338,16 @@ def build_spend_admission_lock(
     inventory_provider_set = {
         str(row.get("provider") or "").strip() for row in inventory_rows
     }
-    if not isinstance(billing_totals, Mapping) or set(billing_totals) != inventory_provider_set:
+    billing_provider_set = (
+        set(billing_totals) if isinstance(billing_totals, Mapping) else set()
+    )
+    if (
+        not REQUIRED_BILLING_PROVIDERS.issubset(billing_provider_set)
+        or not billing_provider_set.issubset(inventory_provider_set)
+    ):
         blockers.append("billing_reconciliation_provider_coverage_incomplete")
+    covered_provider_ids = sorted(billing_provider_set & inventory_provider_set)
+    uncovered_provider_ids = sorted(inventory_provider_set - billing_provider_set)
     billing_generated_at = _parse_time(billing.get("generated_at"))
     if (
         billing_generated_at is None
@@ -449,6 +457,23 @@ def build_spend_admission_lock(
         "allocation_ledger_total_usd": ledger_total,
         "reconciled_billing_total_usd": billing_total,
         "effective_spend_usd": effective_spend,
+        "billing_covered_provider_ids": covered_provider_ids,
+        "billing_uncovered_provider_ids": uncovered_provider_ids,
+        "provider_admission": {
+            provider: {
+                "admission_allowed": bool(
+                    admission_allowed and provider in billing_provider_set
+                ),
+                "blockers": []
+                if admission_allowed and provider in billing_provider_set
+                else (
+                    [f"billing_reconciliation_provider_uncovered:{provider}"]
+                    if admission_allowed
+                    else blockers
+                ),
+            }
+            for provider in sorted(inventory_provider_set)
+        },
         "billing_reconciliation": billing,
         "provider_inventory": inventory_rows,
         "override": override,
@@ -478,6 +503,7 @@ def build_spend_admission_lock(
             "page_event_is_not_notification_delivery_proof": True,
             "draining_is_not_provider_teardown_proof": True,
             "override_is_short_lived_and_two_person_audited": True,
+            "uncovered_provider_is_not_authorized_for_paid_work": True,
         },
     }
 
@@ -487,8 +513,17 @@ def validate_spend_admission_lock(
     *,
     now: datetime,
     max_age_seconds: int = MAX_LOCK_AGE_SECONDS,
+    required_provider: str | None = None,
 ) -> list[str]:
-    """Validate a lock artifact at the shared paid-lane chokepoint."""
+    """Validate a lock artifact at the shared paid-lane chokepoint.
+
+    Billing remains mandatory for the original cohort providers. A configured
+    provider added later may be absent from the cumulative billing export only
+    while that provider is not the lane being admitted. Passing
+    ``required_provider`` binds validation to the provider the launch will
+    mutate and refuses that provider unless its own official billing total is
+    present.
+    """
 
     row = _mapping(evidence)
     blockers: list[str] = []
@@ -525,8 +560,55 @@ def validate_spend_admission_lock(
         for item in row.get("provider_inventory") or []
         if isinstance(item, Mapping)
     }
-    if not isinstance(totals, Mapping) or set(totals) != inventory_provider_set:
+    billing_provider_set = set(totals) if isinstance(totals, Mapping) else set()
+    if (
+        not REQUIRED_BILLING_PROVIDERS.issubset(billing_provider_set)
+        or not billing_provider_set.issubset(inventory_provider_set)
+    ):
         blockers.append("spend_admission_lock_billing_provider_coverage_incomplete")
+    provider = str(required_provider or "").strip()
+    if required_provider is not None:
+        if provider not in SUPPORTED_BILLING_PROVIDERS:
+            blockers.append("spend_admission_lock_required_provider_invalid")
+        elif provider not in inventory_provider_set:
+            blockers.append(
+                f"spend_admission_lock_required_provider_inventory_missing:{provider}"
+            )
+        elif provider not in billing_provider_set:
+            blockers.append(
+                f"spend_admission_lock_required_provider_billing_missing:{provider}"
+            )
+    expected_covered = sorted(billing_provider_set & inventory_provider_set)
+    expected_uncovered = sorted(inventory_provider_set - billing_provider_set)
+    if row.get("billing_covered_provider_ids") != expected_covered:
+        blockers.append("spend_admission_lock_billing_covered_providers_mismatch")
+    if row.get("billing_uncovered_provider_ids") != expected_uncovered:
+        blockers.append("spend_admission_lock_billing_uncovered_providers_mismatch")
+    provider_admission = _mapping(row.get("provider_admission"))
+    if set(provider_admission) != inventory_provider_set:
+        blockers.append("spend_admission_lock_provider_admission_scope_mismatch")
+    else:
+        global_open = row.get("admission_allowed") is True
+        for provider_id in sorted(inventory_provider_set):
+            provider_row = _mapping(provider_admission.get(provider_id))
+            expected_allowed = bool(global_open and provider_id in billing_provider_set)
+            if provider_row.get("admission_allowed") is not expected_allowed:
+                blockers.append(
+                    f"spend_admission_lock_provider_admission_mismatch:{provider_id}"
+                )
+            expected_provider_blockers = (
+                []
+                if expected_allowed
+                else (
+                    [f"billing_reconciliation_provider_uncovered:{provider_id}"]
+                    if global_open
+                    else row.get("blockers")
+                )
+            )
+            if provider_row.get("blockers") != expected_provider_blockers:
+                blockers.append(
+                    f"spend_admission_lock_provider_blockers_mismatch:{provider_id}"
+                )
     billing_generated_at = _parse_time(billing.get("generated_at"))
     if (
         billing_generated_at is None
@@ -614,6 +696,7 @@ def validate_spend_admission_lock(
         "page_event_is_not_notification_delivery_proof",
         "draining_is_not_provider_teardown_proof",
         "override_is_short_lived_and_two_person_audited",
+        "uncovered_provider_is_not_authorized_for_paid_work",
     }
     if any(claim_boundary.get(key) is not True for key in required_claim_boundaries):
         blockers.append("spend_admission_lock_claim_boundary_invalid")
