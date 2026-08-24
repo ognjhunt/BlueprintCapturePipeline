@@ -1689,6 +1689,11 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
                 "cell_index": 17,
                 "admitted": True,
                 "candidate_target_position_world_m": [0.501, 0.096, 0.402],
+                "candidate_command_target_position_world_m": [
+                    0.501,
+                    0.0825,
+                    0.402,
+                ],
                 "reached_open_joint_positions_rad": reached_open,
                 "approach_offset_m": -0.005,
                 "jaw_offset_m": 0.006,
@@ -1707,10 +1712,10 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
     assert receipt["status"] == "applied"
     assert receipt["adopted_cell_index"] == 17
     assert contact_open["target_position_world_m"] == pytest.approx(
-        [0.501, 0.096, 0.402]
+        [0.501, 0.0825, 0.402]
     )
     assert contact_open["arrival_target_position_world_m"] == pytest.approx(
-        [0.501, 0.096, 0.402]
+        [0.501, 0.0825, 0.402]
     )
     assert contact_open["hold_solved_arm_joint_positions_rad"] == pytest.approx(
         reached_open
@@ -1719,6 +1724,12 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
     assert contact_close[
         "hold_arm_joint_positions_during_gripper_transition"
     ] is True
+    assert contact_close["target_position_world_m"] == pytest.approx(
+        [0.501, 0.0825, 0.402]
+    )
+    assert contact_close["arrival_target_position_world_m"] == pytest.approx(
+        [0.501, 0.096, 0.402]
+    )
     assert contact_close["hold_solved_arm_joint_positions_rad"] == pytest.approx(
         reached_open
     )
