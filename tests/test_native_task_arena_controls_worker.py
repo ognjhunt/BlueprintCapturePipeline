@@ -24,9 +24,105 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _physics_admitted_contact_open_cell,
     _select_parallel_jaw_control_plan,
     _solve_closed_contact_on_reference_branch,
+    _synthetic_post_phase5_checkpoint,
     _verified_runtime_inputs,
     _with_live_physx_dls_contact_close,
 )
+
+
+def test_downstream_checkpoint_is_synthetic_and_selects_continuous_branch() -> None:
+    plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_close",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "expected_joint_positions": {"door": 0.0, "latch": 0.0},
+            },
+            {
+                "phase_id": "joint_path_01",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.1, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        ]
+    }
+    global_ik = {
+        "phases": [
+            {
+                "phase_id": "contact_close",
+                "attempts": [
+                    {
+                        "solved": False,
+                        "joint_positions_rad": [0.2] * 7,
+                        "position_error_m": 0.004,
+                    },
+                    {
+                        "solved": False,
+                        "joint_positions_rad": [0.8] * 7,
+                        "position_error_m": 0.001,
+                    },
+                ],
+            }
+        ]
+    }
+
+    checkpoint = _synthetic_post_phase5_checkpoint(
+        control_plan=plan,
+        global_ik=global_ik,
+        scripted_pose_joint_targets=[
+            {
+                "phase_id": "joint_path_01",
+                "target_position_world_m": [1.1, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "joint_positions_rad": [0.25] * 7,
+            }
+        ],
+        jaw_selection={"variants": []},
+        task_spec={"joint_reset_positions_rad": {"door": 0.0}},
+    )
+
+    assert checkpoint is not None
+    assert checkpoint["arm_joint_positions_rad"] == [0.2] * 7
+    assert checkpoint["task_joint_positions_rad"] == {
+        "door": 0.0,
+        "latch": 0.0,
+    }
+    assert checkpoint["phase5_qualified"] is False
+    assert checkpoint["gripper_state"] == "closed"
+    assert checkpoint["checkpoint_digest"] == _canonical_digest(
+        checkpoint, field="checkpoint_digest"
+    )
+
+
+def test_downstream_checkpoint_refuses_missing_task_joint_state() -> None:
+    assert (
+        _synthetic_post_phase5_checkpoint(
+            control_plan={
+                "scripted_positive_actions": [
+                    {
+                        "phase_id": "contact_close",
+                        "mode": "ik_pose",
+                        "target_position_world_m": [1.0, 2.0, 3.0],
+                        "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                        "hold_solved_arm_joint_positions_rad": [0.2] * 7,
+                    },
+                    {
+                        "phase_id": "joint_path_01",
+                        "mode": "ik_pose",
+                        "target_position_world_m": [1.1, 2.0, 3.0],
+                        "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                ]
+            },
+            global_ik={"phases": []},
+            scripted_pose_joint_targets=[],
+            jaw_selection={"variants": []},
+            task_spec={},
+        )
+        is None
+    )
 
 
 def test_contact_open_fallback_preserves_variant_specific_scoring_targets() -> None:

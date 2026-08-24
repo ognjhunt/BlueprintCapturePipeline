@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -98,12 +98,26 @@ SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 TASK_CONTROL_PLAN_SCHEMA_VERSION = "adp_task_control_plan.v1"
 TASK_CONTROL_EPISODE_SCHEMA_VERSION = "adp_task_control_episode.v1"
 TASK_CONTROL_PAIR_SCHEMA_VERSION = "adp_task_control_pair.v1"
+TASK_DOWNSTREAM_DIAGNOSTIC_SCHEMA_VERSION = (
+    "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+)
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
 ARM_DYNAMICS_SUMMARY_SCHEMA_VERSION = "adp009d_arm_dynamics_summary.v2"
 
 ZERO_ACTION_NEGATIVE = "zero_action_negative"
 SCRIPTED_POSITIVE = "deterministic_scripted_positive"
 REQUIRED_CONTROLS = (ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE)
+DOWNSTREAM_DIAGNOSTIC_CONTROL_ID = (
+    "development_only_synthetic_post_phase5_downstream"
+)
+DOWNSTREAM_DIAGNOSTIC_PHASE_IDS = (
+    "joint_path_01",
+    "joint_path_02",
+    "joint_path_03",
+    "joint_path_04",
+    "release",
+    "retreat",
+)
 
 # IK controls an articulation body while the task is grasped at the midpoint
 # between the finger bodies.  Those frames are not coincident: v88 proved that
@@ -1622,6 +1636,7 @@ __all__ = [
     "CONTROL_PLAN_FILENAME",
     "CONTROL_PAIR_SCHEMA_VERSION",
     "CONTROL_PLAN_SCHEMA_VERSION",
+    "DOWNSTREAM_DIAGNOSTIC_PHASE_IDS",
     "ControlEpisodeError",
     "SCRIPTED_POSITIVE",
     "ZERO_ACTION_NEGATIVE",
@@ -1811,6 +1826,25 @@ def validate_task_control_plan(
                 len(physx_preferred_joints) == 7
                 and all(math.isfinite(value) for value in physx_preferred_joints)
             )
+            expected_task_joints_raw = raw.get("expected_joint_positions")
+            try:
+                expected_task_joints = (
+                    None
+                    if expected_task_joints_raw is None
+                    else {
+                        str(name): float(value)
+                        for name, value in expected_task_joints_raw.items()
+                    }
+                )
+            except (AttributeError, TypeError, ValueError):
+                expected_task_joints = {}
+            expected_task_joints_valid = expected_task_joints is None or (
+                bool(expected_task_joints)
+                and all(
+                    name and math.isfinite(value)
+                    for name, value in expected_task_joints.items()
+                )
+            )
             hold_arm_during_gripper_transition = (
                 raw.get("hold_arm_joint_positions_during_gripper_transition")
                 is True
@@ -1898,6 +1932,7 @@ def validate_task_control_plan(
                 or not math.isfinite(max_joint_setpoint_lead_rad)
                 or not held_valid
                 or not physx_preferred_valid
+                or not expected_task_joints_valid
                 or (
                     held_joints is not None
                     and physx_preferred_joints is not None
@@ -1941,6 +1976,15 @@ def validate_task_control_plan(
                         ),
                         "max_joint_delta_rad": max_joint_delta_rad,
                         "max_joint_setpoint_lead_rad": max_joint_setpoint_lead_rad,
+                        **(
+                            {
+                                "expected_joint_positions": (
+                                    expected_task_joints
+                                )
+                            }
+                            if expected_task_joints is not None
+                            else {}
+                        ),
                     }
                 )
                 maximum_scripted_steps += maximum_steps
@@ -2070,12 +2114,26 @@ def _run_task_control_episode(
     gripper_closed_command: float | None,
     output: Path,
     episode_id: str,
+    initial_reset_callback: Callable[[], None] | None = None,
+    trajectory_override: Sequence[Mapping[str, Any]] | None = None,
+    qualification_allowed: bool = True,
+    receipt_annotations: Mapping[str, Any] | None = None,
+    initial_sample_validator: Callable[[Mapping[str, Any]], str | None]
+    | None = None,
 ) -> dict[str, Any]:
     task_kind = str(task_spec["task_kind"])
-    environment.reset()
+    if initial_reset_callback is None:
+        environment.reset()
+    else:
+        initial_reset_callback()
     samples = [
         _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
     ]
+    initial_state_blocker = (
+        initial_sample_validator(samples[0])
+        if initial_sample_validator is not None
+        else None
+    )
     policy_inputs = [
         _persist_observation(
             environment,
@@ -2088,10 +2146,16 @@ def _run_task_control_episode(
     review_observations: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
     phase_arrivals: list[dict[str, Any]] = []
-    phase_execution_blocker: str | None = None
+    phase_execution_blocker: str | None = initial_state_blocker
     observation_index = 1
     step_index = 0
-    if control_id == ZERO_ACTION_NEGATIVE:
+    if trajectory_override is not None:
+        trajectory = (
+            []
+            if initial_state_blocker is not None
+            else [dict(row) for row in trajectory_override]
+        )
+    elif control_id == ZERO_ACTION_NEGATIVE:
         trajectory = [
             {
                 "phase_id": ZERO_ACTION_NEGATIVE,
@@ -2791,6 +2855,9 @@ def _run_task_control_episode(
         if phase_execution_blocker is not None:
             blockers.append(phase_execution_blocker)
             passed = False
+    if not qualification_allowed:
+        blockers.append("synthetic_checkpoint_diagnostic_not_qualifying")
+        passed = False
     if visual.get("status") != "complete":
         blockers.append(BLOCKER_MEDIA_INCOMPLETE)
         passed = False
@@ -2820,6 +2887,23 @@ def _run_task_control_episode(
         "caller_asserted_success_accepted": False,
         "receipt_digest": "",
     }
+    if not qualification_allowed:
+        receipt.update(
+            {
+                "qualification_allowed": False,
+                "development_only": True,
+                "diagnostic_only": True,
+                "claim_boundary": (
+                    "synthetic_checkpoint_execution_only;cannot_qualify_"
+                    "phase5_any_downstream_phase_policy_admission_or_task_"
+                    "success"
+                ),
+            }
+        )
+    if receipt_annotations is not None:
+        receipt["diagnostic_annotations"] = json.loads(
+            json.dumps(dict(receipt_annotations), allow_nan=False)
+        )
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -2888,6 +2972,316 @@ def run_task_neutral_controls(
     return pair
 
 
+def run_synthetic_post_phase5_downstream_diagnostic(
+    *,
+    environment: ControlEnvironment,
+    task_spec: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+    checkpoint: Mapping[str, Any],
+    gripper_open_command: float,
+    gripper_closed_command: float,
+    output_dir: str | Path,
+    checkpoint_settle_steps: int = 8,
+) -> dict[str, Any]:
+    """Execute phases 6--11 continuously from a synthetic Phase-5 boundary.
+
+    The checkpoint deliberately does *not* assert that a grasp was achieved.
+    It injects caller-identified arm and task joints, then physically commands
+    the closed gripper through the same bounded action seam before replaying
+    the unchanged downstream suffix.  It therefore breaks the debugging
+    dependency on Phase 5 without qualifying Phase 5, a policy cell, any
+    downstream phase, or task success.
+    """
+
+    task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
+    plan = validate_task_control_plan(control_plan, task_spec=task)
+    try:
+        frozen_checkpoint = json.loads(
+            json.dumps(dict(checkpoint), allow_nan=False)
+        )
+        arm = [
+            float(value)
+            for value in frozen_checkpoint["arm_joint_positions_rad"]
+        ]
+        task_joints = {
+            str(name): float(value)
+            for name, value in frozen_checkpoint[
+                "task_joint_positions_rad"
+            ].items()
+        }
+        open_command = float(gripper_open_command)
+        closed_command = float(gripper_closed_command)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ControlEpisodeError(
+            ["downstream_diagnostic_checkpoint_invalid"]
+        ) from exc
+    errors: list[str] = []
+    if (
+        frozen_checkpoint.get("schema_version")
+        != "adp_task_synthetic_post_phase5_checkpoint.v1"
+        or frozen_checkpoint.get("source_phase_id") != "contact_close"
+        or frozen_checkpoint.get("gripper_state") != "closed"
+        or frozen_checkpoint.get("phase5_qualified") is not False
+        or frozen_checkpoint.get("initialization_authority")
+        != "caller_provided_synthetic_diagnostic_state"
+        or frozen_checkpoint.get("checkpoint_digest")
+        != canonical_digest(
+            frozen_checkpoint, digest_field="checkpoint_digest"
+        )
+    ):
+        errors.append("downstream_diagnostic_checkpoint_contract_invalid")
+    if len(arm) != 7 or not all(math.isfinite(value) for value in arm):
+        errors.append("downstream_diagnostic_checkpoint_arm_invalid")
+    if not task_joints or not all(
+        name and math.isfinite(value) for name, value in task_joints.items()
+    ):
+        errors.append("downstream_diagnostic_checkpoint_task_joints_invalid")
+    if (
+        not all(math.isfinite(value) for value in (open_command, closed_command))
+        or open_command == closed_command
+    ):
+        errors.append("downstream_diagnostic_gripper_commands_invalid")
+    if (
+        isinstance(checkpoint_settle_steps, bool)
+        or not isinstance(checkpoint_settle_steps, int)
+        or checkpoint_settle_steps < 1
+    ):
+        errors.append("downstream_diagnostic_settle_steps_invalid")
+    resetter = getattr(environment, "reset_to_diagnostic_checkpoint", None)
+    bounded = getattr(environment, "bounded_joint_action", None)
+    limits_reader = getattr(environment, "joint_limits", None)
+    if not callable(resetter):
+        errors.append("downstream_diagnostic_checkpoint_reset_unavailable")
+    if not callable(bounded):
+        errors.append("downstream_diagnostic_bounded_action_unavailable")
+    arm_limits: list[list[float]] = []
+    if not callable(limits_reader):
+        errors.append("downstream_diagnostic_arm_joint_limits_unavailable")
+    else:
+        try:
+            arm_limits = [
+                [float(bound) for bound in row]
+                for row in limits_reader()
+            ]
+        except (TypeError, ValueError):
+            arm_limits = []
+        if (
+            len(arm_limits) != 7
+            or any(
+                len(row) != 2
+                or not all(math.isfinite(bound) for bound in row)
+                or row[0] > row[1]
+                for row in arm_limits
+            )
+        ):
+            errors.append("downstream_diagnostic_arm_joint_limits_invalid")
+        elif any(
+            value < lower or value > upper
+            for value, (lower, upper) in zip(arm, arm_limits, strict=True)
+        ):
+            errors.append("downstream_diagnostic_arm_checkpoint_out_of_bounds")
+    task_limits = task.get("joint_hard_limits_rad")
+    if not isinstance(task_limits, Mapping):
+        errors.append("downstream_diagnostic_task_joint_limits_unavailable")
+    else:
+        for name, value in task_joints.items():
+            try:
+                lower, upper = [float(bound) for bound in task_limits[name]]
+            except (KeyError, TypeError, ValueError):
+                errors.append(
+                    f"downstream_diagnostic_task_joint_limit_invalid:{name}"
+                )
+                continue
+            if (
+                not all(math.isfinite(bound) for bound in (lower, upper))
+                or lower > upper
+                or value < lower
+                or value > upper
+            ):
+                errors.append(
+                    f"downstream_diagnostic_task_checkpoint_out_of_bounds:{name}"
+                )
+
+    actions = plan.get("scripted_positive_actions")
+    rows_by_id = {
+        str(row.get("phase_id") or ""): row
+        for row in actions or []
+        if isinstance(row, Mapping)
+    }
+    downstream_rows = [
+        dict(rows_by_id.get(phase_id) or {})
+        for phase_id in DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
+    ]
+    if any(not row for row in downstream_rows):
+        errors.append("downstream_diagnostic_phase_suffix_missing")
+    else:
+        ordered_phase_ids = [
+            str(row.get("phase_id") or "")
+            for row in actions or []
+            if isinstance(row, Mapping)
+            and str(row.get("phase_id") or "")
+            in DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
+        ]
+        if ordered_phase_ids != list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS):
+            errors.append("downstream_diagnostic_phase_suffix_order_invalid")
+    if errors:
+        raise ControlEpisodeError(errors)
+
+    first = downstream_rows[0]
+    checkpoint_rows = [
+        {
+            "phase_id": "synthetic_post_phase5_checkpoint_settle",
+            "arm_joint_positions": list(arm),
+            "gripper_state": "closed",
+            "max_joint_delta_rad": float(first["max_joint_delta_rad"]),
+            "max_joint_setpoint_lead_rad": float(
+                first["max_joint_setpoint_lead_rad"]
+            ),
+        }
+        for _ in range(checkpoint_settle_steps)
+    ]
+    release_settle_rows = [
+        {
+            "phase_id": "release_settle",
+            "mode": "hold_current_joint_positions",
+        }
+        for _ in range(int(task["settle_window_samples"]))
+    ]
+    trajectory = [*checkpoint_rows, *downstream_rows, *release_settle_rows]
+    output = Path(output_dir).expanduser().resolve()
+    _write_json(output / "adp_task_control_plan.v1.json", plan)
+
+    def _initial_sample_blocker(sample: Mapping[str, Any]) -> str | None:
+        if any(
+            sample.get(name) is True
+            for name in (
+                "joint_limit_violation",
+                "containment_violation",
+                "robot_collision_failure",
+                "scene_collision_failure",
+            )
+        ):
+            return "synthetic_checkpoint_initial_state_unsafe"
+        try:
+            reached_arm = [
+                float(value) for value in environment.read_arm_joint_positions()
+            ]
+        except (TypeError, ValueError):
+            return "synthetic_checkpoint_arm_readback_invalid"
+        if len(reached_arm) != 7 or any(
+            abs(expected - reached) > 1.0e-5
+            for expected, reached in zip(arm, reached_arm, strict=True)
+        ):
+            return "synthetic_checkpoint_arm_readback_mismatch"
+        observed_task = sample.get("joint_positions_rad")
+        if not isinstance(observed_task, Mapping):
+            return "synthetic_checkpoint_task_readback_missing"
+        reset_tolerance = float(task.get("reset_tolerance_rad") or 1.0e-4)
+        try:
+            mismatch = any(
+                abs(float(observed_task[name]) - expected) > reset_tolerance
+                for name, expected in task_joints.items()
+            )
+        except (KeyError, TypeError, ValueError):
+            return "synthetic_checkpoint_task_readback_invalid"
+        return "synthetic_checkpoint_task_readback_mismatch" if mismatch else None
+
+    receipt = _run_task_control_episode(
+        environment=environment,
+        task_spec=task,
+        plan=plan,
+        control_id=DOWNSTREAM_DIAGNOSTIC_CONTROL_ID,
+        gripper_open_command=open_command,
+        gripper_closed_command=closed_command,
+        output=output,
+        episode_id=(
+            f"{plan['cell_id']}-{DOWNSTREAM_DIAGNOSTIC_CONTROL_ID}"
+        ),
+        initial_reset_callback=lambda: resetter(
+            arm_joint_positions_rad=arm,
+            task_joint_positions_rad=task_joints,
+        ),
+        trajectory_override=trajectory,
+        qualification_allowed=False,
+        receipt_annotations={
+            "checkpoint": frozen_checkpoint,
+            "checkpoint_settle_steps": checkpoint_settle_steps,
+            "requested_phase_ids": list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS),
+        },
+        initial_sample_validator=_initial_sample_blocker,
+    )
+    executed_phase_ids: list[str] = []
+    for row in receipt["action_trace"]:
+        phase_id = str(row.get("phase_id") or "")
+        if (
+            phase_id in DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
+            and phase_id not in executed_phase_ids
+        ):
+            executed_phase_ids.append(phase_id)
+    arrivals = {
+        str(row.get("phase_id") or ""): row
+        for row in receipt["phase_arrivals"]
+        if isinstance(row, Mapping)
+    }
+    pose_phase_ids = [
+        str(row["phase_id"])
+        for row in downstream_rows
+        if row.get("mode") == "ik_pose"
+    ]
+    unsafe_state_observed = any(
+        sample.get(name) is True
+        for sample in receipt["state_trace"]
+        for name in (
+            "joint_limit_violation",
+            "containment_violation",
+            "robot_collision_failure",
+            "scene_collision_failure",
+        )
+    )
+    receipt.update(
+        {
+            "schema_version": TASK_DOWNSTREAM_DIAGNOSTIC_SCHEMA_VERSION,
+            "status": "measured",
+            "phase5_qualified": False,
+            "synthetic_checkpoint": frozen_checkpoint,
+            "checkpoint_settle_steps": checkpoint_settle_steps,
+            "requested_phase_ids": list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS),
+            "executed_phase_ids": executed_phase_ids,
+            "continuous_suffix_executed": executed_phase_ids
+            == list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS),
+            "all_pose_gates_reached": bool(pose_phase_ids)
+            and all(
+                arrivals.get(phase_id, {}).get("target_reached") is True
+                for phase_id in pose_phase_ids
+            ),
+            "unsafe_state_observed": unsafe_state_observed,
+            "synthetic_checkpoint_task_outcome": receipt["score"].get(
+                "outcome"
+            ),
+            "synthetic_checkpoint_task_succeeded": receipt["score"].get(
+                "task_succeeded"
+            ),
+            "retained_evidence": [
+                "per_step_commanded_and_reached_arm_joints",
+                "per_step_arm_dynamics",
+                "per_phase_fk_and_measured_tcp",
+                "per_step_task_door_contact_state",
+                "lossless_multicamera_observations_and_review_media",
+            ],
+            "qualification_effect": "none",
+            "receipt_digest": "",
+        }
+    )
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write_json(
+        output / "adp_task_synthetic_post_phase5_downstream_diagnostic.v1.json",
+        receipt,
+    )
+    return receipt
+
+
 __all__ = [
     "BLOCKER_POSITIVE_FAILED",
     "BLOCKER_PHASE_NOT_REACHED",
@@ -2898,13 +3292,16 @@ __all__ = [
     "MAX_JOINT_DELTA_PER_STEP_RAD",
     "ControlEpisodeError",
     "SCRIPTED_POSITIVE",
+    "DOWNSTREAM_DIAGNOSTIC_PHASE_IDS",
     "TASK_CONTROL_EPISODE_SCHEMA_VERSION",
     "TASK_CONTROL_PAIR_SCHEMA_VERSION",
     "TASK_CONTROL_PLAN_SCHEMA_VERSION",
+    "TASK_DOWNSTREAM_DIAGNOSTIC_SCHEMA_VERSION",
     "ZERO_ACTION_NEGATIVE",
     "materialize_control_plan",
     "run_control_episode",
     "run_required_controls",
     "run_task_neutral_controls",
+    "run_synthetic_post_phase5_downstream_diagnostic",
     "validate_task_control_plan",
 ]

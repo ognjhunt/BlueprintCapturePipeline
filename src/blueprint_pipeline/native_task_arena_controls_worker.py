@@ -2271,6 +2271,218 @@ def _dispatch_physics_admitted_jaw_variant(
     return plan, targets, preflight, receipt
 
 
+def _synthetic_post_phase5_checkpoint(
+    *,
+    control_plan: Mapping[str, Any],
+    global_ik: Mapping[str, Any],
+    scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
+    jaw_selection: Mapping[str, Any],
+    task_spec: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Choose a traceable synthetic boundary for phases 6--11 diagnostics.
+
+    Prefer the exact contact-close branch already selected for execution.  If
+    the local solver supplied no selected contact branch, retain its explicit
+    terminal hypotheses and choose the one with the smallest joint-space hop
+    to the first door-motion phase.  This state is an initialization proposal,
+    never evidence that Phase 5 succeeded.
+    """
+
+    actions = control_plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        return None
+    rows = {
+        str(row.get("phase_id") or ""): row
+        for row in actions
+        if isinstance(row, Mapping)
+    }
+    contact = rows.get("contact_close")
+    first_downstream = rows.get("joint_path_01")
+    if not isinstance(contact, Mapping) or not isinstance(
+        first_downstream, Mapping
+    ):
+        return None
+
+    def _joints(value: Any) -> list[float] | None:
+        try:
+            result = [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+        if len(result) != 7 or not all(math.isfinite(item) for item in result):
+            return None
+        return result
+
+    def _pose_key(row: Mapping[str, Any]) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
+        try:
+            return (
+                tuple(float(value) for value in row["target_position_world_m"]),
+                tuple(
+                    float(value)
+                    for value in row["target_quaternion_world_xyzw"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    candidates: list[dict[str, Any]] = []
+
+    def _append_candidate(
+        joints: Any,
+        *,
+        source: str,
+        position_error_m: Any = None,
+        orientation_error_rad: Any = None,
+        margin_rad: Any = None,
+    ) -> None:
+        values = _joints(joints)
+        if values is None:
+            return
+        key = tuple(round(value, 8) for value in values)
+        if any(row["key"] == key for row in candidates):
+            return
+        candidates.append(
+            {
+                "key": key,
+                "joint_positions_rad": values,
+                "source": source,
+                "position_error_m": position_error_m,
+                "orientation_error_rad": orientation_error_rad,
+                "minimum_joint_limit_margin_rad": margin_rad,
+            }
+        )
+
+    _append_candidate(
+        contact.get("hold_solved_arm_joint_positions_rad"),
+        source="contact_close_plan_selected_joint_hold",
+    )
+    contact_pose = _pose_key(contact)
+    first_downstream_pose = _pose_key(first_downstream)
+    first_downstream_joints = _joints(
+        first_downstream.get("hold_solved_arm_joint_positions_rad")
+    )
+    for row in scripted_pose_joint_targets:
+        if not isinstance(row, Mapping):
+            continue
+        phase_id = str(row.get("phase_id") or "")
+        key = _pose_key(row)
+        if phase_id == "joint_path_01" or (
+            first_downstream_pose is not None and key == first_downstream_pose
+        ):
+            first_downstream_joints = _joints(row.get("joint_positions_rad"))
+        if phase_id == "contact_close" or (
+            contact_pose is not None and key == contact_pose
+        ):
+            _append_candidate(
+                row.get("joint_positions_rad"),
+                source="global_ik_selected_contact_pose",
+                position_error_m=row.get("position_error_m"),
+                orientation_error_rad=row.get("orientation_error_rad"),
+                margin_rad=row.get("minimum_joint_limit_margin_rad"),
+            )
+
+    from blueprint_pipeline.native_task_arena_actuator_sweep import (
+        candidate_postures,
+    )
+
+    for phase_id in ("contact_close", "contact_open"):
+        for posture in candidate_postures(
+            global_ik,
+            phase_id=phase_id,
+            include_unsolved_attempts=True,
+        ):
+            _append_candidate(
+                posture.get("joint_positions_rad"),
+                source=f"global_ik_terminal_{phase_id}",
+                position_error_m=posture.get("offsim_position_error_m"),
+                orientation_error_rad=posture.get(
+                    "offsim_orientation_error_rad"
+                ),
+                margin_rad=posture.get("minimum_joint_limit_margin_rad"),
+            )
+    for posture in _fallback_contact_open_postures(jaw_selection):
+        _append_candidate(
+            posture.get("joint_positions_rad"),
+            source=(
+                "jaw_variant_terminal_contact_open:"
+                f"{posture.get('variant_id')}"
+            ),
+            position_error_m=posture.get("offsim_position_error_m"),
+            orientation_error_rad=posture.get("offsim_orientation_error_rad"),
+            margin_rad=posture.get("minimum_joint_limit_margin_rad"),
+        )
+    if not candidates:
+        return None
+
+    def _finite_or_default(value: Any, default: float) -> float:
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return default
+        return result if math.isfinite(result) else default
+
+    selected = min(
+        candidates,
+        key=lambda row: (
+            max(
+                (
+                    abs(left - right)
+                    for left, right in zip(
+                        row["joint_positions_rad"],
+                        first_downstream_joints,
+                        strict=True,
+                    )
+                ),
+                default=0.0,
+            )
+            if first_downstream_joints is not None
+            else 0.0,
+            _finite_or_default(row.get("position_error_m"), math.inf),
+            _finite_or_default(row.get("orientation_error_rad"), math.inf),
+            -_finite_or_default(
+                row.get("minimum_joint_limit_margin_rad"), -math.inf
+            ),
+        ),
+    )
+    raw_task_joints = contact.get("expected_joint_positions")
+    if not isinstance(raw_task_joints, Mapping) or not raw_task_joints:
+        raw_task_joints = task_spec.get("joint_reset_positions_rad")
+    if not isinstance(raw_task_joints, Mapping) or not raw_task_joints:
+        return None
+    try:
+        task_joints = {
+            str(name): float(value)
+            for name, value in raw_task_joints.items()
+        }
+    except (TypeError, ValueError):
+        return None
+    if not all(
+        name and math.isfinite(value) for name, value in task_joints.items()
+    ):
+        return None
+    checkpoint: dict[str, Any] = {
+        "schema_version": "adp_task_synthetic_post_phase5_checkpoint.v1",
+        "source_phase_id": "contact_close",
+        "arm_joint_positions_rad": selected["joint_positions_rad"],
+        "task_joint_positions_rad": task_joints,
+        "gripper_state": "closed",
+        "phase5_qualified": False,
+        "initialization_authority": (
+            "caller_provided_synthetic_diagnostic_state"
+        ),
+        "selected_candidate_source": selected["source"],
+        "candidate_count": len(candidates),
+        "selection_rule": (
+            "minimum_max_joint_hop_to_joint_path_01_then_pose_error_then_"
+            "joint_limit_margin"
+        ),
+        "checkpoint_digest": "",
+    }
+    checkpoint["checkpoint_digest"] = _canonical_digest(
+        checkpoint, field="checkpoint_digest"
+    )
+    return checkpoint
+
+
 def _physics_admitted_contact_open_cell(
     sweep: Mapping[str, Any],
     *,
@@ -3056,6 +3268,76 @@ def main(argv: Sequence[str] | None = None) -> int:
             (
                 "completed"
                 if downstream_phase_matrix.get("status") == "measured"
+                else "blocked"
+            ),
+        )
+
+        _announce("synthetic_post_phase5_downstream_diagnostic")
+        downstream_checkpoint = _synthetic_post_phase5_checkpoint(
+            control_plan=effective_control_plan,
+            global_ik=controls_global_ik,
+            scripted_pose_joint_targets=scripted_pose_joint_targets,
+            jaw_selection=jaw_selection,
+            task_spec=scene_plan["task_spec"],
+        )
+        if downstream_checkpoint is None:
+            downstream_diagnostic = {
+                "schema_version": (
+                    "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+                ),
+                "status": "unavailable",
+                "reason": "synthetic_post_phase5_checkpoint_unresolved",
+                "phase5_qualified": False,
+                "qualification_effect": "none",
+                "claim_boundary": (
+                    "diagnostic_gap_only;does_not_qualify_phase5_any_"
+                    "downstream_phase_policy_admission_or_task_success"
+                ),
+            }
+        else:
+            try:
+                from blueprint_pipeline.adp009d_control_episode import (
+                    run_synthetic_post_phase5_downstream_diagnostic,
+                )
+
+                downstream_diagnostic = (
+                    run_synthetic_post_phase5_downstream_diagnostic(
+                        environment=episode_environment,
+                        task_spec=scene_plan["task_spec"],
+                        control_plan=effective_control_plan,
+                        checkpoint=downstream_checkpoint,
+                        gripper_open_command=float(gripper["open_command"]),
+                        gripper_closed_command=float(
+                            gripper["closed_command"]
+                        ),
+                        output_dir=(
+                            output_root / "downstream_continuous_diagnostic"
+                        ),
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                downstream_diagnostic = {
+                    "schema_version": (
+                        "adp_task_synthetic_post_phase5_downstream_"
+                        "diagnostic.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                    "phase5_qualified": False,
+                    "qualification_effect": "none",
+                    "claim_boundary": (
+                        "diagnostic_gap_only;continuous_controls_and_all_"
+                        "qualification_gates_unchanged"
+                    ),
+                }
+        result["synthetic_post_phase5_downstream_diagnostic"] = (
+            downstream_diagnostic
+        )
+        _announce(
+            "synthetic_post_phase5_downstream_diagnostic",
+            (
+                "completed"
+                if downstream_diagnostic.get("status") == "measured"
                 else "blocked"
             ),
         )
