@@ -662,6 +662,95 @@ def test_gripper_transition_holds_arm_targets_and_runs_full_dwell(
     assert close_arrival["target_reached"] is True
 
 
+def test_gripper_transition_preserves_explicit_sealed_arrival_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    task["maximum_action_steps"] = 12
+
+    def phase(phase_id, target, gripper_state, *, hold=False):
+        row = {
+            "phase_id": phase_id,
+            "mode": "ik_pose",
+            "target_position_world_m": target,
+            "target_quaternion_world_xyzw": None,
+            "gripper_state": gripper_state,
+            "minimum_steps": 1,
+            "maximum_steps": 2,
+            "arrival_tolerance_m": 1.0e-6,
+            "arrival_stability_steps": 1,
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.2,
+            "hold_arm_joint_positions_during_gripper_transition": hold,
+        }
+        if hold:
+            row["arrival_target_position_world_m"] = [0.1, 0.0, 0.0]
+        return row
+
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "articulated-sealed-close-arrival",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "e" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            phase("contact_open", [0.0, 0.0, 0.0], "open"),
+            phase(
+                "contact_close",
+                [0.0, 0.0, 0.0],
+                "closed",
+                hold=True,
+            ),
+            phase("open", [0.9, 0.0, 0.0], "closed"),
+            phase("retreat", [0.9, 1.0, 0.0], "open"),
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    run_task_neutral_controls(
+        environment=_CartesianEnvironment("articulated_open_close"),
+        task_spec=task,
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    positive = __import__("json").loads(
+        (
+            tmp_path
+            / "adp_task_control_episode.deterministic_scripted_positive.json"
+        ).read_text()
+    )
+    close_arrival = next(
+        row
+        for row in positive["phase_arrivals"]
+        if row["phase_id"] == "contact_close"
+    )
+    assert close_arrival["arrival_target_source"] == "sealed_arrival_pose_override"
+    assert close_arrival["target_position_world_m"] == [0.1, 0.0, 0.0]
+    assert close_arrival["terminal_position_world_m"] == [0.0, 0.0, 0.0]
+    assert close_arrival["target_reached"] is False
+
+
 def test_contact_close_requires_simultaneous_bilateral_native_contact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
