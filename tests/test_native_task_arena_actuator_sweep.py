@@ -284,6 +284,7 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
             }
 
     environment = _AcquisitionEnvironment()
+    progress: list[dict[str, object]] = []
     report = run_contact_acquisition_sweep(
         environment=environment,
         authored_target_position_world_m=[1.0, 0.0, 0.0],
@@ -302,6 +303,7 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
         advance_steps=1,
         close_steps=2,
         stop_after_admitted_cells=1,
+        progress_callback=lambda value: progress.append(dict(value)),
     )
 
     assert report["schema_version"] == CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION
@@ -317,6 +319,11 @@ def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
     ]
     # One reset for the cell plus a cleanup reset; no provider or scene reload.
     assert environment.reset_count == 2
+    assert [item["status"] for item in progress] == ["running", "measured"]
+    assert progress[0]["executed_cell_count"] == 1
+    assert progress[0]["admitted_cell_count"] == 1
+    assert progress[0]["last_cell"]["cell_index"] == 0
+    assert progress[-1]["best_cell"]["admitted"] is True
 
 
 def test_contact_acquisition_rejects_one_finger_contact() -> None:

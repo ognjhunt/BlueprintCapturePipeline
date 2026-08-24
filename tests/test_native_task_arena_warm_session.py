@@ -469,11 +469,14 @@ def test_warm_marker_scrape_survives_a_chatty_tail(tmp_path, monkeypatch) -> Non
         if remote_argv[0] == "tail":
             return {"stdout": "isaac render spew\n" * 5}
         assert remote_argv[0] == "sh"
-        assert "BLUEPRINT_ARENA_WARM_" in remote_argv[2]
+        assert "ARENA_WARM_" in remote_argv[2]
+        assert "CONTACT_ACQUISITION_CELL" in remote_argv[2]
         return {
             "stdout": (
                 "BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:sha256:abc\n"
                 "BLUEPRINT_ARENA_WARM_OUTPUT_ZIP_WRITTEN:123\n"
+                "BLUEPRINT_CONTACT_ACQUISITION_CELL:i=7:a=-0.005:j=0:l=0:"
+                "ok=1:b=2:lf=1.2:rf=1.1:d=0.004:o=0.05\n"
             )
         }
 
@@ -487,6 +490,7 @@ def test_warm_marker_scrape_survives_a_chatty_tail(tmp_path, monkeypatch) -> Non
     )
 
     assert "BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:" in text
+    assert "BLUEPRINT_CONTACT_ACQUISITION_CELL:i=7:" in text
     assert "isaac render spew" in text
     saved = (tmp_path / "warm_runtime.log").read_text(encoding="utf-8")
     assert saved.startswith("BLUEPRINT_ARENA_WARM_DEPENDENCY_CACHE_HIT:")

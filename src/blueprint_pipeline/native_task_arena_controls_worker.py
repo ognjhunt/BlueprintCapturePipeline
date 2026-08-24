@@ -165,6 +165,55 @@ def _persist(output: Path, result: dict[str, Any]) -> None:
     )
 
 
+def _persist_progress(output: Path, progress: Mapping[str, Any]) -> None:
+    """Atomically retain an interrupt-safe diagnostic checkpoint."""
+
+    normalised = json.loads(json.dumps(dict(progress), default=str))
+    normalised["result_digest"] = _canonical_digest(
+        normalised, field="result_digest"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(
+        json.dumps(normalised, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, output)
+
+
+def _announce_contact_acquisition_cell(progress: Mapping[str, Any]) -> None:
+    """Emit one compact timeout-harvestable numeric summary per cell."""
+
+    cell = progress.get("last_cell")
+    if not isinstance(cell, Mapping):
+        return
+    forces = cell.get("terminal_task_contact_pad_forces_n")
+    if not isinstance(forces, Mapping):
+        forces = {}
+
+    def _number(value: Any) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "na"
+        return f"{number:.5g}" if math.isfinite(number) else "na"
+
+    print(
+        "BLUEPRINT_CONTACT_ACQUISITION_CELL:"
+        f"i={int(cell.get('cell_index') or 0)}:"
+        f"a={_number(cell.get('approach_offset_m'))}:"
+        f"j={_number(cell.get('jaw_offset_m'))}:"
+        f"l={_number(cell.get('lateral_offset_m'))}:"
+        f"ok={int(cell.get('admitted') is True)}:"
+        f"b={int(cell.get('maximum_consecutive_bilateral_steps') or 0)}:"
+        f"lf={_number(forces.get('left_inner_finger'))}:"
+        f"rf={_number(forces.get('right_inner_finger'))}:"
+        f"d={_number(cell.get('terminal_distance_to_authored_target_m'))}:"
+        f"o={_number(cell.get('terminal_orientation_error_rad'))}",
+        flush=True,
+    )
+
+
 def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -2980,6 +3029,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_contact_acquisition_sweep,
             )
 
+            acquisition_progress_path = (
+                output_root / "contact_acquisition_sweep.progress.v1.json"
+            )
+
+            def _contact_acquisition_progress(
+                progress: Mapping[str, Any],
+            ) -> None:
+                _persist_progress(acquisition_progress_path, progress)
+                _announce_contact_acquisition_cell(progress)
+
             contact_acquisition = (
                 run_contact_acquisition_sweep(
                     environment=episode_environment,
@@ -3008,6 +3067,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     bilateral_contact_minimum_force_n=(
                         close_contact_threshold
                     ),
+                    stop_after_admitted_cells=1,
+                    progress_callback=_contact_acquisition_progress,
                 )
                 if (
                     close_sweep_preposition is not None

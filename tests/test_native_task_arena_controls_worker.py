@@ -1761,6 +1761,47 @@ def test_contact_acquisition_axes_use_authored_approach_when_open_and_close_shar
     assert lateral == pytest.approx([1.0, 0.0, 0.0])
 
 
+def test_contact_acquisition_progress_is_atomic_and_timeout_harvestable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _announce_contact_acquisition_cell,
+        _persist_progress,
+    )
+
+    progress = {
+        "schema_version": "native_task_arena_contact_acquisition_sweep.v1",
+        "status": "running",
+        "executed_cell_count": 8,
+        "last_cell": {
+            "cell_index": 7,
+            "approach_offset_m": -0.005,
+            "jaw_offset_m": 0.0,
+            "lateral_offset_m": 0.006,
+            "admitted": True,
+            "maximum_consecutive_bilateral_steps": 2,
+            "terminal_task_contact_pad_forces_n": {
+                "left_inner_finger": 1.2,
+                "right_inner_finger": 1.1,
+            },
+            "terminal_distance_to_authored_target_m": 0.004,
+            "terminal_orientation_error_rad": 0.05,
+        },
+    }
+    output = tmp_path / "contact_acquisition_sweep.progress.v1.json"
+
+    _persist_progress(output, progress)
+    _announce_contact_acquisition_cell(progress)
+
+    retained = json.loads(output.read_text(encoding="utf-8"))
+    assert retained["executed_cell_count"] == 8
+    assert retained["result_digest"].startswith("sha256:")
+    assert not (tmp_path / f".{output.name}.tmp").exists()
+    marker = capsys.readouterr().out.strip()
+    assert marker.startswith("BLUEPRINT_CONTACT_ACQUISITION_CELL:i=7:")
+    assert ":ok=1:b=2:lf=1.2:rf=1.1:d=0.004:o=0.05" in marker
+
+
 def test_contact_acquisition_refuses_nonadmitted_best_cell() -> None:
     from blueprint_pipeline.native_task_arena_controls_worker import (
         _with_contact_acquisition_candidate,

@@ -404,16 +404,18 @@ def _fetch_warm_runtime_log_over_ssh(
         remote_argv=[
             "sh",
             "-c",
-            "grep -aoE 'BLUEPRINT_ARENA_WARM_[A-Z_]+(:[A-Za-z0-9:_.-]+)?' -- "
+            "grep -aoE 'BLUEPRINT_(ARENA_WARM_[A-Z_]+(:[A-Za-z0-9:_.-]+)?|CONTACT_ACQUISITION_CELL:[A-Za-z0-9:=_.-]+)' -- "
             + shlex.quote(remote_log_path)
-            + " | head -n 80",
+            + " | head -n 220",
         ],
         timeout_seconds=30,
     )
     marker_lines = [
         line
         for line in str(markers.get("stdout") or "").splitlines()
-        if line.startswith("BLUEPRINT_ARENA_WARM_")
+        if line.startswith(
+            ("BLUEPRINT_ARENA_WARM_", "BLUEPRINT_CONTACT_ACQUISITION_CELL:")
+        )
     ]
     if marker_lines:
         text = "\n".join(marker_lines) + "\n" + text

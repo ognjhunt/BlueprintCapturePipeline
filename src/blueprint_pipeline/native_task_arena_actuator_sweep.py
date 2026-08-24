@@ -23,7 +23,7 @@ success.  Nothing here gates a run, and the controls that follow are unchanged.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 
@@ -211,7 +211,8 @@ def run_contact_acquisition_sweep(
     advance_steps: int = 30,
     close_steps: int = 18,
     bilateral_stability_steps: int = 2,
-    stop_after_admitted_cells: int = 5,
+    stop_after_admitted_cells: int = 1,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Find a real bilateral grasp by separating open advance from closure.
 
@@ -475,6 +476,22 @@ def run_contact_acquisition_sweep(
                     "admitted": False,
                 }
             )
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "schema_version": CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
+                    "status": "running",
+                    "represented_cell_count": len(offsets),
+                    "executed_cell_count": len(cells),
+                    "early_stop_after_admitted_cells": stop_after,
+                    "admitted_cell_count": admitted_count,
+                    "cells": list(cells),
+                    "last_cell": dict(cells[-1]),
+                    "claim_boundary": (
+                        "incremental_numeric_measurement_only;not_task_success"
+                    ),
+                }
+            )
         if admitted_count >= stop_after:
             break
 
@@ -518,6 +535,8 @@ def run_contact_acquisition_sweep(
     }
     if cleanup_error is not None:
         report["cleanup_error"] = cleanup_error
+    if progress_callback is not None:
+        progress_callback(report)
     return report
 
 
