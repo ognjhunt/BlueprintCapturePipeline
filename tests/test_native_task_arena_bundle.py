@@ -2138,10 +2138,137 @@ def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
     assert observed["candidate_policy_query_expected"] is True
     assert observed["allowed_active_instance_ids"] == (47373597,)
     assert observed["object_store_key_prefix"].endswith("/policy/pi05_droid")
-    assert observed["vast_launch_lock_file"] == (
-        (tmp_path / "policy").resolve()
-        / "native_task_arena_policy_paid_launch.lock"
+    assert observed["vast_launch_lock_file"] is None
+
+
+def test_controls_and_policy_share_the_canonical_provider_semaphore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+    from blueprint_pipeline import vast_provider_adapter
+
+    canonical_lock = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    monkeypatch.setenv(
+        vast_provider_adapter.VAST_LAUNCH_LOCK_FILE_ENV,
+        str(canonical_lock),
     )
+    observed: list[dict] = []
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.append(kwargs) or {"status": "dry_run_ready"},
+    )
+    controls = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "controls",
+        "policy_candidate_id": None,
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_control_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+    policy = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "policy",
+        "policy_candidate_id": "pi05_droid",
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_policy_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    run_native_task_arena_controls_vast(
+        job_dir=tmp_path / "controls",
+        prepared_bundle=controls,
+        paid_resource_admission_grant=None,
+        execute=False,
+        allowed_active_instance_ids=(48606888,),
+    )
+    run_native_task_arena_policy_vast(
+        job_dir=tmp_path / "policy",
+        prepared_bundle=policy,
+        paid_resource_admission_grant=None,
+        execute=False,
+        allowed_active_instance_ids=(48606888, 48607367),
+    )
+
+    assert [row["vast_launch_lock_file"] for row in observed] == [None, None]
+    assert [row["allowed_active_instance_ids"] for row in observed] == [
+        (48606888,),
+        (48606888, 48607367),
+    ]
+    expected_slots = [
+        canonical_lock,
+        canonical_lock.with_name("vast_paid_launch.slot1.lock"),
+        canonical_lock.with_name("vast_paid_launch.slot2.lock"),
+    ]
+    assert vast_provider_adapter.vast_launch_lock_paths() == expected_slots
+
+
+@pytest.mark.parametrize(
+    ("runner", "execution_mode", "expected_output", "candidate"),
+    (
+        (
+            run_native_task_arena_controls_vast,
+            "controls",
+            "native_task_arena_control_result.v1.json",
+            None,
+        ),
+        (
+            run_native_task_arena_policy_vast,
+            "policy",
+            "native_task_arena_policy_result.v1.json",
+            "pi05_droid",
+        ),
+    ),
+)
+def test_shared_semaphore_links_remain_retry_zero_when_authority_is_consumed(
+    runner,
+    execution_mode: str,
+    expected_output: str,
+    candidate: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    monkeypatch.setattr(
+        module,
+        "validate_native_task_arena_paid_attempt_authority",
+        lambda *_args, **_kwargs: {"authorization_digest": "sha256:" + "a" * 64},
+    )
+    monkeypatch.setattr(
+        module,
+        "consume_native_task_arena_authority_once",
+        lambda _authority: {
+            "status": "already_consumed",
+            "blockers": ["native_task_arena_paid_attempt_authority_already_consumed"],
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **_kwargs: pytest.fail("consumed authority reached the provider seam"),
+    )
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": execution_mode,
+        "policy_candidate_id": candidate,
+        "candidate_policy_queried": False,
+        "expected_output_filename": expected_output,
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    result = runner(
+        job_dir=tmp_path / execution_mode,
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=True,
+        allowed_active_instance_ids=(48606888,),
+        paid_attempt_authority={"authorization_digest": "sha256:" + "a" * 64},
+    )
+
+    assert result["status"] == "blocked"
+    assert result["retry_cap"] == 0
+    assert result["provider_mutations_performed"] == 0
 
 
 def test_groot_policy_vast_requires_and_forwards_gated_backbone_authority(
