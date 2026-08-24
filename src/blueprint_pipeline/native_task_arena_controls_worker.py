@@ -2576,6 +2576,73 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
 
+        # Phase 5 must remain the continuous task gate, but it must not
+        # serialize every observation about phases 6--11.  Measure every
+        # solved downstream branch under PhysX now, while the scene is loaded,
+        # so a later joint, actuator, pose, or incidental-contact defect is
+        # visible even when the grasp transition itself does not admit.
+        _announce("downstream_phase_posture_matrix")
+        try:
+            from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                run_downstream_phase_posture_matrix,
+            )
+
+            downstream_progress_path = (
+                output_root / "downstream_phase_posture_matrix.progress.v1.json"
+            )
+
+            def _downstream_phase_progress(
+                progress: Mapping[str, Any],
+            ) -> None:
+                _persist_progress(downstream_progress_path, progress)
+                last_phase = progress.get("last_phase")
+                if not isinstance(last_phase, Mapping):
+                    return
+                print(
+                    "BLUEPRINT_DOWNSTREAM_PHASE_MATRIX_PROGRESS:"
+                    f"phase={last_phase.get('phase_id')}:"
+                    f"completed={progress.get('completed_phase_count')}/"
+                    f"{progress.get('total_phase_count')}:"
+                    f"represented={progress.get('represented_configuration_count')}:"
+                    f"executed={progress.get('executed_cell_count')}:"
+                    f"pose_gate={last_phase.get('pose_gate_cell_count', 0)}",
+                    flush=True,
+                )
+
+            downstream_phase_matrix = run_downstream_phase_posture_matrix(
+                environment=episode_environment,
+                robot=robot,
+                arm_joint_ids=list(range(7)),
+                control_plan=effective_control_plan,
+                global_ik=controls_global_ik,
+                gripper_open_command=float(gripper["open_command"]),
+                gripper_closed_command=float(gripper["closed_command"]),
+                progress_callback=_downstream_phase_progress,
+            )
+        except BaseException as exc:  # noqa: BLE001 - diagnostic only
+            downstream_phase_matrix = {
+                "schema_version": (
+                    "native_task_arena_downstream_phase_posture_matrix.v1"
+                ),
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}:{exc}",
+                "represented_configuration_count": 0,
+                "executed_cell_count": 0,
+                "phase_reports": [],
+                "claim_boundary": (
+                    "diagnostic_gap_only;continuous_controls_unchanged"
+                ),
+            }
+        result["downstream_phase_posture_matrix"] = downstream_phase_matrix
+        _announce(
+            "downstream_phase_posture_matrix",
+            (
+                "completed"
+                if downstream_phase_matrix.get("status") == "measured"
+                else "blocked"
+            ),
+        )
+
         contact_row = next(
             row
             for row in effective_control_plan["scripted_positive_actions"]

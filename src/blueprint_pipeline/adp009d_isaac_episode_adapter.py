@@ -561,6 +561,10 @@ class IsaacEpisodeAdapter:
         gripper_closed_width_m: float,
         gripper_open_width_m: float,
         reset_callback: Callable[[], None] | None = None,
+        diagnostic_checkpoint_reset_callback: Callable[
+            [Sequence[float], Mapping[str, float]], None
+        ]
+        | None = None,
         scripted_pose_controller_reset_callback: Callable[[], None] | None = None,
         simulation_step_seconds: float | None = None,
         scripted_pose_action_callback: Callable[..., Sequence[float]] | None = None,
@@ -592,6 +596,9 @@ class IsaacEpisodeAdapter:
         self._gripper_closed_width_m = float(gripper_closed_width_m)
         self._gripper_open_width_m = float(gripper_open_width_m)
         self._reset_callback = reset_callback
+        self._diagnostic_checkpoint_reset_callback = (
+            diagnostic_checkpoint_reset_callback
+        )
         self._scripted_pose_controller_reset_callback = (
             scripted_pose_controller_reset_callback
         )
@@ -709,6 +716,41 @@ class IsaacEpisodeAdapter:
             self._reset_callback()
         else:
             self._env.reset(seed=self._reset_seed)
+        if self._scripted_pose_controller_reset_callback is not None:
+            self._scripted_pose_controller_reset_callback()
+        self._control_step_index = 0
+
+    def reset_to_diagnostic_checkpoint(
+        self,
+        *,
+        arm_joint_positions_rad: Sequence[float],
+        task_joint_positions_rad: Mapping[str, float],
+    ) -> None:
+        """Reset and inject a measured-state diagnostic checkpoint.
+
+        This is intentionally separate from the episode reset contract.  It is
+        used only by reset-isolated downstream feasibility measurements and
+        cannot establish a qualified grasp, phase admission, or task outcome.
+        """
+
+        if self._diagnostic_checkpoint_reset_callback is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_diagnostic_checkpoint_reset_unavailable"]
+            )
+        arm = [float(value) for value in arm_joint_positions_rad]
+        task = {
+            str(name): float(value)
+            for name, value in task_joint_positions_rad.items()
+        }
+        if (
+            len(arm) != ARM_JOINT_COUNT
+            or not all(math.isfinite(value) for value in [*arm, *task.values()])
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_diagnostic_checkpoint_invalid"]
+            )
+        self.reset()
+        self._diagnostic_checkpoint_reset_callback(arm, task)
         if self._scripted_pose_controller_reset_callback is not None:
             self._scripted_pose_controller_reset_callback()
         self._control_step_index = 0

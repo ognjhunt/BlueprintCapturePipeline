@@ -9,11 +9,13 @@ from blueprint_pipeline.native_task_arena_actuator_sweep import (
     CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
     DEFAULT_CONTACT_APPROACH_OFFSETS_M,
     DEFAULT_WRIST_GAIN_CANDIDATES,
+    DOWNSTREAM_PHASE_POSTURE_MATRIX_SCHEMA_VERSION,
     SWEEP_SCHEMA_VERSION,
     candidate_postures,
     run_actuator_posture_sweep,
     run_contact_acquisition_sweep,
     run_contact_close_posture_sweep,
+    run_downstream_phase_posture_matrix,
 )
 
 
@@ -148,6 +150,169 @@ def test_one_run_returns_a_gain_by_posture_surface() -> None:
         assert cell["measured_distance_to_target_m"] is not None
         assert "task_succeeded" not in cell
         assert "outcome" not in cell
+
+
+def test_actuator_sweep_restores_both_original_pd_gains() -> None:
+    environment = _SweepEnvironment()
+    environment.data = type(
+        "Data",
+        (),
+        {
+            "joint_stiffness": [[321.0] * 7],
+            "joint_damping": [[54.0] * 7],
+        },
+    )()
+
+    _sweep(
+        environment,
+        wrist_gain_candidates=((100.0, 20.0),),
+        settle_steps=1,
+    )
+
+    assert environment.stiffness == 321.0
+    assert environment.damping == 54.0
+
+
+def test_downstream_matrix_measures_many_branches_before_phase_five() -> None:
+    class _DownstreamEnvironment(_SweepEnvironment):
+        def __init__(self):
+            super().__init__()
+            self.checkpoint_resets = []
+
+        def reset_to_diagnostic_checkpoint(
+            self,
+            *,
+            arm_joint_positions_rad,
+            task_joint_positions_rad,
+        ):
+            self.reset()
+            self.joints = list(arm_joint_positions_rad)
+            self.checkpoint_resets.append(
+                {
+                    "arm": list(arm_joint_positions_rad),
+                    "task": dict(task_joint_positions_rad),
+                }
+            )
+
+        def read_object_sample(self):
+            return {
+                "grasp_frame_position_world_m": [self.joints[4], 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "task_contact_active": False,
+            }
+
+    environment = _DownstreamEnvironment()
+    progress_rows = []
+    phase_ids = ("joint_path_01", "retreat")
+    plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": phase_id,
+                "target_position_world_m": [1.0, 0.0, 0.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "arrival_tolerance_m": 0.02,
+                "arrival_orientation_tolerance_rad": 0.08,
+                "gripper_state": (
+                    "closed"
+                    if phase_id in {"contact_close", "joint_path_01"}
+                    else "open"
+                ),
+                "max_joint_delta_rad": 1.0,
+                "max_joint_setpoint_lead_rad": 1.0,
+                **(
+                    {"expected_joint_positions": {"door": 0.8}}
+                    if phase_id == "release"
+                    else {}
+                ),
+            }
+            for phase_id in (
+                "contact_close",
+                "joint_path_01",
+                "release",
+                "retreat",
+            )
+        ]
+    }
+    global_ik = {
+        "phases": [
+            {
+                "phase_id": phase_id,
+                "attempts": [
+                    {
+                        "solved": True,
+                        "seed_index": index,
+                        "joint_positions_rad": [0.0] * 4
+                        + [value, 0.0, 0.0],
+                        "position_error_m": 0.001,
+                    }
+                    for index, value in enumerate((1.0, 0.5))
+                ],
+            }
+            for phase_id in (
+                "contact_close",
+                "joint_path_01",
+                "release",
+                "retreat",
+            )
+        ]
+    }
+
+    report = run_downstream_phase_posture_matrix(
+        environment=environment,
+        robot=environment,
+        arm_joint_ids=list(range(7)),
+        control_plan=plan,
+        global_ik=global_ik,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        phase_ids=phase_ids,
+        wrist_gain_candidates=((400.0, 80.0), (40.0, 8.0)),
+        settle_steps=60,
+        progress_callback=progress_rows.append,
+    )
+
+    assert report["schema_version"] == (
+        DOWNSTREAM_PHASE_POSTURE_MATRIX_SCHEMA_VERSION
+    )
+    assert report["status"] == "measured"
+    assert report["represented_configuration_count"] == 8
+    assert report["executed_cell_count"] == 8
+    assert [row["phase_id"] for row in report["phase_reports"]] == list(
+        phase_ids
+    )
+    assert all(
+        "task_succeeded" not in cell
+        for phase in report["phase_reports"]
+        for cell in phase["cells"]
+    )
+    assert "asserts_no_phase_admission_or_task_outcome" in report[
+        "claim_boundary"
+    ]
+    assert len(progress_rows) == 2
+    assert [row["completed_phase_count"] for row in progress_rows] == [1, 2]
+    assert progress_rows[-1]["represented_configuration_count"] == 8
+    assert progress_rows[-1]["executed_cell_count"] == 8
+    assert progress_rows[-1]["last_phase"]["phase_id"] == "retreat"
+    assert "task_succeeded" not in progress_rows[-1]
+    assert len(environment.checkpoint_resets) == 8
+    assert all(
+        cell["checkpoint_source_phase_id"] == "contact_close"
+        for cell in report["phase_reports"][0]["cells"]
+    )
+    assert all(
+        cell["checkpoint_gripper_command"] == 1.0
+        and cell["checkpoint_settle_steps"] == 8
+        for cell in report["phase_reports"][0]["cells"]
+    )
+    assert all(
+        cell["checkpoint_source_phase_id"] == "release"
+        for cell in report["phase_reports"][1]["cells"]
+    )
+    assert all(
+        cell["checkpoint_gripper_command"] == 0.0
+        for cell in report["phase_reports"][1]["cells"]
+    )
+    assert environment.checkpoint_resets[-1]["task"] == {"door": 0.8}
 
 
 def test_close_sweep_measures_every_branch_and_admits_only_physical_grasp() -> None:

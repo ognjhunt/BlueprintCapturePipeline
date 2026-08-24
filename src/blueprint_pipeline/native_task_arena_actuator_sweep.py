@@ -34,6 +34,9 @@ CLOSE_POSTURE_SWEEP_SCHEMA_VERSION = (
 CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION = (
     "native_task_arena_contact_acquisition_sweep.v1"
 )
+DOWNSTREAM_PHASE_POSTURE_MATRIX_SCHEMA_VERSION = (
+    "native_task_arena_downstream_phase_posture_matrix.v1"
+)
 
 #: Candidate wrist gain sets.  The shipped pair is included so the sweep
 #: measures the status quo alongside the alternatives rather than assuming it
@@ -1359,6 +1362,7 @@ def run_actuator_posture_sweep(
     robot: Any,
     arm_joint_ids: Sequence[int],
     target_position_world_m: Sequence[float],
+    target_orientation_world_xyzw: Sequence[float] | None = None,
     postures: Sequence[Mapping[str, Any]],
     gripper_open_command: float,
     max_joint_delta_rad: float,
@@ -1366,11 +1370,25 @@ def run_actuator_posture_sweep(
     wrist_gain_candidates: Sequence[tuple[float, float]] = DEFAULT_WRIST_GAIN_CANDIDATES,
     settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
     wrist_joint_slice: slice = slice(4, 7),
+    cell_reset_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    checkpoint_settle_steps: int = 0,
 ) -> dict[str, Any]:
     """Measure tracking, saturation and reach for each gain x posture cell."""
 
     target = _finite_vector(target_position_world_m, length=3)
-    if target is None or not postures:
+    target_orientation = (
+        None
+        if target_orientation_world_xyzw is None
+        else _finite_vector(target_orientation_world_xyzw, length=4)
+    )
+    if (
+        target is None
+        or (
+            target_orientation_world_xyzw is not None
+            and target_orientation is None
+        )
+        or not postures
+    ):
         raise ActuatorSweepError(["actuator_sweep_inputs_invalid"])
     write_stiffness = getattr(robot, "write_joint_stiffness_to_sim", None)
     write_damping = getattr(robot, "write_joint_damping_to_sim", None)
@@ -1386,9 +1404,14 @@ def run_actuator_posture_sweep(
             "claim_boundary": _CLAIM_BOUNDARY,
         }
 
-    original = _finite_vector(
+    original_stiffness = _finite_vector(
         getattr(getattr(robot, "data", None), "joint_stiffness", [None])[0]
         if hasattr(getattr(robot, "data", None), "joint_stiffness")
+        else None
+    )
+    original_damping = _finite_vector(
+        getattr(getattr(robot, "data", None), "joint_damping", [None])[0]
+        if hasattr(getattr(robot, "data", None), "joint_damping")
         else None
     )
     cells: list[dict[str, Any]] = []
@@ -1401,7 +1424,33 @@ def run_actuator_posture_sweep(
                 joints = _finite_vector(posture.get("joint_positions_rad"), length=7)
                 if joints is None:
                     continue
-                environment.reset()
+                if cell_reset_callback is None:
+                    environment.reset()
+                else:
+                    cell_reset_callback(posture)
+                    checkpoint_joints = _finite_vector(
+                        posture.get("checkpoint_arm_joint_positions_rad"),
+                        length=7,
+                    )
+                    checkpoint_gripper = posture.get(
+                        "checkpoint_gripper_command"
+                    )
+                    if (
+                        checkpoint_joints is not None
+                        and isinstance(checkpoint_gripper, (int, float))
+                    ):
+                        for _ in range(max(0, int(checkpoint_settle_steps))):
+                            checkpoint_action = bounded(
+                                target_joint_positions_rad=checkpoint_joints,
+                                gripper_command=float(checkpoint_gripper),
+                                max_joint_delta_rad=float(max_joint_delta_rad),
+                                max_joint_setpoint_lead_rad=float(
+                                    max_joint_setpoint_lead_rad
+                                ),
+                            )
+                            environment.step(
+                                [float(value) for value in checkpoint_action]
+                            )
                 peak_utilization = 0.0
                 saturated_steps = 0
                 for _ in range(max(1, int(settle_steps))):
@@ -1428,7 +1477,22 @@ def run_actuator_posture_sweep(
                 observed = _finite_vector(
                     environment.read_arm_joint_positions(), length=7
                 )
-                measured = _grasp_frame_position(environment)
+                sample = _grasp_frame_sample(environment)
+                measured = (
+                    _finite_vector(
+                        sample.get("grasp_frame_position_world_m"), length=3
+                    )
+                    if sample is not None
+                    else None
+                )
+                measured_orientation = (
+                    _finite_vector(
+                        sample.get("grasp_frame_orientation_world_xyzw"),
+                        length=4,
+                    )
+                    if sample is not None
+                    else None
+                )
                 predicted = _finite_vector(
                     posture.get("predicted_grasp_frame_position_world_m"), length=3
                 )
@@ -1470,6 +1534,21 @@ def run_actuator_posture_sweep(
                         # The worst single joint cannot tell those apart; the
                         # whole vector can.
                         "commanded_joint_positions_rad": list(joints),
+                        "checkpoint_arm_joint_positions_rad": posture.get(
+                            "checkpoint_arm_joint_positions_rad"
+                        ),
+                        "checkpoint_task_joint_positions_rad": posture.get(
+                            "checkpoint_task_joint_positions_rad"
+                        ),
+                        "checkpoint_source_phase_id": posture.get(
+                            "checkpoint_source_phase_id"
+                        ),
+                        "checkpoint_gripper_command": posture.get(
+                            "checkpoint_gripper_command"
+                        ),
+                        "checkpoint_settle_steps": int(
+                            checkpoint_settle_steps
+                        ),
                         "measured_joint_positions_rad": (
                             list(observed) if observed is not None else None
                         ),
@@ -1482,17 +1561,44 @@ def run_actuator_posture_sweep(
                         "wrist_saturated_steps": saturated_steps,
                         "settle_steps": int(settle_steps),
                         "measured_grasp_frame_position_world_m": measured,
+                        "measured_grasp_frame_orientation_world_xyzw": (
+                            measured_orientation
+                        ),
                         "measured_distance_to_target_m": (
                             math.dist(measured, target) if measured is not None else None
                         ),
+                        "measured_orientation_error_rad": (
+                            _quaternion_angle_xyzw(
+                                measured_orientation, target_orientation
+                            )
+                            if measured_orientation is not None
+                            and target_orientation is not None
+                            else None
+                        ),
+                        "task_contact_active": (
+                            sample.get("task_contact_active")
+                            if isinstance(sample, Mapping)
+                            else None
+                        ),
+                        "task_contact_pad_forces_n": _task_pad_forces_n(sample),
                     }
                 )
     finally:
         # Restore before the controls run, or the sweep would have silently
         # retuned the robot the deterministic canary is about to measure.
-        if original is not None and len(original) > max(wrist_ids, default=-1):
+        if (
+            original_stiffness is not None
+            and original_damping is not None
+            and len(original_stiffness) > max(wrist_ids, default=-1)
+            and len(original_damping) > max(wrist_ids, default=-1)
+        ):
             for joint_id in wrist_ids:
-                write_stiffness(float(original[joint_id]), joint_ids=[joint_id])
+                write_stiffness(
+                    float(original_stiffness[joint_id]), joint_ids=[joint_id]
+                )
+                write_damping(
+                    float(original_damping[joint_id]), joint_ids=[joint_id]
+                )
         else:
             stiffness, damping = wrist_gain_candidates[0]
             write_stiffness(float(stiffness), joint_ids=wrist_ids)
@@ -1520,6 +1626,286 @@ def run_actuator_posture_sweep(
     }
 
 
+def run_downstream_phase_posture_matrix(
+    *,
+    environment: Any,
+    robot: Any,
+    arm_joint_ids: Sequence[int],
+    control_plan: Mapping[str, Any],
+    global_ik: Mapping[str, Any],
+    gripper_open_command: float,
+    gripper_closed_command: float,
+    phase_ids: Sequence[str] = (
+        "joint_path_01",
+        "joint_path_02",
+        "joint_path_03",
+        "joint_path_04",
+        "retreat",
+    ),
+    wrist_gain_candidates: Sequence[tuple[float, float]] = (
+        (400.0, 80.0),
+        (80.0, 16.0),
+    ),
+    settle_steps: int = 15,
+    checkpoint_settle_steps: int = 8,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Measure downstream arm feasibility without claiming a door-opening pass.
+
+    Phase 5 used to serialize every observation about phases 6--11.  This
+    reset-isolated matrix commands every solved branch for each unique
+    downstream pose under the same PhysX actuator seam.  It can therefore
+    expose unreachable joints, tracking residuals, saturation, pose error, or
+    incidental contact before a continuous grasp has qualified.  It does not
+    initialize a successful grasp or move the door to a synthetic state, so it
+    cannot assert swing, release, retreat, or task success.
+    """
+
+    actions = control_plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        raise ActuatorSweepError(["downstream_phase_matrix_control_plan_invalid"])
+    ordered_rows = [row for row in actions if isinstance(row, Mapping)]
+    rows = {
+        str(row.get("phase_id") or ""): row
+        for row in ordered_rows
+    }
+    row_indices = {
+        str(row.get("phase_id") or ""): index
+        for index, row in enumerate(ordered_rows)
+    }
+    requested = [str(value) for value in phase_ids]
+    if (
+        not requested
+        or len(set(requested)) != len(requested)
+        or any(phase_id not in rows for phase_id in requested)
+        or not wrist_gain_candidates
+        or int(settle_steps) < 1
+    ):
+        raise ActuatorSweepError(["downstream_phase_matrix_inputs_invalid"])
+
+    phase_reports: list[dict[str, Any]] = []
+    represented = 0
+    executed = 0
+
+    def _report_progress(last_phase: Mapping[str, Any]) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "schema_version": (
+                    DOWNSTREAM_PHASE_POSTURE_MATRIX_SCHEMA_VERSION
+                ),
+                "status": "running",
+                "phase_ids": requested,
+                "completed_phase_count": len(phase_reports),
+                "total_phase_count": len(requested),
+                "represented_configuration_count": represented,
+                "executed_cell_count": executed,
+                "last_phase": dict(last_phase),
+                "claim_boundary": (
+                    "interrupt_safe_diagnostic_progress_only;asserts_no_"
+                    "phase_admission_or_task_outcome"
+                ),
+            }
+        )
+
+    for phase_id in requested:
+        row = rows[phase_id]
+        postures = candidate_postures(global_ik, phase_id=phase_id)
+        prior_index = row_indices[phase_id] - 1
+        prior_row = ordered_rows[prior_index] if prior_index >= 0 else None
+        prior_phase_id = (
+            str(prior_row.get("phase_id") or "")
+            if isinstance(prior_row, Mapping)
+            else ""
+        )
+        prior_postures = (
+            candidate_postures(global_ik, phase_id=prior_phase_id)
+            if prior_phase_id
+            else []
+        )
+        if not prior_postures and phase_id == "retreat":
+            prior_phase_id = "joint_path_04"
+            prior_postures = candidate_postures(
+                global_ik, phase_id=prior_phase_id
+            )
+        prior_task_joints = (
+            dict(prior_row.get("expected_joint_positions") or {})
+            if isinstance(prior_row, Mapping)
+            else {}
+        )
+        prior_gripper_command = (
+            gripper_closed_command
+            if isinstance(prior_row, Mapping)
+            and str(prior_row.get("gripper_state") or "") == "closed"
+            else gripper_open_command
+        )
+        checkpoint_reset = getattr(
+            environment, "reset_to_diagnostic_checkpoint", None
+        )
+        checkpointed_postures: list[dict[str, Any]] = []
+        for posture in postures:
+            target_joints = posture["joint_positions_rad"]
+            nearest_prior = (
+                min(
+                    prior_postures,
+                    key=lambda candidate: sum(
+                        abs(float(after) - float(before))
+                        for after, before in zip(
+                            target_joints,
+                            candidate["joint_positions_rad"],
+                            strict=True,
+                        )
+                    ),
+                )
+                if prior_postures
+                else None
+            )
+            checkpointed_postures.append(
+                {
+                    **posture,
+                    "checkpoint_arm_joint_positions_rad": (
+                        list(nearest_prior["joint_positions_rad"])
+                        if nearest_prior is not None
+                        else None
+                    ),
+                    "checkpoint_task_joint_positions_rad": prior_task_joints,
+                    "checkpoint_source_phase_id": (
+                        prior_phase_id if nearest_prior is not None else None
+                    ),
+                    "checkpoint_gripper_command": float(
+                        prior_gripper_command
+                    ),
+                }
+            )
+        postures = checkpointed_postures
+        represented += len(postures) * len(wrist_gain_candidates)
+        if not postures:
+            phase_report = {
+                "phase_id": phase_id,
+                "status": "unavailable",
+                "reason": "no_solved_postures",
+                "represented_configuration_count": 0,
+                "executed_cell_count": 0,
+                "cells": [],
+            }
+            phase_reports.append(phase_report)
+            _report_progress(phase_report)
+            continue
+        command = (
+            gripper_closed_command
+            if str(row.get("gripper_state") or "") == "closed"
+            else gripper_open_command
+        )
+        report = run_actuator_posture_sweep(
+            environment=environment,
+            robot=robot,
+            arm_joint_ids=arm_joint_ids,
+            target_position_world_m=row["target_position_world_m"],
+            target_orientation_world_xyzw=row.get(
+                "target_quaternion_world_xyzw"
+            ),
+            postures=postures,
+            gripper_open_command=float(command),
+            max_joint_delta_rad=float(row["max_joint_delta_rad"]),
+            max_joint_setpoint_lead_rad=float(
+                row["max_joint_setpoint_lead_rad"]
+            ),
+            wrist_gain_candidates=wrist_gain_candidates,
+            settle_steps=settle_steps,
+            checkpoint_settle_steps=checkpoint_settle_steps,
+            cell_reset_callback=(
+                lambda posture: checkpoint_reset(
+                    arm_joint_positions_rad=posture[
+                        "checkpoint_arm_joint_positions_rad"
+                    ],
+                    task_joint_positions_rad=posture[
+                        "checkpoint_task_joint_positions_rad"
+                    ],
+                )
+                if callable(checkpoint_reset)
+                and posture.get("checkpoint_arm_joint_positions_rad") is not None
+                else environment.reset()
+            ),
+        )
+        position_tolerance = float(row["arrival_tolerance_m"])
+        orientation_tolerance = row.get("arrival_orientation_tolerance_rad")
+        phase_cells = []
+        for cell in report.get("cells") or []:
+            position_error = cell.get("measured_distance_to_target_m")
+            orientation_error = cell.get("measured_orientation_error_rad")
+            within_pose_gate = bool(
+                isinstance(position_error, (int, float))
+                and float(position_error) <= position_tolerance
+                and (
+                    orientation_tolerance is None
+                    or (
+                        isinstance(orientation_error, (int, float))
+                        and float(orientation_error)
+                        <= float(orientation_tolerance)
+                    )
+                )
+            )
+            phase_cells.append(
+                {
+                    **cell,
+                    "phase_id": phase_id,
+                    "within_reset_isolated_pose_gate": within_pose_gate,
+                }
+            )
+        executed += len(phase_cells)
+        reachable_phase_cells = [
+            cell
+            for cell in phase_cells
+            if isinstance(
+                cell.get("measured_distance_to_target_m"), (int, float)
+            )
+        ]
+        phase_report = {
+            **report,
+            "phase_id": phase_id,
+            "represented_configuration_count": (
+                len(postures) * len(wrist_gain_candidates)
+            ),
+            "executed_cell_count": len(phase_cells),
+            "cells": phase_cells,
+            "best_cell": (
+                min(
+                    reachable_phase_cells,
+                    key=lambda cell: cell["measured_distance_to_target_m"],
+                )
+                if reachable_phase_cells
+                else None
+            ),
+            "pose_gate_cell_count": sum(
+                cell["within_reset_isolated_pose_gate"]
+                for cell in phase_cells
+            ),
+        }
+        phase_reports.append(phase_report)
+        _report_progress(phase_report)
+    return {
+        "schema_version": DOWNSTREAM_PHASE_POSTURE_MATRIX_SCHEMA_VERSION,
+        "status": (
+            "measured"
+            if any(report.get("status") == "measured" for report in phase_reports)
+            else "unavailable"
+        ),
+        "phase_ids": requested,
+        "represented_configuration_count": represented,
+        "executed_cell_count": executed,
+        "phase_reports": phase_reports,
+        "release_coverage": (
+            "joint_path_04_pose_plus_existing_open_gripper_transition_contract"
+        ),
+        "claim_boundary": (
+            "reset_isolated_physx_joint_tracking_pose_effort_and_contact_"
+            "diagnostic_only;does_not_initialize_a_qualified_grasp_or_task_"
+            "joint_checkpoint;asserts_no_phase_admission_or_task_outcome"
+        ),
+    }
+
+
 _CLAIM_BOUNDARY = (
     "diagnostic_measurement_only;reports_tracking_saturation_and_measured_"
     "reach;asserts_no_task_outcome_and_gates_nothing"
@@ -1536,10 +1922,12 @@ __all__ = [
     "probe_target_reachability",
     "DEFAULT_CELL_SETTLE_STEPS",
     "DEFAULT_WRIST_GAIN_CANDIDATES",
+    "DOWNSTREAM_PHASE_POSTURE_MATRIX_SCHEMA_VERSION",
     "SWEEP_SCHEMA_VERSION",
     "candidate_postures",
     "run_actuator_posture_sweep",
     "run_contact_close_posture_sweep",
+    "run_downstream_phase_posture_matrix",
     "CLOSE_POSTURE_SWEEP_SCHEMA_VERSION",
 ]
 

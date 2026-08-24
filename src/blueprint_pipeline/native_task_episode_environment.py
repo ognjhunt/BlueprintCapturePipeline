@@ -219,6 +219,52 @@ def build_native_task_episode_environment(
     def reset() -> None:
         env.reset(seed=seed)
 
+    def diagnostic_checkpoint_reset(
+        arm_joint_positions_rad: Sequence[float],
+        task_joint_positions_rad: Mapping[str, float],
+    ) -> None:
+        """Inject robot/task joints after a normal deterministic reset."""
+
+        try:
+            robot_joint_names = list(
+                getattr(robot, "joint_names", None)
+                or robot.data.joint_names
+            )
+            robot_position = robot.data.joint_pos.clone()
+            robot_velocity = robot.data.joint_vel.clone()
+            robot_velocity.zero_()
+            arm_indices = [
+                robot_joint_names.index(f"panda_joint{index}")
+                for index in range(1, 8)
+            ]
+            for index, value in zip(
+                arm_indices, arm_joint_positions_rad, strict=True
+            ):
+                robot_position[0, index] = float(value)
+            robot.write_joint_state_to_sim(robot_position, robot_velocity)
+
+            if task_kind == "articulated_open_close":
+                task_joint_names = list(
+                    getattr(task_object, "joint_names", None)
+                    or task_object.data.joint_names
+                )
+                native_names = dict(
+                    plan["task_sample_binding"].get("native_joint_names") or {}
+                )
+                task_position = task_object.data.joint_pos.clone()
+                task_velocity = task_object.data.joint_vel.clone()
+                task_velocity.zero_()
+                for logical_name, value in task_joint_positions_rad.items():
+                    native_name = str(native_names.get(logical_name, logical_name))
+                    task_position[0, task_joint_names.index(native_name)] = float(value)
+                task_object.write_joint_state_to_sim(
+                    task_position, task_velocity
+                )
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_diagnostic_checkpoint_write_failed"]
+            ) from exc
+
     def articulated_task_sample() -> dict[str, Any]:
         raw = task_readback.read_task_sample()
         frame = servo.current_gripper_pad_readback()
@@ -383,6 +429,7 @@ def build_native_task_episode_environment(
         gripper_closed_width_m=closed_separation,
         gripper_open_width_m=open_separation,
         reset_callback=reset,
+        diagnostic_checkpoint_reset_callback=diagnostic_checkpoint_reset,
         scripted_pose_controller_reset_callback=servo.reset_command_state,
         simulation_step_seconds=1.0 / control_frequency_hz,
         scripted_pose_action_callback=scripted_pose_action,
@@ -415,6 +462,17 @@ def build_native_task_episode_environment(
             if task_kind == "articulated_open_close"
             else "native_rigid_body_readback"
         ),
+        "diagnostic_checkpoint_reset": {
+            "available": True,
+            "state_components": [
+                "arm_joint_positions_rad",
+                "task_joint_positions_rad",
+            ],
+            "claim_boundary": (
+                "reset_isolated_diagnostic_initialization_only;not_phase_"
+                "admission_or_task_success"
+            ),
+        },
         "scripted_pose_source": (
             "global_ik_free_space_with_live_physx_jacobian_precision_servo_"
             "and_full_pose_nullspace_joint_limit_avoidance"

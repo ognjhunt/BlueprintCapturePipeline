@@ -425,7 +425,12 @@ class _Env:
         self.stepped.append([float(v) for v in np.asarray(tensor)[0]])
 
 
-def _adapter(env=None, *, with_contact_sensor=False):
+def _adapter(
+    env=None,
+    *,
+    with_contact_sensor=False,
+    diagnostic_checkpoint_reset_callback=None,
+):
     robot = _Robot()
     return IsaacEpisodeAdapter(
         env=env or _Env(),
@@ -436,12 +441,42 @@ def _adapter(env=None, *, with_contact_sensor=False):
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
+        diagnostic_checkpoint_reset_callback=(
+            diagnostic_checkpoint_reset_callback
+        ),
         contact_envelope=canonical_contact_envelope(),
         contact_sensor=(
             _ContactSensor(robot.data.body_names) if with_contact_sensor else None
         ),
         joint_wrench_sensor=_JointWrenchSensor(robot.data.body_names),
     )
+
+
+def test_reset_to_diagnostic_checkpoint_is_explicit_and_fail_closed() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_diagnostic_checkpoint_reset_unavailable",
+    ):
+        _adapter().reset_to_diagnostic_checkpoint(
+            arm_joint_positions_rad=[0.0] * 7,
+            task_joint_positions_rad={"door": 0.4},
+        )
+
+    calls = []
+    env = _Env()
+    adapter = _adapter(
+        env,
+        diagnostic_checkpoint_reset_callback=lambda arm, task: calls.append(
+            (list(arm), dict(task))
+        ),
+    )
+    adapter.reset_to_diagnostic_checkpoint(
+        arm_joint_positions_rad=[0.1] * 7,
+        task_joint_positions_rad={"door": 0.4},
+    )
+
+    assert env.reset_calls == [20260806]
+    assert calls == [([0.1] * 7, {"door": 0.4})]
 
 
 def test_arm_dynamics_observation_retains_actuator_and_contact_readback() -> None:
