@@ -9,6 +9,7 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     BLOCKER_NOT_LOOPBACK,
     BLOCKER_SHARED_INTERPRETER,
     ISAAC_INTERPRETER,
+    ISAAC_PYTHON_EXECUTABLE,
     PolicyProvisioningError,
     build_provisioning_script,
     describe_provisioning,
@@ -26,7 +27,11 @@ def test_the_policy_environment_is_built_beside_isaac_never_inside_it() -> None:
     # Isaac's interpreter installs only the thin client, never the policy:
     # pip-resolving the policy against Isaac's own CPython is how Isaac stops
     # starting, but the episode runs inside Isaac and needs a client there.
-    isaac_pip = [ln for ln in script.splitlines() if f'"{ISAAC_INTERPRETER}" -m pip' in ln]
+    isaac_pip = [
+        ln
+        for ln in script.splitlines()
+        if f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in ln
+    ]
     for line in isaac_pip:
         assert ("packages/openpi-client" in line or "--no-deps" in line
                 or "pyzmq" in line), line
@@ -110,7 +115,7 @@ def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> N
     assert '"pyzmq==27.0.1"' in script
     assert '"msgpack==1.1.0"' in script
     assert '"msgpack-numpy==0.4.8"' in script
-    assert script.index("pip install --no-deps -e") < script.index(
+    assert script.index("--no-deps -e") < script.index(
         '"msgpack-numpy==0.4.8"'
     )
 
@@ -241,7 +246,13 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
             assert "packages/openpi-client" in line or "--no-deps" in line, line
         else:
             assert "VIRTUAL_ENV=" in line, line
-    assert "/isaac-sim/kit/python/bin/python3" not in script
+    client_install_lines = [
+        line
+        for line in script.splitlines()
+        if f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in line
+    ]
+    assert client_install_lines
+    assert all('"$UV" pip install' in line for line in client_install_lines)
 
 
 def test_the_pinned_policy_source_is_verified_not_merely_cloned() -> None:
@@ -389,15 +400,27 @@ def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
     gripper measured, and died on ModuleNotFoundError: openpi_client.
     """
 
-    from blueprint_pipeline.adp009d_policy_provisioning import ISAAC_INTERPRETER
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        ISAAC_INTERPRETER,
+        ISAAC_PYTHON_EXECUTABLE,
+    )
 
     script = build_provisioning_script("pi05_droid")
     # Only the thin client, from the same pinned revision as the server, so
     # the two cannot drift apart.
-    assert f'"{ISAAC_INTERPRETER}" -m pip install -e' in script
+    assert (
+        f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" -e' in script
+    )
     assert "packages/openpi-client" in script
+    # The wrapper is correct for running Isaac, but not for pip build
+    # subprocesses: C83's pi05 setup lost the stdlib and failed importing json.
+    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
     # And the full policy tree still goes to the policy venv, never to Isaac.
-    assert f'"{ISAAC_INTERPRETER}" -m pip install -e "/opt/adp009d-policy-source/pi05_droid"' not in script
+    assert (
+        f'--python "{ISAAC_PYTHON_EXECUTABLE}" -e '
+        '"/opt/adp009d-policy-source/pi05_droid"'
+        not in script
+    )
 
 
 def test_groots_client_reaches_isaac_without_its_dependency_tree() -> None:
@@ -408,10 +431,18 @@ def test_groots_client_reaches_isaac_without_its_dependency_tree() -> None:
     conflict the separate-interpreter design exists to avoid.
     """
 
-    from blueprint_pipeline.adp009d_policy_provisioning import ISAAC_INTERPRETER
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        ISAAC_INTERPRETER,
+        ISAAC_PYTHON_EXECUTABLE,
+    )
 
     script = build_provisioning_script("groot_n17_droid")
-    assert f'"{ISAAC_INTERPRETER}" -m pip install --no-deps -e' in script
+    assert (
+        f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
+        "--no-deps -e"
+        in script
+    )
+    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
     assert "pyzmq" in script and "msgpack" in script
 
 

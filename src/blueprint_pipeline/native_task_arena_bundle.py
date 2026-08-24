@@ -296,6 +296,13 @@ name = {quoted}
     "candidate_policy_queried": False,
     "candidate_outcomes_accessed": False,
     "native_isaac_executed": False,
+    "visual_evidence": {{
+        "status": "unavailable_before_first_observation",
+        "media_gap": {{
+            "type": "before_first_observation",
+            "reason": "native_task_runtime_source_provisioning_failed"
+        }}
+    }},
     "provider_zero_required_after_return": True
 }}, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 PY
@@ -326,6 +333,13 @@ name = {quoted}
     "policy_provisioning_exit_code": rc,
     "candidate_policy_queried": False,
     "candidate_outcomes_accessed": False,
+    "visual_evidence": {{
+        "status": "unavailable_before_first_observation",
+        "media_gap": {{
+            "type": "before_first_observation",
+            "reason": "native_task_arena_policy_provisioning_failed"
+        }}
+    }},
     "provider_zero_required_after_return": True
 }}, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 PY

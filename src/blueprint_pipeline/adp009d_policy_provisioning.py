@@ -51,6 +51,13 @@ PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
 
 # Isaac's own interpreter, which must not be mutated to host a policy.
 ISAAC_INTERPRETER = "/isaac-sim/python.sh"
+# uv needs the real interpreter when it installs the thin episode client.  Do
+# not run pip through ``python.sh`` here: pip's PEP 517 subprocess re-executes
+# the bare Kit interpreter without the wrapper's runtime environment, and a
+# live run proved that subprocess could not even import the stdlib ``json``
+# module.  uv builds outside that wrapper and installs only into this explicit
+# target prefix.
+ISAAC_PYTHON_EXECUTABLE = "/isaac-sim/kit/python/bin/python3"
 # The policy environment lives beside it, never inside it.
 POLICY_VENV_PARENT = "/opt/adp009d-policy-venv"
 
@@ -161,16 +168,18 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
         # client class, and pulling GR00T's full tree into Isaac would risk
         # the torch conflict this design exists to avoid.
         return [
-            f'"{ISAAC_INTERPRETER}" -m pip install --no-deps -e "{source}"',
+            f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
+            f'--no-deps -e "{source}"',
             # Exact thin-client dependencies from the frozen GR00T pyproject.
             # ``server_client.py`` imports msgpack_numpy at module import, so
             # omitting it fails only after the server and Isaac have both paid
             # their startup cost.
-            f'"{ISAAC_INTERPRETER}" -m pip install '
+            f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
             '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8"',
         ]
     return [
-        f'"{ISAAC_INTERPRETER}" -m pip install -e "{source}/{subpackage}"',
+        f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
+        f'-e "{source}/{subpackage}"',
     ]
 
 
