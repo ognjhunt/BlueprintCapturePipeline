@@ -1185,6 +1185,66 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
 
+def test_controls_bundle_seals_bounded_orientation_reference_into_plan(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    reference = [
+        1.8153258562,
+        0.8945093155,
+        -1.6013997793,
+        -2.5417878628,
+        -2.8766772747,
+        2.3462493420,
+        -0.8545385003,
+    ]
+
+    receipt = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "controls-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="c" * 40,
+        generated_at="fixed",
+        bounded_orientation_reference_joint_positions_rad=reference,
+    )
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        plan = json.loads(
+            archive.read(
+                "provider_runtime/runtime_inputs/adp_task_control_plan.v1.json"
+            )
+        )
+    assert plan[
+        "bounded_orientation_reference_joint_positions_rad"
+    ] == pytest.approx(reference)
+    assert plan["plan_digest"] == canonical_digest(
+        plan, digest_field="plan_digest"
+    )
+
+
+def test_controls_bundle_refuses_invalid_bounded_orientation_reference(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+
+    with pytest.raises(
+        ValueError,
+        match="native_task_controls_bounded_orientation_reference_invalid",
+    ):
+        build_native_task_arena_controls_bundle(
+            job_dir=tmp_path / "controls-bundle",
+            packet_dir=packet,
+            construction_result_path=construction,
+            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+            implementation_commit="c" * 40,
+            generated_at="fixed",
+            bounded_orientation_reference_joint_positions_rad=[0.0] * 6,
+        )
+
+
 def test_downstream_diagnostic_is_default_off_and_requires_immutable_bundle_opt_in(
     tmp_path: Path,
 ) -> None:

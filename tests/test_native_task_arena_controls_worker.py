@@ -265,10 +265,10 @@ def test_bounded_orientation_seeds_prioritize_bound_physics_reference() -> None:
     ]
     seeds = _bounded_orientation_reference_seeds(
         control_plan={
+            "bounded_orientation_reference_joint_positions_rad": c75,
             "scripted_positive_actions": [
                 {
                     "phase_id": "contact_close",
-                    "physx_dls_preferred_posture_joint_positions_rad": c75,
                 }
             ]
         },
@@ -297,6 +297,27 @@ def test_bounded_orientation_seeds_prioritize_bound_physics_reference() -> None:
 
     assert seeds[0] == c75
     assert seeds[1:] == [[-1.0] * 7, [-2.0] * 7]
+
+
+@pytest.mark.parametrize(
+    "control_plan, blocker",
+    [
+        ({}, "bounded_orientation_reference_missing"),
+        (
+            {"bounded_orientation_reference_joint_positions_rad": [0.0] * 6},
+            "bounded_orientation_reference_invalid",
+        ),
+    ],
+)
+def test_bounded_orientation_seeds_fail_closed_without_bound_reference(
+    control_plan: dict[str, object], blocker: str
+) -> None:
+    with pytest.raises(RuntimeError, match=blocker):
+        _bounded_orientation_reference_seeds(
+            control_plan=control_plan,
+            jaw_selection={"variants": []},
+            sweep={"cells": []},
+        )
 
 
 def test_bounded_orientation_joints_do_not_rewrite_authoritative_targets() -> None:

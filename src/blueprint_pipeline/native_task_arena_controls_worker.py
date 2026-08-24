@@ -2241,15 +2241,21 @@ def _bounded_orientation_reference_seeds(
 ) -> list[list[float]]:
     """Prefer bound physical references, then the best current jaw branches."""
 
-    candidates: list[Sequence[float]] = []
-    for row in control_plan.get("scripted_positive_actions") or []:
-        if not isinstance(row, Mapping):
-            continue
-        preferred = row.get("physx_dls_preferred_posture_joint_positions_rad")
-        if isinstance(preferred, Sequence) and not isinstance(
-            preferred, (str, bytes)
-        ):
-            candidates.append(preferred)
+    bound_reference = control_plan.get(
+        "bounded_orientation_reference_joint_positions_rad"
+    )
+    if not isinstance(bound_reference, Sequence) or isinstance(
+        bound_reference, (str, bytes)
+    ):
+        raise RuntimeError("bounded_orientation_reference_missing")
+    try:
+        reference = [float(value) for value in bound_reference]
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("bounded_orientation_reference_invalid") from exc
+    if len(reference) != 7 or not all(math.isfinite(value) for value in reference):
+        raise RuntimeError("bounded_orientation_reference_invalid")
+
+    candidates: list[Sequence[float]] = [reference]
     cells = [
         cell
         for cell in sweep.get("cells") or []
@@ -3896,11 +3902,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 jaw_selection=jaw_selection,
                 sweep=sweep,
             )
-            if not bounded_reference_seeds:
-                bounded_reference_seeds = [
-                    [float(value) for value in servo.read_arm_joint_positions()]
-                ]
-
             def _solve_bounded_orientation(
                 phase_id,
                 target_position,
