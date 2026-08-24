@@ -1532,6 +1532,9 @@ def _with_contact_acquisition_candidate(
     if not isinstance(best, Mapping) or best.get("admitted") is not True:
         receipt["reason"] = "no_physics_admitted_contact_acquisition_cell"
         return plan, receipt
+    if best.get("authored_target_gate_passed") is not True:
+        receipt["reason"] = "physics_admitted_cell_authored_gate_unproven"
+        return plan, receipt
     if not isinstance(actions, list):
         receipt["reason"] = "scripted_positive_actions_invalid"
         return plan, receipt
@@ -1588,6 +1591,22 @@ def _with_contact_acquisition_candidate(
     if contact_open is None or contact_close is None:
         receipt["reason"] = "contact_phase_missing"
         return plan, receipt
+    try:
+        authored_arrival_target = [
+            float(value)
+            for value in contact_close.get(
+                "arrival_target_position_world_m",
+                contact_close["target_position_world_m"],
+            )
+        ]
+    except (KeyError, TypeError, ValueError):
+        receipt["reason"] = "authored_arrival_target_invalid"
+        return plan, receipt
+    if len(authored_arrival_target) != 3 or not all(
+        math.isfinite(value) for value in authored_arrival_target
+    ):
+        receipt["reason"] = "authored_arrival_target_invalid"
+        return plan, receipt
 
     # The preceding measured branch-replay row remains the known-clear anchor.
     # Contact-open now performs only the open-jaw advance the sweep qualified.
@@ -1599,8 +1618,12 @@ def _with_contact_acquisition_candidate(
     # Close from the pose the episode itself physically reached, not from a
     # second IK posture.  The episode seam snapshots those joints on entry and
     # keeps its native TCP, orientation, and bilateral-contact gates intact.
+    # The command may replay a nearby physics-qualified grasp candidate, but
+    # the authoritative arrival target never moves with the search cell.
     contact_close["target_position_world_m"] = list(command_target)
-    contact_close["arrival_target_position_world_m"] = list(target)
+    contact_close["arrival_target_position_world_m"] = list(
+        authored_arrival_target
+    )
     contact_close["target_quaternion_world_xyzw"] = list(
         contact_open["target_quaternion_world_xyzw"]
     )
@@ -1614,6 +1637,9 @@ def _with_contact_acquisition_candidate(
             "adopted_cell_index": int(best["cell_index"]),
             "adopted_target_position_world_m": target,
             "adopted_command_target_position_world_m": command_target,
+            "authoritative_arrival_target_position_world_m": (
+                authored_arrival_target
+            ),
             "adopted_open_joint_positions_rad": joints,
             "adopted_offsets_m": {
                 "approach": float(best["approach_offset_m"]),

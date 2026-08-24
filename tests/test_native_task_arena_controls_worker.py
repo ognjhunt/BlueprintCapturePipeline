@@ -1688,6 +1688,7 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
             "best_cell": {
                 "cell_index": 17,
                 "admitted": True,
+                "authored_target_gate_passed": True,
                 "candidate_target_position_world_m": [0.501, 0.096, 0.402],
                 "candidate_command_target_position_world_m": [
                     0.501,
@@ -1728,7 +1729,10 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
         [0.501, 0.0825, 0.402]
     )
     assert contact_close["arrival_target_position_world_m"] == pytest.approx(
-        [0.501, 0.096, 0.402]
+        [0.5, 0.1, 0.4]
+    )
+    assert receipt["authoritative_arrival_target_position_world_m"] == pytest.approx(
+        [0.5, 0.1, 0.4]
     )
     assert contact_close["hold_solved_arm_joint_positions_rad"] == pytest.approx(
         reached_open
@@ -1835,6 +1839,34 @@ def test_contact_acquisition_refuses_nonadmitted_best_cell() -> None:
 
     assert receipt["status"] == "not_applied"
     assert receipt["reason"] == "no_physics_admitted_contact_acquisition_cell"
+    assert derived == plan
+
+
+def test_contact_acquisition_refuses_admitted_cell_without_authored_gate() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_acquisition_candidate,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    derived, receipt = _with_contact_acquisition_candidate(
+        control_plan=plan,
+        sweep={
+            "status": "measured",
+            "best_cell": {
+                "cell_index": 8,
+                "admitted": True,
+                "candidate_target_position_world_m": [0.49, 0.1, 0.4],
+                "candidate_command_target_position_world_m": [0.49, 0.1, 0.4],
+                "reached_open_joint_positions_rad": [0.1] * 7,
+                "approach_offset_m": -0.01,
+                "jaw_offset_m": 0.0,
+                "lateral_offset_m": 0.0,
+            },
+        },
+    )
+
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "physics_admitted_cell_authored_gate_unproven"
     assert derived == plan
 
 
