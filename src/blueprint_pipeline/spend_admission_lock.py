@@ -111,17 +111,23 @@ def _inventory_contract_blockers(value: object) -> list[str]:
             continue
         if row.get("required") is not True:
             blockers.append(f"provider_inventory_not_required:{provider}")
-        if row.get("credential_present") is not True:
-            blockers.append(f"provider_inventory_credential_missing:{provider}")
-        if row.get("status") != "succeeded":
-            blockers.append(f"provider_inventory_not_succeeded:{provider}")
         row_count = row.get("row_count")
         if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count < 0:
             blockers.append(f"provider_inventory_row_count_invalid:{provider}")
-        blockers.extend(
-            f"provider_inventory:{provider}:{item}"
-            for item in _string_items(row.get("blockers"))
-        )
+    return sorted(set(blockers))
+
+
+def _inventory_provider_blockers(row: Mapping[str, Any]) -> list[str]:
+    provider = str(row.get("provider") or "unknown").strip() or "unknown"
+    blockers: list[str] = []
+    if row.get("credential_present") is not True:
+        blockers.append(f"provider_inventory_credential_missing:{provider}")
+    if row.get("status") != "succeeded":
+        blockers.append(f"provider_inventory_not_succeeded:{provider}")
+    blockers.extend(
+        f"provider_inventory:{provider}:{item}"
+        for item in _string_items(row.get("blockers"))
+    )
     return sorted(set(blockers))
 
 
@@ -347,6 +353,13 @@ def build_spend_admission_lock(
         blockers.append("billing_reconciliation_provider_coverage_incomplete")
     covered_provider_ids = sorted(billing_provider_set & inventory_provider_set)
     uncovered_provider_ids = sorted(inventory_provider_set - billing_provider_set)
+    inventory_by_provider = {
+        str(row.get("provider") or "").strip(): row for row in inventory_rows
+    }
+    inventory_provider_blockers = {
+        provider: _inventory_provider_blockers(row)
+        for provider, row in inventory_by_provider.items()
+    }
     billing_generated_at = _parse_time(billing.get("generated_at"))
     if (
         billing_generated_at is None
@@ -461,12 +474,25 @@ def build_spend_admission_lock(
         "provider_admission": {
             provider: {
                 "admission_allowed": bool(
-                    admission_allowed and provider in billing_provider_set
+                    admission_allowed
+                    and provider in billing_provider_set
+                    and not inventory_provider_blockers.get(provider)
                 ),
                 "blockers": []
-                if admission_allowed and provider in billing_provider_set
+                if (
+                    admission_allowed
+                    and provider in billing_provider_set
+                    and not inventory_provider_blockers.get(provider)
+                )
                 else (
-                    [f"billing_reconciliation_provider_uncovered:{provider}"]
+                    [
+                        *inventory_provider_blockers.get(provider, []),
+                        *(
+                            [f"billing_reconciliation_provider_uncovered:{provider}"]
+                            if provider not in billing_provider_set
+                            else []
+                        ),
+                    ]
                     if admission_allowed
                     else blockers
                 ),
@@ -503,6 +529,7 @@ def build_spend_admission_lock(
             "draining_is_not_provider_teardown_proof": True,
             "override_is_short_lived_and_two_person_audited": True,
             "uncovered_provider_is_not_authorized_for_paid_work": True,
+            "unavailable_provider_inventory_is_not_authorized_for_paid_work": True,
         },
     }
 
@@ -560,6 +587,15 @@ def validate_spend_admission_lock(
         if isinstance(item, Mapping)
     }
     billing_provider_set = set(totals) if isinstance(totals, Mapping) else set()
+    inventory_by_provider = {
+        str(item.get("provider") or "").strip(): dict(item)
+        for item in row.get("provider_inventory") or []
+        if isinstance(item, Mapping)
+    }
+    inventory_provider_blockers = {
+        provider_id: _inventory_provider_blockers(inventory_row)
+        for provider_id, inventory_row in inventory_by_provider.items()
+    }
     if not billing_provider_set or not billing_provider_set.issubset(
         inventory_provider_set
     ):
@@ -571,6 +607,10 @@ def validate_spend_admission_lock(
         elif provider not in inventory_provider_set:
             blockers.append(
                 f"spend_admission_lock_required_provider_inventory_missing:{provider}"
+            )
+        elif inventory_provider_blockers.get(provider):
+            blockers.append(
+                f"spend_admission_lock_required_provider_inventory_unavailable:{provider}"
             )
         elif provider not in billing_provider_set:
             blockers.append(
@@ -589,7 +629,11 @@ def validate_spend_admission_lock(
         global_open = row.get("admission_allowed") is True
         for provider_id in sorted(inventory_provider_set):
             provider_row = _mapping(provider_admission.get(provider_id))
-            expected_allowed = bool(global_open and provider_id in billing_provider_set)
+            expected_allowed = bool(
+                global_open
+                and provider_id in billing_provider_set
+                and not inventory_provider_blockers.get(provider_id)
+            )
             if provider_row.get("admission_allowed") is not expected_allowed:
                 blockers.append(
                     f"spend_admission_lock_provider_admission_mismatch:{provider_id}"
@@ -598,7 +642,17 @@ def validate_spend_admission_lock(
                 []
                 if expected_allowed
                 else (
-                    [f"billing_reconciliation_provider_uncovered:{provider_id}"]
+                    [
+                        *inventory_provider_blockers.get(provider_id, []),
+                        *(
+                            [
+                                "billing_reconciliation_provider_uncovered:"
+                                f"{provider_id}"
+                            ]
+                            if provider_id not in billing_provider_set
+                            else []
+                        ),
+                    ]
                     if global_open
                     else row.get("blockers")
                 )
@@ -695,6 +749,7 @@ def validate_spend_admission_lock(
         "draining_is_not_provider_teardown_proof",
         "override_is_short_lived_and_two_person_audited",
         "uncovered_provider_is_not_authorized_for_paid_work",
+        "unavailable_provider_inventory_is_not_authorized_for_paid_work",
     }
     if any(claim_boundary.get(key) is not True for key in required_claim_boundaries):
         blockers.append("spend_admission_lock_claim_boundary_invalid")
