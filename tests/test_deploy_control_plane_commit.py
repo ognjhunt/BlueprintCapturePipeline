@@ -103,6 +103,135 @@ def _provenance(tmp_path: Path, commit: str) -> Path:
     return path
 
 
+def _iteration_provenance(commit: str) -> tuple[bytes, dict[str, object]]:
+    receipt: dict[str, object] = {
+        "schema_version": "blueprint.deploy_release_provenance.v1",
+        "status": "iteration",
+        "git_sha": commit,
+        "promotion_eligible": False,
+        "claim_boundary": {
+            "canonical_full_lane_verified": False,
+            "promotion_eligible": False,
+            "evidence_grade": "development_only",
+        },
+    }
+    payload = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
+    return payload, receipt
+
+
+def _verified_provenance(commit: str) -> tuple[bytes, dict[str, object]]:
+    receipt: dict[str, object] = {
+        "schema_version": "blueprint.deploy_release_provenance.v1",
+        "status": "verified",
+        "git_sha": commit,
+        "promotion_eligible": True,
+        "run_id": 123,
+        "claim_boundary": {"canonical_full_lane_verified": True},
+    }
+    return json.dumps(receipt).encode(), receipt
+
+
+def test_verified_provenance_supersedes_same_commit_iteration_once(
+    tmp_path: Path,
+) -> None:
+    commit = "a" * 40
+    state_root = tmp_path / "state"
+    iteration_payload, iteration_receipt = _iteration_provenance(commit)
+    verified_payload, verified_receipt = _verified_provenance(commit)
+
+    deploy._install_release_provenance(
+        payload=iteration_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=iteration_receipt,
+    )
+    installed = deploy._install_release_provenance(
+        payload=verified_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=verified_receipt,
+    )
+
+    canonical = state_root / commit / deploy.DEPLOY_RELEASE_PROVENANCE_NAME
+    superseded = (
+        state_root / commit / deploy.SUPERSEDED_ITERATION_PROVENANCE_NAME
+    )
+    assert canonical.read_bytes() == verified_payload
+    assert superseded.read_bytes() == iteration_payload
+    assert canonical.stat().st_mode & 0o777 == 0o440
+    assert superseded.stat().st_mode & 0o777 == 0o440
+    assert installed["superseded_iteration_provenance"]["path"] == str(
+        superseded
+    )
+    assert installed["superseded_iteration_provenance"]["status"] == "iteration"
+
+    # A repeated promotion is idempotent and does not rewrite history.
+    repeated = deploy._install_release_provenance(
+        payload=verified_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=verified_receipt,
+    )
+    assert canonical.read_bytes() == verified_payload
+    assert superseded.read_bytes() == iteration_payload
+    assert "superseded_iteration_provenance" not in repeated
+
+
+def test_release_provenance_never_downgrades_verified_to_iteration(
+    tmp_path: Path,
+) -> None:
+    commit = "b" * 40
+    state_root = tmp_path / "state"
+    iteration_payload, iteration_receipt = _iteration_provenance(commit)
+    verified_payload, verified_receipt = _verified_provenance(commit)
+    deploy._install_release_provenance(
+        payload=verified_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=verified_receipt,
+    )
+
+    with pytest.raises(
+        deploy.ControlPlaneDeployError, match="deploy_release_provenance_conflict"
+    ):
+        deploy._install_release_provenance(
+            payload=iteration_payload,
+            state_root=state_root,
+            source_commit=commit,
+            receipt=iteration_receipt,
+        )
+
+    canonical = state_root / commit / deploy.DEPLOY_RELEASE_PROVENANCE_NAME
+    assert canonical.read_bytes() == verified_payload
+    assert not (
+        state_root / commit / deploy.SUPERSEDED_ITERATION_PROVENANCE_NAME
+    ).exists()
+
+
+def test_release_provenance_does_not_upgrade_an_iteration_from_another_commit(
+    tmp_path: Path,
+) -> None:
+    commit = "c" * 40
+    state_root = tmp_path / "state"
+    other_payload, _ = _iteration_provenance("d" * 40)
+    verified_payload, verified_receipt = _verified_provenance(commit)
+    destination = state_root / commit / deploy.DEPLOY_RELEASE_PROVENANCE_NAME
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(other_payload)
+
+    with pytest.raises(
+        deploy.ControlPlaneDeployError, match="deploy_release_provenance_conflict"
+    ):
+        deploy._install_release_provenance(
+            payload=verified_payload,
+            state_root=state_root,
+            source_commit=commit,
+            receipt=verified_receipt,
+        )
+
+    assert destination.read_bytes() == other_payload
+
+
 def test_the_canonical_lock_is_checked_by_default() -> None:
     """An operator who forgets the flag still gets the guard."""
 

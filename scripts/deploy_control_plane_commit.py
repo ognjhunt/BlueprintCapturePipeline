@@ -69,6 +69,9 @@ DEFAULT_INTAKE_RUNTIME_DROP_IN = (
 )
 DEFAULT_INTAKE_VERSION_URL = "http://127.0.0.1:8765/api/live-pipeline/version"
 DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
+SUPERSEDED_ITERATION_PROVENANCE_NAME = (
+    "deploy-release-provenance.iteration-superseded.json"
+)
 
 
 class ControlPlaneDeployError(ValueError):
@@ -121,16 +124,107 @@ def _validated_release_provenance(
 def _install_release_provenance(
     *, payload: bytes, state_root: Path, source_commit: str, receipt: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Install immutable promotion proof where paid admission can reopen it."""
+    """Install promotion proof, permitting only the documented one-way upgrade.
+
+    An iteration deploy writes a development-only receipt before the full lane
+    finishes.  The same exact commit must later be promotable without deleting
+    that earlier evidence.  Preserve the iteration receipt beside the canonical
+    path, then atomically replace the canonical receipt with the verified one.
+    Every other content change remains a conflict.
+    """
 
     destination = state_root / source_commit / DEPLOY_RELEASE_PROVENANCE_NAME
+    superseded_iteration = (
+        destination.parent / SUPERSEDED_ITERATION_PROVENANCE_NAME
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_symlink():
         raise ControlPlaneDeployError("deploy_release_provenance_destination_symlink")
+    superseded_receipt: dict[str, Any] | None = None
     try:
         if destination.exists():
-            if not destination.is_file() or destination.read_bytes() != payload:
+            if not destination.is_file():
                 raise ControlPlaneDeployError("deploy_release_provenance_conflict")
+            existing_payload = destination.read_bytes()
+            if existing_payload != payload:
+                try:
+                    existing_receipt = json.loads(existing_payload)
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise ControlPlaneDeployError(
+                        "deploy_release_provenance_conflict"
+                    ) from exc
+                existing_claim = (
+                    existing_receipt.get("claim_boundary")
+                    if isinstance(existing_receipt, Mapping)
+                    else None
+                )
+                incoming_claim = receipt.get("claim_boundary")
+                is_same_commit_iteration = (
+                    isinstance(existing_receipt, Mapping)
+                    and existing_receipt.get("schema_version")
+                    == "blueprint.deploy_release_provenance.v1"
+                    and existing_receipt.get("status") == "iteration"
+                    and existing_receipt.get("git_sha") == source_commit
+                    and existing_receipt.get("promotion_eligible") is False
+                    and isinstance(existing_claim, Mapping)
+                    and existing_claim.get("canonical_full_lane_verified") is False
+                    and existing_claim.get("promotion_eligible") is False
+                )
+                is_verified_upgrade = (
+                    receipt.get("schema_version")
+                    == "blueprint.deploy_release_provenance.v1"
+                    and receipt.get("status") == "verified"
+                    and receipt.get("git_sha") == source_commit
+                    and receipt.get("promotion_eligible") is True
+                    and isinstance(incoming_claim, Mapping)
+                    and incoming_claim.get("canonical_full_lane_verified") is True
+                )
+                if not (is_same_commit_iteration and is_verified_upgrade):
+                    raise ControlPlaneDeployError(
+                        "deploy_release_provenance_conflict"
+                    )
+                if superseded_iteration.is_symlink():
+                    raise ControlPlaneDeployError(
+                        "deploy_release_provenance_supersession_conflict"
+                    )
+                if superseded_iteration.exists():
+                    if (
+                        not superseded_iteration.is_file()
+                        or superseded_iteration.read_bytes() != existing_payload
+                    ):
+                        raise ControlPlaneDeployError(
+                            "deploy_release_provenance_supersession_conflict"
+                        )
+                else:
+                    with superseded_iteration.open("xb") as handle:
+                        handle.write(existing_payload)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.chmod(superseded_iteration, 0o440)
+
+                temporary_fd, temporary_name = tempfile.mkstemp(
+                    prefix=f".{DEPLOY_RELEASE_PROVENANCE_NAME}.",
+                    suffix=".tmp",
+                    dir=destination.parent,
+                )
+                temporary = Path(temporary_name)
+                try:
+                    with os.fdopen(temporary_fd, "wb") as handle:
+                        handle.write(payload)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.chmod(temporary, 0o440)
+                    os.replace(temporary, destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                superseded_receipt = {
+                    "path": str(superseded_iteration),
+                    "sha256": _sha256_bytes(existing_payload),
+                    "size_bytes": len(existing_payload),
+                    "git_sha": source_commit,
+                    "status": "iteration",
+                    "mode": "0440",
+                }
         else:
             with destination.open("xb") as handle:
                 handle.write(payload)
@@ -142,7 +236,7 @@ def _install_release_provenance(
         raise ControlPlaneDeployError("deploy_release_provenance_install_failed") from exc
     if reopened != payload:
         raise ControlPlaneDeployError("deploy_release_provenance_readback_mismatch")
-    return {
+    installed = {
         "path": str(destination),
         "sha256": _sha256_bytes(reopened),
         "size_bytes": len(reopened),
@@ -152,6 +246,9 @@ def _install_release_provenance(
         "canonical_full_lane_verified": True,
         "mode": "0440",
     }
+    if superseded_receipt is not None:
+        installed["superseded_iteration_provenance"] = superseded_receipt
+    return installed
 
 
 def _expanded_slots(lock_paths: Sequence[str]) -> list[Path]:
