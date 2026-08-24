@@ -1640,6 +1640,9 @@ def run_actuator_posture_sweep(
                         "minimum_joint_limit_margin_rad": posture.get(
                             "minimum_joint_limit_margin_rad"
                         ),
+                        "bounded_orientation_candidate": posture.get(
+                            "bounded_orientation_candidate"
+                        ),
                         "offsim_position_error_m": posture.get("offsim_position_error_m"),
                         "offsim_orientation_error_rad": posture.get("offsim_orientation_error_rad"),
                         "offsim_solved": posture.get("offsim_solved"),
