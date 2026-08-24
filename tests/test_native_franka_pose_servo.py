@@ -937,3 +937,55 @@ def test_a_failed_seed_search_never_fails_the_solve() -> None:
     search = result["global_margin_seed_search"]
     assert search["status"] == "unavailable"
     assert "pinocchio exploded" in search["reason"]
+
+
+def test_near_feasible_global_seed_is_refined_before_local_seeds() -> None:
+    """A global near miss must reach the solver without becoming a solution."""
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    near = [1.0, 0.8, -1.2, -1.7, 2.1, 2.0, -2.0]
+    solved_from: list[list[float]] = []
+
+    class _Servo(NativeFrankaDifferentialIkServo):
+        def __init__(self):
+            self._joint_position_lower = [-2.9] * 7
+            self._joint_position_upper = [2.9] * 7
+
+        def _pink_hand_target_for_grasp_world(self, **_kwargs):
+            return [0.4, 0.0, 0.4], [0.0, 0.0, 0.0, 1.0]
+
+        def global_margin_seeds(self, **_kwargs):
+            return {
+                "status": "no_configuration_converged",
+                "seeds": [],
+                "near_feasible_seeds": [near],
+                "near_feasible_orientation_errors_rad": [0.087],
+            }
+
+        def solve_grasp_target_from_joint_seed(
+            self, *, seed_joint_positions_rad, **_kwargs
+        ):
+            solved_from.append(list(seed_joint_positions_rad))
+            return {
+                "solved": True,
+                "joint_positions_rad": list(seed_joint_positions_rad),
+                "position_error_m": 0.001,
+                "orientation_error_rad": 0.01,
+                "iterations": 2,
+            }
+
+    result = _Servo().solve_grasp_target_multistart(
+        target_position_world_m=[0.4, 0.0, 0.4],
+        target_grasp_frame_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preferred_seeds=[[0.0] * 7],
+        reference_joint_positions_rad=[0.0] * 7,
+    )
+
+    assert solved_from[0] == near
+    assert result["global_margin_seed_search"]["status"] == (
+        "no_configuration_converged"
+    )
+    assert result["selected"] is not None

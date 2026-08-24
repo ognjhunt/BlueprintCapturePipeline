@@ -45,6 +45,12 @@ DEFAULT_MAX_ITERATIONS = 60
 #: a handful of good basins is the whole point -- this is not a replacement
 #: search.
 DEFAULT_SEED_LIMIT = 3
+#: When no configuration clears both pose tolerances, retain the closest
+#: distinct terminal configurations as *unsolved* seeds for the live solver to
+#: refine.  C79 evaluated 128 global starts and then discarded every terminal
+#: posture because none crossed the final 0.08 rad gate; the physics fallback
+#: consequently measured only the older local solver's 16 endpoints.
+DEFAULT_NEAR_FEASIBLE_SEED_LIMIT = 8
 #: Global configurations evaluated before the local tracker refines anything.
 #: This is deliberately above one hundred: evaluating FK and a 6x7 Jacobian is
 #: cheap compared with one PhysX episode, and a seven-DOF arm should not choose
@@ -162,6 +168,7 @@ def high_margin_joint_seeds(
     orientation_tolerance_rad: float,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     seed_limit: int = DEFAULT_SEED_LIMIT,
+    near_feasible_seed_limit: int = DEFAULT_NEAR_FEASIBLE_SEED_LIMIT,
 ) -> dict[str, Any]:
     """Configurations that reach the pose with the most joint-limit margin.
 
@@ -202,6 +209,7 @@ def high_margin_joint_seeds(
         }
 
     found: list[tuple[float, list[float], float, float]] = []
+    terminal: list[tuple[float, float, list[float], float, float]] = []
     evaluated = 0
     for seed in seeds:
         try:
@@ -243,11 +251,50 @@ def high_margin_joint_seeds(
                 jacobian @ jacobian.T + DEFAULT_DAMPING * np.eye(6), error
             )
             q = np.clip(q + DEFAULT_STEP * step, lower, upper)
+        # The loop updates ``q`` after measuring its error.  Re-evaluate the
+        # final configuration so a last-iteration convergence is not missed
+        # and so retained terminal metadata describes the joints we return.
+        try:
+            position, quaternion = frame_pose(q.tolist())
+            position_error = float(
+                np.linalg.norm(
+                    target_position
+                    - np.array([float(value) for value in position], dtype=float)
+                )
+            )
+            orientation_error = float(
+                np.linalg.norm(
+                    np.array(
+                        _quaternion_error_vector(quaternion, target_quaternion),
+                        dtype=float,
+                    )
+                )
+            )
+        except Exception:  # noqa: BLE001 - one bad terminal seed is skipped
+            continue
+        if not math.isfinite(position_error) or not math.isfinite(
+            orientation_error
+        ):
+            continue
+        margin = float(np.min(np.minimum(q - lower, upper - q)))
+        normalized_error = (
+            position_error / float(position_tolerance_m)
+        ) ** 2 + (
+            orientation_error / float(orientation_tolerance_rad)
+        ) ** 2
+        terminal.append(
+            (
+                normalized_error,
+                margin,
+                q.tolist(),
+                position_error,
+                orientation_error,
+            )
+        )
         if (
             position_error <= float(position_tolerance_m)
             and orientation_error <= float(orientation_tolerance_rad)
         ):
-            margin = float(np.min(np.minimum(q - lower, upper - q)))
             found.append((margin, q.tolist(), position_error, orientation_error))
 
     found.sort(key=lambda row: -row[0])
@@ -266,6 +313,25 @@ def high_margin_joint_seeds(
         ):
             continue
         kept.append(row)
+    terminal.sort(key=lambda row: (row[0], -row[1]))
+    near_feasible: list[tuple[float, float, list[float], float, float]] = []
+    for row in terminal:
+        if len(near_feasible) >= max(1, int(near_feasible_seed_limit)):
+            break
+        # A configuration that already passed is represented by ``seeds`` and
+        # must not also masquerade as a near miss.
+        if (
+            row[3] <= float(position_tolerance_m)
+            and row[4] <= float(orientation_tolerance_rad)
+        ):
+            continue
+        if any(
+            float(np.linalg.norm(np.array(row[2]) - np.array(other[2])))
+            < DISTINCT_CONFIGURATION_RADIUS_RAD
+            for other in near_feasible
+        ):
+            continue
+        near_feasible.append(row)
     return {
         "schema_version": GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
         "status": "searched" if kept else "no_configuration_converged",
@@ -274,10 +340,16 @@ def high_margin_joint_seeds(
         "seeds": [row[1] for row in kept],
         "margins_rad": [row[0] for row in kept],
         "best_margin_rad": kept[0][0] if kept else None,
+        "near_feasible_seed_count": len(near_feasible),
+        "near_feasible_seeds": [row[2] for row in near_feasible],
+        "near_feasible_normalized_pose_errors": [row[0] for row in near_feasible],
+        "near_feasible_margins_rad": [row[1] for row in near_feasible],
+        "near_feasible_position_errors_m": [row[3] for row in near_feasible],
+        "near_feasible_orientation_errors_rad": [row[4] for row in near_feasible],
         "claim_boundary": (
-            "produces_candidate_seed_configurations_only;the_live_solver_"
-            "refines_and_scores_them_and_every_arrival_and_contact_gate_is_"
-            "unchanged"
+            "produces_candidate_seed_configurations_only;near_feasible_seeds_"
+            "remain_explicitly_unsolved;the_live_solver_refines_and_scores_"
+            "them_and_every_arrival_and_contact_gate_is_unchanged"
         ),
     }
 

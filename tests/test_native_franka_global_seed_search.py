@@ -121,6 +121,19 @@ def test_an_unreachable_pose_is_reported_not_invented() -> None:
     assert report["status"] == "no_configuration_converged"
     assert report["seeds"] == []
     assert report["best_margin_rad"] is None
+    # The closest terminal configurations survive as explicitly unsolved
+    # candidates instead of all 128 global starts being thrown away.
+    assert report["near_feasible_seed_count"] >= 1
+    assert report["near_feasible_seeds"]
+    assert all(
+        position > 0.005 or orientation > 0.05
+        for position, orientation in zip(
+            report["near_feasible_position_errors_m"],
+            report["near_feasible_orientation_errors_rad"],
+            strict=True,
+        )
+    )
+    assert "explicitly_unsolved" in report["claim_boundary"]
 
 
 def test_a_seed_that_cannot_be_evaluated_does_not_lose_the_others() -> None:
@@ -147,6 +160,45 @@ def test_a_seed_that_cannot_be_evaluated_does_not_lose_the_others() -> None:
 
     assert report["seeds_evaluated"] == 2
     assert report["status"] == "searched"
+
+
+def test_final_iteration_update_is_remeasured_before_classification() -> None:
+    """The returned joints and the classified error must describe one pose."""
+
+    def frame_pose(joints):
+        return [float(joints[0]), 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]
+
+    def frame_jacobian(_joints):
+        return [
+            [1.0],
+            [0.0],
+            [0.0],
+            [0.0],
+            [0.0],
+            [0.0],
+        ]
+
+    report = high_margin_joint_seeds(
+        frame_pose=frame_pose,
+        frame_jacobian=frame_jacobian,
+        seeds=[[0.0]],
+        target_position_m=[0.001, 0.0, 0.0],
+        target_quaternion_xyzw=[0.0, 0.0, 0.0, 1.0],
+        lower_joint_position_limits_rad=[-1.0],
+        upper_joint_position_limits_rad=[1.0],
+        position_tolerance_m=0.0007,
+        orientation_tolerance_rad=0.01,
+        max_iterations=1,
+    )
+
+    # The seed begins 1 mm away.  One 0.4-scaled DLS update moves it to about
+    # 0.4 mm, leaving a 0.6 mm residual inside the 0.7 mm gate.  Before the
+    # repair the search classified the pre-update 1 mm error against the
+    # post-update joints and falsely returned no configuration.
+    assert report["status"] == "searched"
+    assert report["seeds"]
+    reached, _ = frame_pose(report["seeds"][0])
+    assert math.dist(reached, [0.001, 0.0, 0.0]) <= 0.0007
 
 
 def test_invalid_limits_are_refused() -> None:
