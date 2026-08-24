@@ -181,6 +181,8 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
         assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
 
     assert "scripts/gpu_spend_guard.py" in guard
+    assert "BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT=/var/lib/blueprint/pipeline-control-plane" in guard
+    assert '--output-root "$${BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT}"' in guard
     assert "blueprint_pipeline.provider_billing_reconciler" in billing
 
 

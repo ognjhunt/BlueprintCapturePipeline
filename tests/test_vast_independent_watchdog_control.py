@@ -250,6 +250,16 @@ def test_watchdog_supersession_proves_successor_before_retiring_predecessor(
     assert receipt["provider_mutations_performed"] == 0
     assert successor is not None
     assert successor.started_instance_id_path.read_text(encoding="utf-8") == "48527937\n"
+    lease = json.loads(
+        (successor.out_dir / control.WARM_SERVE_MARKER_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert lease["status"] == "serving"
+    assert lease["provider"] == "vast"
+    assert lease["pod_id"] == "48527937"
+    assert lease["watchdog_pid"] == successor.process.pid
+    assert lease["watchdog_deadline_epoch"] == successor.deadline_epoch
     assert events == [
         "provider_inspected",
         "provider_inspected",
@@ -456,6 +466,38 @@ def test_watchdog_refuses_retained_claim_after_process_already_died(
     assert result["status"] == "watchdog_process_not_live"
     assert result["watchdog_retention_liveness_confirmed"] is False
     assert result["blockers"] == ["independent_vast_watchdog_process_not_live"]
+    assert not (handle.out_dir / control.WARM_SERVE_MARKER_NAME).exists()
+
+
+def test_live_retained_watchdog_publishes_fleet_reaper_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-24T00:00:00+00:00",
+        pod_name_prefix="blueprint-adp-arena-controls-",
+    )
+    assert handle is not None
+
+    result = control.close_independent_vast_watchdog(
+        job_dir=tmp_path,
+        handle=handle,
+        instance_ids=[48527937],
+        provider_teardown_completed=False,
+    )
+
+    assert result["status"] == "retained_until_hard_ttl"
+    lease = json.loads(
+        (handle.out_dir / control.WARM_SERVE_MARKER_NAME).read_text(encoding="utf-8")
+    )
+    assert lease["pod_id"] == "48527937"
+    assert lease["status"] == "serving"
+    assert lease["lease_expires_at"] > lease["heartbeat_at"]
+    assert result["warm_serve_lease_path"] == str(
+        handle.out_dir / control.WARM_SERVE_MARKER_NAME
+    )
 
 
 def test_systemd_watchdog_refuses_retention_without_kill_mode_contract(
