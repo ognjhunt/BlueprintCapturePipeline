@@ -65,6 +65,40 @@ class _Adapter:
         self.kwargs = kwargs
 
 
+class _MutableState:
+    def __init__(self, values):
+        self.values = [list(row) for row in values]
+
+    def clone(self):
+        return _MutableState(self.values)
+
+    def zero_(self):
+        for row in self.values:
+            for index in range(len(row)):
+                row[index] = 0.0
+
+    def __getitem__(self, key):
+        row, column = key
+        return self.values[row][column]
+
+    def __setitem__(self, key, value):
+        row, column = key
+        self.values[row][column] = float(value)
+
+
+class _WritableArticulation:
+    def __init__(self, joint_names):
+        self.joint_names = list(joint_names)
+        self.data = SimpleNamespace(
+            joint_pos=_MutableState([[0.0] * len(joint_names)]),
+            joint_vel=_MutableState([[1.0] * len(joint_names)]),
+        )
+        self.writes = []
+
+    def write_joint_state_to_sim(self, position, velocity):
+        self.writes.append((position.values, velocity.values))
+
+
 def _built(task_kind: str):
     scene = {
         "robot": object(),
@@ -207,6 +241,47 @@ def test_articulated_factory_requires_native_task_readback() -> None:
             task_readback=None,
             to_tensor=lambda value: value,
         )
+
+
+def test_factory_checkpoint_writer_sets_arm_and_native_task_joint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    built = _built("articulated_open_close")
+    robot = _WritableArticulation(
+        [*[f"panda_joint{index}" for index in range(1, 8)], "finger_joint"]
+    )
+    task = _WritableArticulation(["door_hinge", "locked_hinge"])
+    built.env.unwrapped.scene["robot"] = robot
+    built.env.unwrapped.scene["bound_task_asset"] = task
+    built.plan["task_sample_binding"] = {
+        "native_joint_names": {
+            "door": "door_hinge",
+            "locked": "locked_hinge",
+        }
+    }
+    adapter, _receipt = build_native_task_episode_environment(
+        built=built,
+        gripper_convention={
+            "closed_command": 1.0,
+            "open_command": 0.0,
+            "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+        },
+        servo=_Servo(),
+        task_readback=_Readback(),
+        to_tensor=lambda value: value,
+    )
+
+    adapter.kwargs["diagnostic_checkpoint_reset_callback"](
+        [0.1] * 7, {"door": 0.4}
+    )
+
+    assert robot.writes[-1][0][0][:7] == [0.1] * 7
+    assert robot.writes[-1][1][0] == [0.0] * 8
+    assert task.writes[-1][0][0] == [0.4, 0.0]
+    assert task.writes[-1][1][0] == [0.0, 0.0]
 
 
 def test_factory_replays_construction_global_ik_joint_target(
