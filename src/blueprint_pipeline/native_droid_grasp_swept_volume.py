@@ -208,7 +208,17 @@ def materialize_native_droid_grasp_swept_volume(
     pinch = np.asarray(
         _unit(candidate.get("pinch_axis_registered_stage"), "droid_grasp_axes_invalid")
     )
-    if abs(float(np.dot(approach, pinch))) > 1.0e-6:
+    lateral_outward = np.asarray(
+        _unit(
+            candidate.get("grasp_lateral_outward_unit_registered_stage"),
+            "droid_grasp_axes_invalid",
+        )
+    )
+    if (
+        abs(float(np.dot(approach, pinch))) > 1.0e-6
+        or abs(float(np.dot(approach, lateral_outward))) > 1.0e-6
+        or abs(float(np.dot(pinch, lateral_outward))) > 1.0e-6
+    ):
         raise NativeDroidGraspSweptVolumeError("droid_grasp_axes_invalid")
     grasp_x = np.cross(pinch, approach)
     target_grasp_rotation = np.column_stack([grasp_x, pinch, approach])
@@ -314,6 +324,49 @@ def materialize_native_droid_grasp_swept_volume(
     )[:, :3]
     patch_approach = patch_corners @ approach
     patch_pinch = patch_corners @ pinch
+    # ``contact`` is a point on the source-derived rim collider, while the
+    # control TCP is the midpoint between the two fingertip pads.  Placing
+    # that midpoint on the surface embeds half of each pad in the rim.  PhysX
+    # then resolves the overlap by pushing the hand outward: C75 measured an
+    # 11.65 mm repeatable lateral residual, and the exact shipped pad geometry
+    # below independently measures an 11.00 mm support distance.
+    #
+    # Determine which end of the patch the authored contact occupies, then
+    # move the TCP beyond that free edge by the conservative pad AABB support.
+    # The sign is derived from the patch itself rather than assuming a
+    # left- or right-hand rim.
+    grasp_lateral = target_grasp_rotation[:, 0]
+    patch_lateral = patch_corners @ grasp_lateral
+    contact_lateral = float(contact @ grasp_lateral)
+    distance_to_minimum = abs(contact_lateral - float(patch_lateral.min()))
+    distance_to_maximum = abs(contact_lateral - float(patch_lateral.max()))
+    if min(distance_to_minimum, distance_to_maximum) > 0.001:
+        raise NativeDroidGraspSweptVolumeError(
+            "droid_grasp_contact_not_on_lateral_patch_boundary"
+        )
+    lateral_sign = -1.0 if distance_to_minimum <= distance_to_maximum else 1.0
+    patch_derived_lateral_outward = grasp_lateral * lateral_sign
+    if float(np.dot(patch_derived_lateral_outward, lateral_outward)) < 1.0 - 1.0e-6:
+        raise NativeDroidGraspSweptVolumeError(
+            "droid_grasp_lateral_axis_binding_mismatch"
+        )
+    selected_grasp_target = contact + outward * selected
+    pad_lateral_support: dict[str, float] = {}
+    for side, path in PAD_PATHS.items():
+        lower, upper = selected_row["transformed"][path]
+        pad_corners = _box_corners(lower, upper, np)[:, :3]
+        projections = (pad_corners - selected_grasp_target) @ lateral_outward
+        support = max(0.0, -float(projections.min()))
+        if not math.isfinite(support) or support <= 0.0:
+            raise NativeDroidGraspSweptVolumeError(
+                "droid_grasp_lateral_pad_support_invalid"
+            )
+        pad_lateral_support[side] = support
+    selected_lateral_tcp_offset = max(pad_lateral_support.values())
+    if selected_lateral_tcp_offset > maximum + 1.0e-9:
+        raise NativeDroidGraspSweptVolumeError(
+            "droid_grasp_lateral_pad_support_exceeds_bound"
+        )
     pad_reach = {}
     for side, path in PAD_PATHS.items():
         lower, upper = selected_row["transformed"][path]
@@ -367,6 +420,17 @@ def materialize_native_droid_grasp_swept_volume(
             if key != "transformed"
         },
         "pad_patch_approach_overlap_m": pad_reach,
+        "lateral_outward_unit_world": [
+            float(value) for value in lateral_outward
+        ],
+        "lateral_outward_grasp_frame_unit": [lateral_sign, 0.0, 0.0],
+        "pad_lateral_surface_support_m": pad_lateral_support,
+        "selected_lateral_tcp_surface_offset_m": (
+            selected_lateral_tcp_offset
+        ),
+        "lateral_contact_method": (
+            "source_patch_boundary_plus_conservative_pad_aabb_support"
+        ),
         "collision_method": "conservative_transformed_world_aabb",
         "native_contact_or_closure_executed": False,
         "provider_mutation_performed": False,

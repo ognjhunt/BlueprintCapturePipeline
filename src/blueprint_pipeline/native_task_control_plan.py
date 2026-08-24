@@ -714,6 +714,8 @@ def materialize_native_graph_articulated_control_plan(
             bite_direction_source_phase_id = None
             contact_standoff = 0.0
             contact_standoff_source = None
+            lateral_tcp_surface_offset = 0.0
+            lateral_tcp_surface_offset_source = None
             clearance_phase_id = measured_construction_phase_id(phase_id)
             if phase_id in {"contact_open", "contact_close", "release"} or phase_id.startswith(
                 "joint_path_"
@@ -761,6 +763,16 @@ def materialize_native_graph_articulated_control_plan(
                     contact_standoff_source = (
                         "native_droid_grasp_swept_volume"
                     )
+                    lateral_tcp_surface_offset = float(
+                        affordance.get(
+                            "contact_lateral_tcp_surface_offset_m", 0.0
+                        )
+                    )
+                    if lateral_tcp_surface_offset > 0.0:
+                        lateral_tcp_surface_offset_source = (
+                            "native_droid_grasp_swept_volume."
+                            "selected_lateral_tcp_surface_offset_m"
+                        )
                 else:
                     bite_depth = ROBOTOIQ_2F85_BITE_DEPTH_M
                     position = [
@@ -824,6 +836,12 @@ def materialize_native_graph_articulated_control_plan(
                     "target_position_source_phase_id": phase_id,
                     "contact_standoff_m": contact_standoff,
                     "contact_standoff_source": contact_standoff_source,
+                    "contact_lateral_tcp_surface_offset_m": (
+                        lateral_tcp_surface_offset
+                    ),
+                    "contact_lateral_tcp_surface_offset_source": (
+                        lateral_tcp_surface_offset_source
+                    ),
                     "contact_bite_depth_m": bite_depth,
                     "contact_bite_source": (
                         ROBOTOIQ_2F85_BITE_SOURCE if bite_depth else None
@@ -946,6 +964,25 @@ def materialize_native_graph_articulated_control_plan(
             "native_droid_grasp_swept_volume"
             if float(affordance.get("contact_outward_standoff_m", 0.0)) > 0.0
             else "nvlabs_graspdatagen_robotiq_2f85_bite_depth"
+        ),
+        "positive_trajectory_executes_surface_to_tcp_offset_targets": (
+            float(
+                affordance.get(
+                    "contact_lateral_tcp_surface_offset_m", 0.0
+                )
+            )
+            > 0.0
+        ),
+        "contact_lateral_tcp_surface_offset_source": (
+            "native_droid_grasp_swept_volume."
+            "selected_lateral_tcp_surface_offset_m"
+            if float(
+                affordance.get(
+                    "contact_lateral_tcp_surface_offset_m", 0.0
+                )
+            )
+            > 0.0
+            else None
         ),
         "positive_trajectory_budgets_derived_from_measured_construction": True,
         "candidate_policy_queried": False,

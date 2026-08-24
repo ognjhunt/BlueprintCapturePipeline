@@ -112,9 +112,10 @@ def _receipts(tmp_path: Path, task: Path) -> tuple[Path, Path]:
                 "/Asset/links/door/grasp_collision_patches/right_outer_rim"
             ),
             "contact_point_to_grasp_collider_surface_m": 0.0,
-            "contact_point_registered_stage_m": [0.0, -0.001, 0.0],
+            "contact_point_registered_stage_m": [0.005, -0.001, 0.0],
             "gripper_approach_axis_registered_stage": [0.0, 1.0, 0.0],
             "pinch_axis_registered_stage": [0.0, 0.0, 1.0],
+            "grasp_lateral_outward_unit_registered_stage": [1.0, 0.0, 0.0],
         },
         "receipt_digest": "",
     }
@@ -155,6 +156,16 @@ def test_exact_robot_bytes_derive_a_margin_beyond_first_clear_pose(
     assert receipt["last_blocked_sample"]["forbidden_collision_count"] > 0
     assert all(
         value > 0.0 for value in receipt["pad_patch_approach_overlap_m"].values()
+    )
+    assert receipt["lateral_outward_grasp_frame_unit"] == [-1.0, 0.0, 0.0]
+    assert receipt["lateral_outward_unit_world"] == pytest.approx(
+        [1.0, 0.0, 0.0]
+    )
+    assert receipt["selected_lateral_tcp_surface_offset_m"] == pytest.approx(
+        0.02
+    )
+    assert receipt["pad_lateral_surface_support_m"] == pytest.approx(
+        {"left": 0.02, "right": 0.02}
     )
 
 

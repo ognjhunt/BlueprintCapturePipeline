@@ -124,6 +124,14 @@ def materialize_paired_target_articulated_kinematic_path(
     target_value = (float(target_interval[0]) + float(target_interval[1])) / 2.0
     contact_link_id = str(candidate.get("link_id") or "")
     contact_local = [float(item) for item in candidate.get("contact_point_link_m") or []]
+    lateral_outward_local = (
+        _unit(
+            candidate.get("grasp_lateral_outward_unit_link") or [],
+            "paired_target_kinematic_path_lateral_outward_invalid",
+        )
+        if candidate.get("grasp_lateral_outward_unit_link") is not None
+        else None
+    )
     approach_world = _unit(
         candidate.get("approach_unit_registered_stage") or [],
         "paired_target_kinematic_path_approach_invalid",
@@ -303,6 +311,14 @@ def materialize_paired_target_articulated_kinematic_path(
         point = transform @ np.asarray([*contact_local, 1.0], dtype=np.float64)
         clearance = transform[:3, :3] @ clearance_link_local
         clearance /= np.linalg.norm(clearance)
+        lateral_outward = (
+            transform[:3, :3]
+            @ np.asarray(lateral_outward_local, dtype=np.float64)
+            if lateral_outward_local is not None
+            else None
+        )
+        if lateral_outward is not None:
+            lateral_outward /= np.linalg.norm(lateral_outward)
         gf_transform = Gf.Matrix4d(*transform.T.reshape(-1).tolist())
         rotation = gf_transform.ExtractRotationQuat()
         rows.append(
@@ -321,6 +337,15 @@ def materialize_paired_target_articulated_kinematic_path(
                 "clearance_unit_asset_root": [
                     float(item) for item in clearance
                 ],
+                **(
+                    {
+                        "lateral_outward_unit_asset_root": [
+                            float(item) for item in lateral_outward
+                        ]
+                    }
+                    if lateral_outward is not None
+                    else {}
+                ),
             }
         )
     payload: dict[str, Any] = {
