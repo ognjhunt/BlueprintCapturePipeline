@@ -231,7 +231,10 @@ def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
         raise ProviderBillingReconciliationError("provider_billing_request_failed")
 
     secrets = _secrets(tmp_path)
-    with pytest.raises(ProviderBillingReconciliationError, match="provider_billing_request_failed"):
+    with pytest.raises(
+        ProviderBillingReconciliationError,
+        match="provider_billing_no_provider_covered",
+    ):
         reconcile_provider_billing(
             secrets_dir=secrets,
             billing_export_path=export,
@@ -314,6 +317,69 @@ def test_required_aws_billing_failure_preserves_prior_export(tmp_path: Path) -> 
     assert export.read_text(encoding="utf-8") == "sentinel\n"
 
 
+def test_optional_digitalocean_failure_does_not_block_vast_export(
+    tmp_path: Path,
+) -> None:
+    class DigitalOceanUnavailableTransport(_Transport):
+        def __call__(self, request, timeout: float) -> bytes:
+            if urlsplit(request.full_url).netloc == "api.digitalocean.com":
+                raise ProviderBillingReconciliationError(
+                    "provider_billing_request_failed"
+                )
+            return super().__call__(request, timeout)
+
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "provider_billing_export.json"
+    result = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=export,
+        audit_root=tmp_path / "audit",
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW,
+        transport=DigitalOceanUnavailableTransport(),
+        required_providers=("vast",),
+        **_aws_kwargs(secrets),
+    )
+
+    assert result["status"] == "reconciled"
+    assert result["covered_provider_ids"] == ["aws", "runpod", "vast"]
+    assert result["uncovered_provider_ids"] == ["digitalocean"]
+    assert result["optional_provider_failures"] == {
+        "digitalocean": "provider_billing_request_failed"
+    }
+    assert "vast" in json.loads(export.read_text())["provider_totals_usd"]
+
+
+def test_required_digitalocean_failure_preserves_prior_export(tmp_path: Path) -> None:
+    class DigitalOceanUnavailableTransport(_Transport):
+        def __call__(self, request, timeout: float) -> bytes:
+            if urlsplit(request.full_url).netloc == "api.digitalocean.com":
+                raise ProviderBillingReconciliationError(
+                    "provider_billing_request_failed"
+                )
+            return super().__call__(request, timeout)
+
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "provider_billing_export.json"
+    export.write_text("sentinel\n", encoding="utf-8")
+    with pytest.raises(
+        ProviderBillingReconciliationError,
+        match="provider_billing_request_failed",
+    ):
+        reconcile_provider_billing(
+            secrets_dir=secrets,
+            billing_export_path=export,
+            audit_root=tmp_path / "audit",
+            start_at="2026-01-01T00:00:00Z",
+            now=NOW,
+            transport=DigitalOceanUnavailableTransport(),
+            required_providers=("digitalocean",),
+            **_aws_kwargs(secrets),
+        )
+
+    assert export.read_text(encoding="utf-8") == "sentinel\n"
+
+
 def test_accepts_digitalocean_daily_balance_after_24_hour_boundary(
     tmp_path: Path,
 ) -> None:
@@ -344,6 +410,7 @@ def test_rejects_digitalocean_balance_older_than_two_daily_intervals(
             start_at="2026-01-01T00:00:00Z",
             now=datetime(2026, 8, 16, 3, 31, tzinfo=timezone.utc),
             transport=_Transport(digitalocean_generated_at="2026-08-14T03:16:38Z"),
+            required_providers=("digitalocean",),
             **_aws_kwargs(secrets),
         )
 

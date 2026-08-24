@@ -35,7 +35,6 @@ BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
 BILLING_SCOPE = "blueprint_beta_100_user_cohort"
 PROVIDERS = ("runpod", "vast", "digitalocean", "aws")
-BASE_REQUIRED_PROVIDERS = frozenset({"runpod", "vast", "digitalocean"})
 RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
 VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
@@ -517,44 +516,64 @@ def reconcile_provider_billing(
     if start >= current:
         raise ProviderBillingReconciliationError("cohort_start_at_not_before_end")
     secret_root = Path(secrets_dir).expanduser().resolve()
-    keys = {
-        "runpod": _read_secret(secret_root / "runpod_api_key"),
-        "vast": _read_secret(secret_root / "vast_api_key"),
-        "digitalocean": _read_secret(secret_root / "digitalocean_api_token"),
-    }
     requested_required = {str(provider).strip() for provider in required_providers}
     if not requested_required.issubset(PROVIDERS):
         raise ProviderBillingReconciliationError("required_provider_invalid")
-    required_provider_ids = BASE_REQUIRED_PROVIDERS | requested_required
+    required_provider_ids = requested_required
     audit_rows: list[dict[str, Any]] = []
-    totals = {
-        "runpod": _runpod_total(
-            token=keys["runpod"],
-            start_at=start,
-            end_at=current,
-            timeout=timeout,
-            transport=transport,
-            audit_rows=audit_rows,
-        ),
-        "vast": _vast_total(
-            token=keys["vast"],
-            start_at=start,
-            end_at=current,
-            timeout=timeout,
-            transport=transport,
-            audit_rows=audit_rows,
-        ),
-        "digitalocean": _digitalocean_total(
-            token=keys["digitalocean"],
-            start_at=start,
-            end_at=current,
-            timeout=timeout,
-            transport=transport,
-            audit_rows=audit_rows,
-        ),
-    }
+    totals: dict[str, float] = {}
     optional_provider_failures: dict[str, str] = {}
-    try:
+    security_blockers = (
+        "secret_symlink_forbidden:",
+        "secret_file_invalid:",
+        "secret_file_writable_by_group_or_world:",
+        "aws_billing_account_identity_mismatch",
+    )
+
+    def record_provider(provider: str, collect: Callable[[], float]) -> None:
+        try:
+            totals[provider] = collect()
+        except ProviderBillingReconciliationError as exc:
+            error = str(exc)
+            if provider in required_provider_ids or error.startswith(security_blockers):
+                raise
+            optional_provider_failures[provider] = error
+
+    record_provider(
+        "runpod",
+        lambda: _runpod_total(
+            token=_read_secret(secret_root / "runpod_api_key"),
+            start_at=start,
+            end_at=current,
+            timeout=timeout,
+            transport=transport,
+            audit_rows=audit_rows,
+        ),
+    )
+    record_provider(
+        "vast",
+        lambda: _vast_total(
+            token=_read_secret(secret_root / "vast_api_key"),
+            start_at=start,
+            end_at=current,
+            timeout=timeout,
+            transport=transport,
+            audit_rows=audit_rows,
+        ),
+    )
+    record_provider(
+        "digitalocean",
+        lambda: _digitalocean_total(
+            token=_read_secret(secret_root / "digitalocean_api_token"),
+            start_at=start,
+            end_at=current,
+            timeout=timeout,
+            transport=transport,
+            audit_rows=audit_rows,
+        ),
+    )
+
+    def collect_aws() -> float:
         credentials_path = _validate_secret_file(
             Path(
                 aws_credentials_file or secret_root / "aws_agent_credentials"
@@ -568,7 +587,7 @@ def reconcile_provider_billing(
             credentials_file=credentials_path,
             profile=profile,
         )
-        totals["aws"] = _aws_total(
+        return _aws_total(
             account_id=account_id,
             credentials=credentials,
             start_at=start,
@@ -577,17 +596,10 @@ def reconcile_provider_billing(
             transport=transport,
             audit_rows=audit_rows,
         )
-    except ProviderBillingReconciliationError as exc:
-        error = str(exc)
-        security_blockers = (
-            "secret_symlink_forbidden:",
-            "secret_file_invalid:",
-            "secret_file_writable_by_group_or_world:",
-            "aws_billing_account_identity_mismatch",
-        )
-        if "aws" in required_provider_ids or error.startswith(security_blockers):
-            raise
-        optional_provider_failures["aws"] = error
+
+    record_provider("aws", collect_aws)
+    if not totals:
+        raise ProviderBillingReconciliationError("provider_billing_no_provider_covered")
     totals = {provider: round(value, 6) for provider, value in totals.items()}
     covered_provider_ids = sorted(totals)
     uncovered_provider_ids = sorted(set(PROVIDERS) - set(totals))

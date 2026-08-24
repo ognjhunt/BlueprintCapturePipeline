@@ -198,6 +198,48 @@ def test_new_uncovered_provider_does_not_block_covered_provider() -> None:
     )
 
 
+def test_uncovered_existing_provider_does_not_block_vast_launch() -> None:
+    billing = _billing(42.0)
+    billing["provider_totals_usd"] = {
+        "runpod": 42.0,
+        "vast": 0.0,
+    }
+    evidence = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0),
+        billing_reconciliation=billing,
+        instances=[],
+        reap_results=[],
+        inventory_results=_inventory(),
+        override_path=None,
+        now=NOW,
+    )
+
+    assert evidence["status"] == "open"
+    assert evidence["admission_allowed"] is True
+    assert evidence["provider_admission"]["vast"] == {  # type: ignore[index]
+        "admission_allowed": True,
+        "blockers": [],
+    }
+    assert evidence["provider_admission"]["digitalocean"] == {  # type: ignore[index]
+        "admission_allowed": False,
+        "blockers": [
+            "billing_reconciliation_provider_uncovered:digitalocean"
+        ],
+    }
+    assert validate_spend_admission_lock(
+        evidence,
+        now=NOW,
+        required_provider="vast",
+    ) == []
+    assert (
+        "spend_admission_lock_required_provider_billing_missing:digitalocean"
+        in validate_spend_admission_lock(
+            evidence,
+            now=NOW,
+            required_provider="digitalocean",
+        )
+    )
+
 def test_paid_chokepoint_binds_billing_coverage_to_launch_provider() -> None:
     now = datetime.now(timezone.utc)
     evidence = build_spend_admission_lock(
