@@ -385,6 +385,15 @@ def _articulated_task_spec(
             if grasp_swept_volume is None
             else float(grasp_swept_volume["selected_outward_standoff_m"])
         ),
+        "contact_lateral_tcp_surface_offset_m": (
+            0.0
+            if grasp_swept_volume is None
+            else float(
+                grasp_swept_volume[
+                    "selected_lateral_tcp_surface_offset_m"
+                ]
+            )
+        ),
         "grasp_swept_volume_receipt_digest": (
             None
             if grasp_swept_volume is None
@@ -668,6 +677,24 @@ def materialize_paired_target_native_arena_requests(
                 digest_field="receipt_digest",
                 code="paired_target_arena_request_grasp_swept_volume_invalid",
             )
+            try:
+                lateral_tcp_offset = float(
+                    grasp_swept.get(
+                        "selected_lateral_tcp_surface_offset_m"
+                    )
+                    or 0.0
+                )
+                lateral_outward_world = [
+                    float(value)
+                    for value in grasp_swept.get(
+                        "lateral_outward_unit_world"
+                    )
+                    or []
+                ]
+            except (TypeError, ValueError) as exc:
+                raise PairedTargetNativeArenaRequestError(
+                    "paired_target_arena_request_grasp_swept_volume_invalid"
+                ) from exc
             if (
                 grasp_swept.get("status")
                 != "conservative_open_gripper_standoff_qualified"
@@ -681,6 +708,19 @@ def materialize_paired_target_native_arena_requests(
                 != affordance.get("receipt_digest")
                 or float(grasp_swept.get("selected_outward_standoff_m") or 0.0)
                 <= 0.0
+                or not math.isfinite(lateral_tcp_offset)
+                or lateral_tcp_offset <= 0.0
+                or len(lateral_outward_world) != 3
+                or not all(
+                    math.isfinite(value) for value in lateral_outward_world
+                )
+                or abs(
+                    math.sqrt(
+                        sum(value * value for value in lateral_outward_world)
+                    )
+                    - 1.0
+                )
+                > 1.0e-6
             ):
                 raise PairedTargetNativeArenaRequestError(
                     "paired_target_arena_request_grasp_swept_volume_invalid"

@@ -429,6 +429,8 @@ def materialize_paired_target_interaction_affordance_candidate(
         )
     grasp_patch = grasp_patches[0] if grasp_patches else None
     grasp_collision_patch_path = None
+    lateral_outward_local = None
+    lateral_outward_world = None
     candidate_geometry_modified = False
     if grasp_patch is not None:
         if task_kind != "articulated_interaction":
@@ -493,6 +495,41 @@ def materialize_paired_target_interaction_affordance_candidate(
         contact_world = [
             float(item) for item in link_world.Transform(Gf.Vec3d(*contact_local))
         ]
+        gripper_approach_local = [-value for value in outward_local]
+        grasp_lateral_local = _normalize(
+            _cross(pinch_axis_local, gripper_approach_local),
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
+        patch_points = UsdGeom.Mesh(grasp_patch).GetPointsAttr().Get()
+        if not patch_points:
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_collision_patch_invalid"
+            )
+        lateral_projections = [
+            _dot(point, grasp_lateral_local) for point in patch_points
+        ]
+        contact_projection = _dot(contact_local, grasp_lateral_local)
+        distance_to_minimum = abs(contact_projection - min(lateral_projections))
+        distance_to_maximum = abs(contact_projection - max(lateral_projections))
+        if min(distance_to_minimum, distance_to_maximum) > 0.001:
+            raise PairedTargetInteractionAffordanceError(
+                "paired_target_affordance_grasp_contact_not_on_lateral_boundary"
+            )
+        lateral_sign = (
+            -1.0 if distance_to_minimum <= distance_to_maximum else 1.0
+        )
+        lateral_outward_local = [
+            lateral_sign * value for value in grasp_lateral_local
+        ]
+        lateral_outward_world = _normalize(
+            [
+                float(item)
+                for item in link_world.TransformDir(
+                    Gf.Vec3d(*lateral_outward_local)
+                )
+            ],
+            code="paired_target_affordance_grasp_collision_patch_invalid",
+        )
         method = "source_derived_grasp_collision_patch"
         gripper_approach_source = "grasp_patch_front_normal_inward"
         standoff_axis_source = "grasp_patch_front_normal_outward"
@@ -666,6 +703,17 @@ def materialize_paired_target_interaction_affordance_candidate(
             # the free edge before closing across the panel thickness.
             "gripper_approach_axis_registered_stage": gripper_approach,
             "pinch_axis_registered_stage": pinch_axis,
+            **(
+                {
+                    "grasp_lateral_outward_unit_link": lateral_outward_local,
+                    "grasp_lateral_outward_unit_registered_stage": (
+                        lateral_outward_world
+                    ),
+                }
+                if lateral_outward_local is not None
+                and lateral_outward_world is not None
+                else {}
+            ),
             "pinch_span_m": pinch_span,
             "parallel_jaw_stroke_m": stroke,
             "pinch_span_within_stroke": pinch_span <= stroke,

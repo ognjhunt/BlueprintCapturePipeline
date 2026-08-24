@@ -388,12 +388,18 @@ def test_measured_outward_standoff_replaces_generic_inward_bite() -> None:
     scene = _scene_with_command_limits(0.10, 1.00)
     affordance = scene["task_spec"]["interaction_affordance"]
     affordance["contact_outward_standoff_m"] = 0.01
+    affordance["contact_lateral_tcp_surface_offset_m"] = 0.011
+    for row in affordance["joint_contact_path"]:
+        row["lateral_outward_unit_asset_root"] = [1.0, 0.0, 0.0]
     affordance["grasp_swept_volume_receipt_digest"] = "sha256:" + "f" * 64
     _redigest_affordance(scene)
 
     phase_plan = materialize_native_task_construction_phase_plan(scene)
     exact = {row["phase_id"]: row for row in phase_plan["exact_contact_phases"]}
     assert exact["contact_open"]["position_world_m"][1] == pytest.approx(1.99)
+    assert exact["contact_open"]["position_world_m"][0] == pytest.approx(
+        1.511
+    )
     clearance = {
         row["phase_id"]: row for row in phase_plan["phases"]
     }
@@ -410,6 +416,15 @@ def test_measured_outward_standoff_replaces_generic_inward_bite() -> None:
         exact["contact_open"]["position_world_m"]
     )
     assert actions["contact_open"]["contact_standoff_m"] == pytest.approx(0.01)
+    assert actions["contact_open"][
+        "contact_lateral_tcp_surface_offset_m"
+    ] == pytest.approx(0.011)
+    assert actions["contact_open"][
+        "contact_lateral_tcp_surface_offset_source"
+    ] == (
+        "native_droid_grasp_swept_volume."
+        "selected_lateral_tcp_surface_offset_m"
+    )
     assert actions["contact_open"]["contact_bite_depth_m"] == pytest.approx(0.0)
     assert actions["contact_open"]["arrival_tolerance_m"] == pytest.approx(
         ROBOTOIQ_2F85_EXACT_CONTACT_ARRIVAL_TOLERANCE_M
@@ -424,6 +439,23 @@ def test_measured_outward_standoff_replaces_generic_inward_bite() -> None:
     assert control["contact_standoff_source"] == (
         "native_droid_grasp_swept_volume"
     )
+    assert control[
+        "positive_trajectory_executes_surface_to_tcp_offset_targets"
+    ] is True
+
+
+def test_swept_volume_standoff_without_surface_to_tcp_offset_is_refused() -> None:
+    scene = _scene_with_command_limits(0.10, 1.00)
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["contact_outward_standoff_m"] = 0.01
+    affordance["grasp_swept_volume_receipt_digest"] = "sha256:" + "f" * 64
+    _redigest_affordance(scene)
+
+    with pytest.raises(
+        NativeTaskConstructionPlanError,
+        match="native_articulated_graph_construction_contact_standoff_invalid",
+    ):
+        materialize_native_task_construction_phase_plan(scene)
 
 
 def test_construction_plan_rejects_a_lead_below_the_slew() -> None:

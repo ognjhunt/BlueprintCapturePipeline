@@ -305,6 +305,12 @@ def test_tagged_source_patch_authors_front_approach_and_vertical_pinch(
     assert candidate["pinch_axis_registered_stage"] == pytest.approx(
         [0.0, 0.0, 1.0]
     )
+    assert candidate["grasp_lateral_outward_unit_link"] == pytest.approx(
+        [1.0, 0.0, 0.0]
+    )
+    assert candidate[
+        "grasp_lateral_outward_unit_registered_stage"
+    ] == pytest.approx([1.0, 0.0, 0.0])
     assert candidate["pinch_span_m"] == pytest.approx(0.05)
     assert candidate["grasp_collision_patch_prim_path"].endswith(
         "/right_outer_rim"

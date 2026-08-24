@@ -66,6 +66,39 @@ def test_derives_reset_to_target_path_from_usd_joint_frames(tmp_path: Path) -> N
     assert result["native_ik_or_contact_executed"] is False
 
 
+def test_lateral_surface_normal_stays_attached_to_moving_contact_link(
+    tmp_path: Path,
+) -> None:
+    freeze, affordance = _inputs(tmp_path)
+    value = json.loads(affordance.read_text())
+    value["candidate"]["grasp_lateral_outward_unit_link"] = [1.0, 0.0, 0.0]
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    value["receipt_digest"] = canonical_digest(
+        value, digest_field="receipt_digest"
+    )
+    affordance.write_text(json.dumps(value))
+
+    result = materialize_paired_target_articulated_kinematic_path(
+        task_freeze_path=freeze,
+        interaction_affordance_path=affordance,
+        output_path=tmp_path / "lateral-path.json",
+        waypoint_count=5,
+    )
+
+    rows = result["joint_contact_path"]
+    assert all(
+        math.sqrt(
+            sum(value * value for value in row["lateral_outward_unit_asset_root"])
+        )
+        == pytest.approx(1.0, abs=1e-9)
+        for row in rows
+    )
+    assert rows[0]["lateral_outward_unit_asset_root"] != pytest.approx(
+        rows[-1]["lateral_outward_unit_asset_root"], abs=1e-6
+    )
+
+
 def test_reset_fk_mismatch_fails_closed(tmp_path: Path) -> None:
     freeze, affordance = _inputs(tmp_path)
     value = json.loads(affordance.read_text())

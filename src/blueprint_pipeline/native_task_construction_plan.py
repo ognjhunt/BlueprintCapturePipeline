@@ -523,6 +523,9 @@ def _graph_articulated_affordance(
     )
     try:
         contact_standoff = float(value.get("contact_outward_standoff_m", 0.0))
+        lateral_tcp_offset = float(
+            value.get("contact_lateral_tcp_surface_offset_m", 0.0)
+        )
     except (TypeError, ValueError) as exc:
         raise NativeTaskConstructionPlanError(
             ["native_articulated_graph_construction_contact_standoff_invalid"]
@@ -540,12 +543,17 @@ def _graph_articulated_affordance(
             )
         )
         or (contact_standoff == 0.0 and standoff_digest not in (None, ""))
+        or not math.isfinite(lateral_tcp_offset)
+        or lateral_tcp_offset < 0.0
+        or (contact_standoff > 0.0 and lateral_tcp_offset <= 0.0)
     ):
         raise NativeTaskConstructionPlanError(
             ["native_articulated_graph_construction_contact_standoff_invalid"]
         )
     if "contact_outward_standoff_m" in value:
         value["contact_outward_standoff_m"] = contact_standoff
+    if lateral_tcp_offset > 0.0:
+        value["contact_lateral_tcp_surface_offset_m"] = lateral_tcp_offset
     for field in (
         "precontact_clearance_m",
         "sweep_clearance_m",
@@ -691,6 +699,22 @@ def _graph_articulated_affordance(
                         "native_articulated_graph_construction_clearance_direction_invalid:"
                         f"{waypoint_id or index}"
                     ),
+                ),
+                **(
+                    {
+                        "lateral_outward_unit_asset_root": _unit(
+                            raw_waypoint.get(
+                                "lateral_outward_unit_asset_root"
+                            ),
+                            error=(
+                                "native_articulated_graph_construction_"
+                                "contact_lateral_tcp_offset_invalid:"
+                                f"{waypoint_id or index}"
+                            ),
+                        )
+                    }
+                    if lateral_tcp_offset > 0.0
+                    else {}
                 ),
             }
         )
@@ -877,6 +901,9 @@ def materialize_graph_articulated_construction_phase_plan(
         root_orientation, affordance["retreat_unit_asset_root"]
     )
     contact_standoff = float(affordance.get("contact_outward_standoff_m", 0.0))
+    lateral_tcp_offset = float(
+        affordance.get("contact_lateral_tcp_surface_offset_m", 0.0)
+    )
     if contact_standoff > 0.0:
         for row in world_rows:
             surface_position = list(row["contact_position_world_m"])
@@ -884,6 +911,24 @@ def materialize_graph_articulated_construction_phase_plan(
             row["contact_position_world_m"] = [
                 surface_position[axis]
                 + row["clearance_unit_world"][axis] * contact_standoff
+                for axis in range(3)
+            ]
+    if lateral_tcp_offset > 0.0:
+        for row in world_rows:
+            approach_standoff_position = list(
+                row["contact_position_world_m"]
+            )
+            row["approach_standoff_contact_position_world_m"] = (
+                approach_standoff_position
+            )
+            lateral_world = _quaternion_rotate_xyzw(
+                root_orientation,
+                row["lateral_outward_unit_asset_root"],
+            )
+            row["lateral_outward_unit_world"] = lateral_world
+            row["contact_position_world_m"] = [
+                approach_standoff_position[axis]
+                + lateral_world[axis] * lateral_tcp_offset
                 for axis in range(3)
             ]
     first = world_rows[0]
