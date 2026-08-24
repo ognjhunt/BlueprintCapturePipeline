@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -432,6 +433,25 @@ def serve_identity_bound_policy(
     except ImportError as exc:  # pragma: no cover - exercised on GPU runtime
         raise RuntimeError("openpi_server_runtime_not_installed") from exc
     config = training_config.get_config(spec.config_name)
+    # PolaRiS' frozen config points its normalization-assets lookup back at the
+    # public GCS checkpoint.  That is correct for OpenPI's convenience
+    # downloader, but wrong after Blueprint has already fetched and verified
+    # every checkpoint object: the server would perform a second, unbound
+    # network lookup and can hang on ambient GCS credential discovery.  Bind
+    # only the assets directory to the verified local checkpoint.  Preserve
+    # the upstream data factory, asset id, transforms, and model config.
+    data_factory = getattr(config, "data", None)
+    assets = getattr(data_factory, "assets", None)
+    if data_factory is None or assets is None:
+        raise ValueError("openpi_config_assets_binding_unavailable")
+    try:
+        local_assets = dataclasses.replace(assets, assets_dir=str(checkpoint / "assets"))
+        config = dataclasses.replace(
+            config,
+            data=dataclasses.replace(data_factory, assets=local_assets),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("openpi_config_assets_binding_failed") from exc
     configured_rows = int(config.model.action_horizon)
     if configured_rows != spec.action_chunk_rows:
         raise ValueError("openpi_config_action_horizon_mismatch")

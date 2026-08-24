@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import base64
 import hashlib
+import sys
+import types
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -218,6 +221,99 @@ def test_policy_server_rejects_non_loopback_bind_before_checkpoint_io(
             host="0.0.0.0",
             port=8000,
         )
+
+
+def test_identity_bound_server_uses_verified_local_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A materialized checkpoint must not be re-resolved through public GCS."""
+
+    @dataclass(frozen=True)
+    class FakeAssets:
+        assets_dir: str
+        asset_id: str = "droid"
+
+    @dataclass(frozen=True)
+    class FakeData:
+        assets: FakeAssets
+
+    @dataclass(frozen=True)
+    class FakeModel:
+        action_horizon: int = 10
+
+    @dataclass(frozen=True)
+    class FakeConfig:
+        data: FakeData
+        model: FakeModel
+
+    checkpoint = tmp_path / "checkpoint"
+    (checkpoint / "assets" / "droid").mkdir(parents=True)
+    spec = load_policy_spec(
+        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
+    )
+    captured: dict[str, object] = {}
+    policy_config = types.ModuleType("openpi.policies.policy_config")
+
+    def create_trained_policy(config, checkpoint_path):
+        captured["assets_dir"] = config.data.assets.assets_dir
+        captured["checkpoint"] = checkpoint_path
+        return object()
+
+    policy_config.create_trained_policy = create_trained_policy
+    websocket = types.ModuleType("openpi.serving.websocket_policy_server")
+
+    class FakeServer:
+        def __init__(self, **kwargs):
+            captured["server"] = kwargs
+
+        def serve_forever(self):
+            captured["served"] = True
+
+    websocket.WebsocketPolicyServer = FakeServer
+    training = types.ModuleType("openpi.training.config")
+    training.get_config = lambda name: FakeConfig(
+        data=FakeData(
+            assets=FakeAssets(
+                "gs://openpi-assets/checkpoints/polaris/pi0_fast_droid_jointpos_polaris/assets"
+            )
+        ),
+        model=FakeModel(),
+    )
+    modules = {
+        "openpi": types.ModuleType("openpi"),
+        "openpi.policies": types.ModuleType("openpi.policies"),
+        "openpi.policies.policy_config": policy_config,
+        "openpi.serving": types.ModuleType("openpi.serving"),
+        "openpi.serving.websocket_policy_server": websocket,
+        "openpi.training": types.ModuleType("openpi.training"),
+        "openpi.training.config": training,
+    }
+    modules["openpi.policies"].policy_config = policy_config
+    modules["openpi.serving"].websocket_policy_server = websocket
+    modules["openpi.training"].config = training
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(
+        "blueprint_pipeline.openpi_droid_policy_runtime.verify_local_checkpoint",
+        lambda **kwargs: {
+            "local_checkpoint_verified": True,
+            "local_checkpoint_verification_sha256": "c" * 64,
+            "local_checkpoint_object_count": spec.checkpoint_object_count,
+            "local_checkpoint_size_bytes": spec.checkpoint_size_bytes,
+        },
+    )
+
+    serve_identity_bound_policy(
+        spec=spec,
+        checkpoint_dir=checkpoint,
+        checkpoint_inventory_path=tmp_path / "inventory.json",
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    assert captured["assets_dir"] == str((checkpoint / "assets").resolve())
+    assert captured["checkpoint"] == checkpoint.resolve()
+    assert captured["served"] is True
 
 
 def _arena_execution_spec(
