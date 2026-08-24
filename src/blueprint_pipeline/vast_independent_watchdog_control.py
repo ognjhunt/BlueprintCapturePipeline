@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ SUPERSESSION_NAME = "vast_independent_watchdog_supersession.json"
 HANDOFF_NAME = "vast_independent_watchdog_handoff.json"
 WATCHDOG_DIR_NAME = "independent_vast_watchdog"
 EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
+WARM_SERVE_MARKER_NAME = "warm_serve_pod.json"
 CALLER_EXIT_SURVIVAL_ENV = "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL"
 SYSTEMD_KILL_MODE_PROCESS_SURVIVAL = "systemd_dispatcher_kill_mode_process"
 
@@ -121,6 +123,34 @@ def _retained_watchdog_result(
         ),
         "raw_secret_values_recorded": False,
     }
+
+
+def _write_warm_serve_lease(
+    *, handle: VastWatchdogHandle, instance_id: int
+) -> Path:
+    """Publish the fleet-reaper lease owned by this exact live watchdog."""
+
+    marker = {
+        "schema_version": "vast_independent_watchdog_warm_lease.v1",
+        "status": "serving",
+        "provider": "vast",
+        # gpu_spend_guard uses the historical provider-neutral ``pod_id`` key.
+        "pod_id": str(int(instance_id)),
+        "instance_id": int(instance_id),
+        "heartbeat_at": utc_now_iso(),
+        "lease_expires_at": datetime.fromtimestamp(
+            handle.deadline_epoch, timezone.utc
+        ).isoformat(),
+        "watchdog_pid": handle.process.pid,
+        "watchdog_deadline_epoch": handle.deadline_epoch,
+        "watchdog_out_dir": str(handle.out_dir),
+        "watchdog_pod_name_prefix": handle.pod_name_prefix,
+        "continuing_spend": True,
+        "raw_secret_values_recorded": False,
+    }
+    path = handle.out_dir / WARM_SERVE_MARKER_NAME
+    write_json(path, marker)
+    return path
 
 
 def _terminal_evidence_matches_handle(
@@ -568,6 +598,11 @@ def supersede_independent_vast_watchdog(
         and successor.process.poll() is None
         and _exact_vast_instance_live(after, instance_id)
     )
+    warm_serve_lease_path = None
+    if transferred:
+        warm_serve_lease_path = str(
+            _write_warm_serve_lease(handle=successor, instance_id=instance_id)
+        )
     result = {
         "schema_version": SUPERSESSION_SCHEMA,
         "generated_at": generated_at,
@@ -585,6 +620,7 @@ def supersede_independent_vast_watchdog(
         "provider_instance_running_after_transfer": _exact_vast_instance_live(
             after, instance_id
         ),
+        "warm_serve_lease_path": warm_serve_lease_path,
         "provider_mutations_performed": 0,
         "blockers": [] if transferred else ["watchdog_supersession_transfer_unproven"],
         "raw_secret_values_recorded": False,
@@ -634,6 +670,13 @@ def close_independent_vast_watchdog(
             reason="provider_teardown_not_completed",
             instance_ids=instance_ids,
         )
+        if result.get("status") == "retained_until_hard_ttl" and instance_ids:
+            result["warm_serve_lease_path"] = str(
+                _write_warm_serve_lease(
+                    handle=handle,
+                    instance_id=int(instance_ids[-1]),
+                )
+            )
         write_json(job_dir / HANDOFF_NAME, result)
         return result
     instance_id = str(instance_ids[-1])

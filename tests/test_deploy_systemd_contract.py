@@ -548,6 +548,8 @@ def test_systemd_spend_guard_enforces_5000_admission_lock_and_page_path():
     installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
 
     assert "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD=5000.0" in service
+    assert "BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT=/var/lib/blueprint/pipeline-control-plane" in service
+    assert '--output-root "$${BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT}"' in service
     assert "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD=500.0" not in service
     assert "--require-billing-reconciliation" in service
     assert "--admission-lock-report" in service
