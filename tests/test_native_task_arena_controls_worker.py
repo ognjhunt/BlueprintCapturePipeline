@@ -486,6 +486,67 @@ def test_controls_refuses_parallel_jaw_variants_without_contact_solution() -> No
         )
 
 
+def test_controls_selects_safe_open_branch_when_close_requires_live_dls() -> None:
+    class _Servo:
+        def read_arm_joint_positions(self):
+            return [0.0] * 7
+
+        def solve_grasp_target_multistart(self, **kwargs):
+            position = kwargs["target_position_world_m"]
+            if position == [1.0, 2.1, 3.0]:
+                return {"solved": False, "selected": None, "attempts": []}
+            quaternion = kwargs["target_grasp_frame_quaternion_world_xyzw"]
+            equivalent = quaternion[1] > 0.5
+            margin = 0.2 if equivalent else 0.02
+            return {
+                "solved": True,
+                "selected": {
+                    "solved": True,
+                    "joint_positions_rad": [margin] * 7,
+                    "minimum_joint_limit_margin_rad": margin,
+                },
+                "attempts": [],
+            }
+
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_open",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
+            },
+            {
+                "phase_id": "contact_close",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.1, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
+            },
+        ],
+        "plan_digest": "sha256:" + "a" * 64,
+    }
+
+    selected_plan, targets, receipt = _select_parallel_jaw_control_plan(
+        servo=_Servo(),
+        control_plan=plan,
+        construction_bound_targets=[],
+        reference_seeds=[[0.5] * 7],
+    )
+
+    assert receipt["selected_variant_id"] == "parallel_jaw_equivalent"
+    assert receipt["variants"][1]["contact_open_solved_or_bound"] is True
+    assert receipt["variants"][1]["contact_close_solved_or_bound"] is False
+    assert receipt["variants"][1]["admissible"] is True
+    assert selected_plan["runtime_control_variant"].startswith("parallel_jaw")
+    assert [row["phase_id"] for row in targets] == ["contact_open"]
+
+
 def test_controls_bind_construction_global_ik_branch_to_same_pose_phase() -> None:
     rows = _construction_global_ik_joint_targets(
         construction={
