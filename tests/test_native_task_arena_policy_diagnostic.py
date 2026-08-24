@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import (
+    native_task_arena_policy_diagnostic_bundle as diagnostic_bundle_module,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
@@ -25,6 +28,7 @@ from blueprint_pipeline.native_task_arena_policy_worker import (
 from tests.test_adp009d_policy_episode import _run
 from tests.test_native_task_arena_bundle import (
     _articulated_packet,
+    _native_bundle_preflight,
     _qualified_construction,
     _runtime_source_packet,
 )
@@ -154,6 +158,11 @@ def test_diagnostic_bundle_is_not_an_official_policy_bundle(tmp_path: Path) -> N
 
     assert receipt["execution_mode"] == "policy_diagnostic"
     assert receipt["expected_output_filename"] == RESULT_FILENAME
+    preflight = _native_bundle_preflight(
+        tmp_path, receipt, name="policy-diagnostic"
+    )
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         worker = archive.read(
             "provider_runtime/adp_arena_provider_runner.py"
@@ -199,6 +208,42 @@ def test_diagnostic_bundle_is_not_an_official_policy_bundle(tmp_path: Path) -> N
             runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
             implementation_commit="d" * 40,
         )
+
+
+def test_provider_preflight_rejects_diagnostic_result_name_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _diagnostic_controls(tmp_path, scene, construction)
+    spec = build_policy_diagnostic_execution_spec(
+        candidate_id="pi05_droid",
+        scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
+        construction_result_path=construction,
+        control_result_path=controls,
+        output_path=tmp_path / "diagnostic-spec.json",
+    )
+    monkeypatch.setattr(
+        diagnostic_bundle_module,
+        "RESULT_FILENAME",
+        "native_task_arena_policy_result.v1.json",
+    )
+    receipt = build_native_task_arena_policy_diagnostic_bundle(
+        job_dir=tmp_path / "mismatched-diagnostic-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        control_result_path=controls,
+        policy_execution_spec=spec,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="e" * 40,
+        generated_at="fixed",
+    )
+
+    preflight = _native_bundle_preflight(
+        tmp_path, receipt, name="mismatched-policy-diagnostic"
+    )
+    assert preflight["status"] == "blocked"
+    assert "native_task_arena_provider_manifest_invalid" in preflight["blockers"]
 
 
 def test_diagnostic_episode_retains_actions_but_skips_task_scoring() -> None:
