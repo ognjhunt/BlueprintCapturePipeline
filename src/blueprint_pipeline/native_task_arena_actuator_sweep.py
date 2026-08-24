@@ -23,13 +23,16 @@ success.  Nothing here gates a run, and the controls that follow are unchanged.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 
 SWEEP_SCHEMA_VERSION = "native_task_arena_actuator_posture_sweep.v1"
 CLOSE_POSTURE_SWEEP_SCHEMA_VERSION = (
     "native_task_arena_contact_close_posture_sweep.v1"
+)
+CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION = (
+    "native_task_arena_contact_acquisition_sweep.v1"
 )
 
 #: Candidate wrist gain sets.  The shipped pair is included so the sweep
@@ -48,6 +51,25 @@ DEFAULT_WRIST_GAIN_CANDIDATES: tuple[tuple[float, float], ...] = (
 #: for a settled reading at the slowest candidate, short enough that the whole
 #: sweep stays inside seconds.
 DEFAULT_CELL_SETTLE_STEPS = 45
+
+# The authored close pose is the deepest point.  Search progressively farther
+# behind it, where an open jaw can clear the door face before closing.  Five
+# values on each of the approach, jaw, and lateral axes represent 125 physical
+# cells in one loaded scene instead of 125 provider launches.
+DEFAULT_CONTACT_APPROACH_OFFSETS_M: tuple[float, ...] = (
+    -0.020,
+    -0.015,
+    -0.010,
+    -0.005,
+    0.0,
+)
+DEFAULT_CONTACT_TRANSVERSE_OFFSETS_M: tuple[float, ...] = (
+    -0.012,
+    -0.006,
+    0.0,
+    0.006,
+    0.012,
+)
 
 
 class ActuatorSweepError(ValueError):
@@ -151,6 +173,621 @@ def _task_pad_forces_n(sample: Mapping[str, Any] | None) -> dict[str, float]:
             if math.isfinite(magnitude) and magnitude >= 0.0:
                 peaks[side] = max(peaks.get(side, 0.0), magnitude)
     return peaks
+
+
+def _unit_vector(values: Any) -> list[float] | None:
+    vector = _finite_vector(values, length=3)
+    if vector is None:
+        return None
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm <= 1.0e-9:
+        return None
+    return [value / norm for value in vector]
+
+
+def _center_first(values: Sequence[float]) -> list[float]:
+    return sorted((float(value) for value in values), key=lambda value: (abs(value), value))
+
+
+def run_contact_acquisition_sweep(
+    *,
+    environment: Any,
+    authored_target_position_world_m: Sequence[float],
+    command_target_position_world_m: Sequence[float] | None = None,
+    target_orientation_world_xyzw: Sequence[float],
+    preposition_joint_positions_rad: Sequence[float],
+    approach_axis_world: Sequence[float],
+    jaw_axis_world: Sequence[float],
+    lateral_axis_world: Sequence[float],
+    gripper_open_command: Any,
+    gripper_closed_command: Any,
+    max_joint_delta_rad: Any,
+    max_joint_setpoint_lead_rad: Any,
+    arrival_tolerance_m: Any,
+    orientation_tolerance_rad: Any,
+    bilateral_contact_minimum_force_n: Any,
+    approach_offsets_m: Sequence[float] = DEFAULT_CONTACT_APPROACH_OFFSETS_M,
+    jaw_offsets_m: Sequence[float] = DEFAULT_CONTACT_TRANSVERSE_OFFSETS_M,
+    lateral_offsets_m: Sequence[float] = DEFAULT_CONTACT_TRANSVERSE_OFFSETS_M,
+    preposition_steps: int = 30,
+    advance_steps: int = 30,
+    close_steps: int = 18,
+    open_contact_trigger_required_steps: int = 1,
+    open_contact_trigger_position_multiplier: Any = 2.0,
+    bilateral_stability_steps: int = 2,
+    stop_after_admitted_cells: int = 1,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Find a real bilateral grasp by separating open advance from closure.
+
+    C53 held the qualified open pose while asking the gripper to close: the
+    pose gate passed, but only the left finger touched.  C63 changed both arm
+    posture and gripper state at once: the jaws reached their closed width
+    before the arm reached the handle.  This sweep isolates those operations.
+    The authored target remains the closed-gripper arrival authority.  The
+    optional command target preserves the measured open-to-closed linkage
+    compensation, so the open gripper starts behind that finish line instead
+    of discarding the compensation before closure.  Every cell starts from the
+    same measured open posture, advances while open,
+    freezes the *reached* arm joints at the first task-pad contact or first
+    pose-gate arrival, and only then closes.  If neither event occurs, the full
+    bounded advance is still executed before closure.  Triggering closure does
+    not admit a cell; the unchanged post-close pose, force, and stability gates
+    remain decisive.
+
+    The sweep records numeric telemetry only.  It does not grade the task and
+    it does not weaken the final episode's native bilateral-contact gate.
+    """
+
+    target = _finite_vector(authored_target_position_world_m, length=3)
+    command_target = _finite_vector(
+        (
+            authored_target_position_world_m
+            if command_target_position_world_m is None
+            else command_target_position_world_m
+        ),
+        length=3,
+    )
+    orientation = _finite_vector(target_orientation_world_xyzw, length=4)
+    preposition = _finite_vector(preposition_joint_positions_rad, length=7)
+    approach = _unit_vector(approach_axis_world)
+    jaw = _unit_vector(jaw_axis_world)
+    lateral = _unit_vector(lateral_axis_world)
+    bounded = getattr(environment, "bounded_joint_action", None)
+    pose_action = getattr(environment, "scripted_action_for_pose", None)
+    if (
+        target is None
+        or command_target is None
+        or orientation is None
+        or preposition is None
+        or approach is None
+        or jaw is None
+        or lateral is None
+    ):
+        raise ActuatorSweepError(["contact_acquisition_sweep_inputs_invalid"])
+    if not callable(bounded) or not callable(pose_action):
+        return {
+            "schema_version": CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "runtime_missing_joint_or_pose_action",
+            "cells": [],
+        }
+    try:
+        open_command = float(gripper_open_command)
+        closed_command = float(gripper_closed_command)
+        joint_delta = float(max_joint_delta_rad)
+        setpoint_lead = float(max_joint_setpoint_lead_rad)
+        arrival_tolerance = float(arrival_tolerance_m)
+        orientation_tolerance = float(orientation_tolerance_rad)
+        contact_threshold = float(bilateral_contact_minimum_force_n)
+        open_trigger_required = int(open_contact_trigger_required_steps)
+        open_trigger_position_multiplier = float(
+            open_contact_trigger_position_multiplier
+        )
+        stability_required = int(bilateral_stability_steps)
+        stop_after = int(stop_after_admitted_cells)
+    except (TypeError, ValueError) as exc:
+        raise ActuatorSweepError(
+            ["contact_acquisition_sweep_scalar_inputs_invalid"]
+        ) from exc
+    scalars = (
+        open_command,
+        closed_command,
+        joint_delta,
+        setpoint_lead,
+        arrival_tolerance,
+        orientation_tolerance,
+        contact_threshold,
+        open_trigger_position_multiplier,
+    )
+    if (
+        not all(math.isfinite(value) for value in scalars)
+        or open_trigger_required < 1
+        or open_trigger_position_multiplier < 1.0
+        or stability_required < 1
+        or stop_after < 1
+    ):
+        raise ActuatorSweepError(
+            ["contact_acquisition_sweep_scalar_inputs_invalid"]
+        )
+
+    offsets: list[tuple[float, float, float]] = []
+    try:
+        for approach_offset in _center_first(approach_offsets_m):
+            for jaw_offset in _center_first(jaw_offsets_m):
+                for lateral_offset in _center_first(lateral_offsets_m):
+                    if not all(
+                        math.isfinite(value)
+                        for value in (
+                            approach_offset,
+                            jaw_offset,
+                            lateral_offset,
+                        )
+                    ):
+                        raise ValueError("non-finite offset")
+                    offsets.append(
+                        (approach_offset, jaw_offset, lateral_offset)
+                    )
+    except (TypeError, ValueError) as exc:
+        raise ActuatorSweepError(
+            ["contact_acquisition_sweep_offsets_invalid"]
+        ) from exc
+    if not offsets:
+        raise ActuatorSweepError(["contact_acquisition_sweep_offsets_invalid"])
+
+    def _bounded_action(joints: Sequence[float], gripper: float) -> list[float]:
+        return bounded(
+            target_joint_positions_rad=list(joints),
+            gripper_command=gripper,
+            max_joint_delta_rad=joint_delta,
+            max_joint_setpoint_lead_rad=setpoint_lead,
+        )
+
+    cells: list[dict[str, Any]] = []
+    admitted_count = 0
+    for cell_index, (approach_offset, jaw_offset, lateral_offset) in enumerate(
+        offsets
+    ):
+        candidate_target = [
+            target[axis]
+            + approach_offset * approach[axis]
+            + jaw_offset * jaw[axis]
+            + lateral_offset * lateral[axis]
+            for axis in range(3)
+        ]
+        candidate_command_target = [
+            command_target[axis]
+            + approach_offset * approach[axis]
+            + jaw_offset * jaw[axis]
+            + lateral_offset * lateral[axis]
+            for axis in range(3)
+        ]
+        stage = "reset"
+        try:
+            environment.reset()
+            stage = "preposition"
+            for _ in range(max(1, int(preposition_steps))):
+                environment.step(_bounded_action(preposition, open_command))
+
+            stage = "open_advance"
+            advance_sample: Mapping[str, Any] | None = None
+            peak_advance_forces: dict[str, float] = {}
+            open_contact_consecutive = 0
+            maximum_consecutive_open_contact = 0
+            open_bilateral_consecutive = 0
+            maximum_consecutive_open_bilateral = 0
+            open_contact_triggered = False
+            open_pose_gate_triggered = False
+            open_contact_trigger_step = None
+            open_contact_trigger_forces: dict[str, float] = {}
+            open_advance_trigger_reasons: list[str] = []
+            executed_advance_steps = 0
+            for advance_step_index in range(max(1, int(advance_steps))):
+                action = pose_action(
+                    target_position_world_m=candidate_command_target,
+                    target_quaternion_world_xyzw=orientation,
+                    gripper_command=open_command,
+                    max_joint_delta_rad=joint_delta,
+                    max_joint_setpoint_lead_rad=setpoint_lead,
+                )
+                environment.step(action)
+                executed_advance_steps += 1
+                advance_sample = _grasp_frame_sample(environment)
+                advance_forces = _task_pad_forces_n(advance_sample)
+                step_position = _finite_vector(
+                    (advance_sample or {}).get(
+                        "grasp_frame_position_world_m"
+                    ),
+                    length=3,
+                )
+                step_orientation = _finite_vector(
+                    (advance_sample or {}).get(
+                        "grasp_frame_orientation_world_xyzw"
+                    ),
+                    length=4,
+                )
+                pose_gate_reached = bool(
+                    step_position is not None
+                    and math.dist(step_position, candidate_command_target)
+                    <= arrival_tolerance
+                    and step_orientation is not None
+                    and _quaternion_angle_xyzw(step_orientation, orientation)
+                    <= orientation_tolerance
+                )
+                contact_trigger_pose_guard = bool(
+                    step_position is not None
+                    and math.dist(step_position, candidate_command_target)
+                    <= arrival_tolerance * open_trigger_position_multiplier
+                    and step_orientation is not None
+                    and _quaternion_angle_xyzw(
+                        step_orientation, orientation
+                    )
+                    <= orientation_tolerance
+                )
+                for side, magnitude in advance_forces.items():
+                    peak_advance_forces[side] = max(
+                        peak_advance_forces.get(side, 0.0), magnitude
+                    )
+                any_open_contact = contact_trigger_pose_guard and any(
+                    advance_forces.get(side, 0.0) >= contact_threshold
+                    for side in ("left_inner_finger", "right_inner_finger")
+                )
+                bilateral_open_contact = all(
+                    advance_forces.get(side, 0.0) >= contact_threshold
+                    for side in ("left_inner_finger", "right_inner_finger")
+                )
+                open_contact_consecutive = (
+                    open_contact_consecutive + 1
+                    if any_open_contact
+                    else 0
+                )
+                maximum_consecutive_open_contact = max(
+                    maximum_consecutive_open_contact,
+                    open_contact_consecutive,
+                )
+                open_bilateral_consecutive = (
+                    open_bilateral_consecutive + 1
+                    if bilateral_open_contact
+                    else 0
+                )
+                maximum_consecutive_open_bilateral = max(
+                    maximum_consecutive_open_bilateral,
+                    open_bilateral_consecutive,
+                )
+                if open_contact_consecutive >= open_trigger_required:
+                    open_contact_triggered = True
+                    open_contact_trigger_step = advance_step_index
+                    open_contact_trigger_forces = dict(advance_forces)
+                    open_advance_trigger_reasons.append(
+                        "task_pad_contact"
+                    )
+                if pose_gate_reached:
+                    open_pose_gate_triggered = True
+                    open_advance_trigger_reasons.append("pose_gate")
+                if open_contact_triggered or open_pose_gate_triggered:
+                    break
+
+            reached_open = _finite_vector(
+                environment.read_arm_joint_positions(), length=7
+            )
+            advance_position = _finite_vector(
+                (advance_sample or {}).get("grasp_frame_position_world_m"),
+                length=3,
+            )
+            advance_orientation = _finite_vector(
+                (advance_sample or {}).get(
+                    "grasp_frame_orientation_world_xyzw"
+                ),
+                length=4,
+            )
+            if reached_open is None or advance_position is None:
+                raise RuntimeError("open_advance_readback_missing")
+
+            stage = "close_hold"
+            consecutive_bilateral = 0
+            maximum_consecutive_bilateral = 0
+            peak_close_forces: dict[str, float] = {}
+            close_gripper_widths: list[float] = []
+            first_bilateral_close_step = None
+            last_bilateral_close_step = None
+            close_phase_gate_triggered = False
+            executed_close_steps = 0
+            terminal_sample: Mapping[str, Any] | None = None
+            for close_step_index in range(max(1, int(close_steps))):
+                environment.step(_bounded_action(reached_open, closed_command))
+                executed_close_steps += 1
+                terminal_sample = _grasp_frame_sample(environment)
+                measured_width = (terminal_sample or {}).get(
+                    "gripper_width_m"
+                )
+                if isinstance(measured_width, (int, float)) and math.isfinite(
+                    float(measured_width)
+                ):
+                    close_gripper_widths.append(float(measured_width))
+                forces = _task_pad_forces_n(terminal_sample)
+                for side, magnitude in forces.items():
+                    peak_close_forces[side] = max(
+                        peak_close_forces.get(side, 0.0), magnitude
+                    )
+                bilateral = all(
+                    forces.get(side, 0.0) >= contact_threshold
+                    for side in ("left_inner_finger", "right_inner_finger")
+                )
+                consecutive_bilateral = (
+                    consecutive_bilateral + 1 if bilateral else 0
+                )
+                if bilateral:
+                    if first_bilateral_close_step is None:
+                        first_bilateral_close_step = close_step_index
+                    last_bilateral_close_step = close_step_index
+                maximum_consecutive_bilateral = max(
+                    maximum_consecutive_bilateral,
+                    consecutive_bilateral,
+                )
+                close_position = _finite_vector(
+                    (terminal_sample or {}).get(
+                        "grasp_frame_position_world_m"
+                    ),
+                    length=3,
+                )
+                close_orientation = _finite_vector(
+                    (terminal_sample or {}).get(
+                        "grasp_frame_orientation_world_xyzw"
+                    ),
+                    length=4,
+                )
+                close_pose_gate = bool(
+                    close_position is not None
+                    and math.dist(close_position, candidate_target)
+                    <= arrival_tolerance
+                    and close_orientation is not None
+                    and _quaternion_angle_xyzw(
+                        close_orientation, orientation
+                    )
+                    <= orientation_tolerance
+                )
+                if (
+                    close_pose_gate
+                    and consecutive_bilateral >= stability_required
+                ):
+                    close_phase_gate_triggered = True
+                    break
+
+            terminal_position = _finite_vector(
+                (terminal_sample or {}).get("grasp_frame_position_world_m"),
+                length=3,
+            )
+            terminal_orientation = _finite_vector(
+                (terminal_sample or {}).get(
+                    "grasp_frame_orientation_world_xyzw"
+                ),
+                length=4,
+            )
+            terminal_forces = _task_pad_forces_n(terminal_sample)
+            terminal_joints = _finite_vector(
+                environment.read_arm_joint_positions(), length=7
+            )
+            terminal_bilateral = all(
+                terminal_forces.get(side, 0.0) >= contact_threshold
+                for side in ("left_inner_finger", "right_inner_finger")
+            )
+            orientation_error = (
+                _quaternion_angle_xyzw(terminal_orientation, orientation)
+                if terminal_orientation is not None
+                else None
+            )
+            candidate_distance = (
+                math.dist(terminal_position, candidate_target)
+                if terminal_position is not None
+                else None
+            )
+            admitted = bool(
+                terminal_position is not None
+                and candidate_distance is not None
+                and candidate_distance <= arrival_tolerance
+                and terminal_bilateral
+                and maximum_consecutive_bilateral >= stability_required
+                and orientation_error is not None
+                and orientation_error <= orientation_tolerance
+            )
+            if admitted:
+                admitted_count += 1
+            cells.append(
+                {
+                    "cell_index": cell_index,
+                    "approach_offset_m": approach_offset,
+                    "jaw_offset_m": jaw_offset,
+                    "lateral_offset_m": lateral_offset,
+                    "candidate_target_position_world_m": candidate_target,
+                    "candidate_command_target_position_world_m": (
+                        candidate_command_target
+                    ),
+                    "reached_open_joint_positions_rad": reached_open,
+                    "executed_open_advance_steps": executed_advance_steps,
+                    "open_contact_trigger_required_steps": (
+                        open_trigger_required
+                    ),
+                    "open_contact_trigger_position_tolerance_m": (
+                        arrival_tolerance
+                        * open_trigger_position_multiplier
+                    ),
+                    "open_contact_triggered": open_contact_triggered,
+                    "open_pose_gate_triggered": open_pose_gate_triggered,
+                    "open_advance_trigger_reasons": (
+                        open_advance_trigger_reasons
+                    ),
+                    "open_contact_trigger_step_index": (
+                        open_contact_trigger_step
+                    ),
+                    "open_contact_trigger_pad_forces_n": (
+                        open_contact_trigger_forces
+                    ),
+                    "maximum_consecutive_open_contact_steps": (
+                        maximum_consecutive_open_contact
+                    ),
+                    "maximum_consecutive_open_bilateral_steps": (
+                        maximum_consecutive_open_bilateral
+                    ),
+                    "advance_position_world_m": advance_position,
+                    "advance_position_error_m": math.dist(
+                        advance_position, candidate_command_target
+                    ),
+                    "advance_distance_to_arrival_target_m": math.dist(
+                        advance_position, candidate_target
+                    ),
+                    "advance_orientation_error_rad": (
+                        _quaternion_angle_xyzw(
+                            advance_orientation, orientation
+                        )
+                        if advance_orientation is not None
+                        else None
+                    ),
+                    "peak_open_advance_pad_forces_n": peak_advance_forces,
+                    "terminal_open_advance_pad_forces_n": (
+                        _task_pad_forces_n(advance_sample)
+                    ),
+                    "terminal_open_advance_gripper_width_m": (
+                        (advance_sample or {}).get("gripper_width_m")
+                    ),
+                    "terminal_position_world_m": terminal_position,
+                    "terminal_distance_to_candidate_target_m": (
+                        candidate_distance
+                    ),
+                    "terminal_distance_to_authored_target_m": (
+                        math.dist(terminal_position, target)
+                        if terminal_position is not None
+                        else None
+                    ),
+                    "terminal_orientation_error_rad": orientation_error,
+                    "terminal_task_contact_pad_forces_n": terminal_forces,
+                    "terminal_reached_joint_positions_rad": terminal_joints,
+                    "terminal_maximum_joint_drift_from_frozen_rad": (
+                        max(
+                            abs(terminal - frozen)
+                            for terminal, frozen in zip(
+                                terminal_joints, reached_open
+                            )
+                        )
+                        if terminal_joints is not None
+                        else None
+                    ),
+                    "terminal_grasp_frame_shift_from_open_m": (
+                        math.dist(terminal_position, advance_position)
+                        if terminal_position is not None
+                        else None
+                    ),
+                    "peak_close_pad_forces_n": peak_close_forces,
+                    "commanded_close_gripper_value": closed_command,
+                    "executed_close_steps": executed_close_steps,
+                    "close_phase_gate_triggered": (
+                        close_phase_gate_triggered
+                    ),
+                    "minimum_close_gripper_width_m": (
+                        min(close_gripper_widths)
+                        if close_gripper_widths
+                        else None
+                    ),
+                    "maximum_close_gripper_width_m": (
+                        max(close_gripper_widths)
+                        if close_gripper_widths
+                        else None
+                    ),
+                    "first_bilateral_close_step_index": (
+                        first_bilateral_close_step
+                    ),
+                    "last_bilateral_close_step_index": (
+                        last_bilateral_close_step
+                    ),
+                    "maximum_consecutive_bilateral_steps": (
+                        maximum_consecutive_bilateral
+                    ),
+                    "terminal_bilateral_task_contact_active": (
+                        terminal_bilateral
+                    ),
+                    "terminal_gripper_width_m": (
+                        (terminal_sample or {}).get("gripper_width_m")
+                    ),
+                    "admitted": admitted,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate one physical cell
+            cells.append(
+                {
+                    "cell_index": cell_index,
+                    "approach_offset_m": approach_offset,
+                    "jaw_offset_m": jaw_offset,
+                    "lateral_offset_m": lateral_offset,
+                    "candidate_target_position_world_m": candidate_target,
+                    "candidate_command_target_position_world_m": (
+                        candidate_command_target
+                    ),
+                    "status": "cell_error",
+                    "error": f"{stage}:{type(exc).__name__}:{exc}",
+                    "admitted": False,
+                }
+            )
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "schema_version": CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
+                    "status": "running",
+                    "represented_cell_count": len(offsets),
+                    "executed_cell_count": len(cells),
+                    "early_stop_after_admitted_cells": stop_after,
+                    "admitted_cell_count": admitted_count,
+                    "cells": list(cells),
+                    "last_cell": dict(cells[-1]),
+                    "claim_boundary": (
+                        "incremental_numeric_measurement_only;not_task_success"
+                    ),
+                }
+            )
+        if admitted_count >= stop_after:
+            break
+
+    admitted_cells = [cell for cell in cells if cell.get("admitted") is True]
+    measurable = [
+        cell
+        for cell in cells
+        if cell.get("terminal_distance_to_authored_target_m") is not None
+    ]
+    best = min(
+        admitted_cells or measurable,
+        key=lambda cell: (
+            cell.get("admitted") is not True,
+            -int(cell.get("maximum_consecutive_bilateral_steps") or 0),
+            float(cell.get("terminal_distance_to_authored_target_m") or math.inf),
+            abs(float(cell.get("approach_offset_m") or 0.0)),
+            abs(float(cell.get("jaw_offset_m") or 0.0))
+            + abs(float(cell.get("lateral_offset_m") or 0.0)),
+        ),
+        default=None,
+    )
+    cleanup_error = None
+    try:
+        environment.reset()
+    except Exception as exc:  # noqa: BLE001 - preserve completed measurements
+        cleanup_error = f"final_reset:{type(exc).__name__}:{exc}"
+    report = {
+        "schema_version": CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
+        "status": "measured" if cells else "unavailable",
+        "represented_cell_count": len(offsets),
+        "executed_cell_count": len(cells),
+        "early_stop_after_admitted_cells": stop_after,
+        "admitted_cell_count": len(admitted_cells),
+        "cells": cells,
+        "best_cell": best,
+        "claim_boundary": (
+            "numeric_reset_isolated_open_advance_then_close_hold_search;"
+            "only_the_following_deterministic_controls_episode_asserts_task_"
+            "success"
+        ),
+    }
+    if cleanup_error is not None:
+        report["cleanup_error"] = cleanup_error
+    if progress_callback is not None:
+        progress_callback(report)
+    return report
 
 
 def run_contact_close_posture_sweep(

@@ -6,10 +6,12 @@ import pytest
 
 from blueprint_pipeline.native_task_arena_actuator_sweep import (
     CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
+    CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION,
     DEFAULT_WRIST_GAIN_CANDIDATES,
     SWEEP_SCHEMA_VERSION,
     candidate_postures,
     run_actuator_posture_sweep,
+    run_contact_acquisition_sweep,
     run_contact_close_posture_sweep,
 )
 
@@ -224,6 +226,401 @@ def test_close_sweep_measures_every_branch_and_admits_only_physical_grasp() -> N
     assert report["best_cell"]["admitted"] is True
     assert report["best_cell"]["commanded_to_reached_joint_l2_rad"] == 0.0
     assert report["best_cell"]["fk_to_measured_tcp_error_m"] == 0.0
+
+
+def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
+    class _AcquisitionEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+            self.reset_count = 0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+            self.reset_count += 1
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def scripted_action_for_pose(self, **kwargs):
+            target = [float(value) for value in kwargs["target_position_world_m"]]
+            return [*target, 0.0, 0.0, 0.0, 0.0, float(kwargs["gripper_command"])]
+
+        def step(self, action):
+            self.joints = [float(value) for value in action[:7]]
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def read_task_sample(self):
+            measured_position = [
+                self.joints[0] + (0.1 if self.gripper == 1.0 else 0.0),
+                self.joints[1],
+                self.joints[2],
+            ]
+            bilateral = self.gripper == 1.0 and measured_position == [1.0, 0.0, 0.0]
+            forces = (
+                [
+                    {
+                        "filter_prim_path_expr": side,
+                        "force_magnitude_n": 1.0,
+                    }
+                    for side in ("left_inner_finger", "right_inner_finger")
+                ]
+                if bilateral
+                else []
+            )
+            return {
+                "grasp_frame_position_world_m": measured_position,
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "gripper_width_m": 0.02 if self.gripper == 1.0 else 0.10,
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    environment = _AcquisitionEnvironment()
+    progress: list[dict[str, object]] = []
+    report = run_contact_acquisition_sweep(
+        environment=environment,
+        authored_target_position_world_m=[1.0, 0.0, 0.0],
+        command_target_position_world_m=[0.9, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preposition_joint_positions_rad=[0.0] * 7,
+        approach_axis_world=[1.0, 0.0, 0.0],
+        jaw_axis_world=[0.0, 1.0, 0.0],
+        lateral_axis_world=[0.0, 0.0, 1.0],
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        preposition_steps=1,
+        advance_steps=1,
+        close_steps=3,
+        stop_after_admitted_cells=1,
+        progress_callback=lambda value: progress.append(dict(value)),
+    )
+
+    assert report["schema_version"] == CONTACT_ACQUISITION_SWEEP_SCHEMA_VERSION
+    assert report["represented_cell_count"] == 125
+    assert report["executed_cell_count"] == 1
+    assert report["admitted_cell_count"] == 1
+    assert report["best_cell"]["admitted"] is True
+    assert report["best_cell"]["maximum_consecutive_bilateral_steps"] == 2
+    assert report["best_cell"]["open_pose_gate_triggered"] is True
+    assert report["best_cell"]["open_contact_triggered"] is False
+    assert report["best_cell"]["open_advance_trigger_reasons"] == [
+        "pose_gate"
+    ]
+    assert report["best_cell"]["executed_close_steps"] == 2
+    assert report["best_cell"]["close_phase_gate_triggered"] is True
+    assert report["best_cell"]["reached_open_joint_positions_rad"][:3] == [
+        0.9,
+        0.0,
+        0.0,
+    ]
+    assert report["best_cell"]["candidate_command_target_position_world_m"] == [
+        0.9,
+        0.0,
+        0.0,
+    ]
+    assert report["best_cell"]["terminal_grasp_frame_shift_from_open_m"] == (
+        pytest.approx(0.1)
+    )
+    # One reset for the cell plus a cleanup reset; no provider or scene reload.
+    assert environment.reset_count == 2
+    assert [item["status"] for item in progress] == ["running", "measured"]
+    assert progress[0]["executed_cell_count"] == 1
+    assert progress[0]["admitted_cell_count"] == 1
+    assert progress[0]["last_cell"]["cell_index"] == 0
+    assert progress[-1]["best_cell"]["admitted"] is True
+
+
+def test_contact_acquisition_closes_at_first_task_pad_contact() -> None:
+    class _ContactOnsetEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+            self.pose_calls = 0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def scripted_action_for_pose(self, **kwargs):
+            self.pose_calls += 1
+            # The second advance step is the useful first-pad-contact moment.
+            # A fixed-horizon controller would execute the third step, drive
+            # through that moment, and close after contact has been lost.
+            x = (0.99, 1.0, 1.02)[min(self.pose_calls - 1, 2)]
+            return [x, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(kwargs["gripper_command"])]
+
+        def step(self, action):
+            self.joints = [float(value) for value in action[:7]]
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def read_task_sample(self):
+            at_contact = self.joints[0] == 1.0
+            sides = (
+                ("left_inner_finger", "right_inner_finger")
+                if self.gripper == 1.0
+                else ("left_inner_finger",)
+            )
+            forces = [
+                {
+                    "filter_prim_path_expr": side,
+                    "force_magnitude_n": 2.0,
+                }
+                for side in sides
+            ] if at_contact else []
+            return {
+                "grasp_frame_position_world_m": list(self.joints[:3]),
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "gripper_width_m": 0.02 if self.gripper == 1.0 else 0.10,
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    environment = _ContactOnsetEnvironment()
+    report = run_contact_acquisition_sweep(
+        environment=environment,
+        authored_target_position_world_m=[1.0, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preposition_joint_positions_rad=[0.0] * 7,
+        approach_axis_world=[1.0, 0.0, 0.0],
+        jaw_axis_world=[0.0, 1.0, 0.0],
+        lateral_axis_world=[0.0, 0.0, 1.0],
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        approach_offsets_m=[0.0],
+        jaw_offsets_m=[0.0],
+        lateral_offsets_m=[0.0],
+        preposition_steps=1,
+        advance_steps=3,
+        close_steps=2,
+    )
+
+    cell = report["best_cell"]
+    assert report["admitted_cell_count"] == 1
+    assert environment.pose_calls == 2
+    assert cell["open_contact_triggered"] is True
+    assert cell["open_pose_gate_triggered"] is True
+    assert cell["open_advance_trigger_reasons"] == [
+        "task_pad_contact",
+        "pose_gate",
+    ]
+    assert cell["open_contact_trigger_step_index"] == 1
+    assert cell["executed_open_advance_steps"] == 2
+    assert cell["maximum_consecutive_open_contact_steps"] == 1
+    assert cell["maximum_consecutive_open_bilateral_steps"] == 0
+    assert cell["open_contact_trigger_pad_forces_n"] == {
+        "left_inner_finger": 2.0,
+    }
+    assert cell["terminal_maximum_joint_drift_from_frozen_rad"] == 0.0
+    assert cell["terminal_grasp_frame_shift_from_open_m"] == 0.0
+    assert cell["terminal_open_advance_gripper_width_m"] == 0.10
+    assert cell["commanded_close_gripper_value"] == 1.0
+    assert cell["minimum_close_gripper_width_m"] == 0.02
+    assert cell["maximum_close_gripper_width_m"] == 0.02
+    assert cell["first_bilateral_close_step_index"] == 0
+    assert cell["last_bilateral_close_step_index"] == 1
+    assert cell["executed_close_steps"] == 2
+    assert cell["close_phase_gate_triggered"] is True
+
+
+def test_contact_acquisition_rejects_one_finger_contact() -> None:
+    class _OneFingerEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def scripted_action_for_pose(self, **kwargs):
+            target = [float(value) for value in kwargs["target_position_world_m"]]
+            return [*target, 0.0, 0.0, 0.0, 0.0, float(kwargs["gripper_command"])]
+
+        def step(self, action):
+            self.joints = [float(value) for value in action[:7]]
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def read_task_sample(self):
+            forces = (
+                [
+                    {
+                        "filter_prim_path_expr": "left_inner_finger",
+                        "force_magnitude_n": 2.0,
+                    }
+                ]
+                if self.gripper == 1.0
+                else []
+            )
+            return {
+                "grasp_frame_position_world_m": list(self.joints[:3]),
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    report = run_contact_acquisition_sweep(
+        environment=_OneFingerEnvironment(),
+        authored_target_position_world_m=[1.0, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preposition_joint_positions_rad=[0.0] * 7,
+        approach_axis_world=[1.0, 0.0, 0.0],
+        jaw_axis_world=[0.0, 1.0, 0.0],
+        lateral_axis_world=[0.0, 0.0, 1.0],
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        approach_offsets_m=[0.0],
+        jaw_offsets_m=[0.0],
+        lateral_offsets_m=[0.0],
+        preposition_steps=1,
+        advance_steps=1,
+        close_steps=2,
+    )
+
+    assert report["executed_cell_count"] == 1
+    assert report["admitted_cell_count"] == 0
+    assert report["cells"][0]["peak_close_pad_forces_n"] == {
+        "left_inner_finger": 2.0
+    }
+    assert report["cells"][0]["terminal_bilateral_task_contact_active"] is False
+
+
+def test_contact_acquisition_rejects_bilateral_contact_outside_arrival_gate() -> None:
+    class _BilateralMissEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def scripted_action_for_pose(self, **kwargs):
+            target = [float(value) for value in kwargs["target_position_world_m"]]
+            target[0] += 0.010
+            return [*target, 0.0, 0.0, 0.0, 0.0, float(kwargs["gripper_command"])]
+
+        def step(self, action):
+            self.joints = [float(value) for value in action[:7]]
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def read_task_sample(self):
+            forces = (
+                [
+                    {
+                        "filter_prim_path_expr": side,
+                        "force_magnitude_n": 1.0,
+                    }
+                    for side in ("left_inner_finger", "right_inner_finger")
+                ]
+                if self.gripper == 1.0
+                else []
+            )
+            return {
+                "grasp_frame_position_world_m": list(self.joints[:3]),
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    report = run_contact_acquisition_sweep(
+        environment=_BilateralMissEnvironment(),
+        authored_target_position_world_m=[1.0, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preposition_joint_positions_rad=[0.0] * 7,
+        approach_axis_world=[1.0, 0.0, 0.0],
+        jaw_axis_world=[0.0, 1.0, 0.0],
+        lateral_axis_world=[0.0, 0.0, 1.0],
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        approach_offsets_m=[0.0],
+        jaw_offsets_m=[0.0],
+        lateral_offsets_m=[0.0],
+        preposition_steps=1,
+        advance_steps=1,
+        close_steps=2,
+    )
+
+    assert report["executed_cell_count"] == 1
+    assert report["admitted_cell_count"] == 0
+    assert report["cells"][0]["terminal_bilateral_task_contact_active"] is True
+    assert report["cells"][0][
+        "terminal_distance_to_candidate_target_m"
+    ] == pytest.approx(0.010)
 
 
 def test_close_sweep_isolates_one_bad_branch_instead_of_losing_the_surface() -> None:

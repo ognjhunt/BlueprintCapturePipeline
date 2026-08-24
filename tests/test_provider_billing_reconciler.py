@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from botocore.credentials import Credentials
 
 from blueprint_pipeline.provider_billing_reconciler import (
     ProviderBillingReconciliationError,
@@ -24,7 +25,19 @@ def _secrets(tmp_path: Path) -> Path:
         path = root / name
         path.write_text(f"{name}-value\n", encoding="utf-8")
         path.chmod(0o600)
+    aws = root / "aws_agent_credentials"
+    aws.write_text("[test]\naws_access_key_id = test\naws_secret_access_key = test\n")
+    aws.chmod(0o600)
     return root
+
+
+def _aws_kwargs(secret_root: Path) -> dict:
+    return {
+        "aws_account_id": "111710313013",
+        "aws_credentials_file": secret_root / "aws_agent_credentials",
+        "aws_profile": "test",
+        "aws_credentials": Credentials("AKIAIOSFODNN7EXAMPLE", "test-secret"),
+    }
 
 
 class _Transport:
@@ -58,6 +71,20 @@ class _Transport:
                     "next_token": None,
                 }
             return json.dumps(payload).encode()
+        if parsed.netloc == "sts.us-east-1.amazonaws.com":
+            return b"""<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Arn>arn:aws:iam::111710313013:user/Agent</Arn><UserId>agent</UserId><Account>111710313013</Account></GetCallerIdentityResult></GetCallerIdentityResponse>"""
+        if parsed.netloc == "ce.us-east-1.amazonaws.com":
+            return json.dumps(
+                {
+                    "ResultsByTime": [
+                        {
+                            "TimePeriod": {"Start": "2026-01-01", "End": "2026-08-11"},
+                            "Total": {"UnblendedCost": {"Amount": "0.75", "Unit": "USD"}},
+                            "Estimated": True,
+                        }
+                    ]
+                }
+            ).encode()
         if parsed.path.endswith("/balance"):
             return json.dumps(
                 {
@@ -91,13 +118,15 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
     transport = _Transport()
     export = tmp_path / "guard" / "provider_billing_export.json"
 
+    secrets = _secrets(tmp_path)
     result = reconcile_provider_billing(
-        secrets_dir=_secrets(tmp_path),
+        secrets_dir=secrets,
         billing_export_path=export,
         audit_root=tmp_path / "audit",
         start_at="2026-01-01T00:00:00Z",
         now=NOW,
         transport=transport,
+        **_aws_kwargs(secrets),
     )
 
     assert result["status"] == "reconciled"
@@ -105,6 +134,7 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
         "runpod": 4.0,
         "vast": 5.5,
         "digitalocean": 8.0,
+        "aws": 0.75,
     }
     assert result["provider_mutation_performed"] is False
     payload = json.loads(export.read_text())
@@ -117,10 +147,19 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
     }
     source = json.loads(Path(result["source_receipt_path"]).read_text())
     assert source["status"] == "reconciled"
-    assert len(source["sources"]) == 7
+    assert len(source["sources"]) == 9
     assert all(Path(row["retained_path"]).is_file() for row in source["sources"])
     assert all(row["response_digest"].startswith("sha256:") for row in source["sources"])
-    assert all(header.endswith("-value") for _, header in transport.requests)
+    assert all(
+        header.endswith("-value")
+        for url, header in transport.requests
+        if "amazonaws.com" not in url
+    )
+    assert all(
+        header.startswith("AWS4-HMAC-SHA256")
+        for url, header in transport.requests
+        if "amazonaws.com" in url
+    )
     assert all("-value" not in json.dumps(row) for row in source["sources"])
 
 
@@ -135,13 +174,15 @@ def test_atomic_service_owned_refresh_is_trusted_by_root_guard(
     export.write_text("stale\n", encoding="utf-8")
     stale_inode = export.stat().st_ino
 
+    secrets = _secrets(tmp_path)
     reconcile_provider_billing(
-        secrets_dir=_secrets(tmp_path),
+        secrets_dir=secrets,
         billing_export_path=export,
         audit_root=tmp_path / "audit",
         start_at="2026-01-01T00:00:00Z",
         now=NOW,
         transport=_Transport(),
+        **_aws_kwargs(secrets),
     )
 
     refreshed = export.stat()
@@ -156,9 +197,7 @@ def test_atomic_service_owned_refresh_is_trusted_by_root_guard(
         guard.pwd,
         "getpwnam",
         lambda account: SimpleNamespace(
-            pw_uid=os.getuid()
-            if account == guard.BILLING_EXPORT_PRODUCER_ACCOUNT
-            else 8675309
+            pw_uid=os.getuid() if account == guard.BILLING_EXPORT_PRODUCER_ACCOUNT else 8675309
         ),
     )
 
@@ -181,10 +220,7 @@ def test_atomic_service_owned_refresh_is_trusted_by_root_guard(
         required=True,
     )
     assert writable["status"] == "blocked"
-    assert (
-        "provider_billing_export_writable_by_group_or_world"
-        in writable["blockers"]
-    )
+    assert "provider_billing_export_writable_by_group_or_world" in writable["blockers"]
 
 
 def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
@@ -194,14 +230,16 @@ def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
     def fail(_request, _timeout: float) -> bytes:
         raise ProviderBillingReconciliationError("provider_billing_request_failed")
 
+    secrets = _secrets(tmp_path)
     with pytest.raises(ProviderBillingReconciliationError, match="provider_billing_request_failed"):
         reconcile_provider_billing(
-            secrets_dir=_secrets(tmp_path),
+            secrets_dir=secrets,
             billing_export_path=export,
             audit_root=tmp_path / "audit",
             start_at="2026-01-01T00:00:00Z",
             now=NOW,
             transport=fail,
+            **_aws_kwargs(secrets),
         )
 
     assert export.read_text(encoding="utf-8") == "sentinel\n"
@@ -210,13 +248,15 @@ def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
 def test_accepts_digitalocean_daily_balance_after_24_hour_boundary(
     tmp_path: Path,
 ) -> None:
+    secrets = _secrets(tmp_path)
     result = reconcile_provider_billing(
-        secrets_dir=_secrets(tmp_path),
+        secrets_dir=secrets,
         billing_export_path=tmp_path / "export.json",
         audit_root=tmp_path / "audit",
         start_at="2026-01-01T00:00:00Z",
         now=datetime(2026, 8, 16, 3, 31, tzinfo=timezone.utc),
         transport=_Transport(digitalocean_generated_at="2026-08-15T03:16:38Z"),
+        **_aws_kwargs(secrets),
     )
 
     assert result["status"] == "reconciled"
@@ -226,16 +266,16 @@ def test_accepts_digitalocean_daily_balance_after_24_hour_boundary(
 def test_rejects_digitalocean_balance_older_than_two_daily_intervals(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(
-        ProviderBillingReconciliationError, match="digitalocean_balance_stale"
-    ):
+    secrets = _secrets(tmp_path)
+    with pytest.raises(ProviderBillingReconciliationError, match="digitalocean_balance_stale"):
         reconcile_provider_billing(
-            secrets_dir=_secrets(tmp_path),
+            secrets_dir=secrets,
             billing_export_path=tmp_path / "export.json",
             audit_root=tmp_path / "audit",
             start_at="2026-01-01T00:00:00Z",
             now=datetime(2026, 8, 16, 3, 31, tzinfo=timezone.utc),
             transport=_Transport(digitalocean_generated_at="2026-08-14T03:16:38Z"),
+            **_aws_kwargs(secrets),
         )
 
 
@@ -258,3 +298,47 @@ def test_secret_symlink_is_rejected_before_network_access(tmp_path: Path) -> Non
             now=NOW,
             transport=_Transport(),
         )
+
+
+def test_aws_billing_refuses_credentials_bound_to_another_account(tmp_path: Path) -> None:
+    class MismatchedIdentityTransport(_Transport):
+        def __call__(self, request, timeout: float) -> bytes:
+            payload = super().__call__(request, timeout)
+            if urlsplit(request.full_url).netloc == "sts.us-east-1.amazonaws.com":
+                return payload.replace(b"111710313013", b"999999999999")
+            return payload
+
+    secrets = _secrets(tmp_path)
+    with pytest.raises(
+        ProviderBillingReconciliationError,
+        match="aws_billing_account_identity_mismatch",
+    ):
+        reconcile_provider_billing(
+            secrets_dir=secrets,
+            billing_export_path=tmp_path / "export.json",
+            audit_root=tmp_path / "audit",
+            start_at="2026-01-01T00:00:00Z",
+            now=NOW,
+            transport=MismatchedIdentityTransport(),
+            **_aws_kwargs(secrets),
+        )
+
+
+def test_aws_billing_loads_only_the_named_canonical_profile(tmp_path: Path) -> None:
+    secrets = _secrets(tmp_path)
+    result = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=tmp_path / "export.json",
+        audit_root=tmp_path / "audit",
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW,
+        transport=_Transport(),
+        aws_account_id="111710313013",
+        aws_credentials_file=secrets / "aws_agent_credentials",
+        aws_profile="test",
+    )
+
+    assert result["provider_totals_usd"]["aws"] == 0.75
+    receipt = Path(result["source_receipt_path"]).read_text(encoding="utf-8")
+    assert "aws_secret_access_key" not in receipt
+    assert "test-secret" not in receipt
