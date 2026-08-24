@@ -589,6 +589,47 @@ def test_a_failed_account_sweep_is_recoverable_from_a_fresh_global_zero(
     assert receipt["recovered_global_zero_guard"]["path"] == str(guard)
 
 
+def test_recovery_accepts_additional_required_providers_only_when_zero(
+    tmp_path: Path,
+) -> None:
+    """Adding AWS to the required fleet strengthens rather than breaks zero."""
+
+    now = datetime(2026, 8, 18, 19, 30, tzinfo=timezone.utc)
+    authority_path, result_path = _failed_sweep_attempt(tmp_path)
+    guard = _guard(tmp_path, generated_at="2026-08-18T19:29:00+00:00")
+    value = json.loads(guard.read_text())
+    value["inventory_results"].append(
+        {
+            "provider": "aws",
+            "required": True,
+            "status": "succeeded",
+            "row_count": 0,
+        }
+    )
+    write_json(guard, value)
+
+    receipt = paid.materialize_native_task_arena_recovered_provider_zero(
+        authority_path=authority_path,
+        result_path=result_path,
+        global_zero_guard_path=guard,
+        output_path=tmp_path / "recovered-with-aws.json",
+        now=now,
+    )
+
+    assert receipt["provider_zero_confirmed"] is True
+
+    value["inventory_results"][-1]["row_count"] = 1
+    write_json(guard, value)
+    with pytest.raises(ValueError, match="recovered_provider_zero_invalid"):
+        paid.materialize_native_task_arena_recovered_provider_zero(
+            authority_path=authority_path,
+            result_path=result_path,
+            global_zero_guard_path=guard,
+            output_path=tmp_path / "must-not-exist.json",
+            now=now,
+        )
+
+
 def test_recovery_refuses_stale_or_non_zero_evidence(tmp_path: Path) -> None:
     """Recovery is not a way around proving the account is empty now."""
 
