@@ -29,6 +29,10 @@ SCENE_ID = "840920"
 TASK_ID = "task_a_washer_door_open"
 CONTROLS_PREDECESSOR = "authoritative_controls_positive_receipt_missing"
 READY_VERDICT = "READY_WAITING_ONLY_FOR_CONTROLS"
+REHEARSED_BUNDLE_STATUS = (
+    "production_builder_rehearsed_real_bundle_waits_for_controls"
+)
+REHEARSED_TERMINAL_STATUS = "passed_with_identity_bound_fixture_bundle"
 
 
 class ScenePolicyReadinessError(ValueError):
@@ -68,6 +72,13 @@ def validate_scene_policy_readiness(
         errors.append("scene_policy_readiness_scenario_digest_mismatch")
     if payload.get("task_freeze_digest") != suite.get("task_freeze_digest"):
         errors.append("scene_policy_readiness_task_freeze_mismatch")
+    if (
+        payload.get("claim_ceiling") != "development_only"
+        or payload.get("outcome_blind") is not True
+        or payload.get("learned_policy_outcomes_observed") is not False
+        or payload.get("provider_execution_performed") is not False
+    ):
+        errors.append("scene_policy_readiness_claim_boundary_invalid")
 
     scenario = _mapping(payload.get("scenario_matrix"))
     cells = list(suite.get("cells") or [])
@@ -115,6 +126,14 @@ def validate_scene_policy_readiness(
             errors.append(
                 f"scene_policy_readiness_{candidate_id}_checkpoint_invalid"
             )
+        if (
+            checkpoint.get("provider_retrieval_path_ready") is not True
+            or checkpoint.get("checkpoint_ready") is not True
+            or checkpoint.get("missing_secrets_or_gated_access") != []
+        ):
+            errors.append(
+                f"scene_policy_readiness_{candidate_id}_checkpoint_availability_invalid"
+            )
         for field in (
             "rights_ready",
             "observation_adapter_ready",
@@ -129,6 +148,50 @@ def validate_scene_policy_readiness(
                 )
         if row.get("claim_ceiling") != "development_only":
             errors.append(f"scene_policy_readiness_{candidate_id}_claim_invalid")
+        if (
+            not _mapping(row.get("runtime_dependencies"))
+            or not _mapping(row.get("policy_input_schema"))
+            or not _mapping(row.get("policy_output_schema"))
+            or not str(row.get("action_adapter") or "")
+        ):
+            errors.append(
+                f"scene_policy_readiness_{candidate_id}_runtime_contract_invalid"
+            )
+        if row.get("bundle_build_status") != REHEARSED_BUNDLE_STATUS:
+            errors.append(
+                f"scene_policy_readiness_{candidate_id}_bundle_rehearsal_invalid"
+            )
+        if row.get("terminal_rehearsal_status") != REHEARSED_TERMINAL_STATUS:
+            errors.append(
+                f"scene_policy_readiness_{candidate_id}_terminal_rehearsal_invalid"
+            )
+
+    pi05 = _mapping(by_id.get("pi05_droid"))
+    pi05_checkpoint = _mapping(pi05.get("checkpoint"))
+    pi05_rights = _mapping(pi05_checkpoint.get("rights_provenance"))
+    pi05_revision = EXPECTED_CANDIDATES["pi05_droid"]["source_revision"]
+    if (
+        pi05_checkpoint.get("checkpoint_specific_terms_bound") is not True
+        or set(pi05_rights)
+        != {
+            "publisher_model_release",
+            "apache_license",
+            "gemma_terms",
+            "exact_checkpoint_config",
+        }
+        or any(pi05_revision not in str(uri) for uri in pi05_rights.values())
+    ):
+        errors.append("scene_policy_readiness_pi05_droid_rights_provenance_invalid")
+
+    groot = _mapping(by_id.get("groot_n17_droid"))
+    groot_checkpoint = _mapping(groot.get("checkpoint"))
+    gated_backbone = _mapping(groot_checkpoint.get("gated_backbone"))
+    if (
+        gated_backbone.get("access_probe_status") != "authorized"
+        or not _digest(gated_backbone.get("access_probe_receipt_digest"))
+        or gated_backbone.get("secret_material_recorded") is not False
+    ):
+        errors.append("scene_policy_readiness_groot_gated_backbone_invalid")
 
     controls = _mapping(payload.get("controls_predecessor"))
     if (
@@ -144,6 +207,37 @@ def validate_scene_policy_readiness(
         errors.append("scene_policy_readiness_external_blocker_invalid")
     if payload.get("verdict") != READY_VERDICT:
         errors.append("scene_policy_readiness_verdict_invalid")
+
+    precontrol = _mapping(payload.get("precontrol_build"))
+    expected_precontrol = {
+        "policy_execution_spec_builder": (
+            "ready_requires_controls_result_digest_and_control_pair_digest"
+        ),
+        "policy_execution_spec_builder_entrypoint": (
+            "scripts/materialize_native_task_arena_policy_execution_spec.py"
+        ),
+        "provider_bundle_builder": "ready_requires_completed_controls_result",
+        "provider_bundle_builder_entrypoint": (
+            "python -m blueprint_pipeline.native_task_arena_policy_bundle"
+        ),
+        "worker": "ready",
+        "launch_profile_builder": "ready_requires_bundle_and_controls_result",
+        "launch_profile_builder_entrypoint": (
+            "scripts/build_native_task_arena_live_profile.py policy"
+        ),
+        "terminal_rehearsal_entrypoint": (
+            "scripts/rehearse_lane_terminal_contract.py"
+        ),
+        "real_scene_bundle_built": False,
+        "unpublished_launch_profiles_built": False,
+        "reason_unbuilt": "controls_positive_receipt_identity_does_not_exist_yet",
+        "missing_controls_is_expected_predecessor_not_build_defect": True,
+    }
+    if any(
+        precontrol.get(key) != expected
+        for key, expected in expected_precontrol.items()
+    ):
+        errors.append("scene_policy_readiness_precontrol_build_invalid")
 
     terminal = _mapping(payload.get("terminal_contract"))
     required_terminal = {

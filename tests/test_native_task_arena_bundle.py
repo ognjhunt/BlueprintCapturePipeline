@@ -39,6 +39,7 @@ from blueprint_pipeline.native_task_arena_execution_contract import (
 )
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
+    build_native_task_policy_execution_spec,
     load_verified_native_task_arena_policy_bundle,
     materialize_native_task_policy_execution_spec,
 )
@@ -485,6 +486,7 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
         "schema_version": "native_task_arena_control_result.v1",
         "status": "completed",
         "controls_qualified": True,
+        "scene_plan_digest": scene["plan_digest"],
         "construction_result_digest": construction_result["result_digest"],
         "control_pair": pair,
         "candidate_policy_queried": False,
@@ -716,6 +718,119 @@ def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
         materialize_native_task_policy_execution_spec(
             request=request, output_path=output
         )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_provider_free_spec_builder_derives_each_frozen_candidate(
+    tmp_path: Path, candidate_id: str
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    output = tmp_path / f"{candidate_id}.execution-spec.json"
+
+    result = build_native_task_policy_execution_spec(
+        candidate_id=candidate_id,
+        scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
+        construction_result_path=construction,
+        control_result_path=controls,
+        output_path=output,
+    )
+
+    assert result["candidate_id"] == candidate_id
+    assert result["task_id"] == scene["task_id"]
+    assert result["prompt"] == scene["task_spec"]["prompt"]
+    assert result["max_policy_queries"] == 56
+    assert result["policy_may_grade_itself"] is False
+    assert result["execution_spec_digest"] == canonical_digest(
+        result, digest_field="execution_spec_digest"
+    )
+    assert json.loads(output.read_text(encoding="utf-8")) == result
+    if candidate_id == "pi05_droid":
+        assert result["policy_spec"]["checkpoint_uri"].endswith(
+            "/polaris/pi05_droid_jointpos_polaris"
+        )
+    else:
+        assert result["policy_identity_receipt"] == (
+            policy_bundle_module.GROOT_RUNTIME_IDENTITY_DECLARATION
+        )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_provider_free_spec_cli_seals_each_frozen_candidate(
+    tmp_path: Path, candidate_id: str
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    output = tmp_path / f"{candidate_id}.cli-execution-spec.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/materialize_native_task_arena_policy_execution_spec.py",
+            "--candidate-id",
+            candidate_id,
+            "--scene-plan",
+            str(packet / "native_task_arena_scene_plan.v1.json"),
+            "--construction-result",
+            str(construction),
+            "--control-result",
+            str(controls),
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout)["candidate_id"] == candidate_id
+    assert json.loads(output.read_text(encoding="utf-8"))["candidate_id"] == (
+        candidate_id
+    )
+
+
+def test_provider_free_spec_cli_fails_closed_before_controls_qualify(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    control_result = json.loads(controls.read_text(encoding="utf-8"))
+    control_result["controls_qualified"] = False
+    control_result["result_digest"] = canonical_digest(
+        control_result, digest_field="result_digest"
+    )
+    controls.write_text(json.dumps(control_result), encoding="utf-8")
+    output = tmp_path / "must-not-exist.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/materialize_native_task_arena_policy_execution_spec.py",
+            "--candidate-id",
+            "pi05_droid",
+            "--scene-plan",
+            str(packet / "native_task_arena_scene_plan.v1.json"),
+            "--construction-result",
+            str(construction),
+            "--control-result",
+            str(controls),
+            "--output",
+            str(output),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "native_task_policy_controls_not_qualified" in completed.stdout
+    assert not output.exists()
 
 
 def test_groot_execution_spec_refuses_predeclared_verified_runtime_identity(
@@ -1471,10 +1586,12 @@ def test_real_policy_bundles_pass_preflight_and_import_cleanly(
     packet, scene = _articulated_packet(tmp_path)
     construction = _qualified_construction(tmp_path, scene)
     controls = _qualified_controls(tmp_path, scene, construction)
-    spec = (
-        _policy_spec(scene, construction, controls)
-        if candidate_id == "pi05_droid"
-        else _groot_policy_spec(scene, construction, controls)
+    spec = build_native_task_policy_execution_spec(
+        candidate_id=candidate_id,
+        scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
+        construction_result_path=construction,
+        control_result_path=controls,
+        output_path=tmp_path / f"{candidate_id}.execution-spec.json",
     )
     receipt = build_native_task_arena_policy_bundle(
         job_dir=tmp_path / f"policy-{candidate_id}",

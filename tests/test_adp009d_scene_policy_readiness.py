@@ -79,6 +79,25 @@ def test_readiness_rejects_candidate_whose_rights_are_not_ready() -> None:
     )
 
 
+def test_readiness_rejects_unavailable_checkpoint_or_unrehearsed_terminal() -> None:
+    report, scenario = _values()
+    report["candidates"][0]["checkpoint"]["checkpoint_ready"] = False
+    report["candidates"][1]["terminal_rehearsal_status"] = "not_run"
+    report["readiness_digest"] = canonical_digest(
+        report, digest_field="readiness_digest"
+    )
+
+    with pytest.raises(ScenePolicyReadinessError) as excinfo:
+        validate_scene_policy_readiness(report, scenario_suite=scenario)
+
+    assert "scene_policy_readiness_pi05_droid_checkpoint_availability_invalid" in (
+        excinfo.value.errors
+    )
+    assert "scene_policy_readiness_groot_n17_droid_terminal_rehearsal_invalid" in (
+        excinfo.value.errors
+    )
+
+
 def test_readiness_rejects_a_scenario_target_without_runtime_application() -> None:
     report, scenario = _values()
     scenario["cells"][2]["factor_records"][0]["runtime_target"] = (

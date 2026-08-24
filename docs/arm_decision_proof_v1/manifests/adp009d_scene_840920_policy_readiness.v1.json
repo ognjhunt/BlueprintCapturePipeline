@@ -310,9 +310,13 @@
   },
   "precontrol_build": {
     "policy_execution_spec_builder": "ready_requires_controls_result_digest_and_control_pair_digest",
+    "policy_execution_spec_builder_entrypoint": "scripts/materialize_native_task_arena_policy_execution_spec.py",
     "provider_bundle_builder": "ready_requires_completed_controls_result",
+    "provider_bundle_builder_entrypoint": "python -m blueprint_pipeline.native_task_arena_policy_bundle",
     "worker": "ready",
     "launch_profile_builder": "ready_requires_bundle_and_controls_result",
+    "launch_profile_builder_entrypoint": "scripts/build_native_task_arena_live_profile.py policy",
+    "terminal_rehearsal_entrypoint": "scripts/rehearse_lane_terminal_contract.py",
     "real_scene_bundle_built": false,
     "unpublished_launch_profiles_built": false,
     "reason_unbuilt": "controls_positive_receipt_identity_does_not_exist_yet",
@@ -332,5 +336,5 @@
     "policy bundles and unpublished development-only launch profiles bind that receipt and its admitted control-pair digest"
   ],
   "verdict": "READY_WAITING_ONLY_FOR_CONTROLS",
-  "readiness_digest": "sha256:5b496fedd88744db642af1027df9170f16d0ce5b0b4846b1ba47becf29e2c4f7"
+  "readiness_digest": "sha256:d21ea0c32dafe03478ef3119fc45bf12a2ec1c9c9ed3cf0f90d25c2010db705b"
 }
