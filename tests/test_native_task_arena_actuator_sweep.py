@@ -200,6 +200,54 @@ def test_actuator_sweep_scores_each_parallel_jaw_posture_against_its_own_target(
     ] == pytest.approx(0.0)
 
 
+def test_bounded_command_bias_is_scored_only_against_authoritative_target() -> None:
+    authoritative = [0.0, 0.0, 0.0, 1.0]
+    command = [0.0, math.sin(0.02), 0.0, math.cos(0.02)]
+    metadata = {
+        "rotation_vector_body_rad": [0.0, 0.04, 0.0],
+        "close_joint_positions_rad": [0.2] * 7,
+    }
+
+    class _AuthorityEnvironment(_SweepEnvironment):
+        def read_object_sample(self):
+            return {
+                "grasp_frame_position_world_m": [self.joints[4], 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": authoritative,
+                "task_contact_active": False,
+                "joint_limit_violation": False,
+                "robot_collision_failure": False,
+                "scene_collision_failure": False,
+            }
+
+    report = _sweep(
+        _AuthorityEnvironment(),
+        target_orientation_world_xyzw=authoritative,
+        postures=[
+            {
+                "posture_index": 0,
+                "joint_positions_rad": [0.0] * 4 + [1.0, 0.0, 0.0],
+                "candidate_command_target_position_world_m": TARGET,
+                "candidate_command_target_quaternion_world_xyzw": command,
+                "authoritative_target_position_world_m": TARGET,
+                "authoritative_target_quaternion_world_xyzw": authoritative,
+                "bounded_orientation_candidate": metadata,
+            }
+        ],
+        wrist_gain_candidates=((40.0, 8.0),),
+        settle_steps=60,
+    )
+
+    cell = report["cells"][0]
+    assert cell["bounded_orientation_candidate"] == metadata
+    assert cell["measured_orientation_error_rad"] == pytest.approx(0.0)
+    assert cell[
+        "measured_orientation_error_to_authoritative_target_rad"
+    ] == pytest.approx(0.0)
+    assert cell[
+        "measured_orientation_error_to_candidate_command_target_rad"
+    ] == pytest.approx(0.04)
+
+
 def test_actuator_sweep_publishes_incremental_cell_progress() -> None:
     progress = []
 

@@ -13,6 +13,8 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_controls_worker import (
     _RigidScoringEnvironment,
+    _bounded_orientation_joint_targets,
+    _bounded_orientation_reference_seeds,
     _canonical_digest,
     _contact_close_sweep_minimum_force_n,
     _construction_global_ik_joint_targets,
@@ -27,6 +29,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _parallel_jaw_equivalent_quaternion_xyzw,
     _physics_admitted_contact_open_cell,
     _select_parallel_jaw_control_plan,
+    _should_run_bounded_orientation_fallback,
     _solve_closed_contact_on_reference_branch,
     _synthetic_post_phase5_checkpoint,
     _verified_runtime_inputs,
@@ -250,6 +253,185 @@ def test_contact_open_fallback_preserves_variant_specific_scoring_targets() -> N
     ] == pytest.approx([0.0, 2**-0.5, 2**-0.5, 0.0])
 
 
+def test_bounded_orientation_seeds_prioritize_bound_physics_reference() -> None:
+    c75 = [
+        1.8153258562,
+        0.8945093155,
+        -1.6013997793,
+        -2.5417878628,
+        -2.8766772747,
+        2.3462493420,
+        -0.8545385003,
+    ]
+    seeds = _bounded_orientation_reference_seeds(
+        control_plan={
+            "bounded_orientation_reference_joint_positions_rad": c75,
+            "scripted_positive_actions": [
+                {
+                    "phase_id": "contact_close",
+                }
+            ]
+        },
+        jaw_selection={
+            "variants": [
+                {
+                    "scripted_pose_joint_targets": [
+                        {
+                            "phase_id": "contact_open",
+                            "joint_positions_rad": [-2.0] * 7,
+                        }
+                    ]
+                }
+            ]
+        },
+        sweep={
+            "cells": [
+                {
+                    "measured_distance_to_target_m": 0.0044,
+                    "measured_orientation_error_rad": 0.087,
+                    "commanded_joint_positions_rad": [-1.0] * 7,
+                }
+            ]
+        },
+    )
+
+    assert seeds[0] == c75
+    assert seeds[1:] == [[-1.0] * 7, [-2.0] * 7]
+
+
+@pytest.mark.parametrize(
+    "control_plan, blocker",
+    [
+        ({}, "bounded_orientation_reference_missing"),
+        (
+            {"bounded_orientation_reference_joint_positions_rad": [0.0] * 6},
+            "bounded_orientation_reference_invalid",
+        ),
+    ],
+)
+def test_bounded_orientation_seeds_fail_closed_without_bound_reference(
+    control_plan: dict[str, object], blocker: str
+) -> None:
+    with pytest.raises(RuntimeError, match=blocker):
+        _bounded_orientation_reference_seeds(
+            control_plan=control_plan,
+            jaw_selection={"variants": []},
+            sweep={"cells": []},
+        )
+
+
+def test_bounded_orientation_joints_do_not_rewrite_authoritative_targets() -> None:
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+    biased = [0.68, -0.02, 0.02, -0.73]
+    plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": phase_id,
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, z],
+                "target_quaternion_world_xyzw": nominal,
+            }
+            for phase_id, z in (("contact_open", 3.0), ("contact_close", 3.1))
+        ]
+    }
+
+    targets = _bounded_orientation_joint_targets(
+        control_plan=plan,
+        admitted_cell={
+            "commanded_joint_positions_rad": [0.1] * 7,
+            "candidate_command_target_quaternion_world_xyzw": biased,
+            "bounded_orientation_candidate": {
+                "open_command_quaternion_world_xyzw": biased,
+                "close_command_quaternion_world_xyzw": biased,
+                "close_joint_positions_rad": [0.2] * 7,
+            },
+        },
+    )
+
+    assert [row["phase_id"] for row in targets] == [
+        "contact_open",
+        "contact_close",
+    ]
+    assert [row["joint_positions_rad"] for row in targets] == [
+        [0.1] * 7,
+        [0.2] * 7,
+    ]
+    assert all(row["target_quaternion_world_xyzw"] == nominal for row in targets)
+    assert all(row["target_quaternion_world_xyzw"] != biased for row in targets)
+
+
+def test_bounded_orientation_runs_only_after_both_jaw_variants_miss() -> None:
+    sweep = {
+        "cells": [
+            {"variant_id": "normalized_nominal"},
+            {"variant_id": "parallel_jaw_equivalent"},
+        ]
+    }
+
+    assert _should_run_bounded_orientation_fallback(
+        live_dls_contact_fallback=True,
+        admitted_open_cell=None,
+        sweep=sweep,
+    )
+    assert not _should_run_bounded_orientation_fallback(
+        live_dls_contact_fallback=True,
+        admitted_open_cell={"pose_gate_passed": True},
+        sweep=sweep,
+    )
+    assert not _should_run_bounded_orientation_fallback(
+        live_dls_contact_fallback=True,
+        admitted_open_cell=None,
+        sweep={"cells": [{"variant_id": "normalized_nominal"}]},
+    )
+    assert not _should_run_bounded_orientation_fallback(
+        live_dls_contact_fallback=False,
+        admitted_open_cell=None,
+        sweep=sweep,
+    )
+
+
+def test_c82_sealed_dual_variant_miss_enters_bounded_fallback() -> None:
+    common = {
+        "commanded_joint_positions_rad": [0.1] * 7,
+        "joint_tracking_error_rad": 0.001,
+        "joint_limit_violation": False,
+        "robot_collision_failure": False,
+        "scene_collision_failure": False,
+        "task_contact_active": False,
+    }
+    c82_sweep = {
+        "source_result_digest": (
+            "sha256:e73a483c48eb87f525c9f7adb53c5f401c4278cc72a9c1771ae6296484b80a0c"
+        ),
+        "cells": [
+            {
+                **common,
+                "variant_id": "normalized_nominal",
+                "measured_distance_to_target_m": 0.00436435,
+                "measured_orientation_error_rad": 0.0870456,
+            },
+            {
+                **common,
+                "variant_id": "parallel_jaw_equivalent",
+                "measured_distance_to_target_m": 0.00444000,
+                "measured_orientation_error_rad": 0.0887271,
+            },
+        ],
+    }
+
+    admitted = _physics_admitted_contact_open_cell(
+        c82_sweep,
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+    )
+    assert admitted is None
+    assert _should_run_bounded_orientation_fallback(
+        live_dls_contact_fallback=True,
+        admitted_open_cell=admitted,
+        sweep=c82_sweep,
+    )
+
+
 def test_physics_admitted_parallel_cell_switches_plan_targets_and_preflight() -> None:
     nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
     equivalent = [0.0, 2**-0.5, 2**-0.5, 0.0]
@@ -354,6 +536,28 @@ def test_contact_open_physics_adoption_keeps_every_gate_fail_closed() -> None:
     )
     assert selected_variant is not None
     assert selected_variant["variant_id"] == "parallel_jaw_equivalent"
+
+    high_margin = {
+        **base,
+        "minimum_joint_limit_margin_rad": 0.2,
+        "measured_distance_to_target_m": 0.0049,
+        "measured_orientation_error_rad": 0.079,
+    }
+    low_margin_better_pose = {
+        **base,
+        "minimum_joint_limit_margin_rad": 0.001,
+        "measured_distance_to_target_m": 0.001,
+        "measured_orientation_error_rad": 0.01,
+    }
+    selected_margin = _physics_admitted_contact_open_cell(
+        {"cells": [low_margin_better_pose, high_margin]},
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+    )
+    assert selected_margin is not None
+    assert selected_margin["minimum_joint_limit_margin_rad"] == pytest.approx(
+        0.2
+    )
 
     for failed_field, failed_value in (
         ("measured_distance_to_target_m", 0.0051),

@@ -2232,6 +2232,167 @@ def _fallback_contact_open_postures(
     return rows
 
 
+def _bounded_orientation_reference_seeds(
+    *,
+    control_plan: Mapping[str, Any],
+    jaw_selection: Mapping[str, Any],
+    sweep: Mapping[str, Any],
+    maximum_seed_count: int = 12,
+) -> list[list[float]]:
+    """Prefer bound physical references, then the best current jaw branches."""
+
+    bound_reference = control_plan.get(
+        "bounded_orientation_reference_joint_positions_rad"
+    )
+    if not isinstance(bound_reference, Sequence) or isinstance(
+        bound_reference, (str, bytes)
+    ):
+        raise RuntimeError("bounded_orientation_reference_missing")
+    try:
+        reference = [float(value) for value in bound_reference]
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("bounded_orientation_reference_invalid") from exc
+    if len(reference) != 7 or not all(math.isfinite(value) for value in reference):
+        raise RuntimeError("bounded_orientation_reference_invalid")
+
+    candidates: list[Sequence[float]] = [reference]
+    cells = [
+        cell
+        for cell in sweep.get("cells") or []
+        if isinstance(cell, Mapping)
+        and isinstance(cell.get("measured_distance_to_target_m"), (int, float))
+        and isinstance(cell.get("measured_orientation_error_rad"), (int, float))
+    ]
+    cells.sort(
+        key=lambda cell: (
+            float(cell["measured_distance_to_target_m"]) / 0.005
+        )
+        ** 2
+        + (float(cell["measured_orientation_error_rad"]) / 0.08) ** 2
+    )
+    candidates.extend(
+        cell["commanded_joint_positions_rad"]
+        for cell in cells
+        if isinstance(cell.get("commanded_joint_positions_rad"), list)
+    )
+    for variant in jaw_selection.get("variants") or []:
+        if not isinstance(variant, Mapping):
+            continue
+        for row in variant.get("scripted_pose_joint_targets") or []:
+            if (
+                isinstance(row, Mapping)
+                and str(row.get("phase_id") or "")
+                in {"contact_open", "contact_close"}
+                and isinstance(row.get("joint_positions_rad"), list)
+            ):
+                candidates.append(row["joint_positions_rad"])
+    seeds: list[list[float]] = []
+    seen: set[tuple[float, ...]] = set()
+    for raw in candidates:
+        try:
+            seed = [float(value) for value in raw]
+        except (TypeError, ValueError):
+            continue
+        key = tuple(round(value, 8) for value in seed)
+        if (
+            len(seed) != 7
+            or not all(math.isfinite(value) for value in seed)
+            or key in seen
+        ):
+            continue
+        seen.add(key)
+        seeds.append(seed)
+        if len(seeds) >= int(maximum_seed_count):
+            break
+    return seeds
+
+
+def _bounded_orientation_joint_targets(
+    *,
+    control_plan: Mapping[str, Any],
+    admitted_cell: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Bind biased-solve joints to unchanged open/close plan authorities."""
+
+    metadata = admitted_cell.get("bounded_orientation_candidate")
+    if not isinstance(metadata, Mapping):
+        return []
+    actions = control_plan.get("scripted_positive_actions")
+    if not isinstance(actions, list):
+        raise RuntimeError("bounded_orientation_control_plan_invalid")
+    rows = {
+        str(row.get("phase_id") or ""): row
+        for row in actions
+        if isinstance(row, Mapping)
+        and str(row.get("phase_id") or "")
+        in {"contact_open", "contact_close"}
+    }
+    try:
+        open_joints = [
+            float(value) for value in admitted_cell["commanded_joint_positions_rad"]
+        ]
+        close_joints = [
+            float(value) for value in metadata["close_joint_positions_rad"]
+        ]
+        targets = [
+            {
+                "phase_id": phase_id,
+                "target_position_world_m": [
+                    float(value) for value in rows[phase_id]["target_position_world_m"]
+                ],
+                "target_quaternion_world_xyzw": [
+                    float(value)
+                    for value in rows[phase_id]["target_quaternion_world_xyzw"]
+                ],
+                "joint_positions_rad": joints,
+            }
+            for phase_id, joints in (
+                ("contact_open", open_joints),
+                ("contact_close", close_joints),
+            )
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("bounded_orientation_joint_targets_invalid") from exc
+    if any(
+        len(row["joint_positions_rad"]) != 7
+        or len(row["target_position_world_m"]) != 3
+        or len(row["target_quaternion_world_xyzw"]) != 4
+        or not all(
+            math.isfinite(value)
+            for field in (
+                "joint_positions_rad",
+                "target_position_world_m",
+                "target_quaternion_world_xyzw",
+            )
+            for value in row[field]
+        )
+        for row in targets
+    ):
+        raise RuntimeError("bounded_orientation_joint_targets_invalid")
+    return targets
+
+
+def _should_run_bounded_orientation_fallback(
+    *,
+    live_dls_contact_fallback: bool,
+    admitted_open_cell: Mapping[str, Any] | None,
+    sweep: Mapping[str, Any],
+) -> bool:
+    measured = {
+        str(cell.get("variant_id") or "")
+        for cell in sweep.get("cells") or []
+        if isinstance(cell, Mapping)
+    }
+    return bool(
+        live_dls_contact_fallback
+        and admitted_open_cell is None
+        and {
+            "normalized_nominal",
+            "parallel_jaw_equivalent",
+        }.issubset(measured)
+    )
+
+
 def _dispatch_physics_admitted_jaw_variant(
     *,
     normalized_control_plan: Mapping[str, Any],
@@ -2639,6 +2800,14 @@ def _physics_admitted_contact_open_cell(
     return min(
         admitted,
         key=lambda cell: (
+            -float(
+                cell.get("minimum_joint_limit_margin_rad")
+                if isinstance(
+                    cell.get("minimum_joint_limit_margin_rad"),
+                    (int, float),
+                )
+                else -math.inf
+            ),
             (
                 float(cell["measured_distance_to_target_m"])
                 / float(position_tolerance_m)
@@ -3704,14 +3873,176 @@ def main(argv: Sequence[str] | None = None) -> int:
             position_tolerance_m=contact_tolerance,
             orientation_tolerance_rad=contact_orientation_tolerance,
         )
+        bounded_orientation_report: dict[str, Any] = {
+            "schema_version": (
+                "native_task_arena_bounded_orientation_search.v1"
+            ),
+            "status": "not_attempted",
+            "reason": (
+                "jaw_variant_cell_admitted"
+                if admitted_open_cell is not None
+                else "both_jaw_variants_not_measured"
+            ),
+            "represented_candidate_count": 0,
+            "solved_candidate_count": 0,
+            "executed_cell_count": 0,
+        }
+        bounded_sweep: dict[str, Any] | None = None
+        if _should_run_bounded_orientation_fallback(
+            live_dls_contact_fallback=live_dls_contact_fallback,
+            admitted_open_cell=admitted_open_cell,
+            sweep=sweep,
+        ):
+            from blueprint_pipeline.native_task_arena_bounded_orientation import (
+                build_bounded_orientation_postures,
+            )
+
+            bounded_reference_seeds = _bounded_orientation_reference_seeds(
+                control_plan=normalized_control_plan,
+                jaw_selection=jaw_selection,
+                sweep=sweep,
+            )
+            def _solve_bounded_orientation(
+                phase_id,
+                target_position,
+                target_quaternion,
+                preferred_seeds,
+            ):
+                del phase_id
+                reference = list(preferred_seeds[0])
+                solved = servo.solve_grasp_target_multistart(
+                    target_position_world_m=list(target_position),
+                    target_grasp_frame_quaternion_world_xyzw=list(
+                        target_quaternion
+                    ),
+                    preferred_seeds=[list(seed) for seed in preferred_seeds],
+                    reference_joint_positions_rad=reference,
+                    position_tolerance_m=contact_tolerance,
+                    orientation_tolerance_rad=contact_orientation_tolerance,
+                    preferred_minimum_joint_limit_margin_rad=0.05,
+                    required_minimum_joint_limit_margin_rad=0.0,
+                )
+                selected = (
+                    solved.get("selected")
+                    if isinstance(solved, Mapping)
+                    else None
+                )
+                return dict(selected) if isinstance(selected, Mapping) else None
+
+            bounded_postures, bounded_orientation_report = (
+                build_bounded_orientation_postures(
+                    variant_plans=(
+                        ("normalized_nominal", normalized_control_plan),
+                        (
+                            "parallel_jaw_equivalent",
+                            _parallel_jaw_equivalent_control_plan(
+                                normalized_control_plan
+                            ),
+                        ),
+                    ),
+                    solve_phase=_solve_bounded_orientation,
+                    reference_joint_seeds=bounded_reference_seeds,
+                )
+            )
+            if bounded_postures:
+                try:
+                    from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                        run_actuator_posture_sweep,
+                    )
+
+                    bounded_progress_path = (
+                        output_root
+                        / "contact_open_bounded_orientation.progress.v1.json"
+                    )
+
+                    def _bounded_orientation_progress(
+                        progress: Mapping[str, Any],
+                    ) -> None:
+                        _persist_progress(bounded_progress_path, progress)
+                        completed = int(
+                            progress.get("completed_cell_count") or 0
+                        )
+                        total = int(progress.get("total_cell_count") or 0)
+                        if completed % 5 == 0 or completed == total:
+                            last = progress.get("last_cell") or {}
+                            print(
+                                "BLUEPRINT_BOUNDED_ORIENTATION_PROGRESS:"
+                                f"completed={completed}/{total}:"
+                                "position_m="
+                                f"{last.get('measured_distance_to_target_m')}:"
+                                "orientation_rad="
+                                f"{last.get('measured_orientation_error_rad')}",
+                                flush=True,
+                            )
+
+                    bounded_sweep = run_actuator_posture_sweep(
+                        environment=episode_environment,
+                        robot=robot,
+                        arm_joint_ids=list(range(7)),
+                        target_position_world_m=contact_authoritative_position,
+                        target_orientation_world_xyzw=(
+                            contact_authoritative_quaternion
+                        ),
+                        postures=bounded_postures,
+                        gripper_open_command=float(gripper["open_command"]),
+                        max_joint_delta_rad=float(
+                            contact_row["max_joint_delta_rad"]
+                        ),
+                        max_joint_setpoint_lead_rad=float(
+                            contact_row["max_joint_setpoint_lead_rad"]
+                        ),
+                        wrist_gain_candidates=((400.0, 80.0),),
+                        progress_callback=_bounded_orientation_progress,
+                    )
+                except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                    bounded_sweep = {
+                        "schema_version": (
+                            "native_task_arena_actuator_posture_sweep.v1"
+                        ),
+                        "status": "unavailable",
+                        "reason": f"{type(exc).__name__}:{exc}",
+                        "cells": [],
+                    }
+                bounded_orientation_report["executed_cell_count"] = len(
+                    bounded_sweep.get("cells") or []
+                )
+                admitted_open_cell = _physics_admitted_contact_open_cell(
+                    bounded_sweep,
+                    position_tolerance_m=contact_tolerance,
+                    orientation_tolerance_rad=contact_orientation_tolerance,
+                )
+                bounded_orientation_report["status"] = (
+                    "physics_cell_admitted"
+                    if admitted_open_cell is not None
+                    else "physics_measured_no_admission"
+                )
+                bounded_orientation_report["reason"] = (
+                    None
+                    if admitted_open_cell is not None
+                    else "no_reset_isolated_cell_passed_unchanged_gates"
+                )
+                bounded_orientation_report["physics_admitted_cell"] = (
+                    admitted_open_cell
+                )
+        result["bounded_contact_orientation_search"] = (
+            bounded_orientation_report
+        )
+        if bounded_sweep is not None:
+            result["contact_open_bounded_orientation_sweep"] = bounded_sweep
         result["contact_open_physics_adoption"] = {
             "schema_version": (
                 "native_task_controls_contact_open_physics_adoption.v1"
             ),
             "status": "applied" if admitted_open_cell is not None else "not_applied",
             "measured_cell": admitted_open_cell,
-            "represented_posture_count": len(contact_open_postures),
-            "executed_cell_count": len(sweep.get("cells") or []),
+            "represented_posture_count": (
+                len(contact_open_postures)
+                + int(bounded_orientation_report.get("solved_candidate_count") or 0)
+            ),
+            "executed_cell_count": (
+                len(sweep.get("cells") or [])
+                + int(bounded_orientation_report.get("executed_cell_count") or 0)
+            ),
             "claim_boundary": (
                 "promotes_only_a_reset_isolated_cell_that_passed_the_unchanged_"
                 "position_orientation_joint_limit_collision_and_zero_contact_"
@@ -3744,23 +4075,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             adopted_target_quaternion = list(
                 admitted_open_cell.get(
-                    "candidate_command_target_quaternion_world_xyzw"
+                    "authoritative_target_quaternion_world_xyzw"
                 )
                 or contact_quaternion
             )
             contact_quaternion = adopted_target_quaternion
-            target_record = {
+            target_records = [{
                 "phase_id": "contact_open",
                 "target_position_world_m": adopted_target_position,
                 "target_quaternion_world_xyzw": adopted_target_quaternion,
                 "joint_positions_rad": adopted_open,
-            }
+            }]
+            bounded_candidate = admitted_open_cell.get(
+                "bounded_orientation_candidate"
+            )
+            if isinstance(bounded_candidate, Mapping):
+                target_records = _bounded_orientation_joint_targets(
+                    control_plan=selected_control_plan,
+                    admitted_cell=admitted_open_cell,
+                )
+                for row in selected_control_plan[
+                    "scripted_positive_actions"
+                ]:
+                    if (
+                        isinstance(row, dict)
+                        and str(row.get("phase_id") or "")
+                        == "contact_close"
+                    ):
+                        row.pop(
+                            "physx_dls_preferred_posture_joint_positions_rad",
+                            None,
+                        )
             scripted_pose_joint_targets = [
                 row
                 for row in scripted_pose_joint_targets
-                if str(row.get("phase_id") or "") != "contact_open"
+                if str(row.get("phase_id") or "")
+                not in {record["phase_id"] for record in target_records}
             ]
-            scripted_pose_joint_targets.append(target_record)
+            scripted_pose_joint_targets.extend(target_records)
             selected_control_plan, held_vectors = (
                 _with_held_solved_contact_vectors(
                     control_plan=selected_control_plan,

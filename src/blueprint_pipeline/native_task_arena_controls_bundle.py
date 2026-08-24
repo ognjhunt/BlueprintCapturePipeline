@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
@@ -47,6 +48,8 @@ def build_native_task_arena_controls_bundle(
     implementation_commit: str,
     generated_at: str | None = None,
     enable_synthetic_post_phase5_downstream_diagnostic: bool = False,
+    bounded_orientation_reference_joint_positions_rad: Sequence[float]
+    | None = None,
 ) -> dict[str, Any]:
     """Bind a qualified construction receipt to zero and positive controls."""
 
@@ -64,6 +67,28 @@ def build_native_task_arena_controls_bundle(
         scene_plan=scene_plan,
         construction_result=construction,
     )
+    if bounded_orientation_reference_joint_positions_rad is not None:
+        try:
+            reference = [
+                float(value)
+                for value in bounded_orientation_reference_joint_positions_rad
+            ]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "native_task_controls_bounded_orientation_reference_invalid"
+            ) from exc
+        if len(reference) != 7 or not all(
+            math.isfinite(value) for value in reference
+        ):
+            raise ValueError(
+                "native_task_controls_bounded_orientation_reference_invalid"
+            )
+        control_plan["bounded_orientation_reference_joint_positions_rad"] = (
+            reference
+        )
+        control_plan["plan_digest"] = canonical_digest(
+            control_plan, digest_field="plan_digest"
+        )
     with tempfile.TemporaryDirectory(prefix="blueprint-native-task-controls-") as raw:
         frozen_plan = Path(raw) / "adp_task_control_plan.v1.json"
         frozen_plan.write_text(
@@ -239,6 +264,17 @@ def main(argv: list[str] | None = None) -> int:
             "request into this bundle"
         ),
     )
+    parser.add_argument(
+        "--bounded-orientation-reference-joint-positions-rad",
+        nargs=7,
+        type=float,
+        help=(
+            "Seal one previously measured seven-joint posture into the control "
+            "plan as a reference seed for bounded orientation search. The "
+            "runtime re-solves every candidate and never directly replays this "
+            "posture."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -251,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
             **({"generated_at": args.generated_at} if args.generated_at else {}),
             enable_synthetic_post_phase5_downstream_diagnostic=(
                 args.enable_synthetic_post_phase5_downstream_diagnostic
+            ),
+            bounded_orientation_reference_joint_positions_rad=(
+                args.bounded_orientation_reference_joint_positions_rad
             ),
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
