@@ -396,6 +396,11 @@ def _lane_blockers(
                         raise ValueError(
                             "native_task_arena_warm_session_without_warm_authority"
                         )
+                    allowed_active_instance_ids = tuple(
+                        (authority.get("active_instance_allowlist") or {}).get(
+                            "external_provider_owned", []
+                        )
+                    )
                     retain_warm_session = bool(authority.get("retain_warm_session"))
                     if retain_warm_session and link.probe_kind != CONTROLS_PROBE_KIND:
                         raise ValueError(
@@ -407,13 +412,11 @@ def _lane_blockers(
                         max_hourly_rate_usd=context.max_hourly_rate_usd,
                         hard_cap_usd=context.max_spend_usd,
                         hard_ttl_seconds=context.hard_ttl_seconds,
+                        allowed_active_instance_ids=allowed_active_instance_ids,
                         retain_warm_session=retain_warm_session,
                     )
             except (OSError, ValueError, json.JSONDecodeError):
                 found.append("native_task_arena_attempt_authority_invalid")
-        for value in context.extra_paths.get("allowed_active_instance_ids", ()) or ():
-            if int(value) <= 0:
-                found.append("native_task_arena_allowed_active_instance_id_invalid")
         # Ask the adapter itself whether it would accept this packet. Every
         # refusal it raises before construction is a check on the plan, the
         # staged bytes, or the camera rows -- none of which needs Isaac. Two
@@ -469,6 +472,15 @@ def _lane_argv(link: ArenaLink, *, authorize_gated_backbone: bool = False):
         )
         if authority.get("retain_warm_session") is True:
             built += ["--native-task-arena-retain-warm-session"]
+        for instance_id in (
+            (authority.get("active_instance_allowlist") or {}).get(
+                "external_provider_owned", []
+            )
+        ):
+            built += [
+                "--adp-allowed-active-vast-instance-id",
+                str(int(instance_id)),
+            ]
         if authority.get("schema_version") == WARM_AUTHORITY_SCHEMA_VERSION:
             warm_session = _read_mapping(
                 context.extra_paths["warm_session"],

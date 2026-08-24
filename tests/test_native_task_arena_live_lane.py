@@ -602,6 +602,25 @@ def test_controls_profile_forwards_digest_bound_warm_retention(lane) -> None:
     assert "--native-task-arena-retain-warm-session" in argv
 
 
+def test_controls_profile_forwards_authorized_external_active_instances(lane) -> None:
+    authority_path = lane["authorities"]["controls"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["active_instance_allowlist"]["external_provider_owned"] = [41, 42]
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    argv = _build(lane, "controls")["allocator"]["argv"]
+
+    indices = [
+        index
+        for index, value in enumerate(argv)
+        if value == "--adp-allowed-active-vast-instance-id"
+    ]
+    assert [argv[index + 1] for index in indices] == ["41", "42"]
+
+
 def test_controls_profile_routes_small_bundle_to_retained_instance(lane) -> None:
     bundle_receipt = lane["bundle_receipts"]["controls"]
     bundle = json.loads(bundle_receipt.read_text(encoding="utf-8"))
