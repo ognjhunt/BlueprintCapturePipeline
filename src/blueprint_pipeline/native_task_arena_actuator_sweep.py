@@ -546,8 +546,18 @@ def run_contact_acquisition_sweep(
                     )
                     <= orientation_tolerance
                 )
+                authored_pose_gate = bool(
+                    close_position is not None
+                    and math.dist(close_position, target) <= arrival_tolerance
+                    and close_orientation is not None
+                    and _quaternion_angle_xyzw(
+                        close_orientation, orientation
+                    )
+                    <= orientation_tolerance
+                )
                 if (
                     close_pose_gate
+                    and authored_pose_gate
                     and consecutive_bilateral >= stability_required
                 ):
                     close_phase_gate_triggered = True
@@ -581,10 +591,17 @@ def run_contact_acquisition_sweep(
                 if terminal_position is not None
                 else None
             )
+            authored_distance = (
+                math.dist(terminal_position, target)
+                if terminal_position is not None
+                else None
+            )
             admitted = bool(
                 terminal_position is not None
                 and candidate_distance is not None
                 and candidate_distance <= arrival_tolerance
+                and authored_distance is not None
+                and authored_distance <= arrival_tolerance
                 and terminal_bilateral
                 and maximum_consecutive_bilateral >= stability_required
                 and orientation_error is not None
@@ -654,9 +671,15 @@ def run_contact_acquisition_sweep(
                         candidate_distance
                     ),
                     "terminal_distance_to_authored_target_m": (
-                        math.dist(terminal_position, target)
-                        if terminal_position is not None
-                        else None
+                        authored_distance
+                    ),
+                    "candidate_target_gate_passed": bool(
+                        candidate_distance is not None
+                        and candidate_distance <= arrival_tolerance
+                    ),
+                    "authored_target_gate_passed": bool(
+                        authored_distance is not None
+                        and authored_distance <= arrival_tolerance
                     ),
                     "terminal_orientation_error_rad": orientation_error,
                     "terminal_task_contact_pad_forces_n": terminal_forces,

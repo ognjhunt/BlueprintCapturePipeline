@@ -623,6 +623,91 @@ def test_contact_acquisition_rejects_bilateral_contact_outside_arrival_gate() ->
     ] == pytest.approx(0.010)
 
 
+def test_contact_acquisition_rejects_shifted_candidate_outside_authored_gate() -> None:
+    class _ShiftedCandidateEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def scripted_action_for_pose(self, **kwargs):
+            target = [float(value) for value in kwargs["target_position_world_m"]]
+            return [*target, 0.0, 0.0, 0.0, 0.0, float(kwargs["gripper_command"])]
+
+        def step(self, action):
+            self.joints = [float(value) for value in action[:7]]
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def read_task_sample(self):
+            forces = (
+                [
+                    {
+                        "filter_prim_path_expr": side,
+                        "force_magnitude_n": 1.0,
+                    }
+                    for side in ("left_inner_finger", "right_inner_finger")
+                ]
+                if self.gripper == 1.0
+                else []
+            )
+            return {
+                "grasp_frame_position_world_m": list(self.joints[:3]),
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    report = run_contact_acquisition_sweep(
+        environment=_ShiftedCandidateEnvironment(),
+        authored_target_position_world_m=[1.0, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        preposition_joint_positions_rad=[0.0] * 7,
+        approach_axis_world=[1.0, 0.0, 0.0],
+        jaw_axis_world=[0.0, 1.0, 0.0],
+        lateral_axis_world=[0.0, 0.0, 1.0],
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        approach_offsets_m=[-0.010],
+        jaw_offsets_m=[0.0],
+        lateral_offsets_m=[0.0],
+        preposition_steps=1,
+        advance_steps=1,
+        close_steps=2,
+    )
+
+    cell = report["cells"][0]
+    assert cell["candidate_target_gate_passed"] is True
+    assert cell["authored_target_gate_passed"] is False
+    assert cell["terminal_bilateral_task_contact_active"] is True
+    assert cell["maximum_consecutive_bilateral_steps"] == 2
+    assert cell["terminal_distance_to_candidate_target_m"] == pytest.approx(0.0)
+    assert cell["terminal_distance_to_authored_target_m"] == pytest.approx(0.010)
+    assert cell["admitted"] is False
+    assert report["admitted_cell_count"] == 0
+
+
 def test_close_sweep_isolates_one_bad_branch_instead_of_losing_the_surface() -> None:
     class _OneBadBranch(_SweepEnvironment):
         def step(self, action):
