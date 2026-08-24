@@ -229,6 +229,111 @@ def test_close_sweep_measures_every_branch_and_admits_only_physical_grasp() -> N
     assert report["best_cell"]["fk_to_measured_tcp_error_m"] == 0.0
 
 
+def test_close_sweep_folds_measured_closed_tcp_residual_back_into_ik() -> None:
+    class _ClosedCalibrationEnvironment:
+        def __init__(self) -> None:
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def reset(self):
+            self.joints = [0.0] * 7
+            self.gripper = 0.0
+
+        def bounded_joint_action(self, **kwargs):
+            return [
+                *[float(value) for value in kwargs["target_joint_positions_rad"]],
+                float(kwargs["gripper_command"]),
+            ]
+
+        def step(self, action):
+            self.joints = list(action[:7])
+            self.gripper = float(action[7])
+
+        def read_arm_joint_positions(self):
+            return list(self.joints)
+
+        def predict_grasp_frame_pose_world(self, joints, *, gripper_command=None):
+            del gripper_command
+            return [float(joints[0]), 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+        def read_task_sample(self):
+            # PhysX's closed-pad frame is +10 mm from the solver model. The
+            # first posture therefore misses; one measured-residual update
+            # asks IK for 0.19 m and lands the physical frame at 0.20 m.
+            measured_x = self.joints[0] + (0.01 if self.gripper == 1.0 else 0.0)
+            forces = (
+                [
+                    {
+                        "filter_prim_path_expr": side,
+                        "force_magnitude_n": 1.0,
+                    }
+                    for side in ("left_inner_finger", "right_inner_finger")
+                ]
+                if self.gripper == 1.0
+                else []
+            )
+            return {
+                "grasp_frame_position_world_m": [measured_x, 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "native_readback": {
+                    "contact_sensor_instance_readback": {
+                        "task_robot_contact": [
+                            {"nonzero_filter_forces": forces}
+                        ]
+                    }
+                },
+            }
+
+    solve_calls: list[tuple[list[float], list[float]]] = []
+
+    def _solve(target, seed):
+        solve_calls.append((list(target), list(seed)))
+        return [float(target[0]), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    report = run_contact_close_posture_sweep(
+        environment=_ClosedCalibrationEnvironment(),
+        target_position_world_m=[0.2, 0.0, 0.0],
+        target_orientation_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        postures=[
+            {
+                "posture_index": 0,
+                "seed_index": 7,
+                "joint_positions_rad": [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        ],
+        preposition_joint_positions_rad=[0.0] * 7,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        max_joint_delta_rad=1.0,
+        max_joint_setpoint_lead_rad=1.0,
+        arrival_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+        bilateral_contact_minimum_force_n=0.5,
+        preposition_steps=1,
+        settle_steps=2,
+        solve=_solve,
+        solver_target_position_world_m=[0.2, 0.0, 0.0],
+        max_calibration_iterations=4,
+        bilateral_stability_steps=2,
+    )
+
+    assert report["calibration_enabled"] is True
+    assert report["branch_count"] == 1
+    assert report["cell_count"] == 2
+    assert report["admitted_cell_count"] == 1
+    assert report["cells"][0]["measured_residual_to_target_m"] == pytest.approx(
+        [0.01, 0.0, 0.0]
+    )
+    assert report["cells"][1]["solver_target_position_world_m"] == pytest.approx(
+        [0.19, 0.0, 0.0]
+    )
+    assert report["best_cell"]["commanded_joint_positions_rad"][0] == pytest.approx(
+        0.19
+    )
+    assert report["best_cell"]["maximum_consecutive_bilateral_steps"] == 2
+    assert solve_calls[0][0] == pytest.approx([0.19, 0.0, 0.0])
+
+
 def test_contact_acquisition_represents_125_cells_in_one_loaded_scene() -> None:
     class _AcquisitionEnvironment:
         def __init__(self) -> None:

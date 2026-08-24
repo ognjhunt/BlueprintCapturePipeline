@@ -2846,6 +2846,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             contact_close_row=contact_close_row,
             task_state_binding=scene_plan["task_state_binding"],
         )
+
+        def _solve_closed_contact(target_position, seed_joints):
+            solved = servo.solve_grasp_target_multistart(
+                target_position_world_m=list(target_position),
+                target_grasp_frame_quaternion_world_xyzw=contact_close_row[
+                    "target_quaternion_world_xyzw"
+                ],
+                preferred_seeds=[list(seed_joints)],
+                reference_joint_positions_rad=list(seed_joints),
+                position_tolerance_m=contact_close_row[
+                    "arrival_tolerance_m"
+                ],
+                orientation_tolerance_rad=(
+                    contact_close_row.get(
+                        "arrival_orientation_tolerance_rad"
+                    )
+                    or 0.08
+                ),
+                preferred_minimum_joint_limit_margin_rad=0.05,
+                required_minimum_joint_limit_margin_rad=(
+                    CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
+                ),
+            )
+            selected = (solved or {}).get("selected")
+            if not isinstance(selected, Mapping):
+                return None
+            return selected.get("joint_positions_rad")
+
         try:
             from blueprint_pipeline.native_task_arena_actuator_sweep import (
                 candidate_postures,
@@ -2888,6 +2916,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         or 0.08
                     ),
                     bilateral_contact_minimum_force_n=close_contact_threshold,
+                    solve=_solve_closed_contact,
+                    solver_target_position_world_m=contact_close_row[
+                        "target_position_world_m"
+                    ],
+                    max_calibration_iterations=4,
+                    bilateral_stability_steps=2,
                 )
                 if close_sweep_preposition is not None
                 else {
@@ -3036,12 +3070,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         result["control_plan_digest"] = effective_control_plan["plan_digest"]
 
-        # Search the missing transition dimension in one loaded scene.  The
-        # earlier close sweep changed the arm target and gripper state at the
-        # same time; C53 and C63 therefore bracketed two one-finger failures
-        # without ever testing the ordinary manipulation sequence: advance
-        # open, freeze the physically reached arm posture, then close.  The
-        # measured approach and jaw axes make the 5x5x5 grid scene-relative.
+        # The earlier acquisition grid displaced the command target and then
+        # required both that displaced target and the authored target to sit
+        # inside 5 mm. Any cell displaced by more than 10 mm is mathematically
+        # unable to pass both gates, and the interrupted symmetric sweep
+        # already exhausted the geometrically admissible centre/5/10 mm
+        # slices. The measured closed-contact calibration above now varies the
+        # thing that actually failed -- the commanded joint posture under the
+        # closed linkage -- while the authored target stays fixed. Do not pay
+        # again for a target-offset surface whose admissible region is closed.
         _announce("contact_acquisition_sweep")
         authored_close_target = [
             float(value)
@@ -3082,6 +3119,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _announce_contact_acquisition_cell(progress)
 
             contact_acquisition = (
+                {
+                    "schema_version": (
+                        "native_task_arena_contact_acquisition_sweep.v1"
+                    ),
+                    "status": "skipped",
+                    "reason": (
+                        "superseded_by_closed_contact_measured_calibration"
+                    ),
+                    "cells": [],
+                    "provider_mutation_performed": False,
+                    "claim_boundary": (
+                        "the_target_offset_grid_cannot_admit_cells_whose_"
+                        "candidate_and_authored_5mm_balls_do_not_intersect;"
+                        "closed_contact_calibration_keeps_the_authored_target_"
+                        "fixed_and_measures_the_failed_joint_posture_instead"
+                    ),
+                }
+                if close_posture_sweep.get("calibration_enabled") is True
+                else
                 run_contact_acquisition_sweep(
                     environment=episode_environment,
                     authored_target_position_world_m=authored_close_target,
