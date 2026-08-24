@@ -966,6 +966,10 @@ def run_contact_close_posture_sweep(
     bilateral_contact_minimum_force_n: Any,
     preposition_steps: int = DEFAULT_CELL_SETTLE_STEPS,
     settle_steps: int = DEFAULT_CELL_SETTLE_STEPS,
+    solve: Any | None = None,
+    solver_target_position_world_m: Sequence[float] | None = None,
+    max_calibration_iterations: int = 1,
+    bilateral_stability_steps: int = 2,
 ) -> dict[str, Any]:
     """Physically measure every solved close branch before choosing one.
 
@@ -973,11 +977,23 @@ def run_contact_close_posture_sweep(
     extremely sensitive to a tiny tracking residual.  Each cell starts from
     the same measured open posture, closes on one solved branch, and seals the
     full selected -> commanded -> reached -> FK -> measured -> pad-force chain.
+
+    When a solver and its command-space target are supplied, a failed physical
+    cell is not thrown away.  The measured closed-pad residual is subtracted
+    from that solver target and the same branch is solved and measured again.
+    This is the closed-gripper counterpart of measured posture calibration:
+    it corrects the actual frame the Phase-5 gate reads while preserving the
+    authored arrival target and bilateral-contact threshold.
     """
 
     target = _finite_vector(target_position_world_m, length=3)
     orientation = _finite_vector(target_orientation_world_xyzw, length=4)
     preposition = _finite_vector(preposition_joint_positions_rad, length=7)
+    solver_target_base = (
+        _finite_vector(solver_target_position_world_m, length=3)
+        if solver_target_position_world_m is not None
+        else None
+    )
     bounded = getattr(environment, "bounded_joint_action", None)
     if target is None or orientation is None or preposition is None or not postures:
         raise ActuatorSweepError(["contact_close_posture_sweep_inputs_invalid"])
@@ -988,6 +1004,18 @@ def run_contact_close_posture_sweep(
             "reason": "runtime_missing_bounded_action",
             "cells": [],
         }
+    if solve is not None and (
+        not callable(solve)
+        or solver_target_base is None
+        or int(max_calibration_iterations) < 1
+    ):
+        raise ActuatorSweepError(
+            ["contact_close_posture_calibration_inputs_invalid"]
+        )
+    if int(bilateral_stability_steps) < 1:
+        raise ActuatorSweepError(
+            ["contact_close_posture_sweep_stability_invalid"]
+        )
     try:
         open_command = float(gripper_open_command)
         closed_command = float(gripper_closed_command)
@@ -1029,86 +1057,123 @@ def run_contact_close_posture_sweep(
         environment.step(action)
 
     cells: list[dict[str, Any]] = []
-    for cell_index, posture in enumerate(postures):
+    iteration_limit = (
+        max(1, int(max_calibration_iterations)) if solve is not None else 1
+    )
+    for posture in postures:
         commanded = _finite_vector(posture.get("joint_positions_rad"), length=7)
         if commanded is None:
             continue
-        stage = "reset"
-        try:
-            environment.reset()
-            stage = "preposition"
-            for _ in range(max(1, int(preposition_steps))):
-                _command(preposition, open_command)
-            bilateral_steps = 0
-            peak_pad_forces: dict[str, float] = {}
-            terminal_sample: Mapping[str, Any] | None = None
-            stage = "close"
-            for _ in range(max(1, int(settle_steps))):
-                _command(commanded, closed_command)
-                terminal_sample = _grasp_frame_sample(environment)
-                forces = _task_pad_forces_n(terminal_sample)
-                for side, magnitude in forces.items():
-                    peak_pad_forces[side] = max(
-                        peak_pad_forces.get(side, 0.0), magnitude
+        solver_target = (
+            list(solver_target_base) if solver_target_base is not None else None
+        )
+        for calibration_iteration in range(iteration_limit):
+            stage = "reset"
+            try:
+                environment.reset()
+                stage = "preposition"
+                for _ in range(max(1, int(preposition_steps))):
+                    _command(preposition, open_command)
+                bilateral_steps = 0
+                consecutive_bilateral_steps = 0
+                maximum_consecutive_bilateral_steps = 0
+                peak_pad_forces: dict[str, float] = {}
+                terminal_sample: Mapping[str, Any] | None = None
+                stage = "close"
+                for _ in range(max(1, int(settle_steps))):
+                    _command(commanded, closed_command)
+                    terminal_sample = _grasp_frame_sample(environment)
+                    forces = _task_pad_forces_n(terminal_sample)
+                    for side, magnitude in forces.items():
+                        peak_pad_forces[side] = max(
+                            peak_pad_forces.get(side, 0.0), magnitude
+                        )
+                    bilateral = all(
+                        forces.get(side, 0.0) >= contact_threshold
+                        for side in (
+                            "left_inner_finger",
+                            "right_inner_finger",
+                        )
                     )
-                if all(
-                    forces.get(side, 0.0) >= contact_threshold
-                    for side in ("left_inner_finger", "right_inner_finger")
-                ):
-                    bilateral_steps += 1
-            stage = "terminal_readback"
-            reached = _finite_vector(
-                environment.read_arm_joint_positions(), length=7
-            )
-            terminal_sample = terminal_sample or _grasp_frame_sample(environment)
-            # C58 proved that isolating only reset/step/readback is not enough:
-            # a later conversion or derived measurement can still erase every
-            # branch through the caller's outer diagnostic catch.  Keep the
-            # complete cell lifecycle inside the same isolation boundary.
-            stage = "measurement"
-            measured = _finite_vector(
-                (terminal_sample or {}).get("grasp_frame_position_world_m"),
-                length=3,
-            )
-            measured_orientation = _finite_vector(
-                (terminal_sample or {}).get(
-                    "grasp_frame_orientation_world_xyzw"
-                ),
-                length=4,
-            )
-            terminal_forces = _task_pad_forces_n(terminal_sample)
-            predictor = getattr(
-                environment, "predict_grasp_frame_pose_world", None
-            )
-            predicted = None
-            if reached is not None and callable(predictor):
-                try:
-                    predicted = _finite_vector(
-                        predictor(reached, gripper_command=closed_command),
-                        length=7,
+                    bilateral_steps += int(bilateral)
+                    consecutive_bilateral_steps = (
+                        consecutive_bilateral_steps + 1 if bilateral else 0
                     )
-                except Exception:  # noqa: BLE001 - retain an explicit FK gap
-                    predicted = None
-            distance = (
-                math.dist(measured, target) if measured is not None else None
-            )
-            orientation_error = (
-                _quaternion_angle_xyzw(measured_orientation, orientation)
-                if measured_orientation is not None
-                else None
-            )
-            admitted = bool(
-                distance is not None
-                and distance <= position_tolerance
-                and orientation_error is not None
-                and orientation_error <= orientation_tolerance
-                and all(
-                    terminal_forces.get(side, 0.0) >= contact_threshold
-                    for side in ("left_inner_finger", "right_inner_finger")
+                    maximum_consecutive_bilateral_steps = max(
+                        maximum_consecutive_bilateral_steps,
+                        consecutive_bilateral_steps,
+                    )
+                stage = "terminal_readback"
+                reached = _finite_vector(
+                    environment.read_arm_joint_positions(), length=7
                 )
-            )
-            cells.append(
-                {
+                terminal_sample = terminal_sample or _grasp_frame_sample(
+                    environment
+                )
+                # C58 proved that isolating only reset/step/readback is not
+                # enough: a later conversion or derived measurement can still
+                # erase every branch through the caller's outer diagnostic
+                # catch. Keep the complete cell lifecycle isolated.
+                stage = "measurement"
+                measured = _finite_vector(
+                    (terminal_sample or {}).get(
+                        "grasp_frame_position_world_m"
+                    ),
+                    length=3,
+                )
+                measured_orientation = _finite_vector(
+                    (terminal_sample or {}).get(
+                        "grasp_frame_orientation_world_xyzw"
+                    ),
+                    length=4,
+                )
+                terminal_forces = _task_pad_forces_n(terminal_sample)
+                predictor = getattr(
+                    environment, "predict_grasp_frame_pose_world", None
+                )
+                predicted = None
+                if reached is not None and callable(predictor):
+                    try:
+                        predicted = _finite_vector(
+                            predictor(
+                                reached, gripper_command=closed_command
+                            ),
+                            length=7,
+                        )
+                    except Exception:  # noqa: BLE001 - explicit FK gap
+                        predicted = None
+                distance = (
+                    math.dist(measured, target)
+                    if measured is not None
+                    else None
+                )
+                orientation_error = (
+                    _quaternion_angle_xyzw(measured_orientation, orientation)
+                    if measured_orientation is not None
+                    else None
+                )
+                terminal_bilateral = all(
+                    terminal_forces.get(side, 0.0) >= contact_threshold
+                    for side in (
+                        "left_inner_finger",
+                        "right_inner_finger",
+                    )
+                )
+                admitted = bool(
+                    distance is not None
+                    and distance <= position_tolerance
+                    and orientation_error is not None
+                    and orientation_error <= orientation_tolerance
+                    and terminal_bilateral
+                    and maximum_consecutive_bilateral_steps
+                    >= int(bilateral_stability_steps)
+                )
+                residual = (
+                    [measured[axis] - target[axis] for axis in range(3)]
+                    if measured is not None
+                    else None
+                )
+                cell = {
                     **{
                         key: posture.get(key)
                         for key in (
@@ -1118,6 +1183,13 @@ def run_contact_close_posture_sweep(
                             "minimum_joint_limit_margin_rad",
                         )
                     },
+                    "cell_index": len(cells),
+                    "calibration_iteration": calibration_iteration,
+                    "solver_target_position_world_m": (
+                        list(solver_target)
+                        if solver_target is not None
+                        else None
+                    ),
                     "commanded_joint_positions_rad": commanded,
                     "reached_joint_positions_rad": reached,
                     "commanded_to_reached_joint_l2_rad": (
@@ -1140,27 +1212,49 @@ def run_contact_close_posture_sweep(
                     "measured_grasp_frame_orientation_world_xyzw": (
                         measured_orientation
                     ),
+                    "measured_residual_to_target_m": residual,
                     "measured_distance_to_target_m": distance,
                     "measured_orientation_error_rad": orientation_error,
                     "terminal_task_contact_pad_forces_n": terminal_forces,
                     "peak_task_contact_pad_forces_n": peak_pad_forces,
                     "bilateral_contact_steps": bilateral_steps,
+                    "maximum_consecutive_bilateral_steps": (
+                        maximum_consecutive_bilateral_steps
+                    ),
                     "admitted": admitted,
                 }
-            )
-        except Exception as exc:  # noqa: BLE001 - isolate one physical branch
-            cells.append(
-                {
-                    "posture_index": posture.get("posture_index"),
-                    "seed_index": posture.get("seed_index"),
-                    "commanded_joint_positions_rad": commanded,
-                    "status": "cell_error",
-                    "error": f"{stage}:{type(exc).__name__}:{exc}",
-                    "admitted": False,
-                    "measured_distance_to_target_m": None,
-                }
-            )
-            continue
+                cells.append(cell)
+                if admitted or solve is None or residual is None:
+                    break
+                stage = "measured_residual_resolve"
+                solver_target = [
+                    solver_target[axis] - residual[axis]
+                    for axis in range(3)
+                ]
+                solved = solve(solver_target, reached or commanded)
+                corrected = _finite_vector(solved, length=7)
+                if corrected is None:
+                    cell["calibration_stopped_reason"] = (
+                        "solver_returned_no_pose"
+                    )
+                    break
+                commanded = corrected
+            except Exception as exc:  # noqa: BLE001 - isolate physical branch
+                cells.append(
+                    {
+                        "cell_index": len(cells),
+                        "posture_index": posture.get("posture_index"),
+                        "seed_index": posture.get("seed_index"),
+                        "calibration_iteration": calibration_iteration,
+                        "solver_target_position_world_m": solver_target,
+                        "commanded_joint_positions_rad": commanded,
+                        "status": "cell_error",
+                        "error": f"{stage}:{type(exc).__name__}:{exc}",
+                        "admitted": False,
+                        "measured_distance_to_target_m": None,
+                    }
+                )
+                break
     admitted_cells = [cell for cell in cells if cell["admitted"]]
     measurable = [
         cell for cell in cells if cell["measured_distance_to_target_m"] is not None
@@ -1181,12 +1275,19 @@ def run_contact_close_posture_sweep(
     report = {
         "schema_version": CLOSE_POSTURE_SWEEP_SCHEMA_VERSION,
         "status": "measured" if cells else "unavailable",
+        "branch_count": len(postures),
         "cell_count": len(cells),
         "cells": cells,
         "best_cell": best,
         "admitted_cell_count": len(admitted_cells),
+        "calibration_enabled": solve is not None,
+        "maximum_calibration_iterations_per_branch": iteration_limit,
+        "bilateral_stability_required_steps": int(
+            bilateral_stability_steps
+        ),
         "claim_boundary": (
-            "physics_measures_each_solved_close_branch;only_the_following_"
+            "physics_measures_each_solved_close_branch_and_optionally_folds_"
+            "the_closed_pad_residual_back_into_ik;only_the_following_"
             "deterministic_controls_episode_asserts_task_success"
         ),
     }
