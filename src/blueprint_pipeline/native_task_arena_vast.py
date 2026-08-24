@@ -217,7 +217,6 @@ def run_native_task_arena_controls_vast(
         != CONTROLS_RESULT_FILENAME
     ):
         raise ValueError("native_task_arena_controls_prepared_bundle_contract_invalid")
-    job = Path(job_dir).expanduser().resolve()
     allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
     authority = (
         validate_native_task_arena_paid_attempt_authority(
@@ -265,11 +264,11 @@ def run_native_task_arena_controls_vast(
         # Policies retain their independent 46 GB floor below.
         min_gpu_ram_mb=NO_POLICY_MIN_GPU_RAM_MB,
         allowed_active_instance_ids=allowed_ids,
-        vast_launch_lock_file=(
-            job / "native_task_arena_controls_paid_launch.lock"
-            if allowed_ids
-            else None
-        ),
+        # Active-instance allowlisting permits an explicitly coordinated
+        # concurrent run; it must not also replace the provider-wide semaphore
+        # with a lane-local lock. ``None`` makes the transport resolve the
+        # canonical VAST_LAUNCH_LOCK_FILE and its bounded concurrency slots.
+        vast_launch_lock_file=None,
         candidate_policy_query_expected=False,
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
@@ -379,7 +378,6 @@ def _run_native_task_arena_policy_vast(
         != expected_output_filename
     ):
         raise ValueError("native_task_arena_policy_prepared_bundle_contract_invalid")
-    job = Path(job_dir).expanduser().resolve()
     allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
     authority = (
         validate_native_task_arena_paid_attempt_authority(
@@ -428,9 +426,10 @@ def _run_native_task_arena_policy_vast(
         blocker_prefix=blocker_prefix,
         min_gpu_ram_mb=46_000,
         allowed_active_instance_ids=allowed_ids,
-        vast_launch_lock_file=(
-            job / "native_task_arena_policy_paid_launch.lock" if allowed_ids else None
-        ),
+        # Policy and controls share the provider-wide semaphore even when a
+        # predecessor GPU is explicitly allowlisted. The allowlist governs
+        # inventory admission; it is not permission to bypass launch slots.
+        vast_launch_lock_file=None,
         candidate_policy_query_expected=True,
         forward_hf_token=(candidate == "groot_n17_droid"),
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
