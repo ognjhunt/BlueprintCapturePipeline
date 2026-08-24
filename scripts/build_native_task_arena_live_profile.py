@@ -377,7 +377,15 @@ def _lane_blockers(
                     raise ValueError("native_task_arena_attempt_authority_invalid")
                 if authority.get("schema_version") == WARM_AUTHORITY_SCHEMA_VERSION:
                     warm_path = context.extra_paths.get("warm_session")
-                    if link.probe_kind != CONTROLS_PROBE_KIND or warm_path is None:
+                    warm_policy_supported = (
+                        link.probe_kind == POLICY_PROBE_KIND
+                        and prepared_bundle.get("policy_candidate_id")
+                        == "pi05_droid"
+                    )
+                    if (
+                        link.probe_kind != CONTROLS_PROBE_KIND
+                        and not warm_policy_supported
+                    ) or warm_path is None:
                         raise ValueError("native_task_arena_warm_attach_invalid")
                     warm_session = _read_mapping(
                         warm_path,

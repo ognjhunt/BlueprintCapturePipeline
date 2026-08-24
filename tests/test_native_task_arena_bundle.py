@@ -38,6 +38,7 @@ from blueprint_pipeline.native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
 )
 from blueprint_pipeline.native_task_arena_policy_bundle import (
+    PROBE_KIND as POLICY_PROBE_KIND,
     build_native_task_arena_policy_bundle,
     build_native_task_policy_execution_spec,
     load_verified_native_task_arena_policy_bundle,
@@ -2446,6 +2447,131 @@ def test_canonical_allocator_attaches_controls_without_new_gpu(
     assert admission["allocation_binding"]["warm_session_digest"] == (
         warm_session["session_digest"]
     )
+
+
+def test_canonical_allocator_attaches_pi05_policy_without_new_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    source_packet = _runtime_source_packet(tmp_path)
+    policy_spec = _policy_spec(scene, construction, controls)
+    policy_spec_path = tmp_path / "pi05-policy-spec.json"
+    write_json(policy_spec_path, policy_spec)
+    frozen_bundle = build_native_task_arena_policy_bundle(
+        job_dir=tmp_path / "frozen-policy-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        control_result_path=controls,
+        policy_execution_spec=policy_spec,
+        runtime_source_packet_receipt=source_packet,
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    warm_session = {
+        "schema_version": "native_task_arena_warm_session.v1",
+        "session_digest": "sha256:" + "7" * 64,
+        "instance_id": 123,
+    }
+    warm_session_path = tmp_path / "warm-policy-session.json"
+    write_json(warm_session_path, warm_session)
+    warm_authority = {
+        "schema_version": "native_task_arena_warm_attempt_authority.v1",
+        "authorization_digest": "sha256:" + "8" * 64,
+    }
+    warm_authority_path = tmp_path / "warm-policy-authority.json"
+    write_json(warm_authority_path, warm_authority)
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_session",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_attempt_authority",
+        lambda value, **_kwargs: value,
+    )
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "provider_allocations_performed": 0}
+
+    monkeypatch.setattr(
+        allocator, "run_native_task_arena_warm_policy_vast", fake_run
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        POLICY_PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "policy-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "policy-adapter.json"),
+        "--pod-name",
+        "native-task-arena-warm-pi05",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-construction-result",
+        str(construction),
+        "--native-task-arena-control-result",
+        str(controls),
+        "--native-task-arena-policy-execution-spec",
+        str(policy_spec_path),
+        "--native-task-arena-runtime-source-packet",
+        str(source_packet),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-policy-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--native-task-arena-attempt-authority",
+        str(warm_authority_path),
+        "--native-task-arena-warm-session",
+        str(warm_session_path),
+        "--adp-allowed-active-vast-instance-id",
+        "123",
+        "--adp-job-dir",
+        str(tmp_path / "policy-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["execute"] is True
+    assert observed["prepared_bundle"]["bundle_sha256"] == frozen_bundle[
+        "bundle_sha256"
+    ]
+    assert observed["prepared_bundle"]["policy_candidate_id"] == "pi05_droid"
+    assert observed["warm_session"] == warm_session
+    admission = json.loads((tmp_path / "policy-admission.json").read_text())
+    assert admission["allocation_binding"]["execution_transport"] == (
+        "retained_warm_instance"
+    )
+    assert admission["candidate_policy_queried"] is True
 
 
 def _repack_scene(packet: Path, scene: dict) -> None:

@@ -198,7 +198,10 @@ from .native_task_arena_warm_authority import (
     validate_native_task_arena_warm_attempt_authority,
     validate_native_task_arena_warm_session,
 )
-from .native_task_arena_warm_vast import run_native_task_arena_warm_controls_vast
+from .native_task_arena_warm_vast import (
+    run_native_task_arena_warm_controls_vast,
+    run_native_task_arena_warm_policy_vast,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -4997,8 +5000,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing.append("native_task_arena_control_result")
             if policy_requested and not args.native_task_arena_policy_execution_spec:
                 missing.append("native_task_arena_policy_execution_spec")
-            if warm_attach_requested and not controls_requested:
-                missing.append("native_task_arena_warm_attach_requires_controls")
+            if warm_attach_requested and not (controls_requested or policy_requested):
+                missing.append("native_task_arena_warm_attach_requires_controls_or_policy")
             if warm_attach_requested and args.native_task_arena_retain_warm_session:
                 missing.append("native_task_arena_warm_modes_conflict")
             if warm_attach_requested and not args.native_task_arena_attempt_authority:
@@ -5037,6 +5040,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     selected_candidate = ""
                     blockers.append("native_task_arena_policy_execution_spec_unreadable")
                 groot_selected = selected_candidate == "groot_n17_droid"
+                if warm_attach_requested and selected_candidate != "pi05_droid":
+                    blockers.append(
+                        "native_task_arena_warm_policy_requires_public_pi05"
+                    )
                 if groot_selected and not args.adp009d_authorize_gated_backbone:
                     blockers.append("native_task_arena_groot_gated_backbone_authority_missing")
                 if args.adp009d_authorize_gated_backbone and not groot_selected:
@@ -5335,7 +5342,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             else:
                 if warm_attach_requested:
-                    result = run_native_task_arena_warm_controls_vast(
+                    warm_runner = (
+                        run_native_task_arena_warm_policy_vast
+                        if policy_requested
+                        else run_native_task_arena_warm_controls_vast
+                    )
+                    result = warm_runner(
                         job_dir=args.adp_job_dir,
                         prepared_bundle=prepared_bundle,
                         warm_session=native_warm_session,
