@@ -199,7 +199,7 @@ def _announce_contact_acquisition_cell(progress: Mapping[str, Any]) -> None:
         return f"{number:.5g}" if math.isfinite(number) else "na"
 
     print(
-        "BLUEPRINT_CONTACT_ACQUISITION_CELL:"
+        "BLUEPRINT_CONTACT_ACQUISITION_PROGRESS:CELL:"
         f"i={int(cell.get('cell_index') or 0)}:"
         f"a={_number(cell.get('approach_offset_m'))}:"
         f"j={_number(cell.get('jaw_offset_m'))}:"

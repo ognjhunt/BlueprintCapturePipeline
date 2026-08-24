@@ -1799,7 +1799,7 @@ def test_contact_acquisition_progress_is_atomic_and_timeout_harvestable(
     assert retained["result_digest"].startswith("sha256:")
     assert not (tmp_path / f".{output.name}.tmp").exists()
     marker = capsys.readouterr().out.strip()
-    assert marker.startswith("BLUEPRINT_CONTACT_ACQUISITION_CELL:i=7:")
+    assert marker.startswith("BLUEPRINT_CONTACT_ACQUISITION_PROGRESS:CELL:i=7:")
     assert ":ok=1:b=2:lf=1.2:rf=1.1:d=0.004:o=0.05" in marker
 
 
