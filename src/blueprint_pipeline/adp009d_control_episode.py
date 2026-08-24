@@ -2115,8 +2115,11 @@ def _run_task_control_episode(
             if hold_arm_during_gripper_transition
             else None
         )
+        explicit_arrival_target = (
+            row.get("arrival_target_position_world_m") is not None
+        )
         arrival_target_position = row.get("arrival_target_position_world_m")
-        if arrival_target_position is None:
+        if not explicit_arrival_target:
             arrival_target_position = row.get("target_position_world_m")
         arrival_target_orientation = row.get("target_quaternion_world_xyzw")
         arrival_target_source = (
@@ -2124,7 +2127,11 @@ def _run_task_control_episode(
             if row.get("arrival_target_position_world_m") is not None
             else "commanded_phase_pose"
         )
-        if hold_arm_during_gripper_transition:
+        # Holding the reached arm joints is a command policy, not permission
+        # to move the scientific arrival gate.  An explicit sealed target
+        # remains authoritative through gripper motion; only legacy hold rows
+        # without one fall back to the qualified entry pose.
+        if hold_arm_during_gripper_transition and not explicit_arrival_target:
             arrival_target_position = start_sample.get(
                 "grasp_frame_position_world_m"
             )
