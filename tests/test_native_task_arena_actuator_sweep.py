@@ -152,6 +152,54 @@ def test_one_run_returns_a_gain_by_posture_surface() -> None:
         assert "outcome" not in cell
 
 
+def test_actuator_sweep_scores_each_parallel_jaw_posture_against_its_own_target() -> None:
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+    equivalent = [0.0, 2**-0.5, 2**-0.5, 0.0]
+
+    class _VariantEnvironment(_SweepEnvironment):
+        def read_object_sample(self):
+            return {
+                "grasp_frame_position_world_m": [self.joints[4], 0.0, 0.0],
+                "grasp_frame_orientation_world_xyzw": equivalent,
+                "task_contact_active": False,
+                "joint_limit_violation": False,
+                "robot_collision_failure": False,
+                "scene_collision_failure": False,
+            }
+
+    postures = [
+        {
+            "posture_index": index,
+            "variant_id": variant_id,
+            "joint_positions_rad": [0.0] * 4 + [1.0, 0.0, 0.0],
+            "authoritative_target_position_world_m": TARGET,
+            "authoritative_target_quaternion_world_xyzw": quaternion,
+        }
+        for index, (variant_id, quaternion) in enumerate(
+            (
+                ("normalized_nominal", nominal),
+                ("parallel_jaw_equivalent", equivalent),
+            )
+        )
+    ]
+
+    report = _sweep(
+        _VariantEnvironment(),
+        target_orientation_world_xyzw=nominal,
+        postures=postures,
+        wrist_gain_candidates=((40.0, 8.0),),
+        settle_steps=60,
+    )
+
+    by_variant = {cell["variant_id"]: cell for cell in report["cells"]}
+    assert by_variant["normalized_nominal"][
+        "measured_orientation_error_rad"
+    ] == pytest.approx(math.pi)
+    assert by_variant["parallel_jaw_equivalent"][
+        "measured_orientation_error_rad"
+    ] == pytest.approx(0.0)
+
+
 def test_actuator_sweep_publishes_incremental_cell_progress() -> None:
     progress = []
 

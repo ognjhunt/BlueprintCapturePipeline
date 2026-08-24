@@ -14,6 +14,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _contact_close_sweep_minimum_force_n,
     _construction_global_ik_joint_targets,
     _control_plan_global_ik_joint_targets,
+    _dispatch_physics_admitted_jaw_variant,
     _fallback_contact_open_postures,
     _input_binding_mismatches,
     _load_and_verify_manifest,
@@ -28,7 +29,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
 )
 
 
-def test_contact_open_fallback_measures_both_variants_and_deduplicates_postures() -> None:
+def test_contact_open_fallback_preserves_variant_specific_scoring_targets() -> None:
     def _preflight(*rows):
         return {
             "phases": [
@@ -46,6 +47,20 @@ def test_contact_open_fallback_measures_both_variants_and_deduplicates_postures(
         "joint_positions_rad": [0.1] * 7,
         "position_error_m": 0.0043,
         "orientation_error_rad": 0.086,
+    }
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+    control_plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_open",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+                "arrival_tolerance_m": 0.005,
+                "arrival_orientation_tolerance_rad": 0.08,
+            }
+        ],
+        "plan_digest": "sha256:" + "a" * 64,
     }
     rows = _fallback_contact_open_postures(
         {
@@ -66,12 +81,90 @@ def test_contact_open_fallback_measures_both_variants_and_deduplicates_postures(
                     ),
                 },
             ]
-        }
+        },
+        control_plan=control_plan,
     )
 
-    assert len(rows) == 2
+    # The same joint vector under different jaw conventions is retained twice:
+    # one physical reading can be compared with either quaternion, but the
+    # matrix cell must preserve which target it is grading.
+    assert len(rows) == 3
     assert {row["joint_positions_rad"][0] for row in rows} == {0.1, 0.2}
     assert rows[0]["variant_id"] == "normalized_nominal"
+    by_variant = {row["variant_id"]: row for row in rows}
+    assert by_variant["normalized_nominal"][
+        "authoritative_target_quaternion_world_xyzw"
+    ] == pytest.approx(nominal)
+    assert by_variant["parallel_jaw_equivalent"][
+        "authoritative_target_quaternion_world_xyzw"
+    ] == pytest.approx([0.0, 2**-0.5, 2**-0.5, 0.0])
+
+
+def test_physics_admitted_parallel_cell_switches_plan_targets_and_preflight() -> None:
+    nominal = [-2**-0.5, 0.0, 0.0, 2**-0.5]
+    equivalent = [0.0, 2**-0.5, 2**-0.5, 0.0]
+    normalized = {
+        "schema_version": "adp_task_control_plan.v1",
+        "scripted_positive_actions": [
+            {
+                "phase_id": phase_id,
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": nominal,
+            }
+            for phase_id in ("contact_open", "contact_close")
+        ],
+        "plan_digest": "sha256:" + "a" * 64,
+    }
+    parallel_targets = [
+        {
+            "phase_id": "contact_open",
+            "target_position_world_m": [1.0, 2.0, 3.0],
+            "target_quaternion_world_xyzw": equivalent,
+            "joint_positions_rad": [0.2] * 7,
+        }
+    ]
+    parallel_preflight = {
+        "status": "partial",
+        "phases": [{"phase_id": "contact_open"}],
+    }
+
+    plan, targets, preflight, receipt = (
+        _dispatch_physics_admitted_jaw_variant(
+            normalized_control_plan=normalized,
+            selected_control_plan=normalized,
+            scripted_pose_joint_targets=[],
+            controls_global_ik={"status": "nominal"},
+            jaw_selection={
+                "selected_variant_id": "normalized_nominal",
+                "variants": [
+                    {
+                        "variant_id": "parallel_jaw_equivalent",
+                        "scripted_pose_joint_targets": parallel_targets,
+                        "global_ik_preflight": parallel_preflight,
+                    }
+                ],
+            },
+            admitted_open_cell={
+                "variant_id": "parallel_jaw_equivalent"
+            },
+        )
+    )
+
+    assert receipt["variant_switched"] is True
+    assert receipt["adopted_variant_id"] == "parallel_jaw_equivalent"
+    assert all(
+        row["target_quaternion_world_xyzw"] == pytest.approx(equivalent)
+        for row in plan["scripted_positive_actions"]
+    )
+    assert plan["plan_digest"] == _canonical_digest(
+        plan, field="plan_digest"
+    )
+    assert targets == parallel_targets
+    assert preflight == parallel_preflight
+    assert receipt["selected_variant_control_plan_digest"] == plan[
+        "plan_digest"
+    ]
 
 
 def test_contact_open_physics_adoption_keeps_every_gate_fail_closed() -> None:
@@ -92,6 +185,25 @@ def test_contact_open_physics_adoption_keeps_every_gate_fail_closed() -> None:
     )
     assert selected is not None
     assert selected["pose_gate_passed"] is True
+
+    parallel = {
+        **base,
+        "variant_id": "parallel_jaw_equivalent",
+        "measured_distance_to_target_m": 0.003467,
+        "measured_orientation_error_rad": 0.06678,
+    }
+    nominal_wrong_target = {
+        **base,
+        "variant_id": "normalized_nominal",
+        "measured_orientation_error_rad": 3.14159,
+    }
+    selected_variant = _physics_admitted_contact_open_cell(
+        {"cells": [nominal_wrong_target, parallel]},
+        position_tolerance_m=0.005,
+        orientation_tolerance_rad=0.08,
+    )
+    assert selected_variant is not None
+    assert selected_variant["variant_id"] == "parallel_jaw_equivalent"
 
     for failed_field, failed_value in (
         ("measured_distance_to_target_m", 0.0051),

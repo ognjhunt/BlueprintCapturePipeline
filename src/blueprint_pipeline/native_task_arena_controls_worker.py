@@ -2094,6 +2094,8 @@ def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
 
 def _fallback_contact_open_postures(
     jaw_selection: Mapping[str, Any],
+    *,
+    control_plan: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return every distinct terminal IK posture for live physics to measure.
 
@@ -2112,7 +2114,15 @@ def _fallback_contact_open_postures(
     if not isinstance(variants, list):
         return []
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[float, ...]] = set()
+    seen: set[tuple[Any, ...]] = set()
+    variant_plans: dict[str, Mapping[str, Any]] = {}
+    if control_plan is not None:
+        variant_plans = {
+            "normalized_nominal": control_plan,
+            "parallel_jaw_equivalent": _parallel_jaw_equivalent_control_plan(
+                control_plan
+            ),
+        }
     for variant in variants:
         if not isinstance(variant, Mapping):
             continue
@@ -2120,6 +2130,21 @@ def _fallback_contact_open_postures(
         preflight = variant.get("global_ik_preflight")
         if not variant_id or not isinstance(preflight, Mapping):
             continue
+        variant_plan = variant_plans.get(variant_id)
+        target_row = (
+            next(
+                (
+                    row
+                    for row in variant_plan.get("scripted_positive_actions") or []
+                    if isinstance(row, Mapping)
+                    and row.get("mode") == "ik_pose"
+                    and str(row.get("phase_id") or "") == "contact_open"
+                ),
+                None,
+            )
+            if isinstance(variant_plan, Mapping)
+            else None
+        )
         for posture in candidate_postures(
             preflight,
             phase_id="contact_open",
@@ -2128,12 +2153,122 @@ def _fallback_contact_open_postures(
             joints = posture.get("joint_positions_rad")
             if not isinstance(joints, list) or len(joints) != 7:
                 continue
-            key = tuple(round(float(value), 6) for value in joints)
+            key = (
+                variant_id,
+                *(round(float(value), 6) for value in joints),
+            )
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({**posture, "variant_id": variant_id})
+            row = {
+                **posture,
+                "variant_id": variant_id,
+                "posture_source": "jaw_variant_global_ik",
+            }
+            if isinstance(target_row, Mapping):
+                row.update(
+                    {
+                        "candidate_command_target_position_world_m": list(
+                            target_row["target_position_world_m"]
+                        ),
+                        "candidate_command_target_quaternion_world_xyzw": list(
+                            target_row["target_quaternion_world_xyzw"]
+                        ),
+                        "authoritative_target_position_world_m": list(
+                            target_row.get(
+                                "arrival_target_position_world_m",
+                                target_row["target_position_world_m"],
+                            )
+                        ),
+                        "authoritative_target_quaternion_world_xyzw": list(
+                            target_row.get(
+                                "arrival_target_quaternion_world_xyzw",
+                                target_row["target_quaternion_world_xyzw"],
+                            )
+                        ),
+                    }
+                )
+            rows.append(row)
     return rows
+
+
+def _dispatch_physics_admitted_jaw_variant(
+    *,
+    normalized_control_plan: Mapping[str, Any],
+    selected_control_plan: Mapping[str, Any],
+    scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
+    controls_global_ik: Mapping[str, Any],
+    jaw_selection: Mapping[str, Any],
+    admitted_open_cell: Mapping[str, Any],
+) -> tuple[
+    dict[str, Any],
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    """Dispatch the exact jaw convention whose physical cell passed."""
+
+    previous_variant_id = str(
+        jaw_selection.get("selected_variant_id") or "normalized_nominal"
+    )
+    adopted_variant_id = str(
+        admitted_open_cell.get("variant_id")
+        or previous_variant_id
+    )
+    variant_row = next(
+        (
+            row
+            for row in jaw_selection.get("variants") or []
+            if isinstance(row, Mapping)
+            and row.get("variant_id") == adopted_variant_id
+        ),
+        None,
+    )
+    plan = dict(selected_control_plan)
+    targets = [dict(row) for row in scripted_pose_joint_targets]
+    preflight = dict(controls_global_ik)
+    if adopted_variant_id != previous_variant_id:
+        if (
+            adopted_variant_id != "parallel_jaw_equivalent"
+            or not isinstance(variant_row, Mapping)
+        ):
+            raise RuntimeError(
+                "native_task_controls_physics_variant_dispatch_invalid"
+            )
+        plan = _parallel_jaw_equivalent_control_plan(
+            normalized_control_plan
+        )
+        variant_targets = variant_row.get("scripted_pose_joint_targets")
+        variant_preflight = variant_row.get("global_ik_preflight")
+        if not isinstance(variant_targets, list):
+            raise RuntimeError(
+                "native_task_controls_physics_variant_targets_missing"
+            )
+        if not isinstance(variant_preflight, Mapping):
+            raise RuntimeError(
+                "native_task_controls_physics_variant_preflight_missing"
+            )
+        targets = [
+            dict(row) for row in variant_targets if isinstance(row, Mapping)
+        ]
+        preflight = dict(variant_preflight)
+    receipt = {
+        "schema_version": (
+            "native_task_controls_physics_variant_dispatch.v1"
+        ),
+        "status": "applied",
+        "previous_variant_id": previous_variant_id,
+        "adopted_variant_id": adopted_variant_id,
+        "variant_switched": adopted_variant_id != previous_variant_id,
+        "selected_variant_control_plan_digest": plan.get("plan_digest"),
+        "claim_boundary": (
+            "dispatches_only_the_same_parallel_jaw_variant_whose_reset_"
+            "isolated_cell_passed_the_unchanged_native_pose_collision_joint_"
+            "limit_and_zero_contact_gates;continuous_episode_remains_"
+            "authoritative"
+        ),
+    }
+    return plan, targets, preflight, receipt
 
 
 def _physics_admitted_contact_open_cell(
@@ -2266,6 +2401,7 @@ def _select_parallel_jaw_control_plan(
             "contact_open_minimum_joint_limit_margin_rad": margin,
             "admissible": admissible,
             "global_ik_preflight": preflight,
+            "scripted_pose_joint_targets": targets,
         }
         variants.append(row)
         evaluated_payloads.append((variant_id, plan, targets, preflight))
@@ -2931,6 +3067,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             and str(row.get("phase_id") or "") == "contact_open"
         )
         contact_quaternion = contact_row["target_quaternion_world_xyzw"]
+        contact_authoritative_position = contact_row.get(
+            "arrival_target_position_world_m",
+            contact_row["target_position_world_m"],
+        )
+        contact_authoritative_quaternion = contact_row.get(
+            "arrival_target_quaternion_world_xyzw",
+            contact_quaternion,
+        )
         contact_tolerance = float(contact_row["arrival_tolerance_m"])
         contact_orientation_tolerance = float(
             contact_row.get("arrival_orientation_tolerance_rad") or 0.08
@@ -2943,12 +3087,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             controls_global_ik, phase_id="contact_open"
         )
         if live_dls_contact_fallback:
-            # C79 physically reached the corrected endpoint but became pinned
-            # 0.0072 rad outside the orientation gate on one joint-limit
-            # branch.  Measure every terminal posture from both equivalent
-            # jaw variants instead of paying for another single local basin.
+            # C82's fallback carried terminal postures for both physically
+            # equivalent jaw signs, but the matrix scored every one against
+            # the selected nominal quaternion.  A parallel-jaw posture was
+            # therefore guaranteed to report pi radians and could never be
+            # adopted.  Measure those already-computed variants against their
+            # own unchanged plan targets before searching any new bias shell.
             contact_open_postures = _fallback_contact_open_postures(
-                jaw_selection
+                jaw_selection,
+                control_plan=normalized_control_plan,
             )
 
         def _solve_contact(target_position, seed_joints):
@@ -3070,6 +3217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             try:
                 from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                    DEFAULT_WRIST_GAIN_CANDIDATES,
                     run_actuator_posture_sweep,
                 )
 
@@ -3100,13 +3248,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     environment=episode_environment,
                     robot=robot,
                     arm_joint_ids=list(range(7)),
-                    target_position_world_m=contact_row["target_position_world_m"],
-                    target_orientation_world_xyzw=contact_quaternion,
+                    target_position_world_m=contact_authoritative_position,
+                    target_orientation_world_xyzw=(
+                        contact_authoritative_quaternion
+                    ),
                     postures=contact_open_postures,
                     gripper_open_command=float(gripper["open_command"]),
                     max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
                     max_joint_setpoint_lead_rad=float(
                         contact_row["max_joint_setpoint_lead_rad"]
+                    ),
+                    wrist_gain_candidates=(
+                        ((400.0, 80.0),)
+                        if live_dls_contact_fallback
+                        else DEFAULT_WRIST_GAIN_CANDIDATES
                     ),
                     progress_callback=_contact_open_progress,
                 )
@@ -3117,6 +3272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "reason": f"{type(exc).__name__}:{exc}",
                     "cells": [],
                 }
+        result["contact_open_jaw_variant_posture_sweep"] = sweep
+
         result["contact_posture_actuator_sweep"] = sweep
 
         admitted_open_cell = _physics_admitted_contact_open_cell(
@@ -3139,15 +3296,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         }
         if admitted_open_cell is not None:
+            (
+                selected_control_plan,
+                scripted_pose_joint_targets,
+                controls_global_ik,
+                variant_dispatch,
+            ) = _dispatch_physics_admitted_jaw_variant(
+                normalized_control_plan=normalized_control_plan,
+                selected_control_plan=selected_control_plan,
+                scripted_pose_joint_targets=scripted_pose_joint_targets,
+                controls_global_ik=controls_global_ik,
+                jaw_selection=jaw_selection,
+                admitted_open_cell=admitted_open_cell,
+            )
+            result["contact_open_physics_variant_dispatch"] = variant_dispatch
             adopted_open = list(
                 admitted_open_cell["commanded_joint_positions_rad"]
             )
+            adopted_target_position = list(
+                admitted_open_cell.get(
+                    "candidate_command_target_position_world_m"
+                )
+                or contact_row["target_position_world_m"]
+            )
+            adopted_target_quaternion = list(
+                admitted_open_cell.get(
+                    "candidate_command_target_quaternion_world_xyzw"
+                )
+                or contact_quaternion
+            )
+            contact_quaternion = adopted_target_quaternion
             target_record = {
                 "phase_id": "contact_open",
-                "target_position_world_m": list(
-                    contact_row["target_position_world_m"]
-                ),
-                "target_quaternion_world_xyzw": list(contact_quaternion),
+                "target_position_world_m": adopted_target_position,
+                "target_quaternion_world_xyzw": adopted_target_quaternion,
                 "joint_positions_rad": adopted_open,
             }
             scripted_pose_joint_targets = [

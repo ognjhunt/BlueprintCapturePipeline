@@ -1593,6 +1593,30 @@ def run_actuator_posture_sweep(
                 predicted = _finite_vector(
                     posture.get("predicted_grasp_frame_position_world_m"), length=3
                 )
+                candidate_command_position = _finite_vector(
+                    posture.get("candidate_command_target_position_world_m"),
+                    length=3,
+                )
+                candidate_command_orientation = _finite_vector(
+                    posture.get("candidate_command_target_quaternion_world_xyzw"),
+                    length=4,
+                )
+                authoritative_position = (
+                    _finite_vector(
+                        posture.get("authoritative_target_position_world_m"),
+                        length=3,
+                    )
+                    or target
+                )
+                authoritative_orientation = (
+                    _finite_vector(
+                        posture.get(
+                            "authoritative_target_quaternion_world_xyzw"
+                        ),
+                        length=4,
+                    )
+                    or target_orientation
+                )
                 cells.append(
                     {
                         "wrist_stiffness_nm_per_rad": float(stiffness),
@@ -1600,10 +1624,24 @@ def run_actuator_posture_sweep(
                         "posture_index": posture.get("posture_index"),
                         "seed_index": posture.get("seed_index"),
                         "variant_id": posture.get("variant_id"),
-                        "offsim_position_error_m": posture.get("offsim_position_error_m"),
-                        "offsim_orientation_error_rad": posture.get(
-                            "offsim_orientation_error_rad"
+                        "posture_source": posture.get("posture_source"),
+                        "candidate_command_target_position_world_m": posture.get(
+                            "candidate_command_target_position_world_m"
                         ),
+                        "candidate_command_target_quaternion_world_xyzw": posture.get(
+                            "candidate_command_target_quaternion_world_xyzw"
+                        ),
+                        "authoritative_target_position_world_m": posture.get(
+                            "authoritative_target_position_world_m"
+                        ),
+                        "authoritative_target_quaternion_world_xyzw": posture.get(
+                            "authoritative_target_quaternion_world_xyzw"
+                        ),
+                        "minimum_joint_limit_margin_rad": posture.get(
+                            "minimum_joint_limit_margin_rad"
+                        ),
+                        "offsim_position_error_m": posture.get("offsim_position_error_m"),
+                        "offsim_orientation_error_rad": posture.get("offsim_orientation_error_rad"),
                         "offsim_solved": posture.get("offsim_solved"),
                         # What the solver believed, minus what physics did, at
                         # the same joints.  Gains, branch, posture and
@@ -1663,18 +1701,47 @@ def run_actuator_posture_sweep(
                         "wrist_saturated_steps": saturated_steps,
                         "settle_steps": int(settle_steps),
                         "measured_grasp_frame_position_world_m": measured,
-                        "measured_grasp_frame_orientation_world_xyzw": (
-                            measured_orientation
-                        ),
+                        "measured_grasp_frame_orientation_world_xyzw": (measured_orientation),
                         "measured_distance_to_target_m": (
-                            math.dist(measured, target) if measured is not None else None
+                            math.dist(measured, authoritative_position)
+                            if measured is not None
+                            else None
+                        ),
+                        "measured_distance_to_authoritative_target_m": (
+                            math.dist(measured, authoritative_position)
+                            if measured is not None
+                            else None
+                        ),
+                        "measured_distance_to_candidate_command_target_m": (
+                            math.dist(measured, candidate_command_position)
+                            if measured is not None and candidate_command_position is not None
+                            else None
                         ),
                         "measured_orientation_error_rad": (
                             _quaternion_angle_xyzw(
-                                measured_orientation, target_orientation
+                                measured_orientation,
+                                authoritative_orientation,
                             )
                             if measured_orientation is not None
-                            and target_orientation is not None
+                            and authoritative_orientation is not None
+                            else None
+                        ),
+                        "measured_orientation_error_to_authoritative_target_rad": (
+                            _quaternion_angle_xyzw(
+                                measured_orientation,
+                                authoritative_orientation,
+                            )
+                            if measured_orientation is not None
+                            and authoritative_orientation is not None
+                            else None
+                        ),
+                        "measured_orientation_error_to_candidate_command_target_rad": (
+                            _quaternion_angle_xyzw(
+                                measured_orientation,
+                                candidate_command_orientation,
+                            )
+                            if measured_orientation is not None
+                            and candidate_command_orientation is not None
                             else None
                         ),
                         "task_contact_active": (
