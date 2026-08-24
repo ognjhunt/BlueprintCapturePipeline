@@ -723,6 +723,7 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
     assert hold[:7] == adapter.read_arm_joint_positions()
     assert hold[7] == 1.0
     scripted_action = adapter.scripted_action_for_pose(
+        phase_id="contact_close",
         target_position_world_m=[1.0, 2.0, 3.0],
         target_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
         gripper_command=0.0,
@@ -735,6 +736,7 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         preferred_posture_joint_positions_rad=[0.1] * 7,
     )
     assert scripted_action == [0.2] * 7 + [0.0]
+    assert calls[0]["phase_id"] == "contact_close"
     assert calls[0]["max_joint_delta_rad"] == 0.03
     assert calls[0]["max_task_space_translation_step_m"] == 0.01
     assert calls[0]["orientation_tolerance_deg"] == 2.0

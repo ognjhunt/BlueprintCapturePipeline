@@ -335,6 +335,7 @@ class ControlEnvironment(Protocol):
     def scripted_action_for_pose(
         self,
         *,
+        phase_id: str | None = None,
         target_position_world_m: Sequence[float],
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
@@ -1286,6 +1287,7 @@ def run_control_episode(
                         ]
                 elif action_recomputed:
                     held_action = environment.scripted_action_for_pose(
+                        phase_id=str(phase["phase_id"]),
                         target_position_world_m=phase["target_position_world_m"],
                         target_quaternion_world_xyzw=phase[
                             "target_quaternion_world_xyzw"
@@ -2241,6 +2243,7 @@ def _run_task_control_episode(
                     )
                 else:
                     pose_action_kwargs = {
+                        "phase_id": str(row["phase_id"]),
                         "target_position_world_m": commanded_position,
                         "target_quaternion_world_xyzw": row[
                             "target_quaternion_world_xyzw"
@@ -2632,6 +2635,7 @@ def _run_task_control_episode(
                                 environment.read_arm_dynamics_observation()
                             )
                             action = environment.scripted_action_for_pose(
+                                phase_id=str(row["phase_id"]),
                                 target_position_world_m=retreat_target,
                                 target_quaternion_world_xyzw=retreat_orientation,
                                 gripper_command=command,

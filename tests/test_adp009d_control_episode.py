@@ -200,6 +200,7 @@ class _ControlEnvironment:
     def scripted_action_for_pose(
         self,
         *,
+        phase_id=None,
         target_position_world_m,
         target_quaternion_world_xyzw,
         gripper_command,
@@ -208,6 +209,7 @@ class _ControlEnvironment:
         orientation_tolerance_deg,
         task_space_translation_strategy,
     ):
+        assert phase_id is not None
         assert target_quaternion_world_xyzw == [1.0, 0.0, 0.0, 0.0]
         assert max_joint_delta_rad == 0.03
         assert max_task_space_translation_step_m == 0.01

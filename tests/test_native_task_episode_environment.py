@@ -418,6 +418,90 @@ def test_factory_uses_cartesian_servo_before_precision_contact(
         "approach",
         "contact_open",
     ]
+    assert receipt["cartesian_contact_phase_controller_bindings"] == [
+        {
+            "phase_id": "approach",
+            "controller": "live_physx_full_pose_dls",
+            "preferred_posture_source": "selected_global_ik_joint_target",
+            "recovery_target_bias_preserves_controller": True,
+        },
+        {
+            "phase_id": "contact_open",
+            "controller": "live_physx_full_pose_dls",
+            "preferred_posture_source": "selected_global_ik_joint_target",
+            "recovery_target_bias_preserves_controller": True,
+        },
+    ]
+
+
+def test_factory_uses_physx_dls_for_precision_pose_without_offsim_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing optional PINK seed must not switch the live controller to PINK."""
+
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    servo = _Servo()
+    target = {
+        "phase_id": "contact_open",
+        "target_position_world_m": [1.0, 2.0, 3.0],
+        "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }
+    adapter, receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"),
+        gripper_convention={
+            "closed_command": 1.0,
+            "open_command": 0.0,
+            "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+        },
+        servo=servo,
+        task_readback=_Readback(),
+        to_tensor=lambda value: value,
+        scripted_pose_joint_targets=[],
+        scripted_pose_phase_targets=[target],
+    )
+
+    action = adapter.kwargs["scripted_pose_action_callback"](
+        phase_id="contact_open",
+        # Retry calibration deliberately biases the authored target.  Phase
+        # identity, not exact float equality with the original waypoint, must
+        # keep the live controller authoritative.
+        target_position_world_m=[1.01, 2.0, 3.0],
+        target_quaternion_world_xyzw=target[
+            "target_quaternion_world_xyzw"
+        ],
+        gripper_command=0.0,
+        max_joint_delta_rad=0.03,
+        max_joint_setpoint_lead_rad=0.2,
+    )
+
+    assert action == [0.5] * 7 + [0.0]
+    assert servo.calls[-1]["backend"] == "physx_dls"
+    assert servo.calls[-1]["preferred_posture_joint_positions_rad"] is None
+    assert receipt["scripted_pose_source"] == (
+        "live_physx_jacobian_precision_servo_without_offsim_posture_seed"
+    )
+    assert receipt["cartesian_contact_phase_ids"] == ["contact_open"]
+    assert receipt["cartesian_contact_physx_dls_phase_ids"] == ["contact_open"]
+    assert receipt["cartesian_contact_posture_source"] == (
+        "no_offsim_posture_seed_live_physx_full_pose_dls"
+    )
+    assert receipt["cartesian_contact_phase_controller_bindings"] == [
+        {
+            "phase_id": "contact_open",
+            "controller": "live_physx_full_pose_dls",
+            "preferred_posture_source": None,
+            "recovery_target_bias_preserves_controller": True,
+        }
+    ]
+    assert receipt["cartesian_contact_posture_nullspace_gain"] is None
+    assert receipt["cartesian_precision_joint_limit_avoidance_gain"] == pytest.approx(
+        0.20
+    )
+    assert receipt["cartesian_precision_joint_limit_avoidance_margin_rad"] == (
+        pytest.approx(0.30)
+    )
 
 
 def test_factory_rejects_malformed_construction_joint_target() -> None:
