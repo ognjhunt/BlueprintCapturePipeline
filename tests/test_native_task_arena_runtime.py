@@ -14,7 +14,7 @@ from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
     build_native_task_arena_environment,
     camera_runtime_parameters,
-    materialize_task_subject_link_dynamic_friction_override,
+    build_task_subject_link_dynamic_friction_override,
     read_task_subject_link_dynamic_friction,
     read_task_light_intensity_scale,
 )
@@ -1303,7 +1303,7 @@ def test_exact_link_material_override_precedes_native_import_and_is_scoped(
     UsdPhysics.MaterialAPI.Apply(unrelated.GetPrim()).CreateDynamicFrictionAttr(0.4)
     stage.GetRootLayer().Save()
 
-    result = materialize_task_subject_link_dynamic_friction_override(
+    result = build_task_subject_link_dynamic_friction_override(
         source,
         task_link_id="door",
         value=0.45,

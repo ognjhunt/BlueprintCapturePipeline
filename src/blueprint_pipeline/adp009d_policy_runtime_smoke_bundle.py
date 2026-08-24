@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import shutil
 import stat
 import zipfile
@@ -210,4 +212,40 @@ def build_policy_runtime_smoke_bundle(
     return receipt
 
 
+def main(argv: list[str] | None = None) -> int:
+    """Build one commit-bound runtime-smoke bundle without provider mutation."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--job-dir", required=True)
+    parser.add_argument("--candidate-id", required=True, choices=sorted(ALLOWED_CANDIDATES))
+    parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--generated-at")
+    args = parser.parse_args(argv)
+    try:
+        receipt = build_policy_runtime_smoke_bundle(
+            job_dir=args.job_dir,
+            candidate_id=args.candidate_id,
+            implementation_commit=args.implementation_commit,
+            generated_at=args.generated_at,
+        )
+    except (OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [f"{type(exc).__name__}:{exc}"],
+                    "provider_mutation_performed": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if receipt.get("status") == "ready" else 2
+
+
 __all__ = ["PROBE_KIND", "build_policy_runtime_smoke_bundle"]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

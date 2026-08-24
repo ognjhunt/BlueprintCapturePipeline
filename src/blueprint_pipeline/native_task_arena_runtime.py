@@ -57,7 +57,7 @@ class NativeTaskArenaRuntimeError(ValueError):
         super().__init__(";".join(self.errors))
 
 
-def materialize_task_subject_link_dynamic_friction_override(
+def build_task_subject_link_dynamic_friction_override(
     source_usd: str | Path, *, task_link_id: str, value: float
 ) -> dict[str, Any]:
     """Create a derived USD override before PhysX imports the task asset.
@@ -929,7 +929,7 @@ def build_native_task_arena_environment(
             raise NativeTaskArenaRuntimeError(
                 ["native_task_arena_scenario_material_asset_missing"]
             )
-        override = materialize_task_subject_link_dynamic_friction_override(
+        override = build_task_subject_link_dynamic_friction_override(
             subject["usd_path"],
             task_link_id=application["task_link_id"],
             value=float(application["expected_native_value"]),
@@ -1398,7 +1398,7 @@ __all__ = [
     "NativeTaskArenaRuntimeError",
     "build_native_task_arena_environment",
     "camera_runtime_parameters",
-    "materialize_task_subject_link_dynamic_friction_override",
+    "build_task_subject_link_dynamic_friction_override",
     "read_task_subject_link_dynamic_friction",
     "read_task_light_intensity_scale",
 ]

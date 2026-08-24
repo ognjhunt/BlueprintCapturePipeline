@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -103,6 +105,38 @@ def test_bundle_is_one_query_outcome_blind_and_stops_server(
     if candidate_id == "pi05_droid":
         assert "provider_runtime/adp009d_policy_execution_spec.json" in names
         assert "provider_runtime/adp009d_openpi_checkpoint_inventory.json" in names
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_bundle_cli_rebuilds_each_candidate_without_provider(
+    tmp_path: Path, candidate_id: str
+) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.adp009d_policy_runtime_smoke_bundle",
+            "--job-dir",
+            str(tmp_path / candidate_id),
+            "--candidate-id",
+            candidate_id,
+            "--implementation-commit",
+            COMMIT,
+            "--generated-at",
+            "2026-08-24T00:00:00Z",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    receipt = json.loads(completed.stdout)
+    assert receipt["status"] == "ready"
+    assert receipt["policy_candidate_id"] == candidate_id
+    assert receipt["controls_requested"] is False
+    assert receipt["provider_zero_required_after_return"] is True
 
 
 def test_normal_episode_provisioning_keeps_server_running() -> None:
