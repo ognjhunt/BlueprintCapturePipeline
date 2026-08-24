@@ -520,7 +520,12 @@ def _global_guard_proves_zero(report: Mapping[str, Any]) -> bool:
         and report.get("provider_zero_verified") is True
         and report.get("live_instance_count") == 0
         and report.get("total_burn_per_hour_usd") == 0
-        and set(required) == {"runpod", "vast", "digitalocean"}
+        # These three providers form the historical minimum account-wide
+        # inventory.  New required providers strengthen the report; they must
+        # not make an otherwise valid zero unrecognizable merely because this
+        # validator predates them.  Every required row, including additions
+        # such as AWS, is still required to be succeeded and empty below.
+        and {"runpod", "vast", "digitalocean"}.issubset(required)
         and all(
             row.get("status") == "succeeded" and row.get("row_count") == 0
             for row in required.values()
