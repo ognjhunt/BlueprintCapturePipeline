@@ -3734,12 +3734,15 @@ def _probe_shell_script(
     curl_download_protocol = (
         "--http1.1 --continue-at - --retry 5 --retry-delay 3 "
         "--retry-all-errors --retry-max-time 420 --connect-timeout 30 "
-        # curl's --speed-limit takes an integer byte rate.  Some curl builds
-        # accept suffixes for other rate options, but Ubuntu 24.04 curl 8.5.0
-        # rejects ``4M`` here and silently sends this path to the unguarded wget
-        # fallback.  Spell 4 MiB/s as bytes so the slow-transfer guard actually
-        # runs on the provider image.
-        "--speed-limit 4194304 --speed-time 60 "
+        # A throughput floor must distinguish a dead transfer from a merely
+        # slow provider link.  The former 4 MiB/s for 60 seconds repeatedly
+        # aborted a progressing 4.0 GiB runtime dependency on a healthy RTX
+        # 4090 host.  512 KiB/s still completes that packet in about 2.3 hours,
+        # inside the lane's four-hour hard TTL, while a three-minute window
+        # continues to fail a genuinely stalled connection well before the
+        # independent watchdog owns teardown.  Keep the byte count literal:
+        # Ubuntu 24.04 curl 8.5.0 rejects a ``512K`` suffix here.
+        "--speed-limit 524288 --speed-time 180 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
