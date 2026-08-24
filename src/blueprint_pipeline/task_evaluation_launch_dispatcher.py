@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -68,6 +69,7 @@ _ALLOWED_RUNTIME_ENV_KEYS = frozenset(
     }
 )
 QUEUE_RUN_SCHEMA_VERSION = "task_evaluation_launch_queue_run.v1"
+MAX_DISPATCH_CONCURRENCY = 3
 #: Where the scene a launch runs over actually came from. This is a provenance
 #: claim, not a label, so a lane whose scene is none of these does not get to
 #: borrow the nearest one -- the fresh-site camera lane runs over a public
@@ -1080,30 +1082,37 @@ def dispatch_launch_request(
             argv.append("--execute")
         if allocator_runner is None:
             try:
-                with _scoped_runtime_environment(
-                    _mapping(profile.get("runtime_environment"))
-                ):
-                    completed = subprocess.run(  # nosec B603 - fixed module plus validated profile argv
-                        [
-                            sys.executable,
-                            "-m",
-                            "blueprint_pipeline.paid_resource_allocator",
-                            *argv,
-                        ],
-                        shell=False,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=(
-                            int(
-                                _mapping(profile.get("allocator")).get(
-                                    "hard_ttl_seconds"
-                                )
-                                or 1
+                child_environment = os.environ.copy()
+                child_environment.update(
+                    {
+                        str(key): str(value)
+                        for key, value in _mapping(
+                            profile.get("runtime_environment")
+                        ).items()
+                    }
+                )
+                completed = subprocess.run(  # nosec B603 - fixed module plus validated profile argv
+                    [
+                        sys.executable,
+                        "-m",
+                        "blueprint_pipeline.paid_resource_allocator",
+                        *argv,
+                    ],
+                    shell=False,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=child_environment,
+                    timeout=(
+                        int(
+                            _mapping(profile.get("allocator")).get(
+                                "hard_ttl_seconds"
                             )
-                            + 300
-                        ),
-                    )
+                            or 1
+                        )
+                        + 300
+                    ),
+                )
                 allocator_exit_code = completed.returncode
                 stdout_text = completed.stdout
                 stderr_text = completed.stderr
@@ -1200,8 +1209,13 @@ def process_launch_queue(
     execute_launch_id: str | None = None,
     public_catalog_path: str | Path | None = None,
     max_messages: int = 1,
+    max_concurrency: int = 1,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool):
+        raise TaskEvaluationLaunchError("launch_dispatch_concurrency_invalid")
+    if max_concurrency < 1 or max_concurrency > MAX_DISPATCH_CONCURRENCY:
+        raise TaskEvaluationLaunchError("launch_dispatch_concurrency_out_of_bounds")
     queue = Path(queue_root).expanduser().resolve()
     pending = queue / "pending"
     processing = queue / "processing"
@@ -1264,9 +1278,45 @@ def process_launch_queue(
             for source in sources
             if source.name.startswith(f"{execution_scope_launch_id}-")
         ]
-    for source in sources[: max(0, max_messages)]:
+    def claim(source: Path) -> Path | None:
         claimed = processing / source.name
-        os.replace(source, claimed)
+        # The dispatcher may be started manually while the systemd-triggered
+        # instance is still active. Reserve the processing name with O_EXCL
+        # before replacing the pending request, so two workers can never both
+        # cross the paid mutation boundary for the same immutable request.
+        # Terminal filenames are durable idempotency records too: a duplicate
+        # upload of an already completed or blocked request is never replayed.
+        if any(
+            (queue / directory / source.name).exists()
+            for directory in ("completed", "blocked")
+        ):
+            return None
+        try:
+            descriptor = os.open(
+                claimed,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+        except FileExistsError:
+            return None
+        else:
+            os.close(descriptor)
+        try:
+            os.replace(source, claimed)
+        except FileNotFoundError:
+            # Another claimant removed the pending source between the source
+            # snapshot and our reservation. Release only our empty reservation.
+            claimed.unlink(missing_ok=True)
+            return None
+        return claimed
+
+    claimed_requests = [
+        claimed
+        for source in sources[: max(0, max_messages)]
+        if (claimed := claim(source)) is not None
+    ]
+
+    def dispatch_claimed(claimed: Path) -> dict[str, Any]:
         try:
             receipt = dispatch_launch_request(
                 request_path=claimed,
@@ -1290,8 +1340,7 @@ def process_launch_queue(
                 "raw_error_message_recorded": False,
             }
         if receipt.get("retain_processing_for_reconciliation") is True:
-            processed.append(receipt)
-            continue
+            return receipt
         destination_dir = queue / (
             "completed"
             if receipt.get("status")
@@ -1303,7 +1352,15 @@ def process_launch_queue(
         )
         destination_dir.mkdir(parents=True, exist_ok=True)
         os.replace(claimed, destination_dir / claimed.name)
-        processed.append(receipt)
+        return receipt
+
+    if max_concurrency == 1:
+        processed = [dispatch_claimed(claimed) for claimed in claimed_requests]
+    else:
+        with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+            # executor.map preserves the stable pending-file order in the
+            # queue receipt while the independently claimed launches overlap.
+            processed = list(executor.map(dispatch_claimed, claimed_requests))
     return {
         "schema_version": QUEUE_RUN_SCHEMA_VERSION,
         "status": "completed"
@@ -1314,6 +1371,7 @@ def process_launch_queue(
         "execute_requested": bool(execute),
         "execute_launch_id": execution_scope_launch_id if execute else None,
         "ignored_terminal_execute_launch_id": ignored_terminal_execute_launch_id,
+        "max_concurrency": max_concurrency,
         "automatic_retry_performed": False,
     }
 
@@ -1324,6 +1382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--profile-dir", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--max-messages", type=int, default=1)
+    parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execute-launch-id")
     parser.add_argument("--public-catalog")
@@ -1336,6 +1395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         execute_launch_id=args.execute_launch_id,
         public_catalog_path=args.public_catalog,
         max_messages=args.max_messages,
+        max_concurrency=args.max_concurrency,
     )
     print(json.dumps(result, sort_keys=True))
     # The queue status describes the launch outcome, not whether dispatch

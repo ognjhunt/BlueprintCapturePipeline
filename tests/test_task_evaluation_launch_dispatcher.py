@@ -490,6 +490,7 @@ def test_profile_rejects_unknown_runtime_placeholders(tmp_path: Path) -> None:
 def test_default_dispatch_uses_isolated_canonical_allocator_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", raising=False)
     profile = _profile(tmp_path)
     request = _request(profile)
     profile_dir = tmp_path / "profiles"
@@ -522,6 +523,8 @@ def test_default_dispatch_uses_isolated_canonical_allocator_process(
         *profile["allocator"]["argv"],
     ]
     assert calls[0]["shell"] is False
+    assert calls[0]["env"]["BLUEPRINT_ADP009D_CAMERA_RESOLUTION"] == "policy"
+    assert __import__("os").environ.get("BLUEPRINT_ADP009D_CAMERA_RESOLUTION") is None
     run_root = tmp_path / "state" / request["launch_id"]
     assert (run_root / "allocator.stdout.log").read_text(encoding="utf-8") == (
         '{"success":true}\n'
@@ -776,6 +779,172 @@ def test_unhandled_dispatch_failure_stays_processing_for_independent_reconciliat
     assert len(list((queue_root / "processing").glob("*.json"))) == 1
     assert not list((queue_root / "blocked").glob("*.json"))
     assert result["automatic_retry_performed"] is False
+
+
+def _stage_distinct_queue_requests(
+    *, queue_root: Path, profile: dict, count: int
+) -> list[dict]:
+    requests: list[dict] = []
+    for index in range(count):
+        request = _request(profile)
+        request["launch_id"] = f"launch-concurrent-{index}"
+        request["run_id"] = f"run-concurrent-{index}"
+        request["idempotency_key"] = request["launch_id"]
+        request["request_digest"] = canonical_digest(
+            request, digest_field="request_digest"
+        )
+        stage_launch_request(value=request, queue_root=queue_root)
+        requests.append(request)
+    return requests
+
+
+def test_explicit_concurrency_overlaps_two_independently_claimed_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing the worker pool makes the barrier fail: this is an overlap test."""
+
+    profile = _profile(tmp_path)
+    queue_root = tmp_path / "queue"
+    requests = _stage_distinct_queue_requests(
+        queue_root=queue_root, profile=profile, count=2
+    )
+    barrier = threading.Barrier(2)
+    active = 0
+    peak_active = 0
+    active_lock = threading.Lock()
+    seen_launch_ids: list[str] = []
+
+    def fake_dispatch(**kwargs) -> dict:
+        nonlocal active, peak_active
+        request = json.loads(Path(kwargs["request_path"]).read_text(encoding="utf-8"))
+        with active_lock:
+            active += 1
+            peak_active = max(peak_active, active)
+            seen_launch_ids.append(request["launch_id"])
+        barrier.wait(timeout=5)
+        with active_lock:
+            active -= 1
+        return {"status": "dry_run_completed", "launch_id": request["launch_id"]}
+
+    monkeypatch.setattr(dispatcher_module, "dispatch_launch_request", fake_dispatch)
+
+    report = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=tmp_path / "profiles",
+        state_root=tmp_path / "state",
+        max_messages=2,
+        max_concurrency=2,
+    )
+
+    assert report["status"] == "completed"
+    assert report["processed_count"] == 2
+    assert report["max_concurrency"] == 2
+    assert peak_active == 2
+    assert set(seen_launch_ids) == {request["launch_id"] for request in requests}
+    assert len(list((queue_root / "completed").glob("*.json"))) == 2
+
+
+def test_concurrent_queue_workers_never_double_claim_the_same_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    queue_root = tmp_path / "queue"
+    _stage_distinct_queue_requests(queue_root=queue_root, profile=profile, count=1)
+    entered_dispatch = threading.Event()
+    release_dispatch = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def fake_dispatch(**kwargs) -> dict:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        entered_dispatch.set()
+        assert release_dispatch.wait(timeout=5)
+        request = json.loads(Path(kwargs["request_path"]).read_text(encoding="utf-8"))
+        return {"status": "dry_run_completed", "launch_id": request["launch_id"]}
+
+    monkeypatch.setattr(dispatcher_module, "dispatch_launch_request", fake_dispatch)
+
+    def process() -> dict:
+        return process_launch_queue(
+            queue_root=queue_root,
+            profile_dir=tmp_path / "profiles",
+            state_root=tmp_path / "state",
+            max_messages=1,
+            max_concurrency=1,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(process)
+        assert entered_dispatch.wait(timeout=5)
+        second = executor.submit(process)
+        second_report = second.result(timeout=5)
+        release_dispatch.set()
+        first_report = first.result(timeout=5)
+
+    assert calls == 1
+    assert sorted(
+        (first_report["processed_count"], second_report["processed_count"])
+    ) == [0, 1]
+    assert len(list((queue_root / "completed").glob("*.json"))) == 1
+
+
+def test_one_concurrent_provider_error_does_not_strand_its_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    queue_root = tmp_path / "queue"
+    requests = _stage_distinct_queue_requests(
+        queue_root=queue_root, profile=profile, count=2
+    )
+    failing_launch_id = requests[0]["launch_id"]
+    barrier = threading.Barrier(2)
+
+    def fake_dispatch(**kwargs) -> dict:
+        request = json.loads(Path(kwargs["request_path"]).read_text(encoding="utf-8"))
+        barrier.wait(timeout=5)
+        if request["launch_id"] == failing_launch_id:
+            raise RuntimeError("provider boundary failed")
+        return {"status": "dry_run_completed", "launch_id": request["launch_id"]}
+
+    monkeypatch.setattr(dispatcher_module, "dispatch_launch_request", fake_dispatch)
+
+    report = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=tmp_path / "profiles",
+        state_root=tmp_path / "state",
+        max_messages=2,
+        max_concurrency=2,
+    )
+
+    assert report["status"] == "blocked"
+    assert report["processed_count"] == 2
+    failed = next(row for row in report["receipts"] if row["status"] == "blocked")
+    assert failed["error_type"] == "RuntimeError"
+    assert failed["retain_processing_for_reconciliation"] is True
+    assert len(list((queue_root / "processing").glob("*.json"))) == 1
+    assert len(list((queue_root / "completed").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("max_concurrency", [0, 4, True, 1.5])
+def test_dispatcher_refuses_concurrency_outside_one_to_three(
+    tmp_path: Path, max_concurrency: object
+) -> None:
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match=(
+            "launch_dispatch_concurrency_invalid"
+            if max_concurrency in (True, 1.5)
+            else "launch_dispatch_concurrency_out_of_bounds"
+        ),
+    ):
+        process_launch_queue(
+            queue_root=tmp_path / "queue",
+            profile_dir=tmp_path / "profiles",
+            state_root=tmp_path / "state",
+            max_concurrency=max_concurrency,  # type: ignore[arg-type]
+        )
 
 
 def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(

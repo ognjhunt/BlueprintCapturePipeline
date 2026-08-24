@@ -52,6 +52,11 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipel
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
+# Serial remains the safe default. Operators may explicitly raise this to 2 or
+# 3; the dispatcher rejects every other value before claiming a request, and
+# each worker still crosses the canonical allocator's independent spend,
+# authority, provider-lock, and paid-slot gates.
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_MAX_CONCURRENCY=1
 # A paid execution window names one immutable launch ID, or is admitted by a
 # standing per-profile authorization -- which is digest-bound, expiring, and
 # bounded in launch count and spend. Requiring the ID unconditionally made
@@ -91,7 +96,7 @@ WorkingDirectory=/
 # file still permits execution.  EnvironmentFile values override Environment=
 # values in systemd, so a separate positive dry interlock is required; never
 # rely on an Environment=...EXECUTE=false drop-in as a spend stop.
-ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10) && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] && [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ]; then ARGS+=(--execute); if [ -n "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID:-}" ]; then ARGS+=(--execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}"); fi; fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10 --max-concurrency "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_MAX_CONCURRENCY:-1}") && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] && [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ]; then ARGS+=(--execute); if [ -n "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID:-}" ]; then ARGS+=(--execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}"); fi; fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
 # KillMode=process deliberately preserves a valid hard-TTL watchdog. Reap every
 # other remaining allocator/provider descendant before the oneshot is closed or
 # restarted, and retain a secret-free reconciliation receipt.
