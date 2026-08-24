@@ -207,6 +207,23 @@ def high_margin_joint_seeds(
             "reason": "target_pose_invalid",
             "seeds": [],
         }
+    try:
+        position_tolerance = float(position_tolerance_m)
+        orientation_tolerance = float(orientation_tolerance_rad)
+    except (TypeError, ValueError):
+        position_tolerance = orientation_tolerance = float("nan")
+    if (
+        not math.isfinite(position_tolerance)
+        or not math.isfinite(orientation_tolerance)
+        or position_tolerance <= 0.0
+        or orientation_tolerance <= 0.0
+    ):
+        return {
+            "schema_version": GLOBAL_SEED_SEARCH_SCHEMA_VERSION,
+            "status": "unavailable",
+            "reason": "pose_tolerance_invalid",
+            "seeds": [],
+        }
 
     found: list[tuple[float, list[float], float, float]] = []
     terminal: list[tuple[float, float, list[float], float, float]] = []
@@ -239,8 +256,8 @@ def high_margin_joint_seeds(
             position_error = float(np.linalg.norm(delta_position))
             orientation_error = float(np.linalg.norm(delta_rotation))
             if (
-                position_error <= float(position_tolerance_m)
-                and orientation_error <= float(orientation_tolerance_rad)
+                position_error <= position_tolerance
+                and orientation_error <= orientation_tolerance
             ):
                 break
             if jacobian.shape != (6, lower.size):
@@ -278,10 +295,8 @@ def high_margin_joint_seeds(
             continue
         margin = float(np.min(np.minimum(q - lower, upper - q)))
         normalized_error = (
-            position_error / float(position_tolerance_m)
-        ) ** 2 + (
-            orientation_error / float(orientation_tolerance_rad)
-        ) ** 2
+            position_error / position_tolerance
+        ) ** 2 + (orientation_error / orientation_tolerance) ** 2
         terminal.append(
             (
                 normalized_error,
@@ -292,8 +307,8 @@ def high_margin_joint_seeds(
             )
         )
         if (
-            position_error <= float(position_tolerance_m)
-            and orientation_error <= float(orientation_tolerance_rad)
+            position_error <= position_tolerance
+            and orientation_error <= orientation_tolerance
         ):
             found.append((margin, q.tolist(), position_error, orientation_error))
 
@@ -321,8 +336,8 @@ def high_margin_joint_seeds(
         # A configuration that already passed is represented by ``seeds`` and
         # must not also masquerade as a near miss.
         if (
-            row[3] <= float(position_tolerance_m)
-            and row[4] <= float(orientation_tolerance_rad)
+            row[3] <= position_tolerance
+            and row[4] <= orientation_tolerance
         ):
             continue
         if any(

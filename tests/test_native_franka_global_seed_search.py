@@ -218,6 +218,24 @@ def test_invalid_limits_are_refused() -> None:
     assert report["reason"] == "joint_limits_invalid"
 
 
+def test_invalid_pose_tolerance_is_refused_without_dividing_by_zero() -> None:
+    frame_pose, frame_jacobian = _planar_arm([1.0, 1.0])
+    report = high_margin_joint_seeds(
+        frame_pose=frame_pose,
+        frame_jacobian=frame_jacobian,
+        seeds=[[0.0, 0.0]],
+        target_position_m=[1.0, 0.0, 0.0],
+        target_quaternion_xyzw=[0.0, 0.0, 0.0, 1.0],
+        lower_joint_position_limits_rad=[-2.9, -2.9],
+        upper_joint_position_limits_rad=[2.9, 2.9],
+        position_tolerance_m=0.0,
+        orientation_tolerance_rad=0.05,
+    )
+
+    assert report["status"] == "unavailable"
+    assert report["reason"] == "pose_tolerance_invalid"
+
+
 def test_returned_seeds_are_distinct_basins_not_near_duplicates() -> None:
     """Highest-margin is not the same as diverse.
 
