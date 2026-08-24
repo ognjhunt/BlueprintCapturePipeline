@@ -981,6 +981,84 @@ def _with_held_solved_contact_vectors(
     }
 
 
+def _with_live_physx_dls_contact_close(
+    *,
+    control_plan: Mapping[str, Any],
+    preferred_posture_joint_positions_rad: Sequence[float],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Execute the controller that the reset-isolated close cell admitted.
+
+    A compensated contact-close target is an open-frame IK construction: the
+    solved hand starts behind the authored target and linkage closure moves the
+    pads onto it. Live DLS instead controls the closed TCP directly, so it must
+    receive the authored arrival target. It also must not retain the solved
+    joint hold, which otherwise wins dispatch before DLS is called at all.
+    """
+
+    plan = json.loads(json.dumps(dict(control_plan), allow_nan=False))
+    try:
+        preferred = [
+            float(value) for value in preferred_posture_joint_positions_rad
+        ]
+    except (TypeError, ValueError):
+        preferred = []
+    actions = plan.get("scripted_positive_actions")
+    if (
+        len(preferred) != 7
+        or not all(math.isfinite(value) for value in preferred)
+        or not isinstance(actions, list)
+    ):
+        return plan, {
+            "schema_version": "native_task_controls_physx_dls_close.v1",
+            "status": "not_applied",
+            "reason": "preferred_posture_or_plan_invalid",
+        }
+    applied = 0
+    source_target = None
+    for row in actions:
+        if (
+            not isinstance(row, dict)
+            or row.get("mode") != "ik_pose"
+            or str(row.get("phase_id") or "") != "contact_close"
+        ):
+            continue
+        authored = row.get("arrival_target_position_world_m")
+        if not isinstance(authored, list) or len(authored) != 3:
+            return plan, {
+                "schema_version": "native_task_controls_physx_dls_close.v1",
+                "status": "not_applied",
+                "reason": "authored_arrival_target_missing",
+            }
+        source_target = list(row.get("target_position_world_m") or [])
+        row["target_position_world_m"] = [float(value) for value in authored]
+        row["hold_solved_arm_joint_positions_rad"] = None
+        row["physx_dls_preferred_posture_joint_positions_rad"] = list(
+            preferred
+        )
+        applied += 1
+    if applied != 1:
+        return plan, {
+            "schema_version": "native_task_controls_physx_dls_close.v1",
+            "status": "not_applied",
+            "reason": "contact_close_row_count_invalid",
+        }
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    return plan, {
+        "schema_version": "native_task_controls_physx_dls_close.v1",
+        "status": "applied",
+        "source_control_plan_digest": control_plan.get("plan_digest"),
+        "derived_control_plan_digest": plan["plan_digest"],
+        "compensated_solver_target_position_world_m": source_target,
+        "authored_dls_target_position_world_m": list(authored),
+        "preferred_posture_joint_positions_rad": preferred,
+        "claim_boundary": (
+            "executes_only_a_reset_isolated_physics_admitted_controller_cell;"
+            "the_authored_tcp_orientation_bilateral_contact_and_task_outcome_"
+            "gates_are_unchanged"
+        ),
+    }
+
+
 def _with_closed_pad_midpoint_compensated_contact(
     *,
     control_plan: Mapping[str, Any],
@@ -3035,6 +3113,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ],
                     max_calibration_iterations=4,
                     bilateral_stability_steps=2,
+                    # C73 showed the held solved-vector seam winning dispatch
+                    # over the live PhysX TCP controller: every episode retry
+                    # replayed joint targets even though the runtime reported
+                    # contact_close as DLS-capable. Compare both controllers
+                    # reset-isolated on every branch before adopting either.
+                    compare_physx_dls=True,
                 )
                 if close_sweep_preposition is not None
                 else {
@@ -3070,21 +3154,63 @@ def main(argv: Sequence[str] | None = None) -> int:
             adopted_close = list(
                 close_sweep_best["commanded_joint_positions_rad"]
             )
-            scripted_pose_joint_targets = [
-                (
-                    {**row, "joint_positions_rad": adopted_close}
-                    if str(row.get("phase_id") or "") == "contact_close"
-                    else row
+            if (
+                close_sweep_best.get("controller_mode")
+                == "live_physx_dls"
+            ):
+                selected_control_plan, dls_adoption = (
+                    _with_live_physx_dls_contact_close(
+                        control_plan=selected_control_plan,
+                        preferred_posture_joint_positions_rad=adopted_close,
+                    )
                 )
-                for row in scripted_pose_joint_targets
-            ]
-            selected_control_plan, held_vectors = (
-                _with_held_solved_contact_vectors(
-                    control_plan=selected_control_plan,
-                    scripted_pose_joint_targets=scripted_pose_joint_targets,
+                result["contact_close_controller_adoption"] = dls_adoption
+                if dls_adoption.get("status") != "applied":
+                    raise RuntimeError(
+                        "native_task_controls_physx_dls_close_adoption_failed:"
+                        + str(dls_adoption.get("reason"))
+                    )
+                prior_held = dict(result["held_solved_contact_vectors"])
+                result["held_solved_contact_vectors"] = {
+                    **prior_held,
+                    "held_phase_ids": [
+                        phase_id
+                        for phase_id in prior_held.get("held_phase_ids") or []
+                        if phase_id != "contact_close"
+                    ],
+                    "derived_control_plan_digest": selected_control_plan.get(
+                        "plan_digest"
+                    ),
+                    "claim_boundary": (
+                        "contact_open_commands_the_preflight_solved_posture;"
+                        "contact_close_executes_the_reset_isolated_physics_"
+                        "admitted_live_tcp_controller"
+                    ),
+                }
+            else:
+                scripted_pose_joint_targets = [
+                    (
+                        {**row, "joint_positions_rad": adopted_close}
+                        if str(row.get("phase_id") or "") == "contact_close"
+                        else row
+                    )
+                    for row in scripted_pose_joint_targets
+                ]
+                selected_control_plan, held_vectors = (
+                    _with_held_solved_contact_vectors(
+                        control_plan=selected_control_plan,
+                        scripted_pose_joint_targets=scripted_pose_joint_targets,
+                    )
                 )
-            )
-            result["held_solved_contact_vectors"] = held_vectors
+                result["held_solved_contact_vectors"] = held_vectors
+                result["contact_close_controller_adoption"] = {
+                    "schema_version": (
+                        "native_task_controls_contact_close_controller_"
+                        "adoption.v1"
+                    ),
+                    "status": "applied",
+                    "controller_mode": "bounded_joint_replay",
+                }
             effective_control_plan, branch_replay = (
                 _with_contact_entry_branch_replay(
                     control_plan=selected_control_plan,

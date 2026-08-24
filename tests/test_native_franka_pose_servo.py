@@ -485,7 +485,8 @@ def test_predicted_grasp_frame_fk_uses_pink_to_tcp_binding() -> None:
 
     def grasp_for_hand_candidate(**kwargs):
         observed.update(kwargs)
-        return [0.4, 0.1, 0.2], [0.0, 0.0, 0.0, 1.0]
+        command = float(kwargs.get("gripper_command") or 0.0)
+        return [0.4, 0.1 + 0.02 * command, 0.2], [0.0, 0.0, 0.0, 1.0]
 
     servo._pink_grasp_frame_for_hand_candidate = grasp_for_hand_candidate
 
@@ -496,8 +497,9 @@ def test_predicted_grasp_frame_fk_uses_pink_to_tcp_binding() -> None:
     assert observed["candidate_body_position_base_m"] == pytest.approx(
         [0.2, 0.0, 0.0]
     )
+    assert observed["gripper_command"] == pytest.approx(1.0)
     assert predicted == pytest.approx(
-        [1.4, 2.1, 3.2, 0.0, 0.0, 0.0, 1.0]
+        [1.4, 2.12, 3.2, 0.0, 0.0, 0.0, 1.0]
     )
 
 

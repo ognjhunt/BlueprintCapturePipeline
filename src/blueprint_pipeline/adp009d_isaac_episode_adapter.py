@@ -1116,6 +1116,7 @@ class IsaacEpisodeAdapter:
         max_task_space_translation_step_m: float | None = None,
         orientation_tolerance_deg: float | None = None,
         task_space_translation_strategy: str | None = None,
+        preferred_posture_joint_positions_rad: Sequence[float] | None = None,
     ) -> list[float]:
         """Resolve one deterministic pose-servo step through the injected native IK."""
 
@@ -1133,6 +1134,18 @@ class IsaacEpisodeAdapter:
             "gripper_command": float(gripper_command),
             "max_joint_delta_rad": float(max_joint_delta_rad),
         }
+        if preferred_posture_joint_positions_rad is not None:
+            preferred = [
+                float(value)
+                for value in preferred_posture_joint_positions_rad
+            ]
+            if len(preferred) != ARM_JOINT_COUNT or not all(
+                math.isfinite(value) for value in preferred
+            ):
+                raise IsaacEpisodeAdapterError(
+                    ["isaac_episode_preferred_posture_invalid"]
+                )
+            common["preferred_posture_joint_positions_rad"] = preferred
         task_space_values = (
             max_task_space_translation_step_m,
             orientation_tolerance_deg,

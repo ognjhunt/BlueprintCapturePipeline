@@ -1083,6 +1083,22 @@ class NativeFrankaDifferentialIkServo:
                 *grasp_position_base,
                 *grasp_quaternion_base,
             ]
+            self._pink_grasp_poses_at_binding_base_by_command = {}
+            for command in self._body_to_grasp_positions_by_command:
+                command_grasp_world = self.current_grasp_frame_pose_world(
+                    gripper_command=command
+                )
+                command_position_base, command_quaternion_base = (
+                    pose_world_to_base(
+                        position_world=command_grasp_world[:3],
+                        quaternion_world_xyzw=command_grasp_world[3:7],
+                        base_position_world=self._base_pose[:3],
+                        base_quaternion_world_xyzw=self._base_pose[3:7],
+                    )
+                )
+                self._pink_grasp_poses_at_binding_base_by_command[
+                    float(command)
+                ] = [*command_position_base, *command_quaternion_base]
         except Exception as exc:  # noqa: BLE001 - one stable runtime boundary
             raise NativeFrankaPoseServoError(
                 ["native_franka_pose_servo_pink_initialization_failed"]
@@ -1508,8 +1524,19 @@ class NativeFrankaDifferentialIkServo:
         *,
         candidate_body_position_base_m: Sequence[float],
         candidate_body_quaternion_base_xyzw: Sequence[float],
+        gripper_command: float | None = None,
     ) -> tuple[list[float], list[float]]:
         """Where a candidate hand pose puts the grasp frame, same offsets."""
+
+        binding_grasp = self._pink_grasp_pose_at_binding_base
+        by_command = getattr(
+            self, "_pink_grasp_poses_at_binding_base_by_command", {}
+        )
+        if gripper_command is not None and by_command:
+            command = float(gripper_command)
+            binding_grasp = min(
+                by_command.items(), key=lambda item: abs(item[0] - command)
+            )[1]
 
         return rigid_grasp_frame_pose_for_controlled_body(
             current_body_position_world_m=(
@@ -1519,10 +1546,10 @@ class NativeFrankaDifferentialIkServo:
                 self._pink_hand_pose_at_binding_base[3:7]
             ),
             current_grasp_frame_position_world_m=(
-                self._pink_grasp_pose_at_binding_base[:3]
+                binding_grasp[:3]
             ),
             current_grasp_frame_quaternion_world_xyzw=(
-                self._pink_grasp_pose_at_binding_base[3:7]
+                binding_grasp[3:7]
             ),
             candidate_body_position_world_m=candidate_body_position_base_m,
             candidate_body_quaternion_world_xyzw=(
@@ -1844,6 +1871,7 @@ class NativeFrankaDifferentialIkServo:
                 self._pink_grasp_frame_for_hand_candidate(
                     candidate_body_position_base_m=hand_position_base,
                     candidate_body_quaternion_base_xyzw=hand_quaternion_base,
+                    gripper_command=gripper_command,
                 )
             )
             position_world, quaternion_world = pose_base_to_world(

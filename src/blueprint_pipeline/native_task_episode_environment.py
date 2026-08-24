@@ -388,7 +388,24 @@ def build_native_task_episode_environment(
                 "velocity_feedforward_scale", DEFAULT_VELOCITY_FEEDFORWARD_SCALE
             ),
         }
-        if joint_target is not None and joint_target[
+        diagnostic_preferred_posture = kwargs.get(
+            "preferred_posture_joint_positions_rad"
+        )
+        if diagnostic_preferred_posture is not None:
+            # Reset-isolated contact diagnostics must be able to compare the
+            # joint-replay controller with the live PhysX TCP controller for
+            # the *same* preferred IK branch.  Routing this through the normal
+            # pose lookup would silently replace the tested branch with the
+            # plan-selected one, defeating the A/B measurement.
+            action, _diagnostic = servo.action_for_grasp_target_physx_dls(
+                target_position_world_m=kwargs["target_position_world_m"],
+                target_grasp_frame_quaternion_world_xyzw=resolved_quaternion,
+                preferred_posture_joint_positions_rad=[
+                    float(value) for value in diagnostic_preferred_posture
+                ],
+                **common,
+            )
+        elif joint_target is not None and joint_target[
             "phase_id"
         ] in PHYSX_DLS_PRECISION_PHASE_IDS:
             action, _diagnostic = servo.action_for_grasp_target_physx_dls(

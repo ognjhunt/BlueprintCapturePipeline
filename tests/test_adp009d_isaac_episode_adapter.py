@@ -732,6 +732,7 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         task_space_translation_strategy=(
             "orientation_first_bounded_local_increment"
         ),
+        preferred_posture_joint_positions_rad=[0.1] * 7,
     )
     assert scripted_action == [0.2] * 7 + [0.0]
     assert calls[0]["max_joint_delta_rad"] == 0.03
@@ -740,6 +741,7 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
     assert calls[0]["task_space_translation_strategy"] == (
         "orientation_first_bounded_local_increment"
     )
+    assert calls[0]["preferred_posture_joint_positions_rad"] == [0.1] * 7
     metadata = adapter.read_control_observation_metadata()
     assert metadata["simulation_time_s"] == 0.0
     assert metadata["timestamp_ns"] == 0

@@ -22,6 +22,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _select_parallel_jaw_control_plan,
     _solve_closed_contact_on_reference_branch,
     _verified_runtime_inputs,
+    _with_live_physx_dls_contact_close,
 )
 
 
@@ -40,6 +41,37 @@ def test_close_sweep_refuses_a_contact_force_gate_mismatch() -> None:
             contact_close_row={"bilateral_task_contact_minimum_force_n": 0.4},
             task_state_binding={"task_contact_minimum_force_n": 0.5},
         )
+
+
+def test_physx_dls_close_adoption_removes_joint_override_and_restores_authored_target() -> None:
+    plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_close",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 1.986, 3.0],
+                "arrival_target_position_world_m": [1.0, 2.0, 3.0],
+                "hold_solved_arm_joint_positions_rad": [0.2] * 7,
+            }
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+
+    derived, receipt = _with_live_physx_dls_contact_close(
+        control_plan=plan,
+        preferred_posture_joint_positions_rad=[0.3] * 7,
+    )
+
+    row = derived["scripted_positive_actions"][0]
+    assert receipt["status"] == "applied"
+    assert row["target_position_world_m"] == [1.0, 2.0, 3.0]
+    assert row["arrival_target_position_world_m"] == [1.0, 2.0, 3.0]
+    assert row["hold_solved_arm_joint_positions_rad"] is None
+    assert row["physx_dls_preferred_posture_joint_positions_rad"] == [
+        0.3
+    ] * 7
+    assert derived["plan_digest"] != plan["plan_digest"]
 
 
 def test_closed_contact_calibration_keeps_the_measured_ik_branch() -> None:
