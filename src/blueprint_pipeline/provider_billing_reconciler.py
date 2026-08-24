@@ -19,18 +19,28 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+import boto3
+import botocore.session
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.exceptions import BotoCoreError
 
 
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
 BILLING_SCOPE = "blueprint_beta_100_user_cohort"
-PROVIDERS = ("runpod", "vast", "digitalocean")
+PROVIDERS = ("runpod", "vast", "digitalocean", "aws")
 RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
 VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
+AWS_COST_EXPLORER_URL = "https://ce.us-east-1.amazonaws.com"
+AWS_STS_URL = "https://sts.us-east-1.amazonaws.com"
+AWS_BILLING_REGION = "us-east-1"
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_PAGES = 100
 # DigitalOcean documents its current invoice preview as a daily artifact.  A
@@ -101,6 +111,22 @@ def _read_secret(path: Path) -> str:
     return value
 
 
+def _validate_secret_file(path: Path) -> Path:
+    if path.is_symlink():
+        raise ProviderBillingReconciliationError(f"secret_symlink_forbidden:{path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise ProviderBillingReconciliationError(f"secret_missing:{path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+        raise ProviderBillingReconciliationError(f"secret_file_invalid:{path.name}")
+    if stat.S_IMODE(metadata.st_mode) & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ProviderBillingReconciliationError(
+            f"secret_file_writable_by_group_or_world:{path.name}"
+        )
+    return path.resolve()
+
+
 def _default_transport(request: urllib.request.Request, timeout: float) -> bytes:
     parsed = urllib.parse.urlsplit(request.full_url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
@@ -151,6 +177,147 @@ def _request_json(
         }
     )
     return decoded
+
+
+def _aws_credentials(*, credentials_file: Path, profile: str):
+    if not profile or any(character.isspace() for character in profile):
+        raise ProviderBillingReconciliationError("aws_billing_profile_invalid")
+    try:
+        session = botocore.session.get_session()
+        session.set_config_variable("credentials_file", str(credentials_file))
+        session.set_config_variable("profile", profile)
+        credentials = boto3.Session(botocore_session=session).get_credentials()
+    except BotoCoreError as exc:
+        raise ProviderBillingReconciliationError("aws_billing_credentials_unavailable") from exc
+    if credentials is None:
+        raise ProviderBillingReconciliationError("aws_billing_credentials_unavailable")
+    return credentials.get_frozen_credentials()
+
+
+def _aws_signed_request(
+    *,
+    provider_service: str,
+    url: str,
+    body: bytes,
+    headers: Mapping[str, str],
+    credentials: Any,
+    timeout: float,
+    transport: Transport,
+    audit_rows: list[dict[str, Any]],
+) -> bytes:
+    if url not in {AWS_COST_EXPLORER_URL, AWS_STS_URL}:
+        raise ProviderBillingReconciliationError("aws_billing_endpoint_not_allowlisted")
+    request = AWSRequest(method="POST", url=url, data=body, headers=dict(headers))
+    SigV4Auth(credentials, provider_service, AWS_BILLING_REGION).add_auth(request)
+    prepared = request.prepare()
+    payload = transport(
+        urllib.request.Request(
+            url,
+            data=body,
+            headers=dict(prepared.headers.items()),
+            method="POST",
+        ),
+        timeout,
+    )
+    audit_rows.append(
+        {
+            "provider": "aws",
+            "endpoint": url,
+            "request_query_digest": _digest_bytes(body),
+            "response_digest": _digest_bytes(payload),
+            "response_size_bytes": len(payload),
+            "response_bytes": payload,
+        }
+    )
+    return payload
+
+
+def _aws_total(
+    *,
+    account_id: str,
+    credentials: Any,
+    start_at: datetime,
+    end_at: datetime,
+    timeout: float,
+    transport: Transport,
+    audit_rows: list[dict[str, Any]],
+) -> float:
+    if not (len(account_id) == 12 and account_id.isdigit()):
+        raise ProviderBillingReconciliationError("aws_billing_account_id_invalid")
+    identity_body = urllib.parse.urlencode(
+        {"Action": "GetCallerIdentity", "Version": "2011-06-15"}
+    ).encode("utf-8")
+    identity_payload = _aws_signed_request(
+        provider_service="sts",
+        url=AWS_STS_URL,
+        body=identity_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
+        credentials=credentials,
+        timeout=timeout,
+        transport=transport,
+        audit_rows=audit_rows,
+    )
+    try:
+        identity = ET.fromstring(identity_payload)
+    except ET.ParseError as exc:
+        raise ProviderBillingReconciliationError("aws_billing_identity_response_invalid") from exc
+    observed_account = next(
+        (node.text for node in identity.iter() if node.tag.endswith("Account")), None
+    )
+    if observed_account != account_id:
+        raise ProviderBillingReconciliationError("aws_billing_account_identity_mismatch")
+
+    total = 0.0
+    next_page_token: str | None = None
+    seen_tokens: set[str] = set()
+    for _page in range(MAX_PAGES):
+        query: dict[str, Any] = {
+            "TimePeriod": {
+                "Start": start_at.date().isoformat(),
+                "End": (end_at.date() + timedelta(days=1)).isoformat(),
+            },
+            "Granularity": "MONTHLY",
+            "Metrics": ["UnblendedCost"],
+        }
+        if next_page_token:
+            query["NextPageToken"] = next_page_token
+        body = _canonical_json(query).encode("utf-8")
+        payload = _aws_signed_request(
+            provider_service="ce",
+            url=AWS_COST_EXPLORER_URL,
+            body=body,
+            headers={
+                "Content-Type": "application/x-amz-json-1.1",
+                "X-Amz-Target": "AWSInsightsIndexService.GetCostAndUsage",
+            },
+            credentials=credentials,
+            timeout=timeout,
+            transport=transport,
+            audit_rows=audit_rows,
+        )
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ProviderBillingReconciliationError("aws_billing_response_invalid_json") from exc
+        rows = decoded.get("ResultsByTime") if isinstance(decoded, Mapping) else None
+        if not isinstance(rows, list):
+            raise ProviderBillingReconciliationError("aws_billing_results_invalid")
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                raise ProviderBillingReconciliationError(f"aws_billing_result_invalid:{index}")
+            totals = row.get("Total")
+            metric = totals.get("UnblendedCost") if isinstance(totals, Mapping) else None
+            if not isinstance(metric, Mapping) or metric.get("Unit") != "USD":
+                raise ProviderBillingReconciliationError("aws_billing_metric_invalid")
+            total += _money(metric.get("Amount"), field="aws_unblended_cost_amount")
+        token = decoded.get("NextPageToken")
+        if token is None:
+            return total
+        if not isinstance(token, str) or not token or token in seen_tokens:
+            raise ProviderBillingReconciliationError("aws_billing_cursor_invalid")
+        seen_tokens.add(token)
+        next_page_token = token
+    raise ProviderBillingReconciliationError("aws_billing_page_cap_exceeded")
 
 
 def _runpod_total(
@@ -338,6 +505,10 @@ def reconcile_provider_billing(
     now: datetime | None = None,
     timeout: float = 30.0,
     transport: Transport = _default_transport,
+    aws_account_id: str | None = None,
+    aws_credentials_file: str | Path | None = None,
+    aws_profile: str | None = None,
+    aws_credentials: Any | None = None,
 ) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     start = _parse_time(start_at, field="cohort_start_at")
@@ -349,6 +520,15 @@ def reconcile_provider_billing(
         "vast": _read_secret(secret_root / "vast_api_key"),
         "digitalocean": _read_secret(secret_root / "digitalocean_api_token"),
     }
+    credentials_path = _validate_secret_file(
+        Path(aws_credentials_file or secret_root / "aws_agent_credentials").expanduser().resolve()
+    )
+    account_id = str(aws_account_id or os.environ.get("BLUEPRINT_AWS_ACCOUNT_ID") or "")
+    profile = str(aws_profile or os.environ.get("AWS_PROFILE") or "")
+    credentials = aws_credentials or _aws_credentials(
+        credentials_file=credentials_path,
+        profile=profile,
+    )
     audit_rows: list[dict[str, Any]] = []
     totals = {
         "runpod": _runpod_total(
@@ -369,6 +549,15 @@ def reconcile_provider_billing(
         ),
         "digitalocean": _digitalocean_total(
             token=keys["digitalocean"],
+            start_at=start,
+            end_at=current,
+            timeout=timeout,
+            transport=transport,
+            audit_rows=audit_rows,
+        ),
+        "aws": _aws_total(
+            account_id=account_id,
+            credentials=credentials,
             start_at=start,
             end_at=current,
             timeout=timeout,
@@ -435,6 +624,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--audit-root", required=True)
     parser.add_argument("--cohort-start-at", required=True)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--aws-account-id", default=os.environ.get("BLUEPRINT_AWS_ACCOUNT_ID"))
+    parser.add_argument(
+        "--aws-credentials-file", default=os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+    )
+    parser.add_argument("--aws-profile", default=os.environ.get("AWS_PROFILE"))
     args = parser.parse_args(argv)
     try:
         result = reconcile_provider_billing(
@@ -443,6 +637,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             audit_root=args.audit_root,
             start_at=args.cohort_start_at,
             timeout=args.timeout,
+            aws_account_id=args.aws_account_id,
+            aws_credentials_file=args.aws_credentials_file,
+            aws_profile=args.aws_profile,
         )
     except (OSError, ProviderBillingReconciliationError) as exc:
         print(

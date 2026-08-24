@@ -37,10 +37,18 @@ by `BLUEPRINT_GPU_BILLING_EXPORT` with this shape:
   "provider_totals_usd": {
     "runpod": 0.0,
     "vast": 0.0,
-    "digitalocean": 0.0
+    "digitalocean": 0.0,
+    "aws": 0.0
   }
 }
 ```
+
+AWS coverage is read-only and account-bound. The canonical AWS profile must
+allow `sts:GetCallerIdentity` and `ce:GetCostAndUsage`; the reconciler signs the
+fixed STS and Cost Explorer endpoints, retains their exact response bytes, and
+refuses an account mismatch. Cost Explorer refreshes at least daily, so live
+inventory plus the independent watchdog remains the immediate zero-resource
+authority while the official billing export supplies cumulative spend evidence.
 
 The guard rejects a file older than 24 hours, a future timestamp, another
 currency/scope/schema, negative/non-numeric totals, or any omitted provider.
