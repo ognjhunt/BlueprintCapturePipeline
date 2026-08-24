@@ -152,6 +152,20 @@ def test_one_run_returns_a_gain_by_posture_surface() -> None:
         assert "outcome" not in cell
 
 
+def test_actuator_sweep_publishes_incremental_cell_progress() -> None:
+    progress = []
+
+    report = _sweep(
+        _SweepEnvironment(),
+        progress_callback=lambda row: progress.append(row),
+    )
+
+    assert len(progress) == report["cell_count"]
+    assert progress[-1]["completed_cell_count"] == report["cell_count"]
+    assert progress[-1]["total_cell_count"] == report["cell_count"]
+    assert progress[-1]["last_cell"] == report["cells"][-1]
+
+
 def test_actuator_sweep_restores_both_original_pd_gains() -> None:
     environment = _SweepEnvironment()
     environment.data = type(
@@ -1468,6 +1482,41 @@ def test_the_sweep_reads_every_seed_the_multistart_already_sealed() -> None:
         phase_id="contact_open",
     )
     assert len(fallback) == 1
+
+
+def test_unsolved_terminal_postures_require_explicit_physics_diagnostic_opt_in() -> None:
+    """A failed IK attempt is evidence to measure, never a silent solution."""
+
+    global_ik = {
+        "phases": [
+            {
+                "phase_id": "contact_open",
+                "selected": None,
+                "attempts": [
+                    {
+                        "solved": False,
+                        "seed_index": 4,
+                        "joint_positions_rad": [0.4] * 7,
+                        "position_error_m": 0.0044,
+                        "orientation_error_rad": 0.087,
+                    }
+                ],
+            }
+        ]
+    }
+
+    assert candidate_postures(global_ik, phase_id="contact_open") == []
+    diagnostic = candidate_postures(
+        global_ik,
+        phase_id="contact_open",
+        include_unsolved_attempts=True,
+    )
+
+    assert len(diagnostic) == 1
+    assert diagnostic[0]["offsim_solved"] is False
+    assert diagnostic[0]["offsim_orientation_error_rad"] == pytest.approx(
+        0.087
+    )
 
 
 class _WallEnvironment(_SweepEnvironment):

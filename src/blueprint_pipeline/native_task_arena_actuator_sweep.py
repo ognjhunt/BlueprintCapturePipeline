@@ -1375,7 +1375,12 @@ def run_contact_close_posture_sweep(
     return report
 
 
-def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[dict[str, Any]]:
+def candidate_postures(
+    global_ik: Mapping[str, Any],
+    *,
+    phase_id: str,
+    include_unsolved_attempts: bool = False,
+) -> list[dict[str, Any]]:
     """Every solved branch for one phase, not only the selected one.
 
     The selector keeps the solution with the healthiest joint-limit margin,
@@ -1396,6 +1401,13 @@ def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[d
         # because this looked for a key the solver does not emit and fell back
         # to the selected branch alone.  Prefer the full attempt list, keep
         # only the seeds that actually solved, and fall back in that order.
+        #
+        # A live-physics diagnostic may explicitly include the terminal
+        # postures from failed attempts.  C79 is the motivating case: every
+        # off-sim solve missed the unchanged pose gate by less than a degree,
+        # but those terminal postures span the branches that physics still
+        # needs to arbitrate.  They remain excluded by default so an unsolved
+        # IK attempt can never silently become an executable posture.
         rows = phase.get("solutions")
         if not isinstance(rows, list):
             attempts = phase.get("attempts")
@@ -1403,7 +1415,11 @@ def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[d
                 rows = [
                     row
                     for row in attempts
-                    if isinstance(row, Mapping) and row.get("solved") is not False
+                    if isinstance(row, Mapping)
+                    and (
+                        include_unsolved_attempts
+                        or row.get("solved") is not False
+                    )
                 ]
             else:
                 rows = []
@@ -1421,6 +1437,10 @@ def candidate_postures(global_ik: Mapping[str, Any], *, phase_id: str) -> list[d
                     "seed_index": row.get("seed_index"),
                     "joint_positions_rad": joints,
                     "offsim_position_error_m": row.get("position_error_m"),
+                    "offsim_orientation_error_rad": row.get(
+                        "orientation_error_rad"
+                    ),
+                    "offsim_solved": row.get("solved"),
                     "predicted_grasp_frame_position_world_m": row.get(
                         "predicted_grasp_frame_position_world_m"
                     ),
@@ -1448,6 +1468,7 @@ def run_actuator_posture_sweep(
     wrist_joint_slice: slice = slice(4, 7),
     cell_reset_callback: Callable[[Mapping[str, Any]], None] | None = None,
     checkpoint_settle_steps: int = 0,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Measure tracking, saturation and reach for each gain x posture cell."""
 
@@ -1578,7 +1599,12 @@ def run_actuator_posture_sweep(
                         "wrist_damping_nm_per_rad_s": float(damping),
                         "posture_index": posture.get("posture_index"),
                         "seed_index": posture.get("seed_index"),
+                        "variant_id": posture.get("variant_id"),
                         "offsim_position_error_m": posture.get("offsim_position_error_m"),
+                        "offsim_orientation_error_rad": posture.get(
+                            "offsim_orientation_error_rad"
+                        ),
+                        "offsim_solved": posture.get("offsim_solved"),
                         # What the solver believed, minus what physics did, at
                         # the same joints.  Gains, branch, posture and
                         # obstruction are all ruled out by measurement as
@@ -1656,9 +1682,38 @@ def run_actuator_posture_sweep(
                             if isinstance(sample, Mapping)
                             else None
                         ),
+                        "joint_limit_violation": (
+                            sample.get("joint_limit_violation")
+                            if isinstance(sample, Mapping)
+                            else None
+                        ),
+                        "robot_collision_failure": (
+                            sample.get("robot_collision_failure")
+                            if isinstance(sample, Mapping)
+                            else None
+                        ),
+                        "scene_collision_failure": (
+                            sample.get("scene_collision_failure")
+                            if isinstance(sample, Mapping)
+                            else None
+                        ),
                         "task_contact_pad_forces_n": _task_pad_forces_n(sample),
                     }
                 )
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "schema_version": (
+                                "native_task_arena_actuator_posture_sweep_"
+                                "progress.v1"
+                            ),
+                            "completed_cell_count": len(cells),
+                            "total_cell_count": (
+                                len(wrist_gain_candidates) * len(postures)
+                            ),
+                            "last_cell": cells[-1],
+                        }
+                    )
     finally:
         # Restore before the controls run, or the sweep would have silently
         # retuned the robot the deterministic canary is about to measure.

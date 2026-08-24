@@ -2092,6 +2092,114 @@ def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
     return None
 
 
+def _fallback_contact_open_postures(
+    jaw_selection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return every distinct terminal IK posture for live physics to measure.
+
+    An unsolved off-sim attempt is not an executable solution.  It is still a
+    useful reset-isolated physics hypothesis when the entire contact-open
+    family narrowly misses the gate, as C79 did.  Keep this surface explicit,
+    variant-labelled and deduplicated; only a later measured pose/collision
+    gate may promote one posture into the deterministic episode.
+    """
+
+    from blueprint_pipeline.native_task_arena_actuator_sweep import (
+        candidate_postures,
+    )
+
+    variants = jaw_selection.get("variants")
+    if not isinstance(variants, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[float, ...]] = set()
+    for variant in variants:
+        if not isinstance(variant, Mapping):
+            continue
+        variant_id = str(variant.get("variant_id") or "")
+        preflight = variant.get("global_ik_preflight")
+        if not variant_id or not isinstance(preflight, Mapping):
+            continue
+        for posture in candidate_postures(
+            preflight,
+            phase_id="contact_open",
+            include_unsolved_attempts=True,
+        ):
+            joints = posture.get("joint_positions_rad")
+            if not isinstance(joints, list) or len(joints) != 7:
+                continue
+            key = tuple(round(float(value), 6) for value in joints)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({**posture, "variant_id": variant_id})
+    return rows
+
+
+def _physics_admitted_contact_open_cell(
+    sweep: Mapping[str, Any],
+    *,
+    position_tolerance_m: float,
+    orientation_tolerance_rad: float,
+) -> dict[str, Any] | None:
+    """Choose a collision-free physical cell inside the unchanged pose gate."""
+
+    cells = sweep.get("cells")
+    if not isinstance(cells, list):
+        return None
+    admitted: list[dict[str, Any]] = []
+    for cell in cells:
+        if not isinstance(cell, Mapping):
+            continue
+        try:
+            position_error = float(cell["measured_distance_to_target_m"])
+            orientation_error = float(cell["measured_orientation_error_rad"])
+            commanded = [
+                float(value)
+                for value in cell["commanded_joint_positions_rad"]
+            ]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            len(commanded) != 7
+            or not all(
+                math.isfinite(value)
+                for value in [position_error, orientation_error, *commanded]
+            )
+            or position_error > float(position_tolerance_m)
+            or orientation_error > float(orientation_tolerance_rad)
+            or cell.get("joint_limit_violation") is not False
+            or cell.get("robot_collision_failure") is not False
+            or cell.get("scene_collision_failure") is not False
+            or cell.get("task_contact_active") is not False
+        ):
+            continue
+        admitted.append(
+            {
+                **dict(cell),
+                "pose_gate_passed": True,
+                "commanded_joint_positions_rad": commanded,
+            }
+        )
+    return min(
+        admitted,
+        key=lambda cell: (
+            (
+                float(cell["measured_distance_to_target_m"])
+                / float(position_tolerance_m)
+            )
+            ** 2
+            + (
+                float(cell["measured_orientation_error_rad"])
+                / float(orientation_tolerance_rad)
+            )
+            ** 2,
+            float(cell.get("joint_tracking_error_rad") or math.inf),
+        ),
+        default=None,
+    )
+
+
 def _phase_is_solved_or_bound(
     global_ik: Mapping[str, Any], *, phase_id: str
 ) -> bool:
@@ -2827,6 +2935,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         contact_orientation_tolerance = float(
             contact_row.get("arrival_orientation_tolerance_rad") or 0.08
         )
+        from blueprint_pipeline.native_task_arena_actuator_sweep import (
+            candidate_postures,
+        )
+
+        contact_open_postures = candidate_postures(
+            controls_global_ik, phase_id="contact_open"
+        )
+        if live_dls_contact_fallback:
+            # C79 physically reached the corrected endpoint but became pinned
+            # 0.0072 rad outside the orientation gate on one joint-limit
+            # branch.  Measure every terminal posture from both equivalent
+            # jaw variants instead of paying for another single local basin.
+            contact_open_postures = _fallback_contact_open_postures(
+                jaw_selection
+            )
 
         def _solve_contact(target_position, seed_joints):
             solved = servo.solve_grasp_target_multistart(
@@ -2947,23 +3070,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             try:
                 from blueprint_pipeline.native_task_arena_actuator_sweep import (
-                    candidate_postures,
                     run_actuator_posture_sweep,
                 )
+
+                contact_open_progress_path = (
+                    output_root
+                    / "contact_open_posture_matrix.progress.v1.json"
+                )
+
+                def _contact_open_progress(
+                    progress: Mapping[str, Any],
+                ) -> None:
+                    _persist_progress(contact_open_progress_path, progress)
+                    completed = int(
+                        progress.get("completed_cell_count") or 0
+                    )
+                    total = int(progress.get("total_cell_count") or 0)
+                    last = progress.get("last_cell")
+                    if completed % 10 == 0 or completed == total:
+                        print(
+                            "BLUEPRINT_CONTACT_OPEN_MATRIX_PROGRESS:"
+                            f"completed={completed}/{total}:"
+                            f"position_m={(last or {}).get('measured_distance_to_target_m')}:"
+                            f"orientation_rad={(last or {}).get('measured_orientation_error_rad')}",
+                            flush=True,
+                        )
 
                 sweep = run_actuator_posture_sweep(
                     environment=episode_environment,
                     robot=robot,
                     arm_joint_ids=list(range(7)),
                     target_position_world_m=contact_row["target_position_world_m"],
-                    postures=candidate_postures(
-                        controls_global_ik, phase_id="contact_open"
-                    ),
+                    target_orientation_world_xyzw=contact_quaternion,
+                    postures=contact_open_postures,
                     gripper_open_command=float(gripper["open_command"]),
                     max_joint_delta_rad=float(contact_row["max_joint_delta_rad"]),
                     max_joint_setpoint_lead_rad=float(
                         contact_row["max_joint_setpoint_lead_rad"]
                     ),
+                    progress_callback=_contact_open_progress,
                 )
             except BaseException as exc:  # noqa: BLE001 - diagnostic only
                 sweep = {
@@ -2973,6 +3118,70 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "cells": [],
                 }
         result["contact_posture_actuator_sweep"] = sweep
+
+        admitted_open_cell = _physics_admitted_contact_open_cell(
+            sweep,
+            position_tolerance_m=contact_tolerance,
+            orientation_tolerance_rad=contact_orientation_tolerance,
+        )
+        result["contact_open_physics_adoption"] = {
+            "schema_version": (
+                "native_task_controls_contact_open_physics_adoption.v1"
+            ),
+            "status": "applied" if admitted_open_cell is not None else "not_applied",
+            "measured_cell": admitted_open_cell,
+            "represented_posture_count": len(contact_open_postures),
+            "executed_cell_count": len(sweep.get("cells") or []),
+            "claim_boundary": (
+                "promotes_only_a_reset_isolated_cell_that_passed_the_unchanged_"
+                "position_orientation_joint_limit_collision_and_zero_contact_"
+                "gates;the_continuous_episode_remains_authoritative"
+            ),
+        }
+        if admitted_open_cell is not None:
+            adopted_open = list(
+                admitted_open_cell["commanded_joint_positions_rad"]
+            )
+            target_record = {
+                "phase_id": "contact_open",
+                "target_position_world_m": list(
+                    contact_row["target_position_world_m"]
+                ),
+                "target_quaternion_world_xyzw": list(contact_quaternion),
+                "joint_positions_rad": adopted_open,
+            }
+            scripted_pose_joint_targets = [
+                row
+                for row in scripted_pose_joint_targets
+                if str(row.get("phase_id") or "") != "contact_open"
+            ]
+            scripted_pose_joint_targets.append(target_record)
+            selected_control_plan, held_vectors = (
+                _with_held_solved_contact_vectors(
+                    control_plan=selected_control_plan,
+                    scripted_pose_joint_targets=scripted_pose_joint_targets,
+                )
+            )
+            result["held_solved_contact_vectors"] = held_vectors
+            effective_control_plan, branch_replay = (
+                _with_contact_entry_branch_replay(
+                    control_plan=selected_control_plan,
+                    scripted_pose_joint_targets=scripted_pose_joint_targets,
+                    task_spec=scene_plan["task_spec"],
+                    actuator_feasible_step_rad=actuator_feasible_step_vector,
+                )
+            )
+            result["contact_entry_branch_replay"] = branch_replay
+            result["control_plan_digest"] = effective_control_plan[
+                "plan_digest"
+            ]
+            contact_row = next(
+                row
+                for row in effective_control_plan["scripted_positive_actions"]
+                if isinstance(row, Mapping)
+                and str(row.get("phase_id") or "") == "contact_open"
+            )
+            seed_posture = adopted_open
 
         # C36 localized the defect to a kinematic constant: at the solved
         # contact posture, across a tenfold stiffness range and with joint
@@ -3160,6 +3369,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reference_joint_positions_rad=seed_joints,
             )
 
+        close_postures = candidate_postures(
+            controls_global_ik, phase_id="contact_close"
+        )
+        if not close_postures and seed_posture is not None:
+            # The reset-isolated contact-open matrix has already proved this
+            # posture is a physically safe starting branch.  Even when PINK
+            # cannot solve the closed linkage, use that measured branch as the
+            # null-space preference for the live closed-TCP controller.
+            close_postures = [
+                {
+                    "posture_index": 0,
+                    "seed_index": None,
+                    "joint_positions_rad": list(seed_posture),
+                    "posture_source": "physics_admitted_contact_open",
+                }
+            ]
+
         try:
             from blueprint_pipeline.native_task_arena_actuator_sweep import (
                 candidate_postures,
@@ -3176,9 +3402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     target_orientation_world_xyzw=contact_close_row[
                         "target_quaternion_world_xyzw"
                     ],
-                    postures=candidate_postures(
-                        controls_global_ik, phase_id="contact_close"
-                    ),
+                    postures=close_postures,
                     preposition_joint_positions_rad=close_sweep_preposition,
                     # The sweep owns scalar validation and reports a typed
                     # input error.  Eager caller-side float conversions made
