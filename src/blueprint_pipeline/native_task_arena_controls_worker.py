@@ -2132,12 +2132,17 @@ def _select_parallel_jaw_control_plan(
             reference_seeds=reference_seeds,
         )
         margin = _contact_open_joint_margin(preflight)
-        contact_phases_solved_or_bound = all(
-            _phase_is_solved_or_bound(preflight, phase_id=phase_id)
-            for phase_id in HOLD_SOLVED_VECTOR_PHASE_IDS
+        contact_open_solved_or_bound = _phase_is_solved_or_bound(
+            preflight, phase_id="contact_open"
+        )
+        contact_close_solved_or_bound = _phase_is_solved_or_bound(
+            preflight, phase_id="contact_close"
+        )
+        contact_phases_solved_or_bound = (
+            contact_open_solved_or_bound and contact_close_solved_or_bound
         )
         admissible = (
-            contact_phases_solved_or_bound
+            contact_open_solved_or_bound
             and margin is not None
             and margin >= CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD
         )
@@ -2146,6 +2151,8 @@ def _select_parallel_jaw_control_plan(
             "control_plan_digest": plan.get("plan_digest"),
             "all_unique_poses_solved_or_bound": preflight.get("status")
             == "all_unique_poses_solved_or_bound",
+            "contact_open_solved_or_bound": contact_open_solved_or_bound,
+            "contact_close_solved_or_bound": contact_close_solved_or_bound,
             "contact_phases_solved_or_bound": contact_phases_solved_or_bound,
             "contact_open_minimum_joint_limit_margin_rad": margin,
             "admissible": admissible,
@@ -2175,16 +2182,18 @@ def _select_parallel_jaw_control_plan(
         "selected_control_plan_digest": plan.get("plan_digest"),
         "selected_contact_open_minimum_joint_limit_margin_rad": margin,
         "selection_rule": (
-            "contact_open_and_contact_close_solved_or_bound_then_maximise_"
-            "contact_open_joint_limit_margin_then_prefer_normalized_nominal"
+            "contact_open_solved_or_bound_then_maximise_contact_open_joint_"
+            "limit_margin_then_prefer_normalized_nominal;contact_close_may_"
+            "remain_live_physx_dls"
         ),
         "variants": variants,
         "provider_mutation_performed": False,
         "physics_steps_performed": 0,
         "claim_boundary": (
-            "off_sim_contact_branch_selection_only;non_contact_poses_without_"
-            "global_ik_remain_live_dls_controls;native_arrival_contact_"
-            "dynamics_and_task_outcome_gates_remain_authoritative"
+            "off_sim_contact_open_branch_selection_only;contact_close_and_"
+            "non_contact_poses_without_global_ik_remain_live_dls_controls;"
+            "native_arrival_contact_dynamics_and_task_outcome_gates_remain_"
+            "authoritative"
         ),
     }
     return plan, targets, {**receipt, "selected_global_ik_preflight": preflight}
