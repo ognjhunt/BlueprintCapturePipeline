@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -22,6 +23,8 @@ from .watchdog_owner_teardown_contract import (
 
 
 HANDOFF_SCHEMA = "vast_independent_watchdog_handoff.v1"
+SUPERSESSION_SCHEMA = "vast_independent_watchdog_supersession.v1"
+SUPERSESSION_NAME = "vast_independent_watchdog_supersession.json"
 HANDOFF_NAME = "vast_independent_watchdog_handoff.json"
 WATCHDOG_DIR_NAME = "independent_vast_watchdog"
 EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
@@ -227,6 +230,25 @@ def _read_json(path: Path) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _exact_vast_instance_live(value: Mapping[str, Any], instance_id: int) -> bool:
+    return bool(
+        value.get("api_confirmed") is True
+        and value.get("status") == "observed"
+        and str(value.get("instance_id") or "") == str(instance_id)
+        and str(value.get("actual_status") or "").lower() in {"running", "active"}
+    )
+
+
 def arm_independent_vast_watchdog(
     *,
     job_dir: Path,
@@ -378,6 +400,197 @@ def arm_independent_vast_watchdog(
         allowed_active_instance_ids=allowed_ids,
         caller_exit_survival_contract=caller_exit_survival,
     )
+
+
+def supersede_independent_vast_watchdog(
+    *,
+    job_dir: Path,
+    predecessor_handoff: Mapping[str, Any],
+    instance_id: int,
+    max_live_minutes: int,
+    generated_at: str,
+    pod_name_prefix: str,
+    provider_factory: Any | None = None,
+    predecessor_exit_wait_seconds: float = 10.0,
+) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
+    """Transfer one live Vast instance to a later independent watchdog.
+
+    The predecessor remains untouched unless the successor is independently
+    armed, bound to the exact same instance, has a later deadline, and two
+    provider inspections prove that instance is still running.  The final
+    provider inspection happens after predecessor retirement so the receipt
+    proves the transfer itself did not terminate the worker.
+    """
+
+    predecessor_pid = int(predecessor_handoff.get("watchdog_pid") or 0)
+    predecessor_deadline = float(
+        predecessor_handoff.get("watchdog_deadline_epoch") or 0.0
+    )
+    predecessor_out_dir = Path(
+        str(predecessor_handoff.get("watchdog_out_dir") or "")
+    ).expanduser()
+    predecessor_instance_path = predecessor_out_dir / "started_vast_instance_id.txt"
+    try:
+        predecessor_instance_id = int(
+            predecessor_instance_path.read_text(encoding="utf-8").strip()
+        )
+    except (OSError, UnicodeError, ValueError):
+        predecessor_instance_id = 0
+    blockers: list[str] = []
+    if predecessor_handoff.get("status") not in {
+        "armed",
+        "retained_until_hard_ttl",
+    }:
+        blockers.append("predecessor_watchdog_status_invalid")
+    if not _pid_alive(predecessor_pid):
+        blockers.append("predecessor_watchdog_not_live")
+    if predecessor_deadline <= time.time() + 60:
+        blockers.append("predecessor_watchdog_deadline_too_close")
+    if predecessor_instance_id != int(instance_id):
+        blockers.append("predecessor_watchdog_instance_binding_invalid")
+    if blockers:
+        result = {
+            "schema_version": SUPERSESSION_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "instance_id": int(instance_id),
+            "predecessor_watchdog_pid": predecessor_pid or None,
+            "provider_mutations_performed": 0,
+            "blockers": blockers,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job_dir / SUPERSESSION_NAME, result)
+        return result, None
+
+    if provider_factory is None:
+        from .gpu_render_providers import get_render_provider
+
+        provider_factory = get_render_provider
+    try:
+        provider = provider_factory("vast")
+        before = provider.inspect(str(instance_id))
+    except Exception as exc:  # noqa: BLE001 - predecessor stays armed
+        result = {
+            "schema_version": SUPERSESSION_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "instance_id": int(instance_id),
+            "predecessor_watchdog_pid": predecessor_pid,
+            "provider_mutations_performed": 0,
+            "blockers": ["successor_watchdog_instance_live_unproven"],
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job_dir / SUPERSESSION_NAME, result)
+        return result, None
+    if not _exact_vast_instance_live(before, instance_id):
+        result = {
+            "schema_version": SUPERSESSION_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "instance_id": int(instance_id),
+            "predecessor_watchdog_pid": predecessor_pid,
+            "provider_inspect_before": before,
+            "provider_mutations_performed": 0,
+            "blockers": ["successor_watchdog_instance_not_running"],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job_dir / SUPERSESSION_NAME, result)
+        return result, None
+
+    successor_handoff, successor = arm_independent_vast_watchdog(
+        job_dir=job_dir,
+        max_live_minutes=max_live_minutes,
+        generated_at=generated_at,
+        pod_name_prefix=pod_name_prefix,
+        allowed_active_instance_ids=[instance_id],
+    )
+    if successor is None:
+        result = {
+            "schema_version": SUPERSESSION_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "instance_id": int(instance_id),
+            "predecessor_watchdog_pid": predecessor_pid,
+            "successor_watchdog": successor_handoff,
+            "provider_mutations_performed": 0,
+            "blockers": ["successor_watchdog_not_armed"],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job_dir / SUPERSESSION_NAME, result)
+        return result, None
+    write_started_vast_instance_id(successor.started_instance_id_path, instance_id)
+
+    try:
+        successor_bound = (
+            successor.deadline_epoch > predecessor_deadline
+            and successor.process.poll() is None
+            and successor.started_instance_id_path.read_text(encoding="utf-8").strip()
+            == str(instance_id)
+        )
+        second = provider.inspect(str(instance_id))
+    except Exception:  # noqa: BLE001 - predecessor remains armed
+        successor_bound = False
+        second = {}
+    if not successor_bound or not _exact_vast_instance_live(second, instance_id):
+        successor.process.terminate()
+        try:
+            successor.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            successor.process.kill()
+        result = {
+            "schema_version": SUPERSESSION_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "instance_id": int(instance_id),
+            "predecessor_watchdog_pid": predecessor_pid,
+            "successor_watchdog": successor_handoff,
+            "provider_inspect_before": before,
+            "provider_inspect_successor_armed": second,
+            "provider_mutations_performed": 0,
+            "blockers": ["successor_watchdog_exact_binding_unproven"],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job_dir / SUPERSESSION_NAME, result)
+        return result, None
+
+    os.kill(predecessor_pid, signal.SIGTERM)
+    exit_deadline = time.monotonic() + max(0.1, predecessor_exit_wait_seconds)
+    while time.monotonic() < exit_deadline and _pid_alive(predecessor_pid):
+        time.sleep(0.1)
+    predecessor_retired = not _pid_alive(predecessor_pid)
+    try:
+        after = provider.inspect(str(instance_id))
+    except Exception:  # noqa: BLE001 - successor stays armed and owns teardown
+        after = {}
+    transferred = bool(
+        predecessor_retired
+        and successor.process.poll() is None
+        and _exact_vast_instance_live(after, instance_id)
+    )
+    result = {
+        "schema_version": SUPERSESSION_SCHEMA,
+        "generated_at": generated_at,
+        "status": "superseded" if transferred else "successor_retained_transfer_unproven",
+        "instance_id": int(instance_id),
+        "predecessor_watchdog_pid": predecessor_pid,
+        "predecessor_watchdog_deadline_epoch": predecessor_deadline,
+        "predecessor_watchdog_retired": predecessor_retired,
+        "successor_watchdog_pid": successor.process.pid,
+        "successor_watchdog_deadline_epoch": successor.deadline_epoch,
+        "successor_watchdog_out_dir": str(successor.out_dir),
+        "provider_inspect_before": before,
+        "provider_inspect_successor_armed": second,
+        "provider_inspect_after_transfer": after,
+        "provider_instance_running_after_transfer": _exact_vast_instance_live(
+            after, instance_id
+        ),
+        "provider_mutations_performed": 0,
+        "blockers": [] if transferred else ["watchdog_supersession_transfer_unproven"],
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job_dir / SUPERSESSION_NAME, result)
+    return result, successor
 
 
 def close_independent_vast_watchdog(
