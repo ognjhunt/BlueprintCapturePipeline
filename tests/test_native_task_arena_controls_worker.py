@@ -449,7 +449,7 @@ def test_controls_selects_contact_branch_when_non_contact_pose_is_unsolved() -> 
     assert targets[-1]["joint_positions_rad"] == pytest.approx([0.2] * 7)
 
 
-def test_controls_refuses_parallel_jaw_variants_without_contact_solution() -> None:
+def test_controls_uses_live_dls_fallback_without_contact_solution() -> None:
     class _Servo:
         def read_arm_joint_positions(self):
             return [0.0] * 7
@@ -474,16 +474,21 @@ def test_controls_refuses_parallel_jaw_variants_without_contact_solution() -> No
         "plan_digest": "sha256:" + "a" * 64,
     }
 
-    with pytest.raises(
-        RuntimeError,
-        match="native_task_controls_no_parallel_jaw_variant_with_contact_margin",
-    ):
-        _select_parallel_jaw_control_plan(
-            servo=_Servo(),
-            control_plan=plan,
-            construction_bound_targets=[],
-            reference_seeds=[[0.5] * 7],
-        )
+    selected_plan, targets, receipt = _select_parallel_jaw_control_plan(
+        servo=_Servo(),
+        control_plan=plan,
+        construction_bound_targets=[],
+        reference_seeds=[[0.5] * 7],
+    )
+
+    assert selected_plan == plan
+    assert targets == []
+    assert receipt["selected_variant_id"] == "normalized_nominal"
+    assert receipt["status"] == (
+        "selected_live_physx_dls_fallback_before_physics_motion"
+    )
+    assert receipt["selected_contact_open_minimum_joint_limit_margin_rad"] is None
+    assert all(row["admissible"] is False for row in receipt["variants"])
 
 
 def test_controls_selects_safe_open_branch_when_close_requires_live_dls() -> None:

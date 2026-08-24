@@ -2121,6 +2121,7 @@ def _select_parallel_jaw_control_plan(
     equivalent = _parallel_jaw_equivalent_control_plan(control_plan)
     variants = []
     solved_payloads = []
+    evaluated_payloads = []
     for variant_id, plan, bound_targets in (
         ("normalized_nominal", nominal, construction_bound_targets),
         ("parallel_jaw_equivalent", equivalent, []),
@@ -2159,12 +2160,44 @@ def _select_parallel_jaw_control_plan(
             "global_ik_preflight": preflight,
         }
         variants.append(row)
+        evaluated_payloads.append((variant_id, plan, targets, preflight))
         if admissible:
             solved_payloads.append((margin, variant_id, plan, targets, preflight))
     if not solved_payloads:
-        raise RuntimeError(
-            "native_task_controls_no_parallel_jaw_variant_with_contact_margin"
-        )
+        # C78 proved that the off-sim PINK solve can reject contact_open even
+        # though earlier PhysX episodes physically admitted that same authored
+        # pose inside the 5 mm gate.  PINK is a seed generator, not the task
+        # authority.  Preserve the authored jaw sign and let the live DLS
+        # controller face every unchanged pose, joint, collision, and contact
+        # gate instead of turning a missing optional seed into a veto.
+        variant_id, plan, targets, preflight = evaluated_payloads[0]
+        receipt = {
+            "schema_version": "native_task_controls_parallel_jaw_selection.v1",
+            "status": "selected_live_physx_dls_fallback_before_physics_motion",
+            "source_control_plan_digest": control_plan.get("plan_digest"),
+            "sealed_input_control_plan_digest": control_plan.get(
+                "runtime_normalized_source_plan_digest"
+            ),
+            "selected_variant_id": variant_id,
+            "selected_control_plan_digest": plan.get("plan_digest"),
+            "selected_contact_open_minimum_joint_limit_margin_rad": None,
+            "selection_rule": (
+                "preserve_normalized_nominal_when_no_off_sim_contact_open_"
+                "branch_clears_margin_then_require_live_physx_gates"
+            ),
+            "variants": variants,
+            "provider_mutation_performed": False,
+            "physics_steps_performed": 0,
+            "claim_boundary": (
+                "missing_off_sim_seed_only;does_not_admit_contact_open_or_"
+                "contact_close;native_pose_joint_collision_bilateral_contact_"
+                "and_task_outcome_gates_remain_authoritative"
+            ),
+        }
+        return plan, targets, {
+            **receipt,
+            "selected_global_ik_preflight": preflight,
+        }
     # Prefer joint-limit room; retain the normalized nominal on an exact tie.
     selected = max(
         solved_payloads,
@@ -2658,7 +2691,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             (
                 "completed"
                 if jaw_selection.get("status")
-                == "selected_before_physics_motion"
+                in {
+                    "selected_before_physics_motion",
+                    "selected_live_physx_dls_fallback_before_physics_motion",
+                }
                 else "blocked"
             ),
         )
@@ -2685,63 +2721,84 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
 
-        # Phase 5 must remain the continuous task gate, but it must not
-        # serialize every observation about phases 6--11.  Measure every
-        # solved downstream branch under PhysX now, while the scene is loaded,
-        # so a later joint, actuator, pose, or incidental-contact defect is
-        # visible even when the grasp transition itself does not admit.
+        # A missing off-sim contact-open seed is precisely the condition that
+        # needs the live controller as authority.  Running the 134-cell
+        # phases-6--11 diagnostic first would spend most of the retained-worker
+        # window before testing that cause.  C74 already sealed the downstream
+        # feasibility matrix; on this fallback path, test Phase 5 first.
+        live_dls_contact_fallback = jaw_selection.get("status") == (
+            "selected_live_physx_dls_fallback_before_physics_motion"
+        )
         _announce("downstream_phase_posture_matrix")
-        try:
-            from blueprint_pipeline.native_task_arena_actuator_sweep import (
-                run_downstream_phase_posture_matrix,
-            )
-
-            downstream_progress_path = (
-                output_root / "downstream_phase_posture_matrix.progress.v1.json"
-            )
-
-            def _downstream_phase_progress(
-                progress: Mapping[str, Any],
-            ) -> None:
-                _persist_progress(downstream_progress_path, progress)
-                last_phase = progress.get("last_phase")
-                if not isinstance(last_phase, Mapping):
-                    return
-                print(
-                    "BLUEPRINT_DOWNSTREAM_PHASE_MATRIX_PROGRESS:"
-                    f"phase={last_phase.get('phase_id')}:"
-                    f"completed={progress.get('completed_phase_count')}/"
-                    f"{progress.get('total_phase_count')}:"
-                    f"represented={progress.get('represented_configuration_count')}:"
-                    f"executed={progress.get('executed_cell_count')}:"
-                    f"pose_gate={last_phase.get('pose_gate_cell_count', 0)}",
-                    flush=True,
-                )
-
-            downstream_phase_matrix = run_downstream_phase_posture_matrix(
-                environment=episode_environment,
-                robot=robot,
-                arm_joint_ids=list(range(7)),
-                control_plan=effective_control_plan,
-                global_ik=controls_global_ik,
-                gripper_open_command=float(gripper["open_command"]),
-                gripper_closed_command=float(gripper["closed_command"]),
-                progress_callback=_downstream_phase_progress,
-            )
-        except BaseException as exc:  # noqa: BLE001 - diagnostic only
+        if live_dls_contact_fallback:
             downstream_phase_matrix = {
                 "schema_version": (
                     "native_task_arena_downstream_phase_posture_matrix.v1"
                 ),
                 "status": "unavailable",
-                "reason": f"{type(exc).__name__}:{exc}",
+                "reason": "deferred_until_live_dls_contact_open_is_measured",
                 "represented_configuration_count": 0,
                 "executed_cell_count": 0,
                 "phase_reports": [],
                 "claim_boundary": (
-                    "diagnostic_gap_only;continuous_controls_unchanged"
+                    "phase5_first_diagnostic_order_only;continuous_controls_"
+                    "and_all_task_gates_unchanged;c74_retains_prior_"
+                    "downstream_feasibility_evidence"
                 ),
             }
+        else:
+            try:
+                from blueprint_pipeline.native_task_arena_actuator_sweep import (
+                    run_downstream_phase_posture_matrix,
+                )
+
+                downstream_progress_path = (
+                    output_root
+                    / "downstream_phase_posture_matrix.progress.v1.json"
+                )
+
+                def _downstream_phase_progress(
+                    progress: Mapping[str, Any],
+                ) -> None:
+                    _persist_progress(downstream_progress_path, progress)
+                    last_phase = progress.get("last_phase")
+                    if not isinstance(last_phase, Mapping):
+                        return
+                    print(
+                        "BLUEPRINT_DOWNSTREAM_PHASE_MATRIX_PROGRESS:"
+                        f"phase={last_phase.get('phase_id')}:"
+                        f"completed={progress.get('completed_phase_count')}/"
+                        f"{progress.get('total_phase_count')}:"
+                        f"represented={progress.get('represented_configuration_count')}:"
+                        f"executed={progress.get('executed_cell_count')}:"
+                        f"pose_gate={last_phase.get('pose_gate_cell_count', 0)}",
+                        flush=True,
+                    )
+
+                downstream_phase_matrix = run_downstream_phase_posture_matrix(
+                    environment=episode_environment,
+                    robot=robot,
+                    arm_joint_ids=list(range(7)),
+                    control_plan=effective_control_plan,
+                    global_ik=controls_global_ik,
+                    gripper_open_command=float(gripper["open_command"]),
+                    gripper_closed_command=float(gripper["closed_command"]),
+                    progress_callback=_downstream_phase_progress,
+                )
+            except BaseException as exc:  # noqa: BLE001 - diagnostic only
+                downstream_phase_matrix = {
+                    "schema_version": (
+                        "native_task_arena_downstream_phase_posture_matrix.v1"
+                    ),
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                    "represented_configuration_count": 0,
+                    "executed_cell_count": 0,
+                    "phase_reports": [],
+                    "claim_boundary": (
+                        "diagnostic_gap_only;continuous_controls_unchanged"
+                    ),
+                }
         result["downstream_phase_posture_matrix"] = downstream_phase_matrix
         _announce(
             "downstream_phase_posture_matrix",
