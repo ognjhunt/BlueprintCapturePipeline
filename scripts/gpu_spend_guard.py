@@ -67,7 +67,6 @@ DEFAULT_MAX_BOOT_SECONDS = 480
 DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
 DEFAULT_WARM_LEASE_SECONDS = 15 * 60
 PROVIDERS = ("runpod", "vast", "digitalocean", "gcp", "aws")
-BILLING_BASE_PROVIDERS = ("runpod", "vast", "digitalocean")
 MAX_BILLING_EXPORT_BYTES = 1024 * 1024
 # The official billing reconciler is intentionally sandboxed as the Blueprint
 # service account (see ``blueprint-provider-billing-reconciler.service``).  Its
@@ -801,12 +800,12 @@ def reconcile_billing_export(
     if not isinstance(totals, Mapping):
         blockers.append("provider_billing_export_totals_missing")
         totals = {}
-    # Backward-compatible exports always cover the original fleet. Newly added
-    # providers become mandatory as soon as they have live inventory; an
-    # unconfigured provider does not make every historical export invalid.
-    required_providers = (
-        set(BILLING_BASE_PROVIDERS) | live_providers if required else live_providers
-    )
+    # A current export may intentionally omit a provider whose official API is
+    # unavailable. Every provider with live inventory remains mandatory here;
+    # the paid-lane chokepoint separately requires coverage for the provider a
+    # new launch will mutate. Do not turn an idle, uncovered provider into a
+    # cross-provider veto for covered work.
+    required_providers = live_providers
     missing = sorted(provider for provider in required_providers if provider not in totals)
     if missing:
         blockers.extend(f"provider_billing_export_missing:{provider}" for provider in missing)
