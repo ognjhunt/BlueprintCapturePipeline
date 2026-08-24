@@ -1540,6 +1540,12 @@ def _with_contact_acquisition_candidate(
             float(value)
             for value in best["candidate_target_position_world_m"]
         ]
+        command_target = [
+            float(value)
+            for value in best.get(
+                "candidate_command_target_position_world_m", target
+            )
+        ]
         joints = [
             float(value)
             for value in best["reached_open_joint_positions_rad"]
@@ -1549,8 +1555,12 @@ def _with_contact_acquisition_candidate(
         return plan, receipt
     if (
         len(target) != 3
+        or len(command_target) != 3
         or len(joints) != 7
-        or not all(math.isfinite(value) for value in [*target, *joints])
+        or not all(
+            math.isfinite(value)
+            for value in [*target, *command_target, *joints]
+        )
     ):
         receipt["reason"] = "admitted_cell_replay_values_invalid"
         return plan, receipt
@@ -1581,15 +1591,15 @@ def _with_contact_acquisition_candidate(
 
     # The preceding measured branch-replay row remains the known-clear anchor.
     # Contact-open now performs only the open-jaw advance the sweep qualified.
-    contact_open["target_position_world_m"] = list(target)
-    contact_open["arrival_target_position_world_m"] = list(target)
+    contact_open["target_position_world_m"] = list(command_target)
+    contact_open["arrival_target_position_world_m"] = list(command_target)
     contact_open["hold_solved_arm_joint_positions_rad"] = list(joints)
     contact_open["gripper_state"] = "open"
 
     # Close from the pose the episode itself physically reached, not from a
     # second IK posture.  The episode seam snapshots those joints on entry and
     # keeps its native TCP, orientation, and bilateral-contact gates intact.
-    contact_close["target_position_world_m"] = list(target)
+    contact_close["target_position_world_m"] = list(command_target)
     contact_close["arrival_target_position_world_m"] = list(target)
     contact_close["target_quaternion_world_xyzw"] = list(
         contact_open["target_quaternion_world_xyzw"]
@@ -1603,6 +1613,7 @@ def _with_contact_acquisition_candidate(
             "reason": None,
             "adopted_cell_index": int(best["cell_index"]),
             "adopted_target_position_world_m": target,
+            "adopted_command_target_position_world_m": command_target,
             "adopted_open_joint_positions_rad": joints,
             "adopted_offsets_m": {
                 "approach": float(best["approach_offset_m"]),
@@ -3043,6 +3054,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_contact_acquisition_sweep(
                     environment=episode_environment,
                     authored_target_position_world_m=authored_close_target,
+                    command_target_position_world_m=contact_close_row[
+                        "target_position_world_m"
+                    ],
                     target_orientation_world_xyzw=contact_close_row[
                         "target_quaternion_world_xyzw"
                     ],
