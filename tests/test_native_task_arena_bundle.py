@@ -36,6 +36,7 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
 from blueprint_pipeline.native_task_arena_execution_contract import (
     EXECUTION_MODE_CONTRACTS,
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
+    native_task_arena_execution_transport_completed,
 )
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
@@ -91,6 +92,86 @@ def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
         "controls",
         "policy",
     }
+
+
+def test_transport_accepts_only_exact_nonqualifying_downstream_diagnostic() -> None:
+    request = {
+        "schema_version": (
+            "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1"
+        ),
+        "enabled": True,
+        "development_only": True,
+        "qualification_effect": "none",
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request["status"] = "requested"
+    diagnostic = {
+        "schema_version": (
+            "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+        ),
+        "status": "measured",
+        "phase5_qualified": False,
+        "qualification_effect": "none",
+        "control_passed": False,
+        "receipt_digest": "",
+    }
+    diagnostic["receipt_digest"] = canonical_digest(
+        diagnostic, digest_field="receipt_digest"
+    )
+    result = {
+        "schema_version": "native_task_arena_control_result.v1",
+        "status": "diagnostic_completed",
+        "controls_qualified": False,
+        "qualification_effect": "none",
+        "development_only": True,
+        "diagnostic_only": True,
+        "phase5_qualified": False,
+        "candidate_policy_queried": False,
+        "candidate_outcomes_accessed": False,
+        "blockers": [],
+        "phase_reached": (
+            "synthetic_post_phase5_downstream_diagnostic_complete"
+        ),
+        "synthetic_post_phase5_downstream_diagnostic_request": request,
+        "synthetic_post_phase5_downstream_diagnostic": diagnostic,
+        "downstream_phase_posture_matrix": {
+            "status": "not_run",
+            "executed_cell_count": 0,
+            "represented_configuration_count": 0,
+        },
+    }
+    assert native_task_arena_execution_transport_completed(
+        result,
+        expected_output_filename="native_task_arena_control_result.v1.json",
+    )
+    assert not native_task_arena_execution_transport_completed(
+        result,
+        expected_output_filename="native_task_arena_policy_result.v1.json",
+    )
+    for field, value in (
+        ("controls_qualified", True),
+        ("qualification_effect", "qualify"),
+        ("control_pair", {}),
+    ):
+        invalid = json.loads(json.dumps(result))
+        invalid[field] = value
+        assert not native_task_arena_execution_transport_completed(
+            invalid,
+            expected_output_filename=(
+                "native_task_arena_control_result.v1.json"
+            ),
+        )
+    invalid_digest = json.loads(json.dumps(result))
+    invalid_digest[
+        "synthetic_post_phase5_downstream_diagnostic"
+    ]["receipt_digest"] = "sha256:" + "0" * 64
+    assert not native_task_arena_execution_transport_completed(
+        invalid_digest,
+        expected_output_filename="native_task_arena_control_result.v1.json",
+    )
     assert NATIVE_TASK_ARENA_POLICY_CANDIDATES == {
         "groot_n17_droid",
         "pi05_droid",

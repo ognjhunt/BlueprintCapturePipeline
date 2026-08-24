@@ -17,6 +17,9 @@ from typing import Any, Mapping
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
 from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .native_task_arena_execution_contract import (
+    native_task_arena_execution_transport_completed,
+)
 from .paid_lane_guard import (
     SPEND_ADMISSION_LOCK_PATH_ENV,
     PreSpendPreflightBlocked,
@@ -721,7 +724,10 @@ def run_arena_native_control_vast(
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
-    if execution.get("status") != "completed":
+    if not native_task_arena_execution_transport_completed(
+        execution,
+        expected_output_filename=expected_output_filename,
+    ):
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
     policy_query_blocker = _candidate_policy_query_blocker(
         execution,

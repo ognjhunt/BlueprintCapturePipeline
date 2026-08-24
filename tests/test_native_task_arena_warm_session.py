@@ -9,6 +9,7 @@ import zipfile
 import pytest
 
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_warm_authority as authority
 import blueprint_pipeline.native_task_arena_warm_vast as warm_vast
 
@@ -371,8 +372,11 @@ def test_close_accepts_provider_404_as_observed_absence(
     assert result["continuing_spend_from_this_run"] is False
 
 
+@pytest.mark.parametrize("diagnostic_mode", [False, True])
 def test_warm_execution_reuses_instance_without_allocating(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    diagnostic_mode: bool,
 ) -> None:
     prepared, receipt = _prepared(tmp_path)
     session = _session(prepared)
@@ -447,16 +451,67 @@ def test_warm_execution_reuses_instance_without_allocating(
         return {"status": "completed"}, text
 
     def fake_download(*, destination, **_kwargs):
+        execution = {
+            "status": "completed",
+            "candidate_policy_queried": False,
+            "blockers": [],
+        }
+        if diagnostic_mode:
+            request = {
+                "schema_version": (
+                    "adp_task_synthetic_post_phase5_downstream_"
+                    "diagnostic_request.v1"
+                ),
+                "enabled": True,
+                "development_only": True,
+                "qualification_effect": "none",
+                "request_digest": "",
+            }
+            request["request_digest"] = canonical_digest(
+                request, digest_field="request_digest"
+            )
+            request["status"] = "requested"
+            diagnostic = {
+                "schema_version": (
+                    "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+                ),
+                "status": "measured",
+                "phase5_qualified": False,
+                "qualification_effect": "none",
+                "control_passed": False,
+                "receipt_digest": "",
+            }
+            diagnostic["receipt_digest"] = canonical_digest(
+                diagnostic, digest_field="receipt_digest"
+            )
+            execution = {
+                "schema_version": "native_task_arena_control_result.v1",
+                "status": "diagnostic_completed",
+                "controls_qualified": False,
+                "qualification_effect": "none",
+                "development_only": True,
+                "diagnostic_only": True,
+                "phase5_qualified": False,
+                "candidate_policy_queried": False,
+                "candidate_outcomes_accessed": False,
+                "blockers": [],
+                "phase_reached": (
+                    "synthetic_post_phase5_downstream_diagnostic_complete"
+                ),
+                "synthetic_post_phase5_downstream_diagnostic_request": (
+                    request
+                ),
+                "synthetic_post_phase5_downstream_diagnostic": diagnostic,
+                "downstream_phase_posture_matrix": {
+                    "status": "not_run",
+                    "executed_cell_count": 0,
+                    "represented_configuration_count": 0,
+                },
+            }
         with zipfile.ZipFile(destination, "w") as archive:
             archive.writestr(
                 "native_task_arena_control_result.v1.json",
-                json.dumps(
-                    {
-                        "status": "completed",
-                        "candidate_policy_queried": False,
-                        "blockers": [],
-                    }
-                ),
+                json.dumps(execution),
             )
         return True
 

@@ -7,6 +7,9 @@ can share one exact mode/result/module contract without importing one another.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+from collections.abc import Mapping
 
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
@@ -132,6 +135,113 @@ NATIVE_TASK_ARENA_POLICY_CANDIDATES = frozenset(
     {"groot_n17_droid", "pi05_droid"}
 )
 
+CONTROLS_RESULT_FILENAME = "native_task_arena_control_result.v1.json"
+CONTROLS_RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
+DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION = (
+    "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
+)
+
+
+def _canonical_digest(value: Mapping[str, object], *, field: str) -> str:
+    payload = dict(value)
+    payload.pop(field, None)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def native_task_arena_execution_transport_completed(
+    result: Mapping[str, object],
+    *,
+    expected_output_filename: str,
+) -> bool:
+    """Accept a completed transport without expanding scientific claims.
+
+    Ordinary worker completion is unchanged.  The only additional terminal
+    form is the opt-in, development-only controls diagnostic.  Its exact
+    non-qualification fields and digest-bound request/receipt are required so
+    a policy or ordinary controls result cannot borrow this transport status.
+    """
+
+    if result.get("status") == "completed":
+        return True
+    if (
+        expected_output_filename != CONTROLS_RESULT_FILENAME
+        or result.get("status") != "diagnostic_completed"
+        or result.get("schema_version") != CONTROLS_RESULT_SCHEMA_VERSION
+        or result.get("controls_qualified") is not False
+        or result.get("qualification_effect") != "none"
+        or result.get("development_only") is not True
+        or result.get("diagnostic_only") is not True
+        or result.get("phase5_qualified") is not False
+        or result.get("candidate_policy_queried") is not False
+        or result.get("candidate_outcomes_accessed") is not False
+        or result.get("blockers") != []
+        or result.get("phase_reached")
+        != "synthetic_post_phase5_downstream_diagnostic_complete"
+        or any(
+            key in result
+            for key in (
+                "control_pair",
+                "contact_posture_actuator_sweep",
+                "contact_target_reachability_probe",
+                "contact_close_posture_sweep",
+                "contact_acquisition_sweep",
+            )
+        )
+    ):
+        return False
+    request = result.get(
+        "synthetic_post_phase5_downstream_diagnostic_request"
+    )
+    diagnostic = result.get(
+        "synthetic_post_phase5_downstream_diagnostic"
+    )
+    matrix = result.get("downstream_phase_posture_matrix")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (request, diagnostic, matrix)
+    ):
+        return False
+    assert isinstance(request, Mapping)
+    assert isinstance(diagnostic, Mapping)
+    assert isinstance(matrix, Mapping)
+    try:
+        request_payload = dict(request)
+        request_payload.pop("status", None)
+        request_digest_valid = request.get("request_digest") == _canonical_digest(
+            request_payload, field="request_digest"
+        )
+        diagnostic_digest_valid = diagnostic.get(
+            "receipt_digest"
+        ) == _canonical_digest(diagnostic, field="receipt_digest")
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        request.get("schema_version")
+        == "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1"
+        and request.get("status") == "requested"
+        and request.get("enabled") is True
+        and request.get("development_only") is True
+        and request.get("qualification_effect") == "none"
+        and request_digest_valid
+        and diagnostic.get("schema_version")
+        == DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION
+        and diagnostic.get("status") == "measured"
+        and diagnostic.get("phase5_qualified") is False
+        and diagnostic.get("qualification_effect") == "none"
+        and diagnostic.get("control_passed") is False
+        and diagnostic_digest_valid
+        and matrix.get("status") == "not_run"
+        and matrix.get("executed_cell_count") == 0
+        and matrix.get("represented_configuration_count") == 0
+    )
+
 
 def required_archive_entries(execution_mode: str) -> set[str]:
     """Return the exact internal Python module members required by one mode."""
@@ -148,11 +258,15 @@ def required_archive_entries(execution_mode: str) -> set[str]:
 __all__ = [
     "CONSTRUCTION_RUNTIME_MODULE_NAMES",
     "CONTROLS_RUNTIME_MODULE_NAMES",
+    "CONTROLS_RESULT_FILENAME",
+    "CONTROLS_RESULT_SCHEMA_VERSION",
+    "DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION",
     "EXECUTION_MODE_CONTRACTS",
     "NATIVE_TASK_ARENA_RESULT_FILENAMES",
     "NATIVE_TASK_ARENA_POLICY_CANDIDATES",
     "NativeTaskArenaExecutionContract",
     "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
     "RUNTIME_PREFLIGHT_MODULE_NAMES",
+    "native_task_arena_execution_transport_completed",
     "required_archive_entries",
 ]

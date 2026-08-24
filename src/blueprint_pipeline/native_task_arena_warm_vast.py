@@ -25,6 +25,9 @@ from .gpu_render_providers import (
     enroll_vast_ssh_host_key,
 )
 from .native_task_arena_controls_bundle import RESULT_FILENAME
+from .native_task_arena_execution_contract import (
+    native_task_arena_execution_transport_completed,
+)
 from .native_task_arena_warm_authority import (
     consume_native_task_arena_warm_authority_once,
     validate_native_task_arena_warm_attempt_authority,
@@ -763,7 +766,10 @@ def _run_native_task_arena_warm_controls_vast(
         blockers.append("native_task_arena_warm_dependency_cache_hit_unproven")
     if "BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK" not in runtime_log_text:
         blockers.append("native_task_arena_warm_output_upload_unproven")
-    if execution.get("status") != "completed":
+    if not native_task_arena_execution_transport_completed(
+        execution,
+        expected_output_filename=RESULT_FILENAME,
+    ):
         blockers.extend(
             execution.get("blockers") or ["native_task_arena_warm_controls_not_completed"]
         )
