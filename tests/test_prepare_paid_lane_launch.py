@@ -199,6 +199,7 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         # file rather than accepting independent command-line strings.
         "packet_dir",
         "runtime_source_packet",
+        "container_image",
         "scene_id",
         "task_id",
         "project_spend_reconciliation",
@@ -258,6 +259,10 @@ def test_native_lane_prepares_rehearses_then_publishes_once(lane: str) -> None:
     )
     standing = prep.LANES[lane][order.index("standing_authorization")]
     assert standing.argv[standing.argv.index("--max-launches") + 1] == "1"
+    bundle = prep.LANES[lane][order.index("provider_bundle")]
+    assert bundle.argv[bundle.argv.index("--container-image") + 1] == (
+        "{container_image}"
+    )
 
 
 def test_native_context_reopens_independent_versioned_references(

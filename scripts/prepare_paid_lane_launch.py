@@ -258,6 +258,8 @@ def _native_task_arena_steps(link: str) -> tuple[LaneStep, ...]:
         "{runtime_source_packet}",
         "--implementation-commit",
         "{source_commit}",
+        "--container-image",
+        "{container_image}",
     ]
     if controls:
         bundle_argv.extend(("--construction-result", "{construction_result}"))
@@ -866,6 +868,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             "scene_id": str(scene["scene_id"]),
             "task_id": str(task["task_id"]),
             "runtime_source_packet": str(runtime_source_path),
+            "container_image": container_image,
             "reference_bindings": {
                 "team_namespace": str(value["team_namespace"]),
                 "scene": dict(scene),
