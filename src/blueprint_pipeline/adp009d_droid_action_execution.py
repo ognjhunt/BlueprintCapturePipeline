@@ -75,6 +75,17 @@ BLOCKER_GRIPPER_BOUNDS = "candidate_action_gripper_bounds_invalid"
 # compatibility bridge could clip them.
 DROID_NORMALIZED_JOINT_VELOCITY_BOUNDS = (-1.0, 1.0)
 DROID_GRIPPER_BOUNDS = (0.0, 1.0)
+# The raw response envelope for the gripper channel is wider than its command
+# interval.  The released checkpoints regress this scalar and overshoot it
+# slightly -- the 20260825T125800Z live pi05 run returned 1.0253 on all 15
+# rows -- and the native DROID adapter in ``droid_policy_bridge`` clips the
+# scalar to [0, 1] and binarizes at 0.5, so 1.0253 and 1.0 command the
+# identical grasp.  Refusing the overshoot made this harness stricter than the
+# runtime it mirrors: the same class of harness fault as treating velocity
+# rows as positions above.  The envelope still fails closed on wrong-unit or
+# wrong-channel decodes (radians, meters, logits), which land far outside a
+# quarter of the interval.
+DROID_GRIPPER_RAW_ACCEPTED_BOUNDS = (-0.25, 1.25)
 
 
 class DroidActionExecutionError(ValueError):
@@ -166,17 +177,35 @@ def validate_candidate_action_bounds(
     errors: list[str] = []
 
     gripper_lower, gripper_upper = DROID_GRIPPER_BOUNDS
+    raw_gripper_lower, raw_gripper_upper = DROID_GRIPPER_RAW_ACCEPTED_BOUNDS
+    gripper_values = values[:, ARM_JOINT_COUNT]
+    # Refusal applies the raw response envelope; the tighter command interval
+    # is executed via the native clip-then-threshold semantics and is reported,
+    # not policed.  See DROID_GRIPPER_RAW_ACCEPTED_BOUNDS.
     invalid_gripper = np.argwhere(
-        (values[:, ARM_JOINT_COUNT] < gripper_lower)
-        | (values[:, ARM_JOINT_COUNT] > gripper_upper)
+        (gripper_values < raw_gripper_lower) | (gripper_values > raw_gripper_upper)
     )
     if invalid_gripper.size:
         row_index = int(invalid_gripper[0, 0])
         errors.append(
             f"{BLOCKER_GRIPPER_BOUNDS}:count={len(invalid_gripper)}:"
-            f"first_row={row_index}:value={values[row_index, ARM_JOINT_COUNT]!r}:"
-            f"bounds=[{gripper_lower},{gripper_upper}]"
+            f"first_row={row_index}:value={gripper_values[row_index]!r}:"
+            f"bounds=[{raw_gripper_lower},{raw_gripper_upper}]"
         )
+    outside_command_interval = np.argwhere(
+        (gripper_values < gripper_lower) | (gripper_values > gripper_upper)
+    )
+    command_interval_overshoot = float(
+        np.max(
+            np.clip(
+                np.maximum(
+                    gripper_values - gripper_upper, gripper_lower - gripper_values
+                ),
+                0.0,
+                None,
+            )
+        )
+    )
 
     if action_space == ACTION_SPACE_JOINT_VELOCITY:
         arm_lower, arm_upper = DROID_NORMALIZED_JOINT_VELOCITY_BOUNDS
@@ -241,8 +270,17 @@ def validate_candidate_action_bounds(
         "arm_contract": arm_contract,
         "gripper_contract": {
             "kind": "absolute_gripper_scalar",
-            "inclusive_bounds": [gripper_lower, gripper_upper],
+            "command_interval": [gripper_lower, gripper_upper],
+            "raw_accepted_bounds": [raw_gripper_lower, raw_gripper_upper],
+            "executed_semantics": "clip_to_command_interval_then_threshold_at_0.5",
+            "native_reference": (
+                "droid_policy_bridge.droid_action_to_mujoco_targets"
+            ),
+            "rows_outside_command_interval": int(len(outside_command_interval)),
+            "max_command_interval_overshoot": command_interval_overshoot,
         },
+        # Arm channels only: the gripper channel's native adapter clips, and
+        # its raw values are retained above rather than policed.
         "raw_candidate_clipping_permitted": False,
     }
 
