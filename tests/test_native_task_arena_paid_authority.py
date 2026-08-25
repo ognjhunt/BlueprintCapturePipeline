@@ -130,9 +130,9 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
         authorized_by="user",
         authorized_on="2026-08-13",
         blueprint_commit=COMMIT,
-        max_hourly_rate_usd=0.6,
-        hard_cap_usd=0.6,
-        hard_ttl_seconds=3600,
+        max_hourly_rate_usd=0.64,
+        hard_cap_usd=0.5,
+        hard_ttl_seconds=2_800,
         output_path=tmp_path / "attempt_authority.json",
     )
 
@@ -150,9 +150,9 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     assert paid.validate_native_task_arena_paid_attempt_authority(
         authority,
         prepared_bundle=prepared,
-        max_hourly_rate_usd=0.6,
-        hard_cap_usd=0.6,
-        hard_ttl_seconds=3600,
+        max_hourly_rate_usd=0.64,
+        hard_cap_usd=0.5,
+        hard_ttl_seconds=2_800,
     )["authorization_digest"] == authority["authorization_digest"]
 
     declared = [
@@ -187,9 +187,9 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     assert paid.validate_native_task_arena_paid_attempt_authority(
         authority,
         prepared_bundle=prepared,
-        max_hourly_rate_usd=0.6,
-        hard_cap_usd=0.6,
-        hard_ttl_seconds=3600,
+        max_hourly_rate_usd=0.64,
+        hard_cap_usd=0.5,
+        hard_ttl_seconds=2_800,
     )["authorization_digest"] == authority["authorization_digest"]
 
     tampered = dict(authority)
@@ -201,9 +201,9 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
         paid.validate_native_task_arena_paid_attempt_authority(
             tampered,
             prepared_bundle=prepared,
-            max_hourly_rate_usd=0.6,
-            hard_cap_usd=0.6,
-            hard_ttl_seconds=3600,
+            max_hourly_rate_usd=0.64,
+            hard_cap_usd=0.5,
+            hard_ttl_seconds=2_800,
         )
 
 

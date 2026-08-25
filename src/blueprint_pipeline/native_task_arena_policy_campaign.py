@@ -28,9 +28,7 @@ from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_paid_authority import (
     AGGREGATE_GOAL_SPEND_CAP_USD,
-    MAX_HARD_CAP_USD,
-    MAX_TTL_SECONDS,
-    MIN_TTL_SECONDS,
+    native_task_arena_attempt_budget_blockers,
     validate_terminal_spend_chain,
 )
 from .native_task_arena_policy_bundle import (
@@ -363,15 +361,11 @@ def validate_native_task_arena_policy_campaign(
             or not isinstance(row.get("bundle_receipt"), Mapping)
             or row.get("blueprint_commit") != commit
             or mode not in POLICY_EXECUTION_MODES
-            or isinstance(rate, bool)
-            or not isinstance(rate, (int, float))
-            or isinstance(cap, bool)
-            or not isinstance(cap, (int, float))
-            or not 0 < float(rate) <= float(cap) <= MAX_HARD_CAP_USD
-            or isinstance(ttl, bool)
-            or not isinstance(ttl, int)
-            or not MIN_TTL_SECONDS <= ttl <= MAX_TTL_SECONDS
-            or ttl * float(rate) / 3600 > float(cap)
+            or native_task_arena_attempt_budget_blockers(
+                max_hourly_rate_usd=rate,
+                hard_cap_usd=cap,
+                hard_ttl_seconds=ttl,
+            )
             or row.get("maximum_automatic_retries") != 0
             or row.get("maximum_provider_allocations") != 1
         ):

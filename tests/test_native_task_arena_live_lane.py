@@ -1048,6 +1048,35 @@ def test_default_budget_matches_the_attempt_authority(lane) -> None:
     assert profile["allocator"]["max_spend_usd"] == 2.0
 
 
+def test_profile_accepts_rate_above_cap_when_ttl_projection_fits(lane) -> None:
+    authority_path = lane["authorities"]["policy-diagnostic"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority.update(
+        {
+            "maximum_hourly_rate_usd": 0.64,
+            "hard_attempt_spend_cap_usd": 0.5,
+            "maximum_single_resource_ttl_seconds": 2_800,
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    profile = _build(
+        lane,
+        "policy-diagnostic",
+        max_hourly_rate_usd=0.64,
+        max_spend_usd=0.5,
+        hard_ttl_seconds=2_800,
+    )
+
+    assert profile["allocator"]["max_spend_usd"] == 0.5
+    argv = profile["allocator"]["argv"]
+    assert argv[argv.index("--adp-max-hourly-rate-usd") + 1] == "0.64"
+    assert argv[argv.index("--adp-hard-ttl-seconds") + 1] == "2800"
+
+
 def test_scene_and_task_are_part_of_the_profile_and_source_identity(lane) -> None:
     profile = _build(lane, "construction")
 
