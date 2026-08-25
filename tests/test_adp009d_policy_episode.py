@@ -1143,6 +1143,16 @@ def test_failed_second_query_reports_partial_multicamera_evidence(
             super().__init__()
             self.evaluation_camera_reads = 0
 
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 40, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 80, dtype=np.uint8
+            )
+            return inputs
+
         def read_evaluation_camera_inputs(self):
             self.evaluation_camera_reads += 1
             if self.evaluation_camera_reads == 2:
