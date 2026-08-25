@@ -984,6 +984,32 @@ def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execut
     assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
 
 
+def test_preallocation_closeout_accepts_hardened_vast_api_zero_receipt(
+    tmp_path: Path,
+) -> None:
+    fixture = _watchdog_not_armed_fixture(tmp_path / "attempt")
+    api_zero = json.loads(fixture["api_zero"].read_text())
+    api_zero["api_command"] = [
+        "blueprint_pipeline.gpu_render_providers.VastRenderProvider.billable_inventory",
+        "name_prefix=",
+    ]
+    api_zero["provider_zero_digest"] = canonical_digest(
+        api_zero, digest_field="provider_zero_digest"
+    )
+    write_json(fixture["api_zero"], api_zero)
+
+    value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=fixture["authority"],
+        allocator_result_path=fixture["result"],
+        watchdog_handoff_path=fixture["watchdog"],
+        object_store_cleanup_path=fixture["cleanup"],
+        api_provider_zero_path=fixture["api_zero"],
+        output_dir=tmp_path / "closeout",
+    )
+
+    assert Path(value["terminal_result_path"]).is_file()
+
+
 def test_preallocation_closeout_rejects_missing_typed_media_gap(tmp_path: Path) -> None:
     fixture = _watchdog_not_armed_fixture(tmp_path / "attempt")
     value = paid.materialize_native_task_arena_preallocation_closeout(
