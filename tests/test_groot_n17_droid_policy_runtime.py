@@ -14,6 +14,7 @@ from blueprint_pipeline.adp009d_groot_worker_identity import (
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     CHECKPOINT_REVISION,
     EMBODIMENT_TAG,
+    FROZEN_VIDEO_DELTA_INDICES,
     GROOT_SOURCE_REVISION,
     LANGUAGE_KEY,
     MODEL_ID,
@@ -60,7 +61,7 @@ class _FakePolicyClient:
 
     def get_modality_config(self) -> dict:
         return {
-            "video": _Modality(("exterior_image_1_left", "wrist_image_left"), (-15, 0)),
+            "video": _Modality(("exterior_image_1_left", "wrist_image_left"), (0,)),
             "state": _Modality(("eef_9d", "gripper_position", "joint_position"), (0,)),
             "action": _Modality(("eef_9d", "gripper_position", "joint_position"), tuple(range(40))),
             "language": _Modality((LANGUAGE_KEY,), (0,)),
@@ -83,17 +84,11 @@ class _FakePolicyClient:
 
 def _observation() -> dict:
     return {
-        "observation/exterior_image_1_left": np.full((224, 224, 3), 5, dtype=np.uint8),
-        "observation/wrist_image_left": np.full((224, 224, 3), 7, dtype=np.uint8),
+        "observation/exterior_image_1_left": np.full((180, 320, 3), 5, dtype=np.uint8),
+        "observation/wrist_image_left": np.full((180, 320, 3), 7, dtype=np.uint8),
         "observation/joint_position": np.arange(7, dtype=float),
         "observation/gripper_position": np.asarray([0.25]),
         "observation/eef_9d": np.arange(9, dtype=float),
-        "observation_history/exterior_image_1_left_t_minus_15": np.full(
-            (224, 224, 3), 3, dtype=np.uint8
-        ),
-        "observation_history/wrist_image_left_t_minus_15": np.full(
-            (224, 224, 3), 4, dtype=np.uint8
-        ),
         "prompt": "Pick up the spray can and place it inside the marked tray.",
     }
 
@@ -103,6 +98,21 @@ def test_spec_is_pinned_to_official_droid_checkpoint_and_source() -> None:
     assert identity["model_id"] == "nvidia/GR00T-N1.7-DROID"
     assert identity["embodiment_tag"] == "OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT"
     assert len(identity["identity_sha256"]) == 64
+
+    processor_config = next(
+        row
+        for row in expected_checkpoint_content_binding()["file_manifest"]
+        if row["path"] == "processor_config.json"
+    )
+    assert processor_config == {
+        "path": "processor_config.json",
+        "size_bytes": 2_833,
+        "digest_algorithm": "git_blob_sha1",
+        "digest": "55b4d74b3565274662ba33eefe9bdb0ca75df3e9",
+    }
+    # This exact root file is loaded by AutoProcessor and declares [0].  The
+    # checkpoint's legacy experiment config says [-15, 0] but is not served.
+    assert FROZEN_VIDEO_DELTA_INDICES == (0,)
 
 
 def test_client_translates_existing_observation_and_returns_joint_chunk() -> None:
@@ -121,7 +131,15 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     assert np.array_equal(first[:, :7], np.repeat(np.arange(7)[None, :], 40, axis=0))
     assert set(first[:, 7]) == {0.0, 1.0}
     request = fake.requests[0]
-    assert request["video"]["exterior_image_1_left"].shape == (1, 2, 180, 320, 3)
+    assert request["video"]["exterior_image_1_left"].shape == (1, 1, 180, 320, 3)
+    assert np.array_equal(
+        request["video"]["exterior_image_1_left"][0, 0],
+        _observation()["observation/exterior_image_1_left"],
+    )
+    assert np.array_equal(
+        request["video"]["wrist_image_left"][0, 0],
+        _observation()["observation/wrist_image_left"],
+    )
     assert request["state"]["eef_9d"].shape == (1, 1, 9)
     assert request["language"] == {LANGUAGE_KEY: [[_observation()["prompt"]]]}
     assert client.evidence_summary()["identity_verified"] is True
@@ -131,7 +149,10 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     assert len(native["native_action_chunk_sha256"]) == 64
     assert native["execution_projection"].endswith("eef_9d_retained_not_executed")
     evidence = client.evidence_summary()
-    assert evidence["video_delta_indices"] == [-15, 0]
+    assert evidence["video_delta_indices"] == [0]
+    assert evidence["video_history_source"] == (
+        "current_policy_query_observation_only"
+    )
     assert evidence["state_delta_indices"] == [0]
     assert evidence["action_delta_indices"] == list(range(40))
     assert evidence["language_delta_indices"] == [0]
@@ -142,14 +163,10 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     reset_request = fake.requests[-1]
     assert reset_request["video"]["exterior_image_1_left"].shape == (
         1,
-        2,
+        1,
         180,
         320,
         3,
-    )
-    assert not np.array_equal(
-        reset_request["video"]["exterior_image_1_left"][:, 0],
-        reset_request["video"]["exterior_image_1_left"][:, 1],
     )
     client.close()
     assert fake.close_calls == 1
@@ -160,7 +177,7 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     [
         (
             "video",
-            _Modality(("exterior_image_1_left", "wrist_image_left"), (0,)),
+            _Modality(("exterior_image_1_left", "wrist_image_left"), (-15, 0)),
             "groot_droid_video_delta_indices_mismatch",
         ),
         (
@@ -243,7 +260,7 @@ def test_default_factory_uses_wire_only_client_for_real_loopback_round_trip() ->
                                     "exterior_image_1_left",
                                     "wrist_image_left",
                                 ],
-                                "delta_indices": [-15, 0],
+                                "delta_indices": [0],
                             },
                         },
                         "state": {
