@@ -2876,6 +2876,7 @@ def test_vast_adapter_rejects_offer_without_requested_disk_capacity() -> None:
                 "gpu_name": "A100",
                 "gpu_ram_mb": 40960,
                 "disk_space": 10.0,
+                "storage_cost": 0.0,
                 "dph_total": 0.20,
                 "driver_version": "580.173.02",
             },
@@ -2885,6 +2886,7 @@ def test_vast_adapter_rejects_offer_without_requested_disk_capacity() -> None:
                 "gpu_name": "L40S",
                 "gpu_ram_mb": 49152,
                 "disk_space": 160.0,
+                "storage_cost": 0.0,
                 "dph_total": 0.35,
                 "driver_version": "580.159.03",
             },
@@ -2944,6 +2946,31 @@ def test_vast_offer_selection_rejects_requested_disk_all_in_rate_over_cap() -> N
         ],
         max_hourly_rate=0.64,
         disk_gb=200,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is None
+
+
+def test_vast_offer_selection_fails_closed_without_requested_disk_price() -> None:
+    selected = _select_offer(
+        [
+            {
+                "ask_contract_id": 48064193,
+                "gpu_name": "RTX 6000Ada",
+                "dph_base": 0.5733333333333334,
+                "dph_total": 0.5792592592592593,
+                # The default-disk total is not a price for the requested
+                # 200 GB container disk, and no monthly per-GB value exists.
+                "storage_total_cost": 0.005925925925925925,
+                "disk_space": 300,
+                "gpu_ram": 49_140,
+                "driver_version": "580.119.02",
+            }
+        ],
+        max_hourly_rate=0.80,
+        disk_gb=200,
+        required_provider_disk_gb=200,
         prefer_isaac_rt=False,
     )
 
