@@ -180,8 +180,12 @@ def execute_artifixer3d_observed_object_removal(
     _receipt_record, receipt_path = _provider_runtime_artifact(
         provider_runtime_artifacts, role="appearance_removal_receipt"
     )
+    review_record, review_path = _provider_runtime_artifact(
+        provider_runtime_artifacts, role="appearance_visual_review_receipt"
+    )
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        review = json.loads(review_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise TaskEvaluationSceneConfigurationAdapterError(
             "artifixer3d_object_removal_receipt_invalid"
@@ -207,11 +211,36 @@ def execute_artifixer3d_observed_object_removal(
         != source_object.get("publisher_instance_id")
         or receipt.get("raw_interiorgs_bytes_sent_to_external_provider")
         is not False
+        or receipt.get("visual_review_receipt_digest")
+        != review.get("receipt_digest")
+        or receipt.get("visual_review_receipt_sha256")
+        != review_record.get("digest")
         or receipt.get("semantic_object_free_visual_review_passed") is not True
         or receipt.get("multiview_consistency_review_passed") is not True
         or receipt.get("generated_pixels_labeled") is not True
         or receipt.get("result_digest")
         != canonical_digest(receipt, digest_field="result_digest")
+        or review.get("schema_version")
+        != "task_evaluation_artifixer_ai_visual_review.v1"
+        or review.get("status") != "accepted"
+        or review.get("publisher_instance_id")
+        != source_object.get("publisher_instance_id")
+        or review.get("decision") != "accepted"
+        or review.get("semantic_object_absence_review_passed") is not True
+        or review.get("multiview_consistency_review_passed") is not True
+        or review.get("review_frame_count", 0)
+        < configuration.get("required_views", {}).get("minimum", 1)
+        or review.get("all_review_frames_digest_bound") is not True
+        or review.get("ai_visual_review_completed") is not True
+        or review.get("human_review_completed") is not False
+        or review.get("generated_output_is_capture_or_physical_evidence")
+        is not False
+        or not isinstance(review.get("reviewer"), Mapping)
+        or not str(review["reviewer"].get("identity") or "")
+        or not str(review["reviewer"].get("runtime") or "")
+        or not str(review["reviewer"].get("model") or "")
+        or review.get("receipt_digest")
+        != canonical_digest(review, digest_field="receipt_digest")
     ):
         raise TaskEvaluationSceneConfigurationAdapterError(
             "artifixer3d_object_removal_result_invalid"
@@ -222,6 +251,9 @@ def execute_artifixer3d_observed_object_removal(
     copied_receipt = _copy_artifact(
         receipt_path, output_root / "appearance_removal_receipt.v1.json"
     )
+    copied_review = _copy_artifact(
+        review_path, output_root / "appearance_visual_review_receipt.v1.json"
+    )
     return _stage_result(
         stage=stage,
         configuration_path=configuration_path,
@@ -231,6 +263,7 @@ def execute_artifixer3d_observed_object_removal(
                 **copied_appearance,
             },
             {"role": "appearance_removal_receipt", **copied_receipt},
+            {"role": "appearance_visual_review_receipt", **copied_review},
         ],
     )
 
