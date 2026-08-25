@@ -321,6 +321,25 @@ def fake_adapter(**kwargs) -> dict[str, object]:
     return result
 
 
+def fake_scene_render_inputs(**kwargs) -> dict[str, object]:
+    output = Path(kwargs["output_root"])
+    output.mkdir(parents=True)
+    result = {
+        "schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
+        "status": "derived_method_inputs_materialized",
+        "run_id": kwargs["envelope"]["request"]["run_id"],
+        "derived_frame_count": 8,
+        "raw_interiorgs_bytes_in_provider_packet": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    return result
+
+
 def test_materializes_every_reference_and_full_byte_reads_back(tmp_path) -> None:
     value, payloads = request_with_fetchable_bytes()
     result = materialize_preparation_references(
@@ -479,6 +498,7 @@ def test_worker_accepts_recipe_without_prebuilt_packet_or_adapter_call(tmp_path)
         source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
         adapter_materializer=forbidden_adapter,
+        scene_render_input_materializer=fake_scene_render_inputs,
         construction_queue_root=tmp_path / "construction-queue",
     )
 
@@ -492,6 +512,7 @@ def test_worker_accepts_recipe_without_prebuilt_packet_or_adapter_call(tmp_path)
     assert envelope["run_id"] == value["run_id"]
     assert envelope["recipe_digest"] == result["construction_recipe_digest"]
     assert envelope["automatic_progression_required"] is True
+    assert envelope["render_inputs_result"]["derived_frame_count"] == 8
     assert result["construction_packet_materialized"] is False
     assert result["construction_recipe_digest"].startswith("sha256:")
     assert result["construction_stage_configuration_count"] == 6
@@ -535,6 +556,7 @@ def test_worker_blocks_recipe_stage_configuration_outside_allowed_prefix(
         source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
         adapter_materializer=fake_adapter,
+        scene_render_input_materializer=fake_scene_render_inputs,
         construction_queue_root=tmp_path / "construction-queue",
     )
 

@@ -88,6 +88,7 @@ def stage_scene_construction(
     preparation_result: Mapping[str, Any],
     recipe: Mapping[str, Any],
     recipe_configuration_references: Sequence[Mapping[str, Any]],
+    render_inputs_result: Mapping[str, Any],
     queue_root: str | Path,
 ) -> dict[str, Any]:
     """Atomically continue one website-started run into production construction."""
@@ -112,6 +113,17 @@ def stage_scene_construction(
             row.get("full_byte_service_account_readback_passed") is not True
             for row in recipe_configuration_references
         )
+        or render_inputs_result.get("schema_version")
+        != "task_evaluation_scene_configuration_render_inputs.v1"
+        or render_inputs_result.get("status")
+        != "derived_method_inputs_materialized"
+        or render_inputs_result.get("run_id") != run_id
+        or render_inputs_result.get("raw_interiorgs_bytes_in_provider_packet")
+        is not False
+        or render_inputs_result.get("provider_mutation_performed") is not False
+        or render_inputs_result.get("paid_execution_requested") is not False
+        or render_inputs_result.get("result_digest")
+        != canonical_digest(render_inputs_result, digest_field="result_digest")
     ):
         raise TaskEvaluationSceneConstructionQueueError(
             "scene_construction_handoff_binding_invalid"
@@ -134,6 +146,7 @@ def stage_scene_construction(
         "stage_configuration_references": [
             dict(row) for row in recipe_configuration_references
         ],
+        "render_inputs_result": dict(render_inputs_result),
         "stage_states": [
             {
                 "stage_id": stage["stage_id"],
