@@ -39,6 +39,7 @@ EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
 SERVER_METADATA_SCHEMA_VERSION = "openpi_droid_policy_server_metadata.v1"
 SUPPORTED_ACTION_SPACES = frozenset({"joint_position"})
 SUPPORTED_ACTION_CHUNK_ROWS = frozenset({10, 15})
+OPENPI_INFERENCE_RESPONSE_KEYS = frozenset({"actions", "server_timing"})
 LOCAL_VERIFICATION_FIELDS = frozenset(
     {
         "local_checkpoint_verified",
@@ -392,13 +393,18 @@ class OpenPIWebsocketDroidPolicyClient:
         self.open_loop_horizon = spec.open_loop_horizon
         self._spec = spec
         self._client = client_factory(host=host, port=int(port), api_key=api_key)
+        self.candidate_policy_queried = False
         raw_metadata = self._client.get_server_metadata()
         if not isinstance(raw_metadata, Mapping):
             raise ValueError("policy_server_metadata_not_object")
         self.server_metadata = validate_server_metadata(raw_metadata, expected=spec)
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
-        return self._client.infer(dict(observation))
+        response = self._client.infer(dict(observation))
+        # The server completed a real inference query even if the returned
+        # envelope is rejected by the strict normalization below.
+        self.candidate_policy_queried = True
+        return normalize_openpi_inference_response(response)
 
     def evidence_summary(self) -> dict[str, Any]:
         return {
@@ -406,6 +412,35 @@ class OpenPIWebsocketDroidPolicyClient:
             "identity_verified": True,
             "server_metadata": self.server_metadata,
         }
+
+
+def normalize_openpi_inference_response(response: Any) -> Any:
+    """Return only the action chunk from the pinned OpenPI wire response.
+
+    At the frozen OpenPI revision, ``DroidOutputs`` emits ``actions`` and the
+    websocket server adds optional ``server_timing`` metadata.  Passing that
+    complete mapping to the numeric action validator attempts to convert the
+    mapping itself to a float array.  Keep the transport envelope at this
+    boundary and reject alternate or ambiguous action fields fail-closed.
+    """
+
+    if not isinstance(response, Mapping):
+        raise ValueError("openpi_inference_response_not_object")
+    keys = set(response)
+    if not all(isinstance(key, str) for key in keys):
+        raise ValueError("openpi_inference_response_keys_not_strings")
+    unexpected = sorted(keys - OPENPI_INFERENCE_RESPONSE_KEYS)
+    if unexpected:
+        raise ValueError(
+            "openpi_inference_response_unexpected_keys:" + ",".join(unexpected)
+        )
+    if "actions" not in response:
+        raise ValueError("openpi_inference_response_actions_missing")
+    if "server_timing" in response and not isinstance(
+        response["server_timing"], Mapping
+    ):
+        raise ValueError("openpi_inference_response_server_timing_not_object")
+    return response["actions"]
 
 
 def serve_identity_bound_policy(

@@ -333,6 +333,28 @@ def _policy_client(
     )
 
 
+class _PolicyQueryTracker:
+    """Remember a completed server query even if later action handling fails."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.candidate_policy_queried = False
+
+    def infer(self, observation: Mapping[str, Any]) -> Any:
+        try:
+            response = self._client.infer(observation)
+        except BaseException:  # noqa: BLE001 - preserve paid-run query truth
+            self.candidate_policy_queried = bool(
+                getattr(self._client, "candidate_policy_queried", False)
+            )
+            raise
+        self.candidate_policy_queried = True
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     runtime = Path(__file__).resolve().parent
@@ -367,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "claim_ceiling": DIAGNOSTIC_CLAIM_CEILING if diagnostic else None,
     }
     simulation_app = None
+    policy_query_tracker = None
     try:
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
         manifest = initial_manifest
@@ -522,15 +545,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 groot_worker_identity_receipt,
                 result["policy_runtime_identity"],
             ) = _runtime_groot_worker_identity(output_root=output_root, spec=spec)
-        policy = _policy_client(
-            spec,
-            groot_worker_identity_receipt=groot_worker_identity_receipt,
+        policy_query_tracker = _PolicyQueryTracker(
+            _policy_client(
+                spec,
+                groot_worker_identity_receipt=groot_worker_identity_receipt,
+            )
         )
         result["phase_reached"] = "policy_client_verified"
         episode_id = f"{scene_plan['task_id']}--{spec['cell_id']}--{spec['candidate_id']}"
         episode = run_policy_episode(
             environment=episode_environment,
-            policy=policy,
+            policy=policy_query_tracker,
             candidate_id=spec["candidate_id"],
             prompt=spec["prompt"],
             task_spec=scene_plan["task_spec"],
@@ -546,7 +571,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             episode_id=episode_id,
             scoring_authorized=not diagnostic,
         )
-        result["candidate_policy_queried"] = True
         result["episode"] = episode
         if diagnostic:
             result["policy_outcome_interpretable"] = False
@@ -578,6 +602,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{type(exc).__name__}:{exc}"
         )
     finally:
+        if policy_query_tracker is not None:
+            result["candidate_policy_queried"] = (
+                policy_query_tracker.candidate_policy_queried
+            )
         result["blockers"] = sorted(set(result["blockers"]))
         media_gap = _typed_media_gap_for_blocked_result(
             output_root=output_root, result=result

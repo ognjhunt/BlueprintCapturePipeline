@@ -30,6 +30,61 @@ def test_persist_survives_values_json_cannot_encode() -> None:
     assert written["result_digest"].startswith("sha256:")
 
 
+def test_policy_query_tracker_records_returned_response_before_later_failure() -> None:
+    from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+
+    class _Client:
+        action_space = "joint_position"
+
+        def infer(self, observation):
+            assert observation == {"prompt": "open"}
+            return [[0.0] * 8]
+
+    tracker = _PolicyQueryTracker(_Client())
+
+    assert tracker.candidate_policy_queried is False
+    assert tracker.infer({"prompt": "open"}) == [[0.0] * 8]
+    assert tracker.candidate_policy_queried is True
+    assert tracker.action_space == "joint_position"
+
+
+def test_policy_query_tracker_does_not_claim_failed_server_query() -> None:
+    import pytest
+
+    from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+
+    class _Client:
+        def infer(self, observation):
+            del observation
+            raise RuntimeError("server_query_failed")
+
+    tracker = _PolicyQueryTracker(_Client())
+
+    with pytest.raises(RuntimeError, match="server_query_failed"):
+        tracker.infer({})
+    assert tracker.candidate_policy_queried is False
+
+
+def test_policy_query_tracker_preserves_completed_query_on_response_refusal() -> None:
+    import pytest
+
+    from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+
+    class _Client:
+        candidate_policy_queried = False
+
+        def infer(self, observation):
+            del observation
+            self.candidate_policy_queried = True
+            raise ValueError("response_refused")
+
+    tracker = _PolicyQueryTracker(_Client())
+
+    with pytest.raises(ValueError, match="response_refused"):
+        tracker.infer({})
+    assert tracker.candidate_policy_queried is True
+
+
 def test_groot_episode_consumes_runtime_measured_worker_identity(tmp_path) -> None:
     """The immutable request may not impersonate a later runtime measurement."""
 
