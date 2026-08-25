@@ -543,6 +543,20 @@ def _receipt(
                     "exterior_image_1_left": [8, 8, 3],
                     "wrist_image_left": [8, 8, 3],
                 },
+                "multicamera_observation_digest": policy_observation[
+                    "observation_digest"
+                ],
+                "raw_policy_input_camera_bindings": {
+                    camera_id: {
+                        "frame_digest": policy_observation["views"][camera_id][
+                            "frame_digest"
+                        ],
+                        "raw_rgb_sha256": policy_observation["views"][camera_id][
+                            "raw_rgb_sha256"
+                        ],
+                    }
+                    for camera_id in ("external", "wrist")
+                },
             }
         )
         exact["frame_manifest_digest"] = canonical_digest(exact)
@@ -743,6 +757,59 @@ def test_portable_episode_index_rejects_changed_exact_policy_input(
         exact_path.unlink()
     else:
         exact_path.write_bytes(b"tampered")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_exact_policy_input_invalid:canonical-pi05",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong_raw_digest", "wrong_observation_digest", "missing_camera_bindings"],
+)
+def test_portable_episode_index_rejects_resealed_cross_query_camera_binding(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    exact = receipt["candidate_exact_policy_input_frames"][0]
+    if mutation == "wrong_raw_digest":
+        exact["raw_policy_input_camera_bindings"]["external"]["raw_rgb_sha256"] = (
+            "sha256:" + "f" * 64
+        )
+    elif mutation == "wrong_observation_digest":
+        exact["multicamera_observation_digest"] = "sha256:" + "e" * 64
+    else:
+        exact.pop("raw_policy_input_camera_bindings")
+    exact["frame_manifest_digest"] = canonical_digest(
+        exact, digest_field="frame_manifest_digest"
+    )
+    receipt["candidate_exact_policy_input_manifest_digest"] = canonical_digest(
+        {"frames": receipt["candidate_exact_policy_input_frames"]}
+    )
+    receipt["observation_trace_digest"] = canonical_digest(
+        {"observations": receipt["candidate_exact_policy_input_frames"]}
+    )
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
     with pytest.raises(
         EpisodeEvidenceIndexError,
