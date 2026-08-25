@@ -90,11 +90,25 @@ def launch_activation_request_digest(value: Mapping[str, Any]) -> str:
     return canonical_digest(validate_launch_activation_request(value))
 
 
+def launch_activation_intent_digest(value: Mapping[str, Any]) -> str:
+    """Bind exact customer intent without the coordinator window reference.
+
+    Excluding the release-window reference avoids a circular digest: the
+    coordinator window binds this digest, while the request binds the immutable
+    bytes of that window. Every other customer-controlled field remains covered.
+    """
+
+    intent = validate_launch_activation_request(value)
+    del intent["release_window"]
+    return canonical_digest(intent)
+
+
 __all__ = [
     "SCHEMA_PATH",
     "SCHEMA_VERSION",
     "TaskEvaluationLaunchActivationContractError",
     "activation_request_schema",
+    "launch_activation_intent_digest",
     "launch_activation_request_digest",
     "validate_launch_activation_request",
 ]

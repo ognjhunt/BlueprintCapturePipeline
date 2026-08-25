@@ -10,6 +10,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_launch_activation_contract import (
+    launch_activation_intent_digest,
+)
 from blueprint_pipeline.task_evaluation_launch_activation_queue import (
     launch_activation_status,
     stage_launch_activation_request,
@@ -204,6 +207,7 @@ def _release_window(request: dict[str, object], now: datetime) -> bytes:
         "status": "released",
         "window_id": "window-scene-841007-001",
         "activation_id": request["activation_id"],
+        "activation_intent_digest": launch_activation_intent_digest(request),
         "team_namespace": request["team_namespace"],
         "expected_production_commit": request["expected_production_commit"],
         "allowed_mutations": [
@@ -240,18 +244,18 @@ def test_worker_cross_binds_preparation_window_and_no_execution_publication(tmp_
     request["authorization"]["standing_authorization_expires_at"] = (
         datetime.now(timezone.utc) + timedelta(hours=1)
     ).isoformat()
-    window_bytes = _release_window(request, datetime.now(timezone.utc))
-    request["release_window"] = _reference(
-        "s3://blueprint-production-inputs/coordinator-release-windows/release-window.json",
-        window_bytes,
-    )
-    payloads[request["release_window"]["uri"]] = window_bytes
     for name, reference in request["lineage"].items():
         if name == "kind":
             continue
         content = json.dumps({"kind": name}).encode()
         reference.update(_reference(str(reference["uri"]), content))
         payloads[str(reference["uri"])] = content
+    window_bytes = _release_window(request, datetime.now(timezone.utc))
+    request["release_window"] = _reference(
+        "s3://blueprint-production-inputs/coordinator-release-windows/release-window.json",
+        window_bytes,
+    )
+    payloads[request["release_window"]["uri"]] = window_bytes
 
     queue = tmp_path / "activation-queue"
     stage_launch_activation_request(
@@ -360,6 +364,11 @@ def test_worker_blocks_wrong_window_before_preparer(tmp_path) -> None:
         "request_digest": launch_preparation_request_digest(preparation),
         "result_digest": preparation_result["result_digest"],
     }
+    for name, reference in request["lineage"].items():
+        if name != "kind":
+            content = json.dumps({"kind": name}).encode()
+            reference.update(_reference(str(reference["uri"]), content))
+            payloads[str(reference["uri"])] = content
     window_bytes = _release_window(request, datetime.now(timezone.utc))
     window = json.loads(window_bytes)
     window["activation_id"] = "different-activation"
@@ -370,11 +379,6 @@ def test_worker_blocks_wrong_window_before_preparer(tmp_path) -> None:
         window_bytes,
     )
     payloads[request["release_window"]["uri"]] = window_bytes
-    for name, reference in request["lineage"].items():
-        if name != "kind":
-            content = json.dumps({"kind": name}).encode()
-            reference.update(_reference(str(reference["uri"]), content))
-            payloads[str(reference["uri"])] = content
     queue = tmp_path / "activation-queue"
     stage_launch_activation_request(
         value=request, queue_root=queue, submitted_by="blueprint-webapp"

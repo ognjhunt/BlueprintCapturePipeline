@@ -7,6 +7,7 @@ import pytest
 from blueprint_pipeline.task_evaluation_launch_activation_contract import (
     SCHEMA_VERSION,
     TaskEvaluationLaunchActivationContractError,
+    launch_activation_intent_digest,
     launch_activation_request_digest,
     validate_launch_activation_request,
 )
@@ -101,6 +102,17 @@ def test_rejects_wrong_lineage_or_missing_zero_action_predecessor() -> None:
         match="launch_activation_request_invalid:lineage",
     ):
         validate_launch_activation_request(value)
+
+
+def test_intent_digest_excludes_window_reference_but_binds_customer_intent() -> None:
+    value = request()
+    expected = launch_activation_intent_digest(value)
+
+    value["release_window"] = ref(99)
+    assert launch_activation_intent_digest(value) == expected
+
+    value["authorization"]["profile_revision"] = "r2"
+    assert launch_activation_intent_digest(value) != expected
 
 
 def test_rejects_host_paths_secrets_and_invalid_authority_window() -> None:

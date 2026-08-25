@@ -8,6 +8,7 @@
     "status",
     "window_id",
     "activation_id",
+    "activation_intent_digest",
     "team_namespace",
     "expected_production_commit",
     "allowed_mutations",
@@ -27,6 +28,7 @@
     "status": {"const": "released"},
     "window_id": {"$ref": "#/$defs/identifier"},
     "activation_id": {"$ref": "#/$defs/identifier"},
+    "activation_intent_digest": {"$ref": "#/$defs/digest"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
     "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "allowed_mutations": {

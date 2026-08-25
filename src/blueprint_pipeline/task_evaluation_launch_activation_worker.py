@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_activation_contract import (
+    launch_activation_intent_digest,
     validate_launch_activation_request,
 )
 from .task_evaluation_launch_activation_queue import (
@@ -710,6 +711,7 @@ def process_launch_activation_queue(
             window = validate_shared_mutation_window(
                 window_value,
                 activation_id=request["activation_id"],
+                activation_intent_digest=launch_activation_intent_digest(request),
                 team_namespace=request["team_namespace"],
                 expected_production_commit=observed_commit,
                 provider_allowlist=preparation_request["spend"]["provider_allowlist"],

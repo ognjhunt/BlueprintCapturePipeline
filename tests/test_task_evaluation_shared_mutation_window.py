@@ -17,6 +17,7 @@ def window(now: datetime) -> dict[str, object]:
         "status": "released",
         "window_id": "window-scene-841007-001",
         "activation_id": "activation-scene-841007-construction",
+        "activation_intent_digest": "sha256:" + "1" * 64,
         "team_namespace": "team-a",
         "expected_production_commit": "a" * 40,
         "allowed_mutations": [
@@ -44,6 +45,7 @@ def test_exact_window_releases_only_no_execution_mutations() -> None:
     assert validate_shared_mutation_window(
         value,
         activation_id="activation-scene-841007-construction",
+        activation_intent_digest="sha256:" + "1" * 64,
         team_namespace="team-a",
         expected_production_commit="a" * 40,
         provider_allowlist=[],
@@ -64,6 +66,7 @@ def test_window_fails_closed_on_stale_commit_cap_or_time() -> None:
         validate_shared_mutation_window(
             value,
             activation_id="activation-scene-841007-construction",
+            activation_intent_digest="sha256:" + "1" * 64,
             team_namespace="team-a",
             expected_production_commit="b" * 40,
             provider_allowlist=[],
@@ -77,6 +80,7 @@ def test_window_fails_closed_on_stale_commit_cap_or_time() -> None:
         validate_shared_mutation_window(
             value,
             activation_id="activation-scene-841007-construction",
+            activation_intent_digest="sha256:" + "1" * 64,
             team_namespace="team-a",
             expected_production_commit="a" * 40,
             provider_allowlist=[],
@@ -90,9 +94,30 @@ def test_window_fails_closed_on_stale_commit_cap_or_time() -> None:
         validate_shared_mutation_window(
             value,
             activation_id="activation-scene-841007-construction",
+            activation_intent_digest="sha256:" + "1" * 64,
             team_namespace="team-a",
             expected_production_commit="a" * 40,
             provider_allowlist=[],
             hard_cap_usd=0.75,
             now=now + timedelta(hours=1),
+        )
+
+
+def test_window_fails_closed_when_activation_intent_changes_after_release() -> None:
+    now = datetime(2026, 8, 25, 18, 0, tzinfo=timezone.utc)
+    value = window(now)
+
+    with pytest.raises(
+        TaskEvaluationSharedMutationWindowError,
+        match="shared_mutation_window_binding_mismatch",
+    ):
+        validate_shared_mutation_window(
+            value,
+            activation_id="activation-scene-841007-construction",
+            activation_intent_digest="sha256:" + "2" * 64,
+            team_namespace="team-a",
+            expected_production_commit="a" * 40,
+            provider_allowlist=[],
+            hard_cap_usd=0.75,
+            now=now,
         )

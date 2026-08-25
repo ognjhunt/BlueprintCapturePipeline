@@ -56,6 +56,7 @@ def validate_shared_mutation_window(
     value: Mapping[str, Any],
     *,
     activation_id: str,
+    activation_intent_digest: str,
     team_namespace: str,
     expected_production_commit: str,
     provider_allowlist: list[str],
@@ -89,6 +90,7 @@ def validate_shared_mutation_window(
         )
     if (
         window["activation_id"] != activation_id
+        or window["activation_intent_digest"] != activation_intent_digest
         or window["team_namespace"] != team_namespace
         or window["expected_production_commit"] != expected_production_commit
         or set(window["allowed_mutations"]) != ALLOWED_MUTATIONS
