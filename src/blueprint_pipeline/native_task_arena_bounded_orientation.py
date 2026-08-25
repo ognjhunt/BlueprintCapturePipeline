@@ -14,6 +14,9 @@ from typing import Any
 
 
 SCHEMA_VERSION = "native_task_arena_bounded_orientation_search.v1"
+PROGRESS_SCHEMA_VERSION = (
+    "native_task_arena_bounded_orientation_solve_progress.v1"
+)
 
 # C81/C82 measured a repeatable target-local orientation residual whose unit
 # direction is approximately (0.803, 0.596, 0.009).  Cartesian directions keep
@@ -183,6 +186,7 @@ def build_bounded_orientation_postures(
     ],
     reference_joint_seeds: Sequence[Sequence[float]],
     rotation_vectors_body_rad: Sequence[Sequence[float]] | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Solve open and close for each small command bias under both jaw bases."""
 
@@ -229,6 +233,39 @@ def build_bounded_orientation_postures(
     attempts: list[dict[str, Any]] = []
     postures: list[dict[str, Any]] = []
     seen_commands: set[tuple[Any, ...]] = set()
+    total_candidate_count = len(variant_plans) * len(vectors)
+    candidate_progress_index = 0
+    solve_call_count = 0
+
+    def _emit_progress(
+        *,
+        event: str,
+        candidate_index: int,
+        completed_candidate_count: int,
+        variant_id: str,
+        vector: Sequence[float],
+        phase_id: str | None = None,
+        phase_solution_returned: bool | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "schema_version": PROGRESS_SCHEMA_VERSION,
+                "event": event,
+                "candidate_index": candidate_index,
+                "completed_candidate_count": completed_candidate_count,
+                "total_candidate_count": total_candidate_count,
+                "variant_id": variant_id,
+                "rotation_vector_body_rad": list(vector),
+                "phase_id": phase_id,
+                "phase_solution_returned": phase_solution_returned,
+                "solve_call_count": solve_call_count,
+                "reason": reason,
+            }
+        )
+
     for variant_id, plan in variant_plans:
         opened = _phase(plan, "contact_open")
         closed = _phase(plan, "contact_close")
@@ -321,6 +358,8 @@ def build_bounded_orientation_postures(
             )
             continue
         for vector in vectors:
+            progress_index = candidate_progress_index
+            candidate_progress_index += 1
             open_command = apply_body_rotation_vector_xyzw(open_authority, vector)
             close_command = apply_body_rotation_vector_xyzw(close_authority, vector)
             command_key = (
@@ -329,8 +368,23 @@ def build_bounded_orientation_postures(
                 *(round(value, 9) for value in close_command),
             )
             if command_key in seen_commands:
+                _emit_progress(
+                    event="candidate_completed",
+                    candidate_index=progress_index,
+                    completed_candidate_count=candidate_progress_index,
+                    variant_id=variant_id,
+                    vector=vector,
+                    reason="duplicate_command",
+                )
                 continue
             seen_commands.add(command_key)
+            _emit_progress(
+                event="candidate_started",
+                candidate_index=progress_index,
+                completed_candidate_count=progress_index,
+                variant_id=variant_id,
+                vector=vector,
+            )
             attempt: dict[str, Any] = {
                 "candidate_index": len(attempts),
                 "variant_id": variant_id,
@@ -349,12 +403,38 @@ def build_bounded_orientation_postures(
                 ),
                 "position_offset_world_m": [0.0, 0.0, 0.0],
             }
+            solve_call_count += 1
+            _emit_progress(
+                event="phase_solve_started",
+                candidate_index=progress_index,
+                completed_candidate_count=progress_index,
+                variant_id=variant_id,
+                vector=vector,
+                phase_id="contact_open",
+            )
             open_solution = solve_phase(
                 "contact_open", open_position, open_command, seeds
+            )
+            _emit_progress(
+                event="phase_solve_completed",
+                candidate_index=progress_index,
+                completed_candidate_count=progress_index,
+                variant_id=variant_id,
+                vector=vector,
+                phase_id="contact_open",
+                phase_solution_returned=isinstance(open_solution, Mapping),
             )
             if not isinstance(open_solution, Mapping):
                 attempts.append(
                     {**attempt, "status": "refused", "reason": "contact_open_unsolved"}
+                )
+                _emit_progress(
+                    event="candidate_completed",
+                    candidate_index=progress_index,
+                    completed_candidate_count=candidate_progress_index,
+                    variant_id=variant_id,
+                    vector=vector,
+                    reason="contact_open_unsolved",
                 )
                 continue
             try:
@@ -365,16 +445,50 @@ def build_bounded_orientation_postures(
                 attempts.append(
                     {**attempt, "status": "refused", "reason": "contact_open_invalid"}
                 )
+                _emit_progress(
+                    event="candidate_completed",
+                    candidate_index=progress_index,
+                    completed_candidate_count=candidate_progress_index,
+                    variant_id=variant_id,
+                    vector=vector,
+                    reason="contact_open_invalid",
+                )
                 continue
+            solve_call_count += 1
+            _emit_progress(
+                event="phase_solve_started",
+                candidate_index=progress_index,
+                completed_candidate_count=progress_index,
+                variant_id=variant_id,
+                vector=vector,
+                phase_id="contact_close",
+            )
             close_solution = solve_phase(
                 "contact_close",
                 close_position,
                 close_command,
                 [open_joints, *seeds],
             )
+            _emit_progress(
+                event="phase_solve_completed",
+                candidate_index=progress_index,
+                completed_candidate_count=progress_index,
+                variant_id=variant_id,
+                vector=vector,
+                phase_id="contact_close",
+                phase_solution_returned=isinstance(close_solution, Mapping),
+            )
             if not isinstance(close_solution, Mapping):
                 attempts.append(
                     {**attempt, "status": "refused", "reason": "contact_close_unsolved"}
+                )
+                _emit_progress(
+                    event="candidate_completed",
+                    candidate_index=progress_index,
+                    completed_candidate_count=candidate_progress_index,
+                    variant_id=variant_id,
+                    vector=vector,
+                    reason="contact_close_unsolved",
                 )
                 continue
             try:
@@ -385,10 +499,26 @@ def build_bounded_orientation_postures(
                 attempts.append(
                     {**attempt, "status": "refused", "reason": "contact_close_invalid"}
                 )
+                _emit_progress(
+                    event="candidate_completed",
+                    candidate_index=progress_index,
+                    completed_candidate_count=candidate_progress_index,
+                    variant_id=variant_id,
+                    vector=vector,
+                    reason="contact_close_invalid",
+                )
                 continue
             if len(open_joints) != 7 or len(close_joints) != 7:
                 attempts.append(
                     {**attempt, "status": "refused", "reason": "joint_vector_invalid"}
+                )
+                _emit_progress(
+                    event="candidate_completed",
+                    candidate_index=progress_index,
+                    completed_candidate_count=candidate_progress_index,
+                    variant_id=variant_id,
+                    vector=vector,
+                    reason="joint_vector_invalid",
                 )
                 continue
             margins = [
@@ -422,6 +552,14 @@ def build_bounded_orientation_postures(
                     "bounded_orientation_candidate": metadata,
                 }
             )
+            _emit_progress(
+                event="candidate_completed",
+                candidate_index=progress_index,
+                completed_candidate_count=candidate_progress_index,
+                variant_id=variant_id,
+                vector=vector,
+                reason="solved",
+            )
     report = {
         "schema_version": SCHEMA_VERSION,
         "status": "candidates_found" if postures else "unavailable",
@@ -447,6 +585,7 @@ __all__ = [
     "BoundedOrientationError",
     "DEFAULT_BIAS_MAGNITUDES_RAD",
     "MEASURED_RESIDUAL_DIRECTION_BODY",
+    "PROGRESS_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "apply_body_rotation_vector_xyzw",
     "build_bounded_orientation_postures",

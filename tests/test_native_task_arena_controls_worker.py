@@ -13,6 +13,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_controls_worker import (
     _RigidScoringEnvironment,
+    _announce_bounded_orientation_ik_progress,
     _bounded_orientation_joint_targets,
     _bounded_orientation_reference_seeds,
     _canonical_digest,
@@ -402,6 +403,50 @@ def test_bounded_orientation_seeds_prioritize_bound_physics_reference() -> None:
 
     assert seeds[0] == c75
     assert seeds[1:] == [[-1.0] * 7, [-2.0] * 7]
+
+
+def test_bounded_orientation_ik_progress_is_persisted_and_announced(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    progress = {
+        "schema_version": (
+            "native_task_arena_bounded_orientation_solve_progress.v1"
+        ),
+        "event": "phase_solve_started",
+        "candidate_index": 6,
+        "completed_candidate_count": 6,
+        "total_candidate_count": 40,
+        "phase_id": "contact_close",
+        "phase_solution_returned": None,
+        "solve_call_count": 9,
+        "reason": None,
+    }
+
+    _announce_bounded_orientation_ik_progress(
+        output_root=tmp_path,
+        progress=progress,
+    )
+
+    retained = json.loads(
+        (
+            tmp_path
+            / "contact_open_bounded_orientation_ik.progress.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert retained["event"] == "phase_solve_started"
+    assert retained["candidate_index"] == 6
+    assert retained["solve_call_count"] == 9
+    assert retained["result_digest"] == _canonical_digest(
+        retained,
+        field="result_digest",
+    )
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert capsys.readouterr().out.strip() == (
+        "BLUEPRINT_BOUNDED_ORIENTATION_IK_PROGRESS:"
+        "event=phase_solve_started:candidate=7/40:phase=contact_close:"
+        "solve_calls=9:solution_returned=None:reason=None"
+    )
 
 
 @pytest.mark.parametrize(

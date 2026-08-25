@@ -7,6 +7,7 @@ import pytest
 from blueprint_pipeline.native_task_arena_bounded_orientation import (
     BoundedOrientationError,
     MEASURED_RESIDUAL_DIRECTION_BODY,
+    PROGRESS_SCHEMA_VERSION,
     apply_body_rotation_vector_xyzw,
     build_bounded_orientation_postures,
     default_body_rotation_vectors_rad,
@@ -107,6 +108,61 @@ def test_search_binds_open_and_close_bias_but_keeps_authority_unchanged() -> Non
         row["bounded_orientation_candidate"]["close_joint_positions_rad"]
         for row in postures
     )
+
+
+def test_search_emits_progress_before_each_expensive_phase_solve() -> None:
+    progress = []
+    calls = []
+
+    def solve(phase_id, _position, _quaternion, _seeds):
+        calls.append(phase_id)
+        if len(calls) == 1:
+            return None
+        return {
+            "joint_positions_rad": [float(len(calls))] * 7,
+            "minimum_joint_limit_margin_rad": 0.2,
+        }
+
+    postures, report = build_bounded_orientation_postures(
+        variant_plans=(("normalized_nominal", _plan([0.0, 0.0, 0.0, 1.0])),),
+        solve_phase=solve,
+        reference_joint_seeds=[[0.0] * 7],
+        rotation_vectors_body_rad=(
+            (0.008, 0.0, 0.0),
+            (0.016, 0.0, 0.0),
+        ),
+        progress_callback=progress.append,
+    )
+
+    assert calls == ["contact_open", "contact_open", "contact_close"]
+    assert report["represented_candidate_count"] == 2
+    assert report["solved_candidate_count"] == len(postures) == 1
+    assert all(row["schema_version"] == PROGRESS_SCHEMA_VERSION for row in progress)
+    assert [row["event"] for row in progress] == [
+        "candidate_started",
+        "phase_solve_started",
+        "phase_solve_completed",
+        "candidate_completed",
+        "candidate_started",
+        "phase_solve_started",
+        "phase_solve_completed",
+        "phase_solve_started",
+        "phase_solve_completed",
+        "candidate_completed",
+    ]
+    started = [row for row in progress if row["event"] == "phase_solve_started"]
+    assert [row["solve_call_count"] for row in started] == [1, 2, 3]
+    assert [row["phase_id"] for row in started] == [
+        "contact_open",
+        "contact_open",
+        "contact_close",
+    ]
+    completed = [row for row in progress if row["event"] == "candidate_completed"]
+    assert [row["completed_candidate_count"] for row in completed] == [1, 2]
+    assert [row["reason"] for row in completed] == [
+        "contact_open_unsolved",
+        "solved",
+    ]
 
 
 @pytest.mark.parametrize("override_state", ["missing", "none"])
