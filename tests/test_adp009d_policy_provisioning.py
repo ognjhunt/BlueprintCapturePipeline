@@ -3,8 +3,14 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+from blueprint_pipeline.adp009d_groot_wire_wheels import (
+    GROOT_WIRE_WHEEL_ARTIFACTS,
+    RECEIPT_FILENAME as GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+    expected_artifacts_digest as groot_wire_expected_artifacts_digest,
+)
 from blueprint_pipeline.adp009d_policy_provisioning import (
     BLOCKER_CREDENTIALS,
+    BLOCKER_GROOT_WIRE_WHEEL_LOCK,
     BLOCKER_JAX_PREALLOCATION,
     BLOCKER_NOT_LOOPBACK,
     BLOCKER_SHARED_INTERPRETER,
@@ -114,11 +120,15 @@ def test_generated_groot_provisioning_script_is_valid_bash(tmp_path) -> None:
 def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> None:
     script = build_provisioning_script("groot_n17_droid")
 
-    assert '"pyzmq==27.0.1"' in script
-    assert '"msgpack==1.1.0"' in script
-    assert '"msgpack-numpy==0.4.8"' in script
-    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
-    assert script.index('"msgpack-numpy==0.4.8"') < script.index(
+    assert '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"' in script
+    assert '--python "/isaac-sim/kit/python/bin/python3"' in script
+    assert '--runtime-dir "$RUNTIME_DIR"' in script
+    assert f'--output "$OUT_DIR/{GROOT_WIRE_WHEEL_RECEIPT_FILENAME}"' in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" "$RUNTIME_DIR/groot_n17_wire_client.py"'
+        in script
+    )
+    assert script.index('"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"') < script.index(
         '"$RUNTIME_DIR/groot_n17_wire_client.py"'
     )
     assert script.index('"$RUNTIME_DIR/groot_n17_wire_client.py"') < script.index(
@@ -132,24 +142,51 @@ def test_groot_wire_pins_go_to_a_staged_target_never_into_the_kit_environment() 
     Pins installed *into* the kit environment therefore never win: the live
     20260825T134736Z GR00T run observed msgpack 1.2.1/pyzmq 27.1.0 over its
     freshly installed pins and the wire self-check correctly refused. The pins
-    must land in the staged sibling directory the wire client prepends, with
-    --no-deps so nothing resolves into Isaac's interpreter as a side effect
-    (the in-environment install dragged in numpy 2.5.2).
-
-    numpy itself is pinned into the staged directory explicitly: the bare kit
-    interpreter has no numpy outside Isaac's bootstrapped extension path, and
-    the 20260825T144455Z self-check failed on ``import numpy`` once the old
-    side-effect install stopped providing it. In-episode, Isaac's own
-    already-imported numpy wins via sys.modules.
+    must land in the staged sibling directory the wire client prepends. The
+    self-check must run through Isaac's wrapper-provided numpy; --no-deps and
+    the exact wheel set forbid staging a second numpy ABI.
     """
 
     script = build_provisioning_script("groot_n17_droid")
-    line = next(
-        item for item in script.splitlines() if '"pyzmq==27.0.1"' in item
+    assert "adp009d_groot_wire_wheels.py" in script
+    assert " pip install " not in script[
+        script.index("adp009d_groot_wire_wheels.py")
+        : script.index("groot_n17_wire_client.py")
+    ]
+    distributions = {
+        str(artifact["distribution"]) for artifact in GROOT_WIRE_WHEEL_ARTIFACTS
+    }
+    assert distributions == {"pyzmq", "msgpack", "msgpack-numpy"}
+    assert "numpy" not in distributions
+
+
+def test_groot_wire_wheel_lock_is_bound_in_the_provisioning_receipt() -> None:
+    receipt = describe_provisioning("groot_n17_droid")
+    lock = receipt["groot_wire_wheel_lock"]
+
+    assert lock["artifacts_digest"] == groot_wire_expected_artifacts_digest()
+    assert lock["receipt_filename"] == GROOT_WIRE_WHEEL_RECEIPT_FILENAME
+    assert lock["installer_network_access"] is False
+    assert lock["installer_index_access"] is False
+    assert lock["dependency_resolution_allowed"] is False
+    assert len(lock["artifacts"]) == 3
+    assert all(
+        str(row["url"]).startswith("https://files.pythonhosted.org/")
+        for row in lock["artifacts"]
     )
-    assert '--target "$RUNTIME_DIR/groot_wire_deps"' in line
-    assert "--no-deps" in line
-    assert '"numpy==2.5.2"' in line
+    assert all(
+        str(row["sha256"]).startswith("sha256:") for row in lock["artifacts"]
+    )
+
+    changed = dict(receipt)
+    changed["groot_wire_wheel_lock"] = {
+        **lock,
+        "artifacts_digest": "sha256:" + "0" * 64,
+    }
+    assert BLOCKER_GROOT_WIRE_WHEEL_LOCK in validate_provisioning(changed)
+
+    pi05 = describe_provisioning("pi05_droid")
+    assert pi05["groot_wire_wheel_lock"] is None
 
 
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
@@ -466,11 +503,19 @@ def test_groots_wire_client_reaches_isaac_without_installing_groot() -> None:
     )
 
     script = build_provisioning_script("groot_n17_droid")
-    assert f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}"' in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" '
+        '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"'
+        in script
+    )
+    assert f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in script
     assert f'--no-deps -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"' not in script
-    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" "$RUNTIME_DIR/groot_n17_wire_client.py"'
+        in script
+    )
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
-    assert "pyzmq" in script and "msgpack" in script
+    assert GROOT_WIRE_WHEEL_RECEIPT_FILENAME in script
     # The separate server venv still installs the full, frozen GR00T checkout.
     assert (
         f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" '

@@ -128,6 +128,7 @@ def build_policy_runtime_smoke_bundle(
         "adp009d_policy_runtime_smoke_worker.py",
         "adp009d_groot_worker_identity.py",
         "adp009d_gated_backbone.py",
+        "adp009d_groot_wire_wheels.py",
         "groot_n17_droid_policy_runtime.py",
         "openpi_droid_policy_runtime.py",
         "droid_policy_bridge.py",

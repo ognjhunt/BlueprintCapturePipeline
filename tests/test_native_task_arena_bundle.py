@@ -772,6 +772,7 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             "provider_runtime/adp009d_policy_server_worker.py",
             "provider_runtime/adp009d_checkpoint_fetch_worker.py",
             "provider_runtime/adp009d_provisioning_preflight.py",
+            "provider_runtime/adp009d_groot_wire_wheels.py",
             "provider_runtime/openpi_droid_policy_runtime.py",
             "provider_runtime/droid_policy_bridge.py",
         }.issubset(names)

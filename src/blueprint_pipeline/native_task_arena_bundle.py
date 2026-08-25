@@ -55,6 +55,7 @@ POLICY_EXECUTION_AUTHORITY_BY_MODE = {
 POLICY_RUNTIME_ROOT_MODULE_NAMES = (
     "adp009d_checkpoint_fetch_worker.py",
     "adp009d_gated_backbone.py",
+    "adp009d_groot_wire_wheels.py",
     "adp009d_groot_worker_identity.py",
     "adp009d_policy_server_worker.py",
     "adp009d_provisioning_preflight.py",

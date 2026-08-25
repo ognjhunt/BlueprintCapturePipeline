@@ -40,6 +40,13 @@ from .adp009d_checkpoint_materialization import (
 )
 from .adp009d_gated_backbone import MODEL_ID as GATED_BACKBONE_MODEL_ID
 from .adp009d_gated_backbone import REVISION as GATED_BACKBONE_REVISION
+from .adp009d_groot_wire_wheels import (
+    RECEIPT_FILENAME as GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+    SCHEMA_VERSION as GROOT_WIRE_WHEEL_SCHEMA_VERSION,
+    SOURCE_ORIGIN as GROOT_WIRE_WHEEL_SOURCE_ORIGIN,
+    expected_artifact_rows as groot_wire_expected_artifact_rows,
+    expected_artifacts_digest as groot_wire_expected_artifacts_digest,
+)
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES, PROGRAM_ID
 from .adp009d_policy_server_worker import (
     CANDIDATE_DEFAULT_PORTS,
@@ -104,6 +111,7 @@ BLOCKER_SHARED_INTERPRETER = "policy_provisioning_shares_isaac_interpreter"
 BLOCKER_JAX_PREALLOCATION = "policy_provisioning_jax_preallocation_enabled"
 BLOCKER_NOT_LOOPBACK = "policy_provisioning_endpoint_not_loopback"
 BLOCKER_CREDENTIALS = "policy_provisioning_credentials_forwarded"
+BLOCKER_GROOT_WIRE_WHEEL_LOCK = "policy_provisioning_groot_wire_wheel_lock_invalid"
 
 
 class PolicyProvisioningError(ValueError):
@@ -173,22 +181,21 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
         # environment: Isaac ships its own newer msgpack/pyzmq ahead of kit
         # site-packages on sys.path, so an in-environment install can never
         # win (the 20260825T134736Z run observed msgpack 1.2.1/pyzmq 27.1.0
-        # over freshly installed pins and correctly refused).  --no-deps keeps
-        # transitive resolution out of Isaac's interpreter; numpy is pinned
-        # into the staged directory explicitly because the bare kit
-        # interpreter has no numpy at all outside Isaac's bootstrapped
-        # extension path (the 20260825T144455Z self-check failed on
-        # ``import numpy`` once the old in-environment side-effect install
-        # stopped providing it).  In-episode, Isaac's own already-imported
-        # numpy wins via sys.modules; the staged copy serves only the bare
-        # self-check.  The wire client prepends this sibling directory to
-        # sys.path before importing the codec.
+        # over freshly installed pins and correctly refused).  A subsequent
+        # staged-codec run proved the bare kit executable does not bootstrap
+        # Isaac's numpy extension path.  Do not stage another numpy ABI: the
+        # self-check runs through python.sh, just like the episode, and uses
+        # Isaac's own numpy.  --no-deps forbids resolver-selected transitive
+        # packages, and nothing mutates Isaac's prefix.  The wire client
+        # prepends this sibling directory before importing the codec.
         return [
-            f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
-            '--no-deps --target "$RUNTIME_DIR/groot_wire_deps" '
-            '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8" '
-            '"numpy==2.5.2"',
-            f'"{ISAAC_PYTHON_EXECUTABLE}" '
+            f'"{ISAAC_INTERPRETER}" '
+            '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py" '
+            '--uv "$UV" '
+            f'--python "{ISAAC_PYTHON_EXECUTABLE}" '
+            '--runtime-dir "$RUNTIME_DIR" '
+            f'--output "$OUT_DIR/{GROOT_WIRE_WHEEL_RECEIPT_FILENAME}"',
+            f'"{ISAAC_INTERPRETER}" '
             '"$RUNTIME_DIR/groot_n17_wire_client.py"',
         ]
     subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(candidate_id)
@@ -463,6 +470,20 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
             else None
         ),
         "jax_environment": dict(JAX_ENVIRONMENT),
+        "groot_wire_wheel_lock": (
+            {
+                "schema_version": GROOT_WIRE_WHEEL_SCHEMA_VERSION,
+                "source_origin": GROOT_WIRE_WHEEL_SOURCE_ORIGIN,
+                "artifacts": groot_wire_expected_artifact_rows(),
+                "artifacts_digest": groot_wire_expected_artifacts_digest(),
+                "receipt_filename": GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+                "installer_network_access": False,
+                "installer_index_access": False,
+                "dependency_resolution_allowed": False,
+            }
+            if candidate_id == "groot_n17_droid"
+            else None
+        ),
         "materialize_on": "gpu_worker",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -653,6 +674,23 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     if str(receipt.get("endpoint_host")) not in {"127.0.0.1", "localhost", "::1"}:
         errors.append(BLOCKER_NOT_LOOPBACK)
 
+    expected_wire_lock = (
+        {
+            "schema_version": GROOT_WIRE_WHEEL_SCHEMA_VERSION,
+            "source_origin": GROOT_WIRE_WHEEL_SOURCE_ORIGIN,
+            "artifacts": groot_wire_expected_artifact_rows(),
+            "artifacts_digest": groot_wire_expected_artifacts_digest(),
+            "receipt_filename": GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+            "installer_network_access": False,
+            "installer_index_access": False,
+            "dependency_resolution_allowed": False,
+        }
+        if candidate_id == "groot_n17_droid"
+        else None
+    )
+    if receipt.get("groot_wire_wheel_lock") != expected_wire_lock:
+        errors.append(BLOCKER_GROOT_WIRE_WHEEL_LOCK)
+
     # Only pi05 brings JAX, but an enabled preallocation is fatal wherever it
     # appears, so the check is not conditioned on the candidate.
     environment = receipt.get("jax_environment") or {}
@@ -675,6 +713,7 @@ __all__ = [
     "GATED_BACKBONE_AUTH_ENV",
     "GATED_BACKBONE_HF_HOME",
     "GATED_BACKBONE_HUB_CACHE",
+    "BLOCKER_GROOT_WIRE_WHEEL_LOCK",
     "POLICY_HOST",
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",
