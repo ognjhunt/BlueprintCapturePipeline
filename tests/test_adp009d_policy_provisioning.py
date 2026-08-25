@@ -133,8 +133,14 @@ def test_groot_wire_pins_go_to_a_staged_target_never_into_the_kit_environment() 
     20260825T134736Z GR00T run observed msgpack 1.2.1/pyzmq 27.1.0 over its
     freshly installed pins and the wire self-check correctly refused. The pins
     must land in the staged sibling directory the wire client prepends, with
-    --no-deps so numpy never leaks into Isaac's interpreter as a side effect
+    --no-deps so nothing resolves into Isaac's interpreter as a side effect
     (the in-environment install dragged in numpy 2.5.2).
+
+    numpy itself is pinned into the staged directory explicitly: the bare kit
+    interpreter has no numpy outside Isaac's bootstrapped extension path, and
+    the 20260825T144455Z self-check failed on ``import numpy`` once the old
+    side-effect install stopped providing it. In-episode, Isaac's own
+    already-imported numpy wins via sys.modules.
     """
 
     script = build_provisioning_script("groot_n17_droid")
@@ -143,8 +149,7 @@ def test_groot_wire_pins_go_to_a_staged_target_never_into_the_kit_environment() 
     )
     assert '--target "$RUNTIME_DIR/groot_wire_deps"' in line
     assert "--no-deps" in line
-    remaining = line.replace('"msgpack-numpy==0.4.8"', "")
-    assert "numpy==" not in remaining
+    assert '"numpy==2.5.2"' in line
 
 
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
