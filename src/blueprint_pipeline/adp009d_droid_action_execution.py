@@ -24,7 +24,7 @@ queries a policy and never steps a simulator.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +68,14 @@ BLOCKER_GRIPPER_CONVENTION_UNMEASURED = "isaac_gripper_convention_unmeasured"
 BLOCKER_JOINT_VELOCITY_BOUNDS = "candidate_action_joint_velocity_bounds_invalid"
 BLOCKER_JOINT_POSITION_BOUNDS = "candidate_action_joint_position_bounds_invalid"
 BLOCKER_GRIPPER_BOUNDS = "candidate_action_gripper_bounds_invalid"
+# Declared-channel generalization (company-supplied policy contracts).  The
+# per-channel envelope that the DROID gripper hardcodes above becomes data:
+# each declared channel carries its own command interval, raw accepted
+# envelope, and executed semantics, and the validator polices the raw envelope
+# per column exactly the way it polices the gripper today.
+BLOCKER_CHANNEL_BOUNDS = "candidate_action_channel_bounds_invalid"
+BLOCKER_CHANNEL_CONTRACT_INVALID = "candidate_action_channel_contract_invalid"
+BLOCKER_CHANNEL_WIDTH = "candidate_action_channel_contract_width_mismatch"
 
 # The released pi05 DROID checkpoint emits normalized joint-velocity commands.
 # The bridge maps each inclusive [-1, 1] value to at most this candidate-space
@@ -158,20 +166,151 @@ def validate_action_chunk(chunk: Any, *, horizon: int = DROID_OPEN_LOOP_HORIZON)
     return values
 
 
+def _validate_declared_channel_bounds(
+    chunk: Any,
+    *,
+    action_space: str,
+    channel_contracts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate a chunk against *declared* per-channel envelope contracts.
+
+    This is the generalization of the hardcoded DROID gripper envelope: a
+    company-supplied policy declares, per channel, the command interval its
+    runtime executes, the wider raw envelope its server may legitimately
+    return, and the executed semantics explaining the gap.  Refusal applies
+    the raw envelope; command-interval overshoot is *reported* per channel,
+    never policed -- refusing it made this harness stricter than the runtime
+    it mirrors (the 20260825T125800Z pi05 gripper lesson, now as data).
+
+    The declared path deliberately does not touch the DROID-specific arm and
+    gripper logic: the frozen-candidate contract stays code, the company
+    contract stays data, and neither can silently borrow the other's bounds.
+    """
+
+    import numpy as np
+
+    contracts = list(channel_contracts)
+    if not contracts or any(
+        not isinstance(contract, Mapping) for contract in contracts
+    ):
+        raise DroidActionExecutionError(
+            [f"{BLOCKER_CHANNEL_CONTRACT_INVALID}:contracts_not_mappings"]
+        )
+    values = np.asarray(chunk, dtype=float)
+    if values.ndim != 2 or values.shape[0] < 1:
+        raise DroidActionExecutionError(
+            [f"{BLOCKER_CHUNK_SHAPE}:{tuple(values.shape)}"]
+        )
+    if values.shape[1] != len(contracts):
+        # A declared contract for the wrong width would validate columns
+        # against another channel's envelope -- silently, and plausibly.
+        raise DroidActionExecutionError(
+            [
+                f"{BLOCKER_CHANNEL_WIDTH}:declared={len(contracts)}:"
+                f"chunk={int(values.shape[1])}"
+            ]
+        )
+    if not np.isfinite(values).all():
+        raise DroidActionExecutionError([BLOCKER_CHUNK_NONFINITE])
+
+    errors: list[str] = []
+    applied: list[dict[str, Any]] = []
+    for index, contract in enumerate(contracts):
+        name = str(contract.get("name") or "")
+        kind = str(contract.get("kind") or "")
+        executed = str(contract.get("executed_semantics") or "")
+        try:
+            command_lower, command_upper = (
+                float(bound) for bound in contract["command_interval"]
+            )
+            raw_lower, raw_upper = (
+                float(bound) for bound in contract["raw_accepted_bounds"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DroidActionExecutionError(
+                [f"{BLOCKER_CHANNEL_CONTRACT_INVALID}:{name or index}"]
+            ) from exc
+        # Trust nothing about the contract shape even though the admission
+        # validator normally produced it: this function is also reachable with
+        # hand-built dicts, and executing against a self-contradictory
+        # envelope would be a silent harness fault.
+        if (
+            not name
+            or not kind
+            or not executed
+            or not np.isfinite([command_lower, command_upper, raw_lower, raw_upper]).all()
+            or not raw_lower <= command_lower < command_upper <= raw_upper
+        ):
+            raise DroidActionExecutionError(
+                [f"{BLOCKER_CHANNEL_CONTRACT_INVALID}:{name or index}"]
+            )
+        column = values[:, index]
+        outside_raw = np.argwhere((column < raw_lower) | (column > raw_upper))
+        if outside_raw.size:
+            row_index = int(outside_raw[0, 0])
+            errors.append(
+                f"{BLOCKER_CHANNEL_BOUNDS}:{name}:count={len(outside_raw)}:"
+                f"first_row={row_index}:value={column[row_index]!r}:"
+                f"bounds=[{raw_lower},{raw_upper}]"
+            )
+        outside_command = np.argwhere(
+            (column < command_lower) | (column > command_upper)
+        )
+        overshoot = float(
+            np.max(
+                np.clip(
+                    np.maximum(column - command_upper, command_lower - column),
+                    0.0,
+                    None,
+                )
+            )
+        )
+        applied.append(
+            {
+                "name": name,
+                "kind": kind,
+                "command_interval": [command_lower, command_upper],
+                "raw_accepted_bounds": [raw_lower, raw_upper],
+                "executed_semantics": executed,
+                "rows_outside_command_interval": int(len(outside_command)),
+                "max_command_interval_overshoot": overshoot,
+            }
+        )
+    if errors:
+        raise DroidActionExecutionError(errors)
+    return {
+        "action_space": action_space,
+        "validated_rows": int(values.shape[0]),
+        "channel_contracts_applied": applied,
+        "raw_candidate_clipping_permitted": False,
+    }
+
+
 def validate_candidate_action_bounds(
     chunk: Any,
     *,
     action_space: str,
     joint_limits: Sequence[Sequence[float]] | None = None,
+    channel_contracts: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate every raw candidate row before adaptation or clipping.
 
     The open-loop executor may deliberately use only a chunk prefix, but the
     retained candidate response is one scientific output. Every returned row
     therefore has to satisfy the frozen candidate action-space contract.
+
+    With ``channel_contracts=None`` (the frozen ADP candidates) behavior is
+    exactly the historical DROID contract below.  With declared per-channel
+    contracts (company-supplied policies) validation routes through the
+    generalized envelope path instead; the two never mix.
     """
 
     import numpy as np
+
+    if channel_contracts is not None:
+        return _validate_declared_channel_bounds(
+            chunk, action_space=action_space, channel_contracts=channel_contracts
+        )
 
     values = validate_action_chunk(chunk, horizon=1)
     errors: list[str] = []

@@ -113,6 +113,24 @@ MAX_TTL_SECONDS = 14_400
 
 #: The packet directory holds this; it is distinct from the provider-bundle
 #: receipt consumed by the shared live-profile skeleton.
+#: Proven-bad provider machines must survive the run that proved them bad.
+#:
+#: The adapter already records a machine whose container never reaches its
+#: onstart heartbeat (``_machine_avoidlist_reason``), but its default avoidlist
+#: lives under the *job* root -- a fresh directory per launch -- so every new
+#: launch started blind and relearned the same host with real money. On
+#: 2026-08-25 Vast machine 144209 failed three consecutive GR00T launches this
+#: way (``vast_probe_interrupted_before_completion``, then
+#: ``No such container``), each time after allocating a GPU, while the very
+#: same bundle had completed a full episode on another machine.
+#:
+#: Defaulting the lane to one durable path under the launch state root makes
+#: that recorded evidence cumulative: the exclusion is written once, by the run
+#: that paid for it, and every later launch inherits it.
+DEFAULT_MACHINE_AVOIDLIST_PATH = (
+    "/var/lib/blueprint/pipeline-control-plane/"
+    "task-evaluation-launch-runs/vast_machine_avoidlist.json"
+)
 PACKET_RECEIPT_NAME = "native_task_arena_packet_receipt.v1.json"
 PACKET_REQUEST_NAME = "native_task_arena_packet_request.v1.json"
 SCENE_PLAN_NAME = "native_task_arena_scene_plan.v1.json"
@@ -1122,7 +1140,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             required=True,
             help="Local digest-bound content-addressed publication receipt for this run spec.",
         )
-        target.add_argument("--machine-avoidlist")
+        target.add_argument(
+            "--machine-avoidlist",
+            default=DEFAULT_MACHINE_AVOIDLIST_PATH,
+            help=(
+                "Persistent proven-bad-machine avoidlist. Defaults to the "
+                "durable lane-wide path so a machine that failed one paid run "
+                "is excluded from every later one."
+            ),
+        )
         target.add_argument("--warm-session")
         target.add_argument(
             "--revision",

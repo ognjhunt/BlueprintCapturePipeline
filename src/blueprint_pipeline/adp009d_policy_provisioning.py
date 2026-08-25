@@ -29,6 +29,7 @@ never fetches bytes, and never contacts a provider.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -489,6 +490,172 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
     return receipt
 
 
+# ---------------------------------------------------------------------------
+# Company-supplied policy container seam.
+#
+# External robot companies supply their policy as a digest-pinned container
+# that serves on loopback on this same rented worker, admitted through
+# ``company_policy_container_contract``.  This seam emits the worker-side
+# shell commands for that container the same way the builders above emit the
+# frozen-candidate commands: strings only, never executed here.  It is
+# deliberately NOT wired into ``build_provisioning_script`` -- the frozen ADP
+# candidate flow stays byte-identical -- and exists for the future company
+# launch profile builder to consume.
+# ---------------------------------------------------------------------------
+
+# The canonical worker secrets directory (see
+# scripts/install_live_pipeline_control_plane.sh); declared credential
+# filenames resolve against it and nowhere else.
+COMPANY_POLICY_SECRETS_HOST_DIR = "/etc/blueprint/provider-secrets"
+# Mounted read-only inside the container at a fixed path so the company's
+# serve command can find its credentials without the contract ever naming a
+# host path.
+COMPANY_POLICY_SECRETS_MOUNT_DIR = "/run/company-secrets"
+# Bounded readiness: 60 attempts x 5 s = five minutes, then fail closed.  An
+# unbounded wait on a paid GPU worker is the exact silent-stall failure the
+# phase-marker watchdog exists to kill.
+COMPANY_POLICY_READINESS_ATTEMPTS = 60
+COMPANY_POLICY_READINESS_SLEEP_SECONDS = 5
+
+BLOCKER_FROZEN_CANDIDATE_COLLISION = "company_policy_id_collides_with_frozen_candidate"
+
+
+def assert_not_adp_frozen_candidate(policy_id: str) -> None:
+    """Refuse company policy ids that impersonate a frozen ADP candidate.
+
+    The frozen candidates are provisioned by the branches above under sealed
+    rights and identity receipts.  A company contract reusing one of their
+    ids would produce receipts, container names, and phase markers that read
+    as the frozen candidate while running arbitrary company bytes.  The check
+    reads ``EXPECTED_CANDIDATES`` -- currently ``pi05_droid``,
+    ``groot_n17_droid``, ``groot_n16_droid``, ``cosmos3_edge_policy_droid``
+    -- rather than restating the ids, so ratifying a new frozen candidate
+    protects it here automatically.
+    """
+
+    if str(policy_id) in EXPECTED_CANDIDATES:
+        raise PolicyProvisioningError(
+            [f"{BLOCKER_FROZEN_CANDIDATE_COLLISION}:{policy_id}"]
+        )
+
+
+def _company_policy_readiness_block(
+    *, policy_id: str, port: int, handshake_kind: str
+) -> str:
+    """Bounded, fail-closed wait for the company server to accept on loopback.
+
+    Readiness here is deliberately weaker than the frozen candidates' identity
+    handshake: it proves only that something inside the admitted container
+    accepts on the declared loopback port.  Schema conformance is proven
+    separately by the typed probe in ``company_policy_conformance`` -- which
+    is also why the HTTP probe does not pass ``-f``: a websocket server that
+    404s a bare GET is still a live server, and refusing it here would strand
+    a healthy container the same way refusing the pi05 gripper overshoot
+    stranded a healthy policy.
+    """
+
+    if handshake_kind == "zmq_msgpack":
+        # The emitted comment marks where the protocol-pinned zmq ping lands:
+        # the frozen REQ/REP MessagePack codec lives in wire-client modules
+        # like groot_n17_wire_client and the episode client performs the real
+        # ping.  This loop proves only loopback TCP acceptance, with the
+        # stdlib so the host needs no zmq installed.
+        preamble = (
+            "# Placeholder: the protocol-pinned zmq ping (REQ/REP MessagePack,\n"
+            "# groot_n17_wire_client pattern) is performed by the episode client;\n"
+            "# this loop proves only that the loopback socket accepts.\n"
+        )
+        probe = (
+            "python3 -c \"import socket; "
+            f"socket.create_connection(('127.0.0.1', {port}), timeout=5).close()\" "
+            "2>/dev/null"
+        )
+    else:
+        preamble = ""
+        probe = (
+            f'curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:{port}/"'
+        )
+    return f"""{preamble}ready=""
+for _attempt in $(seq 1 {COMPANY_POLICY_READINESS_ATTEMPTS}); do
+  if {probe}; then
+    ready="yes"
+    break
+  fi
+  sleep {COMPANY_POLICY_READINESS_SLEEP_SECONDS}
+done
+if [ -z "$ready" ]; then
+  echo "BLUEPRINT_COMPANY_POLICY_BLOCKER:company_policy_container_readiness_timeout:{policy_id}"
+  docker logs --tail 100 "company-policy-{policy_id}" || true
+  exit 86
+fi
+echo "BLUEPRINT_COMPANY_POLICY_READY:{policy_id}\""""
+
+
+def company_policy_container_commands(contract: Mapping[str, Any]) -> list[str]:
+    """Emit the worker-side shell commands that serve one company policy.
+
+    Pull by digest, run on the host network so the container's loopback IS
+    the worker's loopback (the episode client dials ``127.0.0.1:<port>``;
+    nothing is published off-host), bind-mount each declared credential file
+    read-only from the canonical secrets directory, then wait -- bounded --
+    for the server to accept.  Strings only: this function never runs docker,
+    exactly like every command builder above.
+
+    The contract is re-validated here rather than trusted, so a hand-built
+    mapping with an unpinned image or a path-shaped credential name can never
+    reach an emitted ``docker`` command.
+    """
+
+    from .company_policy_container_contract import (
+        validate_company_policy_container_contract,
+    )
+
+    normalized = validate_company_policy_container_contract(contract)
+    policy_id = str(normalized["policy_id"])
+    assert_not_adp_frozen_candidate(policy_id)
+    container = normalized["container"]
+    image = str(container["image"])
+    port = int(container["port"])
+    container_name = f"company-policy-{policy_id}"
+
+    run_lines = [
+        f'docker run -d --name "{container_name}" \\',
+        "  --network host \\",
+        # Companies stage caches and sockets inside their own image; a
+        # read-only rootfs is not part of the v1 contract.  Spelled out so
+        # the decision is visible in the emitted script, not implicit.
+        "  --read-only=false \\",
+    ]
+    if bool(container["gpu_required"]):
+        run_lines.append("  --gpus all \\")
+    for filename in container["credential_files"]:
+        # Read-only: the container may consume a credential, never rewrite
+        # the worker's secret store.  Filenames were allowlist-validated
+        # (no separators, no colons), so this -v syntax cannot be corrupted.
+        run_lines.append(
+            f'  -v "{COMPANY_POLICY_SECRETS_HOST_DIR}/{filename}:'
+            f'{COMPANY_POLICY_SECRETS_MOUNT_DIR}/{filename}:ro" \\'
+        )
+    run_lines.append(f'  "{image}" \\')
+    run_lines.append(
+        "  " + " ".join(shlex.quote(arg) for arg in container["serve_command"])
+    )
+
+    return [
+        # Phase markers at both ends of the pull: images run to many
+        # gigabytes, and the no-progress watchdog counts only new markers.
+        f'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:company_policy_{policy_id}_pull:started"',
+        f'docker pull "{image}"',
+        f'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:company_policy_{policy_id}_pull:completed"',
+        "\n".join(run_lines),
+        _company_policy_readiness_block(
+            policy_id=policy_id,
+            port=port,
+            handshake_kind=str(container["handshake_kind"]),
+        ),
+    ]
+
+
 def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     """Refuse a provisioning that would take the GPU out from under Isaac."""
 
@@ -535,7 +702,12 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
 
 
 __all__ = [
+    "BLOCKER_FROZEN_CANDIDATE_COLLISION",
     "CHECKPOINT_ROOT",
+    "COMPANY_POLICY_READINESS_ATTEMPTS",
+    "COMPANY_POLICY_READINESS_SLEEP_SECONDS",
+    "COMPANY_POLICY_SECRETS_HOST_DIR",
+    "COMPANY_POLICY_SECRETS_MOUNT_DIR",
     "ISAAC_INTERPRETER",
     "JAX_ENVIRONMENT",
     "GATED_BACKBONE_AUTH_ENV",
@@ -551,7 +723,9 @@ __all__ = [
     "SYSTEM_INTERPRETER",
     "PROVISIONING_SCHEMA_VERSION",
     "PolicyProvisioningError",
+    "assert_not_adp_frozen_candidate",
     "build_provisioning_script",
+    "company_policy_container_commands",
     "describe_provisioning",
     "validate_provisioning",
 ]
