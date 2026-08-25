@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prior-result", required=True)
     parser.add_argument("--prior-provider-zero", required=True)
     parser.add_argument("--prior-spend-reconciliation", required=True)
+    parser.add_argument("--supplemental-prior-result", action="append", default=[])
     parser.add_argument("--authority-reference", required=True)
     parser.add_argument("--authorized-by", required=True)
     parser.add_argument("--authorized-on", required=True)
@@ -54,6 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prior_result_path=args.prior_result,
             prior_provider_zero_path=args.prior_provider_zero,
             prior_spend_reconciliation_path=args.prior_spend_reconciliation,
+            supplemental_prior_result_paths=args.supplemental_prior_result,
             authorization_reference=args.authority_reference,
             authorized_by=args.authorized_by,
             authorized_on=args.authorized_on,

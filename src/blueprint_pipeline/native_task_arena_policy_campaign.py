@@ -516,6 +516,7 @@ def materialize_native_task_arena_policy_campaign(
     groot_hard_cap_usd: float,
     groot_hard_ttl_seconds: int,
     output_path: str | Path,
+    supplemental_prior_result_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Seal one exact two-member campaign before either authority is valid."""
 
@@ -546,8 +547,14 @@ def materialize_native_task_arena_policy_campaign(
         result_path=prior_result_path,
         provider_zero_path=prior_provider_zero_path,
     )
+    prior_result_paths = (
+        prior["records"]["terminal_result"]["path"],
+        *(str(Path(item).expanduser().resolve()) for item in supplemental_prior_result_paths),
+    )
+    if len(prior_result_paths) != len(set(prior_result_paths)):
+        raise ValueError("native_task_arena_policy_campaign_prior_result_duplicate")
     reconciled = bind_lane_prior_spend(
-        prior_result_paths=(prior["records"]["terminal_result"]["path"],),
+        prior_result_paths=prior_result_paths,
         reconciliation_path=prior_spend_reconciliation_path,
         lane="native_task_arena",
     )
@@ -613,6 +620,7 @@ def materialize_native_task_arena_policy_campaign(
                 **prior["records"],
                 "authority_digest": prior["authority_digest"],
             },
+            "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
             "reconciliation": reconciled["reconciliation"],
         },
         "shared_scientific_projection": projections["pi05_droid"],
