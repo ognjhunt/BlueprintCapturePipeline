@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_launch_preparation_request.v1.schema.json",
+  "title": "Task Evaluation launch preparation request v1",
+  "description": "Customer-neutral, immutable input contract for preparing one production Task Evaluation Run. Host paths, provider credentials, catalog paths, and shell commands are deliberately not accepted.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "preparation_id",
+    "team_namespace",
+    "run_id",
+    "scene",
+    "robot",
+    "controller",
+    "task",
+    "sensors",
+    "runtime",
+    "publication",
+    "spend"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_launch_preparation_request.v1"},
+    "preparation_id": {"$ref": "#/$defs/identifier"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "scene": {
+      "type": "object",
+      "required": ["identity", "source_manifest", "appearance", "geometry", "registration", "rights"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "source_manifest": {"$ref": "#/$defs/reference"},
+        "appearance": {
+          "type": "object",
+          "required": ["kind", "representation", "renderer_qualification"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["interiorgs", "gaussian_splat", "textured_usd", "other_observed"]},
+            "representation": {"$ref": "#/$defs/reference"},
+            "renderer_qualification": {"$ref": "#/$defs/reference"}
+          }
+        },
+        "geometry": {
+          "type": "object",
+          "required": ["kind", "collision", "validation"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["sage_derived", "observed_mesh", "qualified_cad", "other_derived"]},
+            "collision": {"$ref": "#/$defs/reference"},
+            "validation": {"$ref": "#/$defs/reference"}
+          }
+        },
+        "registration": {
+          "type": "object",
+          "required": ["metric_registration", "support_plane", "robot_base", "camera_calibration"],
+          "additionalProperties": false,
+          "properties": {
+            "metric_registration": {"$ref": "#/$defs/reference"},
+            "support_plane": {"$ref": "#/$defs/reference"},
+            "robot_base": {"$ref": "#/$defs/reference"},
+            "camera_calibration": {"$ref": "#/$defs/reference"}
+          }
+        },
+        "rights": {
+          "type": "object",
+          "required": ["admission", "source_bytes_redistributable", "provider_disclosure_scope"],
+          "additionalProperties": false,
+          "properties": {
+            "admission": {"$ref": "#/$defs/reference"},
+            "source_bytes_redistributable": {"type": "boolean"},
+            "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]}
+          }
+        }
+      }
+    },
+    "robot": {
+      "type": "object",
+      "required": ["identity", "configuration", "kinematics", "joint_bounds", "controller_configuration"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "configuration": {"$ref": "#/$defs/reference"},
+        "kinematics": {"$ref": "#/$defs/reference"},
+        "joint_bounds": {"$ref": "#/$defs/reference"},
+        "controller_configuration": {"$ref": "#/$defs/reference"}
+      }
+    },
+    "controller": {
+      "type": "object",
+      "required": ["identity", "kind", "configuration"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "kind": {"enum": ["zero_action", "deterministic_scripted", "policy_container"]},
+        "configuration": {"$ref": "#/$defs/reference"},
+        "model_or_asset_rights": {"$ref": "#/$defs/reference"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "policy_container"}}, "required": ["kind"]},
+          "then": {"required": ["model_or_asset_rights"]}
+        }
+      ]
+    },
+    "task": {
+      "type": "object",
+      "required": ["identity", "definition", "success_criteria", "execution"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "definition": {"$ref": "#/$defs/reference"},
+        "success_criteria": {"$ref": "#/$defs/reference"},
+        "execution": {"$ref": "#/$defs/reference"}
+      }
+    },
+    "sensors": {
+      "type": "object",
+      "required": ["configuration"],
+      "additionalProperties": false,
+      "properties": {"configuration": {"$ref": "#/$defs/reference"}}
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "identity",
+        "oci_image",
+        "entrypoint",
+        "health_protocol",
+        "requirements",
+        "network",
+        "secret_refs",
+        "mounts",
+        "output_limit_bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "oci_image": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+        "entrypoint": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+        },
+        "health_protocol": {"$ref": "#/$defs/reference"},
+        "requirements": {
+          "type": "object",
+          "required": ["cpu_cores", "memory_gib", "gpu_count", "disk_gib"],
+          "additionalProperties": false,
+          "properties": {
+            "cpu_cores": {"type": "integer", "minimum": 1, "maximum": 128},
+            "memory_gib": {"type": "number", "exclusiveMinimum": 0, "maximum": 1024},
+            "gpu_count": {"type": "integer", "minimum": 0, "maximum": 8},
+            "disk_gib": {"type": "number", "exclusiveMinimum": 0, "maximum": 4096}
+          }
+        },
+        "network": {
+          "type": "object",
+          "required": ["default", "allowlist"],
+          "additionalProperties": false,
+          "properties": {
+            "default": {"const": "deny"},
+            "allowlist": {
+              "type": "array",
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1, "maxLength": 253}
+            }
+          }
+        },
+        "secret_refs": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^secret-file:[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$"}
+        },
+        "mounts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "required": ["container_path", "mode"],
+            "additionalProperties": false,
+            "properties": {
+              "source": {"$ref": "#/$defs/reference"},
+              "container_path": {"type": "string", "pattern": "^/[A-Za-z0-9_./-]+$"},
+              "mode": {"enum": ["read_only", "output"]}
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"mode": {"const": "read_only"}}, "required": ["mode"]},
+                "then": {"required": ["source"]}
+              },
+              {
+                "if": {"properties": {"mode": {"const": "output"}}, "required": ["mode"]},
+                "then": {"not": {"required": ["source"]}}
+              }
+            ]
+          }
+        },
+        "output_limit_bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+      }
+    },
+    "publication": {
+      "type": "object",
+      "required": ["input_namespace", "service_account_readback_required"],
+      "additionalProperties": false,
+      "properties": {
+        "input_namespace": {"$ref": "#/$defs/identifier"},
+        "service_account_readback_required": {"const": true}
+      }
+    },
+    "spend": {
+      "type": "object",
+      "required": ["maximum_hourly_rate_usd", "hard_cap_usd", "hard_ttl_seconds", "retry_cap", "provider_allowlist"],
+      "additionalProperties": false,
+      "properties": {
+        "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
+        "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 50},
+        "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 9000},
+        "retry_cap": {"const": 0},
+        "provider_allowlist": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}
