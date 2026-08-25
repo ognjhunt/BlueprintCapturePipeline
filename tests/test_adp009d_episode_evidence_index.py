@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import numpy as np
 import pytest
 
 from blueprint_pipeline.adp_episode_evidence_index import (
@@ -17,6 +18,11 @@ from blueprint_pipeline.adp_episode_evidence_index import (
     refresh_agent_cad_supporting_evidence_inventory,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.episode_visual_evidence import (
+    MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION,
+    persist_multicamera_observation,
+    persist_observation_frame,
+)
 from blueprint_pipeline.simready_cad_agent_contract import (
     INSPECTION_SCHEMA_VERSION,
     file_record,
@@ -417,17 +423,89 @@ def _receipt(
     subject_id: str,
     learned: bool,
 ) -> Path:
+    camera_ids = ("external", "wrist", "overview")
+    calibration = {
+        "camera_model": "pinhole",
+        "intrinsic_matrix": [
+            [8.0, 0.0, 4.0],
+            [0.0, 8.0, 4.0],
+            [0.0, 0.0, 1.0],
+        ],
+        "world_from_camera": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "resolution": [8, 8],
+        "near_m": 0.01,
+        "far_m": 10.0,
+    }
+
+    def observation(index: int, kind: str) -> dict[str, object]:
+        images = {
+            camera_id: np.full(
+                (8, 8, 3),
+                20 + index + offset,
+                dtype=np.uint8,
+            )
+            for offset, camera_id in enumerate(camera_ids)
+        }
+        return persist_multicamera_observation(
+            images,
+            output_dir=root,
+            episode_id=episode_id,
+            observation_index=index,
+            kind=kind,
+            timestamp_ns=index * 1_000_000,
+            simulation_time_s=index / 15.0,
+            calibrations={camera_id: calibration for camera_id in camera_ids},
+            source_devices={camera_id: "cpu" for camera_id in camera_ids},
+            synchronizations={
+                camera_id: {"host_bytes_ready": True, "method": "test"}
+                for camera_id in camera_ids
+            },
+        )
+
+    policy_observation = observation(0, "policy-input")
+    terminal_observation = observation(1, "terminal-observation")
+    frame_manifest = {
+        "schema_version": MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION,
+        "episode_id": episode_id,
+        "identity": {"subject_id": subject_id},
+        "required_camera_ids": list(camera_ids),
+        "review_only_camera_ids": ["overview"],
+        "policy_input_observations": [policy_observation],
+        "review_observations": [],
+        "terminal_observation": terminal_observation,
+        "policy_input_observation_count": 1,
+        "policy_input_frame_count": 2,
+        "review_observation_count": 0,
+        "review_frame_count": 0,
+        "lossless_policy_inputs_are_authoritative": True,
+        "derived_videos_are_human_review_convenience": True,
+        "camera_calibration_and_timestamps_retained_per_observation": True,
+        "frame_manifest_digest": "",
+    }
+    frame_manifest["frame_manifest_digest"] = canonical_digest(
+        frame_manifest, digest_field="frame_manifest_digest"
+    )
+    manifest_path = root / f"media/{episode_id}/multicamera_frame_manifest.json"
+    manifest_path.write_text(
+        json.dumps(frame_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     artifacts = []
     manifest = _artifact(
         root,
         f"media/{episode_id}/multicamera_frame_manifest.json",
-        b'{"schema_version":"fixture"}\n',
+        manifest_path.read_bytes(),
     )
     artifacts.append(
         {"role": "multicamera_observation_frame_manifest", **manifest}
     )
     videos = {}
-    for camera_id in ("external", "wrist", "overview"):
+    for camera_id in camera_ids:
         artifact = _artifact(
             root, f"media/{episode_id}/{camera_id}.mp4", camera_id.encode("utf-8")
         )
@@ -437,8 +515,52 @@ def _receipt(
         videos[camera_id] = {
             **artifact,
             "camera_id": camera_id,
-            "derived_from_frame_manifest_digest": "sha256:fixture",
+            "derived_from_frame_manifest_digest": frame_manifest[
+                "frame_manifest_digest"
+            ],
         }
+    exact_policy_inputs = []
+    if learned:
+        exact = persist_observation_frame(
+            np.concatenate(
+                [
+                    np.full((8, 8, 3), 20, dtype=np.uint8),
+                    np.full((8, 8, 3), 21, dtype=np.uint8),
+                ],
+                axis=1,
+            ),
+            output_dir=root,
+            episode_id=episode_id,
+            frame_index=0,
+            kind="policy-input",
+        )
+        exact.update(
+            {
+                "candidate_id": subject_id,
+                "candidate_exact_policy_input": True,
+                "view_order": ["exterior_image_1_left", "wrist_image_left"],
+                "view_shapes": {
+                    "exterior_image_1_left": [8, 8, 3],
+                    "wrist_image_left": [8, 8, 3],
+                },
+                "multicamera_observation_digest": policy_observation[
+                    "observation_digest"
+                ],
+                "raw_policy_input_camera_bindings": {
+                    camera_id: {
+                        "frame_digest": policy_observation["views"][camera_id][
+                            "frame_digest"
+                        ],
+                        "raw_rgb_sha256": policy_observation["views"][camera_id][
+                            "raw_rgb_sha256"
+                        ],
+                    }
+                    for camera_id in ("external", "wrist")
+                },
+            }
+        )
+        exact["frame_manifest_digest"] = canonical_digest(exact)
+        exact_policy_inputs.append(exact)
     receipt = {
         "schema_version": (
             "adp009d_policy_episode.v3" if learned else "adp009d_control_episode.v2"
@@ -456,11 +578,25 @@ def _receipt(
             "status": "complete",
             "required_camera_ids": ["external", "wrist", "overview"],
             "review_only_camera_ids": ["overview"],
+            "frame_manifest_digest": frame_manifest["frame_manifest_digest"],
             "videos": videos,
         },
         "media_artifacts": artifacts,
         "receipt_digest": "",
     }
+    if learned:
+        receipt.update(
+            {
+                "policy_queries": 1,
+                "candidate_exact_policy_input_frames": exact_policy_inputs,
+                "candidate_exact_policy_input_manifest_digest": canonical_digest(
+                    {"frames": exact_policy_inputs}
+                ),
+                "observation_trace_digest": canonical_digest(
+                    {"observations": exact_policy_inputs}
+                ),
+            }
+        )
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -468,6 +604,41 @@ def _receipt(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(receipt), encoding="utf-8")
     return path
+
+
+def _rewrite_manifest_and_reseal_receipt(
+    root: Path,
+    receipt_path: Path,
+    *,
+    manifest: dict[str, object],
+) -> None:
+    manifest["frame_manifest_digest"] = canonical_digest(
+        manifest, digest_field="frame_manifest_digest"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    manifest_artifact = next(
+        row
+        for row in receipt["media_artifacts"]
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest_path = root / manifest_artifact["relative_path"]
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    manifest_artifact["sha256"] = _sha256(manifest_path)
+    manifest_artifact["size_bytes"] = manifest_path.stat().st_size
+    receipt["visual_evidence"]["frame_manifest_digest"] = manifest[
+        "frame_manifest_digest"
+    ]
+    for video in receipt["visual_evidence"]["videos"].values():
+        video["derived_from_frame_manifest_digest"] = manifest[
+            "frame_manifest_digest"
+        ]
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -505,12 +676,201 @@ def test_portable_episode_index_covers_original_and_second_scene_fixtures(
     assert result["index"]["episode_count"] == 2
     assert result["index"]["run_identity"]["scene_id"] == scene_id
     assert result["index"]["overview_is_review_only"] is True
+    learned_row = next(
+        row
+        for row in result["index"]["episodes"]
+        if row["episode_kind"] == "learned_candidate"
+    )
+    assert learned_row["frame_manifest"]["lossless_frame_count"] == 6
+    assert len(learned_row["lossless_camera_frames"]) == 6
+    assert len(learned_row["exact_policy_input_frames"]) == 1
+    assert learned_row["exact_policy_input_frames"][0][
+        "raw_rgb_sha256"
+    ].startswith("sha256:")
     assert (tmp_path / INDEX_FILENAME).is_file()
     html = (tmp_path / HTML_FILENAME).read_text(encoding="utf-8")
     assert f"media/{scene_id}-canonical-pi05/external.mp4" in html
     assert f"media/{scene_id}-canonical-pi05/wrist.mp4" in html
     assert f"media/{scene_id}-canonical-pi05/overview.mp4" in html
+    assert "first exact policy input" in html
+    assert "000000-policy-input.png" in html
     assert "deterministic simulator state" in html
+
+
+def test_portable_episode_index_rejects_tampered_lossless_camera_frame(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    manifest_artifact = next(
+        row
+        for row in receipt["media_artifacts"]
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+    external = manifest["policy_input_observations"][0]["views"]["external"]
+    Image.fromarray(np.full((8, 8, 3), 255, dtype=np.uint8), mode="RGB").save(
+        tmp_path / external["relative_path"], format="PNG"
+    )
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_frame_manifest_invalid:canonical-pi05:.*digest_mismatch",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_portable_episode_index_rejects_changed_exact_policy_input(
+    tmp_path: Path,
+    missing: bool,
+) -> None:
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    exact_path = (
+        tmp_path
+        / receipt["candidate_exact_policy_input_frames"][0]["relative_path"]
+    )
+    if missing:
+        exact_path.unlink()
+    else:
+        exact_path.write_bytes(b"tampered")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_exact_policy_input_invalid:canonical-pi05",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong_raw_digest", "wrong_observation_digest", "missing_camera_bindings"],
+)
+def test_portable_episode_index_rejects_resealed_cross_query_camera_binding(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    exact = receipt["candidate_exact_policy_input_frames"][0]
+    if mutation == "wrong_raw_digest":
+        exact["raw_policy_input_camera_bindings"]["external"]["raw_rgb_sha256"] = (
+            "sha256:" + "f" * 64
+        )
+    elif mutation == "wrong_observation_digest":
+        exact["multicamera_observation_digest"] = "sha256:" + "e" * 64
+    else:
+        exact.pop("raw_policy_input_camera_bindings")
+    exact["frame_manifest_digest"] = canonical_digest(
+        exact, digest_field="frame_manifest_digest"
+    )
+    receipt["candidate_exact_policy_input_manifest_digest"] = canonical_digest(
+        {"frames": receipt["candidate_exact_policy_input_frames"]}
+    )
+    receipt["observation_trace_digest"] = canonical_digest(
+        {"observations": receipt["candidate_exact_policy_input_frames"]}
+    )
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_exact_policy_input_invalid:canonical-pi05",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
+
+
+@pytest.mark.parametrize("invalid_kind", ["wrong_schema", "empty_inputs"])
+def test_portable_episode_index_rejects_invalid_multicamera_manifest(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    manifest_artifact = next(
+        row
+        for row in receipt["media_artifacts"]
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+    if invalid_kind == "wrong_schema":
+        manifest["schema_version"] = "fixture"
+    else:
+        manifest["policy_input_observations"] = []
+        manifest["policy_input_observation_count"] = 0
+        manifest["policy_input_frame_count"] = 0
+    _rewrite_manifest_and_reseal_receipt(
+        tmp_path,
+        receipt_path,
+        manifest=manifest,
+    )
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_frame_manifest_invalid:canonical-pi05",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
 
 
 def test_portable_episode_index_rejects_tampered_video(tmp_path: Path) -> None:
@@ -529,6 +889,44 @@ def test_portable_episode_index_rejects_tampered_video(tmp_path: Path) -> None:
         materialize_episode_evidence_index(
             run_root=tmp_path,
             episode_receipt_paths=[receipt],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
+
+
+@pytest.mark.parametrize("field", ["relative_path", "sha256", "size_bytes"])
+def test_portable_episode_index_rejects_resealed_video_binding_mismatch(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    mismatch: object = {
+        "relative_path": "media/canonical-pi05/unrelated.mp4",
+        "sha256": "sha256:" + "f" * 64,
+        "size_bytes": 999,
+    }[field]
+    receipt["visual_evidence"]["videos"]["external"][field] = mismatch
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_camera_video_manifest_binding_invalid:canonical-pi05:external",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
             run_identity={
                 "scene_id": "840796",
                 "task_id": "upper_refrigerator_door_open",

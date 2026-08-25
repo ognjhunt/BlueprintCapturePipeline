@@ -75,7 +75,6 @@ def test_each_candidate_gets_its_own_measured_shape() -> None:
         gripper_position=0.04,
         prompt="pick up the can",
         eef_9d=np.arange(9, dtype=float),
-        historical_camera_rgb=cameras,
     )
     assert groot[DROID_EXTERIOR_VIEW_1].shape == (180, 320, 3)
     assert np.array_equal(groot["observation/eef_9d"], np.arange(9, dtype=float))
@@ -91,10 +90,6 @@ def test_groot_requires_the_live_nine_dimensional_end_effector_pose() -> None:
         joint_position=_JOINTS,
         gripper_position=0.04,
         prompt="pick up the can",
-        historical_camera_rgb={
-            DROID_EXTERIOR_VIEW_1: _isaac_frame(),
-            DROID_WRIST_VIEW: _isaac_frame(),
-        },
     )
 
     for eef in (None, [0.0] * 8, [float("nan")] * 9):
@@ -102,8 +97,8 @@ def test_groot_requires_the_live_nine_dimensional_end_effector_pose() -> None:
             build_droid_observation(**base, eef_9d=eef)
 
 
-def test_groot_requires_both_exact_t_minus_15_camera_frames() -> None:
-    base = dict(
+def test_groot_uses_only_the_current_checkpoint_requested_camera_frames() -> None:
+    observation = build_droid_observation(
         candidate_id="groot_n17_droid",
         camera_rgb={
             DROID_EXTERIOR_VIEW_1: _isaac_frame(),
@@ -115,8 +110,14 @@ def test_groot_requires_both_exact_t_minus_15_camera_frames() -> None:
         eef_9d=np.arange(9, dtype=float),
     )
 
-    with pytest.raises(DroidObservationError, match="history_view_unavailable"):
-        build_droid_observation(**base)
+    assert set(observation) == {
+        DROID_EXTERIOR_VIEW_1,
+        DROID_WRIST_VIEW,
+        "observation/joint_position",
+        "observation/gripper_position",
+        "observation/eef_9d",
+        "prompt",
+    }
 
 
 def test_pi05_observation_satisfies_the_existing_droid_validator() -> None:
@@ -234,5 +235,5 @@ def test_conversion_receipt_records_what_was_padded_and_asserts_no_crop() -> Non
     # 16:9 into 320x180 is exact, so nothing is padded at all.
     assert wide["padded_rows"] == 0
     assert wide["padded_columns"] == 0
-    assert wide["video_delta_indices"] == [-15, 0]
-    assert wide["history_sampling"] == "exact_simulator_control_steps"
+    assert wide["video_delta_indices"] == [0]
+    assert wide["history_sampling"] == "not_requested_by_frozen_processor_config"

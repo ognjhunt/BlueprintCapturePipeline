@@ -1196,12 +1196,142 @@ def _terminal_evidence(
                 blockers.append(f"allocator_terminal_artifact_missing:{field}")
     else:
         artifacts = {}
-    return {
+    evidence = {
         "status": "passed" if not blockers else "blocked",
         "result": _artifact(result_path),
         "artifacts": artifacts,
         "blockers": sorted(set(blockers)),
     }
+    visual_evidence = _mapping(result.get("visual_evidence"))
+    if visual_evidence:
+        evidence["visual_evidence"] = visual_evidence
+    return evidence
+
+
+def _allocator_boundary_artifact_evidence(
+    allocator_argv: Sequence[str],
+    *,
+    allocator_invoked: bool,
+    live_requested: bool,
+    terminal_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Distinguish allocator invocation from evidence of a paid boundary.
+
+    The canonical allocator writes its admission artifact before it can call a
+    provider.  A dispatcher that is terminated while preparing a native bundle
+    can therefore honestly retain both facts: live execution was requested and
+    the allocator process was invoked, while no provider mutation was attempted.
+    Absence is used only across the canonical output paths bound in the profile;
+    an admission, bound request, adapter output, or terminal result keeps the
+    conservative provider-attempt classification.
+    """
+
+    def _paths_after(flag: str) -> list[Path]:
+        paths: list[Path] = []
+        for index, argument in enumerate(allocator_argv):
+            if argument == flag and index + 1 < len(allocator_argv):
+                raw_path = str(allocator_argv[index + 1]).strip()
+            elif argument.startswith(flag + "="):
+                raw_path = argument.split("=", 1)[1].strip()
+            else:
+                continue
+            if raw_path and not raw_path.startswith("--"):
+                paths.append(Path(raw_path).expanduser().resolve())
+        return paths
+
+    admission_paths = _paths_after("--admission-out")
+    bound_request_paths = _paths_after("--bound-request-out")
+    adapter_output_paths = _paths_after("--adapter-output")
+    admission_path_configured = bool(admission_paths)
+    bound_request_path_configured = bool(bound_request_paths)
+    adapter_output_path_configured = bool(adapter_output_paths)
+    all_boundary_paths_configured = all(
+        (
+            admission_path_configured,
+            bound_request_path_configured,
+            adapter_output_path_configured,
+        )
+    )
+    admission_present = any(path.is_file() for path in admission_paths)
+    bound_request_present = any(path.is_file() for path in bound_request_paths)
+    adapter_output_present = any(path.is_file() for path in adapter_output_paths)
+    result_descriptor = _mapping(terminal_evidence.get("result"))
+    terminal_result_present = result_descriptor.get("exists") is True
+    boundary_artifacts_present = any(
+        (
+            admission_present,
+            bound_request_present,
+            adapter_output_present,
+            terminal_result_present,
+        )
+    )
+    if not live_requested:
+        status = "not_live_requested"
+    elif not all_boundary_paths_configured:
+        status = "boundary_artifact_paths_unconfigured"
+    elif not allocator_invoked:
+        status = "allocator_not_invoked"
+    elif boundary_artifacts_present:
+        status = "allocator_boundary_artifacts_present"
+    else:
+        status = "absent_before_paid_admission"
+    return {
+        "schema_version": "task_evaluation_provider_mutation_evidence.v1",
+        "status": status,
+        "allocator_invoked": allocator_invoked,
+        "admission_artifact_path_configured": admission_path_configured,
+        "bound_request_artifact_path_configured": bound_request_path_configured,
+        "adapter_output_artifact_path_configured": adapter_output_path_configured,
+        "all_boundary_artifact_paths_configured": all_boundary_paths_configured,
+        "admission_artifact_present": admission_present,
+        "bound_request_artifact_present": bound_request_present,
+        "adapter_output_artifact_present": adapter_output_present,
+        "terminal_result_artifact_present": terminal_result_present,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _native_policy_terminal_visual_evidence(
+    profile: Mapping[str, Any],
+    *,
+    live_requested: bool,
+    allocator_invoked: bool,
+    provider_mutation_evidence: Mapping[str, Any],
+    terminal_evidence: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Seal a typed media gap only where pre-observation is proven.
+
+    If the allocator returned a policy result, its exact visual-evidence object
+    remains authoritative.  When no result or paid-boundary artifact exists,
+    the canonical ordering proves the run stopped before a provider—and thus
+    before a first observation.  Once boundary evidence exists, this layer does
+    not guess whether an observation occurred.
+    """
+
+    if not live_requested or not _mapping(profile.get("native_policy_binding")):
+        return None
+    retained = _mapping(terminal_evidence.get("visual_evidence"))
+    if retained:
+        return retained
+    result_descriptor = _mapping(terminal_evidence.get("result"))
+    if (
+        result_descriptor.get("exists") is not True
+        and provider_mutation_evidence.get("status")
+        in {"allocator_not_invoked", "absent_before_paid_admission"}
+    ):
+        reason = (
+            "allocator_terminated_before_paid_admission"
+            if allocator_invoked
+            else "allocator_not_invoked_before_paid_admission"
+        )
+        return {
+            "status": "unavailable_before_first_observation",
+            "media_gap": {
+                "type": "before_first_observation",
+                "reason": reason,
+            },
+        }
+    return None
 
 
 def dispatch_launch_request(
@@ -1538,6 +1668,28 @@ def dispatch_launch_request(
             "blockers": ["launch_profile_missing"],
         }
     )
+    allocator_invoked = allocator_exit_code is not None
+    provider_mutation_evidence = _allocator_boundary_artifact_evidence(
+        allocator_argv,
+        allocator_invoked=allocator_invoked,
+        live_requested=live_requested,
+        terminal_evidence=terminal,
+    )
+    provider_mutation_attempted = bool(
+        live_requested
+        and allocator_invoked
+        and provider_mutation_evidence.get("status")
+        != "absent_before_paid_admission"
+    )
+    visual_evidence = _native_policy_terminal_visual_evidence(
+        profile,
+        live_requested=live_requested,
+        allocator_invoked=allocator_invoked,
+        provider_mutation_evidence=provider_mutation_evidence,
+        terminal_evidence=terminal,
+    )
+    if visual_evidence is not None:
+        terminal["visual_evidence"] = visual_evidence
     blockers.extend(terminal.get("blockers") or [])
     if blockers:
         status = "blocked"
@@ -1555,9 +1707,11 @@ def dispatch_launch_request(
         "binding_digest": bound["binding_digest"],
         "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
         "allocator_exit_code": allocator_exit_code,
+        "allocator_invoked": allocator_invoked,
         "execute_requested": live_requested,
         "execute_launch_id": execution_scope_launch_id if live_requested else None,
-        "provider_mutation_attempted": bool(live_requested and allocator_exit_code is not None),
+        "provider_mutation_attempted": provider_mutation_attempted,
+        "provider_mutation_evidence": provider_mutation_evidence,
         "prelaunch_skill_execution": prelaunch_skill_execution,
         "immutable_input_staging": {
             key: immutable_input_staging.get(key)
@@ -1575,6 +1729,8 @@ def dispatch_launch_request(
         "agent_operator_used": False,
         "claim_ceiling": request.get("claim_ceiling"),
     }
+    if visual_evidence is not None:
+        receipt["visual_evidence"] = visual_evidence
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write_immutable(run_root / "launch_receipt.json", receipt)
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp

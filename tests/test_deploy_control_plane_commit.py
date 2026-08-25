@@ -353,7 +353,7 @@ def test_only_service_and_path_unit_suffixes_may_be_installed(
         )
 
 
-def test_path_unit_activation_enables_restarts_and_proves_waiting(monkeypatch) -> None:
+def test_path_unit_state_restore_preserves_an_active_enabled_watcher(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 
     def completed(argv, **kwargs):
@@ -367,11 +367,18 @@ def test_path_unit_activation_enables_restarts_and_proves_waiting(monkeypatch) -
 
     monkeypatch.setattr(deploy.subprocess, "run", completed)
 
-    activated = deploy._activate_installed_path_units(
+    restored = deploy._restore_installed_path_units(
         [
             {"unit": "blueprint-task-evaluation-launch-dispatcher.service"},
             {"unit": "blueprint-task-evaluation-launch-dispatcher.path"},
-        ]
+        ],
+        before={
+            "blueprint-task-evaluation-launch-dispatcher.path": {
+                "enabled": "enabled",
+                "state": "active",
+            }
+        },
+        arm_path_units=False,
     )
 
     path_unit = "blueprint-task-evaluation-launch-dispatcher.path"
@@ -381,12 +388,18 @@ def test_path_unit_activation_enables_restarts_and_proves_waiting(monkeypatch) -
         ("systemctl", "is-enabled", path_unit),
         ("systemctl", "is-active", path_unit),
     ], "the oneshot service must never be started by the deploy itself"
-    assert activated == [
-        {"unit": path_unit, "enabled": "enabled", "state": "active"}
+    assert restored == [
+        {
+            "unit": path_unit,
+            "before": {"enabled": "enabled", "state": "active"},
+            "requested_intent": "preserve",
+            "after": {"enabled": "enabled", "state": "active"},
+            "operator_freeze_preserved": False,
+        }
     ]
 
 
-def test_path_unit_activation_failure_names_the_unit_and_verb(monkeypatch) -> None:
+def test_path_unit_state_restore_failure_names_the_unit_and_verb(monkeypatch) -> None:
     def completed(argv, **kwargs):
         code = 1 if argv[:2] == ["systemctl", "restart"] else 0
         return subprocess.CompletedProcess(argv, code, stdout="", stderr="")
@@ -395,17 +408,22 @@ def test_path_unit_activation_failure_names_the_unit_and_verb(monkeypatch) -> No
 
     with pytest.raises(
         deploy.ControlPlaneDeployError,
-        match=(
-            "deploy_path_unit_activation_failed:"
-            "blueprint-task-evaluation-launch-dispatcher.path:restart"
-        ),
+        match="deploy_path_unit_state_restore_failed:"
+        "blueprint-task-evaluation-launch-dispatcher.path:restart",
     ):
-        deploy._activate_installed_path_units(
-            [{"unit": "blueprint-task-evaluation-launch-dispatcher.path"}]
+        deploy._restore_installed_path_units(
+            [{"unit": "blueprint-task-evaluation-launch-dispatcher.path"}],
+            before={
+                "blueprint-task-evaluation-launch-dispatcher.path": {
+                    "enabled": "enabled",
+                    "state": "active",
+                }
+            },
+            arm_path_units=False,
         )
 
 
-def test_a_watcher_that_is_not_waiting_after_restart_blocks_the_deploy(
+def test_a_watcher_that_is_not_waiting_after_requested_arm_blocks_the_deploy(
     monkeypatch,
 ) -> None:
     def completed(argv, **kwargs):
@@ -420,14 +438,94 @@ def test_a_watcher_that_is_not_waiting_after_restart_blocks_the_deploy(
 
     with pytest.raises(
         deploy.ControlPlaneDeployError,
-        match=(
-            "deploy_path_unit_not_active:"
-            "blueprint-task-evaluation-launch-dispatcher.path:failed"
-        ),
+        match="deploy_path_unit_active_state_mismatch:"
+        "blueprint-task-evaluation-launch-dispatcher.path:failed:active",
     ):
-        deploy._activate_installed_path_units(
-            [{"unit": "blueprint-task-evaluation-launch-dispatcher.path"}]
+        deploy._restore_installed_path_units(
+            [{"unit": "blueprint-task-evaluation-launch-dispatcher.path"}],
+            before={},
+            arm_path_units=True,
         )
+
+
+def test_path_unit_state_restore_preserves_an_enabled_operator_freeze(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = "enabled\n"
+        if argv[:2] == ["systemctl", "is-active"]:
+            stdout = "inactive\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    unit = "blueprint-task-evaluation-launch-dispatcher.path"
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}],
+        before={unit: {"enabled": "enabled", "state": "inactive"}},
+        arm_path_units=False,
+    )
+
+    assert calls == [
+        ("systemctl", "enable", unit),
+        ("systemctl", "stop", unit),
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+    ]
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "inactive"}
+    assert restored[0]["operator_freeze_preserved"] is True
+
+
+def test_fresh_path_unit_stays_disabled_until_explicit_arm(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = "disabled\n"
+        if argv[:2] == ["systemctl", "is-active"]:
+            stdout = "inactive\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    unit = "blueprint-task-evaluation-launch-dispatcher.path"
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={}, arm_path_units=False
+    )
+
+    assert calls[:2] == [
+        ("systemctl", "disable", unit),
+        ("systemctl", "stop", unit),
+    ]
+    assert restored[0]["before"] == {"enabled": "disabled", "state": "inactive"}
+    assert restored[0]["operator_freeze_preserved"] is True
+
+
+def test_active_watcher_is_quiesced_before_release_surfaces_move(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        stdout = "inactive\n" if argv[1] == "is-active" else "enabled\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    unit = "blueprint-task-evaluation-launch-dispatcher.path"
+    result = deploy._quiesce_active_path_units(
+        {unit: {"enabled": "enabled", "state": "active"}}
+    )
+
+    assert calls == [
+        ("systemctl", "stop", unit),
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+    ]
+    assert result == [{"unit": unit, "state": "inactive"}]
 
 
 def test_the_deploy_holds_the_lock_for_its_whole_duration(tmp_path: Path) -> None:
@@ -684,11 +782,40 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
     monkeypatch.setattr(
         deploy,
-        "_activate_installed_path_units",
-        lambda installed: (
+        "_installed_path_unit_states",
+        lambda installed: {
+            "blueprint-task-evaluation-launch-dispatcher.path": {
+                "enabled": "enabled",
+                "state": "active",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_quiesce_active_path_units",
+        lambda before: (
+            assert_lock_held("path_quiesce")
+            or [
+                {
+                    "unit": "blueprint-task-evaluation-launch-dispatcher.path",
+                    "state": "inactive",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_restore_installed_path_units",
+        lambda installed, **kwargs: (
             assert_lock_held("path_activation")
             or [
-                {"unit": entry["unit"], "enabled": "enabled", "state": "active"}
+                {
+                    "unit": entry["unit"],
+                    "before": {"enabled": "enabled", "state": "active"},
+                    "requested_intent": "preserve",
+                    "after": {"enabled": "enabled", "state": "active"},
+                    "operator_freeze_preserved": False,
+                }
                 for entry in installed
                 if str(entry["unit"]).endswith(".path")
             ]
@@ -706,7 +833,12 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         intake_runtime_drop_in=tmp_path / "drop-in",
     )
 
-    assert observed == ["restart", "runtime_probe", "path_activation"]
+    assert observed == [
+        "path_quiesce",
+        "restart",
+        "runtime_probe",
+        "path_activation",
+    ]
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
     assert receipt["installed_systemd_units"][0]["unit"] == (

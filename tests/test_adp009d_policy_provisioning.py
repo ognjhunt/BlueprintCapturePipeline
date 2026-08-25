@@ -3,14 +3,25 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+from blueprint_pipeline.adp009d_groot_wire_wheels import (
+    GROOT_WIRE_WHEEL_ARTIFACTS,
+    RECEIPT_FILENAME as GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+    expected_artifacts_digest as groot_wire_expected_artifacts_digest,
+)
 from blueprint_pipeline.adp009d_policy_provisioning import (
+    ACTIVE_CANDIDATE_DEPENDENCY_LOCKS,
     BLOCKER_CREDENTIALS,
+    BLOCKER_GROOT_WIRE_WHEEL_LOCK,
+    BLOCKER_DEPENDENCY_LOCK,
     BLOCKER_JAX_PREALLOCATION,
     BLOCKER_NOT_LOOPBACK,
     BLOCKER_SHARED_INTERPRETER,
     ISAAC_INTERPRETER,
     ISAAC_PYTHON_EXECUTABLE,
     POLICY_SOURCE_ROOT,
+    UV_ARCHIVE_SHA256,
+    UV_ARCHIVE_URL,
+    UV_VERSION,
     PolicyProvisioningError,
     build_provisioning_script,
     describe_provisioning,
@@ -114,11 +125,15 @@ def test_generated_groot_provisioning_script_is_valid_bash(tmp_path) -> None:
 def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> None:
     script = build_provisioning_script("groot_n17_droid")
 
-    assert '"pyzmq==27.0.1"' in script
-    assert '"msgpack==1.1.0"' in script
-    assert '"msgpack-numpy==0.4.8"' in script
-    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
-    assert script.index('"msgpack-numpy==0.4.8"') < script.index(
+    assert '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"' in script
+    assert '--python "/isaac-sim/kit/python/bin/python3"' in script
+    assert '--runtime-dir "$RUNTIME_DIR"' in script
+    assert f'--output "$OUT_DIR/{GROOT_WIRE_WHEEL_RECEIPT_FILENAME}"' in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" "$RUNTIME_DIR/groot_n17_wire_client.py"'
+        in script
+    )
+    assert script.index('"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"') < script.index(
         '"$RUNTIME_DIR/groot_n17_wire_client.py"'
     )
     assert script.index('"$RUNTIME_DIR/groot_n17_wire_client.py"') < script.index(
@@ -132,19 +147,51 @@ def test_groot_wire_pins_go_to_a_staged_target_never_into_the_kit_environment() 
     Pins installed *into* the kit environment therefore never win: the live
     20260825T134736Z GR00T run observed msgpack 1.2.1/pyzmq 27.1.0 over its
     freshly installed pins and the wire self-check correctly refused. The pins
-    must land in the staged sibling directory the wire client prepends, with
-    --no-deps so numpy never leaks into Isaac's interpreter as a side effect
-    (the in-environment install dragged in numpy 2.5.2).
+    must land in the staged sibling directory the wire client prepends. The
+    self-check must run through Isaac's wrapper-provided numpy; --no-deps and
+    the exact wheel set forbid staging a second numpy ABI.
     """
 
     script = build_provisioning_script("groot_n17_droid")
-    line = next(
-        item for item in script.splitlines() if '"pyzmq==27.0.1"' in item
+    assert "adp009d_groot_wire_wheels.py" in script
+    assert " pip install " not in script[
+        script.index("adp009d_groot_wire_wheels.py")
+        : script.index("groot_n17_wire_client.py")
+    ]
+    distributions = {
+        str(artifact["distribution"]) for artifact in GROOT_WIRE_WHEEL_ARTIFACTS
+    }
+    assert distributions == {"pyzmq", "msgpack", "msgpack-numpy"}
+    assert "numpy" not in distributions
+
+
+def test_groot_wire_wheel_lock_is_bound_in_the_provisioning_receipt() -> None:
+    receipt = describe_provisioning("groot_n17_droid")
+    lock = receipt["groot_wire_wheel_lock"]
+
+    assert lock["artifacts_digest"] == groot_wire_expected_artifacts_digest()
+    assert lock["receipt_filename"] == GROOT_WIRE_WHEEL_RECEIPT_FILENAME
+    assert lock["installer_network_access"] is False
+    assert lock["installer_index_access"] is False
+    assert lock["dependency_resolution_allowed"] is False
+    assert len(lock["artifacts"]) == 3
+    assert all(
+        str(row["url"]).startswith("https://files.pythonhosted.org/")
+        for row in lock["artifacts"]
     )
-    assert '--target "$RUNTIME_DIR/groot_wire_deps"' in line
-    assert "--no-deps" in line
-    remaining = line.replace('"msgpack-numpy==0.4.8"', "")
-    assert "numpy==" not in remaining
+    assert all(
+        str(row["sha256"]).startswith("sha256:") for row in lock["artifacts"]
+    )
+
+    changed = dict(receipt)
+    changed["groot_wire_wheel_lock"] = {
+        **lock,
+        "artifacts_digest": "sha256:" + "0" * 64,
+    }
+    assert BLOCKER_GROOT_WIRE_WHEEL_LOCK in validate_provisioning(changed)
+
+    pi05 = describe_provisioning("pi05_droid")
+    assert pi05["groot_wire_wheel_lock"] is None
 
 
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
@@ -268,13 +315,15 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     # on exactly one kind of install line -- the thin client the episode needs
     # to reach the server -- and never on the policy itself, which is what
     # would drag JAX or a mismatched torch into Isaac's prefix.
-    install_lines = [ln for ln in script.splitlines() if "pip install -e" in ln]
+    install_lines = [
+        line
+        for line in script.splitlines()
+        if f'VIRTUAL_ENV="{policy_venv_root("pi05_droid")}"' in line
+    ]
     assert install_lines
     for line in install_lines:
-        if ISAAC_INTERPRETER in line:
-            assert "packages/openpi-client" in line or "--no-deps" in line, line
-        else:
-            assert "VIRTUAL_ENV=" in line, line
+        assert '"$UV" sync' in line
+        assert f'--project "{POLICY_SOURCE_ROOT}/pi05_droid"' in line
     client_install_lines = [
         line
         for line in script.splitlines()
@@ -302,7 +351,7 @@ def test_the_install_precedes_the_checkpoint_fetch() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert script.index("pip install -e") < script.index(
+    assert script.index("uv.lock") < script.index(
         "adp009d_checkpoint_fetch_worker.py"
     )
 
@@ -325,10 +374,29 @@ def test_uv_creates_the_environment_because_the_image_lacks_ensurepip() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert 'curl -LsSf https://astral.sh/uv/install.sh' in script
+    assert f"curl -LsSf {UV_ARCHIVE_URL}" in script
+    assert UV_ARCHIVE_SHA256 in script
+    assert "sha256sum -c -" in script
+    assert f'uv {UV_VERSION}"' in script
+    assert "https://astral.sh/uv/install.sh" not in script
+    assert "/releases/latest/" not in script
     assert '"$UV" venv --python' in script
     # pip is not used to create the environment at all.
     assert "-m venv" not in script
+
+
+def test_uv_release_identity_is_bound_in_the_provisioning_receipt() -> None:
+    receipt = describe_provisioning("pi05_droid")
+
+    assert receipt["uv_version"] == UV_VERSION
+    assert receipt["uv_archive_url"] == UV_ARCHIVE_URL
+    assert receipt["uv_archive_sha256"] == UV_ARCHIVE_SHA256
+    for field in ("uv_version", "uv_archive_url", "uv_archive_sha256"):
+        changed = dict(receipt)
+        changed[field] = "moved"
+        assert "policy_provisioning_uv_identity_mismatch" in validate_provisioning(
+            changed
+        )
 
 
 def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
@@ -339,7 +407,7 @@ def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
     assert 'test -x "/opt/adp009d-policy-venv/pi05_droid/bin/python"' in script
     assert "'isaac-sim' not in sys.prefix" in script
     # And the proof precedes any install.
-    assert script.index("not in sys.prefix") < script.index("pip install -e")
+    assert script.index("not in sys.prefix") < script.index('"$UV" sync')
 
 
 def test_build_isolation_is_left_enabled() -> None:
@@ -353,7 +421,10 @@ def test_build_isolation_is_left_enabled() -> None:
     for candidate_id in EXPECTED_CANDIDATES:
         script = build_provisioning_script(candidate_id)
         assert "--no-build-isolation" not in script
-        assert '"$UV" pip install -e' in script
+        if candidate_id in ACTIVE_CANDIDATE_DEPENDENCY_LOCKS:
+            assert '"$UV" sync' in script
+        else:
+            assert '"$UV" pip install -e' in script
 
 
 def test_native_build_dependencies_are_installed_before_the_policy() -> None:
@@ -378,7 +449,7 @@ def test_native_build_dependencies_are_installed_before_the_policy() -> None:
     ):
         assert package in script
     # Headers must be present before uv is asked to build anything.
-    assert script.index("linux-libc-dev") < script.index("pip install -e")
+    assert script.index("linux-libc-dev") < script.index('"$UV" sync')
     # And never fatal on their own: the apt step is best-effort.
     # Best-effort: a missing apt must not fail provisioning on its own.
     assert "|| true" in script[script.index("apt-get install") :][:400]
@@ -461,17 +532,67 @@ def test_groots_wire_client_reaches_isaac_without_installing_groot() -> None:
     )
 
     script = build_provisioning_script("groot_n17_droid")
-    assert f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}"' in script
-    assert f'--no-deps -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"' not in script
-    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
-    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
-    assert "pyzmq" in script and "msgpack" in script
-    # The separate server venv still installs the full, frozen GR00T checkout.
     assert (
-        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" '
-        f'pip install -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"'
+        f'"{ISAAC_INTERPRETER}" '
+        '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"'
         in script
     )
+    assert f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in script
+    assert f'--no-deps -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"' not in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" "$RUNTIME_DIR/groot_n17_wire_client.py"'
+        in script
+    )
+    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
+    assert GROOT_WIRE_WHEEL_RECEIPT_FILENAME in script
+    # The separate server venv still installs the full, frozen GR00T checkout.
+    assert (
+        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" sync '
+        f'--project "{POLICY_SOURCE_ROOT}/groot_n17_droid" '
+        "--active --no-dev --frozen"
+        in script
+    )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_active_candidate_install_is_bound_to_its_upstream_frozen_lock(
+    candidate_id: str,
+) -> None:
+    script = build_provisioning_script(candidate_id)
+    lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS[candidate_id]
+    lock_sha256 = str(lock["sha256"]).removeprefix("sha256:")
+    source_lock = f'{POLICY_SOURCE_ROOT}/{candidate_id}/{lock["relative_path"]}'
+
+    assert lock_sha256 in script
+    assert f'"{source_lock}" | sha256sum --check --strict -' in script
+    assert script.index("rev-parse HEAD") < script.index(lock_sha256)
+    assert script.index(lock_sha256) < script.index('"$UV" sync')
+    assert "--active --no-dev --frozen" in script
+    # The server environment must not resolve open dependency ranges again.
+    policy_install_lines = [
+        line
+        for line in script.splitlines()
+        if f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}"' in line
+    ]
+    assert len(policy_install_lines) == 1
+    assert " pip install " not in policy_install_lines[0]
+
+    receipt = describe_provisioning(candidate_id)
+    assert receipt["policy_dependency_lock"] == {
+        **lock,
+        "install_mode": "uv_sync_frozen_no_dev",
+        "runtime_resolution_allowed": False,
+    }
+
+
+def test_active_candidate_dependency_lock_drift_is_refused() -> None:
+    receipt = dict(describe_provisioning("pi05_droid"))
+    receipt["policy_dependency_lock"] = {
+        **dict(receipt["policy_dependency_lock"]),
+        "sha256": "sha256:" + "0" * 64,
+    }
+
+    assert BLOCKER_DEPENDENCY_LOCK in validate_provisioning(receipt)
 
 
 def test_the_client_install_follows_the_verified_checkout() -> None:
@@ -479,3 +600,201 @@ def test_the_client_install_follows_the_verified_checkout() -> None:
 
     script = build_provisioning_script("pi05_droid")
     assert script.index("rev-parse HEAD") < script.index("packages/openpi-client")
+
+
+# --- company-supplied policy container seam ----------------------------------
+
+_COMPANY_IMAGE = "registry.acme.example/widget-grasp@sha256:" + "b" * 64
+
+
+def _company_contract(**overrides) -> dict:
+    contract = {
+        "schema_version": "company_policy_container_contract.v1",
+        "policy_id": "acme_widget_grasp_v3",
+        "company_id": "acme_robotics",
+        "display_name": "ACME Widget Grasp v3",
+        "checkpoint_identity": {
+            "repository": "https://models.acme.example/widget-grasp",
+            "revision": "2026.08.1",
+        },
+        "claim_ceiling": "development_only",
+        "rights": {
+            "license": "ACME Evaluation License 2026-08",
+            "rights_provenance": "acme_msa_2026_07_appendix_b",
+            "provider_use_status": "permitted_on_rented_gpu_for_this_evaluation",
+            "redistribution_status": "no_redistribution_weights_stay_in_container",
+            "rights_ready": True,
+        },
+        "container": {
+            "image": _COMPANY_IMAGE,
+            "serve_command": ["python", "-m", "acme_policy.serve", "--port", "8600"],
+            "port": 8600,
+            "handshake_kind": "http_json_v1",
+            "credential_files": ["acme_license_token"],
+            "gpu_required": True,
+        },
+        "observation_schema": {
+            "cameras": [{"name": "wrist_image_left", "width": 320, "height": 180}],
+            "state_keys": ["joint_position"],
+        },
+        "action_schema": {
+            "action_space_id": "acme_joint_velocity_v1",
+            "chunk_rows": 15,
+            "channels": [
+                {
+                    "name": "gripper",
+                    "kind": "threshold_scalar",
+                    "command_interval": [0.0, 1.0],
+                    "raw_accepted_bounds": [-0.25, 1.25],
+                    "executed_semantics": (
+                        "clip_to_command_interval_then_threshold_at_0.5"
+                    ),
+                }
+            ],
+        },
+    }
+    contract["container"].update(overrides)
+    return contract
+
+
+def test_company_commands_pull_by_digest_and_run_on_the_host_loopback() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(company_policy_container_commands(_company_contract()))
+
+    # The digest-pinned image appears verbatim: the pull and the run can only
+    # ever resolve the exact bytes the contract sealed.
+    assert f'docker pull "{_COMPANY_IMAGE}"' in script
+    assert f'"{_COMPANY_IMAGE}"' in script.split("docker run", 1)[1]
+    # Host networking is the loopback doctrine: the container's 127.0.0.1 IS
+    # the worker's 127.0.0.1, and nothing is published off-host.
+    assert "--network host" in script
+    assert '--name "company-policy-acme_widget_grasp_v3"' in script
+    assert "--gpus all" in script
+    # The serve command is included, shell-quoted argv.
+    assert "python -m acme_policy.serve --port 8600" in script
+    # Pull progress is phase-marked at both ends for the stall watchdog.
+    assert "company_policy_acme_widget_grasp_v3_pull:started" in script
+    assert "company_policy_acme_widget_grasp_v3_pull:completed" in script
+
+
+def test_company_credential_mounts_are_read_only_from_the_canonical_dir() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        COMPANY_POLICY_SECRETS_HOST_DIR,
+        COMPANY_POLICY_SECRETS_MOUNT_DIR,
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(company_policy_container_commands(_company_contract()))
+    assert (
+        f'-v "{COMPANY_POLICY_SECRETS_HOST_DIR}/acme_license_token:'
+        f'{COMPANY_POLICY_SECRETS_MOUNT_DIR}/acme_license_token:ro"'
+    ) in script
+    assert COMPANY_POLICY_SECRETS_HOST_DIR == "/etc/blueprint/provider-secrets"
+
+    # No declared credentials, no mounts.
+    bare = "\n".join(
+        company_policy_container_commands(_company_contract(credential_files=[]))
+    )
+    assert "-v " not in bare
+
+
+def test_company_readiness_wait_is_bounded_and_fails_closed() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        COMPANY_POLICY_READINESS_ATTEMPTS,
+        COMPANY_POLICY_READINESS_SLEEP_SECONDS,
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(company_policy_container_commands(_company_contract()))
+    assert f"seq 1 {COMPANY_POLICY_READINESS_ATTEMPTS}" in script
+    assert f"sleep {COMPANY_POLICY_READINESS_SLEEP_SECONDS}" in script
+    assert "company_policy_container_readiness_timeout" in script
+    assert "exit 86" in script
+    # HTTP kinds probe with curl on the loopback port; deliberately no -f so
+    # a 404 from a live websocket server still counts as accepting.
+    assert 'curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:8600/"' in script
+    assert "curl -fsS" not in script
+
+
+def test_company_zmq_readiness_probes_the_socket_with_a_placeholder_note() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(
+        company_policy_container_commands(
+            _company_contract(handshake_kind="zmq_msgpack", port=5555)
+        )
+    )
+    assert "socket.create_connection(('127.0.0.1', 5555)" in script
+    assert "zmq ping" in script  # the placeholder comment for the real ping
+    assert "curl" not in script.split("docker run", 1)[1]
+    assert "exit 86" in script
+
+
+def test_company_gpu_flag_is_honored() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    with_gpu = "\n".join(company_policy_container_commands(_company_contract()))
+    assert "--gpus all" in with_gpu
+    without = "\n".join(
+        company_policy_container_commands(_company_contract(gpu_required=False))
+    )
+    assert "--gpus" not in without
+
+
+def test_company_commands_refuse_unvalidated_contracts() -> None:
+    """The seam re-validates: an unpinned image never reaches a docker line."""
+
+    from blueprint_pipeline.company_policy_container_contract import (
+        CompanyPolicyContractError,
+    )
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    with pytest.raises(CompanyPolicyContractError):
+        company_policy_container_commands(
+            _company_contract(image="registry.acme.example/widget-grasp:latest")
+        )
+
+
+def test_company_generated_commands_are_valid_bash(tmp_path) -> None:
+    import subprocess
+
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    for handshake_kind in ("http_json_v1", "zmq_msgpack"):
+        script = tmp_path / f"company_{handshake_kind}.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            + "\n".join(
+                company_policy_container_commands(
+                    _company_contract(handshake_kind=handshake_kind)
+                )
+            )
+            + "\n"
+        )
+        completed = subprocess.run(
+            ["bash", "-n", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+
+def test_company_seam_is_not_wired_into_the_frozen_candidate_flow() -> None:
+    """The ADP candidate provisioning scripts stay docker-free and untouched."""
+
+    for candidate_id in EXPECTED_CANDIDATES:
+        script = build_provisioning_script(candidate_id)
+        assert "docker" not in script
+        assert "company-policy" not in script

@@ -55,6 +55,7 @@ POLICY_EXECUTION_AUTHORITY_BY_MODE = {
 POLICY_RUNTIME_ROOT_MODULE_NAMES = (
     "adp009d_checkpoint_fetch_worker.py",
     "adp009d_gated_backbone.py",
+    "adp009d_groot_wire_wheels.py",
     "adp009d_groot_worker_identity.py",
     "adp009d_policy_server_worker.py",
     "adp009d_provisioning_preflight.py",
@@ -264,11 +265,23 @@ def _entrypoint(
     expected_result_schema: str,
     runtime_source_packet_required: bool,
     policy_provisioning_script_name: str | None,
+    policy_candidate_id: str | None = None,
 ) -> str:
     quoted = json.dumps(str(expected_output_filename))
     result_schema = json.dumps(str(expected_result_schema))
     source_required = "true" if runtime_source_packet_required else "false"
     provisioning_script = json.dumps(str(policy_provisioning_script_name or ""))
+    resolved_candidate_id = str(policy_candidate_id or "")
+    if not resolved_candidate_id and policy_provisioning_script_name:
+        prefix = "adp009d_policy_provisioning."
+        suffix = ".sh"
+        if policy_provisioning_script_name.startswith(
+            prefix
+        ) and policy_provisioning_script_name.endswith(suffix):
+            resolved_candidate_id = policy_provisioning_script_name[
+                len(prefix) : -len(suffix)
+            ]
+    candidate_id = json.dumps(resolved_candidate_id)
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -322,6 +335,24 @@ PY
   exit $provision_rc
 fi
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:completed"
+POLICY_CANDIDATE_ID={candidate_id}
+if [ -n "$POLICY_CANDIDATE_ID" ]; then
+  teardown_policy_server() {{
+    original_rc=$?
+    trap - EXIT INT TERM HUP
+    /isaac-sim/python.sh "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
+      --terminate-ready-server \
+      --receipt "$OUT_DIR/adp009d_policy_server_receipt.$POLICY_CANDIDATE_ID.json" \
+      --result "$OUT_DIR/{expected_output_filename}" \
+      --result-schema {result_schema}
+    teardown_rc=$?
+    if [ $original_rc -eq 0 ] && [ $teardown_rc -ne 0 ]; then
+      original_rc=$teardown_rc
+    fi
+    exit $original_rc
+  }}
+  trap teardown_policy_server EXIT INT TERM HUP
+fi
 POLICY_PROVISIONING_SCRIPT={provisioning_script}
 if [ -n "$POLICY_PROVISIONING_SCRIPT" ]; then
   echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:policy_provisioning:started"
@@ -641,6 +672,7 @@ def build_native_task_arena_bundle(
             expected_result_schema=RESULT_SCHEMA_BY_MODE[execution_mode],
             runtime_source_packet_required=runtime_source_receipt is not None,
             policy_provisioning_script_name=policy_provisioning_script_name,
+            policy_candidate_id=policy_candidate_id,
         ),
         encoding="utf-8",
     )
