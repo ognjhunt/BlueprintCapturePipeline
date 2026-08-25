@@ -65,7 +65,16 @@ def test_steps_run_in_order_and_exported_values_reach_later_steps(
         },
     )
 
-    receipt = prep.prepare_paid_lane_launch("fake", {"value": "v"}, runner=runner)
+    receipt = prep.prepare_paid_lane_launch(
+        "fake",
+        {
+            "value": "v",
+            "reference_bindings": {
+                "prior_webapp_lineage": {"receipt_digest": "sha256:" + "a" * 64}
+            },
+        },
+        runner=runner,
+    )
 
     assert [call[0] for call in calls] == ["cmd-first", "cmd-second"]
     assert calls[1][1] == "r2://bucket/key.json"
@@ -73,6 +82,9 @@ def test_steps_run_in_order_and_exported_values_reach_later_steps(
     assert [s["step_id"] for s in receipt["completed_steps"]] == ["first", "second"]
     assert receipt["completed_steps"][0]["exports"] == {
         "carried": "r2://bucket/key.json"
+    }
+    assert receipt["reference_bindings"] == {
+        "prior_webapp_lineage": {"receipt_digest": "sha256:" + "a" * 64}
     }
 
 
@@ -620,6 +632,176 @@ def test_provider_packet_rejects_source_not_admitted_for_upload() -> None:
         packet_receipt=packet_receipt,
         source_manifest=source_manifest,
     )
+
+
+def test_continuing_lane_requires_exact_webapp_synchronized_result(
+    tmp_path: Path,
+) -> None:
+    prior_result = tmp_path / "allocator-result.json"
+    prior_result.write_text('{"status":"completed"}', encoding="utf-8")
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "completed",
+        "launch_id": "launch-1",
+        "run_id": "run-1",
+        "request_digest": "sha256:" + "1" * 64,
+        "terminal_evidence": {
+            "result": {
+                "path": str(prior_result),
+                "exists": True,
+                "digest": prep._sha256_file(prior_result),
+            }
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = prep._canonical_artifact_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = tmp_path / "launch-receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    sync = {
+        "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+        "status": "succeeded",
+        **{field: receipt[field] for field in (
+            "launch_id",
+            "run_id",
+            "request_digest",
+            "receipt_digest",
+        )},
+        "response": {
+            field: receipt[field]
+            for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
+        },
+        "attempt_number": 1,
+        "attempted_at": "2026-08-25T17:00:00+00:00",
+        "provider_mutation_performed": False,
+        "sync_result_digest": "",
+    }
+    sync["sync_result_digest"] = prep._canonical_artifact_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    sync_path = tmp_path / "webapp-sync-succeeded.json"
+    sync_path.write_text(json.dumps(sync), encoding="utf-8")
+
+    lineage = prep._validate_prior_webapp_lineage(
+        prior_result_path=prior_result,
+        launch_receipt_path=receipt_path,
+        webapp_sync_path=sync_path,
+    )
+
+    assert lineage["launch_id"] == "launch-1"
+    assert lineage["terminal_result"]["sha256"] == prep._sha256_file(prior_result)
+    sync["response"]["receipt_digest"] = "sha256:" + "f" * 64
+    sync["sync_result_digest"] = prep._canonical_artifact_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    sync_path.write_text(json.dumps(sync), encoding="utf-8")
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_prior_webapp_lineage_invalid",
+    ):
+        prep._validate_prior_webapp_lineage(
+            prior_result_path=prior_result,
+            launch_receipt_path=receipt_path,
+            webapp_sync_path=sync_path,
+        )
+
+
+def test_scripted_positive_zero_action_must_be_prior_runtime_artifact(
+    tmp_path: Path,
+) -> None:
+    blueprint_commit = "a" * 40
+    runtime_source_digest = "sha256:" + "b" * 64
+    packet_receipt_digest = "sha256:" + "c" * 64
+    container_image = "registry.example/runtime@sha256:" + "d" * 64
+    authority = {
+        "schema_version": "native_task_arena_paid_attempt_authority.v1",
+        "execution_mode": "controls",
+        "blueprint_commit": blueprint_commit,
+        "runtime_source_packet_receipt_digest": runtime_source_digest,
+        "container_image": container_image,
+        "packet_receipt_digest": packet_receipt_digest,
+        "bundle_sha256": "sha256:" + "e" * 64,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = prep._canonical_artifact_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "prior-authority.json"
+    authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    attempt = tmp_path / "attempt_001"
+    zero = attempt / "immutable_execution" / "zero-action.json"
+    zero.parent.mkdir(parents=True)
+    zero.write_text('{"control_selection":"zero_action_negative"}', encoding="utf-8")
+    artifact = {
+        "schema_version": "task_evaluation_artifact_manifest.v1",
+        "status": "completed",
+        "files": [
+            {
+                "relative_path": zero.relative_to(attempt).as_posix(),
+                "roles": ["provider_runtime_evidence"],
+                "size_bytes": zero.stat().st_size,
+                "sha256": prep._sha256_file(zero),
+            }
+        ],
+        "manifest_digest": "",
+    }
+    artifact["manifest_digest"] = prep._canonical_artifact_digest(
+        artifact, digest_field="manifest_digest"
+    )
+    artifact_path = attempt / "artifact_manifest.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    prior = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "attempt_root": str(attempt),
+        "bundle_sha256": authority["bundle_sha256"],
+        "authorization_consumption": {
+            "authorization_digest": authority["authorization_digest"]
+        },
+        "native_control_result_path": str(zero),
+        "artifact_manifest_path": str(artifact_path),
+    }
+    prior_path = attempt / "allocator-result.json"
+    prior_path.write_text(json.dumps(prior), encoding="utf-8")
+
+    binding = prep._validate_zero_action_predecessor(
+        prior_authority_path=authority_path,
+        prior_result_path=prior_path,
+        zero_action_result_path=zero,
+        expected_blueprint_commit=blueprint_commit,
+        expected_runtime_source_packet_digest=runtime_source_digest,
+        expected_container_image=container_image,
+        expected_packet_receipt_digest=packet_receipt_digest,
+    )
+
+    assert binding["artifact_manifest_digest"] == artifact["manifest_digest"]
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_zero_action_predecessor_invalid",
+    ):
+        prep._validate_zero_action_predecessor(
+            prior_authority_path=authority_path,
+            prior_result_path=prior_path,
+            zero_action_result_path=zero,
+            expected_blueprint_commit="f" * 40,
+            expected_runtime_source_packet_digest=runtime_source_digest,
+            expected_container_image=container_image,
+            expected_packet_receipt_digest=packet_receipt_digest,
+        )
+    zero.write_text('{"control_selection":"fabricated"}', encoding="utf-8")
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_zero_action_predecessor_invalid",
+    ):
+        prep._validate_zero_action_predecessor(
+            prior_authority_path=authority_path,
+            prior_result_path=prior_path,
+            zero_action_result_path=zero,
+            expected_blueprint_commit=blueprint_commit,
+            expected_runtime_source_packet_digest=runtime_source_digest,
+            expected_container_image=container_image,
+            expected_packet_receipt_digest=packet_receipt_digest,
+        )
 
 
 def test_native_context_refuses_operational_reference_override(tmp_path: Path) -> None:

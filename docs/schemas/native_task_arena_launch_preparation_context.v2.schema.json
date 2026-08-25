@@ -160,6 +160,8 @@
         "initial_provider_zero": {"type": "string", "minLength": 1},
         "prior_authority": {"type": "string", "minLength": 1},
         "prior_result": {"type": "string", "minLength": 1},
+        "prior_launch_receipt": {"type": "string", "minLength": 1},
+        "prior_webapp_sync": {"type": "string", "minLength": 1},
         "prior_provider_zero": {"type": "string", "minLength": 1},
         "prior_spend_reconciliation": {"type": "string", "minLength": 1},
         "construction_result": {"type": "string", "minLength": 1},
@@ -188,6 +190,8 @@
             "required": [
               "prior_authority",
               "prior_result",
+              "prior_launch_receipt",
+              "prior_webapp_sync",
               "prior_provider_zero",
               "prior_spend_reconciliation",
               "construction_result"

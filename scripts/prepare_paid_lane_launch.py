@@ -933,6 +933,179 @@ def _validate_provider_packet_source_rights(
             )
 
 
+def _bound_file_record(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256_file(path),
+    }
+
+
+def _load_unlinked_json(path: Any, *, error: str) -> tuple[Path, dict[str, Any]]:
+    unresolved = Path(str(path or "")).expanduser()
+    if unresolved.is_symlink():
+        raise PaidLaneLaunchPreparationError(error)
+    source = unresolved.resolve()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PaidLaneLaunchPreparationError(error) from exc
+    if not source.is_file() or not isinstance(value, dict):
+        raise PaidLaneLaunchPreparationError(error)
+    return source, value
+
+
+def _validate_prior_webapp_lineage(
+    *, prior_result_path: Any, launch_receipt_path: Any, webapp_sync_path: Any
+) -> dict[str, Any]:
+    """Bind a continuing paid lane to the WebApp-synchronized predecessor."""
+
+    prior_path, _prior = _load_unlinked_json(
+        prior_result_path, error="native_task_arena_prior_webapp_lineage_invalid"
+    )
+    receipt_path, receipt = _load_unlinked_json(
+        launch_receipt_path,
+        error="native_task_arena_prior_webapp_lineage_invalid",
+    )
+    sync_path, sync = _load_unlinked_json(
+        webapp_sync_path, error="native_task_arena_prior_webapp_lineage_invalid"
+    )
+    terminal = receipt.get("terminal_evidence")
+    terminal_result = terminal.get("result") if isinstance(terminal, Mapping) else None
+    response = sync.get("response")
+    fields = ("launch_id", "run_id", "request_digest", "receipt_digest")
+    if (
+        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
+        or receipt.get("receipt_digest")
+        != _canonical_artifact_digest(receipt, digest_field="receipt_digest")
+        or not isinstance(terminal_result, Mapping)
+        or Path(str(terminal_result.get("path") or "")).expanduser().resolve()
+        != prior_path
+        or terminal_result.get("exists") is not True
+        or terminal_result.get("digest") != _sha256_file(prior_path)
+        or sync.get("schema_version")
+        != "task_evaluation_launch_webapp_sync_result.v1"
+        or sync.get("status") != "succeeded"
+        or sync.get("provider_mutation_performed") is not False
+        or sync.get("sync_result_digest")
+        != _canonical_artifact_digest(sync, digest_field="sync_result_digest")
+        or not isinstance(sync.get("attempt_number"), int)
+        or isinstance(sync.get("attempt_number"), bool)
+        or sync["attempt_number"] < 1
+        or not str(sync.get("attempted_at") or "").strip()
+        or not isinstance(response, Mapping)
+        or any(sync.get(field) != receipt.get(field) for field in fields)
+        or any(response.get(field) != receipt.get(field) for field in fields)
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_prior_webapp_lineage_invalid"
+        )
+    return {
+        "launch_id": receipt["launch_id"],
+        "run_id": receipt["run_id"],
+        "request_digest": receipt["request_digest"],
+        "launch_receipt": _bound_file_record(receipt_path),
+        "webapp_sync": _bound_file_record(sync_path),
+        "terminal_result": _bound_file_record(prior_path),
+        "sync_result_digest": sync["sync_result_digest"],
+    }
+
+
+def _validate_zero_action_predecessor(
+    *,
+    prior_authority_path: Any,
+    prior_result_path: Any,
+    zero_action_result_path: Any,
+    expected_blueprint_commit: str,
+    expected_runtime_source_packet_digest: str,
+    expected_container_image: str,
+    expected_packet_receipt_digest: str,
+) -> dict[str, Any]:
+    """Prove the scored zero-action bytes came from the paid predecessor."""
+
+    authority_path, authority = _load_unlinked_json(
+        prior_authority_path,
+        error="native_task_arena_zero_action_predecessor_invalid",
+    )
+    prior_path, prior = _load_unlinked_json(
+        prior_result_path,
+        error="native_task_arena_zero_action_predecessor_invalid",
+    )
+    zero_path, _zero = _load_unlinked_json(
+        zero_action_result_path,
+        error="native_task_arena_zero_action_predecessor_invalid",
+    )
+    artifact_path, artifact = _load_unlinked_json(
+        prior.get("artifact_manifest_path"),
+        error="native_task_arena_zero_action_predecessor_invalid",
+    )
+    attempt_root = Path(str(prior.get("attempt_root") or "")).expanduser().resolve()
+    try:
+        zero_relative = zero_path.relative_to(attempt_root).as_posix()
+        artifact_path.relative_to(attempt_root)
+    except ValueError as exc:
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_zero_action_predecessor_invalid"
+        ) from exc
+    rows = artifact.get("files")
+    matched = [
+        row
+        for row in rows or []
+        if isinstance(row, Mapping)
+        and row.get("relative_path") == zero_relative
+        and "provider_runtime_evidence" in (row.get("roles") or [])
+        and row.get("size_bytes") == zero_path.stat().st_size
+        and row.get("sha256") == _sha256_file(zero_path)
+    ]
+    if (
+        authority.get("schema_version")
+        != "native_task_arena_paid_attempt_authority.v1"
+        or authority.get("authorization_digest")
+        != _canonical_artifact_digest(
+            authority, digest_field="authorization_digest"
+        )
+        or authority.get("execution_mode") != "controls"
+        or authority.get("blueprint_commit") != expected_blueprint_commit
+        or authority.get("runtime_source_packet_receipt_digest")
+        != expected_runtime_source_packet_digest
+        or authority.get("container_image") != expected_container_image
+        or authority.get("packet_receipt_digest")
+        != expected_packet_receipt_digest
+        or (prior.get("authorization_consumption") or {}).get(
+            "authorization_digest"
+        )
+        != authority.get("authorization_digest")
+        or prior.get("bundle_sha256") != authority.get("bundle_sha256")
+        or Path(str(prior.get("native_control_result_path") or ""))
+        .expanduser()
+        .resolve()
+        != zero_path
+        or artifact.get("schema_version") != "task_evaluation_artifact_manifest.v1"
+        or artifact.get("status") != "completed"
+        or artifact.get("manifest_digest")
+        != _canonical_artifact_digest(artifact, digest_field="manifest_digest")
+        or len(matched) != 1
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_zero_action_predecessor_invalid"
+        )
+    return {
+        "prior_authority": _bound_file_record(authority_path),
+        "runtime_identity": {
+            "blueprint_commit": expected_blueprint_commit,
+            "runtime_source_packet_receipt_digest": (
+                expected_runtime_source_packet_digest
+            ),
+            "container_image": expected_container_image,
+            "packet_receipt_digest": expected_packet_receipt_digest,
+        },
+        "allocator_result": _bound_file_record(prior_path),
+        "artifact_manifest": _bound_file_record(artifact_path),
+        "zero_action_result": _bound_file_record(zero_path),
+        "artifact_manifest_digest": artifact["manifest_digest"],
+    }
+
+
 def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, Any]:
     """Load and reopen independent scene/task/robot/runtime references."""
 
@@ -1056,6 +1229,28 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         raise PaidLaneLaunchPreparationError(
             "native_task_arena_reference_binding_invalid"
         )
+    prior_webapp_lineage = None
+    if expected_lane != "native_task_arena_construction":
+        prior_webapp_lineage = _validate_prior_webapp_lineage(
+            prior_result_path=operations.get("prior_result"),
+            launch_receipt_path=operations.get("prior_launch_receipt"),
+            webapp_sync_path=operations.get("prior_webapp_sync"),
+        )
+    zero_action_predecessor = None
+    if expected_lane == "native_task_arena_scripted_positive":
+        zero_action_predecessor = _validate_zero_action_predecessor(
+            prior_authority_path=operations.get("prior_authority"),
+            prior_result_path=operations.get("prior_result"),
+            zero_action_result_path=operations.get("zero_action_result"),
+            expected_blueprint_commit=str(operations.get("source_commit") or ""),
+            expected_runtime_source_packet_digest=str(
+                runtime.get("source_packet_receipt_digest") or ""
+            ),
+            expected_container_image=container_image,
+            expected_packet_receipt_digest=str(
+                scene.get("packet_receipt_digest") or ""
+            ),
+        )
     context = dict(operations)
     forbidden_overrides = {
         "packet_dir",
@@ -1086,6 +1281,16 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
                 "source_manifest_path": str(source_manifest_path),
                 "rights_admission_path": str(rights_admission_path),
                 "rights_evidence": rights_evidence,
+                **(
+                    {"prior_webapp_lineage": prior_webapp_lineage}
+                    if prior_webapp_lineage is not None
+                    else {}
+                ),
+                **(
+                    {"zero_action_predecessor": zero_action_predecessor}
+                    if zero_action_predecessor is not None
+                    else {}
+                ),
             },
             "python": str(operations.get("python") or sys.executable),
             "service_account": str(
