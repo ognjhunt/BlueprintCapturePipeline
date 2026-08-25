@@ -51,17 +51,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "policy_campaign_path": args.policy_campaign,
                 "campaign_member_id": args.campaign_member_id,
             }
-        genesis = {}
-        if (
-            args.project_spend_reconciliation is not None
-            or args.initial_provider_zero is not None
-        ):
-            genesis = {
-                "project_spend_reconciliation_path": (
-                    args.project_spend_reconciliation
-                ),
-                "initial_provider_zero_path": args.initial_provider_zero,
-            }
+        spend_lineage = {}
+        if args.project_spend_reconciliation is not None:
+            spend_lineage["project_spend_reconciliation_path"] = (
+                args.project_spend_reconciliation
+            )
+        if args.initial_provider_zero is not None:
+            spend_lineage["initial_provider_zero_path"] = args.initial_provider_zero
         authority = materialize_native_task_arena_paid_attempt_authority(
             bundle_receipt_path=args.bundle_receipt,
             prior_authority_path=args.prior_authority,
@@ -79,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output,
             allowed_active_instance_ids=tuple(args.allow_active_instance),
             retain_warm_session=args.retain_warm_session,
-            **genesis,
+            **spend_lineage,
             **campaign,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

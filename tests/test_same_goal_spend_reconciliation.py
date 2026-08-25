@@ -717,6 +717,65 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
     }
 
 
+def test_live_profile_expands_terminal_and_project_spend_together(
+    tmp_path: Path,
+) -> None:
+    """A continuing policy lane must publish both spend proof closures."""
+
+    fixture = _fixture(tmp_path / "fixture")
+    output, reconciliation = _materialize(
+        tmp_path / "fixture", "gaussian_excision", fixture
+    )
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="gaussian_excision",
+    )
+    baseline = _project_baseline_authority(
+        tmp_path / "baseline-authority.json", total=43.172914
+    )
+    project_output = tmp_path / "project-spend.json"
+    project = materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline,
+        posted_reconciliation_paths=[output],
+        expected_coverage_ids=[str(reconciliation["entries"][0]["attempt_id"])],
+        completeness_reference="human-authorized complete project coverage",
+        authorized_by="user",
+        authorized_on="2026-08-25T20:41:55Z",
+        output_path=project_output,
+    )
+    _, project_record = validate_project_spend_reconciliation(project_output)
+    authority = _write(
+        tmp_path / "authority.json",
+        {
+            "lineage_kind": "terminal_predecessor",
+            "prior_terminal_attempts": binding["prior_terminal_attempts"],
+            "prior_spend_reconciliation": binding["reconciliation"],
+            "prior_actual_provider_spend_usd": binding["actual_total_usd"],
+            "project_spend_reconciliation": project_record,
+            "aggregate_goal_spend_before_attempt_usd": project["total_cost_usd"],
+        },
+    )
+
+    inputs = expand_prior_spend_immutable_inputs(
+        [
+            {
+                "name": "native_task_arena_attempt_authority",
+                "path": str(authority),
+                "digest": "sha256:" + "0" * 64,
+            }
+        ]
+    )
+
+    assert {Path(row["path"]) for row in inputs} == {
+        authority.resolve(),
+        baseline.resolve(),
+        project_output.resolve(),
+        output.resolve(),
+        *(path.resolve() for path in fixture.values()),
+    }
+
+
 def test_project_spend_retains_full_cap_for_preliminary_disk_only_billing(
     tmp_path: Path,
 ) -> None:

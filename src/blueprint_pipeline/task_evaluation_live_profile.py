@@ -105,111 +105,120 @@ def expand_prior_spend_immutable_inputs(
             raise TaskEvaluationLaunchError(
                 f"live_profile_authority_input_invalid:{name}"
             )
-        reconciliation_kind = "prior_spend"
-        reconciliation_record = authority.get("prior_spend_reconciliation")
-        if reconciliation_record is None:
-            reconciliation_kind = "project_spend"
-            reconciliation_record = authority.get("project_spend_reconciliation")
-        if reconciliation_record is None:
-            continue
-        if not isinstance(reconciliation_record, Mapping):
-            raise TaskEvaluationLaunchError(
-                f"live_profile_prior_spend_dependency_invalid:{name}"
-            )
-        reconciliation_path = Path(
-            str(reconciliation_record.get("path") or "")
-        ).expanduser().resolve()
+        reconciliation_records = (
+            ("prior_spend", authority.get("prior_spend_reconciliation")),
+            ("project_spend", authority.get("project_spend_reconciliation")),
+        )
         uses_shared_lane_reconciliation = (
             "prior_terminal_attempts" in authority
             and "prior_actual_provider_spend_usd" in authority
         )
-        try:
-            if reconciliation_kind == "project_spend":
-                reconciliation, observed_record = (
-                    validate_project_spend_reconciliation(
-                        reconciliation_path,
-                        expected_total_cost_usd=authority.get(
-                            "aggregate_goal_spend_before_attempt_usd"
-                        ),
-                    )
+        for reconciliation_kind, reconciliation_record in reconciliation_records:
+            if reconciliation_record is None:
+                continue
+            if not isinstance(reconciliation_record, Mapping):
+                raise TaskEvaluationLaunchError(
+                    f"live_profile_prior_spend_dependency_invalid:{name}"
                 )
-                if observed_record != dict(reconciliation_record):
-                    raise ValueError("project_spend_reconciliation_record_mismatch")
-            elif uses_shared_lane_reconciliation:
-                reconciliation, observed_record = (
-                    validate_same_goal_spend_reconciliation(
-                        reconciliation_path,
-                        expected_total_cost_usd=authority.get(
-                            "prior_actual_provider_spend_usd"
-                        ),
-                    )
-                )
-                if observed_record != dict(reconciliation_record):
-                    raise ValueError("prior_spend_reconciliation_record_mismatch")
-            else:
-                # The semantic-teacher issuer predates the shared five-lane
-                # reconciliation contract. Its lane validator has already
-                # reopened and validated that schema above; retain support for
-                # it while still exposing any nested receipt paths to profile
-                # publication and its service-account readability check.
-                reconciliation = json.loads(
-                    reconciliation_path.read_text(encoding="utf-8")
-                )
-                if (
-                    reconciliation_path.is_symlink()
-                    or not isinstance(reconciliation, Mapping)
-                    or reconciliation_path.stat().st_size
-                    != reconciliation_record.get("size_bytes")
-                    or file_digest(reconciliation_path)
-                    != reconciliation_record.get("sha256")
-                ):
-                    raise ValueError("prior_spend_reconciliation_record_mismatch")
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            raise TaskEvaluationLaunchError(
-                f"live_profile_prior_spend_dependency_invalid:{name}"
-            ) from exc
-
-        dependencies: list[tuple[str, Mapping[str, Any]]] = [
-            ("reconciliation", reconciliation_record)
-        ]
-        if reconciliation_kind == "project_spend":
+            reconciliation_path = Path(
+                str(reconciliation_record.get("path") or "")
+            ).expanduser().resolve()
             try:
-                dependencies.extend(project_spend_dependency_records(reconciliation))
-            except ValueError as exc:
+                if reconciliation_kind == "project_spend":
+                    reconciliation, observed_record = (
+                        validate_project_spend_reconciliation(
+                            reconciliation_path,
+                            expected_total_cost_usd=authority.get(
+                                "aggregate_goal_spend_before_attempt_usd"
+                            ),
+                        )
+                    )
+                    if observed_record != dict(reconciliation_record):
+                        raise ValueError(
+                            "project_spend_reconciliation_record_mismatch"
+                        )
+                elif uses_shared_lane_reconciliation:
+                    reconciliation, observed_record = (
+                        validate_same_goal_spend_reconciliation(
+                            reconciliation_path,
+                            expected_total_cost_usd=authority.get(
+                                "prior_actual_provider_spend_usd"
+                            ),
+                        )
+                    )
+                    if observed_record != dict(reconciliation_record):
+                        raise ValueError(
+                            "prior_spend_reconciliation_record_mismatch"
+                        )
+                else:
+                    # The semantic-teacher issuer predates the shared five-lane
+                    # reconciliation contract. Its lane validator has already
+                    # reopened and validated that schema above; retain support
+                    # while exposing its nested dependencies.
+                    reconciliation = json.loads(
+                        reconciliation_path.read_text(encoding="utf-8")
+                    )
+                    if (
+                        reconciliation_path.is_symlink()
+                        or not isinstance(reconciliation, Mapping)
+                        or reconciliation_path.stat().st_size
+                        != reconciliation_record.get("size_bytes")
+                        or file_digest(reconciliation_path)
+                        != reconciliation_record.get("sha256")
+                    ):
+                        raise ValueError(
+                            "prior_spend_reconciliation_record_mismatch"
+                        )
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
                 raise TaskEvaluationLaunchError(
                     f"live_profile_prior_spend_dependency_invalid:{name}"
                 ) from exc
-        else:
-            for entry_index, entry in enumerate(reconciliation.get("entries") or []):
-                if not isinstance(entry, Mapping):
+
+            dependencies: list[tuple[str, Mapping[str, Any]]] = [
+                ("reconciliation", reconciliation_record)
+            ]
+            if reconciliation_kind == "project_spend":
+                try:
+                    dependencies.extend(
+                        project_spend_dependency_records(reconciliation)
+                    )
+                except ValueError as exc:
                     raise TaskEvaluationLaunchError(
                         f"live_profile_prior_spend_dependency_invalid:{name}"
-                    )
-                for source in entry.get("source_receipts") or []:
-                    if not isinstance(source, Mapping) or not isinstance(
-                        source.get("record"), Mapping
-                    ):
+                    ) from exc
+            else:
+                for entry_index, entry in enumerate(
+                    reconciliation.get("entries") or []
+                ):
+                    if not isinstance(entry, Mapping):
                         raise TaskEvaluationLaunchError(
                             f"live_profile_prior_spend_dependency_invalid:{name}"
                         )
-                    role = str(source.get("role") or "source")
-                    dependencies.append(
-                        (f"entry_{entry_index}_{role}", source["record"])
-                    )
+                    for source in entry.get("source_receipts") or []:
+                        if not isinstance(source, Mapping) or not isinstance(
+                            source.get("record"), Mapping
+                        ):
+                            raise TaskEvaluationLaunchError(
+                                f"live_profile_prior_spend_dependency_invalid:{name}"
+                            )
+                        role = str(source.get("role") or "source")
+                        dependencies.append(
+                            (f"entry_{entry_index}_{role}", source["record"])
+                        )
 
-        for suffix, record in dependencies:
-            path = Path(str(record.get("path") or "")).expanduser().resolve()
-            resolved = str(path)
-            if resolved in observed_paths:
-                continue
-            expanded.append(
-                {
-                    "name": f"{name}_{reconciliation_kind}_{suffix}",
-                    "path": resolved,
-                    "digest": str(record.get("sha256") or ""),
-                }
-            )
-            observed_paths.add(resolved)
+            for suffix, record in dependencies:
+                path = Path(str(record.get("path") or "")).expanduser().resolve()
+                resolved = str(path)
+                if resolved in observed_paths:
+                    continue
+                expanded.append(
+                    {
+                        "name": f"{name}_{reconciliation_kind}_{suffix}",
+                        "path": resolved,
+                        "digest": str(record.get("sha256") or ""),
+                    }
+                )
+                observed_paths.add(resolved)
     return expanded
 
 
