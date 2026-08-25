@@ -12,16 +12,22 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 try:  # flat provider-bundle layout
-    from adp009d_groot_worker_identity import expected_checkpoint_content_binding
+    from adp009d_groot_worker_identity import (
+        expected_checkpoint_content_binding,
+        expected_checkpoint_interface_binding,
+    )
 except ModuleNotFoundError:  # repository package
-    from .adp009d_groot_worker_identity import expected_checkpoint_content_binding
+    from .adp009d_groot_worker_identity import (
+        expected_checkpoint_content_binding,
+        expected_checkpoint_interface_binding,
+    )
 
 
 SCHEMA_VERSION = "adp009d_candidate_policy_rights.v1"
 RESULT_FILENAME = "adp009d_candidate_policy_rights.v1.json"
 FROZEN_CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 EXPECTED_SOURCE_READINESS_DIGEST = (
-    "sha256:d21ea0c32dafe03478ef3119fc45bf12a2ec1c9c9ed3cf0f90d25c2010db705b"
+    "sha256:c3f76892f80514ef81ddbb48b14ebf3c9e39cbbfaf82d516dbcb70f4d8989ffc"
 )
 EXPECTED_SCENARIO_SUITE_DIGEST = (
     "sha256:5adcfd1b9c96da80aff16d49c004591db0347442c4298a763e7d916a10b40e34"
@@ -150,6 +156,8 @@ def validate_candidate_policy_rights(
     elif candidate_id == "groot_n17_droid":
         gated = _mapping(rights.get("gated_backbone"))
         expected_content = expected_checkpoint_content_binding()
+        expected_interface = expected_checkpoint_interface_binding()
+        policy_input = _mapping(interface.get("policy_input_schema"))
         if (
             source.get("repository") != "https://github.com/NVIDIA/Isaac-GR00T"
             or source.get("revision") != policy_spec.get("groot_source_revision")
@@ -167,6 +175,10 @@ def validate_candidate_policy_rights(
             != expected_content["file_manifest_digest"]
         ):
             errors.append("candidate_policy_rights_groot_identity_mismatch")
+        if policy_input.get("frame_history") != expected_interface[
+            "video_delta_indices"
+        ]:
+            errors.append("candidate_policy_rights_groot_interface_mismatch")
         if (
             gated.get("access_probe_status") != "authorized"
             or not _digest(gated.get("access_probe_receipt_digest"))
