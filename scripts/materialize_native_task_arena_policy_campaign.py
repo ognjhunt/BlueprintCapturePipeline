@@ -22,6 +22,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--prior-result", required=True)
     parser.add_argument("--prior-provider-zero", required=True)
     parser.add_argument("--prior-spend-reconciliation", required=True)
+    parser.add_argument("--project-spend-reconciliation")
     parser.add_argument("--supplemental-prior-result", action="append", default=[])
     parser.add_argument("--allow-controls-active-instance", action="append", type=int, default=[])
     for prefix in ("pi05", "groot"):
@@ -42,6 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prior_result_path=args.prior_result,
             prior_provider_zero_path=args.prior_provider_zero,
             prior_spend_reconciliation_path=args.prior_spend_reconciliation,
+            project_spend_reconciliation_path=args.project_spend_reconciliation,
             supplemental_prior_result_paths=args.supplemental_prior_result,
             controls_allowed_active_instance_ids=args.allow_controls_active_instance,
             pi05_launch_id=args.pi05_launch_id,

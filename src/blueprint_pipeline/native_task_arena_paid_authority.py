@@ -947,16 +947,20 @@ def materialize_native_task_arena_paid_attempt_authority(
         prior_provider_zero_path,
         prior_spend_reconciliation_path,
     )
-    initial_inputs = (
-        project_spend_reconciliation_path,
-        initial_provider_zero_path,
-    )
+    initial_inputs = (project_spend_reconciliation_path, initial_provider_zero_path)
     terminal_mode = all(value is not None for value in terminal_inputs)
-    initial_mode = all(value is not None for value in initial_inputs)
+    terminal_inputs_present = any(value is not None for value in terminal_inputs)
+    initial_mode = not terminal_inputs_present and all(
+        value is not None for value in initial_inputs
+    )
     if (
         terminal_mode == initial_mode
-        or any(value is not None for value in terminal_inputs) != terminal_mode
-        or any(value is not None for value in initial_inputs) != initial_mode
+        or terminal_inputs_present != terminal_mode
+        or (initial_provider_zero_path is not None and not initial_mode)
+        or (
+            not terminal_mode
+            and any(value is not None for value in initial_inputs) != initial_mode
+        )
         or (initial_mode and supplemental_prior_result_paths)
     ):
         raise ValueError("native_task_arena_authority_lineage_invalid")
@@ -1011,6 +1015,17 @@ def materialize_native_task_arena_paid_attempt_authority(
             + reconciled["actual_total_usd"],
             6,
         )
+        if project_spend_reconciliation_path is not None:
+            project_path = Path(
+                str(project_spend_reconciliation_path)
+            ).expanduser().resolve()
+            project_spend, project_spend_record = (
+                validate_project_spend_reconciliation(project_path)
+            )
+            project_total = round(float(project_spend["total_cost_usd"]), 6)
+            if project_total < prior_spend:
+                raise ValueError("native_task_arena_project_spend_stale")
+            prior_spend = project_total
     else:
         project_path = Path(
             str(project_spend_reconciliation_path)
@@ -1131,6 +1146,11 @@ def materialize_native_task_arena_paid_attempt_authority(
                 "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
                 "prior_spend_reconciliation": reconciled["reconciliation"],
                 "prior_actual_provider_spend_usd": reconciled["actual_total_usd"],
+                **(
+                    {"project_spend_reconciliation": project_spend_record}
+                    if project_spend_record is not None
+                    else {}
+                ),
             }
             if terminal_mode
             else {
@@ -1329,11 +1349,28 @@ def validate_native_task_arena_paid_attempt_authority(
                 if len(reconciled["prior_terminal_attempts"]) != 1:
                     raise ValueError("primary_predecessor_reconciliation_invalid")
                 main_actual_provider_charge = reconciled["actual_total_usd"]
-            actual_after = round(
+            terminal_actual_after = round(
                 prior["aggregate_goal_spend_before_attempt_usd"]
                 + reconciled["actual_total_usd"],
                 6,
             )
+            actual_after = terminal_actual_after
+            project_record_value = value.get("project_spend_reconciliation")
+            if project_record_value is not None:
+                project_path, project_record = _bound_record(
+                    project_record_value,
+                    "project_spend_reconciliation_unbound",
+                )
+                project_spend, observed_project_record = (
+                    validate_project_spend_reconciliation(project_path)
+                )
+                project_total = round(float(project_spend["total_cost_usd"]), 6)
+                if (
+                    project_record != observed_project_record
+                    or project_total < terminal_actual_after
+                ):
+                    raise ValueError("project_spend_continuation_mismatch")
+                actual_after = project_total
             if (
                 predecessor.get("authority_digest") != prior["authority_digest"]
                 or predecessor.get("attempt_cost_usd") != prior["attempt_cost_usd"]

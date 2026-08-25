@@ -38,6 +38,7 @@ from .native_task_arena_policy_diagnostic_bundle import (
     load_verified_native_task_arena_policy_diagnostic_bundle,
 )
 from .paid_attempt_authority import bind_lane_prior_spend
+from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -503,6 +504,7 @@ def materialize_native_task_arena_policy_campaign(
     prior_result_path: str | Path,
     prior_provider_zero_path: str | Path,
     prior_spend_reconciliation_path: str | Path,
+    project_spend_reconciliation_path: str | Path | None = None,
     controls_allowed_active_instance_ids: Sequence[int],
     pi05_launch_id: str,
     pi05_resource_name: str,
@@ -561,6 +563,15 @@ def materialize_native_task_arena_policy_campaign(
         prior["aggregate_goal_spend_before_attempt_usd"] + reconciled["actual_total_usd"],
         6,
     )
+    project_spend_record: dict[str, Any] | None = None
+    if project_spend_reconciliation_path is not None:
+        project_spend, project_spend_record = validate_project_spend_reconciliation(
+            project_spend_reconciliation_path
+        )
+        project_total = round(float(project_spend["total_cost_usd"]), 6)
+        if project_total < prior_spend:
+            raise ValueError("native_task_arena_policy_campaign_project_spend_stale")
+        prior_spend = project_total
     if any(
         isinstance(value, bool) or not isinstance(value, int) or value <= 0
         for value in controls_allowed_active_instance_ids
@@ -621,6 +632,11 @@ def materialize_native_task_arena_policy_campaign(
             },
             "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
             "reconciliation": reconciled["reconciliation"],
+            **(
+                {"project_spend_reconciliation": project_spend_record}
+                if project_spend_record is not None
+                else {}
+            ),
         },
         "shared_scientific_projection": projections["pi05_droid"],
         "members": members,

@@ -276,6 +276,66 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
     )["authorization_digest"] == authority["authorization_digest"]
 
 
+def test_terminal_continuation_uses_newer_conservative_project_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    predecessor = _predecessor(tmp_path / "predecessor")
+    receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
+    monkeypatch.setattr(
+        paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
+    )
+    reconciled = {
+        "prior_terminal_attempts": [
+            {"result": _record(predecessor["canonical_result"])}
+        ],
+        "reconciliation": _record(predecessor["canonical_result"]),
+        "actual_total_usd": 0.025,
+    }
+    monkeypatch.setattr(paid, "bind_lane_prior_spend", lambda **_kwargs: reconciled)
+    monkeypatch.setattr(
+        paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
+    )
+    project_path = tmp_path / "project-spend.json"
+    write_json(project_path, {"total_cost_usd": 43.197914})
+    project_record = _record(project_path)
+    monkeypatch.setattr(
+        paid,
+        "validate_project_spend_reconciliation",
+        lambda *_args, **_kwargs: (
+            {"total_cost_usd": 43.197914},
+            project_record,
+        ),
+    )
+
+    authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_authority_path=predecessor["authority"],
+        prior_result_path=predecessor["result"],
+        prior_provider_zero_path=predecessor["zero"],
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+        project_spend_reconciliation_path=project_path,
+        authorization_reference="user-authorized conservative continuation",
+        authorized_by="user",
+        authorized_on="2026-08-25T20:41:55Z",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        output_path=tmp_path / "authority.json",
+    )
+
+    assert authority["lineage_kind"] == "terminal_predecessor"
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 43.197914
+    assert authority["project_spend_reconciliation"] == project_record
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+    )["authorization_digest"] == authority["authorization_digest"]
+
+
 def test_new_lane_genesis_refuses_stale_provider_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
