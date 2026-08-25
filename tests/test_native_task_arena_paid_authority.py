@@ -224,7 +224,7 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
     }
     monkeypatch.setattr(
         paid,
-        "validate_same_goal_spend_reconciliation",
+        "validate_project_spend_reconciliation",
         lambda *_args, **_kwargs: (project_spend, project_record),
     )
     zero = {
@@ -287,7 +287,7 @@ def test_new_lane_genesis_refuses_stale_provider_zero(
     write_json(reconciliation_path, {"sealed": True})
     monkeypatch.setattr(
         paid,
-        "validate_same_goal_spend_reconciliation",
+        "validate_project_spend_reconciliation",
         lambda *_args, **_kwargs: (
             {"receipt_digest": "sha256:" + "8" * 64, "total_cost_usd": 1.0},
             _record(reconciliation_path),

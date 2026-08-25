@@ -10,9 +10,10 @@ import sys
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_attempt_authority import (
-    bind_lane_prior_spend,
-    validate_same_goal_spend_reconciliation,
+from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
+from blueprint_pipeline.project_spend_reconciliation import (
+    materialize_project_spend_reconciliation,
+    validate_project_spend_reconciliation,
 )
 from blueprint_pipeline.same_goal_spend_reconciliation import (
     SUPPORTED_LANES,
@@ -37,6 +38,26 @@ def _write(path: Path, value: dict[str, object]) -> Path:
 def _digest_bound(value: dict[str, object], field: str = "receipt_digest") -> dict[str, object]:
     value[field] = canonical_digest(value, digest_field=field)
     return value
+
+
+def _project_baseline_authority(path: Path, *, total: float) -> Path:
+    value: dict[str, object] = {
+        "schema_version": "native_task_arena_paid_attempt_authority.v1",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "maximum_paid_attempts": 1,
+        "maximum_provider_allocations": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "hard_attempt_spend_cap_usd": 0.75,
+        "aggregate_goal_spend_before_attempt_usd": total,
+        "authorized_on": "2026-08-25T14:30:00+00:00",
+        "authorization_digest": "",
+    }
+    value["authorization_digest"] = canonical_digest(
+        value, digest_field="authorization_digest"
+    )
+    return _write(path, value)
 
 
 @pytest.mark.parametrize(
@@ -631,15 +652,26 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
     output, reconciliation = _materialize(
         tmp_path / "fixture", "gaussian_excision", fixture
     )
-    _, record = validate_same_goal_spend_reconciliation(output)
+    baseline = _project_baseline_authority(
+        tmp_path / "baseline-authority.json", total=39.791914
+    )
+    project_output = tmp_path / "project-spend.json"
+    project = materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline,
+        posted_reconciliation_paths=[output],
+        expected_coverage_ids=[str(reconciliation["entries"][0]["attempt_id"])],
+        completeness_reference="retained queue and billing inventory",
+        authorized_by="user",
+        authorized_on="2026-08-25T15:15:00+00:00",
+        output_path=project_output,
+    )
+    _, record = validate_project_spend_reconciliation(project_output)
     authority = _write(
         tmp_path / "authority.json",
         {
             "lineage_kind": "project_spend_genesis",
             "project_spend_reconciliation": record,
-            "aggregate_goal_spend_before_attempt_usd": reconciliation[
-                "total_cost_usd"
-            ],
+            "aggregate_goal_spend_before_attempt_usd": project["total_cost_usd"],
         },
     )
 
@@ -656,6 +688,8 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
     observed = {Path(row["path"]) for row in inputs}
     assert observed == {
         authority.resolve(),
+        baseline.resolve(),
+        project_output.resolve(),
         output.resolve(),
         *(path.resolve() for path in fixture.values()),
     }
