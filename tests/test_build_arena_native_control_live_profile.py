@@ -152,6 +152,7 @@ def test_builds_a_profile_that_passes_every_shared_validator(tmp_path: Path) -> 
 
     assert profile["execution_admission"]["live_enabled"] is True
     assert profile["execution_admission"]["blockers"] == []
+    assert profile["source_commit"] == COMMIT
     assert profile["allocator"]["retry_cap"] == 0
     assert profile["required_controls"]["teardown_required"] is True
     assert profile["required_controls"]["provider_zero_required"] is True
