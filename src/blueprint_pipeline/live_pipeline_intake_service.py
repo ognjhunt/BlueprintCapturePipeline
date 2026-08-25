@@ -41,6 +41,11 @@ from .capture_upload_intake import (
     process_capture_upload_submission,
 )
 from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
+from .company_policy_container_admission import (
+    CompanyPolicyContainerAdmissionError,
+    default_company_policy_container_admission_root,
+    stage_company_policy_container_admission,
+)
 from .capture_lifecycle import (
     CaptureLifecycleError,
     apply_capture_lifecycle_action,
@@ -2418,6 +2423,42 @@ def create_app() -> FastAPI:
             "canonical_allocator_required": True,
         }
         return JSONResponse(status_code=202, content=response)
+
+    @app.post(
+        "/api/live-pipeline/company-policy-containers",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_company_policy_container(request: Request) -> JSONResponse:
+        """Retain a secret-free company contract without granting launch authority."""
+
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        root = default_company_policy_container_admission_root(_work_dir(manifest_path))
+        try:
+            receipt = await run_in_threadpool(
+                stage_company_policy_container_admission,
+                value=payload,
+                root=root,
+            )
+        except CompanyPolicyContainerAdmissionError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "schema_version": "company_policy_container_admission_rejection.v1",
+                    "status": "rejected",
+                    "accepted": False,
+                    "blockers": list(exc.blockers),
+                    "launch_authority_granted": False,
+                    "provider_mutation_authorized": False,
+                    "provider_mutation_performed": False,
+                },
+            )
+        return JSONResponse(status_code=200 if receipt["already_exists"] else 201, content=receipt)
 
     @app.post(
         "/api/live-pipeline/task-evaluation-terminal-resource-releases",
