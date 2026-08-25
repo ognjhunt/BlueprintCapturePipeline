@@ -377,8 +377,11 @@ def test_live_transport_emits_allocator_artifact_manifest(
     }
 
 
-def test_policy_transport_seals_typed_media_gap_before_provider_allocation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("provider_create_attempted", [False, True])
+def test_policy_transport_seals_typed_media_gap_before_first_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_create_attempted: bool,
 ) -> None:
     bundle_path = tmp_path / "bundle.zip"
     bundle_path.write_bytes(b"bundle")
@@ -405,17 +408,23 @@ def test_policy_transport_seals_typed_media_gap_before_provider_allocation(
         adapter = {
             "status": "blocked",
             "blockers": ["provider_bundle_readiness_parse_failed"],
-            "estimated_cost_usd": 0.0,
-            "vast_instance_ids": [],
+            "estimated_cost_usd": 0.00014 if provider_create_attempted else 0.0,
+            "vast_instance_ids": [48650527] if provider_create_attempted else [],
             "continuing_spend_from_this_run": False,
-            "provider_create_attempted": False,
+            "provider_create_attempted": provider_create_attempted,
         }
         write_json(provider / "vast_provider_adapter_result.json", adapter)
         write_json(
             provider / "vast_teardown_manifest.json",
             {
-                "status": "not_required_blueprint_bundle_preflight_blocked",
-                "vast_instance_ids": [],
+                "status": (
+                    "destroyed"
+                    if provider_create_attempted
+                    else "not_required_blueprint_bundle_preflight_blocked"
+                ),
+                "vast_instance_ids": (
+                    [48650527] if provider_create_attempted else []
+                ),
                 "continuing_spend_from_this_run": False,
             },
         )
@@ -448,9 +457,15 @@ def test_policy_transport_seals_typed_media_gap_before_provider_allocation(
         arena,
         "close_independent_vast_watchdog",
         lambda **kwargs: (
-            {"status": "cancelled_no_allocation"}
-            if kwargs["provider_allocation_impossible"] is True
-            else pytest.fail("no-allocation close did not bind provider impossibility")
+            {
+                "status": (
+                    "provider_terminal"
+                    if provider_create_attempted
+                    else "cancelled_no_allocation"
+                )
+            }
+            if kwargs["provider_allocation_impossible"] is not provider_create_attempted
+            else pytest.fail("watchdog close did not bind allocation truth")
         ),
     )
     monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
