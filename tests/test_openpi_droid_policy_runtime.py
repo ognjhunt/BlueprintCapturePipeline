@@ -14,6 +14,7 @@ import pytest
 from blueprint_pipeline.openpi_droid_policy_runtime import (
     OpenPIWebsocketDroidPolicyClient,
     load_policy_spec,
+    normalize_openpi_inference_response,
     serve_identity_bound_policy,
     validate_server_metadata,
     verify_local_checkpoint,
@@ -100,7 +101,10 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
 
         def infer(self, observation):
             assert observation["prompt"] == "pick"
-            return {"actions": np.zeros((10, 8))}
+            return {
+                "actions": np.zeros((10, 8)),
+                "server_timing": {"infer_ms": 31.25},
+            }
 
     client = OpenPIWebsocketDroidPolicyClient(
         spec=spec,
@@ -109,8 +113,64 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
         client_factory=FakeClient,
     )
     response = client.infer({"prompt": "pick"})
-    assert response["actions"].shape == (10, 8)
+    assert response.shape == (10, 8)
     assert client.evidence_summary()["identity_verified"] is True
+
+
+def test_websocket_client_records_completed_query_before_response_refusal(
+    tmp_path: Path,
+) -> None:
+    spec = load_policy_spec(
+        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            return {"action": np.zeros((10, 8))}
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+
+    with pytest.raises(
+        ValueError, match="openpi_inference_response_unexpected_keys:action"
+    ):
+        client.infer({"prompt": "pick"})
+    assert client.candidate_policy_queried is True
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (np.zeros((10, 8)), "openpi_inference_response_not_object"),
+        ({"server_timing": {}}, "openpi_inference_response_actions_missing"),
+        (
+            {"actions": [], "action": []},
+            "openpi_inference_response_unexpected_keys:action",
+        ),
+        (
+            {"actions": [], "action_chunk": []},
+            "openpi_inference_response_unexpected_keys:action_chunk",
+        ),
+        (
+            {"actions": [], "server_timing": 1.0},
+            "openpi_inference_response_server_timing_not_object",
+        ),
+    ],
+)
+def test_openpi_response_normalization_fails_closed(response, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        normalize_openpi_inference_response(response)
 
 
 def test_verify_local_checkpoint_binds_every_object(tmp_path: Path) -> None:
