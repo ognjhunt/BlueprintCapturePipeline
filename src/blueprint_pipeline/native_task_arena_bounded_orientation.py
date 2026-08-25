@@ -31,6 +31,52 @@ class BoundedOrientationError(ValueError):
         super().__init__(";".join(self.errors))
 
 
+def _finite_vector(
+    value: Any,
+    *,
+    length: int,
+    error: str,
+    require_nonzero: bool = False,
+) -> list[float]:
+    try:
+        if isinstance(value, (str, bytes)):
+            raise TypeError
+        vector = [float(component) for component in value]
+    except (TypeError, ValueError) as exc:
+        raise BoundedOrientationError([error]) from exc
+    if (
+        len(vector) != length
+        or not all(math.isfinite(component) for component in vector)
+        or (
+            require_nonzero
+            and math.sqrt(sum(component * component for component in vector))
+            <= 1.0e-12
+        )
+    ):
+        raise BoundedOrientationError([error])
+    return vector
+
+
+def _optional_pose_override(
+    row: Mapping[str, Any],
+    *,
+    override_field: str,
+    fallback: Sequence[float],
+    length: int,
+    error: str,
+    require_nonzero: bool = False,
+) -> list[float]:
+    value = row.get(override_field)
+    if value is None:
+        return list(fallback)
+    return _finite_vector(
+        value,
+        length=length,
+        error=error,
+        require_nonzero=require_nonzero,
+    )
+
+
 def _unit(values: Sequence[float]) -> tuple[float, float, float]:
     try:
         vector = tuple(float(value) for value in values)
@@ -140,12 +186,31 @@ def build_bounded_orientation_postures(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Solve open and close for each small command bias under both jaw bases."""
 
-    vectors = tuple(
-        tuple(float(value) for value in vector)
-        for vector in (
-            rotation_vectors_body_rad or default_body_rotation_vectors_rad()
-        )
+    raw_vectors = (
+        default_body_rotation_vectors_rad()
+        if rotation_vectors_body_rad is None
+        else rotation_vectors_body_rad
     )
+    try:
+        vectors = tuple(
+            tuple(
+                _finite_vector(
+                    vector,
+                    length=3,
+                    error="bounded_orientation_rotation_vector_invalid",
+                    require_nonzero=True,
+                )
+            )
+            for vector in raw_vectors
+        )
+    except TypeError as exc:
+        raise BoundedOrientationError(
+            ["bounded_orientation_rotation_vectors_invalid"]
+        ) from exc
+    if not vectors:
+        raise BoundedOrientationError(
+            ["bounded_orientation_rotation_vectors_invalid"]
+        )
     seeds: list[list[float]] = []
     seen_seeds: set[tuple[float, ...]] = set()
     for raw in reference_joint_seeds:
@@ -177,20 +242,81 @@ def build_bounded_orientation_postures(
             )
             continue
         try:
-            open_position = [float(value) for value in opened["target_position_world_m"]]
-            close_position = [float(value) for value in closed["target_position_world_m"]]
-            open_authority = [
-                float(value) for value in opened["target_quaternion_world_xyzw"]
-            ]
-            close_authority = [
-                float(value) for value in closed["target_quaternion_world_xyzw"]
-            ]
-        except (KeyError, TypeError, ValueError):
+            open_position = _finite_vector(
+                opened["target_position_world_m"],
+                length=3,
+                error="bounded_orientation_contact_open_position_invalid",
+            )
+            close_position = _finite_vector(
+                closed["target_position_world_m"],
+                length=3,
+                error="bounded_orientation_contact_close_position_invalid",
+            )
+            open_authority = _finite_vector(
+                opened["target_quaternion_world_xyzw"],
+                length=4,
+                error="bounded_orientation_contact_open_quaternion_invalid",
+                require_nonzero=True,
+            )
+            close_authority = _finite_vector(
+                closed["target_quaternion_world_xyzw"],
+                length=4,
+                error="bounded_orientation_contact_close_quaternion_invalid",
+                require_nonzero=True,
+            )
+            authoritative_open_position = _optional_pose_override(
+                opened,
+                override_field="arrival_target_position_world_m",
+                fallback=open_position,
+                length=3,
+                error=(
+                    "bounded_orientation_contact_open_arrival_position_invalid"
+                ),
+            )
+            authoritative_close_position = _optional_pose_override(
+                closed,
+                override_field="arrival_target_position_world_m",
+                fallback=close_position,
+                length=3,
+                error=(
+                    "bounded_orientation_contact_close_arrival_position_invalid"
+                ),
+            )
+            authoritative_open_quaternion = _optional_pose_override(
+                opened,
+                override_field="arrival_target_quaternion_world_xyzw",
+                fallback=open_authority,
+                length=4,
+                error=(
+                    "bounded_orientation_contact_open_arrival_quaternion_invalid"
+                ),
+                require_nonzero=True,
+            )
+            authoritative_close_quaternion = _optional_pose_override(
+                closed,
+                override_field="arrival_target_quaternion_world_xyzw",
+                fallback=close_authority,
+                length=4,
+                error=(
+                    "bounded_orientation_contact_close_arrival_quaternion_invalid"
+                ),
+                require_nonzero=True,
+            )
+        except KeyError:
+            target_error = BoundedOrientationError(
+                ["bounded_orientation_contact_target_missing"]
+            )
+        except BoundedOrientationError as exc:
+            target_error = exc
+        else:
+            target_error = None
+        if target_error is not None:
             attempts.append(
                 {
                     "variant_id": variant_id,
                     "status": "refused",
                     "reason": "contact_target_invalid",
+                    "blockers": list(target_error.errors),
                 }
             )
             continue
@@ -213,6 +339,14 @@ def build_bounded_orientation_postures(
                 "close_command_quaternion_world_xyzw": close_command,
                 "authoritative_open_quaternion_world_xyzw": open_authority,
                 "authoritative_close_quaternion_world_xyzw": close_authority,
+                "authoritative_open_position_world_m": authoritative_open_position,
+                "authoritative_close_position_world_m": authoritative_close_position,
+                "authoritative_arrival_open_quaternion_world_xyzw": (
+                    authoritative_open_quaternion
+                ),
+                "authoritative_arrival_close_quaternion_world_xyzw": (
+                    authoritative_close_quaternion
+                ),
                 "position_offset_world_m": [0.0, 0.0, 0.0],
             }
             open_solution = solve_phase(
@@ -279,12 +413,12 @@ def build_bounded_orientation_postures(
                     "minimum_joint_limit_margin_rad": min(margins),
                     "candidate_command_target_position_world_m": open_position,
                     "candidate_command_target_quaternion_world_xyzw": open_command,
-                    "authoritative_target_position_world_m": list(
-                        opened.get(
-                            "arrival_target_position_world_m", open_position
-                        )
+                    "authoritative_target_position_world_m": (
+                        authoritative_open_position
                     ),
-                    "authoritative_target_quaternion_world_xyzw": open_authority,
+                    "authoritative_target_quaternion_world_xyzw": (
+                        authoritative_open_quaternion
+                    ),
                     "bounded_orientation_candidate": metadata,
                 }
             )

@@ -1062,8 +1062,9 @@ def _with_live_physx_dls_contact_close(
             or str(row.get("phase_id") or "") != "contact_close"
         ):
             continue
-        authored = row.get("arrival_target_position_world_m")
-        if not isinstance(authored, list) or len(authored) != 3:
+        try:
+            authored, _ = _contact_authoritative_targets(row)
+        except RuntimeError:
             return plan, {
                 "schema_version": "native_task_controls_physx_dls_close.v1",
                 "status": "not_applied",
@@ -1731,12 +1732,12 @@ def _with_contact_acquisition_candidate(
             float(value)
             for value in best["candidate_target_position_world_m"]
         ]
-        command_target = [
-            float(value)
-            for value in best.get(
-                "candidate_command_target_position_world_m", target
-            )
-        ]
+        command_target_raw = best.get(
+            "candidate_command_target_position_world_m"
+        )
+        if command_target_raw is None:
+            command_target_raw = target
+        command_target = [float(value) for value in command_target_raw]
         joints = [
             float(value)
             for value in best["reached_open_joint_positions_rad"]
@@ -1780,19 +1781,10 @@ def _with_contact_acquisition_candidate(
         receipt["reason"] = "contact_phase_missing"
         return plan, receipt
     try:
-        authored_arrival_target = [
-            float(value)
-            for value in contact_close.get(
-                "arrival_target_position_world_m",
-                contact_close["target_position_world_m"],
-            )
-        ]
-    except (KeyError, TypeError, ValueError):
-        receipt["reason"] = "authored_arrival_target_invalid"
-        return plan, receipt
-    if len(authored_arrival_target) != 3 or not all(
-        math.isfinite(value) for value in authored_arrival_target
-    ):
+        authored_arrival_target, _ = _contact_authoritative_targets(
+            contact_close
+        )
+    except RuntimeError:
         receipt["reason"] = "authored_arrival_target_invalid"
         return plan, receipt
 
@@ -2134,16 +2126,32 @@ def _contact_open_joint_margin(global_ik: Mapping[str, Any]) -> float | None:
 
 def _contact_authoritative_targets(
     target_row: Mapping[str, Any],
-) -> tuple[list[Any], list[Any]]:
+) -> tuple[list[float], list[float]]:
     """Resolve optional arrival overrides exactly as the episode does."""
 
-    position = target_row.get("arrival_target_position_world_m")
-    if position is None:
-        position = target_row["target_position_world_m"]
-    quaternion = target_row.get("arrival_target_quaternion_world_xyzw")
-    if quaternion is None:
-        quaternion = target_row["target_quaternion_world_xyzw"]
-    return list(position), list(quaternion)
+    try:
+        position = target_row.get("arrival_target_position_world_m")
+        if position is None:
+            position = target_row["target_position_world_m"]
+        quaternion = target_row.get("arrival_target_quaternion_world_xyzw")
+        if quaternion is None:
+            quaternion = target_row["target_quaternion_world_xyzw"]
+        resolved_position = [float(value) for value in position]
+        resolved_quaternion = [float(value) for value in quaternion]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("contact_authoritative_target_invalid") from exc
+    if (
+        len(resolved_position) != 3
+        or len(resolved_quaternion) != 4
+        or not all(
+            math.isfinite(value)
+            for value in [*resolved_position, *resolved_quaternion]
+        )
+        or math.sqrt(sum(value * value for value in resolved_quaternion))
+        <= 1.0e-12
+    ):
+        raise RuntimeError("contact_authoritative_target_invalid")
+    return resolved_position, resolved_quaternion
 
 
 def _fallback_contact_open_postures(
@@ -4320,6 +4328,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if isinstance(row, Mapping)
             and str(row.get("phase_id") or "") == "contact_close"
         )
+        (
+            contact_close_authoritative_position,
+            _,
+        ) = _contact_authoritative_targets(contact_close_row)
         close_contact_threshold = _contact_close_sweep_minimum_force_n(
             contact_close_row=contact_close_row,
             task_state_binding=scene_plan["task_state_binding"],
@@ -4359,9 +4371,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             close_posture_sweep = (
                 run_contact_close_posture_sweep(
                     environment=episode_environment,
-                    target_position_world_m=contact_close_row.get(
-                        "arrival_target_position_world_m",
-                        contact_close_row["target_position_world_m"],
+                    target_position_world_m=(
+                        contact_close_authoritative_position
                     ),
                     target_orientation_world_xyzw=contact_close_row[
                         "target_quaternion_world_xyzw"
@@ -4606,13 +4617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # closed linkage -- while the authored target stays fixed. Do not pay
         # again for a target-offset surface whose admissible region is closed.
         _announce("contact_acquisition_sweep")
-        authored_close_target = [
-            float(value)
-            for value in contact_close_row.get(
-                "arrival_target_position_world_m",
-                contact_close_row["target_position_world_m"],
-            )
-        ]
+        authored_close_target = list(contact_close_authoritative_position)
         open_target = [
             float(value) for value in contact_row["target_position_world_m"]
         ]

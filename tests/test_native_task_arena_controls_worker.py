@@ -331,6 +331,33 @@ def test_sweep_authority_uses_command_target_without_arrival_override(
     assert authoritative_quaternion == quaternion
 
 
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    [
+        ("arrival_target_position_world_m", "invalid"),
+        ("arrival_target_position_world_m", [1.0, 2.0]),
+        ("arrival_target_position_world_m", [1.0, float("nan"), 3.0]),
+        ("arrival_target_quaternion_world_xyzw", "invalid"),
+        ("arrival_target_quaternion_world_xyzw", [0.0, 0.0]),
+        ("arrival_target_quaternion_world_xyzw", [0.0, 0.0, 0.0, 0.0]),
+    ],
+)
+def test_sweep_authority_refuses_malformed_non_null_overrides(
+    field: str,
+    malformed: object,
+) -> None:
+    row = {
+        "target_position_world_m": [1.0, 2.0, 3.0],
+        "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+        field: malformed,
+    }
+
+    with pytest.raises(
+        RuntimeError, match="^contact_authoritative_target_invalid$"
+    ):
+        _contact_authoritative_targets(row)
+
+
 def test_bounded_orientation_seeds_prioritize_bound_physics_reference() -> None:
     c75 = [
         1.8153258562,
@@ -681,6 +708,7 @@ def test_physx_dls_close_adoption_removes_joint_override_and_restores_authored_t
                 "mode": "ik_pose",
                 "target_position_world_m": [1.0, 1.986, 3.0],
                 "arrival_target_position_world_m": [1.0, 2.0, 3.0],
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
                 "hold_solved_arm_joint_positions_rad": [0.2] * 7,
             }
         ],
@@ -702,6 +730,39 @@ def test_physx_dls_close_adoption_removes_joint_override_and_restores_authored_t
         0.3
     ] * 7
     assert derived["plan_digest"] != plan["plan_digest"]
+
+
+def test_physx_dls_close_treats_null_arrival_override_as_command_target() -> None:
+    plan = {
+        "scripted_positive_actions": [
+            {
+                "phase_id": "contact_close",
+                "mode": "ik_pose",
+                "target_position_world_m": [1.0, 1.986, 3.0],
+                "arrival_target_position_world_m": None,
+                "target_quaternion_world_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "arrival_target_quaternion_world_xyzw": None,
+                "hold_solved_arm_joint_positions_rad": [0.2] * 7,
+            }
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+
+    derived, receipt = _with_live_physx_dls_contact_close(
+        control_plan=plan,
+        preferred_posture_joint_positions_rad=[0.3] * 7,
+    )
+
+    row = derived["scripted_positive_actions"][0]
+    assert receipt["status"] == "applied"
+    assert receipt["authored_dls_target_position_world_m"] == [
+        1.0,
+        1.986,
+        3.0,
+    ]
+    assert row["target_position_world_m"] == [1.0, 1.986, 3.0]
+    assert row["hold_solved_arm_joint_positions_rad"] is None
 
 
 def test_closed_contact_calibration_keeps_the_measured_ik_branch() -> None:
@@ -2711,6 +2772,55 @@ def test_contact_acquisition_adopts_only_physics_admitted_bilateral_cell() -> No
     assert derived["plan_digest"] != plan["plan_digest"]
     assert derived["plan_digest"] == canonical_digest(
         derived, digest_field="plan_digest"
+    )
+
+
+def test_contact_acquisition_uses_command_fallback_for_null_optional_targets() -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_contact_acquisition_candidate,
+    )
+
+    plan = _branch_replay_plan(_branch_replay_task())
+    contact_close = next(
+        row
+        for row in plan["scripted_positive_actions"]
+        if row["phase_id"] == "contact_close"
+    )
+    authored_close_target = list(contact_close["target_position_world_m"])
+    contact_close["arrival_target_position_world_m"] = None
+    contact_close["arrival_target_quaternion_world_xyzw"] = None
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    candidate_target = [0.501, 0.096, 0.402]
+
+    derived, receipt = _with_contact_acquisition_candidate(
+        control_plan=plan,
+        sweep={
+            "status": "measured",
+            "best_cell": {
+                "cell_index": 18,
+                "admitted": True,
+                "authored_target_gate_passed": True,
+                "candidate_target_position_world_m": candidate_target,
+                "candidate_command_target_position_world_m": None,
+                "reached_open_joint_positions_rad": [0.1] * 7,
+                "approach_offset_m": -0.005,
+                "jaw_offset_m": 0.006,
+                "lateral_offset_m": 0.0,
+            },
+        },
+    )
+
+    rows = {
+        row["phase_id"]: row for row in derived["scripted_positive_actions"]
+    }
+    assert receipt["status"] == "applied"
+    assert receipt["adopted_command_target_position_world_m"] == candidate_target
+    assert receipt["authoritative_arrival_target_position_world_m"] == (
+        authored_close_target
+    )
+    assert rows["contact_open"]["target_position_world_m"] == candidate_target
+    assert rows["contact_close"]["arrival_target_position_world_m"] == (
+        authored_close_target
     )
 
 
