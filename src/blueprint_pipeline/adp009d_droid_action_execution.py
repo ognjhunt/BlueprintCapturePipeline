@@ -1,12 +1,14 @@
 """Execute DROID policy action chunks in the ADP-009D Isaac environment.
 
-The released pi05-DROID checkpoint outputs the original DROID action space:
-seven joint-velocity dimensions and one absolute gripper command.  Arena's
-available DROID embodiment accepts absolute joint-position targets instead,
-so each bounds-validated velocity row is converted to a bounded position
-increment from the *currently observed* joints.  Treating the raw row as seven
-positions made 448/480 actions hit joint limits in a paid run and was a harness
-fault, not a policy result.
+The compatibility DROID action path uses seven joint-velocity dimensions and
+one absolute gripper command.  Arena's available DROID embodiment accepts
+absolute joint-position targets instead, so each bounds-validated velocity row
+is converted to a bounded position increment from the *currently observed*
+joints.  Treating such a raw row as seven positions made 448/480 actions hit
+joint limits in a paid run and was a harness fault, not a policy result.  The
+current frozen pi05 jointpos config and GR00T adapter instead return absolute
+joint positions; those use the same validated direct-position execution but
+retain distinct candidate-specific source representations in their receipts.
 
 The environment's ``sim.dt = 1/120`` with ``decimation = 8`` means one
 ``env.step()`` advances 1/15 s, exactly DROID's 15 Hz control rate.  So one
@@ -47,7 +49,16 @@ ACTION_EXECUTION_SCHEMA_VERSION = "adp009d_droid_action_execution.v2"
 ACTION_SPACE_JOINT_VELOCITY = "joint_velocity"
 ACTION_SPACE_JOINT_POSITION = "joint_position"
 SOURCE_DROID_VELOCITY = "droid_joint_velocity_plus_absolute_gripper"
+SOURCE_PI05_POSITION = (
+    "pi05_droid_jointpos_polaris_absolute_joint_position_plus_absolute_gripper"
+)
 SOURCE_GROOT_POSITION = "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+
+_CANDIDATE_SOURCE_ACTION_SPACES = {
+    ("pi05_droid", ACTION_SPACE_JOINT_VELOCITY): SOURCE_DROID_VELOCITY,
+    ("pi05_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_PI05_POSITION,
+    ("groot_n17_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_GROOT_POSITION,
+}
 
 # DROID's published control contract.
 DROID_CONTROL_HZ = 15
@@ -102,6 +113,35 @@ class DroidActionExecutionError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted({str(e) for e in errors if str(e)}))
         super().__init__(";".join(self.errors))
+
+
+def _source_action_space(*, action_space: str, candidate_id: str | None) -> str:
+    """Name the source representation without changing legacy utility defaults.
+
+    Before the pi0.5 joint-position runtime existed, the only joint-position
+    caller was GR00T, so the public arithmetic helpers implicitly labeled every
+    such row as GR00T-decoded.  Keep that default for compatibility-only callers
+    that do not carry an episode candidate, while the episode path supplies its
+    frozen candidate id and therefore receives exact provenance.
+    """
+
+    if candidate_id is None:
+        if action_space == ACTION_SPACE_JOINT_VELOCITY:
+            return SOURCE_DROID_VELOCITY
+        if action_space == ACTION_SPACE_JOINT_POSITION:
+            return SOURCE_GROOT_POSITION
+        raise DroidActionExecutionError(
+            [f"droid_action_space_unsupported:{action_space}"]
+        )
+    try:
+        return _CANDIDATE_SOURCE_ACTION_SPACES[(str(candidate_id), action_space)]
+    except KeyError as exc:
+        raise DroidActionExecutionError(
+            [
+                "candidate_action_space_unsupported:"
+                f"candidate_id={candidate_id}:action_space={action_space}"
+            ]
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -431,13 +471,16 @@ def droid_row_to_isaac_action(
     joint_limits: Sequence[Sequence[float]],
     gripper: GripperConvention,
     action_space: str = ACTION_SPACE_JOINT_VELOCITY,
+    candidate_id: str | None = None,
 ) -> dict[str, Any]:
     """Convert one candidate row into an Arena absolute-position target.
 
-    OpenPI exposes the released DROID velocity action.  GR00T's processor
-    decodes its configured relative representation back to raw *absolute*
-    joint positions before returning from ``get_action``.  Treating both as
-    velocities would be another silent action-space harness fault.
+    Compatibility OpenPI configs may expose the DROID velocity action.  The
+    frozen pi05 jointpos config returns absolute positions, and GR00T's
+    processor decodes its configured relative representation back to raw
+    *absolute* joint positions before returning from ``get_action``. Treating
+    either absolute representation as velocity would be another silent
+    action-space harness fault.
     """
 
     import numpy as np
@@ -472,7 +515,9 @@ def droid_row_to_isaac_action(
         clipped_source = list(mapped["clipped_action"])
         velocity_command = [float(v) for v in values[:ARM_JOINT_COUNT]]
         joint_limit_clamped = bool(mapped["joint_limit_clamped"])
-        source_action_space = SOURCE_DROID_VELOCITY
+        source_action_space = _source_action_space(
+            action_space=action_space, candidate_id=candidate_id
+        )
         position_adapter = "observed_joint_plus_validated_normalized_velocity_delta"
         adapter_max_delta: float | None = DROID_MAX_JOINT_DELTA_RAD
     elif action_space == ACTION_SPACE_JOINT_POSITION:
@@ -484,7 +529,9 @@ def droid_row_to_isaac_action(
         clipped_source = [float(value) for value in values]
         velocity_command = []
         joint_limit_clamped = False
-        source_action_space = SOURCE_GROOT_POSITION
+        source_action_space = _source_action_space(
+            action_space=action_space, candidate_id=candidate_id
+        )
         position_adapter = "decoded_absolute_joint_position_direct_within_limits"
         adapter_max_delta = None
     else:
@@ -515,6 +562,7 @@ def plan_chunk_execution(
     *,
     horizon: int = DROID_OPEN_LOOP_HORIZON,
     action_space: str = ACTION_SPACE_JOINT_VELOCITY,
+    candidate_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate a chunk and retain the exact raw rows selected for execution.
 
@@ -525,11 +573,15 @@ def plan_chunk_execution(
 
     values = validate_action_chunk(chunk, horizon=horizon)
     if action_space == ACTION_SPACE_JOINT_VELOCITY:
-        source_action_space = SOURCE_DROID_VELOCITY
+        source_action_space = _source_action_space(
+            action_space=action_space, candidate_id=candidate_id
+        )
         position_adapter = "observed_joint_plus_validated_normalized_velocity_delta"
         adapter_max_delta: float | None = DROID_MAX_JOINT_DELTA_RAD
     elif action_space == ACTION_SPACE_JOINT_POSITION:
-        source_action_space = SOURCE_GROOT_POSITION
+        source_action_space = _source_action_space(
+            action_space=action_space, candidate_id=candidate_id
+        )
         position_adapter = "decoded_absolute_joint_position_direct_within_limits"
         adapter_max_delta = None
     else:
@@ -607,6 +659,8 @@ __all__ = [
     "DROID_OPEN_LOOP_HORIZON",
     "DroidActionExecutionError",
     "GripperConvention",
+    "SOURCE_GROOT_POSITION",
+    "SOURCE_PI05_POSITION",
     "build_gripper_convention_probe_request",
     "droid_row_to_isaac_action",
     "isaac_steps_per_droid_action",
