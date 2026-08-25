@@ -13,6 +13,8 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
     BLOCKER_JOINT_VELOCITY_BOUNDS,
     DroidActionExecutionError,
     GripperConvention,
+    SOURCE_GROOT_POSITION,
+    SOURCE_PI05_POSITION,
 )
 from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
@@ -310,7 +312,9 @@ def test_policy_episode_rejects_actions_beyond_frozen_articulated_budget() -> No
     assert environment.reset_count == 0
 
 
-def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
+def test_groot_absolute_joint_actions_take_the_direct_position_path(tmp_path) -> None:
+    from PIL import Image
+
     class _AbsolutePolicy(_Policy):
         action_space = "joint_position"
 
@@ -335,17 +339,28 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         candidate_id="groot_n17_droid",
         max_policy_queries=1,
         settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="groot-current-frame-contract",
     )
 
     assert environment.steps[0][:7] == pytest.approx(
         [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
     )
-    assert receipt["action_space"] == (
-        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+    assert receipt["candidate_id"] == "groot_n17_droid"
+    assert receipt["action_space"] == SOURCE_GROOT_POSITION
+    assert receipt["queries"][0]["source_action_space"] == SOURCE_GROOT_POSITION
+    assert receipt["commanded_actions"][0]["source_action_space"] == (
+        SOURCE_GROOT_POSITION
+    )
+    assert receipt["commanded_action_magnitudes"]["source_action_space"] == (
+        SOURCE_GROOT_POSITION
     )
     assert receipt["queries"][0]["position_adapter"] == (
         "decoded_absolute_joint_position_direct_within_limits"
     )
+    assert receipt["queries"][0]["chunk_shape"] == [40, 8]
+    assert receipt["queries"][0]["executed_rows"] == 8
+    assert receipt["queries"][0]["discarded_rows"] == 32
     assert receipt["queries"][0]["policy_inference_evidence"] == {
         "native_action_chunk_shape": [40, 17],
         "native_action_chunk_sha256": "a" * 64,
@@ -354,6 +369,51 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         "joint_velocity_command_max_abs_rad_s"
     ] == 0.0
     assert "observation/eef_9d" in policy.observations[0]
+    exact = receipt["candidate_exact_policy_input_frames"][0]
+    assert exact["view_order"] == [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
+    with Image.open(tmp_path / exact["relative_path"]) as image:
+        assert image.size == (640, 180)
+        pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    assert np.array_equal(
+        pixels[:, :320], policy.observations[0][DROID_EXTERIOR_VIEW_1]
+    )
+    assert np.array_equal(
+        pixels[:, 320:], policy.observations[0][DROID_WRIST_VIEW]
+    )
+
+
+def test_pi05_absolute_joint_actions_retain_candidate_identity_in_receipt() -> None:
+    class _AbsolutePi05Policy(_Policy):
+        action_space = "joint_position"
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((10, 8), dtype=float)
+            chunk[:, :7] = [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+            chunk[:, 7] = 1.0
+            return chunk
+
+    environment = _Environment()
+    receipt = _run(
+        environment,
+        _AbsolutePi05Policy(),
+        candidate_id="pi05_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+    )
+
+    assert environment.steps[0][:7] == pytest.approx(
+        [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+    )
+    assert receipt["candidate_id"] == "pi05_droid"
+    assert receipt["action_space"] == SOURCE_PI05_POSITION
+    assert receipt["queries"][0]["source_action_space"] == SOURCE_PI05_POSITION
+    assert receipt["commanded_actions"][0]["source_action_space"] == (
+        SOURCE_PI05_POSITION
+    )
+    assert receipt["commanded_action_magnitudes"]["source_action_space"] == (
+        SOURCE_PI05_POSITION
+    )
 
 
 class _ForcedGrootVendorClient:
@@ -367,7 +427,7 @@ class _ForcedGrootVendorClient:
         return {
             "video": {
                 "modality_keys": ["exterior_image_1_left", "wrist_image_left"],
-                "delta_indices": [-15, 0],
+                "delta_indices": [0],
             },
             "state": {
                 "modality_keys": ["eef_9d", "gripper_position", "joint_position"],
@@ -588,7 +648,7 @@ def test_openpi_refused_vendor_action_is_retained_before_episode_application(
         assert retained[0][0] == {"nonfinite_float": "nan"}
 
 
-def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -> None:
+def test_groot_observation_contains_no_unserved_historical_video() -> None:
     class _TemporalEnvironment(_Environment):
         def read_policy_inputs(self):
             inputs = super().read_policy_inputs()
@@ -614,12 +674,9 @@ def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -
         settle_window_samples=1,
     )
 
-    third = policy.observations[2]  # query steps are 0, 8, 16
+    third = policy.observations[2]
     assert third[DROID_EXTERIOR_VIEW_1][0, 0, 0] == 16
-    assert (
-        third["observation_history/exterior_image_1_left_t_minus_15"][0, 0, 0]
-        == 1
-    )
+    assert not any(key.startswith("observation_history/") for key in third)
 
 
 def test_successful_episode_retains_exact_policy_inputs_and_review_video(
@@ -757,7 +814,14 @@ def test_failed_candidate_seals_all_retained_cameras_without_terminal_read(
             self.policy_input_reads += 1
             if self.policy_input_reads > 1:
                 raise AssertionError("terminal_policy_input_read_forbidden")
-            return super().read_policy_inputs()
+            inputs = super().read_policy_inputs()
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 40, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 80, dtype=np.uint8
+            )
+            return inputs
 
         def read_evaluation_camera_inputs(self):
             self.evaluation_camera_reads += 1
@@ -1135,10 +1199,119 @@ def test_exact_first_observation_survives_multicamera_persistence_failure(
     assert resumed_artifacts == artifacts
 
 
-def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
+def test_failed_second_query_reports_partial_multicamera_evidence(
     tmp_path,
 ) -> None:
+    class _SecondCameraReadFails(_Environment):
+        def __init__(self):
+            super().__init__()
+            self.evaluation_camera_reads = 0
+
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 40, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 80, dtype=np.uint8
+            )
+            return inputs
+
+        def read_evaluation_camera_inputs(self):
+            self.evaluation_camera_reads += 1
+            if self.evaluation_camera_reads == 2:
+                raise RuntimeError("forced_second_multicamera_failure")
+            return {
+                "external": np.full((24, 32, 3), 40, dtype=np.uint8),
+                "wrist": np.full((24, 32, 3), 80, dtype=np.uint8),
+                "overview": np.full((24, 32, 3), 160, dtype=np.uint8),
+            }
+
+        def read_control_observation_metadata(self):
+            calibration = {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": [
+                    [20.0, 0.0, 16.0],
+                    [0.0, 20.0, 12.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                "world_from_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "resolution": [32, 24],
+                "near_m": 0.01,
+                "far_m": 10.0,
+            }
+            camera_ids = ("external", "wrist", "overview")
+            return {
+                "timestamp_ns": 100 * self.evaluation_camera_reads,
+                "simulation_time_s": float(self.evaluation_camera_reads - 1),
+                "calibrations": {
+                    camera_id: calibration for camera_id in camera_ids
+                },
+                "source_devices": {camera_id: "cpu" for camera_id in camera_ids},
+                "synchronizations": {
+                    camera_id: {"host_bytes_ready": True, "method": "test"}
+                    for camera_id in camera_ids
+                },
+            }
+
+    progress: dict = {}
+    environment = _SecondCameraReadFails()
+    with pytest.raises(RuntimeError, match="forced_second_multicamera_failure"):
+        _run(
+            environment=environment,
+            max_policy_queries=2,
+            open_loop_horizon=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="second-query-multicamera-failure",
+            progress=progress,
+        )
+
+    assert len(progress["candidate_exact_policy_input_frames"]) == 2
+    visual, artifacts = progress["_failure_media_finalizer"](
+        failure_reason="RuntimeError:forced_second_multicamera_failure"
+    )
+    assert visual["status"] == "incomplete_after_first_observation"
+    assert visual["exact_policy_observation_count"] == 2
+    assert visual["multicamera_policy_observation_count"] == 1
+    assert visual["multicamera_policy_observation_retained"] is True
+    assert visual["multicamera_policy_observation_complete"] is False
+    manifest_row = next(
+        row
+        for row in artifacts
+        if row["role"] == "failed_episode_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_row["relative_path"]).read_text(encoding="utf-8")
+    )
+    assert len(manifest["candidate_exact_policy_input_frames"]) == 2
+    assert len(manifest["multicamera_policy_input_observations"]) == 1
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
+    tmp_path, candidate_id: str
+) -> None:
     class _OverviewEnvironment(_Environment):
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            # Deliberately differ from the independent evaluation-camera read
+            # below. The retained external/wrist files must be these exact raw
+            # policy-input bytes, while only overview comes from the second
+            # camera read.
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 41, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 83, dtype=np.uint8
+            )
+            return inputs
+
         def read_evaluation_camera_inputs(self):
             return {
                 "external": np.full((24, 32, 3), 40, dtype=np.uint8),
@@ -1181,18 +1354,23 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
             }
 
     policy = _Policy()
+    if candidate_id == "groot_n17_droid":
+        policy.action_space = ACTION_SPACE_JOINT_POSITION
     receipt = _run(
         _OverviewEnvironment(),
         policy,
+        candidate_id=candidate_id,
         max_policy_queries=1,
         settle_window_samples=2,
         media_output_dir=tmp_path,
         episode_id="overview-episode",
+        require_complete_multicamera_media=True,
     )
 
     visual = receipt["visual_evidence"]
     assert set(visual["videos"]) == {"external", "wrist", "overview"}
     assert visual["review_only_camera_ids"] == ["overview"]
+    assert visual["policy_input_observation_count"] == receipt["policy_queries"]
     assert visual["policy_input_frame_count"] == 2
     assert visual["review_observation_count"] == 1
     assert visual["review_frame_count"] == 3
@@ -1200,11 +1378,41 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
     exact = receipt["candidate_exact_policy_input_frames"]
     assert len(exact) == 1
     assert exact[0]["candidate_exact_policy_input"] is True
-    assert exact[0]["view_order"] == [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
-    assert exact[0]["width"] == 448
-    assert exact[0]["height"] == 224
+    expected_view_order = [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
+    assert exact[0]["view_order"] == expected_view_order
+    assert exact[0]["width"] == sum(
+        exact[0]["view_shapes"][view][1] for view in expected_view_order
+    )
+    assert exact[0]["height"] == exact[0]["view_shapes"][expected_view_order[0]][0]
     assert exact[0]["frame_manifest_digest"].startswith("sha256:")
     assert (tmp_path / exact[0]["relative_path"]).is_file()
+    manifest_artifact = next(
+        row
+        for row in receipt["media_artifacts"]
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+    first_observation = manifest["policy_input_observations"][0]
+    from PIL import Image
+
+    for camera_id, expected_value in (("external", 41), ("wrist", 83)):
+        frame = first_observation["views"][camera_id]
+        with Image.open(tmp_path / frame["relative_path"]) as image:
+            pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        assert np.all(pixels == expected_value)
+        assert exact[0]["raw_policy_input_camera_bindings"][camera_id] == {
+            "frame_digest": frame["frame_digest"],
+            "raw_rgb_sha256": frame["raw_rgb_sha256"],
+        }
+    assert (
+        exact[0]["multicamera_observation_digest"]
+        == first_observation["observation_digest"]
+    )
+    assert exact[0]["frame_manifest_digest"] == canonical_digest(
+        exact[0], digest_field="frame_manifest_digest"
+    )
     assert receipt["observation_trace_digest"].startswith("sha256:")
 
 
@@ -1213,6 +1421,24 @@ def test_media_output_and_episode_identity_must_be_bound_together(tmp_path) -> N
         _run(media_output_dir=tmp_path)
 
     assert any("policy_media_binding_incomplete" in error for error in excinfo.value.errors)
+
+
+def test_required_complete_multicamera_media_rejects_legacy_profile(tmp_path) -> None:
+    environment = _Environment()
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(
+            environment=environment,
+            media_output_dir=tmp_path,
+            episode_id="legacy-profile-refused",
+            require_complete_multicamera_media=True,
+        )
+
+    assert environment.reset_count == 0
+    assert any(
+        "complete_multicamera_media_contract_missing" in error
+        for error in excinfo.value.errors
+    )
 
 
 def test_the_settle_window_releases_the_gripper() -> None:

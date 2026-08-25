@@ -723,6 +723,29 @@ def test_policy_execution_spec_refuses_non_loopback_endpoint(
         validate_native_task_policy_execution_spec(spec)
 
 
+def test_groot_execution_spec_rejects_stale_processor_history_contract(
+    tmp_path: Path,
+) -> None:
+    _, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    spec = _groot_policy_spec(scene, construction, controls)
+    spec["candidate_rights_binding"]["interface_identity"][
+        "policy_input_schema"
+    ]["frame_history"] = [-15, 0]
+    spec["candidate_rights_binding"]["rights_receipt_digest"] = canonical_digest(
+        spec["candidate_rights_binding"], digest_field="rights_receipt_digest"
+    )
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+
+    with pytest.raises(
+        ValueError, match="native_task_policy_spec_or_identity_invalid"
+    ):
+        validate_native_task_policy_execution_spec(spec)
+
+
 def test_policy_bundle_requires_exact_qualified_construction_and_controls(
     tmp_path: Path,
 ) -> None:
@@ -772,6 +795,7 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             "provider_runtime/adp009d_policy_server_worker.py",
             "provider_runtime/adp009d_checkpoint_fetch_worker.py",
             "provider_runtime/adp009d_provisioning_preflight.py",
+            "provider_runtime/adp009d_groot_wire_wheels.py",
             "provider_runtime/openpi_droid_policy_runtime.py",
             "provider_runtime/droid_policy_bridge.py",
         }.issubset(names)
@@ -779,6 +803,12 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             "provider_runtime/run_adp_arena_provider_runtime.sh"
         ).decode()
         assert 'export RUNTIME_DIR OUT_DIR' in entrypoint
+        assert "trap teardown_policy_server EXIT INT TERM HUP" in entrypoint
+        assert "--terminate-ready-server" in entrypoint
+        assert (
+            'adp009d_policy_server_receipt.$POLICY_CANDIDATE_ID.json'
+            in entrypoint
+        )
         assert entrypoint.index("policy_provisioning:started") < entrypoint.index(
             '"$RUNTIME_DIR/adp_arena_provider_runner.py"'
         )
@@ -2476,7 +2506,10 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
         assert "RTX A6000" not in observed["preferred_gpu_keywords"]
     else:
         assert observed["min_gpu_ram_mb"] == 46_000
+        assert observed["min_compute_cap"] == 800
         assert "RTX A6000" in observed["preferred_gpu_keywords"]
+        assert observed["expected_provider_download_bytes"] > 20_000_000_000
+        assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
@@ -2680,6 +2713,8 @@ def test_groot_policy_vast_requires_and_forwards_gated_backbone_authority(
     )
 
     assert observed["forward_hf_token"] is True
+    assert observed["expected_provider_download_bytes"] == 25_303_924_439
+    assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:

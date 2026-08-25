@@ -6,8 +6,10 @@ produce that project total by themselves.  This module binds one previously
 sealed project baseline, every posted attempt after that baseline, and the full
 caps of any admitted-but-unposted authorities into one reopenable receipt.
 
-The producer performs no provider mutation and never accepts a caller-supplied
-cost.  Every number is derived from digest-bound source bytes.
+The producer performs no provider mutation.  Its opening total comes either
+from a prior paid-attempt authority or from a digest-bound human authorization
+that explicitly adopts a conservative project exposure; every later increment
+is derived from digest-bound source bytes.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from .paid_attempt_authority import validate_same_goal_spend_reconciliation
 
 SCHEMA_VERSION = "adp_project_spend_reconciliation.v1"
 STATUS = "project_spend_conservatively_reconciled"
+HUMAN_BASELINE_SCHEMA_VERSION = "blueprint_project_spend_human_authorization.v1"
 
 
 def _sha256(path: Path) -> str:
@@ -200,6 +203,54 @@ def _official_billing_maturity(entry: Mapping[str, Any]) -> dict[str, Any] | Non
 
 def _baseline(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     source, value = _read(path, code="project_spend_baseline_invalid")
+    if value.get("schema_version") == HUMAN_BASELINE_SCHEMA_VERSION:
+        text = value.get("authorization_text")
+        opening = value.get("opening_project_exposure_usd")
+        ceiling = value.get("aggregate_project_ceiling_usd")
+        attempt = value.get("authorized_attempt")
+        bounded = value.get("maximum_bounded_exposure_after_full_attempt_reserve_usd")
+        headroom = value.get("minimum_guaranteed_headroom_after_full_attempt_reserve_usd")
+        text_digest = (
+            "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if isinstance(text, str)
+            else ""
+        )
+        if (
+            value.get("status") != "authorized"
+            or value.get("program_id") != "arm-decision-proof-v1"
+            or not isinstance(text, str)
+            or not text.strip()
+            or value.get("authorization_text_sha256") != text_digest
+            or not _finite(opening)
+            or not _finite(ceiling)
+            or not isinstance(attempt, Mapping)
+            or attempt.get("count") != 1
+            or attempt.get("retry_cap") != 0
+            or not _finite(attempt.get("maximum_spend_usd"))
+            or float(attempt.get("maximum_spend_usd", 0)) <= 0
+            or not _finite(attempt.get("maximum_hourly_rate_usd"))
+            or float(attempt.get("maximum_hourly_rate_usd", 0)) <= 0
+            or isinstance(attempt.get("hard_ttl_seconds"), bool)
+            or not isinstance(attempt.get("hard_ttl_seconds"), int)
+            or int(attempt.get("hard_ttl_seconds", 0)) <= 0
+            or not _finite(bounded)
+            or not _finite(headroom)
+            or round(float(opening) + float(attempt["maximum_spend_usd"]), 6)
+            != float(bounded)
+            or round(float(ceiling) - float(bounded), 6) != float(headroom)
+            or float(opening) > float(ceiling)
+            or value.get("production_standing_authorization") is not False
+            or value.get("launch_request") is not False
+            or value.get("provider_mutation_performed") is not False
+        ):
+            raise ValueError("project_spend_baseline_invalid")
+        return value, _record(
+            source,
+            baseline_kind="human_authorized_conservative_opening",
+            authorization_text_sha256=text_digest,
+            aggregate_goal_spend_before_attempt_usd=float(opening),
+        )
+
     total = value.get("aggregate_goal_spend_before_attempt_usd")
     digest = value.get("authorization_digest")
     if (
@@ -265,10 +316,12 @@ def materialize_project_spend_reconciliation(
     ):
         raise ValueError("project_spend_completeness_authority_missing")
     expected = tuple(str(item).strip() for item in expected_coverage_ids)
-    if not expected or any(not item for item in expected) or len(set(expected)) != len(expected):
+    if any(not item for item in expected) or len(set(expected)) != len(expected):
         raise ValueError("project_spend_expected_coverage_ids_invalid")
 
     baseline, baseline_record = _baseline(baseline_authority_path)
+    if not expected and baseline.get("schema_version") != HUMAN_BASELINE_SCHEMA_VERSION:
+        raise ValueError("project_spend_expected_coverage_ids_invalid")
     posted_records: list[dict[str, Any]] = []
     posted_entries: list[dict[str, Any]] = []
     posted_billing_maturity: list[dict[str, Any]] = []
@@ -310,7 +363,9 @@ def materialize_project_spend_reconciliation(
     if observed_coverage != set(expected):
         raise ValueError("project_spend_expected_attempt_coverage_mismatch")
 
-    baseline_total = float(baseline["aggregate_goal_spend_before_attempt_usd"])
+    baseline_total = float(
+        baseline_record["aggregate_goal_spend_before_attempt_usd"]
+    )
     posted_total = math.fsum(float(entry["cost_usd"]) for entry in posted_entries)
     conservative_total = math.fsum((baseline_total, posted_total, unposted_cap_total))
     receipt: dict[str, Any] = {
@@ -462,7 +517,9 @@ def validate_project_spend_reconciliation(
     ):
         raise ValueError("project_spend_completeness_authority_invalid")
 
-    baseline_total = float(baseline["aggregate_goal_spend_before_attempt_usd"])
+    baseline_total = float(
+        observed_baseline["aggregate_goal_spend_before_attempt_usd"]
+    )
     posted_total = math.fsum(float(entry["cost_usd"]) for entry in posted_entries)
     total = math.fsum((baseline_total, posted_total, unposted_total))
     if (
@@ -525,7 +582,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--baseline-authority", required=True)
     parser.add_argument("--posted-reconciliation", action="append", default=[])
     parser.add_argument("--unposted-authority", action="append", default=[])
-    parser.add_argument("--expected-coverage-id", action="append", required=True)
+    parser.add_argument("--expected-coverage-id", action="append", default=[])
     parser.add_argument("--completeness-reference", required=True)
     parser.add_argument("--authorized-by", required=True)
     parser.add_argument("--authorized-on", required=True)

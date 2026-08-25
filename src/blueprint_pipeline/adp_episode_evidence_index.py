@@ -28,6 +28,11 @@ try:  # flat provider-bundle layout
         validate_agent_cad_content_agents_bundle_matrix,
     )
     from decision_evidence_contracts import canonical_digest
+    from episode_visual_evidence import (
+        MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION,
+        _verified_retained_rgb_frame,
+        validate_multicamera_frame_manifest,
+    )
     from simready_cad_agent_contract import (
         SimReadyCadAgentContractError,
         validate_cad_agent_matrix,
@@ -38,6 +43,11 @@ except ModuleNotFoundError:  # repository package
         validate_agent_cad_content_agents_bundle_matrix,
     )
     from .decision_evidence_contracts import canonical_digest
+    from .episode_visual_evidence import (
+        MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION,
+        _verified_retained_rgb_frame,
+        validate_multicamera_frame_manifest,
+    )
     from .simready_cad_agent_contract import (
         SimReadyCadAgentContractError,
         validate_cad_agent_matrix,
@@ -904,6 +914,190 @@ def _supporting_receipt_row(root: Path, raw_path: str | Path) -> dict[str, Any]:
     }
 
 
+def _verified_multicamera_manifest(
+    root: Path,
+    *,
+    episode_id: str,
+    artifact: Mapping[str, Any],
+    visual: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    verified = _verify_artifact(root, artifact, role=f"{episode_id}:manifest")
+    path = _inside(root, verified["relative_path"], role=f"{episode_id}:manifest")
+    try:
+        manifest = _load_json(path)
+        manifest = validate_multicamera_frame_manifest(
+            manifest,
+            output_dir=root,
+            verify_files=True,
+        )
+    except (AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
+        raise EpisodeEvidenceIndexError(
+            f"episode_frame_manifest_invalid:{episode_id}:{exc}"
+        ) from exc
+    if (
+        manifest.get("schema_version")
+        != MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION
+        or set(manifest.get("required_camera_ids") or ())
+        != set(REQUIRED_CAMERA_IDS)
+        or set(manifest.get("review_only_camera_ids") or ()) != {"overview"}
+        or visual.get("frame_manifest_digest") != manifest.get("frame_manifest_digest")
+    ):
+        raise EpisodeEvidenceIndexError(
+            f"episode_frame_manifest_binding_invalid:{episode_id}"
+        )
+
+    frames: list[dict[str, Any]] = []
+    observations = [
+        *(manifest.get("policy_input_observations") or []),
+        *(manifest.get("review_observations") or []),
+        manifest["terminal_observation"],
+    ]
+    for observation in observations:
+        for camera_id, raw_frame in sorted(observation["views"].items()):
+            try:
+                frame = _verified_retained_rgb_frame(raw_frame, output_dir=root)
+            except (OSError, ValueError) as exc:
+                raise EpisodeEvidenceIndexError(
+                    "episode_lossless_camera_frame_invalid:"
+                    f"{episode_id}:{observation['observation_index']}:{camera_id}:{exc}"
+                ) from exc
+            frames.append(
+                {
+                    "observation_index": observation["observation_index"],
+                    "kind": observation["kind"],
+                    "camera_id": camera_id,
+                    "timestamp_ns": observation["timestamp_ns"],
+                    "simulation_time_s": observation["simulation_time_s"],
+                    "relative_path": frame["relative_path"],
+                    "png_sha256": frame["png_sha256"],
+                    "raw_rgb_sha256": frame["raw_rgb_sha256"],
+                    "size_bytes": frame["size_bytes"],
+                    "calibration_digest": frame["calibration_digest"],
+                    "frame_digest": frame["frame_digest"],
+                }
+            )
+    return (
+        {
+            **verified,
+            "schema_version": manifest["schema_version"],
+            "frame_manifest_digest": manifest["frame_manifest_digest"],
+            "lossless_frame_count": len(frames),
+        },
+        frames,
+        manifest,
+    )
+
+
+def _verified_exact_policy_input_frames(
+    root: Path,
+    *,
+    episode_id: str,
+    receipt: Mapping[str, Any],
+    multicamera_manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if receipt.get("schema_version") != "adp009d_policy_episode.v3":
+        return []
+    raw_frames = receipt.get("candidate_exact_policy_input_frames")
+    expected_count = receipt.get("policy_queries")
+    if (
+        not isinstance(raw_frames, list)
+        or not raw_frames
+        or isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < 1
+        or len(raw_frames) != expected_count
+    ):
+        raise EpisodeEvidenceIndexError(
+            f"episode_exact_policy_input_count_invalid:{episode_id}"
+        )
+
+    candidate_id = str(receipt.get("candidate_id") or "")
+    policy_observations = multicamera_manifest.get("policy_input_observations")
+    if (
+        not isinstance(policy_observations, list)
+        or len(policy_observations) != expected_count
+    ):
+        raise EpisodeEvidenceIndexError(
+            f"episode_exact_policy_input_multicamera_count_invalid:{episode_id}"
+        )
+    frames: list[dict[str, Any]] = []
+    try:
+        for expected_index, raw_frame in enumerate(raw_frames):
+            if not isinstance(raw_frame, Mapping):
+                raise ValueError("exact_policy_input_frame_not_mapping")
+            frame = _verified_retained_rgb_frame(raw_frame, output_dir=root)
+            observation = policy_observations[expected_index]
+            if not isinstance(observation, Mapping):
+                raise ValueError("exact_policy_input_multicamera_not_mapping")
+            view_order = frame.get("view_order")
+            view_shapes = frame.get("view_shapes")
+            raw_camera_bindings = frame.get("raw_policy_input_camera_bindings")
+            expected_raw_camera_bindings = {
+                camera_id: {
+                    "frame_digest": observation["views"][camera_id]["frame_digest"],
+                    "raw_rgb_sha256": observation["views"][camera_id][
+                        "raw_rgb_sha256"
+                    ],
+                }
+                for camera_id in ("external", "wrist")
+            }
+            if (
+                frame.get("frame_index") != expected_index
+                or frame.get("kind") != "policy-input"
+                or frame.get("candidate_id") != candidate_id
+                or frame.get("candidate_exact_policy_input") is not True
+                or not isinstance(view_order, list)
+                or not view_order
+                or len(set(view_order)) != len(view_order)
+                or not isinstance(view_shapes, Mapping)
+                or set(view_shapes) != set(view_order)
+                or frame.get("multicamera_observation_digest")
+                != observation.get("observation_digest")
+                or raw_camera_bindings != expected_raw_camera_bindings
+                or frame.get("frame_manifest_digest")
+                != canonical_digest(frame, digest_field="frame_manifest_digest")
+            ):
+                raise ValueError("exact_policy_input_frame_binding_invalid")
+            shapes = [view_shapes[view] for view in view_order]
+            if any(
+                not isinstance(shape, list)
+                or len(shape) != 3
+                or shape[2] != 3
+                or shape[0] != frame["height"]
+                for shape in shapes
+            ) or sum(int(shape[1]) for shape in shapes) != frame["width"]:
+                raise ValueError("exact_policy_input_view_shape_invalid")
+            frames.append(
+                {
+                    "frame_index": frame["frame_index"],
+                    "relative_path": frame["relative_path"],
+                    "png_sha256": frame["png_sha256"],
+                    "raw_rgb_sha256": frame["raw_rgb_sha256"],
+                    "size_bytes": frame["size_bytes"],
+                    "width": frame["width"],
+                    "height": frame["height"],
+                    "view_order": list(view_order),
+                    "view_shapes": dict(view_shapes),
+                    "frame_manifest_digest": frame["frame_manifest_digest"],
+                }
+            )
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise EpisodeEvidenceIndexError(
+            f"episode_exact_policy_input_invalid:{episode_id}:{exc}"
+        ) from exc
+
+    if (
+        receipt.get("candidate_exact_policy_input_manifest_digest")
+        != canonical_digest({"frames": raw_frames})
+        or receipt.get("observation_trace_digest")
+        != canonical_digest({"observations": raw_frames})
+    ):
+        raise EpisodeEvidenceIndexError(
+            f"episode_exact_policy_input_manifest_digest_invalid:{episode_id}"
+        )
+    return frames
+
+
 def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
     receipt = _load_json(receipt_path)
     schema_version = str(receipt.get("schema_version") or "")
@@ -938,8 +1132,26 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
     ]
     if len(manifests) != 1:
         raise EpisodeEvidenceIndexError(f"episode_frame_manifest_not_unique:{episode_id}")
-    manifest = _verify_artifact(root, manifests[0], role=f"{episode_id}:manifest")
+    manifest, lossless_camera_frames, multicamera_manifest = (
+        _verified_multicamera_manifest(
+            root,
+            episode_id=episode_id,
+            artifact=manifests[0],
+            visual=visual,
+        )
+    )
+    exact_policy_input_frames = _verified_exact_policy_input_frames(
+        root,
+        episode_id=episode_id,
+        receipt=receipt,
+        multicamera_manifest=multicamera_manifest,
+    )
 
+    visual_videos = visual.get("videos")
+    if not isinstance(visual_videos, Mapping):
+        raise EpisodeEvidenceIndexError(
+            f"episode_camera_video_bindings_missing:{episode_id}"
+        )
     videos: dict[str, dict[str, Any]] = {}
     for camera_id in REQUIRED_CAMERA_IDS:
         matches = [
@@ -956,6 +1168,24 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
         videos[camera_id] = _verify_artifact(
             root, matches[0], role=f"{episode_id}:{camera_id}"
         )
+        video_binding = visual_videos.get(camera_id)
+        if (
+            not isinstance(video_binding, Mapping)
+            or video_binding.get("camera_id") != camera_id
+            or any(
+                video_binding.get(field) != videos[camera_id].get(field)
+                for field in (
+                    "relative_path",
+                    "sha256",
+                    "size_bytes",
+                )
+            )
+            or video_binding.get("derived_from_frame_manifest_digest")
+            != manifest["frame_manifest_digest"]
+        ):
+            raise EpisodeEvidenceIndexError(
+                f"episode_camera_video_manifest_binding_invalid:{episode_id}:{camera_id}"
+            )
 
     score = receipt.get("score")
     if not isinstance(score, Mapping) or not score.get("status"):
@@ -984,6 +1214,8 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
             ),
         },
         "frame_manifest": manifest,
+        "lossless_camera_frames": lossless_camera_frames,
+        "exact_policy_input_frames": exact_policy_input_frames,
         "videos": videos,
     }
 
@@ -998,6 +1230,13 @@ def _render_html(payload: Mapping[str, Any]) -> str:
                 f'<a href="{quote(path)}">{html.escape(camera_id)}</a>'
             )
         manifest_path = episode["frame_manifest"]["relative_path"]
+        frame_links = [f'<a href="{quote(manifest_path)}">manifest</a>']
+        exact_policy_inputs = episode.get("exact_policy_input_frames") or []
+        if exact_policy_inputs:
+            exact_path = exact_policy_inputs[0]["relative_path"]
+            frame_links.append(
+                f'<a href="{quote(exact_path)}">first exact policy input</a>'
+            )
         receipt_path = episode["receipt"]["relative_path"]
         score = episode["score"]
         rows.append(
@@ -1008,7 +1247,7 @@ def _render_html(payload: Mapping[str, Any]) -> str:
             f"<td>{html.escape(str(score.get('outcome')))}</td>"
             f"<td>{html.escape(str(score.get('task_succeeded')))}</td>"
             f"<td>{' | '.join(links)}</td>"
-            f'<td><a href="{quote(manifest_path)}">manifest</a></td>'
+            f"<td>{' | '.join(frame_links)}</td>"
             f'<td><a href="{quote(receipt_path)}">receipt</a></td>'
             "</tr>"
         )

@@ -3926,6 +3926,7 @@ def test_bundle_ships_the_identity_bound_server_and_its_staged_inputs(
 
     assert "provider_runtime/openpi_droid_policy_runtime.py" in names
     assert "provider_runtime/droid_policy_bridge.py" in names
+    assert "provider_runtime/adp009d_groot_wire_wheels.py" in names
     assert f"provider_runtime/{POLICY_EXECUTION_SPEC_STAGED_NAME}" in names
     assert f"provider_runtime/{CHECKPOINT_INVENTORY_STAGED_NAME}" in names
     # The script the worker actually runs must name the files that shipped.
