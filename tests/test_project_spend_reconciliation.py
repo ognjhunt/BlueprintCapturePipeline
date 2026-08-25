@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -39,6 +40,103 @@ def _authority(
     )
     path.write_text(json.dumps(value), encoding="utf-8")
     return path, value
+
+
+def _human_baseline(path: Path) -> tuple[Path, dict[str, object]]:
+    text = (
+        "I authorize Blueprint to adopt $43.197914 as the conservative opening "
+        "project exposure for the next launch ledger."
+    )
+    value: dict[str, object] = {
+        "schema_version": "blueprint_project_spend_human_authorization.v1",
+        "status": "authorized",
+        "program_id": "arm-decision-proof-v1",
+        "authorization_text": text,
+        "authorization_text_sha256": (
+            "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        ),
+        "opening_project_exposure_usd": 43.197914,
+        "aggregate_project_ceiling_usd": 50.0,
+        "authorized_attempt": {
+            "count": 1,
+            "retry_cap": 0,
+            "maximum_spend_usd": 0.75,
+            "maximum_hourly_rate_usd": 0.8,
+            "hard_ttl_seconds": 9000,
+        },
+        "maximum_bounded_exposure_after_full_attempt_reserve_usd": 43.947914,
+        "minimum_guaranteed_headroom_after_full_attempt_reserve_usd": 6.052086,
+        "production_standing_authorization": False,
+        "launch_request": False,
+        "provider_mutation_performed": False,
+    }
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path, value
+
+
+def test_human_authorized_opening_accepts_empty_post_baseline_coverage(
+    tmp_path: Path,
+) -> None:
+    baseline_path, baseline = _human_baseline(tmp_path / "human-baseline.json")
+    output = tmp_path / "project-spend.json"
+
+    receipt = materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline_path,
+        posted_reconciliation_paths=[],
+        expected_coverage_ids=[],
+        completeness_reference=str(baseline_path),
+        authorized_by="user",
+        authorized_on="2026-08-25T20:41:55Z",
+        output_path=output,
+    )
+
+    assert receipt["baseline_total_cost_usd"] == 43.197914
+    assert receipt["covered_post_baseline_attempt_ids"] == []
+    assert receipt["total_cost_usd"] == 43.197914
+    assert receipt["baseline_authority"]["baseline_kind"] == (
+        "human_authorized_conservative_opening"
+    )
+    validate_project_spend_reconciliation(
+        output, expected_total_cost_usd=43.197914
+    )
+
+
+def test_human_authorized_opening_rejects_changed_authorization_text(
+    tmp_path: Path,
+) -> None:
+    baseline_path, baseline = _human_baseline(tmp_path / "human-baseline.json")
+    baseline["authorization_text"] = "changed after authorization"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="project_spend_baseline_invalid"):
+        materialize_project_spend_reconciliation(
+            baseline_authority_path=baseline_path,
+            posted_reconciliation_paths=[],
+            expected_coverage_ids=[],
+            completeness_reference=str(baseline_path),
+            authorized_by="user",
+            authorized_on="2026-08-25T20:41:55Z",
+            output_path=tmp_path / "project-spend.json",
+        )
+
+
+def test_paid_attempt_baseline_still_requires_post_baseline_coverage(
+    tmp_path: Path,
+) -> None:
+    authority_path, _ = _authority(tmp_path / "authority.json")
+
+    with pytest.raises(
+        ValueError, match="project_spend_expected_coverage_ids_invalid"
+    ):
+        materialize_project_spend_reconciliation(
+            baseline_authority_path=authority_path,
+            posted_reconciliation_paths=[],
+            expected_coverage_ids=[],
+            completeness_reference="retained queue inventory",
+            authorized_by="user",
+            authorized_on="2026-08-25T20:41:55Z",
+            output_path=tmp_path / "project-spend.json",
+        )
 
 
 def test_unposted_attempt_is_counted_at_full_cap_and_reopened(tmp_path: Path) -> None:
