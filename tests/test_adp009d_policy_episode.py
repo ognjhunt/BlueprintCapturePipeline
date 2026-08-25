@@ -947,7 +947,7 @@ def test_nonfinite_candidate_action_is_retained_before_finite_validation() -> No
             ACTION_SPACE_JOINT_VELOCITY,
             "pi05_droid",
             7,
-            1.01,
+            1.30,
             BLOCKER_GRIPPER_BOUNDS,
         ),
         (
@@ -961,7 +961,7 @@ def test_nonfinite_candidate_action_is_retained_before_finite_validation() -> No
             ACTION_SPACE_JOINT_POSITION,
             "groot_n17_droid",
             7,
-            -0.01,
+            -0.30,
             BLOCKER_GRIPPER_BOUNDS,
         ),
     ],

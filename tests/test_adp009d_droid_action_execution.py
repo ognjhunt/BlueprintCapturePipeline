@@ -252,13 +252,13 @@ def test_plan_matches_the_repository_droid_velocity_action_semantics() -> None:
         (
             ACTION_SPACE_JOINT_VELOCITY,
             7,
-            1.01,
+            1.30,
             BLOCKER_GRIPPER_BOUNDS,
         ),
         (
             ACTION_SPACE_JOINT_POSITION,
             7,
-            -0.01,
+            -0.30,
             BLOCKER_GRIPPER_BOUNDS,
         ),
     ],
@@ -291,6 +291,65 @@ def test_raw_candidate_bounds_refuse_instead_of_clipping(
     assert any(
         error.startswith(expected_blocker) for error in row_excinfo.value.errors
     )
+
+
+def test_live_pi05_gripper_overshoot_validates_and_thresholds_closed() -> None:
+    """Live run 20260825T125800Z: pi05 returned gripper 1.0253 on all 15 rows.
+
+    The native DROID adapter clips this scalar to [0, 1] and binarizes at 0.5
+    (``droid_policy_bridge.droid_action_to_mujoco_targets``), so the validator
+    must accept the overshoot and the executed command must read "closed".
+    Refusing it was a harness fault, not a policy result -- no action was
+    applied and a rented L40's episode never ran.
+    """
+
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        validate_candidate_action_bounds as validate,
+    )
+
+    overshoot = 1.0253319786572457
+    chunk = np.zeros((15, 8), dtype=float)
+    chunk[:, 7] = overshoot
+
+    receipt = validate(
+        chunk, action_space=ACTION_SPACE_JOINT_VELOCITY, joint_limits=_LIMITS
+    )
+    contract = receipt["gripper_contract"]
+    assert contract["rows_outside_command_interval"] == 15
+    assert contract["max_command_interval_overshoot"] == pytest.approx(
+        overshoot - 1.0
+    )
+    assert contract["raw_accepted_bounds"] == [-0.25, 1.25]
+    assert contract["command_interval"] == [0.0, 1.0]
+
+    # GR00T's decoded joint-position space shares the same gripper channel.
+    validate(chunk, action_space=ACTION_SPACE_JOINT_POSITION, joint_limits=_LIMITS)
+
+    executed = droid_row_to_isaac_action(
+        chunk[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_VELOCITY,
+    )
+    assert executed["gripper_closed"] is True
+    assert executed["droid_gripper_scalar"] == pytest.approx(overshoot)
+    assert executed["raw_candidate_bounds_validated"] is True
+
+
+def test_gripper_values_inside_command_interval_report_zero_overshoot() -> None:
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        validate_candidate_action_bounds as validate,
+    )
+
+    receipt = validate(
+        _chunk(gripper=0.9),
+        action_space=ACTION_SPACE_JOINT_VELOCITY,
+        joint_limits=_LIMITS,
+    )
+    contract = receipt["gripper_contract"]
+    assert contract["rows_outside_command_interval"] == 0
+    assert contract["max_command_interval_overshoot"] == 0.0
 
 
 def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> None:
