@@ -765,6 +765,39 @@ def run_arena_native_control_vast(
         and watchdog_close.get("status") not in accepted_watchdog_statuses
     ):
         blockers.append(f"{blocker_prefix}_independent_watchdog_not_terminal")
+    policy_evidence: dict[str, Any] = {}
+    if candidate_policy_query_expected:
+        observed_visual = execution.get("visual_evidence")
+        observed_query = execution.get("candidate_policy_queried")
+        if isinstance(observed_query, bool):
+            policy_evidence["candidate_policy_queried"] = observed_query
+        if isinstance(observed_visual, Mapping):
+            policy_evidence["visual_evidence"] = dict(observed_visual)
+        if adapter.get("provider_create_attempted") is False and not execution:
+            adapter_blockers = [
+                str(value)
+                for value in adapter.get("blockers") or []
+                if str(value)
+            ]
+            reason = (
+                adapter_blockers[0]
+                if len(adapter_blockers) == 1
+                else f"{blocker_prefix}_provider_preflight_blocked"
+            )
+            policy_evidence.update(
+                {
+                    "candidate_policy_queried": False,
+                    "first_observation_reached": False,
+                    "scientific_attempt_started": False,
+                    "visual_evidence": {
+                        "status": "unavailable_before_first_observation",
+                        "media_gap": {
+                            "type": "before_first_observation",
+                            "reason": reason,
+                        },
+                    },
+                }
+            )
     warm_session_path = attempt_root / "native_task_arena_warm_session.v1.json"
     warm_session: dict[str, Any] | None = None
     if warm_retained:
@@ -896,6 +929,7 @@ def run_arena_native_control_vast(
         },
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        **policy_evidence,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }

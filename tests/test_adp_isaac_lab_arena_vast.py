@@ -359,6 +359,114 @@ def test_live_transport_emits_allocator_artifact_manifest(
     }
 
 
+def test_policy_transport_seals_typed_media_gap_before_provider_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+        "protocol_digest": "sha256:" + "b" * 64,
+    }
+
+    def fake_stage(*, job_dir, **_kwargs):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.invalid/object\n")
+        return {"status": "completed"}
+
+    def fake_adapter(*, job_dir, **_kwargs):
+        provider = Path(job_dir)
+        adapter = {
+            "status": "blocked",
+            "blockers": ["provider_bundle_readiness_parse_failed"],
+            "estimated_cost_usd": 0.0,
+            "vast_instance_ids": [],
+            "continuing_spend_from_this_run": False,
+            "provider_create_attempted": False,
+        }
+        write_json(provider / "vast_provider_adapter_result.json", adapter)
+        write_json(
+            provider / "vast_teardown_manifest.json",
+            {
+                "status": "not_required_blueprint_bundle_preflight_blocked",
+                "vast_instance_ids": [],
+                "continuing_spend_from_this_run": False,
+            },
+        )
+        return adapter
+
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        arena,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
+    monkeypatch.setattr(
+        arena,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {"status": "armed", "blockers": []},
+            SimpleNamespace(
+                pod_name_prefix="blueprint-native-task-policy-diagnostic-",
+                started_instance_id_path=tmp_path / "started_vast_instance_id.txt",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        arena,
+        "close_independent_vast_watchdog",
+        lambda **kwargs: (
+            {"status": "cancelled_no_allocation"}
+            if kwargs["provider_allocation_impossible"] is True
+            else pytest.fail("no-allocation close did not bind provider impossibility")
+        ),
+    )
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=0.5,
+        hard_ttl_seconds=9_000,
+        require_independent_watchdog=True,
+        candidate_policy_query_expected=True,
+        blocker_prefix="native_task_arena_policy_diagnostic",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["candidate_policy_queried"] is False
+    assert result["first_observation_reached"] is False
+    assert result["scientific_attempt_started"] is False
+    assert result["visual_evidence"] == {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "provider_bundle_readiness_parse_failed",
+        },
+    }
+    persisted = json.loads(
+        (tmp_path / "job/adp_arena_vast_result.json").read_text(encoding="utf-8")
+    )
+    assert persisted["visual_evidence"] == result["visual_evidence"]
+
+
 def test_live_transport_seals_guarded_warm_session_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -190,6 +190,15 @@ def _attempt_id(result_path: Path, result: Mapping[str, Any]) -> str:
         value = result.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    attempt_root = result.get("attempt_root")
+    if isinstance(attempt_root, str) and attempt_root.strip():
+        parts = Path(attempt_root).parts
+        try:
+            launch_index = parts.index("task-evaluation-launch-runs") + 1
+        except ValueError:
+            launch_index = len(parts)
+        if launch_index < len(parts) and parts[launch_index].strip():
+            return parts[launch_index].strip()
     if result_path.parent.name == "allocator" and result_path.parent.parent.name:
         return result_path.parent.parent.name
     if result_path.parent.name:

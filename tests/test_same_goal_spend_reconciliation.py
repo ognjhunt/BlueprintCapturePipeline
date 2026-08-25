@@ -13,6 +13,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
 from blueprint_pipeline.same_goal_spend_reconciliation import (
     SUPPORTED_LANES,
+    _attempt_id,
     materialize_same_goal_spend_reconciliation,
 )
 from blueprint_pipeline.semantic_teacher_image_edit_paid_authority import (
@@ -33,6 +34,25 @@ def _write(path: Path, value: dict[str, object]) -> Path:
 def _digest_bound(value: dict[str, object], field: str = "receipt_digest") -> dict[str, object]:
     value[field] = canonical_digest(value, digest_field=field)
     return value
+
+
+@pytest.mark.parametrize(
+    "launch_id",
+    [
+        "adp-arena-policy-diagnostic-pi05-exact-sha",
+        "adp-arena-policy-diagnostic-groot-exact-sha",
+    ],
+)
+def test_attempt_id_uses_launch_run_identity_before_shared_attempt_number(
+    tmp_path: Path, launch_id: str
+) -> None:
+    result_path = tmp_path / launch_id / "attempt_001/adp_arena_vast_result.json"
+    attempt_root = (
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/"
+        f"{launch_id}/allocator/arena-policy-diagnostic-job/attempts/attempt_001"
+    )
+
+    assert _attempt_id(result_path, {"attempt_root": attempt_root}) == launch_id
 
 
 def _fixture(root: Path, *, instance_id: int = 47593142, amount: float = 0.025) -> dict[str, Path]:
