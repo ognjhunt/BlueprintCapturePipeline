@@ -3,14 +3,25 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+from blueprint_pipeline.adp009d_groot_wire_wheels import (
+    GROOT_WIRE_WHEEL_ARTIFACTS,
+    RECEIPT_FILENAME as GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+    expected_artifacts_digest as groot_wire_expected_artifacts_digest,
+)
 from blueprint_pipeline.adp009d_policy_provisioning import (
+    ACTIVE_CANDIDATE_DEPENDENCY_LOCKS,
     BLOCKER_CREDENTIALS,
+    BLOCKER_GROOT_WIRE_WHEEL_LOCK,
+    BLOCKER_DEPENDENCY_LOCK,
     BLOCKER_JAX_PREALLOCATION,
     BLOCKER_NOT_LOOPBACK,
     BLOCKER_SHARED_INTERPRETER,
     ISAAC_INTERPRETER,
     ISAAC_PYTHON_EXECUTABLE,
     POLICY_SOURCE_ROOT,
+    UV_ARCHIVE_SHA256,
+    UV_ARCHIVE_URL,
+    UV_VERSION,
     PolicyProvisioningError,
     build_provisioning_script,
     describe_provisioning,
@@ -114,11 +125,15 @@ def test_generated_groot_provisioning_script_is_valid_bash(tmp_path) -> None:
 def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> None:
     script = build_provisioning_script("groot_n17_droid")
 
-    assert '"pyzmq==27.0.1"' in script
-    assert '"msgpack==1.1.0"' in script
-    assert '"msgpack-numpy==0.4.8"' in script
-    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
-    assert script.index('"msgpack-numpy==0.4.8"') < script.index(
+    assert '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"' in script
+    assert '--python "/isaac-sim/kit/python/bin/python3"' in script
+    assert '--runtime-dir "$RUNTIME_DIR"' in script
+    assert f'--output "$OUT_DIR/{GROOT_WIRE_WHEEL_RECEIPT_FILENAME}"' in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" "$RUNTIME_DIR/groot_n17_wire_client.py"'
+        in script
+    )
+    assert script.index('"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"') < script.index(
         '"$RUNTIME_DIR/groot_n17_wire_client.py"'
     )
     assert script.index('"$RUNTIME_DIR/groot_n17_wire_client.py"') < script.index(
@@ -132,24 +147,51 @@ def test_groot_wire_pins_go_to_a_staged_target_never_into_the_kit_environment() 
     Pins installed *into* the kit environment therefore never win: the live
     20260825T134736Z GR00T run observed msgpack 1.2.1/pyzmq 27.1.0 over its
     freshly installed pins and the wire self-check correctly refused. The pins
-    must land in the staged sibling directory the wire client prepends, with
-    --no-deps so nothing resolves into Isaac's interpreter as a side effect
-    (the in-environment install dragged in numpy 2.5.2).
-
-    numpy itself is pinned into the staged directory explicitly: the bare kit
-    interpreter has no numpy outside Isaac's bootstrapped extension path, and
-    the 20260825T144455Z self-check failed on ``import numpy`` once the old
-    side-effect install stopped providing it. In-episode, Isaac's own
-    already-imported numpy wins via sys.modules.
+    must land in the staged sibling directory the wire client prepends. The
+    self-check must run through Isaac's wrapper-provided numpy; --no-deps and
+    the exact wheel set forbid staging a second numpy ABI.
     """
 
     script = build_provisioning_script("groot_n17_droid")
-    line = next(
-        item for item in script.splitlines() if '"pyzmq==27.0.1"' in item
+    assert "adp009d_groot_wire_wheels.py" in script
+    assert " pip install " not in script[
+        script.index("adp009d_groot_wire_wheels.py")
+        : script.index("groot_n17_wire_client.py")
+    ]
+    distributions = {
+        str(artifact["distribution"]) for artifact in GROOT_WIRE_WHEEL_ARTIFACTS
+    }
+    assert distributions == {"pyzmq", "msgpack", "msgpack-numpy"}
+    assert "numpy" not in distributions
+
+
+def test_groot_wire_wheel_lock_is_bound_in_the_provisioning_receipt() -> None:
+    receipt = describe_provisioning("groot_n17_droid")
+    lock = receipt["groot_wire_wheel_lock"]
+
+    assert lock["artifacts_digest"] == groot_wire_expected_artifacts_digest()
+    assert lock["receipt_filename"] == GROOT_WIRE_WHEEL_RECEIPT_FILENAME
+    assert lock["installer_network_access"] is False
+    assert lock["installer_index_access"] is False
+    assert lock["dependency_resolution_allowed"] is False
+    assert len(lock["artifacts"]) == 3
+    assert all(
+        str(row["url"]).startswith("https://files.pythonhosted.org/")
+        for row in lock["artifacts"]
     )
-    assert '--target "$RUNTIME_DIR/groot_wire_deps"' in line
-    assert "--no-deps" in line
-    assert '"numpy==2.5.2"' in line
+    assert all(
+        str(row["sha256"]).startswith("sha256:") for row in lock["artifacts"]
+    )
+
+    changed = dict(receipt)
+    changed["groot_wire_wheel_lock"] = {
+        **lock,
+        "artifacts_digest": "sha256:" + "0" * 64,
+    }
+    assert BLOCKER_GROOT_WIRE_WHEEL_LOCK in validate_provisioning(changed)
+
+    pi05 = describe_provisioning("pi05_droid")
+    assert pi05["groot_wire_wheel_lock"] is None
 
 
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
@@ -273,13 +315,15 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     # on exactly one kind of install line -- the thin client the episode needs
     # to reach the server -- and never on the policy itself, which is what
     # would drag JAX or a mismatched torch into Isaac's prefix.
-    install_lines = [ln for ln in script.splitlines() if "pip install -e" in ln]
+    install_lines = [
+        line
+        for line in script.splitlines()
+        if f'VIRTUAL_ENV="{policy_venv_root("pi05_droid")}"' in line
+    ]
     assert install_lines
     for line in install_lines:
-        if ISAAC_INTERPRETER in line:
-            assert "packages/openpi-client" in line or "--no-deps" in line, line
-        else:
-            assert "VIRTUAL_ENV=" in line, line
+        assert '"$UV" sync' in line
+        assert f'--project "{POLICY_SOURCE_ROOT}/pi05_droid"' in line
     client_install_lines = [
         line
         for line in script.splitlines()
@@ -307,7 +351,7 @@ def test_the_install_precedes_the_checkpoint_fetch() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert script.index("pip install -e") < script.index(
+    assert script.index("uv.lock") < script.index(
         "adp009d_checkpoint_fetch_worker.py"
     )
 
@@ -330,10 +374,29 @@ def test_uv_creates_the_environment_because_the_image_lacks_ensurepip() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert 'curl -LsSf https://astral.sh/uv/install.sh' in script
+    assert f"curl -LsSf {UV_ARCHIVE_URL}" in script
+    assert UV_ARCHIVE_SHA256 in script
+    assert "sha256sum -c -" in script
+    assert f'uv {UV_VERSION}"' in script
+    assert "https://astral.sh/uv/install.sh" not in script
+    assert "/releases/latest/" not in script
     assert '"$UV" venv --python' in script
     # pip is not used to create the environment at all.
     assert "-m venv" not in script
+
+
+def test_uv_release_identity_is_bound_in_the_provisioning_receipt() -> None:
+    receipt = describe_provisioning("pi05_droid")
+
+    assert receipt["uv_version"] == UV_VERSION
+    assert receipt["uv_archive_url"] == UV_ARCHIVE_URL
+    assert receipt["uv_archive_sha256"] == UV_ARCHIVE_SHA256
+    for field in ("uv_version", "uv_archive_url", "uv_archive_sha256"):
+        changed = dict(receipt)
+        changed[field] = "moved"
+        assert "policy_provisioning_uv_identity_mismatch" in validate_provisioning(
+            changed
+        )
 
 
 def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
@@ -344,7 +407,7 @@ def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
     assert 'test -x "/opt/adp009d-policy-venv/pi05_droid/bin/python"' in script
     assert "'isaac-sim' not in sys.prefix" in script
     # And the proof precedes any install.
-    assert script.index("not in sys.prefix") < script.index("pip install -e")
+    assert script.index("not in sys.prefix") < script.index('"$UV" sync')
 
 
 def test_build_isolation_is_left_enabled() -> None:
@@ -358,7 +421,10 @@ def test_build_isolation_is_left_enabled() -> None:
     for candidate_id in EXPECTED_CANDIDATES:
         script = build_provisioning_script(candidate_id)
         assert "--no-build-isolation" not in script
-        assert '"$UV" pip install -e' in script
+        if candidate_id in ACTIVE_CANDIDATE_DEPENDENCY_LOCKS:
+            assert '"$UV" sync' in script
+        else:
+            assert '"$UV" pip install -e' in script
 
 
 def test_native_build_dependencies_are_installed_before_the_policy() -> None:
@@ -383,7 +449,7 @@ def test_native_build_dependencies_are_installed_before_the_policy() -> None:
     ):
         assert package in script
     # Headers must be present before uv is asked to build anything.
-    assert script.index("linux-libc-dev") < script.index("pip install -e")
+    assert script.index("linux-libc-dev") < script.index('"$UV" sync')
     # And never fatal on their own: the apt step is best-effort.
     # Best-effort: a missing apt must not fail provisioning on its own.
     assert "|| true" in script[script.index("apt-get install") :][:400]
@@ -466,17 +532,67 @@ def test_groots_wire_client_reaches_isaac_without_installing_groot() -> None:
     )
 
     script = build_provisioning_script("groot_n17_droid")
-    assert f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}"' in script
-    assert f'--no-deps -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"' not in script
-    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
-    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
-    assert "pyzmq" in script and "msgpack" in script
-    # The separate server venv still installs the full, frozen GR00T checkout.
     assert (
-        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" '
-        f'pip install -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"'
+        f'"{ISAAC_INTERPRETER}" '
+        '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py"'
         in script
     )
+    assert f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in script
+    assert f'--no-deps -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"' not in script
+    assert (
+        f'"{ISAAC_INTERPRETER}" "$RUNTIME_DIR/groot_n17_wire_client.py"'
+        in script
+    )
+    assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
+    assert GROOT_WIRE_WHEEL_RECEIPT_FILENAME in script
+    # The separate server venv still installs the full, frozen GR00T checkout.
+    assert (
+        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" sync '
+        f'--project "{POLICY_SOURCE_ROOT}/groot_n17_droid" '
+        "--active --no-dev --frozen"
+        in script
+    )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_active_candidate_install_is_bound_to_its_upstream_frozen_lock(
+    candidate_id: str,
+) -> None:
+    script = build_provisioning_script(candidate_id)
+    lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS[candidate_id]
+    lock_sha256 = str(lock["sha256"]).removeprefix("sha256:")
+    source_lock = f'{POLICY_SOURCE_ROOT}/{candidate_id}/{lock["relative_path"]}'
+
+    assert lock_sha256 in script
+    assert f'"{source_lock}" | sha256sum --check --strict -' in script
+    assert script.index("rev-parse HEAD") < script.index(lock_sha256)
+    assert script.index(lock_sha256) < script.index('"$UV" sync')
+    assert "--active --no-dev --frozen" in script
+    # The server environment must not resolve open dependency ranges again.
+    policy_install_lines = [
+        line
+        for line in script.splitlines()
+        if f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}"' in line
+    ]
+    assert len(policy_install_lines) == 1
+    assert " pip install " not in policy_install_lines[0]
+
+    receipt = describe_provisioning(candidate_id)
+    assert receipt["policy_dependency_lock"] == {
+        **lock,
+        "install_mode": "uv_sync_frozen_no_dev",
+        "runtime_resolution_allowed": False,
+    }
+
+
+def test_active_candidate_dependency_lock_drift_is_refused() -> None:
+    receipt = dict(describe_provisioning("pi05_droid"))
+    receipt["policy_dependency_lock"] = {
+        **dict(receipt["policy_dependency_lock"]),
+        "sha256": "sha256:" + "0" * 64,
+    }
+
+    assert BLOCKER_DEPENDENCY_LOCK in validate_provisioning(receipt)
 
 
 def test_the_client_install_follows_the_verified_checkout() -> None:

@@ -13,6 +13,8 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
     DROID_OPEN_LOOP_HORIZON,
     DroidActionExecutionError,
     GripperConvention,
+    SOURCE_GROOT_POSITION,
+    SOURCE_PI05_POSITION,
     build_gripper_convention_probe_request,
     droid_row_to_isaac_action,
     isaac_steps_per_droid_action,
@@ -140,9 +142,7 @@ def test_groot_decoded_absolute_joints_are_not_integrated_as_velocities() -> Non
 
     assert result["joint_position_target_rad"] == pytest.approx(row[:7])
     assert result["joint_velocity_command_rad_s"] == []
-    assert result["source_action_space"] == (
-        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
-    )
+    assert result["source_action_space"] == SOURCE_GROOT_POSITION
     assert result["position_adapter"] == (
         "decoded_absolute_joint_position_direct_within_limits"
     )
@@ -154,6 +154,63 @@ def test_groot_decoded_absolute_joints_are_not_integrated_as_velocities() -> Non
     )
     assert plan["source_action_space"] == result["source_action_space"]
     assert plan["position_adapter_max_joint_delta_rad"] is None
+
+
+def test_pi05_absolute_joints_retain_the_openpi_candidate_representation() -> None:
+    row = np.asarray([0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2, 1.0])
+
+    result = droid_row_to_isaac_action(
+        row,
+        current_joint_position=[0.1] * 7,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+        candidate_id="pi05_droid",
+    )
+    plan = plan_chunk_execution(
+        np.repeat(row[None, :], 10, axis=0),
+        action_space=ACTION_SPACE_JOINT_POSITION,
+        candidate_id="pi05_droid",
+    )
+
+    assert result["joint_position_target_rad"] == pytest.approx(row[:7])
+    assert result["source_action_space"] == SOURCE_PI05_POSITION
+    assert plan["source_action_space"] == SOURCE_PI05_POSITION
+
+
+def test_joint_position_utility_default_remains_groot_compatible() -> None:
+    row = np.asarray([0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2, 1.0])
+
+    result = droid_row_to_isaac_action(
+        row,
+        current_joint_position=[0.1] * 7,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_POSITION,
+    )
+
+    assert result["source_action_space"] == SOURCE_GROOT_POSITION
+
+
+@pytest.mark.parametrize(
+    ("candidate_id", "action_space"),
+    [
+        ("unknown_candidate", ACTION_SPACE_JOINT_POSITION),
+        ("groot_n17_droid", ACTION_SPACE_JOINT_VELOCITY),
+    ],
+)
+def test_explicit_candidate_action_space_mismatch_fails_closed(
+    candidate_id: str, action_space: str
+) -> None:
+    with pytest.raises(
+        DroidActionExecutionError,
+        match="candidate_action_space_unsupported",
+    ):
+        plan_chunk_execution(
+            _chunk(rows=10),
+            action_space=action_space,
+            candidate_id=candidate_id,
+        )
 
 
 def test_only_the_open_loop_horizon_executes_and_the_tail_is_reported() -> None:

@@ -426,6 +426,8 @@ def run_arena_native_control_vast(
     require_independent_watchdog: bool = False,
     authorization_consumption: Mapping[str, Any] | None = None,
     retain_warm_instance: bool = False,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog."""
 
@@ -754,6 +756,8 @@ def run_arena_native_control_vast(
                 allowed_active_resource_names=allowed_active_resource_names,
                 vast_launch_lock_file=vast_launch_lock_file,
                 paid_resource_admission_grant=paid_resource_admission_grant,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
             )
@@ -971,6 +975,8 @@ def run_arena_native_control_vast(
         "hard_ttl_seconds": hard_ttl_seconds,
         "attempt_max_live_minutes": remaining_live_minutes,
         "retry_cap": 0,
+        "expected_provider_download_bytes": expected_provider_download_bytes,
+        "expected_provider_upload_bytes": expected_provider_upload_bytes,
         "authorization_consumption": authorization_consumption,
         "independent_watchdog": watchdog_close,
         "warm_session": warm_session,

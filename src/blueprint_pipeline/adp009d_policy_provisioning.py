@@ -40,6 +40,13 @@ from .adp009d_checkpoint_materialization import (
 )
 from .adp009d_gated_backbone import MODEL_ID as GATED_BACKBONE_MODEL_ID
 from .adp009d_gated_backbone import REVISION as GATED_BACKBONE_REVISION
+from .adp009d_groot_wire_wheels import (
+    RECEIPT_FILENAME as GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+    SCHEMA_VERSION as GROOT_WIRE_WHEEL_SCHEMA_VERSION,
+    SOURCE_ORIGIN as GROOT_WIRE_WHEEL_SOURCE_ORIGIN,
+    expected_artifact_rows as groot_wire_expected_artifact_rows,
+    expected_artifacts_digest as groot_wire_expected_artifacts_digest,
+)
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES, PROGRAM_ID
 from .adp009d_policy_server_worker import (
     CANDIDATE_DEFAULT_PORTS,
@@ -77,6 +84,17 @@ def policy_venv_root(candidate_id: str) -> str:
     return f"{POLICY_VENV_PARENT}/{candidate_id}"
 CHECKPOINT_ROOT = "/opt/adp009d-checkpoints"
 UV_ROOT = "/opt/adp009d-uv"
+# A policy bundle is commit-bound, but the former installer URL selected the
+# newest uv release at provider runtime.  The retained GR00T attempt installed
+# uv 0.12.5; freeze that observed-working binary and its official release hash
+# so an exact bundle cannot execute a different package resolver later.
+UV_VERSION = "0.12.5"
+UV_PLATFORM = "x86_64-unknown-linux-gnu"
+UV_ARCHIVE_SHA256 = "68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
+UV_ARCHIVE_URL = (
+    f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/"
+    f"uv-{UV_PLATFORM}.tar.gz"
+)
 POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
 # Measured on the worker: Isaac runs /isaac-sim/kit/python/bin/python3 at
 # 3.12.12 under its own prefix, and /usr/bin/python3 at 3.12.3 exists
@@ -104,6 +122,28 @@ BLOCKER_SHARED_INTERPRETER = "policy_provisioning_shares_isaac_interpreter"
 BLOCKER_JAX_PREALLOCATION = "policy_provisioning_jax_preallocation_enabled"
 BLOCKER_NOT_LOOPBACK = "policy_provisioning_endpoint_not_loopback"
 BLOCKER_CREDENTIALS = "policy_provisioning_credentials_forwarded"
+BLOCKER_GROOT_WIRE_WHEEL_LOCK = "policy_provisioning_groot_wire_wheel_lock_invalid"
+BLOCKER_DEPENDENCY_LOCK = "policy_provisioning_dependency_lock_invalid"
+
+# These are the upstream uv.lock bytes committed at the same immutable source
+# revisions as the two active ADP-009D candidates.  A frozen source revision is
+# not a frozen environment when ``uv pip install -e`` is allowed to resolve its
+# open version ranges again during every paid run.  Verify the lock after the
+# detached checkout, then make uv consume it without updating it.
+ACTIVE_CANDIDATE_DEPENDENCY_LOCKS = {
+    "pi05_droid": {
+        "relative_path": "uv.lock",
+        "sha256": (
+            "sha256:793488b5a55bb87200db90a61fd0af51922b686d94e1da4f4c587ab119b37d74"
+        ),
+    },
+    "groot_n17_droid": {
+        "relative_path": "uv.lock",
+        "sha256": (
+            "sha256:0d67d3b0dd41b28375bbc2351eefc9e064cbad2d1c40682a52b97fc625a60f19"
+        ),
+    },
+}
 
 
 class PolicyProvisioningError(ValueError):
@@ -173,22 +213,21 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
         # environment: Isaac ships its own newer msgpack/pyzmq ahead of kit
         # site-packages on sys.path, so an in-environment install can never
         # win (the 20260825T134736Z run observed msgpack 1.2.1/pyzmq 27.1.0
-        # over freshly installed pins and correctly refused).  --no-deps keeps
-        # transitive resolution out of Isaac's interpreter; numpy is pinned
-        # into the staged directory explicitly because the bare kit
-        # interpreter has no numpy at all outside Isaac's bootstrapped
-        # extension path (the 20260825T144455Z self-check failed on
-        # ``import numpy`` once the old in-environment side-effect install
-        # stopped providing it).  In-episode, Isaac's own already-imported
-        # numpy wins via sys.modules; the staged copy serves only the bare
-        # self-check.  The wire client prepends this sibling directory to
-        # sys.path before importing the codec.
+        # over freshly installed pins and correctly refused).  A subsequent
+        # staged-codec run proved the bare kit executable does not bootstrap
+        # Isaac's numpy extension path.  Do not stage another numpy ABI: the
+        # self-check runs through python.sh, just like the episode, and uses
+        # Isaac's own numpy.  --no-deps forbids resolver-selected transitive
+        # packages, and nothing mutates Isaac's prefix.  The wire client
+        # prepends this sibling directory before importing the codec.
         return [
-            f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
-            '--no-deps --target "$RUNTIME_DIR/groot_wire_deps" '
-            '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8" '
-            '"numpy==2.5.2"',
-            f'"{ISAAC_PYTHON_EXECUTABLE}" '
+            f'"{ISAAC_INTERPRETER}" '
+            '"$RUNTIME_DIR/adp009d_groot_wire_wheels.py" '
+            '--uv "$UV" '
+            f'--python "{ISAAC_PYTHON_EXECUTABLE}" '
+            '--runtime-dir "$RUNTIME_DIR" '
+            f'--output "$OUT_DIR/{GROOT_WIRE_WHEEL_RECEIPT_FILENAME}"',
+            f'"{ISAAC_INTERPRETER}" '
             '"$RUNTIME_DIR/groot_n17_wire_client.py"',
         ]
     subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(candidate_id)
@@ -227,16 +266,36 @@ def _install_commands(candidate_id: str) -> list[str]:
     repository = str(expected["source_repository"])
     revision = str(expected["source_revision"])
     source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
+    dependency_lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS.get(candidate_id)
+    if dependency_lock is None:
+        policy_install = (
+            f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install '
+            f'-e "{source}"'
+        )
+        lock_verification: list[str] = []
+    else:
+        lock_path = f'{source}/{dependency_lock["relative_path"]}'
+        lock_sha256 = str(dependency_lock["sha256"]).removeprefix("sha256:")
+        lock_verification = [
+            f'printf \'%s  %s\\n\' "{lock_sha256}" "{lock_path}" '
+            "| sha256sum --check --strict -",
+        ]
+        policy_install = (
+            f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" sync '
+            f'--project "{source}" --active --no-dev --frozen'
+        )
     return [
         f'git clone --filter=blob:none "{repository}" "{source}"',
         f'git -C "{source}" fetch --depth 1 origin "{revision}"',
         f'git -C "{source}" checkout --detach FETCH_HEAD',
         f'test "$(git -C "{source}" rev-parse HEAD)" = "{revision}"',
-        # Installed with uv, into the venv named explicitly rather than via an
-        # activated shell, so the target cannot drift.  Build isolation stays
-        # on: disabling it once left pip unable to import hatchling.build, the
-        # backend openpi's pyproject declares.
-        f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install -e "{source}"',
+        *lock_verification,
+        # The active candidates carry an upstream lock at their exact source
+        # revision.  --frozen refuses to update that lock, --no-dev excludes
+        # unrelated development groups, and --active makes the already-proven
+        # candidate-specific venv the explicit target.  Compatibility-only
+        # candidates retain their prior installer until they are re-admitted.
+        policy_install,
         *_isaac_client_commands(candidate_id),
     ]
 
@@ -374,9 +433,15 @@ apt-get install -y -qq \
   "$OUT_DIR/adp009d_provisioning_preflight_after.json" || true
 
 export UV_INSTALL_DIR={uv_root}
-curl -LsSf https://astral.sh/uv/install.sh | sh
+UV_ARCHIVE="$(mktemp /tmp/blueprint-adp009d-uv.XXXXXX.tar.gz)"
+trap 'rm -f "$UV_ARCHIVE"' EXIT
+curl -LsSf {UV_ARCHIVE_URL} -o "$UV_ARCHIVE"
+printf '%s  %s\n' {UV_ARCHIVE_SHA256} "$UV_ARCHIVE" | sha256sum -c -
+mkdir -p "$UV_INSTALL_DIR"
+tar -xzf "$UV_ARCHIVE" -C "$UV_INSTALL_DIR" --strip-components=1
 UV="$UV_INSTALL_DIR/uv"
 test -x "$UV"
+test "$("$UV" --version)" = "uv {UV_VERSION}"
 
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:started"
 "$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
@@ -442,6 +507,9 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "topology": "shared_worker_separate_interpreter",
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
+        "uv_version": UV_VERSION,
+        "uv_archive_url": UV_ARCHIVE_URL,
+        "uv_archive_sha256": UV_ARCHIVE_SHA256,
         "checkpoint_root": f"{CHECKPOINT_ROOT}/{candidate_id}",
         "checkpoint_source": CANDIDATE_SOURCES[candidate_id],
         "checkpoint_repository": plan["checkpoint_repository"],
@@ -463,6 +531,29 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
             else None
         ),
         "jax_environment": dict(JAX_ENVIRONMENT),
+        "groot_wire_wheel_lock": (
+            {
+                "schema_version": GROOT_WIRE_WHEEL_SCHEMA_VERSION,
+                "source_origin": GROOT_WIRE_WHEEL_SOURCE_ORIGIN,
+                "artifacts": groot_wire_expected_artifact_rows(),
+                "artifacts_digest": groot_wire_expected_artifacts_digest(),
+                "receipt_filename": GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+                "installer_network_access": False,
+                "installer_index_access": False,
+                "dependency_resolution_allowed": False,
+            }
+            if candidate_id == "groot_n17_droid"
+            else None
+        ),
+        "policy_dependency_lock": (
+            {
+                **ACTIVE_CANDIDATE_DEPENDENCY_LOCKS[candidate_id],
+                "install_mode": "uv_sync_frozen_no_dev",
+                "runtime_resolution_allowed": False,
+            }
+            if candidate_id in ACTIVE_CANDIDATE_DEPENDENCY_LOCKS
+            else None
+        ),
         "materialize_on": "gpu_worker",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -653,6 +744,41 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     if str(receipt.get("endpoint_host")) not in {"127.0.0.1", "localhost", "::1"}:
         errors.append(BLOCKER_NOT_LOOPBACK)
 
+    if (
+        receipt.get("uv_version") != UV_VERSION
+        or receipt.get("uv_archive_url") != UV_ARCHIVE_URL
+        or receipt.get("uv_archive_sha256") != UV_ARCHIVE_SHA256
+    ):
+        errors.append("policy_provisioning_uv_identity_mismatch")
+
+    expected_wire_lock = (
+        {
+            "schema_version": GROOT_WIRE_WHEEL_SCHEMA_VERSION,
+            "source_origin": GROOT_WIRE_WHEEL_SOURCE_ORIGIN,
+            "artifacts": groot_wire_expected_artifact_rows(),
+            "artifacts_digest": groot_wire_expected_artifacts_digest(),
+            "receipt_filename": GROOT_WIRE_WHEEL_RECEIPT_FILENAME,
+            "installer_network_access": False,
+            "installer_index_access": False,
+            "dependency_resolution_allowed": False,
+        }
+        if candidate_id == "groot_n17_droid"
+        else None
+    )
+    if receipt.get("groot_wire_wheel_lock") != expected_wire_lock:
+        errors.append(BLOCKER_GROOT_WIRE_WHEEL_LOCK)
+
+    expected_lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS.get(candidate_id)
+    if expected_lock is not None:
+        observed_lock = receipt.get("policy_dependency_lock")
+        required_lock = {
+            **expected_lock,
+            "install_mode": "uv_sync_frozen_no_dev",
+            "runtime_resolution_allowed": False,
+        }
+        if observed_lock != required_lock:
+            errors.append(BLOCKER_DEPENDENCY_LOCK)
+
     # Only pi05 brings JAX, but an enabled preallocation is fatal wherever it
     # appears, so the check is not conditioned on the candidate.
     environment = receipt.get("jax_environment") or {}
@@ -675,10 +801,17 @@ __all__ = [
     "GATED_BACKBONE_AUTH_ENV",
     "GATED_BACKBONE_HF_HOME",
     "GATED_BACKBONE_HUB_CACHE",
+    "BLOCKER_GROOT_WIRE_WHEEL_LOCK",
+    "ACTIVE_CANDIDATE_DEPENDENCY_LOCKS",
+    "BLOCKER_DEPENDENCY_LOCK",
     "POLICY_HOST",
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",
     "UV_ROOT",
+    "UV_VERSION",
+    "UV_PLATFORM",
+    "UV_ARCHIVE_URL",
+    "UV_ARCHIVE_SHA256",
     "POLICY_VENV_PARENT",
     "policy_venv_root",
     "SYSTEM_INTERPRETER",
