@@ -848,7 +848,12 @@ def run_arena_native_control_vast(
             policy_evidence["candidate_policy_queried"] = observed_query
         if isinstance(observed_visual, Mapping):
             policy_evidence["visual_evidence"] = dict(observed_visual)
-        if adapter.get("provider_create_attempted") is False and not execution:
+        # A created instance can still be rejected and torn down before its
+        # bundle starts (for example when the authoritative post-create price
+        # exceeds the pre-create cap).  Creation is not an observation.  Seal
+        # the same typed gap whenever the provider produced no execution
+        # receipt, regardless of whether allocation briefly occurred.
+        if not execution:
             adapter_blockers = [
                 str(value)
                 for value in adapter.get("blockers") or []
