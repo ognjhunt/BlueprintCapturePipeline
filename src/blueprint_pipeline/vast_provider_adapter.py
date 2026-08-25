@@ -1555,6 +1555,15 @@ def _offer_summary(
             if storage_hourly_rate is not None
             else "provider_storage_price_unavailable"
         ),
+        # Vast bills network transfer separately from ``dph_total``.  These
+        # values are dollars per decimal GB in both offer and instance rows
+        # (the same rates later appear on official ``bwd``/``bwu`` charges).
+        # Keeping them beside compute and requested-disk rates lets callers
+        # reserve immutable input/output bytes before allocating a machine.
+        "provider_download_cost_per_gb_usd": _number(
+            offer.get("inet_down_cost")
+        ),
+        "provider_upload_cost_per_gb_usd": _number(offer.get("inet_up_cost")),
         "disk_gb": int(disk_gb),
         # Vast reports the host's currently allocatable disk separately from
         # the disk requested in the create payload.  A create call can return
@@ -1621,6 +1630,12 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "compute_hourly_rate_usd": offer.get("compute_hourly_rate_usd"),
         "storage_hourly_rate_usd": offer.get("storage_hourly_rate_usd"),
         "storage_rate_source": offer.get("storage_rate_source"),
+        "provider_download_cost_per_gb_usd": offer.get(
+            "provider_download_cost_per_gb_usd"
+        ),
+        "provider_upload_cost_per_gb_usd": offer.get(
+            "provider_upload_cost_per_gb_usd"
+        ),
         "disk_gb": offer.get("disk_gb"),
         "provider_available_disk_gb": offer.get("provider_available_disk_gb"),
         "driver_version": _string(offer.get("driver_version")) or None,
@@ -1644,6 +1659,51 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "disallowed_for_isaac_rendering": bool(offer.get("disallowed_for_isaac_rendering")),
         "raw_secret_values_recorded": False,
     }
+
+
+def _projected_provider_transfer_cost_usd(
+    offer: Mapping[str, Any],
+    *,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
+) -> float | None:
+    """Price a declared byte ceiling using the offer's non-hourly rates."""
+
+    download_rate = _number(offer.get("provider_download_cost_per_gb_usd"))
+    upload_rate = _number(offer.get("provider_upload_cost_per_gb_usd"))
+    if expected_provider_download_bytes and download_rate is None:
+        return None
+    if expected_provider_upload_bytes and upload_rate is None:
+        return None
+    return (
+        expected_provider_download_bytes / 1_000_000_000.0 * float(download_rate or 0.0)
+        + expected_provider_upload_bytes / 1_000_000_000.0 * float(upload_rate or 0.0)
+    )
+
+
+def _offer_fits_total_cost_bound(
+    offer: Mapping[str, Any],
+    *,
+    hard_cap_usd: float | None,
+    max_live_minutes: int,
+    expected_provider_download_bytes: int,
+    expected_provider_upload_bytes: int,
+) -> bool:
+    if not (expected_provider_download_bytes or expected_provider_upload_bytes):
+        return True
+    if hard_cap_usd is None or max_live_minutes <= 0:
+        return False
+    transfer_cost = _projected_provider_transfer_cost_usd(
+        offer,
+        expected_provider_download_bytes=expected_provider_download_bytes,
+        expected_provider_upload_bytes=expected_provider_upload_bytes,
+    )
+    hourly_rate = _number(offer.get("hourly_rate_usd"))
+    return bool(
+        transfer_cost is not None
+        and hourly_rate is not None
+        and hourly_rate * max_live_minutes / 60.0 + transfer_cost <= hard_cap_usd
+    )
 
 
 def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
@@ -1809,6 +1869,10 @@ def _select_offer(
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
     allowed_geolocation_country_codes: Iterable[str] = (),
+    hard_cap_usd: float | None = None,
+    max_live_minutes: int = 0,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1855,6 +1919,13 @@ def _select_offer(
         and (not require_avx or item.get("has_avx") is True)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
         and vast_geolocation_allowed(item.get("geolocation"), allowed_countries)
+        and _offer_fits_total_cost_bound(
+            item,
+            hard_cap_usd=hard_cap_usd,
+            max_live_minutes=max_live_minutes,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
+        )
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -1931,6 +2002,10 @@ def _offer_selection_manifest(
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
     allowed_geolocation_country_codes: Iterable[str] = (),
+    hard_cap_usd: float | None = None,
+    max_live_minutes: int = 0,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
@@ -1991,6 +2066,13 @@ def _offer_selection_manifest(
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
         and vast_geolocation_allowed(item.get("geolocation"), allowed_countries)
+        and _offer_fits_total_cost_bound(
+            item,
+            hard_cap_usd=hard_cap_usd,
+            max_live_minutes=max_live_minutes,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
+        )
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -2003,6 +2085,34 @@ def _offer_selection_manifest(
         "disk_gb": int(disk_gb),
         "required_provider_disk_gb": int(required_provider_disk_gb),
         "hourly_rate_includes_provider_offer_storage": True,
+        "provider_transfer_cost_included_in_hard_cap_projection": bool(
+            expected_provider_download_bytes or expected_provider_upload_bytes
+        ),
+        "expected_provider_download_bytes": expected_provider_download_bytes,
+        "expected_provider_upload_bytes": expected_provider_upload_bytes,
+        "selected_offer_projected_transfer_cost_usd": (
+            _projected_provider_transfer_cost_usd(
+                selected_offer,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
+            )
+            if selected_offer
+            else None
+        ),
+        "selected_offer_projected_total_cost_usd": (
+            float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+            + float(
+                _projected_provider_transfer_cost_usd(
+                    selected_offer,
+                    expected_provider_download_bytes=expected_provider_download_bytes,
+                    expected_provider_upload_bytes=expected_provider_upload_bytes,
+                )
+                or 0.0
+            )
+            if selected_offer
+            else None
+        ),
+        "hard_cap_usd": hard_cap_usd,
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "min_compute_cap": min_compute_cap,
         "max_compute_cap": max_compute_cap,
@@ -2064,12 +2174,21 @@ def _budget_ledger(
     ended_at_monotonic: float | None = None,
     status: str = "planned",
     continuing_spend: bool = False,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     hourly = _number((selected_offer or {}).get("hourly_rate_usd")) or 0.0
     elapsed_seconds = 0.0
     if started_at_monotonic is not None and ended_at_monotonic is not None:
         elapsed_seconds = max(0.0, ended_at_monotonic - started_at_monotonic)
-    estimated_cost = hourly * elapsed_seconds / 3600.0
+    estimated_runtime_cost = hourly * elapsed_seconds / 3600.0
+    projected_transfer_cost = _projected_provider_transfer_cost_usd(
+        selected_offer or {},
+        expected_provider_download_bytes=expected_provider_download_bytes,
+        expected_provider_upload_bytes=expected_provider_upload_bytes,
+    )
+    estimated_cost = estimated_runtime_cost + float(projected_transfer_cost or 0.0)
+    transfer_cost_priced = projected_transfer_cost is not None
     ledger = {
         "schema_version": VAST_BUDGET_LEDGER_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2081,11 +2200,24 @@ def _budget_ledger(
         "selected_hourly_rate_usd": hourly or None,
         "vast_instance_ids": list(instance_ids),
         "actual_live_runtime_seconds_observed_by_adapter": elapsed_seconds,
+        "estimated_runtime_cost_usd": round(estimated_runtime_cost, 6),
+        "expected_provider_download_bytes": expected_provider_download_bytes,
+        "expected_provider_upload_bytes": expected_provider_upload_bytes,
+        "projected_provider_transfer_cost_usd": (
+            round(projected_transfer_cost, 6)
+            if projected_transfer_cost is not None
+            else None
+        ),
+        "provider_transfer_cost_priced": transfer_cost_priced,
         "estimated_cost_usd": round(estimated_cost, 6),
         "actual_cost_usd": None,
         "actual_cost_source": "not_available_from_instance_probe_api",
-        "estimated_spend_under_target": estimated_cost <= target_spend_usd,
-        "estimated_spend_under_hard_cap": estimated_cost <= hard_cap_usd,
+        "estimated_spend_under_target": (
+            transfer_cost_priced and estimated_cost <= target_spend_usd
+        ),
+        "estimated_spend_under_hard_cap": (
+            transfer_cost_priced and estimated_cost <= hard_cap_usd
+        ),
         "continuing_spend_from_this_run": continuing_spend,
         "raw_secret_values_recorded": False,
     }
@@ -6745,6 +6877,8 @@ def run_vast_provider_adapter(
     pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
     allowed_geolocation_country_codes: Iterable[str] = (),
     stale_offer_create_retry_limit: int | None = None,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -6752,6 +6886,12 @@ def run_vast_provider_adapter(
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
     if retain_native_task_arena_warm_session and retain_instance_on_runtime_failure:
         raise ValueError("multiple_vast_retention_modes_invalid")
+    for field, value in (
+        ("expected_provider_download_bytes", expected_provider_download_bytes),
+        ("expected_provider_upload_bytes", expected_provider_upload_bytes),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"invalid_vast_{field}")
     resolved_image_login_mode = (
         _string(ngc_image_login_mode)
         or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
@@ -7039,6 +7179,8 @@ def run_vast_provider_adapter(
         max_hourly_rate=max_hourly_rate,
         max_live_minutes=max_live_minutes,
         selected_offer=None,
+        expected_provider_download_bytes=expected_provider_download_bytes,
+        expected_provider_upload_bytes=expected_provider_upload_bytes,
     )
 
     base_result: dict[str, Any] = {
@@ -7992,9 +8134,17 @@ def run_vast_provider_adapter(
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
                 allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=max_live_minutes,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
+                if expected_provider_download_bytes or expected_provider_upload_bytes:
+                    offer_blockers.append(
+                        "no_vast_offer_with_transfer_rates_and_total_cost_under_hard_cap"
+                    )
                 if resolved_allowed_machine_ids:
                     offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
                 if resolved_min_compute_cap:
@@ -8036,6 +8186,10 @@ def run_vast_provider_adapter(
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
                 allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=max_live_minutes,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
             _append_phase(
@@ -8049,9 +8203,23 @@ def run_vast_provider_adapter(
             if not selected_offer:
                 raise RuntimeError("no_vast_offer_selected")
 
-            projected_full_cost = float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+            projected_transfer_cost = _projected_provider_transfer_cost_usd(
+                selected_offer,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
+            )
+            if projected_transfer_cost is None:
+                raise RuntimeError("selected_offer_provider_transfer_rate_missing")
+            projected_full_cost = (
+                float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+                + projected_transfer_cost
+            )
             if projected_full_cost > hard_cap_usd:
-                raise RuntimeError("selected_offer_projected_max_runtime_exceeds_hard_cap")
+                raise RuntimeError(
+                    "selected_offer_projected_total_cost_exceeds_hard_cap"
+                    if expected_provider_download_bytes or expected_provider_upload_bytes
+                    else "selected_offer_projected_max_runtime_exceeds_hard_cap"
+                )
 
             image_login, image_login_summary = _resolve_image_login(
                 image=create_request_image or "",
@@ -8183,6 +8351,10 @@ def run_vast_provider_adapter(
                     disk_gb=resolved_disk_gb,
                     required_provider_disk_gb=required_provider_disk_gb,
                     allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
+                    hard_cap_usd=hard_cap_usd,
+                    max_live_minutes=max_live_minutes,
+                    expected_provider_download_bytes=expected_provider_download_bytes,
+                    expected_provider_upload_bytes=expected_provider_upload_bytes,
                 )
                 write_json(
                     resolved_job_dir / "vast_offer_selection_manifest.json",
@@ -8218,6 +8390,8 @@ def run_vast_provider_adapter(
             ended_at_monotonic=started_at_monotonic,
             status="live_instance_created",
             continuing_spend=True,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
         )
         _append_phase(
             resolved_job_dir,
@@ -8243,6 +8417,8 @@ def run_vast_provider_adapter(
             max_hourly_rate=max_hourly_rate,
             hard_cap_usd=hard_cap_usd,
             max_hourly_rate_usd=max_hourly_rate,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
         )
         if not all_in_cost_binding["all_in_hourly_rate_under_max"]:
             raise RuntimeError("created_instance_all_in_hourly_rate_exceeds_max")
@@ -9293,6 +9469,8 @@ def run_vast_provider_adapter(
                 else ("completed" if not continuing_spend else "blocked_teardown")
             ),
             continuing_spend=continuing_spend,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
         )
         estimated_cost_usd = float(ledger["estimated_cost_usd"])
         session_budget_summary = _append_session_budget_attempt(
