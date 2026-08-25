@@ -388,6 +388,40 @@ def _read_mapping_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _signal_delivery_context() -> dict[str, Any]:
+    """Describe who could have delivered a signal to this process.
+
+    POSIX does not hand a Python signal handler the sender's pid, so record the
+    next best identifying evidence: this process and its parent, the parent's
+    command name, and the systemd unit whose cgroup this process is in.  When a
+    paid probe is terminated, that is enough to tell an operator stop from a
+    sibling unit's reaper -- which retained receipts previously could not.
+
+    Best effort by construction: every lookup is optional and a failure records
+    the reason rather than masking the interrupt being handled.
+    """
+
+    context: dict[str, Any] = {
+        "receiving_pid": os.getpid(),
+        "parent_pid": os.getppid(),
+    }
+    try:
+        context["parent_command"] = (
+            Path(f"/proc/{os.getppid()}/comm").read_text(encoding="utf-8").strip()
+        )
+    except OSError as exc:
+        context["parent_command_error"] = type(exc).__name__
+    try:
+        # The unit name is the load-bearing part: a process signalled from
+        # outside its own unit is a different defect than one stopped by it.
+        context["cgroup"] = (
+            Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+    except (OSError, IndexError) as exc:
+        context["cgroup_error"] = type(exc).__name__
+    return context
+
+
 def _default_machine_avoidlist_path(job_dir: Path) -> Path:
     """Share proven-bad hosts across sibling jobs in one bounded run root."""
 
@@ -7869,6 +7903,27 @@ def run_vast_provider_adapter(
                 },
             )
             return
+        # Name the delivery before unwinding.  Three paid GR00T launches on
+        # 2026-08-25 ended `vast_probe_interrupted_before_completion` with a
+        # healthy pod -- heartbeat, GPU sanity, Isaac smoke and bundle download
+        # all OK -- and every retained receipt said only "interrupted".  There
+        # was nothing in the evidence to distinguish an operator stop, a
+        # supervisor, a cgroup reaper, or systemd, so each diagnosis cost
+        # another rented GPU.  A signal that terminates a paid run has to
+        # record who delivered it.
+        write_json(
+            resolved_job_dir / "vast_signal_handling_manifest.json",
+            {
+                "schema_version": "vast_signal_handling_manifest.v1",
+                "generated_at": utc_now_iso(),
+                "status": "probe_interrupted_by_signal",
+                "interrupt_signal": signum,
+                "interrupt_signal_name": signal.Signals(signum).name,
+                "ignore_local_sigterm_during_provider_run": False,
+                **_signal_delivery_context(),
+                "raw_secret_values_recorded": False,
+            },
+        )
         raise KeyboardInterrupt(f"vast_probe_signal:{signum}")
 
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -8914,12 +8969,41 @@ def run_vast_provider_adapter(
     except KeyboardInterrupt as exc:
         interrupt_detail = str(exc)[:300] or type(exc).__name__
         interrupt_blocker = "vast_probe_interrupted_before_completion"
+        # Carry the delivery evidence into the adapter's own terminal result,
+        # not only into the sidecar manifest: a reader diagnosing a terminated
+        # paid run opens the result first, and "interrupted" with no sender is
+        # what made three GR00T launches individually undiagnosable.
+        signal_manifest_path = (
+            resolved_job_dir / "vast_signal_handling_manifest.json"
+        )
+        interrupt_signal_context: dict[str, Any] = {}
+        try:
+            recorded = json.loads(signal_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            recorded = {}
+        if isinstance(recorded, Mapping):
+            interrupt_signal_context = {
+                key: recorded[key]
+                for key in (
+                    "interrupt_signal",
+                    "interrupt_signal_name",
+                    "receiving_pid",
+                    "parent_pid",
+                    "parent_command",
+                    "cgroup",
+                )
+                if key in recorded
+            }
         base_result.update(
             {
                 "status": "blocked",
                 "reason": "vast_probe_interrupted",
                 "blockers": [interrupt_blocker],
                 "interrupt_detail": interrupt_detail,
+                "interrupt_signal_context": interrupt_signal_context,
+                "interrupt_signal_manifest_path": (
+                    str(signal_manifest_path) if signal_manifest_path.is_file() else None
+                ),
                 "api_call_performed": True,
             }
         )

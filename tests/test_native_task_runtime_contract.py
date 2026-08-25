@@ -191,6 +191,50 @@ def _rigid_fixture() -> dict:
     return fixture
 
 
+def _identified_rigid_fixture() -> dict:
+    fixture = _rigid_fixture()
+    fixture["task_spec"] = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "subject_asset_id": "admitted_can",
+    }
+    task_object = fixture["assets"][2]
+    task_object.update(
+        {
+            "asset_id": "admitted_can",
+            "object_type": "RIGID",
+            "reset_state": {"joint_positions": {}},
+        }
+    )
+    return fixture
+
+
+def test_identified_inserted_rigid_task_object_preserves_independent_identity() -> None:
+    contract = materialize_native_task_runtime_contract(
+        **_identified_rigid_fixture()
+    )
+
+    task_object = next(
+        row for row in contract["objects"] if row["task_subject"] is True
+    )
+    assert contract["task_subject_asset_id"] == "admitted_can"
+    assert task_object["asset_id"] == "admitted_can"
+    assert task_object["source_semantic_role"] == "task_object"
+    assert task_object["object_type"] == "RIGID"
+    assert task_object["reset_state"]["joint_positions"] == {}
+
+
+def test_identified_inserted_task_object_fails_closed_on_identity_mismatch() -> None:
+    fixture = _identified_rigid_fixture()
+    fixture["assets"][2]["asset_id"] = "different_can"
+
+    with pytest.raises(
+        NativeTaskRuntimeContractError,
+        match="native_task_runtime_subject_asset_id_invalid",
+    ):
+        materialize_native_task_runtime_contract(**fixture)
+
+
 def _articulated_fixture() -> dict:
     freeze = json.loads(
         (

@@ -252,13 +252,13 @@ def test_plan_matches_the_repository_droid_velocity_action_semantics() -> None:
         (
             ACTION_SPACE_JOINT_VELOCITY,
             7,
-            1.01,
+            1.30,
             BLOCKER_GRIPPER_BOUNDS,
         ),
         (
             ACTION_SPACE_JOINT_POSITION,
             7,
-            -0.01,
+            -0.30,
             BLOCKER_GRIPPER_BOUNDS,
         ),
     ],
@@ -291,6 +291,65 @@ def test_raw_candidate_bounds_refuse_instead_of_clipping(
     assert any(
         error.startswith(expected_blocker) for error in row_excinfo.value.errors
     )
+
+
+def test_live_pi05_gripper_overshoot_validates_and_thresholds_closed() -> None:
+    """Live run 20260825T125800Z: pi05 returned gripper 1.0253 on all 15 rows.
+
+    The native DROID adapter clips this scalar to [0, 1] and binarizes at 0.5
+    (``droid_policy_bridge.droid_action_to_mujoco_targets``), so the validator
+    must accept the overshoot and the executed command must read "closed".
+    Refusing it was a harness fault, not a policy result -- no action was
+    applied and a rented L40's episode never ran.
+    """
+
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        validate_candidate_action_bounds as validate,
+    )
+
+    overshoot = 1.0253319786572457
+    chunk = np.zeros((15, 8), dtype=float)
+    chunk[:, 7] = overshoot
+
+    receipt = validate(
+        chunk, action_space=ACTION_SPACE_JOINT_VELOCITY, joint_limits=_LIMITS
+    )
+    contract = receipt["gripper_contract"]
+    assert contract["rows_outside_command_interval"] == 15
+    assert contract["max_command_interval_overshoot"] == pytest.approx(
+        overshoot - 1.0
+    )
+    assert contract["raw_accepted_bounds"] == [-0.25, 1.25]
+    assert contract["command_interval"] == [0.0, 1.0]
+
+    # GR00T's decoded joint-position space shares the same gripper channel.
+    validate(chunk, action_space=ACTION_SPACE_JOINT_POSITION, joint_limits=_LIMITS)
+
+    executed = droid_row_to_isaac_action(
+        chunk[0],
+        current_joint_position=_ZERO_JOINTS,
+        joint_limits=_LIMITS,
+        gripper=_MEASURED,
+        action_space=ACTION_SPACE_JOINT_VELOCITY,
+    )
+    assert executed["gripper_closed"] is True
+    assert executed["droid_gripper_scalar"] == pytest.approx(overshoot)
+    assert executed["raw_candidate_bounds_validated"] is True
+
+
+def test_gripper_values_inside_command_interval_report_zero_overshoot() -> None:
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        validate_candidate_action_bounds as validate,
+    )
+
+    receipt = validate(
+        _chunk(gripper=0.9),
+        action_space=ACTION_SPACE_JOINT_VELOCITY,
+        joint_limits=_LIMITS,
+    )
+    contract = receipt["gripper_contract"]
+    assert contract["rows_outside_command_interval"] == 0
+    assert contract["max_command_interval_overshoot"] == 0.0
 
 
 def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> None:
@@ -384,4 +443,120 @@ def test_a_measured_probe_result_constructs_a_usable_convention() -> None:
             current_joint_position=_ZERO_JOINTS,
             joint_limits=_LIMITS,
             gripper=ambiguous,
+        )
+
+
+# --- declared per-channel contracts (company-supplied policy generalization) --
+#
+# With channel_contracts=None the validator is the historical DROID contract,
+# proven by every test above running unmodified.  With declared contracts the
+# per-channel envelope becomes data: refusal applies each channel's declared
+# raw envelope, and command-interval overshoot is reported, never policed.
+
+_TWO_CHANNEL_CONTRACTS = [
+    {
+        "name": "elevation_velocity",
+        "kind": "bounded_continuous",
+        "command_interval": [-1.0, 1.0],
+        "raw_accepted_bounds": [-1.5, 1.5],
+        "executed_semantics": "clipped to command interval before integration",
+    },
+    {
+        "name": "gripper",
+        "kind": "threshold_scalar",
+        "command_interval": [0.0, 1.0],
+        "raw_accepted_bounds": [-0.25, 1.25],
+        "executed_semantics": "clip_to_command_interval_then_threshold_at_0.5",
+    },
+]
+
+
+def test_declared_channel_contracts_validate_and_report_per_channel() -> None:
+    chunk = np.zeros((6, 2), dtype=float)
+    chunk[:, 0] = 1.2  # inside raw [-1.5, 1.5], outside command [-1, 1]
+    chunk[:3, 1] = 1.0253  # the live pi05 overshoot, now as declared data
+
+    receipt = validate_candidate_action_bounds(
+        chunk,
+        action_space="acme_two_channel_v1",
+        channel_contracts=_TWO_CHANNEL_CONTRACTS,
+    )
+
+    assert receipt["action_space"] == "acme_two_channel_v1"
+    assert receipt["validated_rows"] == 6
+    assert receipt["raw_candidate_clipping_permitted"] is False
+    applied = receipt["channel_contracts_applied"]
+    assert [channel["name"] for channel in applied] == [
+        "elevation_velocity",
+        "gripper",
+    ]
+    assert applied[0]["rows_outside_command_interval"] == 6
+    assert applied[0]["max_command_interval_overshoot"] == pytest.approx(0.2)
+    assert applied[1]["rows_outside_command_interval"] == 3
+    assert applied[1]["max_command_interval_overshoot"] == pytest.approx(0.0253)
+    assert applied[1]["raw_accepted_bounds"] == [-0.25, 1.25]
+
+
+def test_declared_channel_out_of_envelope_refuses_naming_the_channel() -> None:
+    chunk = np.zeros((6, 2), dtype=float)
+    chunk[2, 1] = 1.30  # beyond the gripper's declared raw envelope
+
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        BLOCKER_CHANNEL_BOUNDS,
+    )
+
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        validate_candidate_action_bounds(
+            chunk,
+            action_space="acme_two_channel_v1",
+            channel_contracts=_TWO_CHANNEL_CONTRACTS,
+        )
+    assert any(
+        error.startswith(f"{BLOCKER_CHANNEL_BOUNDS}:gripper:")
+        for error in excinfo.value.errors
+    ), excinfo.value.errors
+
+
+def test_declared_channel_width_mismatch_refuses() -> None:
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        BLOCKER_CHANNEL_WIDTH,
+    )
+
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        validate_candidate_action_bounds(
+            np.zeros((6, 3), dtype=float),
+            action_space="acme_two_channel_v1",
+            channel_contracts=_TWO_CHANNEL_CONTRACTS,
+        )
+    assert any(
+        error.startswith(f"{BLOCKER_CHANNEL_WIDTH}:declared=2:chunk=3")
+        for error in excinfo.value.errors
+    )
+
+
+def test_declared_contracts_are_not_trusted_blindly() -> None:
+    """A self-contradictory envelope is a harness fault, not a policy result."""
+
+    from blueprint_pipeline.adp009d_droid_action_execution import (
+        BLOCKER_CHANNEL_CONTRACT_INVALID,
+    )
+
+    contradictory = [dict(_TWO_CHANNEL_CONTRACTS[0])]
+    contradictory[0]["raw_accepted_bounds"] = [-0.5, 0.5]  # narrower than command
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        validate_candidate_action_bounds(
+            np.zeros((6, 1), dtype=float),
+            action_space="acme_one_channel_v1",
+            channel_contracts=contradictory,
+        )
+    assert any(
+        error.startswith(BLOCKER_CHANNEL_CONTRACT_INVALID)
+        for error in excinfo.value.errors
+    )
+
+    with pytest.raises(DroidActionExecutionError):
+        validate_candidate_action_bounds(
+            np.zeros((6, 0), dtype=float),
+            action_space="acme_empty_v1",
+            channel_contracts=[],
         )

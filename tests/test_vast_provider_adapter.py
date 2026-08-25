@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import inspect
 import json
 import os
 import shlex
@@ -8545,3 +8546,71 @@ def test_gpu_ram_floor_is_expressed_in_megabytes() -> None:
     floor = payload["gpu_ram"]["gte"]
     assert floor == 46000
     assert floor > 1024, "a value this small would be gigabytes and match everything"
+
+
+def test_signal_delivery_context_names_who_could_have_killed_the_probe() -> None:
+    """A signal that terminates a paid run has to record who delivered it.
+
+    Three GR00T launches on 2026-08-25 ended
+    ``vast_probe_interrupted_before_completion`` with a healthy pod -- heartbeat,
+    GPU sanity, Isaac smoke and bundle download all OK -- and every retained
+    receipt said only "interrupted". Nothing distinguished an operator stop from
+    a sibling unit's reaper, so each diagnosis cost another rented GPU.
+    """
+
+    context = vpa._signal_delivery_context()
+
+    assert context["receiving_pid"] == os.getpid()
+    assert context["parent_pid"] == os.getppid()
+    # The unit is the load-bearing part: signalled from outside our own unit is
+    # a different defect than stopped by it. Either the value or a typed
+    # lookup failure must be present -- never silence.
+    assert ("cgroup" in context) or ("cgroup_error" in context)
+    assert ("parent_command" in context) or ("parent_command_error" in context)
+
+
+def test_signal_delivery_context_survives_an_unreadable_proc(monkeypatch) -> None:
+    """Best effort by construction: the interrupt must never be masked."""
+
+    def refuse(self, *args, **kwargs):
+        raise OSError("proc unavailable")
+
+    monkeypatch.setattr(vpa.Path, "read_text", refuse)
+
+    context = vpa._signal_delivery_context()
+
+    assert context["receiving_pid"] == os.getpid()
+    assert context["parent_command_error"] == "OSError"
+    assert context["cgroup_error"] == "OSError"
+
+
+def test_probe_interrupt_records_the_signal_before_unwinding(tmp_path) -> None:
+    """The sidecar manifest is written by the handler, not after teardown."""
+
+    import signal as signal_module
+
+    source = inspect.getsource(vpa.run_vast_provider_adapter)
+    handler = source[source.index("def _raise_probe_interrupt") :]
+    handler = handler[: handler.index("for signum in (signal.SIGINT")]
+
+    # Recorded on the refusing branch, before the KeyboardInterrupt unwinds.
+    assert "vast_signal_handling_manifest.json" in handler
+    assert handler.index("_signal_delivery_context()") < handler.index(
+        "raise KeyboardInterrupt"
+    )
+    assert '"status": "probe_interrupted_by_signal"' in handler
+    assert "signal.Signals(signum).name" in handler
+    assert signal_module.Signals(15).name == "SIGTERM"
+
+
+def test_interrupt_result_carries_the_signal_context_not_just_a_blocker() -> None:
+    """A reader diagnosing a terminated paid run opens the result first."""
+
+    source = inspect.getsource(vpa.run_vast_provider_adapter)
+    block = source[source.index("except KeyboardInterrupt as exc:") :]
+    block = block[: block.index("except Exception as exc:")]
+
+    assert '"interrupt_signal_context": interrupt_signal_context,' in block
+    assert '"interrupt_signal_manifest_path"' in block
+    for key in ("interrupt_signal", "parent_command", "cgroup", "parent_pid"):
+        assert f'"{key}"' in block, key
