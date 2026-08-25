@@ -370,6 +370,13 @@ def _validate_preallocation_closed_chain(
         zero_result_record,
         "native_task_arena_preallocation_terminal_result_unbound",
     )
+    expected_visual_evidence = {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": _expected_watchdog_blocker(authority),
+        },
+    }
     if (
         result.get("closeout_kind") != PREALLOCATION_CLOSEOUT_KIND
         or zero_authority != dict(authority)
@@ -377,6 +384,7 @@ def _validate_preallocation_closed_chain(
         or result.get("estimated_cost_usd") != 0.0
         or result.get("continuing_spend_from_this_run") is not False
         or result.get("all_staged_objects_absent") is not True
+        or result.get("visual_evidence") != expected_visual_evidence
         or result.get("receipt_digest")
         != canonical_digest(result, digest_field="receipt_digest")
         or original.get("schema_version") != "native_task_arena_vast_run.v1"
@@ -1413,6 +1421,13 @@ def materialize_native_task_arena_preallocation_closeout(
         "teardown_manifest_path": str(teardown_path),
         "scientific_attempt_started": False,
         "candidate_policy_queried": False,
+        "visual_evidence": {
+            "status": "unavailable_before_first_observation",
+            "media_gap": {
+                "type": "before_first_observation",
+                "reason": _expected_watchdog_blocker(authority),
+            },
+        },
         "receipt_digest": "",
     }
     result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")

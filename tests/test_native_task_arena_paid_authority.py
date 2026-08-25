@@ -968,6 +968,13 @@ def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execut
     assert result["estimated_cost_usd"] == 0.0
     assert result["scientific_attempt_started"] is False
     assert result["candidate_policy_queried"] is False
+    assert result["visual_evidence"] == {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "native_task_arena_policy_diagnostic_independent_watchdog_not_armed",
+        },
+    }
     chain = paid.validate_terminal_spend_chain(
         authority_path=fixture["authority"],
         result_path=closed_result,
@@ -975,6 +982,37 @@ def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execut
     )
     assert chain["attempt_cost_usd"] == 0.0
     assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
+
+
+def test_preallocation_closeout_rejects_missing_typed_media_gap(tmp_path: Path) -> None:
+    fixture = _watchdog_not_armed_fixture(tmp_path / "attempt")
+    value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=fixture["authority"],
+        allocator_result_path=fixture["result"],
+        watchdog_handoff_path=fixture["watchdog"],
+        object_store_cleanup_path=fixture["cleanup"],
+        api_provider_zero_path=fixture["api_zero"],
+        output_dir=tmp_path / "closeout",
+    )
+    result_path = Path(value["terminal_result_path"])
+    result = json.loads(result_path.read_text())
+    result.pop("visual_evidence")
+    result["receipt_digest"] = canonical_digest(
+        result, digest_field="receipt_digest"
+    )
+    write_json(result_path, result)
+    zero_path = Path(value["provider_zero_path"])
+    zero = json.loads(zero_path.read_text())
+    zero["terminal_result"] = _record(result_path)
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    write_json(zero_path, zero)
+
+    with pytest.raises(ValueError, match="preallocation_closeout_invalid"):
+        paid.validate_terminal_spend_chain(
+            authority_path=fixture["authority"],
+            result_path=result_path,
+            provider_zero_path=zero_path,
+        )
 
 
 def test_preallocation_closeout_chain_validates_from_dispatcher_staged_snapshots(
