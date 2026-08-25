@@ -13,7 +13,8 @@ surfaced two steps later.
 The order is the contract, so the order lives here as data.  Placeholders are
 resolved against one operator-supplied context and every step is validated
 before any step runs, so an unsupplied value fails the command instead of
-leaving a half-prepared lane behind.  A step that exits non-zero, or that exits
+leaving a half-prepared lane behind.  ``--validate-only`` seals that resolved
+plan without running a subprocess.  A step that exits non-zero, or that exits
 zero without writing the artifact it declares, stops the sequence with its
 outputs preserved.
 
@@ -42,6 +43,7 @@ from typing import Any, Callable, Mapping, Sequence
 import jsonschema
 
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
+VALIDATION_SCHEMA_VERSION = "paid_lane_launch_validation.v1"
 NATIVE_CONTEXT_SCHEMA_VERSION = "native_task_arena_launch_preparation_context.v2"
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
@@ -735,6 +737,82 @@ def prepare_paid_lane_launch(
     }
 
 
+def validate_paid_lane_launch(
+    lane: str,
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one complete launch graph without running a subprocess."""
+
+    validate_lane_context(lane, context)
+    resolved: dict[str, Any] = dict(context)
+    planned: list[dict[str, Any]] = []
+    for step in LANES[lane]:
+        argv = [_render(fragment, resolved) for fragment in step.argv]
+        for flag, context_name in step.repeated_argv:
+            for value in _repeated_values(resolved.get(context_name)):
+                argv.extend((flag, value))
+        planned.append(
+            {
+                "step_id": step.step_id,
+                "argv": argv,
+                "declared_artifact_path": _render(step.produces, resolved),
+            }
+        )
+        for name, key in step.exports:
+            resolved[name] = f"<export:{step.step_id}:{key}>"
+    return {
+        "schema_version": VALIDATION_SCHEMA_VERSION,
+        "lane": lane,
+        "status": "validated_no_commands_run",
+        "source_commit": str(context.get("source_commit") or ""),
+        **(
+            {"reference_bindings": dict(context["reference_bindings"])}
+            if isinstance(context.get("reference_bindings"), Mapping)
+            else {}
+        ),
+        "step_count": len(planned),
+        "planned_steps": planned,
+        "subprocesses_executed": 0,
+        "set_root_permissions_mutated": False,
+        "publication_performed": False,
+        "standing_authorization_published": False,
+        "paid_inference_performed": False,
+        "provider_allocation_performed": False,
+        "provider_mutation_performed": False,
+    }
+
+
+def _reserve_receipt_output(path: str | Path) -> tuple[Path, int]:
+    """Reserve one immutable receipt name before any preparation can run."""
+
+    output = Path(path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o440)
+    except FileExistsError as exc:
+        raise PaidLaneLaunchPreparationError(
+            "paid_lane_receipt_output_exists"
+        ) from exc
+    return output, descriptor
+
+
+def _write_reserved_receipt(
+    output: Path, descriptor: int, receipt: Mapping[str, Any]
+) -> None:
+    payload = (json.dumps(dict(receipt), indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    parent_descriptor = os.open(output.parent, os.O_RDONLY)
+    try:
+        os.fsync(parent_descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
 def _arg_text(value: Any) -> str:
     return "" if value is None else str(value)
 
@@ -1356,32 +1434,62 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Vast machine ID the immutable live profile must exclude; repeatable.",
     )
     parser.add_argument("--set", action="append", help="Extra name=value context entry")
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Validate and seal the ordered command plan without running a command.",
+    )
     parser.add_argument("--receipt-out")
     args = parser.parse_args(argv)
 
+    reserved_output: Path | None = None
+    reserved_descriptor: int | None = None
     try:
+        if args.validate_only and not args.receipt_out:
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_validation_receipt_required"
+            )
+        if args.receipt_out:
+            reserved_output, reserved_descriptor = _reserve_receipt_output(
+                args.receipt_out
+            )
         if args.context_file:
             context = _load_native_context(args.context_file, expected_lane=args.lane)
         else:
             context = _context_from_args(args)
-        receipt = prepare_paid_lane_launch(args.lane, context)
+        receipt = (
+            validate_paid_lane_launch(args.lane, context)
+            if args.validate_only
+            else prepare_paid_lane_launch(args.lane, context)
+        )
     except PaidLaneLaunchPreparationError as exc:
+        if reserved_descriptor is not None:
+            os.close(reserved_descriptor)
+            reserved_descriptor = None
+        if reserved_output is not None:
+            reserved_output.unlink(missing_ok=True)
         print(json.dumps({"status": "blocked", "blockers": [str(exc)]}, sort_keys=True))
         return 2
-    if args.receipt_out:
-        out = Path(args.receipt_out).expanduser()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    except BaseException:
+        if reserved_descriptor is not None:
+            os.close(reserved_descriptor)
+        if reserved_output is not None:
+            reserved_output.unlink(missing_ok=True)
+        raise
+    if reserved_output is not None and reserved_descriptor is not None:
+        _write_reserved_receipt(reserved_output, reserved_descriptor, receipt)
     print(json.dumps(receipt, sort_keys=True))
-    return 0 if receipt["status"] == "prepared" else 2
+    return 0 if receipt["status"] in {"prepared", "validated_no_commands_run"} else 2
 
 
 __all__ = [
     "LANES",
     "PREPARATION_SCHEMA_VERSION",
+    "VALIDATION_SCHEMA_VERSION",
     "LaneStep",
     "PaidLaneLaunchPreparationError",
     "prepare_paid_lane_launch",
+    "validate_paid_lane_launch",
     "step_placeholders",
     "validate_lane_context",
 ]

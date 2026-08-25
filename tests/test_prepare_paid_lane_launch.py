@@ -106,6 +106,76 @@ def test_a_failing_step_stops_the_sequence(
     assert receipt["completed_steps"] == []
 
 
+def test_validate_only_renders_the_complete_plan_without_running_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(prep.LANES, "fake", _lane(tmp_path))
+
+    receipt = prep.validate_paid_lane_launch(
+        "fake",
+        {"value": "v"},
+    )
+
+    assert receipt["status"] == "validated_no_commands_run"
+    assert receipt["subprocesses_executed"] == 0
+    assert receipt["provider_mutation_performed"] is False
+    assert receipt["planned_steps"][0]["argv"] == ["cmd-first", "v"]
+    assert receipt["planned_steps"][1]["argv"] == [
+        "cmd-second",
+        "<export:first:published_uri>",
+    ]
+    assert not (tmp_path / "first.json").exists()
+    assert not (tmp_path / "second.json").exists()
+
+
+def test_validate_only_cli_requires_one_immutable_receipt_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    never = tmp_path / "must-not-run.json"
+    monkeypatch.setitem(
+        prep.LANES,
+        "semantic_teacher_image_edit",
+        (
+            prep.LaneStep(
+                step_id="must-not-run",
+                argv=("{python}", "forbidden-subprocess"),
+                produces=str(never),
+            ),
+        ),
+    )
+    output = tmp_path / "validation.json"
+
+    assert (
+        prep.main(
+            [
+                "--lane",
+                "semantic_teacher_image_edit",
+                "--validate-only",
+                "--receipt-out",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    first_bytes = output.read_bytes()
+    assert json.loads(first_bytes)["status"] == "validated_no_commands_run"
+    assert not never.exists()
+
+    assert (
+        prep.main(
+            [
+                "--lane",
+                "semantic_teacher_image_edit",
+                "--validate-only",
+                "--receipt-out",
+                str(output),
+            ]
+        )
+        == 2
+    )
+    assert output.read_bytes() == first_bytes
+
+
 def test_a_step_that_exits_zero_without_its_artifact_is_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
