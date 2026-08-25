@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -340,6 +341,33 @@ from .task_evaluation_profile_preflight import (
     run_task_evaluation_profile_preflight,
 )
 from .task_evaluation_terminal_resource_release import dispatch_terminal_resource_release
+
+
+_TYPED_AUTHORITY_ERROR = re.compile(r"^[a-z0-9_]+(?::[a-z0-9_,]+)?$")
+
+
+def _native_authority_validation_diagnostic(exc: BaseException) -> dict[str, Any]:
+    """Retain a typed authority failure without leaking paths or payloads."""
+
+    if isinstance(exc, json.JSONDecodeError):
+        error_code = "json_decode_error"
+    elif isinstance(exc, PermissionError):
+        error_code = f"permission_error_errno_{exc.errno or 'unknown'}"
+    elif isinstance(exc, OSError):
+        error_code = f"os_error_errno_{exc.errno or 'unknown'}"
+    else:
+        candidate = str(exc).strip()
+        error_code = (
+            candidate
+            if len(candidate) <= 512 and _TYPED_AUTHORITY_ERROR.fullmatch(candidate)
+            else "value_error_untyped"
+        )
+    return {
+        "status": "blocked",
+        "error_type": type(exc).__name__,
+        "error_code": error_code,
+        "raw_error_message_recorded": False,
+    }
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -5101,6 +5129,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             native_authority = None
             native_warm_session = None
+            native_authority_validation = {
+                "status": "not_requested",
+                "raw_error_message_recorded": False,
+            }
             if args.native_task_arena_packet:
                 try:
                     if native_task_execution_admission_required(
@@ -5261,8 +5293,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 args.native_task_arena_retain_warm_session
                             ),
                         )
-                except (OSError, ValueError, json.JSONDecodeError):
+                    native_authority_validation = {
+                        "status": "passed",
+                        "raw_error_message_recorded": False,
+                    }
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append("native_task_arena_paid_attempt_authority_invalid")
+                    native_authority_validation = (
+                        _native_authority_validation_diagnostic(exc)
+                    )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,
@@ -5373,6 +5412,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "candidate_policy_queried": any_policy_requested,
                     "gated_backbone_access": gated_backbone_access,
                     "physical_outcome_values_uploaded": False,
+                    "native_task_arena_authority_validation": (
+                        native_authority_validation
+                    ),
                     "explicit_concurrent_gpu_authority_bound": bool(
                         args.adp_allowed_active_vast_instance_id
                     ),

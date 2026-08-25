@@ -16,6 +16,33 @@ from blueprint_pipeline.groot_oscar_infrastructure_admission import (
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (
+            ValueError(
+                "native_task_arena_authority_invalid:policy_campaign_binding_invalid"
+            ),
+            "native_task_arena_authority_invalid:policy_campaign_binding_invalid",
+        ),
+        (PermissionError(13, "denied", "/private/authority.json"), "permission_error_errno_13"),
+        (ValueError("invalid at /private/authority.json"), "value_error_untyped"),
+    ],
+)
+def test_native_authority_validation_diagnostic_is_typed_and_path_free(
+    error: BaseException, expected_code: str
+) -> None:
+    diagnostic = allocator._native_authority_validation_diagnostic(error)
+
+    assert diagnostic == {
+        "status": "blocked",
+        "error_type": type(error).__name__,
+        "error_code": expected_code,
+        "raw_error_message_recorded": False,
+    }
+    assert "/private" not in json.dumps(diagnostic)
+
+
 def test_detached_model_volume_supervisor_ignores_only_sigint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
