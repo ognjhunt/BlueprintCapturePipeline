@@ -2451,6 +2451,8 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
     else:
         assert observed["min_gpu_ram_mb"] == 46_000
         assert "RTX A6000" in observed["preferred_gpu_keywords"]
+        assert observed["expected_provider_download_bytes"] > 20_000_000_000
+        assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
@@ -2654,6 +2656,8 @@ def test_groot_policy_vast_requires_and_forwards_gated_backbone_authority(
     )
 
     assert observed["forward_hf_token"] is True
+    assert observed["expected_provider_download_bytes"] == 25_303_924_439
+    assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:

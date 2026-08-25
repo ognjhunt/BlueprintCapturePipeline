@@ -2761,6 +2761,85 @@ def test_vast_adapter_prefers_known_supported_driver_over_known_unsupported_driv
     )
 
 
+def test_vast_offer_selection_prices_transfer_inside_hard_cap() -> None:
+    offers = [
+        {
+            "id": 1,
+            "gpu_name": "RTX 6000 Ada",
+            "dph_total": 0.60,
+            "driver_version": "580.82.09",
+            "inet_down_cost": 0.01,
+            "inet_up_cost": 0.02,
+        }
+    ]
+
+    blocked = _select_offer(
+        offers,
+        max_hourly_rate=0.70,
+        hard_cap_usd=0.75,
+        max_live_minutes=60,
+        expected_provider_download_bytes=20_000_000_000,
+        expected_provider_upload_bytes=1_000_000_000,
+    )
+    admitted = _select_offer(
+        offers,
+        max_hourly_rate=0.70,
+        hard_cap_usd=0.85,
+        max_live_minutes=60,
+        expected_provider_download_bytes=20_000_000_000,
+        expected_provider_upload_bytes=1_000_000_000,
+    )
+
+    assert blocked is None
+    assert admitted is not None
+    assert admitted["provider_download_cost_per_gb_usd"] == pytest.approx(0.01)
+    assert admitted["provider_upload_cost_per_gb_usd"] == pytest.approx(0.02)
+
+
+def test_vast_offer_selection_fails_closed_when_transfer_rate_is_missing() -> None:
+    assert (
+        _select_offer(
+            [{"id": 1, "gpu_name": "RTX 6000 Ada", "dph_total": 0.20}],
+            max_hourly_rate=0.70,
+            hard_cap_usd=0.75,
+            max_live_minutes=60,
+            expected_provider_download_bytes=1,
+        )
+        is None
+    )
+
+
+def test_pi05_observed_offer_requires_transfer_headroom_for_full_ttl() -> None:
+    offer = {
+        "id": 48_659_094,
+        "gpu_name": "L40",
+        "dph_base": 0.5733333333333334,
+        "storage_cost": 0.4,
+        "driver_version": "580.82.09",
+        "inet_down_cost": 0.005208333333333333,
+        "inet_up_cost": 0.006510416666666667,
+    }
+    kwargs = {
+        "max_hourly_rate": 0.70,
+        "hard_cap_usd": 0.75,
+        "disk_gb": 200,
+        "expected_provider_download_bytes": 25_934_530_837,
+        "expected_provider_upload_bytes": 1_000_000_000,
+    }
+
+    assert _select_offer([offer], max_live_minutes=60, **kwargs) is None
+    selected = _select_offer([offer], max_live_minutes=46, **kwargs)
+
+    assert selected is not None
+    transfer = vpa._projected_provider_transfer_cost_usd(
+        selected,
+        expected_provider_download_bytes=25_934_530_837,
+        expected_provider_upload_bytes=1_000_000_000,
+    )
+    assert transfer == pytest.approx(0.141586)
+    assert selected["hourly_rate_usd"] * 46 / 60 + transfer < 0.75
+
+
 def test_vast_adapter_enforces_backend_minimum_driver_version() -> None:
     selected = _select_offer(
         [
