@@ -772,6 +772,7 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             "provider_runtime/adp009d_policy_server_worker.py",
             "provider_runtime/adp009d_checkpoint_fetch_worker.py",
             "provider_runtime/adp009d_provisioning_preflight.py",
+            "provider_runtime/adp009d_groot_wire_wheels.py",
             "provider_runtime/openpi_droid_policy_runtime.py",
             "provider_runtime/droid_policy_bridge.py",
         }.issubset(names)
@@ -1673,6 +1674,32 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena" in worker
 
 
+def test_construction_bundle_binds_customer_supplied_digest_pinned_image(
+    tmp_path: Path,
+) -> None:
+    image = "registry.example/robot-team/runtime@sha256:" + "4" * 64
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "custom-runtime",
+        packet_dir=_packet(tmp_path, scene_id="customer-scene"),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="e" * 40,
+        container_image=image,
+        generated_at="fixed",
+    )
+
+    assert receipt["container_image"] == image
+    loaded = load_verified_native_task_arena_construction_bundle(
+        tmp_path
+        / "custom-runtime/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit="e" * 40,
+        expected_packet_receipt_digest=receipt["packet_receipt_digest"],
+        expected_runtime_source_packet_digest=receipt["runtime_source_packet"][
+            "receipt_digest"
+        ],
+    )
+    assert loaded["container_image"] == image
+
+
 def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
     tmp_path: Path,
 ) -> None:
@@ -2450,7 +2477,10 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
         assert "RTX A6000" not in observed["preferred_gpu_keywords"]
     else:
         assert observed["min_gpu_ram_mb"] == 46_000
+        assert observed["min_compute_cap"] == 800
         assert "RTX A6000" in observed["preferred_gpu_keywords"]
+        assert observed["expected_provider_download_bytes"] > 20_000_000_000
+        assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
@@ -2654,6 +2684,8 @@ def test_groot_policy_vast_requires_and_forwards_gated_backbone_authority(
     )
 
     assert observed["forward_hf_token"] is True
+    assert observed["expected_provider_download_bytes"] == 25_303_924_439
+    assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
@@ -2672,6 +2704,16 @@ def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
     assert excinfo.value.errors == (
         "native_task_arena_bundle_container_image_not_digest_pinned",
     )
+
+    with pytest.raises(NativeTaskArenaBundleError, match="not_digest_pinned"):
+        build_native_task_arena_bundle(
+            job_dir=tmp_path / "job-nonhex",
+            packet_dir=packet,
+            worker_source=worker,
+            runtime_module_sources=[],
+            implementation_commit="f" * 40,
+            container_image="registry.example/runtime@sha256:" + "z" * 64,
+        )
 
 
 def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(

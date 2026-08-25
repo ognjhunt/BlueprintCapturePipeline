@@ -270,6 +270,42 @@ def test_cli_uses_the_invoking_account_outside_production_roots(
     assert (profile_dir / "profile-local-cli.json").is_file()
 
 
+def test_cli_retains_profile_and_catalog_full_byte_readback_receipt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _profile(tmp_path, "profile-receipted")
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    receipt = tmp_path / "publication-receipt.json"
+
+    assert publisher.main(
+        [
+            "--profile",
+            str(fixture["path"]),
+            "--profile-dir",
+            str(profile_dir),
+            "--webapp-catalog-out",
+            str(catalog),
+            "--receipt-out",
+            str(receipt),
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    value = json.loads(receipt.read_text(encoding="utf-8"))
+    profile_record = value["published_profile_readback"][0]
+    target = Path(profile_record["path"])
+    assert profile_record["size_bytes"] == target.stat().st_size
+    assert profile_record["sha256"] == "sha256:" + hashlib.sha256(
+        target.read_bytes()
+    ).hexdigest()
+    assert value["webapp_catalog_readback"]["sha256"] == "sha256:" + hashlib.sha256(
+        catalog.read_bytes()
+    ).hexdigest()
+    assert value["webapp_catalog_readback"]["service_account_readback_verified"] is True
+    assert stat.S_IMODE(catalog.stat().st_mode) == 0o440
+
+
 def test_published_profile_is_group_read_only_and_read_back_as_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

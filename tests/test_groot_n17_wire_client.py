@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import threading
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 import msgpack
@@ -22,6 +24,146 @@ from blueprint_pipeline.groot_n17_wire_client import (
     encode_wire_message,
     run_wire_codec_self_check,
 )
+
+
+def test_staged_wire_deps_sibling_directory_wins_sys_path(
+    tmp_path, monkeypatch
+) -> None:
+    """The staged pinned codec must precede Isaac's bundled msgpack/pyzmq.
+
+    Pins installed into the kit environment never win against Isaac's own
+    newer copies (live 20260825T134736Z self-check refusal), so the module
+    prepends its staged sibling directory before importing the codec.
+    """
+
+    import sys
+
+    from blueprint_pipeline import groot_n17_wire_client as client
+
+    module_file = tmp_path / "groot_n17_wire_client.py"
+    module_file.write_text("# staged copy\n", encoding="utf-8")
+    staged = tmp_path / client.STAGED_WIRE_DEPS_DIRNAME
+    staged.mkdir()
+    # Simulate the staged dir already present later in the path: the prepend
+    # must deduplicate and still land it first.
+    monkeypatch.setattr(
+        sys, "path", ["/isaac/bundled", str(staged), *sys.path]
+    )
+
+    location = client._prepend_staged_wire_deps(str(module_file))
+
+    assert location == str(staged)
+    assert sys.path[0] == str(staged)
+    assert sys.path.count(str(staged)) == 1
+
+
+def test_fresh_import_resolves_staged_modules_and_metadata_over_conflicts(
+    tmp_path,
+) -> None:
+    """Use wrapper numpy while staged protocol wheels beat Isaac conflicts."""
+
+    source_root = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
+    runtime = tmp_path / "provider_runtime"
+    staged = runtime / "groot_wire_deps"
+    conflict = tmp_path / "isaac_bundled"
+    staged.mkdir(parents=True)
+    conflict.mkdir()
+    (runtime / "groot_n17_wire_client.py").write_bytes(
+        (source_root / "groot_n17_wire_client.py").read_bytes()
+    )
+
+    # Copy the installed, pinned protocol distributions exactly as uv's staged
+    # target would. This includes pyzmq's native shared libraries and lets the
+    # subprocess execute the complete strict codec self-check.
+    for distribution in WIRE_DEPENDENCY_VERSIONS:
+        installed = importlib_metadata.distribution(distribution)
+        for relative in installed.files or ():
+            if any(part.endswith(".dist-info") for part in Path(relative).parts):
+                continue
+            source = Path(installed.locate_file(relative))
+            if not source.is_file():
+                continue
+            destination = staged / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        version = WIRE_DEPENDENCY_VERSIONS[distribution]
+        metadata_root = staged / (
+            f"{distribution.replace('-', '_')}-{version}.dist-info"
+        )
+        metadata_root.mkdir()
+        (metadata_root / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {distribution}\nVersion: {version}\n",
+            encoding="utf-8",
+        )
+
+    def write_conflicting_distribution(
+        *, import_name: str, distribution: str, version: str
+    ) -> None:
+        root = conflict
+        (root / f"{import_name}.py").write_text(
+            f"ORIGIN = {str(root)!r}\n", encoding="utf-8"
+        )
+        metadata_root = root / f"{distribution.replace('-', '_')}-{version}.dist-info"
+        metadata_root.mkdir()
+        (metadata_root / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {distribution}\nVersion: {version}\n",
+            encoding="utf-8",
+        )
+
+    write_conflicting_distribution(
+        import_name="msgpack", distribution="msgpack", version="1.2.1"
+    )
+    write_conflicting_distribution(
+        import_name="msgpack_numpy", distribution="msgpack-numpy", version="0.4.9"
+    )
+    write_conflicting_distribution(
+        import_name="zmq", distribution="pyzmq", version="27.1.0"
+    )
+
+    code = """
+import json
+from importlib import metadata
+import sys
+import numpy as wrapper_numpy
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+import groot_n17_wire_client as client
+client.run_wire_codec_self_check(require_distribution_versions=True)
+print(json.dumps({
+    "msgpack_file": client.msgpack.__file__,
+    "msgpack_numpy_file": client.mnp.__file__,
+    "numpy_file": client.np.__file__,
+    "numpy_preloaded_from_wrapper": client.np is wrapper_numpy,
+    "zmq_file": client.zmq.__file__,
+    "versions": {
+        name: metadata.version(name)
+        for name in ("msgpack", "msgpack-numpy", "pyzmq")
+    },
+}, sort_keys=True))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(conflict), str(runtime)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert observed["versions"] == WIRE_DEPENDENCY_VERSIONS
+    for field in ("msgpack_file", "msgpack_numpy_file", "zmq_file"):
+        assert Path(observed[field]).is_relative_to(staged)
+    assert observed["numpy_preloaded_from_wrapper"] is True
+    assert not Path(observed["numpy_file"]).is_relative_to(staged)
+
+
+def test_missing_staged_wire_deps_directory_is_a_no_op(tmp_path) -> None:
+    from blueprint_pipeline import groot_n17_wire_client as client
+
+    module_file = tmp_path / "groot_n17_wire_client.py"
+    module_file.write_text("# staged copy\n", encoding="utf-8")
+
+    assert client._prepend_staged_wire_deps(str(module_file)) is None
 
 
 def test_wire_client_imports_without_gr00t_transformers_or_torch() -> None:
