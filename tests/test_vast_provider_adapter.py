@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import inspect
 import json
 import os
 import shlex
@@ -2761,6 +2762,85 @@ def test_vast_adapter_prefers_known_supported_driver_over_known_unsupported_driv
     )
 
 
+def test_vast_offer_selection_prices_transfer_inside_hard_cap() -> None:
+    offers = [
+        {
+            "id": 1,
+            "gpu_name": "RTX 6000 Ada",
+            "dph_total": 0.60,
+            "driver_version": "580.82.09",
+            "inet_down_cost": 0.01,
+            "inet_up_cost": 0.02,
+        }
+    ]
+
+    blocked = _select_offer(
+        offers,
+        max_hourly_rate=0.70,
+        hard_cap_usd=0.75,
+        max_live_minutes=60,
+        expected_provider_download_bytes=20_000_000_000,
+        expected_provider_upload_bytes=1_000_000_000,
+    )
+    admitted = _select_offer(
+        offers,
+        max_hourly_rate=0.70,
+        hard_cap_usd=0.85,
+        max_live_minutes=60,
+        expected_provider_download_bytes=20_000_000_000,
+        expected_provider_upload_bytes=1_000_000_000,
+    )
+
+    assert blocked is None
+    assert admitted is not None
+    assert admitted["provider_download_cost_per_gb_usd"] == pytest.approx(0.01)
+    assert admitted["provider_upload_cost_per_gb_usd"] == pytest.approx(0.02)
+
+
+def test_vast_offer_selection_fails_closed_when_transfer_rate_is_missing() -> None:
+    assert (
+        _select_offer(
+            [{"id": 1, "gpu_name": "RTX 6000 Ada", "dph_total": 0.20}],
+            max_hourly_rate=0.70,
+            hard_cap_usd=0.75,
+            max_live_minutes=60,
+            expected_provider_download_bytes=1,
+        )
+        is None
+    )
+
+
+def test_pi05_observed_offer_requires_transfer_headroom_for_full_ttl() -> None:
+    offer = {
+        "id": 48_659_094,
+        "gpu_name": "L40",
+        "dph_base": 0.5733333333333334,
+        "storage_cost": 0.4,
+        "driver_version": "580.82.09",
+        "inet_down_cost": 0.005208333333333333,
+        "inet_up_cost": 0.006510416666666667,
+    }
+    kwargs = {
+        "max_hourly_rate": 0.70,
+        "hard_cap_usd": 0.75,
+        "disk_gb": 200,
+        "expected_provider_download_bytes": 25_934_530_837,
+        "expected_provider_upload_bytes": 1_000_000_000,
+    }
+
+    assert _select_offer([offer], max_live_minutes=60, **kwargs) is None
+    selected = _select_offer([offer], max_live_minutes=46, **kwargs)
+
+    assert selected is not None
+    transfer = vpa._projected_provider_transfer_cost_usd(
+        selected,
+        expected_provider_download_bytes=25_934_530_837,
+        expected_provider_upload_bytes=1_000_000_000,
+    )
+    assert transfer == pytest.approx(0.141586)
+    assert selected["hourly_rate_usd"] * 46 / 60 + transfer < 0.75
+
+
 def test_vast_adapter_enforces_backend_minimum_driver_version() -> None:
     selected = _select_offer(
         [
@@ -2876,6 +2956,7 @@ def test_vast_adapter_rejects_offer_without_requested_disk_capacity() -> None:
                 "gpu_name": "A100",
                 "gpu_ram_mb": 40960,
                 "disk_space": 10.0,
+                "storage_cost": 0.0,
                 "dph_total": 0.20,
                 "driver_version": "580.173.02",
             },
@@ -2885,6 +2966,7 @@ def test_vast_adapter_rejects_offer_without_requested_disk_capacity() -> None:
                 "gpu_name": "L40S",
                 "gpu_ram_mb": 49152,
                 "disk_space": 160.0,
+                "storage_cost": 0.0,
                 "dph_total": 0.35,
                 "driver_version": "580.159.03",
             },
@@ -2944,6 +3026,31 @@ def test_vast_offer_selection_rejects_requested_disk_all_in_rate_over_cap() -> N
         ],
         max_hourly_rate=0.64,
         disk_gb=200,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is None
+
+
+def test_vast_offer_selection_fails_closed_without_requested_disk_price() -> None:
+    selected = _select_offer(
+        [
+            {
+                "ask_contract_id": 48064193,
+                "gpu_name": "RTX 6000Ada",
+                "dph_base": 0.5733333333333334,
+                "dph_total": 0.5792592592592593,
+                # The default-disk total is not a price for the requested
+                # 200 GB container disk, and no monthly per-GB value exists.
+                "storage_total_cost": 0.005925925925925925,
+                "disk_space": 300,
+                "gpu_ram": 49_140,
+                "driver_version": "580.119.02",
+            }
+        ],
+        max_hourly_rate=0.80,
+        disk_gb=200,
+        required_provider_disk_gb=200,
         prefer_isaac_rt=False,
     )
 
@@ -8518,3 +8625,71 @@ def test_gpu_ram_floor_is_expressed_in_megabytes() -> None:
     floor = payload["gpu_ram"]["gte"]
     assert floor == 46000
     assert floor > 1024, "a value this small would be gigabytes and match everything"
+
+
+def test_signal_delivery_context_names_who_could_have_killed_the_probe() -> None:
+    """A signal that terminates a paid run has to record who delivered it.
+
+    Three GR00T launches on 2026-08-25 ended
+    ``vast_probe_interrupted_before_completion`` with a healthy pod -- heartbeat,
+    GPU sanity, Isaac smoke and bundle download all OK -- and every retained
+    receipt said only "interrupted". Nothing distinguished an operator stop from
+    a sibling unit's reaper, so each diagnosis cost another rented GPU.
+    """
+
+    context = vpa._signal_delivery_context()
+
+    assert context["receiving_pid"] == os.getpid()
+    assert context["parent_pid"] == os.getppid()
+    # The unit is the load-bearing part: signalled from outside our own unit is
+    # a different defect than stopped by it. Either the value or a typed
+    # lookup failure must be present -- never silence.
+    assert ("cgroup" in context) or ("cgroup_error" in context)
+    assert ("parent_command" in context) or ("parent_command_error" in context)
+
+
+def test_signal_delivery_context_survives_an_unreadable_proc(monkeypatch) -> None:
+    """Best effort by construction: the interrupt must never be masked."""
+
+    def refuse(self, *args, **kwargs):
+        raise OSError("proc unavailable")
+
+    monkeypatch.setattr(vpa.Path, "read_text", refuse)
+
+    context = vpa._signal_delivery_context()
+
+    assert context["receiving_pid"] == os.getpid()
+    assert context["parent_command_error"] == "OSError"
+    assert context["cgroup_error"] == "OSError"
+
+
+def test_probe_interrupt_records_the_signal_before_unwinding(tmp_path) -> None:
+    """The sidecar manifest is written by the handler, not after teardown."""
+
+    import signal as signal_module
+
+    source = inspect.getsource(vpa.run_vast_provider_adapter)
+    handler = source[source.index("def _raise_probe_interrupt") :]
+    handler = handler[: handler.index("for signum in (signal.SIGINT")]
+
+    # Recorded on the refusing branch, before the KeyboardInterrupt unwinds.
+    assert "vast_signal_handling_manifest.json" in handler
+    assert handler.index("_signal_delivery_context()") < handler.index(
+        "raise KeyboardInterrupt"
+    )
+    assert '"status": "probe_interrupted_by_signal"' in handler
+    assert "signal.Signals(signum).name" in handler
+    assert signal_module.Signals(15).name == "SIGTERM"
+
+
+def test_interrupt_result_carries_the_signal_context_not_just_a_blocker() -> None:
+    """A reader diagnosing a terminated paid run opens the result first."""
+
+    source = inspect.getsource(vpa.run_vast_provider_adapter)
+    block = source[source.index("except KeyboardInterrupt as exc:") :]
+    block = block[: block.index("except Exception as exc:")]
+
+    assert '"interrupt_signal_context": interrupt_signal_context,' in block
+    assert '"interrupt_signal_manifest_path"' in block
+    for key in ("interrupt_signal", "parent_command", "cgroup", "parent_pid"):
+        assert f'"{key}"' in block, key

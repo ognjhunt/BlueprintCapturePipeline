@@ -222,6 +222,7 @@ def _asset_rows(
         by_role[role] = row
     if replacements and "task_object" in by_role:
         errors.append("native_task_runtime_legacy_and_replacement_assets_mixed")
+    identified_task_object = False
     if replacements:
         if len(replacements) > MAX_REPLACEMENT_OBJECTS:
             errors.append("native_task_runtime_replacement_asset_count_out_of_range")
@@ -241,7 +242,16 @@ def _asset_rows(
         else:
             by_role["task_object"] = replacements[replacement_ids.index(selected)]
     elif subject_asset_id not in (None, ""):
-        errors.append("native_task_runtime_subject_asset_id_unexpected")
+        task_object = by_role.get("task_object")
+        selected = str(subject_asset_id or "")
+        if (
+            not isinstance(task_object, Mapping)
+            or str(task_object.get("asset_id") or "") != selected
+            or not selected.replace("_", "a").isalnum()
+        ):
+            errors.append("native_task_runtime_subject_asset_id_invalid")
+        else:
+            identified_task_object = True
     required = {"scene_collision", "task_object"}
     for role in sorted(required - set(by_role)):
         errors.append(f"native_task_runtime_asset_missing:{role}")
@@ -286,23 +296,27 @@ def _asset_rows(
             errors=errors,
         )
         object_type = str(source.get("object_type") or "")
-        if replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}:
+        physical_task_asset = (
+            replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}
+        ) or (identified_task_object and role == "task_object")
+        error_scope = "replacement" if replacements else "task_object"
+        if physical_task_asset:
             if object_type not in OBJECT_TYPES:
                 errors.append(
-                    f"native_task_runtime_replacement_object_type_invalid:{asset_id}"
+                    f"native_task_runtime_{error_scope}_object_type_invalid:{asset_id}"
                 )
         reset_state = source.get("reset_state")
         reset_joints: dict[str, float] = {}
-        if replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}:
+        if physical_task_asset:
             if not isinstance(reset_state, Mapping):
                 errors.append(
-                    f"native_task_runtime_replacement_reset_state_missing:{asset_id}"
+                    f"native_task_runtime_{error_scope}_reset_state_missing:{asset_id}"
                 )
             else:
                 joint_positions = reset_state.get("joint_positions")
                 if not isinstance(joint_positions, Mapping):
                     errors.append(
-                        f"native_task_runtime_replacement_joint_reset_invalid:{asset_id}"
+                        f"native_task_runtime_{error_scope}_joint_reset_invalid:{asset_id}"
                     )
                 else:
                     for joint_name, raw in joint_positions.items():
@@ -311,24 +325,24 @@ def _asset_rows(
                             [raw],
                             length=1,
                             error=(
-                                "native_task_runtime_replacement_joint_reset_invalid:"
+                                f"native_task_runtime_{error_scope}_joint_reset_invalid:"
                                 + asset_id
                             ),
                             errors=errors,
                         )
                         if not name or PurePosixPath(name).name != name:
                             errors.append(
-                                f"native_task_runtime_replacement_joint_reset_invalid:{asset_id}"
+                                f"native_task_runtime_{error_scope}_joint_reset_invalid:{asset_id}"
                             )
                         elif number:
                             reset_joints[name] = number[0]
             if object_type == "RIGID" and reset_joints:
                 errors.append(
-                    f"native_task_runtime_rigid_replacement_has_joint_reset:{asset_id}"
+                    f"native_task_runtime_rigid_{error_scope}_has_joint_reset:{asset_id}"
                 )
             if object_type == "ARTICULATION" and not reset_joints:
                 errors.append(
-                    f"native_task_runtime_articulated_replacement_joint_reset_missing:{asset_id}"
+                    f"native_task_runtime_articulated_{error_scope}_joint_reset_missing:{asset_id}"
                 )
         rows.append(
             {

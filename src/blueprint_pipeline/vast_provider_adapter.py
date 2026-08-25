@@ -388,6 +388,40 @@ def _read_mapping_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _signal_delivery_context() -> dict[str, Any]:
+    """Describe who could have delivered a signal to this process.
+
+    POSIX does not hand a Python signal handler the sender's pid, so record the
+    next best identifying evidence: this process and its parent, the parent's
+    command name, and the systemd unit whose cgroup this process is in.  When a
+    paid probe is terminated, that is enough to tell an operator stop from a
+    sibling unit's reaper -- which retained receipts previously could not.
+
+    Best effort by construction: every lookup is optional and a failure records
+    the reason rather than masking the interrupt being handled.
+    """
+
+    context: dict[str, Any] = {
+        "receiving_pid": os.getpid(),
+        "parent_pid": os.getppid(),
+    }
+    try:
+        context["parent_command"] = (
+            Path(f"/proc/{os.getppid()}/comm").read_text(encoding="utf-8").strip()
+        )
+    except OSError as exc:
+        context["parent_command_error"] = type(exc).__name__
+    try:
+        # The unit name is the load-bearing part: a process signalled from
+        # outside its own unit is a different defect than one stopped by it.
+        context["cgroup"] = (
+            Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+    except (OSError, IndexError) as exc:
+        context["cgroup_error"] = type(exc).__name__
+    return context
+
+
 def _default_machine_avoidlist_path(job_dir: Path) -> Path:
     """Share proven-bad hosts across sibling jobs in one bounded run root."""
 
@@ -1287,10 +1321,12 @@ def _search_payload(
     limit: int,
     max_hourly_rate: float | None,
     allowed_machine_ids: Iterable[Any] = (),
+    excluded_machine_ids: Iterable[Any] = (),
     minimum_driver_version: str = "",
     min_gpu_ram_mb: int = 0,
     min_compute_cap: int = 0,
     max_compute_cap: int = 0,
+    required_provider_disk_gb: int = 0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "limit": limit,
@@ -1314,6 +1350,8 @@ def _search_payload(
         compute_cap["lte"] = int(max_compute_cap)
     if compute_cap:
         payload["compute_cap"] = compute_cap
+    if required_provider_disk_gb > 0:
+        payload["disk_space"] = {"gte": int(required_provider_disk_gb)}
     driver_floor = _string(minimum_driver_version)
     if driver_floor:
         # Same bounded-page reasoning as the machine allowlist below: the
@@ -1326,11 +1364,17 @@ def _search_payload(
         # candidate page, it does not replace the fail-closed verification.
         payload["driver_version"] = {"gte": driver_floor}
     allowed = sorted(_machine_id_set(allowed_machine_ids))
-    if allowed:
+    excluded = sorted(_machine_id_set(excluded_machine_ids))
+    if allowed or excluded:
         # Apply the allowlist at the provider query, not only after the
         # response. Otherwise an admitted machine can be omitted by the
         # endpoint's bounded result page even while it is rentable.
-        payload["machine_id"] = {"in": allowed}
+        machine_filter: dict[str, list[int]] = {}
+        if allowed:
+            machine_filter["in"] = allowed
+        if excluded:
+            machine_filter["notin"] = excluded
+        payload["machine_id"] = machine_filter
     return payload
 
 
@@ -1430,7 +1474,12 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) -> float | None:
+def _offer_storage_hourly_rate(
+    offer: Mapping[str, Any],
+    *,
+    disk_gb: int = 0,
+    require_requested_disk_price: bool = False,
+) -> float | None:
     # In offer-search rows ``storage_total_cost`` is the hourly cost of Vast's
     # default 8 GB disk, not of the disk requested by our create payload.  The
     # adjacent ``storage_cost`` is the monthly per-GB price and is therefore the
@@ -1441,6 +1490,11 @@ def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) ->
         monthly_per_gb = _number(_mapping(offer.get("pricing")).get("storage_cost"))
     if monthly_per_gb is not None and monthly_per_gb >= 0 and disk_gb > 0:
         return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
+    if disk_gb > 0 and require_requested_disk_price:
+        # ``storage_total_cost`` on an offer row prices Vast's default disk,
+        # not the caller's requested disk. If the monthly per-GB price is
+        # absent, the requested-disk all-in price is unknowable before create.
+        return None
     direct = _number(offer.get("storage_total_cost"))
     if direct is not None and direct >= 0:
         return direct
@@ -1454,18 +1508,30 @@ def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) ->
     return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
 
 
-def _offer_summary(offer: Mapping[str, Any], *, disk_gb: int = 0) -> dict[str, Any]:
+def _offer_summary(
+    offer: Mapping[str, Any],
+    *,
+    disk_gb: int = 0,
+    require_requested_disk_price: bool = False,
+) -> dict[str, Any]:
     gpu = _gpu_name(offer)
     driver = _driver_version(offer)
     driver_status = _isaac_driver_support_status(driver)
     compute_cap = offer.get("compute_cap")
     compute_hourly_rate = _offer_compute_hourly_rate(offer)
-    storage_hourly_rate = _offer_storage_hourly_rate(offer, disk_gb=disk_gb)
-    all_in_hourly_rate = (
-        compute_hourly_rate + storage_hourly_rate
-        if compute_hourly_rate is not None and storage_hourly_rate is not None
-        else compute_hourly_rate
+    storage_hourly_rate = _offer_storage_hourly_rate(
+        offer,
+        disk_gb=disk_gb,
+        require_requested_disk_price=require_requested_disk_price,
     )
+    if compute_hourly_rate is None:
+        all_in_hourly_rate = None
+    elif storage_hourly_rate is not None:
+        all_in_hourly_rate = compute_hourly_rate + storage_hourly_rate
+    elif require_requested_disk_price:
+        all_in_hourly_rate = None
+    else:
+        all_in_hourly_rate = compute_hourly_rate
     provider_reported_gpu_ram_mb = _number(
         offer.get("gpu_ram") or offer.get("gpu_totalram") or offer.get("gpu_ram_mb")
     )
@@ -1489,6 +1555,15 @@ def _offer_summary(offer: Mapping[str, Any], *, disk_gb: int = 0) -> dict[str, A
             if storage_hourly_rate is not None
             else "provider_storage_price_unavailable"
         ),
+        # Vast bills network transfer separately from ``dph_total``.  These
+        # values are dollars per decimal GB in both offer and instance rows
+        # (the same rates later appear on official ``bwd``/``bwu`` charges).
+        # Keeping them beside compute and requested-disk rates lets callers
+        # reserve immutable input/output bytes before allocating a machine.
+        "provider_download_cost_per_gb_usd": _number(
+            offer.get("inet_down_cost")
+        ),
+        "provider_upload_cost_per_gb_usd": _number(offer.get("inet_up_cost")),
         "disk_gb": int(disk_gb),
         # Vast reports the host's currently allocatable disk separately from
         # the disk requested in the create payload.  A create call can return
@@ -1555,6 +1630,12 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "compute_hourly_rate_usd": offer.get("compute_hourly_rate_usd"),
         "storage_hourly_rate_usd": offer.get("storage_hourly_rate_usd"),
         "storage_rate_source": offer.get("storage_rate_source"),
+        "provider_download_cost_per_gb_usd": offer.get(
+            "provider_download_cost_per_gb_usd"
+        ),
+        "provider_upload_cost_per_gb_usd": offer.get(
+            "provider_upload_cost_per_gb_usd"
+        ),
         "disk_gb": offer.get("disk_gb"),
         "provider_available_disk_gb": offer.get("provider_available_disk_gb"),
         "driver_version": _string(offer.get("driver_version")) or None,
@@ -1578,6 +1659,51 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "disallowed_for_isaac_rendering": bool(offer.get("disallowed_for_isaac_rendering")),
         "raw_secret_values_recorded": False,
     }
+
+
+def _projected_provider_transfer_cost_usd(
+    offer: Mapping[str, Any],
+    *,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
+) -> float | None:
+    """Price a declared byte ceiling using the offer's non-hourly rates."""
+
+    download_rate = _number(offer.get("provider_download_cost_per_gb_usd"))
+    upload_rate = _number(offer.get("provider_upload_cost_per_gb_usd"))
+    if expected_provider_download_bytes and download_rate is None:
+        return None
+    if expected_provider_upload_bytes and upload_rate is None:
+        return None
+    return (
+        expected_provider_download_bytes / 1_000_000_000.0 * float(download_rate or 0.0)
+        + expected_provider_upload_bytes / 1_000_000_000.0 * float(upload_rate or 0.0)
+    )
+
+
+def _offer_fits_total_cost_bound(
+    offer: Mapping[str, Any],
+    *,
+    hard_cap_usd: float | None,
+    max_live_minutes: int,
+    expected_provider_download_bytes: int,
+    expected_provider_upload_bytes: int,
+) -> bool:
+    if not (expected_provider_download_bytes or expected_provider_upload_bytes):
+        return True
+    if hard_cap_usd is None or max_live_minutes <= 0:
+        return False
+    transfer_cost = _projected_provider_transfer_cost_usd(
+        offer,
+        expected_provider_download_bytes=expected_provider_download_bytes,
+        expected_provider_upload_bytes=expected_provider_upload_bytes,
+    )
+    hourly_rate = _number(offer.get("hourly_rate_usd"))
+    return bool(
+        transfer_cost is not None
+        and hourly_rate is not None
+        and hourly_rate * max_live_minutes / 60.0 + transfer_cost <= hard_cap_usd
+    )
 
 
 def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
@@ -1743,6 +1869,10 @@ def _select_offer(
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
     allowed_geolocation_country_codes: Iterable[str] = (),
+    hard_cap_usd: float | None = None,
+    max_live_minutes: int = 0,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1750,7 +1880,14 @@ def _select_offer(
         allowed_geolocation_country_codes
     )
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
-    summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
+    summaries = [
+        _offer_summary(
+            offer,
+            disk_gb=disk_gb,
+            require_requested_disk_price=bool(required_provider_disk_gb),
+        )
+        for offer in offers
+    ]
     candidates = [
         item
         for item in summaries
@@ -1782,6 +1919,13 @@ def _select_offer(
         and (not require_avx or item.get("has_avx") is True)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
         and vast_geolocation_allowed(item.get("geolocation"), allowed_countries)
+        and _offer_fits_total_cost_bound(
+            item,
+            hard_cap_usd=hard_cap_usd,
+            max_live_minutes=max_live_minutes,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
+        )
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -1858,6 +2002,10 @@ def _offer_selection_manifest(
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
     allowed_geolocation_country_codes: Iterable[str] = (),
+    hard_cap_usd: float | None = None,
+    max_live_minutes: int = 0,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
@@ -1918,6 +2066,13 @@ def _offer_selection_manifest(
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
         and vast_geolocation_allowed(item.get("geolocation"), allowed_countries)
+        and _offer_fits_total_cost_bound(
+            item,
+            hard_cap_usd=hard_cap_usd,
+            max_live_minutes=max_live_minutes,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
+        )
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -1930,6 +2085,34 @@ def _offer_selection_manifest(
         "disk_gb": int(disk_gb),
         "required_provider_disk_gb": int(required_provider_disk_gb),
         "hourly_rate_includes_provider_offer_storage": True,
+        "provider_transfer_cost_included_in_hard_cap_projection": bool(
+            expected_provider_download_bytes or expected_provider_upload_bytes
+        ),
+        "expected_provider_download_bytes": expected_provider_download_bytes,
+        "expected_provider_upload_bytes": expected_provider_upload_bytes,
+        "selected_offer_projected_transfer_cost_usd": (
+            _projected_provider_transfer_cost_usd(
+                selected_offer,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
+            )
+            if selected_offer
+            else None
+        ),
+        "selected_offer_projected_total_cost_usd": (
+            float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+            + float(
+                _projected_provider_transfer_cost_usd(
+                    selected_offer,
+                    expected_provider_download_bytes=expected_provider_download_bytes,
+                    expected_provider_upload_bytes=expected_provider_upload_bytes,
+                )
+                or 0.0
+            )
+            if selected_offer
+            else None
+        ),
+        "hard_cap_usd": hard_cap_usd,
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "min_compute_cap": min_compute_cap,
         "max_compute_cap": max_compute_cap,
@@ -1991,12 +2174,21 @@ def _budget_ledger(
     ended_at_monotonic: float | None = None,
     status: str = "planned",
     continuing_spend: bool = False,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     hourly = _number((selected_offer or {}).get("hourly_rate_usd")) or 0.0
     elapsed_seconds = 0.0
     if started_at_monotonic is not None and ended_at_monotonic is not None:
         elapsed_seconds = max(0.0, ended_at_monotonic - started_at_monotonic)
-    estimated_cost = hourly * elapsed_seconds / 3600.0
+    estimated_runtime_cost = hourly * elapsed_seconds / 3600.0
+    projected_transfer_cost = _projected_provider_transfer_cost_usd(
+        selected_offer or {},
+        expected_provider_download_bytes=expected_provider_download_bytes,
+        expected_provider_upload_bytes=expected_provider_upload_bytes,
+    )
+    estimated_cost = estimated_runtime_cost + float(projected_transfer_cost or 0.0)
+    transfer_cost_priced = projected_transfer_cost is not None
     ledger = {
         "schema_version": VAST_BUDGET_LEDGER_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2008,11 +2200,24 @@ def _budget_ledger(
         "selected_hourly_rate_usd": hourly or None,
         "vast_instance_ids": list(instance_ids),
         "actual_live_runtime_seconds_observed_by_adapter": elapsed_seconds,
+        "estimated_runtime_cost_usd": round(estimated_runtime_cost, 6),
+        "expected_provider_download_bytes": expected_provider_download_bytes,
+        "expected_provider_upload_bytes": expected_provider_upload_bytes,
+        "projected_provider_transfer_cost_usd": (
+            round(projected_transfer_cost, 6)
+            if projected_transfer_cost is not None
+            else None
+        ),
+        "provider_transfer_cost_priced": transfer_cost_priced,
         "estimated_cost_usd": round(estimated_cost, 6),
         "actual_cost_usd": None,
         "actual_cost_source": "not_available_from_instance_probe_api",
-        "estimated_spend_under_target": estimated_cost <= target_spend_usd,
-        "estimated_spend_under_hard_cap": estimated_cost <= hard_cap_usd,
+        "estimated_spend_under_target": (
+            transfer_cost_priced and estimated_cost <= target_spend_usd
+        ),
+        "estimated_spend_under_hard_cap": (
+            transfer_cost_priced and estimated_cost <= hard_cap_usd
+        ),
         "continuing_spend_from_this_run": continuing_spend,
         "raw_secret_values_recorded": False,
     }
@@ -6672,6 +6877,8 @@ def run_vast_provider_adapter(
     pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
     allowed_geolocation_country_codes: Iterable[str] = (),
     stale_offer_create_retry_limit: int | None = None,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -6679,6 +6886,12 @@ def run_vast_provider_adapter(
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
     if retain_native_task_arena_warm_session and retain_instance_on_runtime_failure:
         raise ValueError("multiple_vast_retention_modes_invalid")
+    for field, value in (
+        ("expected_provider_download_bytes", expected_provider_download_bytes),
+        ("expected_provider_upload_bytes", expected_provider_upload_bytes),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"invalid_vast_{field}")
     resolved_image_login_mode = (
         _string(ngc_image_login_mode)
         or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
@@ -6966,6 +7179,8 @@ def run_vast_provider_adapter(
         max_hourly_rate=max_hourly_rate,
         max_live_minutes=max_live_minutes,
         selected_offer=None,
+        expected_provider_download_bytes=expected_provider_download_bytes,
+        expected_provider_upload_bytes=expected_provider_upload_bytes,
     )
 
     base_result: dict[str, Any] = {
@@ -7065,10 +7280,13 @@ def run_vast_provider_adapter(
         dry_offer_request = _search_payload(
             limit=100,
             max_hourly_rate=max_hourly_rate,
+            allowed_machine_ids=resolved_allowed_machine_ids,
+            excluded_machine_ids=excluded_machine_ids,
             minimum_driver_version=resolved_minimum_driver_version,
             min_gpu_ram_mb=resolved_min_gpu_ram_mb,
             min_compute_cap=resolved_min_compute_cap,
             max_compute_cap=resolved_max_compute_cap,
+            required_provider_disk_gb=required_provider_disk_gb,
         )
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -7827,6 +8045,27 @@ def run_vast_provider_adapter(
                 },
             )
             return
+        # Name the delivery before unwinding.  Three paid GR00T launches on
+        # 2026-08-25 ended `vast_probe_interrupted_before_completion` with a
+        # healthy pod -- heartbeat, GPU sanity, Isaac smoke and bundle download
+        # all OK -- and every retained receipt said only "interrupted".  There
+        # was nothing in the evidence to distinguish an operator stop, a
+        # supervisor, a cgroup reaper, or systemd, so each diagnosis cost
+        # another rented GPU.  A signal that terminates a paid run has to
+        # record who delivered it.
+        write_json(
+            resolved_job_dir / "vast_signal_handling_manifest.json",
+            {
+                "schema_version": "vast_signal_handling_manifest.v1",
+                "generated_at": utc_now_iso(),
+                "status": "probe_interrupted_by_signal",
+                "interrupt_signal": signum,
+                "interrupt_signal_name": signal.Signals(signum).name,
+                "ignore_local_sigterm_during_provider_run": False,
+                **_signal_delivery_context(),
+                "raw_secret_values_recorded": False,
+            },
+        )
         raise KeyboardInterrupt(f"vast_probe_signal:{signum}")
 
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -7839,15 +8078,6 @@ def run_vast_provider_adapter(
             # regular Python exceptions below.
             previous_signal_handlers.pop(signum, None)
     try:
-        search_request = _search_payload(
-            limit=100,
-            max_hourly_rate=max_hourly_rate,
-            allowed_machine_ids=resolved_allowed_machine_ids,
-            minimum_driver_version=resolved_minimum_driver_version,
-            min_gpu_ram_mb=resolved_min_gpu_ram_mb,
-            min_compute_cap=resolved_min_compute_cap,
-            max_compute_cap=resolved_max_compute_cap,
-        )
         create_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = (
@@ -7860,6 +8090,17 @@ def run_vast_provider_adapter(
         create_payload: dict[str, Any] = {}
         image_login_summary: dict[str, Any] = {}
         for create_attempt_index in range(max_stale_offer_retries + 1):
+            search_request = _search_payload(
+                limit=100,
+                max_hourly_rate=max_hourly_rate,
+                allowed_machine_ids=resolved_allowed_machine_ids,
+                excluded_machine_ids=excluded_machine_ids,
+                minimum_driver_version=resolved_minimum_driver_version,
+                min_gpu_ram_mb=resolved_min_gpu_ram_mb,
+                min_compute_cap=resolved_min_compute_cap,
+                max_compute_cap=resolved_max_compute_cap,
+                required_provider_disk_gb=required_provider_disk_gb,
+            )
             _append_phase(
                 resolved_job_dir,
                 "vast_offer_search_started",
@@ -7893,9 +8134,17 @@ def run_vast_provider_adapter(
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
                 allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=max_live_minutes,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
+                if expected_provider_download_bytes or expected_provider_upload_bytes:
+                    offer_blockers.append(
+                        "no_vast_offer_with_transfer_rates_and_total_cost_under_hard_cap"
+                    )
                 if resolved_allowed_machine_ids:
                     offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
                 if resolved_min_compute_cap:
@@ -7937,6 +8186,10 @@ def run_vast_provider_adapter(
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
                 allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
+                hard_cap_usd=hard_cap_usd,
+                max_live_minutes=max_live_minutes,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
             _append_phase(
@@ -7950,9 +8203,23 @@ def run_vast_provider_adapter(
             if not selected_offer:
                 raise RuntimeError("no_vast_offer_selected")
 
-            projected_full_cost = float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+            projected_transfer_cost = _projected_provider_transfer_cost_usd(
+                selected_offer,
+                expected_provider_download_bytes=expected_provider_download_bytes,
+                expected_provider_upload_bytes=expected_provider_upload_bytes,
+            )
+            if projected_transfer_cost is None:
+                raise RuntimeError("selected_offer_provider_transfer_rate_missing")
+            projected_full_cost = (
+                float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+                + projected_transfer_cost
+            )
             if projected_full_cost > hard_cap_usd:
-                raise RuntimeError("selected_offer_projected_max_runtime_exceeds_hard_cap")
+                raise RuntimeError(
+                    "selected_offer_projected_total_cost_exceeds_hard_cap"
+                    if expected_provider_download_bytes or expected_provider_upload_bytes
+                    else "selected_offer_projected_max_runtime_exceeds_hard_cap"
+                )
 
             image_login, image_login_summary = _resolve_image_login(
                 image=create_request_image or "",
@@ -8084,6 +8351,10 @@ def run_vast_provider_adapter(
                     disk_gb=resolved_disk_gb,
                     required_provider_disk_gb=required_provider_disk_gb,
                     allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
+                    hard_cap_usd=hard_cap_usd,
+                    max_live_minutes=max_live_minutes,
+                    expected_provider_download_bytes=expected_provider_download_bytes,
+                    expected_provider_upload_bytes=expected_provider_upload_bytes,
                 )
                 write_json(
                     resolved_job_dir / "vast_offer_selection_manifest.json",
@@ -8119,6 +8390,8 @@ def run_vast_provider_adapter(
             ended_at_monotonic=started_at_monotonic,
             status="live_instance_created",
             continuing_spend=True,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
         )
         _append_phase(
             resolved_job_dir,
@@ -8144,6 +8417,8 @@ def run_vast_provider_adapter(
             max_hourly_rate=max_hourly_rate,
             hard_cap_usd=hard_cap_usd,
             max_hourly_rate_usd=max_hourly_rate,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
         )
         if not all_in_cost_binding["all_in_hourly_rate_under_max"]:
             raise RuntimeError("created_instance_all_in_hourly_rate_exceeds_max")
@@ -8870,12 +9145,41 @@ def run_vast_provider_adapter(
     except KeyboardInterrupt as exc:
         interrupt_detail = str(exc)[:300] or type(exc).__name__
         interrupt_blocker = "vast_probe_interrupted_before_completion"
+        # Carry the delivery evidence into the adapter's own terminal result,
+        # not only into the sidecar manifest: a reader diagnosing a terminated
+        # paid run opens the result first, and "interrupted" with no sender is
+        # what made three GR00T launches individually undiagnosable.
+        signal_manifest_path = (
+            resolved_job_dir / "vast_signal_handling_manifest.json"
+        )
+        interrupt_signal_context: dict[str, Any] = {}
+        try:
+            recorded = json.loads(signal_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            recorded = {}
+        if isinstance(recorded, Mapping):
+            interrupt_signal_context = {
+                key: recorded[key]
+                for key in (
+                    "interrupt_signal",
+                    "interrupt_signal_name",
+                    "receiving_pid",
+                    "parent_pid",
+                    "parent_command",
+                    "cgroup",
+                )
+                if key in recorded
+            }
         base_result.update(
             {
                 "status": "blocked",
                 "reason": "vast_probe_interrupted",
                 "blockers": [interrupt_blocker],
                 "interrupt_detail": interrupt_detail,
+                "interrupt_signal_context": interrupt_signal_context,
+                "interrupt_signal_manifest_path": (
+                    str(signal_manifest_path) if signal_manifest_path.is_file() else None
+                ),
                 "api_call_performed": True,
             }
         )
@@ -9165,6 +9469,8 @@ def run_vast_provider_adapter(
                 else ("completed" if not continuing_spend else "blocked_teardown")
             ),
             continuing_spend=continuing_spend,
+            expected_provider_download_bytes=expected_provider_download_bytes,
+            expected_provider_upload_bytes=expected_provider_upload_bytes,
         )
         estimated_cost_usd = float(ledger["estimated_cost_usd"])
         session_budget_summary = _append_session_budget_attempt(

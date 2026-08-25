@@ -1156,6 +1156,7 @@ def run_policy_episode(
             action_values,
             horizon=int(open_loop_horizon),
             action_space=policy_action_space,
+            candidate_id=candidate_id,
         )
         timings_seconds["action_planning"] += time.monotonic() - phase_started
         raw_action_evidence["chunk_contract_validated"] = True
@@ -1170,6 +1171,7 @@ def run_policy_episode(
                 joint_limits=joint_limits,
                 gripper=gripper,
                 action_space=policy_action_space,
+                candidate_id=candidate_id,
             )
             query_clamped_rows += int(action["joint_limit_clamped"])
             action_record = {

@@ -20,10 +20,12 @@ from blueprint_pipeline.native_task_arena_paid_authority import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-receipt", required=True)
-    parser.add_argument("--prior-authority", required=True)
-    parser.add_argument("--prior-result", required=True)
-    parser.add_argument("--prior-provider-zero", required=True)
-    parser.add_argument("--prior-spend-reconciliation", required=True)
+    parser.add_argument("--prior-authority")
+    parser.add_argument("--prior-result")
+    parser.add_argument("--prior-provider-zero")
+    parser.add_argument("--prior-spend-reconciliation")
+    parser.add_argument("--project-spend-reconciliation")
+    parser.add_argument("--initial-provider-zero")
     parser.add_argument("--supplemental-prior-result", action="append", default=[])
     parser.add_argument("--authority-reference", required=True)
     parser.add_argument("--authorized-by", required=True)
@@ -49,6 +51,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "policy_campaign_path": args.policy_campaign,
                 "campaign_member_id": args.campaign_member_id,
             }
+        genesis = {}
+        if (
+            args.project_spend_reconciliation is not None
+            or args.initial_provider_zero is not None
+        ):
+            genesis = {
+                "project_spend_reconciliation_path": (
+                    args.project_spend_reconciliation
+                ),
+                "initial_provider_zero_path": args.initial_provider_zero,
+            }
         authority = materialize_native_task_arena_paid_attempt_authority(
             bundle_receipt_path=args.bundle_receipt,
             prior_authority_path=args.prior_authority,
@@ -66,6 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output,
             allowed_active_instance_ids=tuple(args.allow_active_instance),
             retain_warm_session=args.retain_warm_session,
+            **genesis,
             **campaign,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

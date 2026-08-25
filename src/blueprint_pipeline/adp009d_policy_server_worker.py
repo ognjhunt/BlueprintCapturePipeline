@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -60,6 +61,7 @@ READINESS_POLL_SECONDS = 10.0
 HANDSHAKE_ATTEMPT_TIMEOUT_SECONDS = 120.0
 SERVER_LOG_TAIL_BYTES = 32_768
 FAILED_SERVER_TERMINATE_TIMEOUT_SECONDS = 10.0
+READY_SERVER_TERMINATE_TIMEOUT_SECONDS = 10.0
 
 TRANSPORT_OPENPI_WEBSOCKET = "openpi_websocket"
 TRANSPORT_GROOT_ZMQ = "groot_zmq"
@@ -379,6 +381,235 @@ def _stop_failed_server(process: subprocess.Popen | None) -> dict[str, Any]:
         return {"status": "killed", "exit_code": int(exit_code)}
 
 
+def _canonical_digest(value: Mapping[str, Any], *, digest_field: str) -> str:
+    normalized = dict(value)
+    normalized.pop(digest_field, None)
+    payload = json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _linux_process_command(pid: int) -> list[str] | None:
+    """Read one live Linux process identity, or report that the PID is absent."""
+
+    try:
+        payload = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except FileNotFoundError:
+        return None
+    if not payload:
+        # A zombie has exited and can no longer serve even if PID 1 has not yet
+        # reaped its process-table entry.
+        return None
+    return [
+        part.decode("utf-8", errors="surrogateescape")
+        for part in payload.split(b"\0")
+        if part
+    ]
+
+
+def terminate_ready_server_from_receipt(
+    receipt_path: str | Path,
+    *,
+    command_reader: Any = _linux_process_command,
+    signal_process: Any = os.kill,
+    monotonic: Any = time.monotonic,
+    sleep: Any = time.sleep,
+    terminate_timeout_seconds: float = READY_SERVER_TERMINATE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Terminate only the exact ready server named by its retained receipt.
+
+    The launcher that owns ``Popen`` has already exited after readiness, so the
+    bundle supervisor cannot call ``Popen.wait``. It instead verifies the
+    receipt command against ``/proc/<pid>/cmdline`` before signalling and polls
+    that same identity until it is observably gone. A reused or mismatched PID
+    is never signalled.
+    """
+
+    path = Path(receipt_path)
+    result: dict[str, Any] = {
+        "schema_version": "adp009d_policy_server_teardown.v1",
+        "status": "blocked",
+        "policy_server_process_terminated": False,
+        "server_receipt_path": str(path),
+        "server_pid": None,
+        "exact_process_identity_verified": False,
+        "termination_method": None,
+        "blockers": [],
+    }
+    try:
+        receipt_bytes = path.read_bytes()
+        receipt = json.loads(receipt_bytes)
+    except (OSError, json.JSONDecodeError):
+        result["blockers"].append(
+            "policy_server_teardown_receipt_missing_or_invalid"
+        )
+        return result
+    result["server_receipt_sha256"] = "sha256:" + hashlib.sha256(
+        receipt_bytes
+    ).hexdigest()
+
+    pid = receipt.get("server_pid")
+    command = receipt.get("command")
+    result["candidate_id"] = receipt.get("candidate_id")
+    result["server_pid"] = pid
+    if receipt.get("status") != "ready":
+        result["blockers"].append("policy_server_teardown_server_was_not_ready")
+        return result
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        result["blockers"].append("policy_server_teardown_pid_invalid")
+        return result
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(part, str) and part for part in command)
+    ):
+        result["blockers"].append("policy_server_teardown_command_invalid")
+        return result
+
+    try:
+        observed_command = command_reader(pid)
+    except OSError as exc:
+        result["blockers"].append(
+            f"policy_server_teardown_identity_unreadable:{type(exc).__name__}"
+        )
+        return result
+    if observed_command is None:
+        result.update(
+            {
+                "status": "completed",
+                "policy_server_process_terminated": True,
+                "termination_method": "already_exited",
+            }
+        )
+        return result
+    if observed_command != command:
+        result["blockers"].append("policy_server_teardown_pid_identity_mismatch")
+        return result
+    result["exact_process_identity_verified"] = True
+
+    def wait_until_exact_process_exits(timeout_seconds: float) -> bool:
+        deadline = monotonic() + timeout_seconds
+        while True:
+            current = command_reader(pid)
+            if current is None or current != command:
+                return True
+            if monotonic() >= deadline:
+                return False
+            sleep(min(0.1, max(0.0, deadline - monotonic())))
+
+    try:
+        signal_process(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        result.update(
+            {
+                "status": "completed",
+                "policy_server_process_terminated": True,
+                "termination_method": "exited_before_sigterm",
+            }
+        )
+        return result
+    if wait_until_exact_process_exits(terminate_timeout_seconds):
+        result.update(
+            {
+                "status": "completed",
+                "policy_server_process_terminated": True,
+                "termination_method": "sigterm",
+            }
+        )
+        return result
+
+    try:
+        signal_process(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if wait_until_exact_process_exits(terminate_timeout_seconds):
+        result.update(
+            {
+                "status": "completed",
+                "policy_server_process_terminated": True,
+                "termination_method": "sigkill",
+            }
+        )
+        return result
+    result["blockers"].append("policy_server_teardown_process_survived_sigkill")
+    return result
+
+
+def _seal_ready_server_teardown(
+    *, receipt_path: str | Path, result_path: str | Path, result_schema: str
+) -> int:
+    """Retain teardown evidence and bind it into the terminal episode result."""
+
+    try:
+        teardown = terminate_ready_server_from_receipt(receipt_path)
+    except BaseException as exc:  # noqa: BLE001 - trap must retain fail-closed proof
+        teardown = {
+            "schema_version": "adp009d_policy_server_teardown.v1",
+            "status": "blocked",
+            "policy_server_process_terminated": False,
+            "server_pid": None,
+            "exact_process_identity_verified": False,
+            "termination_method": None,
+            "blockers": [
+                f"policy_server_teardown_internal_error:{type(exc).__name__}"
+            ],
+        }
+    destination = Path(result_path)
+    teardown_path = destination.parent / "adp009d_policy_server_teardown.v1.json"
+    teardown["completed_at_unix_ns"] = time.time_ns()
+    teardown["teardown_digest"] = _canonical_digest(
+        teardown, digest_field="teardown_digest"
+    )
+    teardown_path.parent.mkdir(parents=True, exist_ok=True)
+    teardown_path.write_text(
+        json.dumps(teardown, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    try:
+        episode_result = json.loads(destination.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        episode_result = {
+            "schema_version": result_schema,
+            "status": "blocked",
+            "blockers": ["native_task_arena_process_exited_without_result"],
+            "candidate_policy_queried": False,
+            "candidate_outcomes_accessed": False,
+            "provider_zero_required_after_return": True,
+        }
+    bound_teardown = {
+        "policy_server_process_terminated": teardown[
+            "policy_server_process_terminated"
+        ],
+        "server_pid": teardown.get("server_pid"),
+        "exact_process_identity_verified": teardown[
+            "exact_process_identity_verified"
+        ],
+        "termination_method": teardown.get("termination_method"),
+        "teardown_receipt": teardown_path.name,
+        "teardown_receipt_sha256": "sha256:"
+        + hashlib.sha256(teardown_path.read_bytes()).hexdigest(),
+    }
+    episode_result["teardown"] = bound_teardown
+    if teardown["policy_server_process_terminated"] is not True:
+        episode_result["status"] = "blocked"
+        episode_result["scientific_outcome_admitted"] = False
+        episode_result["ranking_eligible"] = False
+        blockers = list(episode_result.get("blockers") or [])
+        blockers.extend(teardown["blockers"])
+        blockers.append("native_task_policy_server_teardown_unproven")
+        episode_result["blockers"] = sorted(set(blockers))
+    episode_result["result_digest"] = _canonical_digest(
+        episode_result, digest_field="result_digest"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(episode_result, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return 0 if teardown["policy_server_process_terminated"] is True else 1
+
+
 def wait_for_handshake(
     *,
     host: str,
@@ -431,6 +662,20 @@ def wait_for_handshake(
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "--terminate-ready-server":
+        teardown_parser = argparse.ArgumentParser(description=__doc__)
+        teardown_parser.add_argument("--terminate-ready-server", action="store_true")
+        teardown_parser.add_argument("--receipt", required=True)
+        teardown_parser.add_argument("--result", required=True)
+        teardown_parser.add_argument("--result-schema", required=True)
+        teardown_args = teardown_parser.parse_args(raw_argv)
+        return _seal_ready_server_teardown(
+            receipt_path=teardown_args.receipt,
+            result_path=teardown_args.result,
+            result_schema=teardown_args.result_schema,
+        )
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-id", required=True)
     parser.add_argument("--source-root", required=True)
@@ -454,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--timeout-seconds", type=float, default=READINESS_TIMEOUT_SECONDS
     )
-    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    args = parser.parse_args(raw_argv)
 
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("policy_server_must_be_loopback_only")

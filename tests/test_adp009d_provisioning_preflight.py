@@ -21,7 +21,7 @@ def test_the_checks_are_the_ones_live_runs_actually_failed_on(monkeypatch) -> No
 
     assert "linux/input.h" in preflight.REQUIRED_HEADERS  # broke v37
     assert "/usr/bin/python3" in preflight.REQUIRED_INTERPRETERS  # broke v34
-    for command in ("curl", "git", "apt-get"):
+    for command in ("curl", "git", "apt-get", "sha256sum", "tar"):
         assert command in preflight.REQUIRED_COMMANDS
     # Python.h broke v38 and is probed via sysconfig, not a guessed path.
     report = preflight.collect_preflight()
