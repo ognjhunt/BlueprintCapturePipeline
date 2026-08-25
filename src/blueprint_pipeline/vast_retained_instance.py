@@ -220,6 +220,8 @@ def bind_all_in_cost(
     max_hourly_rate: float | None = None,
     hard_cap_usd: float,
     max_hourly_rate_usd: float | None = None,
+    expected_provider_download_bytes: int = 0,
+    expected_provider_upload_bytes: int = 0,
 ) -> dict[str, Any]:
     effective_max_hourly_rate = (
         max_hourly_rate_usd
@@ -239,16 +241,37 @@ def bind_all_in_cost(
     instance_row = _mapping(instance_payload.get("instances")) or instance_payload
     all_in_rate = _number(instance_row.get("dph_total"))
     storage_rate = _number(instance_row.get("storage_total_cost"))
+    download_rate = _number(instance_row.get("inet_down_cost"))
+    upload_rate = _number(instance_row.get("inet_up_cost"))
     all_in_rate_observed = all_in_rate is not None and all_in_rate > 0
     if all_in_rate_observed:
         selected_offer.update(
             compute_hourly_rate_usd=compute_rate,
             storage_hourly_rate_usd=storage_rate,
             hourly_rate_usd=all_in_rate,
+            provider_download_cost_per_gb_usd=download_rate,
+            provider_upload_cost_per_gb_usd=upload_rate,
         )
+    transfer_rates_observed = (
+        (not expected_provider_download_bytes or download_rate is not None)
+        and (not expected_provider_upload_bytes or upload_rate is not None)
+    )
+    projected_transfer_cost = (
+        expected_provider_download_bytes
+        / 1_000_000_000.0
+        * float(download_rate or 0.0)
+        + expected_provider_upload_bytes
+        / 1_000_000_000.0
+        * float(upload_rate or 0.0)
+        if transfer_rates_observed
+        else None
+    )
+    projected_runtime_cost = (
+        all_in_rate * max_live_minutes / 60.0 if all_in_rate_observed else None
+    )
     projected_cost = (
-        all_in_rate * max_live_minutes / 60.0
-        if all_in_rate_observed
+        projected_runtime_cost + projected_transfer_cost
+        if projected_runtime_cost is not None and projected_transfer_cost is not None
         else None
     )
     binding = {
@@ -260,11 +283,18 @@ def bind_all_in_cost(
         "storage_hourly_rate_usd": storage_rate,
         "all_in_hourly_rate_observed": all_in_rate_observed,
         "all_in_hourly_rate_usd": all_in_rate,
+        "provider_download_cost_per_gb_usd": download_rate,
+        "provider_upload_cost_per_gb_usd": upload_rate,
+        "expected_provider_download_bytes": expected_provider_download_bytes,
+        "expected_provider_upload_bytes": expected_provider_upload_bytes,
+        "provider_transfer_rates_observed": transfer_rates_observed,
+        "projected_provider_transfer_cost_usd": projected_transfer_cost,
         "max_hourly_rate_usd": effective_max_hourly_rate,
         "all_in_hourly_rate_under_max": (
             all_in_rate_observed and all_in_rate <= effective_max_hourly_rate
         ),
         "max_live_minutes": max_live_minutes,
+        "projected_runtime_cost_usd": projected_runtime_cost,
         "projected_all_in_cost_usd": projected_cost,
         "hard_cap_usd": hard_cap_usd,
         "all_in_hourly_rate_under_max_hourly": (

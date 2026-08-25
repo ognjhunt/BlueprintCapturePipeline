@@ -123,6 +123,44 @@ def _rigid_fixture(*, asset_id: str, scene_id: str = "840313") -> dict:
     }
 
 
+def _planar_push_fixture() -> dict:
+    scene = _rigid_fixture(asset_id="admitted_can", scene_id="841007")
+    spec = scene["task_spec"]
+    spec["manipulation_strategy"] = "planar_push"
+    spec["minimum_lift_m"] = 0.0
+    spec["start_pose_world"] = [-1.5, -7.15, 0.801008339, 0.0, 0.0, 0.0, 1.0]
+    spec["destination_position_bounds_world_m"] = {
+        "minimum": [-1.72, -7.20, 0.791008339],
+        "maximum": [-1.62, -7.10, 0.811008339],
+    }
+    spec["support_height_interval_m"] = [0.791008339, 0.811008339]
+    spec["workspace_position_bounds_world_m"] = {
+        "minimum": [-1.91, -7.60, 0.78],
+        "maximum": [-1.37, -6.30, 1.00],
+    }
+    spec["interaction_affordance"]["contact_point_scoring_frame_m"] = [
+        0.031094726,
+        0.0,
+        0.084713997,
+    ]
+    spec["interaction_affordance"]["approach_unit_scoring_frame"] = [1.0, 0.0, 0.0]
+    spec["interaction_affordance"]["gripper_orientation_scoring_frame_xyzw"] = [
+        0.0,
+        -0.7071067811865475,
+        0.0,
+        0.7071067811865476,
+    ]
+    affordance = spec["interaction_affordance"]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    root_pose = scene["objects"][0]["pose_world"]
+    reset_pose = scene["objects"][0]["reset_state"]["root_pose_world"]
+    root_pose["position_world_m"] = list(spec["start_pose_world"][:3])
+    reset_pose["position_world_m"] = list(spec["start_pose_world"][:3])
+    return scene
+
+
 def test_840796_articulated_fixture_preserves_compatibility_plan() -> None:
     scene = _articulated_840796_fixture()
 
@@ -206,6 +244,96 @@ def test_840313_rigid_fixture_has_complete_construction_gate_sequence() -> None:
     }.issubset(plan["required_gate_ids"])
     assert plan["plan_digest"] == canonical_digest(
         plan, digest_field="plan_digest"
+    )
+
+
+def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
+    plan = materialize_native_task_construction_phase_plan(
+        _planar_push_fixture(), rigid_waypoint_count=3
+    )
+
+    assert plan["manipulation_strategy"] == "planar_push"
+    assert plan["thresholds"]["minimum_lift_m"] == 0.0
+    assert [row["phase_id"] for row in plan["phases"]] == [
+        "precontact",
+        "push_contact",
+        "push_01",
+        "push_02",
+        "push_03",
+        "push_release",
+        "settle_observe",
+        "retreat",
+        "recovery",
+    ]
+    assert "grasp_contact" not in plan["required_gate_ids"]
+    assert {
+        "push_contact",
+        "push_contact_maintained",
+        "push_path",
+        "support_contact",
+        "destination_containment",
+    }.issubset(plan["required_gate_ids"])
+    assert plan["plan_digest"] == canonical_digest(
+        plan, digest_field="plan_digest"
+    )
+
+
+def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> None:
+    plan = materialize_native_task_construction_phase_plan(
+        _planar_push_fixture(), rigid_waypoint_count=3
+    )
+    phase_results = []
+    for phase in plan["phases"]:
+        pushing = phase["phase_id"] == "push_contact" or phase[
+            "phase_id"
+        ].startswith("push_0")
+        sample = {
+            "task_scoring_pose_world": [
+                *phase["expected_scoring_position_world_m"],
+                *phase["expected_scoring_orientation_world_xyzw"],
+            ],
+            "grasp_frame_position_world_m": list(phase["position_world_m"]),
+            "task_robot_contact_peak_force_n": 1.0 if pushing else 0.0,
+            "task_support_contact_peak_force_n": (
+                1.0 if pushing or phase["phase_id"] == "settle_observe" else 0.0
+            ),
+            "task_scene_collision_peak_force_n": 0.0,
+            "robot_scene_contact_peak_force_n": 0.0,
+            "robot_task_forbidden_collision_peak_force_n": 0.0,
+            "locked_joint_containment_violation": False,
+            "finger_separation_m": 0.01 if pushing else 0.08,
+        }
+        samples = [sample]
+        if phase["phase_id"] == "settle_observe":
+            samples = [dict(sample) for _ in range(plan["settle_window_samples"])]
+        phase_results.append(
+            {
+                "phase_id": phase["phase_id"],
+                "target_reached": True,
+                "gripper_state": phase["gripper_state"],
+                "task_sample": sample,
+                "task_samples": samples,
+            }
+        )
+
+    passed = evaluate_rigid_construction_gates(
+        phase_plan=plan,
+        phase_results=phase_results,
+        reset_replay={"passed": True},
+    )
+    assert passed["passed"] is True
+
+    push_02 = next(row for row in phase_results if row["phase_id"] == "push_02")
+    push_02["task_sample"]["task_robot_contact_peak_force_n"] = 0.0
+    failed = evaluate_rigid_construction_gates(
+        phase_plan=plan,
+        phase_results=phase_results,
+        reset_replay={"passed": True},
+    )
+    assert failed["passed"] is False
+    assert (
+        "native_rigid_construction_gate_failed:push_contact_maintained"
+        in failed["blockers"]
     )
 
 

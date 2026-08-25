@@ -147,6 +147,40 @@ def test_collision_is_invisible_and_appearance_is_visible() -> None:
     assert by_role["scene_appearance"]["object_type"] == "BASE"
 
 
+def test_graph_v2_rigid_body_does_not_require_an_articulation_graph() -> None:
+    plan = _plan(
+        task_spec={
+            "schema_version": "adp_task_spec.v2",
+            "task_kind": "rigid_pick_place",
+            "subject_asset_id": "admitted_can",
+        },
+        task_joint_bindings=[],
+        twin_object_type="RIGID",
+    )
+
+    task_object = next(
+        row for row in plan["objects"] if row["semantic_role"] == "task_object"
+    )
+    assert task_object["object_type"] == "RIGID"
+    assert plan["task_sample_binding"]["joint_ids"] == []
+
+
+def test_graph_v2_articulation_still_requires_an_articulation_graph() -> None:
+    with pytest.raises(
+        ArticulatedRuntimeCompositionError,
+        match="articulated_runtime_composition_graph_missing",
+    ):
+        _plan(
+            task_spec={
+                "schema_version": "adp_task_spec.v2",
+                "task_kind": "rigid_pick_place",
+                "subject_asset_id": "locked_notebook",
+            },
+            task_joint_bindings=[],
+            twin_object_type="ARTICULATION",
+        )
+
+
 def test_the_sample_binding_names_every_joint_the_scorer_demands() -> None:
     """The scorer rejects a sample whose joint set differs from the spec's.
 

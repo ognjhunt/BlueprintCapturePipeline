@@ -207,6 +207,127 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
         )
 
 
+def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
+    monkeypatch.setattr(
+        paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
+    )
+    reconciliation_path = tmp_path / "project-spend.json"
+    write_json(reconciliation_path, {"sealed": True})
+    project_record = _record(reconciliation_path)
+    project_spend = {
+        "receipt_digest": "sha256:" + "8" * 64,
+        "total_cost_usd": 39.791914,
+        "entries": [{"attempt_id": "prior-project-attempt"}],
+    }
+    monkeypatch.setattr(
+        paid,
+        "validate_same_goal_spend_reconciliation",
+        lambda *_args, **_kwargs: (project_spend, project_record),
+    )
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-25T14:25:00+00:00",
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "api_command": ["vastai", "show", "instances", "--raw"],
+        "raw_secret_values_recorded": False,
+        "stderr_present": False,
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    zero_path = tmp_path / "provider-zero.json"
+    write_json(zero_path, zero)
+
+    authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        project_spend_reconciliation_path=reconciliation_path,
+        initial_provider_zero_path=zero_path,
+        authorization_reference="user-authorized independent scene lane",
+        authorized_by="user",
+        authorized_on="2026-08-25T14:30:00+00:00",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        output_path=tmp_path / "authority.json",
+    )
+
+    assert authority["lineage_kind"] == "project_spend_genesis"
+    assert authority["prior_terminal_attempts"] == []
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 39.791914
+    assert authority["project_spend_reconciliation"] == project_record
+    assert authority["initial_provider_zero"]["provider_zero_digest"] == zero[
+        "provider_zero_digest"
+    ]
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+    )["authorization_digest"] == authority["authorization_digest"]
+
+
+def test_new_lane_genesis_refuses_stale_provider_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
+    monkeypatch.setattr(
+        paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
+    )
+    reconciliation_path = tmp_path / "project-spend.json"
+    write_json(reconciliation_path, {"sealed": True})
+    monkeypatch.setattr(
+        paid,
+        "validate_same_goal_spend_reconciliation",
+        lambda *_args, **_kwargs: (
+            {"receipt_digest": "sha256:" + "8" * 64, "total_cost_usd": 1.0},
+            _record(reconciliation_path),
+        ),
+    )
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-25T13:00:00+00:00",
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "api_command": ["vastai", "show", "instances", "--raw"],
+        "raw_secret_values_recorded": False,
+        "stderr_present": False,
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    zero_path = tmp_path / "provider-zero.json"
+    write_json(zero_path, zero)
+
+    with pytest.raises(ValueError, match="initial_authority_invalid"):
+        paid.materialize_native_task_arena_paid_attempt_authority(
+            bundle_receipt_path=receipt_path,
+            project_spend_reconciliation_path=reconciliation_path,
+            initial_provider_zero_path=zero_path,
+            authorization_reference="new lane",
+            authorized_by="user",
+            authorized_on="2026-08-25T14:30:00+00:00",
+            blueprint_commit=COMMIT,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+            output_path=tmp_path / "authority.json",
+        )
+
+
 def test_warm_retention_intent_is_digest_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
