@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
@@ -2478,6 +2479,8 @@ def _blueprint_bundle_preflight(
         )
     readiness: dict[str, Any] = {}
     readiness_parse_error = None
+    readiness_source = "local_sidecar"
+    readiness_member: str | None = None
     bundle_url_probe: dict[str, Any] = {"status": "not_requested"}
     output_put_probe: dict[str, Any] = {"status": "not_requested"}
     bundle_url_blocker = _provider_url_public_blocker(
@@ -2515,11 +2518,13 @@ def _blueprint_bundle_preflight(
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     if provider_bundle_kind == "native_task_arena":
+                        readiness_member = (
+                            "provider_runtime/adp_arena_provider_manifest.json"
+                        )
+                        readiness_source = "immutable_bundle_member"
                         try:
                             native_manifest = json.loads(
-                                archive.read(
-                                    "provider_runtime/adp_arena_provider_manifest.json"
-                                ).decode("utf-8")
+                                archive.read(readiness_member).decode("utf-8")
                             )
                             if not isinstance(native_manifest, Mapping):
                                 raise TypeError(
@@ -2560,6 +2565,13 @@ def _blueprint_bundle_preflight(
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"
+                                or native_manifest.get("status") != "ready"
+                                or native_manifest.get("blockers") != []
+                                or native_manifest.get("input_digest")
+                                != canonical_digest(
+                                    native_manifest,
+                                    digest_field="input_digest",
+                                )
                                 or native_manifest.get("expected_output_filename")
                                 != mode_contract.expected_output_filename
                                 or mode_contract.expected_output_filename
@@ -2582,6 +2594,8 @@ def _blueprint_bundle_preflight(
                                 raise ValueError(
                                     "native_task_arena_nonpolicy_candidate_invalid"
                                 )
+                            readiness = dict(native_manifest)
+                            readiness["local_bundle_ready_for_remote_staging"] = True
                         except (
                             KeyError,
                             TypeError,
@@ -3012,7 +3026,13 @@ def _blueprint_bundle_preflight(
                         blockers.append(
                             "provider_runtime_bundle_stale_prefixed_paths_without_resolver"
                         )
-        if readiness_path.is_file():
+        if provider_bundle_kind == "native_task_arena":
+            # The native readiness manifest is a required, JSON-validated member
+            # of the immutable bundle above.  Reopening its adjacent build
+            # sidecar would create a second mutable authority and can fail when
+            # a root operator builds for the hardened unprivileged dispatcher.
+            pass
+        elif readiness_path.is_file():
             try:
                 readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
             except Exception as exc:
@@ -3261,8 +3281,21 @@ def _blueprint_bundle_preflight(
         "zip_parse_error": zip_parse_error,
         "provider_eval_manifest_parse_error": eval_manifest_parse_error,
         "provider_eval_manifest_relative_paths": _mapping(eval_manifest.get("relative_paths")),
-        "provider_bundle_readiness_path": str(readiness_path),
-        "provider_bundle_readiness_present": readiness_path.is_file(),
+        "provider_bundle_readiness_path": (
+            f"{bundle_path}!/{readiness_member}"
+            if readiness_source == "immutable_bundle_member"
+            and bundle_path is not None
+            and readiness_member is not None
+            else str(readiness_path)
+        ),
+        "provider_bundle_readiness_present": (
+            readiness_member in zip_entries
+            if readiness_source == "immutable_bundle_member"
+            and readiness_member is not None
+            else readiness_path.is_file()
+        ),
+        "provider_bundle_readiness_source": readiness_source,
+        "provider_bundle_readiness_member": readiness_member,
         "provider_bundle_readiness_parse_error": readiness_parse_error,
         "provider_bundle_local_ready_for_remote_staging": readiness.get(
             "local_bundle_ready_for_remote_staging"

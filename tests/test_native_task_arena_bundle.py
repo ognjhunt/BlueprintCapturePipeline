@@ -1977,6 +1977,91 @@ def _native_bundle_preflight(tmp_path: Path, receipt: dict, *, name: str) -> dic
     )
 
 
+def _rewrite_zip_json_member(
+    bundle_path: str | Path, member_name: str, payload: dict
+) -> None:
+    path = Path(bundle_path)
+    with zipfile.ZipFile(path) as archive:
+        rows = [(info, archive.read(info.filename)) for info in archive.infolist()]
+    with zipfile.ZipFile(path, "w", allowZip64=True) as archive:
+        for info, value in rows:
+            if info.filename == member_name:
+                value = json.dumps(payload, indent=2).encode("utf-8")
+            archive.writestr(info, value)
+
+
+def test_native_preflight_reads_readiness_from_immutable_bundle_member(
+    tmp_path: Path,
+) -> None:
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "bundle",
+        packet_dir=_packet(tmp_path, scene_id="840796"),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="f" * 40,
+        generated_at="fixed",
+    )
+    sidecar = (
+        Path(receipt["bundle_path"]).parent
+        / "provider_runtime/adp_arena_provider_manifest.json"
+    )
+    sidecar.chmod(0)
+    try:
+        preflight = _native_bundle_preflight(
+            tmp_path, receipt, name="immutable-readiness"
+        )
+    finally:
+        sidecar.chmod(0o600)
+
+    member = "provider_runtime/adp_arena_provider_manifest.json"
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
+    assert preflight["provider_bundle_readiness_source"] == (
+        "immutable_bundle_member"
+    )
+    assert preflight["provider_bundle_readiness_member"] == member
+    assert preflight["provider_bundle_readiness_path"] == (
+        f"{receipt['bundle_path']}!/{member}"
+    )
+    assert preflight["provider_bundle_readiness_present"] is True
+    assert preflight["provider_bundle_local_ready_for_remote_staging"] is True
+
+
+@pytest.mark.parametrize("invalid_field", ["status", "blockers", "input_digest"])
+def test_native_preflight_rejects_invalid_immutable_readiness(
+    tmp_path: Path, invalid_field: str
+) -> None:
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / f"bundle-{invalid_field}",
+        packet_dir=_packet(tmp_path, scene_id="840796"),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="f" * 40,
+        generated_at="fixed",
+    )
+    member = "provider_runtime/adp_arena_provider_manifest.json"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        manifest = json.loads(archive.read(member))
+    if invalid_field == "status":
+        manifest["status"] = "blocked"
+        manifest["input_digest"] = canonical_digest(
+            manifest, digest_field="input_digest"
+        )
+    elif invalid_field == "blockers":
+        manifest["blockers"] = ["fixture_blocker"]
+        manifest["input_digest"] = canonical_digest(
+            manifest, digest_field="input_digest"
+        )
+    else:
+        manifest["input_digest"] = "sha256:" + "0" * 64
+    _rewrite_zip_json_member(receipt["bundle_path"], member, manifest)
+
+    preflight = _native_bundle_preflight(
+        tmp_path, receipt, name=f"invalid-readiness-{invalid_field}"
+    )
+
+    assert preflight["status"] == "blocked"
+    assert "native_task_arena_provider_manifest_invalid" in preflight["blockers"]
+
+
 def _assert_bundle_has_isolated_import_closure(
     tmp_path: Path, receipt: dict, *, name: str
 ) -> set[str]:
