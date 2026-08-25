@@ -34,9 +34,9 @@ from .native_task_arena_policy_diagnostic_bundle import (
 from .paid_attempt_authority import (
     bind_lane_prior_spend,
     normalize_active_instance_allowlist,
-    validate_same_goal_spend_reconciliation,
     validate_bound_lane_prior_spend,
 )
+from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .spend_authority_consumption_root import prepare_consumption_root
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
@@ -1015,7 +1015,7 @@ def materialize_native_task_arena_paid_attempt_authority(
         project_path = Path(
             str(project_spend_reconciliation_path)
         ).expanduser().resolve()
-        project_spend, project_spend_record = validate_same_goal_spend_reconciliation(
+        project_spend, project_spend_record = validate_project_spend_reconciliation(
             project_path
         )
         zero_path = Path(str(initial_provider_zero_path)).expanduser().resolve()
@@ -1266,7 +1266,7 @@ def validate_native_task_arena_paid_attempt_authority(
                 "project_spend_reconciliation_unbound",
             )
             project_spend, observed_project_record = (
-                validate_same_goal_spend_reconciliation(project_path)
+                validate_project_spend_reconciliation(project_path)
             )
             zero_path, zero_record = _bound_record(
                 value.get("initial_provider_zero"),

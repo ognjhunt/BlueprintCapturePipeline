@@ -38,6 +38,10 @@ from .host_resident_launch_inputs import (
     resolve_host_resident_bundle_receipt,
 )
 from .paid_attempt_authority import validate_same_goal_spend_reconciliation
+from .project_spend_reconciliation import (
+    project_spend_dependency_records,
+    validate_project_spend_reconciliation,
+)
 from .robot_eval_provider_input_setup import LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
@@ -116,21 +120,27 @@ def expand_prior_spend_immutable_inputs(
             str(reconciliation_record.get("path") or "")
         ).expanduser().resolve()
         uses_shared_lane_reconciliation = (
-            reconciliation_kind == "project_spend"
-            or (
-                "prior_terminal_attempts" in authority
-                and "prior_actual_provider_spend_usd" in authority
-            )
+            "prior_terminal_attempts" in authority
+            and "prior_actual_provider_spend_usd" in authority
         )
         try:
-            if uses_shared_lane_reconciliation:
+            if reconciliation_kind == "project_spend":
+                reconciliation, observed_record = (
+                    validate_project_spend_reconciliation(
+                        reconciliation_path,
+                        expected_total_cost_usd=authority.get(
+                            "aggregate_goal_spend_before_attempt_usd"
+                        ),
+                    )
+                )
+                if observed_record != dict(reconciliation_record):
+                    raise ValueError("project_spend_reconciliation_record_mismatch")
+            elif uses_shared_lane_reconciliation:
                 reconciliation, observed_record = (
                     validate_same_goal_spend_reconciliation(
                         reconciliation_path,
-                        expected_total_cost_usd=(
-                            authority.get("aggregate_goal_spend_before_attempt_usd")
-                            if reconciliation_kind == "project_spend"
-                            else authority.get("prior_actual_provider_spend_usd")
+                        expected_total_cost_usd=authority.get(
+                            "prior_actual_provider_spend_usd"
                         ),
                     )
                 )
@@ -162,22 +172,30 @@ def expand_prior_spend_immutable_inputs(
         dependencies: list[tuple[str, Mapping[str, Any]]] = [
             ("reconciliation", reconciliation_record)
         ]
-        for entry_index, entry in enumerate(reconciliation.get("entries") or []):
-            if not isinstance(entry, Mapping):
+        if reconciliation_kind == "project_spend":
+            try:
+                dependencies.extend(project_spend_dependency_records(reconciliation))
+            except ValueError as exc:
                 raise TaskEvaluationLaunchError(
                     f"live_profile_prior_spend_dependency_invalid:{name}"
-                )
-            for source in entry.get("source_receipts") or []:
-                if not isinstance(source, Mapping) or not isinstance(
-                    source.get("record"), Mapping
-                ):
+                ) from exc
+        else:
+            for entry_index, entry in enumerate(reconciliation.get("entries") or []):
+                if not isinstance(entry, Mapping):
                     raise TaskEvaluationLaunchError(
                         f"live_profile_prior_spend_dependency_invalid:{name}"
                     )
-                role = str(source.get("role") or "source")
-                dependencies.append(
-                    (f"entry_{entry_index}_{role}", source["record"])
-                )
+                for source in entry.get("source_receipts") or []:
+                    if not isinstance(source, Mapping) or not isinstance(
+                        source.get("record"), Mapping
+                    ):
+                        raise TaskEvaluationLaunchError(
+                            f"live_profile_prior_spend_dependency_invalid:{name}"
+                        )
+                    role = str(source.get("role") or "source")
+                    dependencies.append(
+                        (f"entry_{entry_index}_{role}", source["record"])
+                    )
 
         for suffix, record in dependencies:
             path = Path(str(record.get("path") or "")).expanduser().resolve()
