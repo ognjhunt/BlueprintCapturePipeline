@@ -121,10 +121,22 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
         },
         output_root=tmp_path / "output",
         renderer=render,
+        runtime_resolver=lambda **_kwargs: {
+            "node": "/runtime/node",
+            "browser_executable": "/runtime/chrome",
+            "renderer_root": "/runtime/renderer",
+            "identity": {
+                "mode": "immutable_host_runtime",
+                "runtime_digest": "sha256:" + "d" * 64,
+                "source_commit": "e" * 40,
+                "full_byte_service_account_readback_passed": True,
+            },
+        },
     )
 
     assert observed_splat == splat
     assert result["derived_frame_count"] == 8
     assert result["raw_interiorgs_bytes_in_provider_packet"] is False
     assert result["provider_disclosure_scope"] == "derived_rendered_views_only"
+    assert result["renderer_runtime"]["mode"] == "immutable_host_runtime"
     assert all(Path(row["path"]).read_bytes() != splat.read_bytes() for row in result["derived_frames"])

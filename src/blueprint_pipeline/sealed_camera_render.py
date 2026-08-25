@@ -346,6 +346,9 @@ def render_splat_at_exact_cameras(
     exposure_mode: str = SUPPORTED_EXPOSURE_MODE,
     repo_root: str | Path | None = None,
     node: str = "node",
+    renderer_runtime_root: str | Path | None = None,
+    browser_executable: str | Path | None = None,
+    renderer_runtime_identity: Mapping[str, Any] | None = None,
     graphics_backend: str = "swiftshader",
     background_rgb: int = 0x0B0B10,
     warmup_ms: int = 2500,
@@ -367,8 +370,13 @@ def render_splat_at_exact_cameras(
     """
 
     root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[2]
-    harness = root / RENDER_HARNESS_REL
-    entry = root / RENDER_ENTRY_REL
+    execution_root = (
+        Path(renderer_runtime_root).resolve()
+        if renderer_runtime_root is not None
+        else root
+    )
+    harness = execution_root / RENDER_HARNESS_REL
+    entry = execution_root / RENDER_ENTRY_REL
     splat = Path(splat_path)
     output = Path(output_dir)
     errors: list[str] = []
@@ -427,6 +435,39 @@ def render_splat_at_exact_cameras(
         errors.append("render_node_runtime_unavailable")
     if not harness.is_file() or not entry.is_file():
         errors.append("render_harness_unavailable")
+    if execution_root != root:
+        for relative in (
+            RENDER_HARNESS_REL,
+            RENDER_ENTRY_REL,
+            "tools/splat_render/package.json",
+            "tools/splat_render/package-lock.json",
+        ):
+            source_file = root / relative
+            runtime_file = execution_root / relative
+            if (
+                source_file.is_symlink()
+                or runtime_file.is_symlink()
+                or not source_file.is_file()
+                or not runtime_file.is_file()
+                or _sha256_file(source_file) != _sha256_file(runtime_file)
+            ):
+                errors.append(f"render_runtime_source_mismatch:{relative}")
+    browser_path = (
+        Path(browser_executable).resolve()
+        if browser_executable is not None
+        else None
+    )
+    if browser_path is not None and (
+        browser_path.is_symlink()
+        or not browser_path.is_file()
+        or not browser_path.stat().st_mode & 0o111
+    ):
+        errors.append("render_browser_executable_invalid")
+    if renderer_runtime_identity is not None:
+        try:
+            canonical_json(dict(renderer_runtime_identity))
+        except (TypeError, ValueError):
+            errors.append("render_runtime_identity_invalid")
     if splat.is_symlink() or not splat.is_file():
         errors.append("render_splat_missing_or_symlink")
     if not cameras:
@@ -531,6 +572,8 @@ def render_splat_at_exact_cameras(
         "--bg",
         f"0x{background_rgb:06x}",
     ]
+    if browser_path is not None:
+        command.extend(["--browser-executable", str(browser_path)])
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -650,6 +693,14 @@ def render_splat_at_exact_cameras(
                 initial_progress_timeout_seconds
             ),
             "progress_timeout_seconds": float(progress_timeout_seconds),
+            "execution_runtime": (
+                dict(renderer_runtime_identity)
+                if renderer_runtime_identity is not None
+                else {
+                    "mode": "checkout_local_runtime",
+                    "qualified_external_runtime": False,
+                }
+            ),
         },
         "renders": rendered_rows,
         "render_count": len(rendered_rows),

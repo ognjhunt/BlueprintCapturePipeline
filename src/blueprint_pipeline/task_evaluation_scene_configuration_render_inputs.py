@@ -20,10 +20,12 @@ import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .sealed_camera_render import render_splat_at_exact_cameras
+from .task_evaluation_splat_render_runtime import runtime_from_environment
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_render_inputs.v1"
 Renderer = Callable[..., Mapping[str, Any]]
+RuntimeResolver = Callable[..., Mapping[str, Any]]
 
 
 class TaskEvaluationSceneConfigurationRenderInputsError(ValueError):
@@ -160,6 +162,7 @@ def materialize_scene_configuration_render_inputs(
     stage_one_configuration: Mapping[str, Any],
     output_root: str | Path,
     renderer: Renderer = render_splat_at_exact_cameras,
+    runtime_resolver: RuntimeResolver = runtime_from_environment,
 ) -> dict[str, Any]:
     """Render exact derived method inputs without exposing the raw source."""
 
@@ -249,6 +252,8 @@ def materialize_scene_configuration_render_inputs(
         + "\n",
         encoding="utf-8",
     )
+    repository_root = Path(__file__).resolve().parents[2]
+    runtime = dict(runtime_resolver(repo_root=repository_root))
     rendered = dict(
         renderer(
             splat_path=appearance_path,
@@ -264,6 +269,11 @@ def materialize_scene_configuration_render_inputs(
             source_splat_digest=appearance_row["digest"],
             purpose="artifixer_source_object_removal_method_inputs",
             authorization_class="method_input",
+            repo_root=repository_root,
+            node=str(runtime["node"]),
+            renderer_runtime_root=str(runtime["renderer_root"]),
+            browser_executable=str(runtime["browser_executable"]),
+            renderer_runtime_identity=dict(runtime["identity"]),
         )
     )
     if (
@@ -331,6 +341,7 @@ def materialize_scene_configuration_render_inputs(
         "sage_render_used_as_appearance": False,
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
+        "renderer_runtime": dict(runtime["identity"]),
         "result_digest": "",
     }
     result["result_digest"] = canonical_digest(
