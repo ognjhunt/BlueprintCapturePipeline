@@ -85,6 +85,183 @@ def test_policy_query_tracker_preserves_completed_query_on_response_refusal() ->
     assert tracker.candidate_policy_queried is True
 
 
+def test_ready_policy_server_teardown_waits_for_exact_pid_after_sigterm(
+    tmp_path,
+) -> None:
+    import json
+    import signal
+
+    from blueprint_pipeline.adp009d_policy_server_worker import (
+        terminate_ready_server_from_receipt,
+    )
+
+    command = ["/policy/bin/python", "serve.py", "--port", "8000"]
+    receipt = tmp_path / "server.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "candidate_id": "pi05_droid",
+                "server_pid": 417,
+                "command": command,
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = {"command": command}
+    signals = []
+
+    def signal_process(pid, sent_signal):
+        assert pid == 417
+        signals.append(sent_signal)
+        state["command"] = None
+
+    result = terminate_ready_server_from_receipt(
+        receipt,
+        command_reader=lambda pid: state["command"],
+        signal_process=signal_process,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: None,
+    )
+
+    assert signals == [signal.SIGTERM]
+    assert result["exact_process_identity_verified"] is True
+    assert result["policy_server_process_terminated"] is True
+    assert result["termination_method"] == "sigterm"
+
+
+def test_ready_policy_server_teardown_refuses_reused_pid(tmp_path) -> None:
+    import json
+
+    from blueprint_pipeline.adp009d_policy_server_worker import (
+        terminate_ready_server_from_receipt,
+    )
+
+    receipt = tmp_path / "server.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "candidate_id": "groot_n17_droid",
+                "server_pid": 418,
+                "command": ["/policy/bin/python", "serve.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    signals = []
+
+    result = terminate_ready_server_from_receipt(
+        receipt,
+        command_reader=lambda pid: ["/usr/bin/unrelated"],
+        signal_process=lambda pid, sent_signal: signals.append((pid, sent_signal)),
+    )
+
+    assert signals == []
+    assert result["policy_server_process_terminated"] is False
+    assert result["blockers"] == ["policy_server_teardown_pid_identity_mismatch"]
+
+
+def test_ready_policy_server_teardown_escalates_and_observes_sigkill(
+    tmp_path,
+) -> None:
+    import json
+    import signal
+
+    from blueprint_pipeline.adp009d_policy_server_worker import (
+        terminate_ready_server_from_receipt,
+    )
+
+    command = ["/policy/bin/python", "serve.py"]
+    receipt = tmp_path / "server.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "candidate_id": "pi05_droid",
+                "server_pid": 419,
+                "command": command,
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = {"command": command}
+    signals = []
+
+    def signal_process(pid, sent_signal):
+        assert pid == 419
+        signals.append(sent_signal)
+        if sent_signal == signal.SIGKILL:
+            state["command"] = None
+
+    result = terminate_ready_server_from_receipt(
+        receipt,
+        command_reader=lambda pid: state["command"],
+        signal_process=signal_process,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: None,
+        terminate_timeout_seconds=0.0,
+    )
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert result["policy_server_process_terminated"] is True
+    assert result["termination_method"] == "sigkill"
+
+
+def test_terminal_result_binds_only_observed_policy_server_teardown(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    from blueprint_pipeline import adp009d_policy_server_worker as worker
+
+    result_path = tmp_path / "native_task_arena_policy_result.v1.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "native_task_arena_policy_result.v1",
+                "status": "completed",
+                "blockers": [],
+                "scientific_outcome_admitted": True,
+                "ranking_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker,
+        "terminate_ready_server_from_receipt",
+        lambda receipt_path: {
+            "schema_version": "adp009d_policy_server_teardown.v1",
+            "status": "blocked",
+            "policy_server_process_terminated": False,
+            "server_pid": 420,
+            "exact_process_identity_verified": True,
+            "termination_method": None,
+            "blockers": ["policy_server_teardown_process_survived_sigkill"],
+        },
+    )
+
+    assert (
+        worker._seal_ready_server_teardown(
+            receipt_path=tmp_path / "server.json",
+            result_path=result_path,
+            result_schema="native_task_arena_policy_result.v1",
+        )
+        == 1
+    )
+    sealed = json.loads(result_path.read_text(encoding="utf-8"))
+
+    assert sealed["status"] == "blocked"
+    assert sealed["scientific_outcome_admitted"] is False
+    assert sealed["ranking_eligible"] is False
+    assert sealed["teardown"]["policy_server_process_terminated"] is False
+    assert "native_task_policy_server_teardown_unproven" in sealed["blockers"]
+    assert sealed["result_digest"] == worker._canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+
+
 def test_groot_episode_consumes_runtime_measured_worker_identity(tmp_path) -> None:
     """The immutable request may not impersonate a later runtime measurement."""
 

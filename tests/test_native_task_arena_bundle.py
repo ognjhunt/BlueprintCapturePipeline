@@ -780,6 +780,12 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             "provider_runtime/run_adp_arena_provider_runtime.sh"
         ).decode()
         assert 'export RUNTIME_DIR OUT_DIR' in entrypoint
+        assert "trap teardown_policy_server EXIT INT TERM HUP" in entrypoint
+        assert "--terminate-ready-server" in entrypoint
+        assert (
+            'adp009d_policy_server_receipt.$POLICY_CANDIDATE_ID.json'
+            in entrypoint
+        )
         assert entrypoint.index("policy_provisioning:started") < entrypoint.index(
             '"$RUNTIME_DIR/adp_arena_provider_runner.py"'
         )
