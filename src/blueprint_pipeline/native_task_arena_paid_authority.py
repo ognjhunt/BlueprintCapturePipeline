@@ -34,6 +34,7 @@ from .native_task_arena_policy_diagnostic_bundle import (
 from .paid_attempt_authority import (
     bind_lane_prior_spend,
     normalize_active_instance_allowlist,
+    validate_same_goal_spend_reconciliation,
     validate_bound_lane_prior_spend,
 )
 from .spend_authority_consumption_root import prepare_consumption_root
@@ -53,6 +54,7 @@ PREALLOCATION_TEARDOWN_SCHEMA_VERSION = (
 PREALLOCATION_CLOSEOUT_KIND = "independent_watchdog_not_armed_before_allocation"
 PRE_SPEND_CLOSEOUT_KIND = "pre_spend_preflight_blocked_before_allocation"
 MAX_PREALLOCATION_API_ZERO_AGE_SECONDS = 300
+MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS = 900
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
 # Explicitly expanded by the active Task Arena goal owner on 2026-08-24 so the
 # controls and two frozen policy candidates can keep using ordinary 24 GB GPU
@@ -901,10 +903,12 @@ def _native_policy_campaign_binding(
 def materialize_native_task_arena_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
-    prior_authority_path: str | Path,
-    prior_result_path: str | Path,
-    prior_provider_zero_path: str | Path,
-    prior_spend_reconciliation_path: str | Path,
+    prior_authority_path: str | Path | None = None,
+    prior_result_path: str | Path | None = None,
+    prior_provider_zero_path: str | Path | None = None,
+    prior_spend_reconciliation_path: str | Path | None = None,
+    project_spend_reconciliation_path: str | Path | None = None,
+    initial_provider_zero_path: str | Path | None = None,
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -919,7 +923,12 @@ def materialize_native_task_arena_paid_attempt_authority(
     policy_campaign_path: str | Path | None = None,
     campaign_member_id: str | None = None,
 ) -> dict[str, Any]:
-    """Seal one zero-retry authority against a bundle and terminal predecessor."""
+    """Seal one zero-retry authority for a new or continuing native lane.
+
+    A continuing lane binds one exact terminal predecessor. A brand-new lane
+    instead binds a complete project-spend reconciliation plus a fresh global
+    provider-zero receipt, so it never borrows another lane's launch authority.
+    """
 
     receipt_file = Path(bundle_receipt_path).expanduser().resolve()
     raw_bundle = _read(receipt_file, "native_task_arena_bundle_receipt_invalid")
@@ -932,45 +941,108 @@ def materialize_native_task_arena_paid_attempt_authority(
             "receipt_digest"
         ),
     )
-    prior = validate_terminal_spend_chain(
-        authority_path=prior_authority_path,
-        result_path=prior_result_path,
-        provider_zero_path=prior_provider_zero_path,
+    terminal_inputs = (
+        prior_authority_path,
+        prior_result_path,
+        prior_provider_zero_path,
+        prior_spend_reconciliation_path,
     )
-    prior_result_paths = (
-        prior["records"]["terminal_result"]["path"],
-        *(str(Path(item).expanduser().resolve()) for item in supplemental_prior_result_paths),
+    initial_inputs = (
+        project_spend_reconciliation_path,
+        initial_provider_zero_path,
     )
-    if len(prior_result_paths) != len(set(prior_result_paths)):
-        raise ValueError("native_task_arena_prior_result_duplicate")
-    reconciled = bind_lane_prior_spend(
-        prior_result_paths=prior_result_paths,
-        reconciliation_path=prior_spend_reconciliation_path,
-        lane="native_task_arena",
-    )
-    main_result_sha256 = prior["records"]["terminal_result"]["sha256"]
-    main_rows = [
-        row
-        for row in reconciled["prior_terminal_attempts"]
-        if (
-            row.get("result_sha256")
-            or (row.get("result") or {}).get("sha256")
+    terminal_mode = all(value is not None for value in terminal_inputs)
+    initial_mode = all(value is not None for value in initial_inputs)
+    if (
+        terminal_mode == initial_mode
+        or any(value is not None for value in terminal_inputs) != terminal_mode
+        or any(value is not None for value in initial_inputs) != initial_mode
+        or (initial_mode and supplemental_prior_result_paths)
+    ):
+        raise ValueError("native_task_arena_authority_lineage_invalid")
+    prior: dict[str, Any] | None = None
+    reconciled: dict[str, Any] | None = None
+    main_actual_provider_charge: float | None = None
+    project_spend_record: dict[str, Any] | None = None
+    initial_zero_record: dict[str, Any] | None = None
+    if terminal_mode:
+        prior = validate_terminal_spend_chain(
+            authority_path=str(prior_authority_path),
+            result_path=str(prior_result_path),
+            provider_zero_path=str(prior_provider_zero_path),
         )
-        == main_result_sha256
-    ]
-    if len(main_rows) != 1:
-        raise ValueError("native_task_arena_primary_prior_reconciliation_invalid")
-    main_actual_provider_charge = main_rows[0].get("actual_provider_charge_usd")
-    if main_actual_provider_charge is None:
-        if len(reconciled["prior_terminal_attempts"]) != 1:
+        prior_result_paths = (
+            prior["records"]["terminal_result"]["path"],
+            *(
+                str(Path(item).expanduser().resolve())
+                for item in supplemental_prior_result_paths
+            ),
+        )
+        if len(prior_result_paths) != len(set(prior_result_paths)):
+            raise ValueError("native_task_arena_prior_result_duplicate")
+        reconciled = bind_lane_prior_spend(
+            prior_result_paths=prior_result_paths,
+            reconciliation_path=prior_spend_reconciliation_path,
+            lane="native_task_arena",
+        )
+        main_result_sha256 = prior["records"]["terminal_result"]["sha256"]
+        main_rows = [
+            row
+            for row in reconciled["prior_terminal_attempts"]
+            if (
+                row.get("result_sha256")
+                or (row.get("result") or {}).get("sha256")
+            )
+            == main_result_sha256
+        ]
+        if len(main_rows) != 1:
             raise ValueError("native_task_arena_primary_prior_reconciliation_invalid")
-        main_actual_provider_charge = reconciled["actual_total_usd"]
+        main_actual_provider_charge = main_rows[0].get(
+            "actual_provider_charge_usd"
+        )
+        if main_actual_provider_charge is None:
+            if len(reconciled["prior_terminal_attempts"]) != 1:
+                raise ValueError(
+                    "native_task_arena_primary_prior_reconciliation_invalid"
+                )
+            main_actual_provider_charge = reconciled["actual_total_usd"]
+        prior_spend = round(
+            prior["aggregate_goal_spend_before_attempt_usd"]
+            + reconciled["actual_total_usd"],
+            6,
+        )
+    else:
+        project_path = Path(
+            str(project_spend_reconciliation_path)
+        ).expanduser().resolve()
+        project_spend, project_spend_record = validate_same_goal_spend_reconciliation(
+            project_path
+        )
+        zero_path = Path(str(initial_provider_zero_path)).expanduser().resolve()
+        initial_zero = _validated_api_provider_zero(zero_path)
+        authorized_time = _aware_time(
+            authorized_on, "native_task_arena_initial_authorized_time_invalid"
+        )
+        zero_time = _aware_time(
+            initial_zero.get("observed_at_utc"),
+            "native_task_arena_initial_provider_zero_time_invalid",
+        )
+        if (
+            zero_time > authorized_time
+            or (authorized_time - zero_time).total_seconds()
+            > MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS
+            or allowed_active_instance_ids
+            or retain_warm_session
+            or policy_campaign_path is not None
+            or campaign_member_id is not None
+        ):
+            raise ValueError("native_task_arena_initial_authority_invalid")
+        initial_zero_record = {
+            **_record(zero_path),
+            "provider_zero_digest": initial_zero["provider_zero_digest"],
+        }
+        prior_spend = round(float(project_spend["total_cost_usd"]), 6)
     allowed = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
-    prior_spend = round(
-        prior["aggregate_goal_spend_before_attempt_usd"]
-        + reconciled["actual_total_usd"],
-        6,
-    )
     # A newly deployed program ceiling is itself the authority boundary.  The
     # predecessor's lower historical ceiling remains bound in its immutable
     # receipt, but must not make an explicitly raised current ceiling
@@ -1045,15 +1117,29 @@ def materialize_native_task_arena_paid_attempt_authority(
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
         "aggregate_goal_spend_before_attempt_usd": prior_spend,
         "aggregate_goal_spend_cap_usd": aggregate_cap,
-        "prior_terminal_attempt": {
-            **prior["records"],
-            "authority_digest": prior["authority_digest"],
-            "attempt_cost_usd": prior["attempt_cost_usd"],
-            "actual_provider_charge_usd": main_actual_provider_charge,
-        },
-        "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
-        "prior_spend_reconciliation": reconciled["reconciliation"],
-        "prior_actual_provider_spend_usd": reconciled["actual_total_usd"],
+        "lineage_kind": (
+            "terminal_predecessor" if terminal_mode else "project_spend_genesis"
+        ),
+        **(
+            {
+                "prior_terminal_attempt": {
+                    **prior["records"],
+                    "authority_digest": prior["authority_digest"],
+                    "attempt_cost_usd": prior["attempt_cost_usd"],
+                    "actual_provider_charge_usd": main_actual_provider_charge,
+                },
+                "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
+                "prior_spend_reconciliation": reconciled["reconciliation"],
+                "prior_actual_provider_spend_usd": reconciled["actual_total_usd"],
+            }
+            if terminal_mode
+            else {
+                "project_spend_reconciliation": project_spend_record,
+                "initial_provider_zero": initial_zero_record,
+                "prior_terminal_attempts": [],
+                "prior_actual_provider_spend_usd": prior_spend,
+            }
+        ),
         "active_instance_allowlist": {
             "external_provider_owned": list(allowed),
             "same_goal_concurrent": [],
@@ -1164,56 +1250,108 @@ def validate_native_task_arena_paid_attempt_authority(
         )
         if recorded_receipt_path != expected_receipt_path:
             errors.append("bundle_receipt_path_mismatch")
-        predecessor = value.get("prior_terminal_attempt")
-        if not isinstance(predecessor, Mapping):
-            raise ValueError("predecessor_invalid")
-        paths = {
-            key: _bound_record(predecessor.get(key), "predecessor_unbound")[0]
-            for key in ("authority", "terminal_result", "provider_zero")
-        }
-        prior = validate_terminal_spend_chain(
-            authority_path=paths["authority"],
-            result_path=paths["terminal_result"],
-            provider_zero_path=paths["provider_zero"],
-        )
-        reconciled = validate_bound_lane_prior_spend(
-            value, lane="native_task_arena"
-        )
-        main_result_sha256 = prior["records"]["terminal_result"]["sha256"]
-        main_rows = [
-            row
-            for row in reconciled["prior_terminal_attempts"]
+        lineage_kind = value.get("lineage_kind", "terminal_predecessor")
+        if lineage_kind == "project_spend_genesis":
             if (
-                row.get("result_sha256")
-                or (row.get("result") or {}).get("sha256")
+                value.get("prior_terminal_attempt") is not None
+                or value.get("prior_spend_reconciliation") is not None
+                or value.get("prior_terminal_attempts") != []
+                or retain_warm_session
+                or allowed_active_instance_ids
+                or value.get("policy_campaign_binding") is not None
+            ):
+                raise ValueError("genesis_shape_invalid")
+            project_path, project_record = _bound_record(
+                value.get("project_spend_reconciliation"),
+                "project_spend_reconciliation_unbound",
             )
-            == main_result_sha256
-        ]
-        if len(main_rows) != 1:
-            raise ValueError("primary_predecessor_reconciliation_invalid")
-        main_actual_provider_charge = main_rows[0].get("actual_provider_charge_usd")
-        if main_actual_provider_charge is None:
-            if len(reconciled["prior_terminal_attempts"]) != 1:
+            project_spend, observed_project_record = (
+                validate_same_goal_spend_reconciliation(project_path)
+            )
+            zero_path, zero_record = _bound_record(
+                value.get("initial_provider_zero"),
+                "initial_provider_zero_unbound",
+            )
+            initial_zero = _validated_api_provider_zero(zero_path)
+            authorized_time = _aware_time(
+                value.get("authorized_on"),
+                "native_task_arena_initial_authorized_time_invalid",
+            )
+            zero_time = _aware_time(
+                initial_zero.get("observed_at_utc"),
+                "native_task_arena_initial_provider_zero_time_invalid",
+            )
+            actual_after = round(float(project_spend["total_cost_usd"]), 6)
+            if (
+                project_record != observed_project_record
+                or zero_record.get("provider_zero_digest")
+                != initial_zero.get("provider_zero_digest")
+                or zero_time > authorized_time
+                or (authorized_time - zero_time).total_seconds()
+                > MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS
+                or value.get("prior_actual_provider_spend_usd") != actual_after
+                or value.get("aggregate_goal_spend_before_attempt_usd")
+                != actual_after
+            ):
+                errors.append("project_spend_genesis_mismatch")
+        elif lineage_kind == "terminal_predecessor":
+            predecessor = value.get("prior_terminal_attempt")
+            if not isinstance(predecessor, Mapping):
+                raise ValueError("predecessor_invalid")
+            paths = {
+                key: _bound_record(predecessor.get(key), "predecessor_unbound")[0]
+                for key in ("authority", "terminal_result", "provider_zero")
+            }
+            prior = validate_terminal_spend_chain(
+                authority_path=paths["authority"],
+                result_path=paths["terminal_result"],
+                provider_zero_path=paths["provider_zero"],
+            )
+            reconciled = validate_bound_lane_prior_spend(
+                value, lane="native_task_arena"
+            )
+            main_result_sha256 = prior["records"]["terminal_result"]["sha256"]
+            main_rows = [
+                row
+                for row in reconciled["prior_terminal_attempts"]
+                if (
+                    row.get("result_sha256")
+                    or (row.get("result") or {}).get("sha256")
+                )
+                == main_result_sha256
+            ]
+            if len(main_rows) != 1:
                 raise ValueError("primary_predecessor_reconciliation_invalid")
-            main_actual_provider_charge = reconciled["actual_total_usd"]
-        actual_after = round(
-            prior["aggregate_goal_spend_before_attempt_usd"]
-            + reconciled["actual_total_usd"],
-            6,
-        )
+            main_actual_provider_charge = main_rows[0].get(
+                "actual_provider_charge_usd"
+            )
+            if main_actual_provider_charge is None:
+                if len(reconciled["prior_terminal_attempts"]) != 1:
+                    raise ValueError("primary_predecessor_reconciliation_invalid")
+                main_actual_provider_charge = reconciled["actual_total_usd"]
+            actual_after = round(
+                prior["aggregate_goal_spend_before_attempt_usd"]
+                + reconciled["actual_total_usd"],
+                6,
+            )
+            if (
+                predecessor.get("authority_digest") != prior["authority_digest"]
+                or predecessor.get("attempt_cost_usd") != prior["attempt_cost_usd"]
+                or predecessor.get("actual_provider_charge_usd")
+                != main_actual_provider_charge
+                or value.get("aggregate_goal_spend_before_attempt_usd")
+                != actual_after
+            ):
+                errors.append("prior_terminal_spend_mismatch")
+        else:
+            raise ValueError("lineage_kind_invalid")
         if (
-            predecessor.get("authority_digest") != prior["authority_digest"]
-            or predecessor.get("attempt_cost_usd") != prior["attempt_cost_usd"]
-            or predecessor.get("actual_provider_charge_usd")
-            != main_actual_provider_charge
-            or value.get("aggregate_goal_spend_before_attempt_usd")
-            != actual_after
-            or value.get("aggregate_goal_spend_cap_usd")
+            value.get("aggregate_goal_spend_cap_usd")
             != AGGREGATE_GOAL_SPEND_CAP_USD
             or value.get("aggregate_goal_spend_before_attempt_usd", 0) + hard_cap_usd
             > value.get("aggregate_goal_spend_cap_usd", 0)
         ):
-            errors.append("prior_terminal_spend_mismatch")
+            errors.append("aggregate_goal_spend_mismatch")
     except ValueError:
         errors.append("prior_terminal_spend_invalid")
     campaign_binding = value.get("policy_campaign_binding")

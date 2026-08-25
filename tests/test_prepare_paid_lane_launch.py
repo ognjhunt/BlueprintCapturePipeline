@@ -195,6 +195,21 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "hard_ttl_seconds",
         "aggregate_goal_spend_before_usd",
         "aggregate_goal_spend_cap_usd",
+        # Native Task Arena contexts derive these from the versioned context
+        # file rather than accepting independent command-line strings.
+        "packet_dir",
+        "runtime_source_packet",
+        "scene_id",
+        "task_id",
+        "project_spend_reconciliation",
+        "initial_provider_zero",
+        "prior_authority",
+        "prior_result",
+        "prior_provider_zero",
+        "prior_spend_reconciliation",
+        "construction_result",
+        "standing_authorization_dir",
+        "standing_authorization_expires_at",
     }
     for lane, steps in prep.LANES.items():
         available = set(supplied)
@@ -217,6 +232,147 @@ def test_shipped_semantic_teacher_lane_keeps_its_required_order() -> None:
         "profile_publication",
         "terminal_rehearsal",
     ]
+
+
+@pytest.mark.parametrize(
+    "lane",
+    ["native_task_arena_construction", "native_task_arena_controls"],
+)
+def test_native_lane_prepares_rehearses_then_publishes_once(lane: str) -> None:
+    order = [step.step_id for step in prep.LANES[lane]]
+    assert order == [
+        "provider_bundle",
+        "immutable_manifest",
+        "paid_authority",
+        "allocator_dry_run",
+        "live_profile",
+        "terminal_rehearsal",
+        "profile_publication",
+        "standing_authorization",
+    ]
+    dry_run = prep.LANES[lane][order.index("allocator_dry_run")]
+    assert "--execute" not in dry_run.argv
+    assert dry_run.argv[dry_run.argv.index("--provider") + 1] == "vast"
+    assert dry_run.argv[dry_run.argv.index("--probe-kind") + 1] == lane.replace(
+        "_", "-"
+    )
+    standing = prep.LANES[lane][order.index("standing_authorization")]
+    assert standing.argv[standing.argv.index("--max-launches") + 1] == "1"
+
+
+def test_native_context_reopens_independent_versioned_references(
+    tmp_path: Path,
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    robot = {"robot_id": "customer_arm_v3", "adapter": "fixed_arm_adapter_v1"}
+    (packet / "native_task_arena_packet_receipt.v1.json").write_text(
+        json.dumps(
+            {
+                "scene_id": "public-scene-17",
+                "task_id": "move-can-v2",
+                "receipt_digest": "sha256:" + "1" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packet / "native_task_runtime_contract.v1.json").write_text(
+        json.dumps(
+            {
+                "task_spec_digest": "sha256:" + "2" * 64,
+                "robot": robot,
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_source = tmp_path / "runtime-source.json"
+    runtime_source.write_text(
+        json.dumps({"receipt_digest": "sha256:" + "3" * 64}),
+        encoding="utf-8",
+    )
+    context_file = tmp_path / "context.json"
+    context_file.write_text(
+        json.dumps(
+            {
+                "schema_version": prep.NATIVE_CONTEXT_SCHEMA_VERSION,
+                "lane": "native_task_arena_construction",
+                "team_namespace": "robot-team-a",
+                "references": {
+                    "scene": {
+                        "scene_id": "public-scene-17",
+                        "packet_dir": str(packet),
+                        "packet_receipt_digest": "sha256:" + "1" * 64,
+                    },
+                    "task": {
+                        "task_id": "move-can-v2",
+                        "task_spec_digest": "sha256:" + "2" * 64,
+                    },
+                    "robot": {
+                        "robot_id": "customer_arm_v3",
+                        "configuration_digest": prep._canonical_mapping_digest(robot),
+                    },
+                    "runtime": {
+                        "source_packet": str(runtime_source),
+                        "source_packet_receipt_digest": "sha256:" + "3" * 64,
+                        "container_image": (
+                            "registry.example/robot-runtime@sha256:" + "4" * 64
+                        ),
+                    },
+                },
+                "operations": {
+                    "set_root": str(tmp_path / "set"),
+                    "repository_root": str(tmp_path / "repo"),
+                    "source_commit": "a" * 40,
+                    "destination_prefix": "r2://bucket/manifests",
+                    "profile_dir": str(tmp_path / "profiles"),
+                    "webapp_catalog_out": str(tmp_path / "catalog.json"),
+                    "standing_authorization_dir": str(tmp_path / "authorities"),
+                    "standing_authorization_expires_at": (
+                        "2026-08-26T14:30:00+00:00"
+                    ),
+                    "pod_name": "new-scene-canary",
+                    "revision": "r1",
+                    "authorization_reference": "user-authorized-new-lane",
+                    "authorized_by": "user",
+                    "authorized_on": "2026-08-25T14:30:00+00:00",
+                    "maximum_hourly_rate_usd": 0.8,
+                    "hard_total_spend_cap_usd": 0.75,
+                    "hard_ttl_seconds": 3300,
+                    "project_spend_reconciliation": str(
+                        tmp_path / "project-spend.json"
+                    ),
+                    "initial_provider_zero": str(tmp_path / "provider-zero.json"),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    context = prep._load_native_context(
+        context_file, expected_lane="native_task_arena_construction"
+    )
+
+    assert context["scene_id"] == "public-scene-17"
+    assert context["task_id"] == "move-can-v2"
+    assert context["packet_dir"] == str(packet.resolve())
+    assert context["runtime_source_packet"] == str(runtime_source.resolve())
+    assert context["reference_bindings"]["robot"]["robot_id"] == "customer_arm_v3"
+
+
+def test_native_context_refuses_operational_reference_override(tmp_path: Path) -> None:
+    context = {
+        "schema_version": prep.NATIVE_CONTEXT_SCHEMA_VERSION,
+        "lane": "native_task_arena_construction",
+        "team_namespace": "robot-team-a",
+        "references": {},
+        "operations": {"packet_dir": "/tmp/unbound"},
+    }
+    source = tmp_path / "context.json"
+    source.write_text(json.dumps(context), encoding="utf-8")
+    with pytest.raises(prep.PaidLaneLaunchPreparationError):
+        prep._load_native_context(
+            source, expected_lane="native_task_arena_construction"
+        )
 
 
 def test_semantic_teacher_lane_passes_each_tool_the_argument_shape_it_wants() -> None:

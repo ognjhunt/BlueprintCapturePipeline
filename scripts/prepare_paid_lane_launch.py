@@ -39,7 +39,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+import jsonschema
+
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
+NATIVE_CONTEXT_SCHEMA_VERSION = "native_task_arena_launch_preparation_context.v1"
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
 
@@ -230,8 +233,277 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
     ),
 )
 
+
+def _native_task_arena_steps(link: str) -> tuple[LaneStep, ...]:
+    """Return the reusable construction or controls preparation graph."""
+
+    if link not in {"construction", "controls"}:
+        raise ValueError(f"native_task_arena_preparation_link_invalid:{link}")
+    controls = link == "controls"
+    bundle_module = (
+        "blueprint_pipeline.native_task_arena_controls_bundle"
+        if controls
+        else "blueprint_pipeline.native_task_arena_construction_bundle"
+    )
+    probe_kind = f"native-task-arena-{link}"
+    bundle_argv = [
+        "{python}",
+        "-m",
+        bundle_module,
+        "--job-dir",
+        "{set_root}/bundle",
+        "--packet-dir",
+        "{packet_dir}",
+        "--runtime-source-packet-receipt",
+        "{runtime_source_packet}",
+        "--implementation-commit",
+        "{source_commit}",
+    ]
+    if controls:
+        bundle_argv.extend(("--construction-result", "{construction_result}"))
+    authority_lineage = (
+        (
+            "--prior-authority",
+            "{prior_authority}",
+            "--prior-result",
+            "{prior_result}",
+            "--prior-provider-zero",
+            "{prior_provider_zero}",
+            "--prior-spend-reconciliation",
+            "{prior_spend_reconciliation}",
+        )
+        if controls
+        else (
+            "--project-spend-reconciliation",
+            "{project_spend_reconciliation}",
+            "--initial-provider-zero",
+            "{initial_provider_zero}",
+        )
+    )
+    predecessor_allocator = (
+        (
+            "--native-task-arena-construction-result",
+            "{construction_result}",
+        )
+        if controls
+        else ()
+    )
+    profile_predecessor = (
+        ("--construction-result", "{construction_result}") if controls else ()
+    )
+    return (
+        LaneStep(
+            step_id="provider_bundle",
+            argv=tuple(bundle_argv),
+            produces=(
+                "{set_root}/bundle/"
+                "native_task_arena_provider_bundle_receipt.v1.json"
+            ),
+        ),
+        LaneStep(
+            step_id="immutable_manifest",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "publish_task_evaluation_immutable_manifest.py",
+                "--manifest",
+                "{set_root}/bundle/"
+                "native_task_arena_provider_bundle_receipt.v1.json",
+                "--profile-builder",
+                "build_native_task_arena_live_profile.py",
+                "--destination-prefix",
+                "{destination_prefix}",
+                "--output",
+                "{set_root}/manifest_publication_receipt.v1.json",
+            ),
+            produces="{set_root}/manifest_publication_receipt.v1.json",
+            exports=(("published_manifest_uri", "published_uri"),),
+        ),
+        LaneStep(
+            step_id="paid_authority",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "issue_native_task_arena_paid_attempt_authority.py",
+                "--bundle-receipt",
+                "{set_root}/bundle/"
+                "native_task_arena_provider_bundle_receipt.v1.json",
+                *authority_lineage,
+                "--authority-reference",
+                "{authorization_reference}",
+                "--authorized-by",
+                "{authorized_by}",
+                "--authorized-on",
+                "{authorized_on}",
+                "--blueprint-commit",
+                "{source_commit}",
+                "--max-hourly-rate-usd",
+                "{maximum_hourly_rate_usd}",
+                "--hard-cap-usd",
+                "{hard_total_spend_cap_usd}",
+                "--hard-ttl-seconds",
+                "{hard_ttl_seconds}",
+                "--output",
+                "{set_root}/native_task_arena_paid_attempt_authority.v1.json",
+            ),
+            produces=(
+                "{set_root}/native_task_arena_paid_attempt_authority.v1.json"
+            ),
+        ),
+        LaneStep(
+            step_id="allocator_dry_run",
+            argv=(
+                "{python}",
+                "-m",
+                "blueprint_pipeline.paid_resource_allocator",
+                "gpu-canary",
+                "--admission-out",
+                "{set_root}/dry-run-job/admission.json",
+                "--bound-request-out",
+                "{set_root}/dry-run-job/bound-request.json",
+                "--adapter-output",
+                "{set_root}/allocator_dry_run.v1.json",
+                "--pod-name",
+                "{pod_name}",
+                "--expected-source-commit",
+                "{source_commit}",
+                "--provider",
+                "vast",
+                "--probe-kind",
+                probe_kind,
+                "--native-task-arena-packet",
+                "{packet_dir}",
+                "--native-task-arena-runtime-source-packet",
+                "{runtime_source_packet}",
+                "--native-task-arena-bundle-receipt",
+                "{set_root}/bundle/"
+                "native_task_arena_provider_bundle_receipt.v1.json",
+                "--native-task-arena-attempt-authority",
+                "{set_root}/native_task_arena_paid_attempt_authority.v1.json",
+                *predecessor_allocator,
+                "--adp-job-dir",
+                "{set_root}/dry-run-job/job",
+                "--adp-max-hourly-rate-usd",
+                "{maximum_hourly_rate_usd}",
+                "--adp-max-spend-usd",
+                "{hard_total_spend_cap_usd}",
+                "--adp-hard-ttl-seconds",
+                "{hard_ttl_seconds}",
+            ),
+            produces="{set_root}/allocator_dry_run.v1.json",
+            repeated_argv=(
+                ("--adp-machine-avoidlist", "machine_avoidlist"),
+            ),
+        ),
+        LaneStep(
+            step_id="live_profile",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/build_native_task_arena_live_profile.py",
+                link,
+                "--packet-dir",
+                "{packet_dir}",
+                "--bundle-receipt",
+                "{set_root}/bundle/"
+                "native_task_arena_provider_bundle_receipt.v1.json",
+                "--attempt-authority",
+                "{set_root}/native_task_arena_paid_attempt_authority.v1.json",
+                "--runtime-source-packet",
+                "{runtime_source_packet}",
+                "--source-commit",
+                "{source_commit}",
+                "--scene-id",
+                "{scene_id}",
+                "--task-id",
+                "{task_id}",
+                "--raw-manifest-uri",
+                "{set_root}/manifest_publication_receipt.v1.json",
+                "--revision",
+                "{revision}",
+                "--max-hourly-rate-usd",
+                "{maximum_hourly_rate_usd}",
+                "--max-spend-usd",
+                "{hard_total_spend_cap_usd}",
+                "--hard-ttl-seconds",
+                "{hard_ttl_seconds}",
+                *profile_predecessor,
+                "--output",
+                "{set_root}/live_profile-{revision}.v1.json",
+            ),
+            produces="{set_root}/live_profile-{revision}.v1.json",
+            exports=(("profile_id", "profile_id"),),
+            repeated_argv=(("--machine-avoidlist", "machine_avoidlist"),),
+        ),
+        LaneStep(
+            step_id="terminal_rehearsal",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/rehearse_lane_terminal_contract.py",
+                "--profile",
+                "{set_root}/live_profile-{revision}.v1.json",
+                "--lane-module",
+                "adp_isaac_lab_arena_vast.py",
+                "--lane",
+                f"native_task_arena_{link}",
+                "--receipt-out",
+                "{set_root}/terminal_rehearsal-{revision}.v1.json",
+            ),
+            produces="{set_root}/terminal_rehearsal-{revision}.v1.json",
+        ),
+        LaneStep(
+            step_id="profile_publication",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "publish_task_evaluation_launch_profiles.py",
+                "--profile",
+                "{set_root}/live_profile-{revision}.v1.json",
+                "--profile-dir",
+                "{profile_dir}",
+                "--webapp-catalog-out",
+                "{webapp_catalog_out}",
+                "--service-account",
+                "{service_account}",
+                "--service-group",
+                "{service_group}",
+                "--receipt-out",
+                "{set_root}/profile_publication_receipt.v1.json",
+            ),
+            produces="{set_root}/profile_publication_receipt.v1.json",
+        ),
+        LaneStep(
+            step_id="standing_authorization",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "materialize_task_evaluation_standing_launch_authorization.py",
+                "--profile",
+                "{profile_dir}/{profile_id}.json",
+                "--output-dir",
+                "{standing_authorization_dir}",
+                "--authorized-by",
+                "{authorized_by}",
+                "--authorization-reference",
+                "{authorization_reference}",
+                "--issued-at",
+                "{authorized_on}",
+                "--expires-at",
+                "{standing_authorization_expires_at}",
+                "--max-launches",
+                "1",
+                "--max-total-spend-usd",
+                "{hard_total_spend_cap_usd}",
+                "--service-account",
+                "{service_account}",
+            ),
+            produces="{standing_authorization_dir}/{profile_id}.json",
+        ),
+    )
+
 LANES: dict[str, tuple[LaneStep, ...]] = {
     "semantic_teacher_image_edit": SEMANTIC_TEACHER_IMAGE_EDIT_STEPS,
+    "native_task_arena_construction": _native_task_arena_steps("construction"),
+    "native_task_arena_controls": _native_task_arena_steps("controls"),
 }
 
 
@@ -419,6 +691,11 @@ def prepare_paid_lane_launch(
         "lane": lane,
         "status": "prepared" if not blockers else "blocked",
         "source_commit": str(context.get("source_commit") or ""),
+        **(
+            {"reference_bindings": dict(context["reference_bindings"])}
+            if isinstance(context.get("reference_bindings"), Mapping)
+            else {}
+        ),
         "step_count": len(LANES[lane]),
         "completed_steps": completed,
         "blockers": blockers,
@@ -427,7 +704,11 @@ def prepare_paid_lane_launch(
     }
 
 
-def _context_from_args(args: argparse.Namespace) -> dict[str, str]:
+def _arg_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     context = {
         "python": args.python,
         "repository_root": args.repository_root,
@@ -447,13 +728,15 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, str]:
         "authorized_by": args.authorized_by,
         "authorized_on": args.authorized_on,
         "backend_entry_digest": args.backend_entry_digest,
-        "task_count": str(args.task_count),
-        "camera_count": str(args.camera_count),
-        "maximum_hourly_rate_usd": str(args.maximum_hourly_rate_usd),
-        "hard_total_spend_cap_usd": str(args.hard_total_spend_cap_usd),
-        "hard_ttl_seconds": str(args.hard_ttl_seconds),
-        "aggregate_goal_spend_before_usd": str(args.aggregate_goal_spend_before_usd),
-        "aggregate_goal_spend_cap_usd": str(args.aggregate_goal_spend_cap_usd),
+        "task_count": _arg_text(args.task_count),
+        "camera_count": _arg_text(args.camera_count),
+        "maximum_hourly_rate_usd": _arg_text(args.maximum_hourly_rate_usd),
+        "hard_total_spend_cap_usd": _arg_text(args.hard_total_spend_cap_usd),
+        "hard_ttl_seconds": _arg_text(args.hard_ttl_seconds),
+        "aggregate_goal_spend_before_usd": _arg_text(
+            args.aggregate_goal_spend_before_usd
+        ),
+        "aggregate_goal_spend_cap_usd": _arg_text(args.aggregate_goal_spend_cap_usd),
         "prior_spend_reconciliations": (
             [args.prior_spend_reconciliation]
             if args.prior_spend_reconciliation
@@ -467,18 +750,162 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, str]:
     return context
 
 
+def _canonical_mapping_digest(value: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, Any]:
+    """Load and reopen independent scene/task/robot/runtime references."""
+
+    source = Path(path).expanduser().resolve()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_context_unreadable"
+        ) from exc
+    if (
+        source.is_symlink()
+        or not isinstance(value, Mapping)
+        or value.get("schema_version") != NATIVE_CONTEXT_SCHEMA_VERSION
+        or value.get("lane") != expected_lane
+        or not str(value.get("team_namespace") or "").strip()
+    ):
+        raise PaidLaneLaunchPreparationError("native_task_arena_context_invalid")
+    schema_path = (
+        Path(__file__).resolve().parents[1]
+        / "docs/schemas/native_task_arena_launch_preparation_context.v1.schema.json"
+    )
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.Draft202012Validator(schema).validate(value)
+    except (
+        OSError,
+        json.JSONDecodeError,
+        jsonschema.SchemaError,
+        jsonschema.ValidationError,
+    ) as exc:
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_context_schema_invalid"
+        ) from exc
+    references = value.get("references")
+    operations = value.get("operations")
+    if not isinstance(references, Mapping) or not isinstance(operations, Mapping):
+        raise PaidLaneLaunchPreparationError("native_task_arena_context_invalid")
+    for key in operations:
+        lowered = str(key).lower()
+        if any(token in lowered for token in ("password", "api_key", "secret", "token")):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_context_secret_value_forbidden"
+            )
+    required_reference_keys = {"scene", "task", "robot", "runtime"}
+    if set(references) != required_reference_keys:
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_reference_set_invalid"
+        )
+    scene = references["scene"]
+    task = references["task"]
+    robot = references["robot"]
+    runtime = references["runtime"]
+    if not all(isinstance(item, Mapping) for item in (scene, task, robot, runtime)):
+        raise PaidLaneLaunchPreparationError("native_task_arena_reference_invalid")
+    packet_dir = Path(str(scene.get("packet_dir") or "")).expanduser().resolve()
+    packet_receipt_path = packet_dir / "native_task_arena_packet_receipt.v1.json"
+    runtime_contract_path = packet_dir / "native_task_runtime_contract.v1.json"
+    runtime_source_path = Path(
+        str(runtime.get("source_packet") or "")
+    ).expanduser().resolve()
+    try:
+        packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
+        runtime_contract = json.loads(runtime_contract_path.read_text(encoding="utf-8"))
+        runtime_source = json.loads(runtime_source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_reference_unreadable"
+        ) from exc
+    container_image = str(runtime.get("container_image") or "")
+    if (
+        packet_dir.is_symlink()
+        or runtime_source_path.is_symlink()
+        or packet_receipt.get("scene_id") != scene.get("scene_id")
+        or packet_receipt.get("task_id") != task.get("task_id")
+        or packet_receipt.get("receipt_digest")
+        != scene.get("packet_receipt_digest")
+        or runtime_contract.get("task_spec_digest") != task.get("task_spec_digest")
+        or (runtime_contract.get("robot") or {}).get("robot_id")
+        != robot.get("robot_id")
+        or _canonical_mapping_digest(runtime_contract.get("robot") or {})
+        != robot.get("configuration_digest")
+        or runtime_source.get("receipt_digest")
+        != runtime.get("source_packet_receipt_digest")
+        or "@sha256:" not in container_image
+        or len(container_image.rsplit("@sha256:", 1)[-1]) != 64
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_reference_binding_invalid"
+        )
+    context = dict(operations)
+    forbidden_overrides = {
+        "packet_dir",
+        "scene_id",
+        "task_id",
+        "runtime_source_packet",
+        "reference_bindings",
+    }
+    if forbidden_overrides.intersection(context):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_reference_override_forbidden"
+        )
+    context.update(
+        {
+            "packet_dir": str(packet_dir),
+            "scene_id": str(scene["scene_id"]),
+            "task_id": str(task["task_id"]),
+            "runtime_source_packet": str(runtime_source_path),
+            "reference_bindings": {
+                "team_namespace": str(value["team_namespace"]),
+                "scene": dict(scene),
+                "task": dict(task),
+                "robot": dict(robot),
+                "runtime": dict(runtime),
+                "context_path": str(source),
+                "context_sha256": _sha256_file(source),
+            },
+            "python": str(operations.get("python") or sys.executable),
+            "service_account": str(
+                operations.get("service_account") or DEFAULT_SERVICE_ACCOUNT
+            ),
+            "service_group": str(
+                operations.get("service_group") or DEFAULT_SERVICE_GROUP
+            ),
+            "machine_avoidlist": operations.get("machine_avoidlist") or "",
+        }
+    )
+    source_commit = str(context.get("source_commit") or "")
+    if len(source_commit) != 40 or any(ch not in "0123456789abcdef" for ch in source_commit):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_source_commit_invalid"
+        )
+    return context
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", required=True, choices=sorted(LANES))
-    parser.add_argument("--set-root", required=True)
-    parser.add_argument("--packet", required=True)
-    parser.add_argument("--repository-root", required=True)
-    parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--token-file", required=True)
-    parser.add_argument("--destination-prefix", required=True)
-    parser.add_argument("--runtime-image-identity", required=True)
-    parser.add_argument("--profile-dir", required=True)
-    parser.add_argument("--webapp-catalog-out", required=True)
+    parser.add_argument("--context-file")
+    parser.add_argument("--set-root")
+    parser.add_argument("--packet")
+    parser.add_argument("--repository-root")
+    parser.add_argument("--source-commit")
+    parser.add_argument("--token-file")
+    parser.add_argument("--destination-prefix")
+    parser.add_argument("--runtime-image-identity")
+    parser.add_argument("--profile-dir")
+    parser.add_argument("--webapp-catalog-out")
     parser.add_argument(
         "--service-account",
         default=DEFAULT_SERVICE_ACCOUNT,
@@ -489,20 +916,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_SERVICE_GROUP,
         help="Canonical group allowed to traverse the set and read published inputs.",
     )
-    parser.add_argument("--pod-name", required=True)
+    parser.add_argument("--pod-name")
     parser.add_argument("--revision", default="r1")
     parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--authorization-reference", required=True)
-    parser.add_argument("--authorized-by", required=True)
-    parser.add_argument("--authorized-on", required=True)
-    parser.add_argument("--backend-entry-digest", required=True)
-    parser.add_argument("--task-count", type=int, required=True)
-    parser.add_argument("--camera-count", type=int, required=True)
-    parser.add_argument("--maximum-hourly-rate-usd", type=float, required=True)
-    parser.add_argument("--hard-total-spend-cap-usd", type=float, required=True)
-    parser.add_argument("--hard-ttl-seconds", type=int, required=True)
-    parser.add_argument("--aggregate-goal-spend-before-usd", type=float, required=True)
-    parser.add_argument("--aggregate-goal-spend-cap-usd", type=float, required=True)
+    parser.add_argument("--authorization-reference")
+    parser.add_argument("--authorized-by")
+    parser.add_argument("--authorized-on")
+    parser.add_argument("--backend-entry-digest")
+    parser.add_argument("--task-count", type=int)
+    parser.add_argument("--camera-count", type=int)
+    parser.add_argument("--maximum-hourly-rate-usd", type=float)
+    parser.add_argument("--hard-total-spend-cap-usd", type=float)
+    parser.add_argument("--hard-ttl-seconds", type=int)
+    parser.add_argument("--aggregate-goal-spend-before-usd", type=float)
+    parser.add_argument("--aggregate-goal-spend-cap-usd", type=float)
     parser.add_argument("--prior-spend-reconciliation")
     parser.add_argument(
         "--excluded-machine-id",
@@ -516,7 +943,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        receipt = prepare_paid_lane_launch(args.lane, _context_from_args(args))
+        if args.context_file:
+            context = _load_native_context(args.context_file, expected_lane=args.lane)
+        else:
+            context = _context_from_args(args)
+        receipt = prepare_paid_lane_launch(args.lane, context)
     except PaidLaneLaunchPreparationError as exc:
         print(json.dumps({"status": "blocked", "blockers": [str(exc)]}, sort_keys=True))
         return 2

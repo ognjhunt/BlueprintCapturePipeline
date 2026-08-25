@@ -10,7 +10,10 @@ import sys
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
+from blueprint_pipeline.paid_attempt_authority import (
+    bind_lane_prior_spend,
+    validate_same_goal_spend_reconciliation,
+)
 from blueprint_pipeline.same_goal_spend_reconciliation import (
     SUPPORTED_LANES,
     _attempt_id,
@@ -619,6 +622,43 @@ def test_live_profile_expands_every_nested_prior_spend_receipt(tmp_path: Path) -
         *(path.resolve() for path in fixture.values()),
     }
     assert len(inputs) == 7
+
+
+def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> None:
+    """A first lane attempt must publish the whole project ledger closure."""
+
+    fixture = _fixture(tmp_path / "fixture")
+    output, reconciliation = _materialize(
+        tmp_path / "fixture", "gaussian_excision", fixture
+    )
+    _, record = validate_same_goal_spend_reconciliation(output)
+    authority = _write(
+        tmp_path / "authority.json",
+        {
+            "lineage_kind": "project_spend_genesis",
+            "project_spend_reconciliation": record,
+            "aggregate_goal_spend_before_attempt_usd": reconciliation[
+                "total_cost_usd"
+            ],
+        },
+    )
+
+    inputs = expand_prior_spend_immutable_inputs(
+        [
+            {
+                "name": "native_task_arena_attempt_authority",
+                "path": str(authority),
+                "digest": "sha256:" + "0" * 64,
+            }
+        ]
+    )
+
+    observed = {Path(row["path"]) for row in inputs}
+    assert observed == {
+        authority.resolve(),
+        output.resolve(),
+        *(path.resolve() for path in fixture.values()),
+    }
 
 
 def test_live_profile_rejects_changed_nested_prior_spend_bytes(tmp_path: Path) -> None:
