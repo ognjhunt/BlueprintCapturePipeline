@@ -59,6 +59,20 @@ def fetcher(payloads: dict[str, bytes]):
     return fetch
 
 
+def fake_adapter(**kwargs) -> dict[str, object]:
+    assert Path(kwargs["construction_bundle_path"]).is_file()
+    assert Path(kwargs["runtime_source_bundle_path"]).is_file()
+    result = {
+        "status": "native_arena_adapter_materialized",
+        "adapter_kind": "native_task_arena",
+        "adapter_version": "v1",
+        "packet_receipt_digest": "sha256:" + "c" * 64,
+        "runtime_source_receipt_digest": "sha256:" + "d" * 64,
+        "result_digest": "sha256:" + "e" * 64,
+    }
+    return result
+
+
 def test_materializes_every_reference_and_full_byte_reads_back(tmp_path) -> None:
     value, payloads = request_with_fetchable_bytes()
     result = materialize_preparation_references(
@@ -66,6 +80,7 @@ def test_materializes_every_reference_and_full_byte_reads_back(tmp_path) -> None
         input_root=tmp_path / "inputs",
         allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
         service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
     )
     assert result["status"] == "inputs_materialized_awaiting_construction_adapter"
@@ -93,7 +108,9 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         input_root=tmp_path / "inputs",
         allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
         service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
+        adapter_materializer=fake_adapter,
     )
     assert run["status"] == "processed"
     assert run["processed_count"] == 1
@@ -106,9 +123,11 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         "preparation_id": value["preparation_id"],
         "run_id": value["run_id"],
         "team_namespace": value["team_namespace"],
+        "expected_production_commit": value["expected_production_commit"],
         "request_digest": intake["request_digest"],
         "provider_mutation_performed_by_status_read": False,
-        "worker_status": "inputs_materialized_awaiting_construction_adapter",
+        "worker_status": "native_arena_inputs_verified_awaiting_profile_authority",
+        "source_commit": value["expected_production_commit"],
         "result_digest": run["results"][0]["result_digest"],
         "reference_count": len(payloads),
         "full_byte_service_account_readback_passed": True,
@@ -140,7 +159,9 @@ def test_worker_blocks_unapproved_storage_prefix_before_fetch(tmp_path) -> None:
         input_root=tmp_path / "inputs",
         allowed_uri_prefixes=["s3://different-team/"],
         service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
         fetcher=forbidden_fetch,
+        adapter_materializer=fake_adapter,
     )
     assert run["results"][0]["status"] == "blocked"
     assert run["results"][0]["blockers"] == [
@@ -269,7 +290,9 @@ def test_existing_different_result_is_preserved_and_conflict_is_sealed(
         input_root=tmp_path / "inputs",
         allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
         service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
+        adapter_materializer=fake_adapter,
     )
 
     assert json.loads((results / queue_name).read_text()) == existing
@@ -286,4 +309,32 @@ def test_existing_different_result_is_preserved_and_conflict_is_sealed(
     assert status["worker_status"] == "blocked"
     assert status["blockers"] == [
         "launch_preparation_immutable_result_conflict"
+    ]
+
+
+def test_worker_refuses_request_bound_to_a_different_deployed_commit(
+    tmp_path: Path,
+) -> None:
+    value, payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    def forbidden_fetch(*_args):
+        raise AssertionError("commit mismatch must block before object fetch")
+
+    run = process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit="b" * 40,
+        fetcher=forbidden_fetch,
+        adapter_materializer=fake_adapter,
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "launch_preparation_worker_source_commit_mismatch"
     ]

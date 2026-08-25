@@ -6,6 +6,7 @@
   "type": "object",
   "required": [
     "schema_version",
+    "expected_production_commit",
     "preparation_id",
     "team_namespace",
     "run_id",
@@ -15,12 +16,14 @@
     "task",
     "sensors",
     "runtime",
+    "execution_adapter",
     "publication",
     "spend"
   ],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "task_evaluation_launch_preparation_request.v1"},
+    "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "preparation_id": {"$ref": "#/$defs/identifier"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
     "run_id": {"$ref": "#/$defs/identifier"},
@@ -201,6 +204,17 @@
           }
         },
         "output_limit_bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+      }
+    },
+    "execution_adapter": {
+      "type": "object",
+      "required": ["kind", "version", "construction_packet_bundle", "runtime_source_bundle"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"},
+        "construction_packet_bundle": {"$ref": "#/$defs/reference"},
+        "runtime_source_bundle": {"$ref": "#/$defs/reference"}
       }
     },
     "publication": {

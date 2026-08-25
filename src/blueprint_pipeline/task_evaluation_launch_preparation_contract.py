@@ -80,6 +80,14 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_gpu_requirement_missing"
         )
+    adapter = request["execution_adapter"]
+    if (adapter["kind"], adapter["version"]) != (
+        "native_task_arena",
+        "v1",
+    ):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_execution_adapter_unavailable"
+        )
     output_mounts = [
         mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
     ]

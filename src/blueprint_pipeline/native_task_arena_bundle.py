@@ -259,6 +259,14 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
     return root, receipt, rows
 
 
+def verify_native_task_arena_packet(
+    packet_dir: str | Path,
+) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    """Public read-only verifier for a previously materialized packet."""
+
+    return _verified_packet(packet_dir)
+
+
 def _entrypoint(
     *,
     expected_output_filename: str,
@@ -797,4 +805,5 @@ __all__ = [
     "SCHEMA_VERSION",
     "build_native_task_arena_bundle",
     "digest_pinned_container_image",
+    "verify_native_task_arena_packet",
 ]

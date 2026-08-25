@@ -29,6 +29,15 @@ def signed_headers(body: str, *, nonce: str) -> dict[str, str]:
 
 
 def configure(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        service,
+        "deployment_identity_payload",
+        lambda: {
+            "commit_proven": True,
+            "source_commit": "a" * 40,
+            "blockers": [],
+        },
+    )
     monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "intake"))
     monkeypatch.setenv(
         service.INTAKE_CLIENT_SECRETS_ENV,
@@ -85,4 +94,21 @@ def test_preparation_api_rejects_host_path_before_queueing(monkeypatch, tmp_path
     assert response.status_code == 400
     assert response.json()["accepted"] is False
     assert response.json()["provider_mutation_performed_inside_http_request"] is False
+    assert not list((tmp_path / "preparations" / "pending").glob("*.json"))
+
+
+def test_preparation_api_rejects_stale_deployment_binding(monkeypatch, tmp_path) -> None:
+    configure(monkeypatch, tmp_path)
+    value = request()
+    value["expected_production_commit"] = "b" * 40
+    body = json.dumps(value, separators=(",", ":"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launch-preparations",
+        data=body,
+        headers=signed_headers(body, nonce="preparation-stale-commit-001"),
+    )
+    assert response.status_code == 409
+    assert response.json()["blockers"] == [
+        "launch_preparation_production_commit_mismatch"
+    ]
     assert not list((tmp_path / "preparations" / "pending").glob("*.json"))

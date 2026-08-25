@@ -227,6 +227,7 @@ def _intake_receipt(
         "preparation_id": request["preparation_id"],
         "run_id": request["run_id"],
         "team_namespace": request["team_namespace"],
+        "expected_production_commit": request["expected_production_commit"],
         "request_digest": request_digest,
         "queue_path": str(queue_path),
         "provider_mutation_performed_inside_http_request": False,
@@ -286,6 +287,9 @@ def launch_preparation_status(
         "preparation_id": preparation_id,
         "run_id": envelope["request"]["run_id"],
         "team_namespace": envelope["request"]["team_namespace"],
+        "expected_production_commit": envelope["request"][
+            "expected_production_commit"
+        ],
         "request_digest": envelope["request_digest"],
         "provider_mutation_performed_by_status_read": False,
     }
@@ -321,6 +325,7 @@ def launch_preparation_status(
         status.update(
             {
                 "worker_status": result.get("status"),
+                "source_commit": result.get("source_commit"),
                 "result_digest": result.get("result_digest"),
                 "reference_count": result.get("reference_count"),
                 "full_byte_service_account_readback_passed": result.get(

@@ -26,6 +26,7 @@ def ref(index: int) -> dict[str, object]:
 def request() -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
+        "expected_production_commit": "a" * 40,
         "preparation_id": "team-a-scene-841007-zero-v1",
         "team_namespace": "team-a",
         "run_id": "run-scene-841007-zero-v1",
@@ -92,6 +93,12 @@ def request() -> dict[str, object]:
             ],
             "output_limit_bytes": 20_000_000_000,
         },
+        "execution_adapter": {
+            "kind": "native_task_arena",
+            "version": "v1",
+            "construction_packet_bundle": ref(22),
+            "runtime_source_bundle": ref(23),
+        },
         "publication": {
             "input_namespace": "team-a-scene-841007-v1",
             "service_account_readback_required": True,
@@ -132,6 +139,10 @@ def test_accepts_scene_neutral_customer_contract_and_has_stable_digest() -> None
         (
             lambda value: value["spend"].update(retry_cap=1),
             "launch_preparation_request_invalid:spend.retry_cap",
+        ),
+        (
+            lambda value: value["execution_adapter"].update(kind="unknown_adapter"),
+            "launch_preparation_execution_adapter_unavailable",
         ),
     ],
 )

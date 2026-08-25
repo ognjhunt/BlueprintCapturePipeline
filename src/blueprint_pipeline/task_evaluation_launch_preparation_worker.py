@@ -27,6 +27,9 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
 )
+from .task_evaluation_native_arena_preparation_adapter import (
+    materialize_native_arena_adapter,
+)
 from .task_evaluation_launch_preparation_queue import (
     ENVELOPE_SCHEMA_VERSION,
     TaskEvaluationLaunchPreparationQueueError,
@@ -45,11 +48,40 @@ SERVICE_ACCOUNT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_SERVICE_ACCOUNT"
 )
 ReferenceFetcher = Callable[[str, Path, int], None]
+AdapterMaterializer = Callable[..., dict[str, Any]]
 ALLOWED_REFERENCE_SCHEMES = frozenset({"gs", "https", "s3"})
 
 
 class TaskEvaluationLaunchPreparationWorkerError(RuntimeError):
     """A claimed no-spend preparation could not be completed safely."""
+
+
+def running_worker_source_commit(module_path: str | Path | None = None) -> str:
+    """Read the exact detached/worktree commit that owns the running worker."""
+
+    start = Path(module_path or __file__).resolve()
+    for candidate in (start, *start.parents):
+        marker = candidate / ".git"
+        if not marker.exists():
+            continue
+        head_path = marker / "HEAD"
+        if marker.is_file():
+            try:
+                pointer = marker.read_text(encoding="utf-8").strip()
+            except OSError:
+                return ""
+            if not pointer.startswith("gitdir:"):
+                return ""
+            git_root = Path(pointer.split(":", 1)[1].strip())
+            if not git_root.is_absolute():
+                git_root = (candidate / git_root).resolve()
+            head_path = git_root / "HEAD"
+        try:
+            head = head_path.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            return ""
+        return head if re.fullmatch(r"[0-9a-f]{40}", head) else ""
+    return ""
 
 
 def _sha256_and_size(path: Path) -> tuple[str, int]:
@@ -261,11 +293,19 @@ def materialize_preparation_references(
     input_root: str | Path,
     allowed_uri_prefixes: Sequence[str],
     service_account: str,
+    source_commit: str,
     fetcher: ReferenceFetcher = default_reference_fetcher,
 ) -> dict[str, Any]:
     """Materialize and read back every immutable input, content-addressed."""
 
     validated = validate_launch_preparation_request(request)
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", source_commit)
+        or validated["expected_production_commit"] != source_commit
+    ):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_worker_source_commit_mismatch"
+        )
     try:
         account = pwd.getpwnam(service_account)
     except KeyError as exc:
@@ -360,6 +400,7 @@ def materialize_preparation_references(
         "preparation_id": validated["preparation_id"],
         "run_id": validated["run_id"],
         "team_namespace": validated["team_namespace"],
+        "source_commit": source_commit,
         "reference_count": len(rows),
         "unique_object_count": len(by_identity),
         "references": rows,
@@ -407,14 +448,21 @@ def process_launch_preparation_queue(
     input_root: str | Path,
     allowed_uri_prefixes: Sequence[str],
     service_account: str,
+    source_commit: str | None = None,
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
+    adapter_materializer: AdapterMaterializer = materialize_native_arena_adapter,
 ) -> dict[str, Any]:
     """Claim and materialize bounded queue items without any paid mutation."""
 
     if not isinstance(max_messages, int) or isinstance(max_messages, bool) or not 1 <= max_messages <= 32:
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_max_messages_invalid"
+        )
+    observed_source_commit = source_commit or running_worker_source_commit()
+    if not re.fullmatch(r"[0-9a-f]{40}", observed_source_commit):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_worker_source_commit_unproven"
         )
     root = ensure_launch_preparation_queue_root(queue_root)
     results_root = root / "results"
@@ -443,7 +491,51 @@ def process_launch_preparation_queue(
                 input_root=Path(input_root) / str(envelope["request"]["preparation_id"]),
                 allowed_uri_prefixes=allowed_uri_prefixes,
                 service_account=service_account,
+                source_commit=observed_source_commit,
                 fetcher=fetcher,
+            )
+            references_by_path = {
+                row["contract_path"]: row for row in result["references"]
+            }
+            construction = references_by_path.get(
+                "execution_adapter.construction_packet_bundle"
+            )
+            runtime_source = references_by_path.get(
+                "execution_adapter.runtime_source_bundle"
+            )
+            if construction is None or runtime_source is None:
+                raise TaskEvaluationLaunchPreparationWorkerError(
+                    "launch_preparation_execution_adapter_inputs_missing"
+                )
+            adapter_result = adapter_materializer(
+                request=envelope["request"],
+                construction_bundle_path=construction["materialized_path"],
+                runtime_source_bundle_path=runtime_source["materialized_path"],
+                output_root=(
+                    Path(input_root)
+                    / str(envelope["request"]["preparation_id"])
+                    / "native-arena-adapter"
+                ),
+            )
+            result.update(
+                {
+                    "status": (
+                        "native_arena_inputs_verified_awaiting_profile_authority"
+                    ),
+                    "adapter_result_digest": adapter_result["result_digest"],
+                    "adapter_kind": adapter_result["adapter_kind"],
+                    "adapter_version": adapter_result["adapter_version"],
+                    "packet_receipt_digest": adapter_result[
+                        "packet_receipt_digest"
+                    ],
+                    "runtime_source_receipt_digest": adapter_result[
+                        "runtime_source_receipt_digest"
+                    ],
+                    "result_digest": "",
+                }
+            )
+            result["result_digest"] = canonical_digest(
+                result, digest_field="result_digest"
             )
         except Exception as exc:
             terminal_state = "blocked"
@@ -571,6 +663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             input_root=args.input_root,
             allowed_uri_prefixes=prefixes,
             service_account=args.service_account,
+            source_commit=running_worker_source_commit(),
             max_messages=args.max_messages,
         )
     except (TaskEvaluationLaunchPreparationWorkerError, OSError) as exc:
@@ -605,6 +698,7 @@ __all__ = [
     "default_reference_fetcher",
     "materialize_preparation_references",
     "process_launch_preparation_queue",
+    "running_worker_source_commit",
     "validate_allowed_uri_prefixes",
 ]
 

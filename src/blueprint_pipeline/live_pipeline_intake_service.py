@@ -2071,6 +2071,44 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
+        deployment = deployment_identity_payload()
+        if deployment.get("commit_proven") is not True:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_intake_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": [
+                        "launch_preparation_production_commit_not_proven"
+                    ],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        expected_commit = str(payload.get("expected_production_commit") or "")
+        if expected_commit and expected_commit != deployment.get("source_commit"):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_intake_receipt.v1"
+                    ),
+                    "status": "rejected",
+                    "accepted": False,
+                    "blockers": [
+                        "launch_preparation_production_commit_mismatch"
+                    ],
+                    "expected_production_commit": expected_commit,
+                    "observed_production_commit": deployment.get("source_commit"),
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
         queue_root = _string(
             os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV)
         )
