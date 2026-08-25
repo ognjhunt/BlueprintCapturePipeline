@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Submit one signed Task Evaluation launch request to the production intake.
+"""Submit one signed Task Evaluation launch request through the production WebApp.
 
-The website is the normal trigger. This is the same request over the same
-canonical HMAC-signed endpoint, so an operator or a scheduled routine can drive
-a production run without reconstructing the signing scheme by hand -- which is
-otherwise tribal knowledge that has to be rediscovered from the service source
-every time.
+The website is the normal trigger. This helper builds the WebApp's small,
+launch-only request from one published profile and signs the exact JSON bytes
+for ``/api/internal/task-evaluation-launch-submissions``.  The WebApp expands
+that request into Pipeline's full intake contract after it has checked the
+published profile, rights, spend authority, and idempotency key.
 
 It performs no provider mutation: the intake queues the request and the
 canonical allocator, owned by the dispatcher, remains the only boundary that
@@ -27,13 +27,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from blueprint_pipeline.task_evaluation_launch_dispatcher import canonical_digest
-
-DEFAULT_CLIENT_ID = "blueprint-webapp"
-SIGNATURE_HEADER = "X-Blueprint-Pipeline-Signature"
-TIMESTAMP_HEADER = "X-Blueprint-Pipeline-Timestamp"
-NONCE_HEADER = "X-Blueprint-Pipeline-Nonce"
-CLIENT_ID_HEADER = "X-Blueprint-Pipeline-Client-Id"
+DEFAULT_CLIENT_ID = "blueprint-production-runner"
+SIGNATURE_HEADER = "X-Blueprint-Launch-Signature"
+TIMESTAMP_HEADER = "X-Blueprint-Launch-Timestamp"
+NONCE_HEADER = "X-Blueprint-Launch-Nonce"
+CLIENT_ID_HEADER = "X-Blueprint-Launch-Client-Id"
+IDEMPOTENCY_HEADER = "Idempotency-Key"
 
 
 class LaunchSubmissionError(ValueError):
@@ -52,8 +51,6 @@ def build_launch_request(
     profile: Mapping[str, Any],
     launch_id: str,
     run_id: str,
-    actor_id: str,
-    actor_role: str,
     rights_scope: str,
     rights_uri: str,
     rights_digest: str,
@@ -68,63 +65,50 @@ def build_launch_request(
     """
 
     expires_at = now + timedelta(hours=authority_window_hours)
-    request: dict[str, Any] = {
-        "schema_version": "task_evaluation_launch_request.v1",
+    return {
+        "confirm_execution": True,
         "launch_id": launch_id,
         "run_id": run_id,
-        "idempotency_key": launch_id,
-        "launch_profile_id": profile["profile_id"],
-        "launch_profile_digest": profile["profile_digest"],
-        "source_bundle": profile["source_bundle"],
-        "evaluation_run_spec": profile["evaluation_run_spec"],
-        "required_controls": profile["required_controls"],
-        "claim_ceiling": profile["claim_ceiling"],
-        "authorization": {
-            "actor": {"id": actor_id, "role": actor_role},
-            "authorized_at": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "rights": {
-                "approved": True,
-                "scope": rights_scope,
-                "evidence": {"uri": rights_uri, "digest": rights_digest},
-            },
-            "execution": {"approved": True},
-            "spend": {
-                "approved": True,
-                "currency": "USD",
-                "max_spend_usd": max_spend_usd,
-                "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            },
+        "profile_id": profile["profile_id"],
+        "profile_digest": profile["profile_digest"],
+        "rights": {
+            "scope": rights_scope,
+            "evidence": {"uri": rights_uri, "digest": rights_digest},
+        },
+        "spend": {
+            "max_spend_usd": max_spend_usd,
+            "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         },
     }
-    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
-    return request
 
 
 def signed_headers(
-    *, secret: str, client_id: str, body: bytes, now: datetime, nonce: str
+    *, secret: str, body: bytes, now: datetime, nonce: str, launch_id: str
 ) -> dict[str, str]:
-    """Build the intake's canonical signature headers.
+    """Build the WebApp launch-only canonical signature headers.
 
-    The timestamp must be ISO-8601; the service parses it with
-    ``datetime.fromisoformat`` and rejects epoch seconds outright. The signed
-    payload is ``{timestamp}.{client_id}.{nonce}.`` followed by the raw body,
-    so the exact bytes posted must be the bytes signed.
+    The timestamp must be ISO-8601; the service parses it as a date and rejects
+    epoch seconds outright. The signed payload is
+    ``{timestamp}.{client_id}.{nonce}.`` followed by the raw body, so the exact
+    bytes posted must be the bytes signed.
     """
 
     if not secret:
-        raise LaunchSubmissionError("intake signing secret is empty")
+        raise LaunchSubmissionError("WebApp launch signing secret is empty")
     timestamp = now.isoformat()
     digest = hmac.new(
         secret.encode("utf-8"),
-        f"{timestamp}.{client_id}.{nonce}.".encode("utf-8") + body,
+        f"{timestamp}.{DEFAULT_CLIENT_ID}.{nonce}.".encode("utf-8") + body,
         "sha256",
     ).hexdigest()
     return {
-        "content-type": "application/json",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
         TIMESTAMP_HEADER: timestamp,
         NONCE_HEADER: nonce,
-        CLIENT_ID_HEADER: client_id,
+        CLIENT_ID_HEADER: DEFAULT_CLIENT_ID,
         SIGNATURE_HEADER: f"sha256={digest}",
+        IDEMPOTENCY_HEADER: launch_id,
     }
 
 
@@ -142,8 +126,10 @@ def submit(
         or not parsed.hostname
         or parsed.username
         or parsed.password
+        or parsed.query
+        or parsed.fragment
     ):
-        raise LaunchSubmissionError("intake endpoint must be HTTPS or loopback HTTP")
+        raise LaunchSubmissionError("WebApp endpoint must be HTTPS or loopback HTTP")
     request = urllib.request.Request(
         endpoint, data=body, headers=dict(headers), method="POST"
     )
@@ -160,12 +146,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, help="published launch profile JSON")
     parser.add_argument("--endpoint", required=True)
-    parser.add_argument("--secret-file", required=True, help="file holding the intake secret")
-    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
+    parser.add_argument(
+        "--secret-file", required=True, help="file holding the WebApp launch secret"
+    )
     parser.add_argument("--launch-id", required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--actor-id", required=True)
-    parser.add_argument("--actor-role", default="ops")
     parser.add_argument("--rights-scope", required=True)
     parser.add_argument("--rights-uri", required=True)
     parser.add_argument("--rights-digest", required=True)
@@ -182,8 +167,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             profile=profile,
             launch_id=args.launch_id,
             run_id=args.run_id,
-            actor_id=args.actor_id,
-            actor_role=args.actor_role,
             rights_scope=args.rights_scope,
             rights_uri=args.rights_uri,
             rights_digest=args.rights_digest,
@@ -194,15 +177,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         body = json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
         headers = signed_headers(
             secret=secret,
-            client_id=args.client_id,
             body=body,
             now=now,
             nonce=uuid.uuid4().hex,
+            launch_id=args.launch_id,
         )
         if args.request_out:
-            Path(args.request_out).expanduser().write_text(
-                json.dumps(request, indent=1, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            Path(args.request_out).expanduser().write_bytes(body)
         result = submit(endpoint=args.endpoint, headers=headers, body=body)
     except (OSError, ValueError) as exc:
         print(
@@ -224,7 +205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "submitted" if result["http_status"] == 202 else "rejected",
                 "http_status": result["http_status"],
                 "launch_id": args.launch_id,
-                "client_id": args.client_id,
+                "client_id": DEFAULT_CLIENT_ID,
                 "response": result["body"],
                 "provider_mutation_performed_by_this_tool": False,
             },
