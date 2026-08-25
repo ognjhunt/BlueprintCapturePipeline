@@ -4,7 +4,9 @@ import pytest
 
 from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
 from blueprint_pipeline.adp009d_policy_provisioning import (
+    ACTIVE_CANDIDATE_DEPENDENCY_LOCKS,
     BLOCKER_CREDENTIALS,
+    BLOCKER_DEPENDENCY_LOCK,
     BLOCKER_JAX_PREALLOCATION,
     BLOCKER_NOT_LOOPBACK,
     BLOCKER_SHARED_INTERPRETER,
@@ -247,13 +249,15 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     # on exactly one kind of install line -- the thin client the episode needs
     # to reach the server -- and never on the policy itself, which is what
     # would drag JAX or a mismatched torch into Isaac's prefix.
-    install_lines = [ln for ln in script.splitlines() if "pip install -e" in ln]
+    install_lines = [
+        line
+        for line in script.splitlines()
+        if f'VIRTUAL_ENV="{policy_venv_root("pi05_droid")}"' in line
+    ]
     assert install_lines
     for line in install_lines:
-        if ISAAC_INTERPRETER in line:
-            assert "packages/openpi-client" in line or "--no-deps" in line, line
-        else:
-            assert "VIRTUAL_ENV=" in line, line
+        assert '"$UV" sync' in line
+        assert f'--project "{POLICY_SOURCE_ROOT}/pi05_droid"' in line
     client_install_lines = [
         line
         for line in script.splitlines()
@@ -281,7 +285,7 @@ def test_the_install_precedes_the_checkpoint_fetch() -> None:
 
     script = build_provisioning_script("pi05_droid")
 
-    assert script.index("pip install -e") < script.index(
+    assert script.index("uv.lock") < script.index(
         "adp009d_checkpoint_fetch_worker.py"
     )
 
@@ -318,7 +322,7 @@ def test_the_venv_is_proven_real_and_not_isaacs_before_installing() -> None:
     assert 'test -x "/opt/adp009d-policy-venv/pi05_droid/bin/python"' in script
     assert "'isaac-sim' not in sys.prefix" in script
     # And the proof precedes any install.
-    assert script.index("not in sys.prefix") < script.index("pip install -e")
+    assert script.index("not in sys.prefix") < script.index('"$UV" sync')
 
 
 def test_build_isolation_is_left_enabled() -> None:
@@ -332,7 +336,10 @@ def test_build_isolation_is_left_enabled() -> None:
     for candidate_id in EXPECTED_CANDIDATES:
         script = build_provisioning_script(candidate_id)
         assert "--no-build-isolation" not in script
-        assert '"$UV" pip install -e' in script
+        if candidate_id in ACTIVE_CANDIDATE_DEPENDENCY_LOCKS:
+            assert '"$UV" sync' in script
+        else:
+            assert '"$UV" pip install -e' in script
 
 
 def test_native_build_dependencies_are_installed_before_the_policy() -> None:
@@ -357,7 +364,7 @@ def test_native_build_dependencies_are_installed_before_the_policy() -> None:
     ):
         assert package in script
     # Headers must be present before uv is asked to build anything.
-    assert script.index("linux-libc-dev") < script.index("pip install -e")
+    assert script.index("linux-libc-dev") < script.index('"$UV" sync')
     # And never fatal on their own: the apt step is best-effort.
     # Best-effort: a missing apt must not fail provisioning on its own.
     assert "|| true" in script[script.index("apt-get install") :][:400]
@@ -447,10 +454,52 @@ def test_groots_wire_client_reaches_isaac_without_installing_groot() -> None:
     assert "pyzmq" in script and "msgpack" in script
     # The separate server venv still installs the full, frozen GR00T checkout.
     assert (
-        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" '
-        f'pip install -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"'
+        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" sync '
+        f'--project "{POLICY_SOURCE_ROOT}/groot_n17_droid" '
+        "--active --no-dev --frozen"
         in script
     )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_active_candidate_install_is_bound_to_its_upstream_frozen_lock(
+    candidate_id: str,
+) -> None:
+    script = build_provisioning_script(candidate_id)
+    lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS[candidate_id]
+    lock_sha256 = str(lock["sha256"]).removeprefix("sha256:")
+    source_lock = f'{POLICY_SOURCE_ROOT}/{candidate_id}/{lock["relative_path"]}'
+
+    assert lock_sha256 in script
+    assert f'"{source_lock}" | sha256sum --check --strict -' in script
+    assert script.index("rev-parse HEAD") < script.index(lock_sha256)
+    assert script.index(lock_sha256) < script.index('"$UV" sync')
+    assert "--active --no-dev --frozen" in script
+    # The server environment must not resolve open dependency ranges again.
+    policy_install_lines = [
+        line
+        for line in script.splitlines()
+        if f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}"' in line
+    ]
+    assert len(policy_install_lines) == 1
+    assert " pip install " not in policy_install_lines[0]
+
+    receipt = describe_provisioning(candidate_id)
+    assert receipt["policy_dependency_lock"] == {
+        **lock,
+        "install_mode": "uv_sync_frozen_no_dev",
+        "runtime_resolution_allowed": False,
+    }
+
+
+def test_active_candidate_dependency_lock_drift_is_refused() -> None:
+    receipt = dict(describe_provisioning("pi05_droid"))
+    receipt["policy_dependency_lock"] = {
+        **dict(receipt["policy_dependency_lock"]),
+        "sha256": "sha256:" + "0" * 64,
+    }
+
+    assert BLOCKER_DEPENDENCY_LOCK in validate_provisioning(receipt)
 
 
 def test_the_client_install_follows_the_verified_checkout() -> None:

@@ -103,6 +103,27 @@ BLOCKER_SHARED_INTERPRETER = "policy_provisioning_shares_isaac_interpreter"
 BLOCKER_JAX_PREALLOCATION = "policy_provisioning_jax_preallocation_enabled"
 BLOCKER_NOT_LOOPBACK = "policy_provisioning_endpoint_not_loopback"
 BLOCKER_CREDENTIALS = "policy_provisioning_credentials_forwarded"
+BLOCKER_DEPENDENCY_LOCK = "policy_provisioning_dependency_lock_invalid"
+
+# These are the upstream uv.lock bytes committed at the same immutable source
+# revisions as the two active ADP-009D candidates.  A frozen source revision is
+# not a frozen environment when ``uv pip install -e`` is allowed to resolve its
+# open version ranges again during every paid run.  Verify the lock after the
+# detached checkout, then make uv consume it without updating it.
+ACTIVE_CANDIDATE_DEPENDENCY_LOCKS = {
+    "pi05_droid": {
+        "relative_path": "uv.lock",
+        "sha256": (
+            "sha256:793488b5a55bb87200db90a61fd0af51922b686d94e1da4f4c587ab119b37d74"
+        ),
+    },
+    "groot_n17_droid": {
+        "relative_path": "uv.lock",
+        "sha256": (
+            "sha256:0d67d3b0dd41b28375bbc2351eefc9e064cbad2d1c40682a52b97fc625a60f19"
+        ),
+    },
+}
 
 
 class PolicyProvisioningError(ValueError):
@@ -209,16 +230,36 @@ def _install_commands(candidate_id: str) -> list[str]:
     repository = str(expected["source_repository"])
     revision = str(expected["source_revision"])
     source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
+    dependency_lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS.get(candidate_id)
+    if dependency_lock is None:
+        policy_install = (
+            f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install '
+            f'-e "{source}"'
+        )
+        lock_verification: list[str] = []
+    else:
+        lock_path = f'{source}/{dependency_lock["relative_path"]}'
+        lock_sha256 = str(dependency_lock["sha256"]).removeprefix("sha256:")
+        lock_verification = [
+            f'printf \'%s  %s\\n\' "{lock_sha256}" "{lock_path}" '
+            "| sha256sum --check --strict -",
+        ]
+        policy_install = (
+            f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" sync '
+            f'--project "{source}" --active --no-dev --frozen'
+        )
     return [
         f'git clone --filter=blob:none "{repository}" "{source}"',
         f'git -C "{source}" fetch --depth 1 origin "{revision}"',
         f'git -C "{source}" checkout --detach FETCH_HEAD',
         f'test "$(git -C "{source}" rev-parse HEAD)" = "{revision}"',
-        # Installed with uv, into the venv named explicitly rather than via an
-        # activated shell, so the target cannot drift.  Build isolation stays
-        # on: disabling it once left pip unable to import hatchling.build, the
-        # backend openpi's pyproject declares.
-        f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install -e "{source}"',
+        *lock_verification,
+        # The active candidates carry an upstream lock at their exact source
+        # revision.  --frozen refuses to update that lock, --no-dev excludes
+        # unrelated development groups, and --active makes the already-proven
+        # candidate-specific venv the explicit target.  Compatibility-only
+        # candidates retain their prior installer until they are re-admitted.
+        policy_install,
         *_isaac_client_commands(candidate_id),
     ]
 
@@ -445,6 +486,15 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
             else None
         ),
         "jax_environment": dict(JAX_ENVIRONMENT),
+        "policy_dependency_lock": (
+            {
+                **ACTIVE_CANDIDATE_DEPENDENCY_LOCKS[candidate_id],
+                "install_mode": "uv_sync_frozen_no_dev",
+                "runtime_resolution_allowed": False,
+            }
+            if candidate_id in ACTIVE_CANDIDATE_DEPENDENCY_LOCKS
+            else None
+        ),
         "materialize_on": "gpu_worker",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -469,6 +519,17 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     if str(receipt.get("endpoint_host")) not in {"127.0.0.1", "localhost", "::1"}:
         errors.append(BLOCKER_NOT_LOOPBACK)
 
+    expected_lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS.get(candidate_id)
+    if expected_lock is not None:
+        observed_lock = receipt.get("policy_dependency_lock")
+        required_lock = {
+            **expected_lock,
+            "install_mode": "uv_sync_frozen_no_dev",
+            "runtime_resolution_allowed": False,
+        }
+        if observed_lock != required_lock:
+            errors.append(BLOCKER_DEPENDENCY_LOCK)
+
     # Only pi05 brings JAX, but an enabled preallocation is fatal wherever it
     # appears, so the check is not conditioned on the candidate.
     environment = receipt.get("jax_environment") or {}
@@ -486,6 +547,8 @@ __all__ = [
     "GATED_BACKBONE_AUTH_ENV",
     "GATED_BACKBONE_HF_HOME",
     "GATED_BACKBONE_HUB_CACHE",
+    "ACTIVE_CANDIDATE_DEPENDENCY_LOCKS",
+    "BLOCKER_DEPENDENCY_LOCK",
     "POLICY_HOST",
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",
