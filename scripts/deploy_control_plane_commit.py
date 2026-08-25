@@ -536,32 +536,100 @@ def _install_release_systemd_units(
     return receipts
 
 
-def _activate_installed_path_units(
+def _systemd_unit_state(unit: str) -> dict[str, str]:
+    """Read enabled/active state without changing the unit."""
+
+    states: dict[str, str] = {}
+    for probe in ("is-enabled", "is-active"):
+        result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["systemctl", probe, unit],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        state = result.stdout.strip() or (
+            "disabled" if probe == "is-enabled" else "inactive"
+        )
+        if state in {"not-found", "unknown"}:
+            state = "disabled" if probe == "is-enabled" else "inactive"
+        states[probe] = state
+    return {"enabled": states["is-enabled"], "state": states["is-active"]}
+
+
+def _installed_path_unit_states(
     installed_units: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """Enable and restart every installed ``.path`` watcher, and prove it waits.
+) -> dict[str, dict[str, str]]:
+    """Snapshot watcher intent before unit bytes or daemon state move."""
 
-    Installing the dispatcher's ``.path`` bytes without activating them leaves
-    the durable queue watched by whatever unit systemd loaded before the
-    deploy -- or by nothing at all on a rebuilt host.  The watcher is the wake
-    seam for atomically published launch requests, so after its bytes move the
-    deploy must show the running watcher is the new one: enabled for boot,
-    restarted under the already-reloaded daemon, and reporting ``active``
-    (waiting) afterwards.
+    return {
+        unit: _systemd_unit_state(unit)
+        for entry in installed_units
+        if (unit := str(entry.get("unit") or "")).endswith(".path")
+    }
 
-    The paired oneshot ``.service`` is deliberately never restarted here:
-    starting it would dispatch the queue in the middle of the deploy, inside
-    the held paid-launch locks.  The watcher triggers it on the next queue
-    publication instead.  Runs after the intake runtime probe, so a watcher
-    only starts watching once every other surface has proven the new commit.
+
+def _quiesce_active_path_units(
+    before: Mapping[str, Mapping[str, str]],
+) -> list[dict[str, str]]:
+    """Stop only watchers that were active, before release surfaces move.
+
+    Paid-launch locks stop provider allocation, but an armed watcher could
+    still claim a newly published request while source and release identities
+    are changing.  Quiesce it first, retain the prior state, and restore that
+    exact intent only after intake proves the new commit.
     """
 
-    activated: list[dict[str, Any]] = []
+    stopped: list[dict[str, str]] = []
+    for unit, state in before.items():
+        if state.get("state") != "active":
+            continue
+        result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["systemctl", "stop", unit],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ControlPlaneDeployError(
+                f"deploy_path_unit_quiesce_failed:{unit}"
+            )
+        observed = _systemd_unit_state(unit)
+        if observed["state"] != "inactive":
+            raise ControlPlaneDeployError(
+                f"deploy_path_unit_quiesce_state_mismatch:{unit}:"
+                f"{observed['state']}"
+            )
+        stopped.append({"unit": unit, "state": observed["state"]})
+    return stopped
+
+
+def _restore_installed_path_units(
+    installed_units: Sequence[Mapping[str, Any]],
+    *,
+    before: Mapping[str, Mapping[str, str]],
+    arm_path_units: bool,
+) -> list[dict[str, Any]]:
+    """Install new watcher bytes without widening operator launch authority.
+
+    A stopped watcher is an operational freeze.  Deploy used to unconditionally
+    ``enable`` and ``restart`` every installed path unit, silently reopening the
+    paid queue.  Preserve both the boot and active state by default.  A fresh
+    host therefore stays disabled/inactive.  The only widening operation is the
+    explicit ``arm_path_units`` flag, whose before/requested/after state is
+    retained in the deployment receipt.
+    """
+
+    receipts: list[dict[str, Any]] = []
     for entry in installed_units:
         unit = str(entry.get("unit") or "")
         if not unit.endswith(".path"):
             continue
-        for verb in ("enable", "restart"):
+        prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
+        should_enable = arm_path_units or prior.get("enabled") == "enabled"
+        should_start = arm_path_units or prior.get("state") == "active"
+        commands = ["enable" if should_enable else "disable"]
+        commands.append("restart" if should_start else "stop")
+        for verb in commands:
             result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
                 ["systemctl", verb, unit],
                 capture_output=True,
@@ -570,30 +638,31 @@ def _activate_installed_path_units(
             )
             if result.returncode != 0:
                 raise ControlPlaneDeployError(
-                    f"deploy_path_unit_activation_failed:{unit}:{verb}"
+                    f"deploy_path_unit_state_restore_failed:{unit}:{verb}"
                 )
-        checks: dict[str, str] = {}
-        for probe, expected in (("is-enabled", "enabled"), ("is-active", "active")):
-            result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
-                ["systemctl", probe, unit],
-                capture_output=True,
-                text=True,
-                check=False,
+        after = _systemd_unit_state(unit)
+        expected_enabled = "enabled" if should_enable else "disabled"
+        expected_state = "active" if should_start else "inactive"
+        if after["enabled"] != expected_enabled:
+            raise ControlPlaneDeployError(
+                f"deploy_path_unit_enabled_state_mismatch:{unit}:"
+                f"{after['enabled']}:{expected_enabled}"
             )
-            state = result.stdout.strip()
-            if state != expected:
-                raise ControlPlaneDeployError(
-                    f"deploy_path_unit_not_{expected}:{unit}:{state or 'unknown'}"
-                )
-            checks[probe] = state
-        activated.append(
+        if after["state"] != expected_state:
+            raise ControlPlaneDeployError(
+                f"deploy_path_unit_active_state_mismatch:{unit}:"
+                f"{after['state']}:{expected_state}"
+            )
+        receipts.append(
             {
                 "unit": unit,
-                "enabled": checks["is-enabled"],
-                "state": checks["is-active"],
+                "before": prior,
+                "requested_intent": "arm" if arm_path_units else "preserve",
+                "after": after,
+                "operator_freeze_preserved": not arm_path_units and not should_start,
             }
         )
-    return activated
+    return receipts
 
 
 def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
@@ -760,6 +829,7 @@ def deploy_control_plane_commit(
     intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
     intake_version_url: str = DEFAULT_INTAKE_VERSION_URL,
     systemd_dir: str | Path = DEFAULT_SYSTEMD_DIR,
+    arm_path_units: bool = False,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
@@ -839,6 +909,15 @@ def deploy_control_plane_commit(
     # Held for the whole deploy, not sampled before it: a launch that starts
     # mid-deploy would read a release being swapped underneath it.
     with _holding_paid_launch_locks(paid_launch_locks):
+        path_unit_names = [
+            {"unit": unit}
+            for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
+            if unit.endswith(".path")
+        ]
+        path_unit_states_before = _installed_path_unit_states(path_unit_names)
+        quiesced_path_units = _quiesce_active_path_units(
+            path_unit_states_before
+        )
         installed_provenance = _install_release_provenance(
             payload=provenance_payload,
             state_root=state,
@@ -905,8 +984,10 @@ def deploy_control_plane_commit(
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
-        activated_path_units = _activate_installed_path_units(
-            installed_systemd_units
+        path_unit_state_receipts = _restore_installed_path_units(
+            installed_systemd_units,
+            before=path_unit_states_before,
+            arm_path_units=arm_path_units,
         )
 
     return {
@@ -922,7 +1003,19 @@ def deploy_control_plane_commit(
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
         "installed_systemd_units": installed_systemd_units,
-        "activated_path_units": activated_path_units,
+        "path_unit_states": path_unit_state_receipts,
+        "quiesced_path_units": quiesced_path_units,
+        # Compatibility projection for readers that predate the state-preserving
+        # receipt. It contains only watchers that are active after this deploy.
+        "activated_path_units": [
+            {
+                "unit": row["unit"],
+                "enabled": row["after"]["enabled"],
+                "state": row["after"]["state"],
+            }
+            for row in path_unit_state_receipts
+            if row["after"]["state"] == "active"
+        ],
         "intake_runtime_binding": runtime_binding,
         "intake_runtime": runtime,
         # Every slot actually held, not the one base path the caller named.
@@ -1000,6 +1093,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--intake-runtime-drop-in", default=DEFAULT_INTAKE_RUNTIME_DROP_IN
     )
     parser.add_argument("--intake-version-url", default=DEFAULT_INTAKE_VERSION_URL)
+    parser.add_argument(
+        "--arm-path-units",
+        action="store_true",
+        help=(
+            "Explicitly enable and start release-owned path watchers. By default "
+            "deploy preserves the prior enabled/active state and leaves fresh "
+            "installations disarmed."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1016,6 +1118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             intake_runtime_drop_in=args.intake_runtime_drop_in,
             intake_version_url=args.intake_version_url,
             systemd_dir=args.systemd_dir,
+            arm_path_units=args.arm_path_units,
         )
     except (OSError, ControlPlaneDeployError, ControlPlaneReleaseError) as exc:
         print(

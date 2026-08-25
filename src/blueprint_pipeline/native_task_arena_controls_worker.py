@@ -3531,6 +3531,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ],
             )
         )
+        if graph_rigid and downstream_diagnostic_request.get("enabled") is True:
+            raise RuntimeError(
+                "synthetic_post_phase5_diagnostic_not_applicable_to_rigid_task"
+            )
         if graph_rigid:
             episode_environment = _RigidScoringEnvironment(
                 environment=episode_environment,
@@ -3543,6 +3547,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["episode_environment"] = environment_receipt
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
+
+        # Rigid relocation phases are already native-qualified by the bound
+        # construction result and have their own exact pose/contact scorer.
+        # The diagnostics below are specific to an articulated handle's
+        # ``contact_open``/``contact_close`` transition; sending a rigid plan
+        # through them makes the worker search for phase IDs that cannot and
+        # should not exist. Execute the required zero/scripted pair directly
+        # through the shared episode seam instead.
+        if graph_rigid:
+            _announce("required_controls")
+            pair = run_task_neutral_controls(
+                environment=episode_environment,
+                task_spec=scene_plan["task_spec"],
+                control_plan=effective_control_plan,
+                gripper_open_command=float(gripper["open_command"]),
+                gripper_closed_command=float(gripper["closed_command"]),
+                output_dir=output_root / "controls",
+            )
+            result["control_pair"] = pair
+            result["controls_qualified"] = pair[
+                "cell_admitted_for_policy_execution"
+            ]
+            result["blockers"].extend(pair["policy_execution_blockers"])
+            result["blockers"] = sorted(set(result["blockers"]))
+            result["status"] = "completed" if not result["blockers"] else "blocked"
+            result["phase_reached"] = "required_controls_complete"
+            _announce(
+                "required_controls",
+                "completed" if result["controls_qualified"] else "blocked",
+            )
+            return 0 if result["status"] == "completed" else 1
 
         # This immutable opt-in is a separate, development-only probe.  C74
         # already sealed the reset-isolated 134-cell matrix, so repeating that

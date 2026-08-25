@@ -86,6 +86,55 @@ def test_authority_cli_supplies_complete_single_attempt_contract(monkeypatch, tm
     }
 
 
+def test_authority_cli_supplies_new_lane_genesis_contract(monkeypatch, tmp_path) -> None:
+    module = _load("issue_native_task_arena_paid_attempt_authority")
+    observed = {}
+
+    def fake_materialize(**kwargs):
+        observed.update(kwargs)
+        return {"authorization_digest": "sha256:" + "a" * 64}
+
+    monkeypatch.setattr(
+        module, "materialize_native_task_arena_paid_attempt_authority", fake_materialize
+    )
+    output = tmp_path / "authority.json"
+    result = module.main(
+        [
+            "--bundle-receipt",
+            "bundle.json",
+            "--project-spend-reconciliation",
+            "project-spend.json",
+            "--initial-provider-zero",
+            "provider-zero.json",
+            "--authority-reference",
+            "explicit-new-lane",
+            "--authorized-by",
+            "user",
+            "--authorized-on",
+            "2026-08-25T14:30:00+00:00",
+            "--blueprint-commit",
+            "a" * 40,
+            "--max-hourly-rate-usd",
+            "0.8",
+            "--hard-cap-usd",
+            "0.75",
+            "--hard-ttl-seconds",
+            "3300",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert observed["project_spend_reconciliation_path"] == "project-spend.json"
+    assert observed["initial_provider_zero_path"] == "provider-zero.json"
+    assert observed["prior_authority_path"] is None
+    assert observed["prior_result_path"] is None
+    assert observed["prior_provider_zero_path"] is None
+    assert observed["prior_spend_reconciliation_path"] is None
+    assert observed["allowed_active_instance_ids"] == ()
+
+
 def test_warm_authority_cli_supplies_zero_allocation_contract(
     monkeypatch, tmp_path
 ) -> None:

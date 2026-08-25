@@ -29,6 +29,7 @@ SCHEMA_VERSION = "native_task_construction_phase_plan.v1"
 RIGID_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
 RIGID_AFFORDANCE_SCHEMA_VERSION = "native_rigid_interaction_affordance.v1"
+RIGID_MANIPULATION_STRATEGIES = frozenset({"pick_and_place", "planar_push"})
 GRAPH_ARTICULATED_SCHEMA_VERSION = (
     "native_articulated_graph_construction_phase_plan.v1"
 )
@@ -1428,9 +1429,17 @@ def materialize_rigid_construction_phase_plan(
             ["native_rigid_construction_support_interval_invalid"]
         )
     pregrasp_clearance = float(affordance["pregrasp_clearance_m"])
+    manipulation_strategy = str(
+        task_spec.get("manipulation_strategy") or "pick_and_place"
+    )
+    if manipulation_strategy not in RIGID_MANIPULATION_STRATEGIES:
+        raise NativeTaskConstructionPlanError(
+            ["native_rigid_construction_manipulation_strategy_invalid"]
+        )
     lift = _positive(
         task_spec.get("minimum_lift_m"),
         error="native_rigid_construction_lift_invalid",
+        allow_zero=manipulation_strategy == "planar_push",
     )
     minimum_translation = _positive(
         task_spec.get("minimum_translation_m"),
@@ -1550,131 +1559,249 @@ def materialize_rigid_construction_phase_plan(
         destination_orientation,
         affordance["gripper_orientation_scoring_frame_xyzw"],
     )
-    phases = [
-        _phase(
-            "pregrasp",
-            pregrasp,
-            gripper_state="open",
-            gate_ids=("pregrasp_reachability", "base_collision_clearance"),
-            orientation_world_xyzw=start_gripper_orientation,
-            expected_scoring_position_world_m=start,
-            expected_scoring_orientation_world_xyzw=start_orientation,
-        ),
-        _phase(
-            "grasp_contact",
-            contact_start,
-            gripper_state="closed",
-            gate_ids=("grasp_contact",),
-            orientation_world_xyzw=start_gripper_orientation,
-            expected_scoring_position_world_m=start,
-            expected_scoring_orientation_world_xyzw=start_orientation,
-        ),
-        _phase(
-            "lift_clearance",
-            lifted_start_contact,
-            gripper_state="closed",
-            gate_ids=("grasp_retention", "support_clearance"),
-            orientation_world_xyzw=start_gripper_orientation,
-            expected_scoring_position_world_m=[
-                start[index] + lift_world[index] * lift for index in range(3)
-            ],
-            expected_scoring_orientation_world_xyzw=start_orientation,
-        ),
-    ]
-    for index in range(1, waypoint_count + 1):
-        fraction = index / waypoint_count
-        point = [
-            start_value + (destination_value - start_value) * fraction
-            for start_value, destination_value in zip(
-                lifted_start_contact, lifted_destination_contact, strict=True
-            )
-        ]
-        expected_scoring = [
-            start_value + (destination_value - start_value) * fraction
-            + lift_world[axis] * lift
-            for axis, (start_value, destination_value) in enumerate(
-                zip(start, destination, strict=True)
-            )
-        ]
-        scoring_orientation = _slerp_xyzw(
-            start_orientation, destination_orientation, fraction
-        )
-        phases.append(
+    if manipulation_strategy == "planar_push":
+        phases = [
             _phase(
-                f"relocate_{index:02d}",
-                point,
-                gripper_state="closed",
-                gate_ids=(
-                    "relocation_path",
-                    "grasp_retention",
-                    "workspace_containment",
-                ),
-                orientation_world_xyzw=_quaternion_product_xyzw(
-                    scoring_orientation,
-                    affordance["gripper_orientation_scoring_frame_xyzw"],
-                ),
-                expected_scoring_position_world_m=expected_scoring,
-                expected_scoring_orientation_world_xyzw=scoring_orientation,
-            )
-        )
-    phases.extend(
-        [
-            _phase(
-                "place",
-                contact_destination,
-                gripper_state="closed",
-                gate_ids=("destination_containment", "support_contact"),
-                orientation_world_xyzw=destination_gripper_orientation,
-                expected_scoring_position_world_m=destination,
-                expected_scoring_orientation_world_xyzw=destination_orientation,
-            ),
-            _phase(
-                "release",
-                contact_destination,
-                gripper_state="open",
-                gate_ids=("release",),
-                orientation_world_xyzw=destination_gripper_orientation,
-                expected_scoring_position_world_m=destination,
-                expected_scoring_orientation_world_xyzw=destination_orientation,
-            ),
-            _phase(
-                "settle_observe",
-                [
-                    contact_destination[index]
-                    + destination_approach_world[index] * pregrasp_clearance
-                    for index in range(3)
-                ],
-                gripper_state="open",
-                gate_ids=("support_stability", "destination_containment"),
-                orientation_world_xyzw=destination_gripper_orientation,
-                expected_scoring_position_world_m=destination,
-                expected_scoring_orientation_world_xyzw=destination_orientation,
-            ),
-            _phase(
-                "retreat",
-                [
-                    contact_destination[index]
-                    + destination_approach_world[index] * pregrasp_clearance
-                    for index in range(3)
-                ],
-                gripper_state="open",
-                gate_ids=("retreat",),
-                orientation_world_xyzw=destination_gripper_orientation,
-                expected_scoring_position_world_m=destination,
-                expected_scoring_orientation_world_xyzw=destination_orientation,
-            ),
-            _phase(
-                "recovery",
+                "precontact",
                 pregrasp,
                 gripper_state="open",
-                gate_ids=("recovery", "reset_readback"),
+                gate_ids=("precontact_reachability", "base_collision_clearance"),
+                orientation_world_xyzw=start_gripper_orientation,
+                expected_scoring_position_world_m=start,
+                expected_scoring_orientation_world_xyzw=start_orientation,
+            ),
+            _phase(
+                "push_contact",
+                contact_start,
+                gripper_state="closed",
+                gate_ids=("push_contact", "support_contact"),
                 orientation_world_xyzw=start_gripper_orientation,
                 expected_scoring_position_world_m=start,
                 expected_scoring_orientation_world_xyzw=start_orientation,
             ),
         ]
-    )
-    gate_contract = {
+        for index in range(1, waypoint_count + 1):
+            fraction = index / waypoint_count
+            scoring_position = [
+                start_value + (destination_value - start_value) * fraction
+                for start_value, destination_value in zip(
+                    start, destination, strict=True
+                )
+            ]
+            scoring_orientation = _slerp_xyzw(
+                start_orientation, destination_orientation, fraction
+            )
+            contact_offset = _quaternion_rotate_xyzw(
+                scoring_orientation, contact_local
+            )
+            phases.append(
+                _phase(
+                    f"push_{index:02d}",
+                    [
+                        scoring_position[axis] + contact_offset[axis]
+                        for axis in range(3)
+                    ],
+                    gripper_state="closed",
+                    gate_ids=(
+                        "push_path",
+                        "push_contact_maintained",
+                        "support_contact",
+                        "workspace_containment",
+                    ),
+                    orientation_world_xyzw=_quaternion_product_xyzw(
+                        scoring_orientation,
+                        affordance["gripper_orientation_scoring_frame_xyzw"],
+                    ),
+                    expected_scoring_position_world_m=scoring_position,
+                    expected_scoring_orientation_world_xyzw=scoring_orientation,
+                )
+            )
+        destination_retreat = [
+            contact_destination[index]
+            + destination_approach_world[index] * pregrasp_clearance
+            for index in range(3)
+        ]
+        phases.extend(
+            [
+                _phase(
+                    "push_release",
+                    destination_retreat,
+                    gripper_state="open",
+                    gate_ids=("release",),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "settle_observe",
+                    destination_retreat,
+                    gripper_state="open",
+                    gate_ids=("support_stability", "destination_containment"),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "retreat",
+                    destination_retreat,
+                    gripper_state="open",
+                    gate_ids=("retreat",),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "recovery",
+                    pregrasp,
+                    gripper_state="open",
+                    gate_ids=("recovery", "reset_readback"),
+                    orientation_world_xyzw=start_gripper_orientation,
+                    expected_scoring_position_world_m=start,
+                    expected_scoring_orientation_world_xyzw=start_orientation,
+                ),
+            ]
+        )
+        gate_contract = {
+            "precontact_reachability": "native_end_effector_pose_readback",
+            "base_collision_clearance": "native_robot_scene_contact_readback",
+            "push_contact": "native_task_robot_contact_force_readback",
+            "push_contact_maintained": "native_task_robot_contact_force_readback",
+            "push_path": "native_task_root_pose_path_readback",
+            "release": "native_gripper_and_task_contact_readback",
+            "retreat": "native_grasp_frame_separation_readback",
+            "support_contact": "native_task_scene_contact_force_readback",
+            "support_stability": "native_settle_window_root_pose_readback",
+            "destination_containment": "native_task_root_pose_volume_readback",
+            "workspace_containment": "native_task_root_pose_workspace_bounds_readback",
+            "recovery": "native_end_effector_pose_readback",
+            "reset_readback": "native_robot_and_object_reset_replay",
+        }
+    else:
+        phases = [
+            _phase(
+                "pregrasp",
+                pregrasp,
+                gripper_state="open",
+                gate_ids=("pregrasp_reachability", "base_collision_clearance"),
+                orientation_world_xyzw=start_gripper_orientation,
+                expected_scoring_position_world_m=start,
+                expected_scoring_orientation_world_xyzw=start_orientation,
+            ),
+            _phase(
+                "grasp_contact",
+                contact_start,
+                gripper_state="closed",
+                gate_ids=("grasp_contact",),
+                orientation_world_xyzw=start_gripper_orientation,
+                expected_scoring_position_world_m=start,
+                expected_scoring_orientation_world_xyzw=start_orientation,
+            ),
+            _phase(
+                "lift_clearance",
+                lifted_start_contact,
+                gripper_state="closed",
+                gate_ids=("grasp_retention", "support_clearance"),
+                orientation_world_xyzw=start_gripper_orientation,
+                expected_scoring_position_world_m=[
+                    start[index] + lift_world[index] * lift for index in range(3)
+                ],
+                expected_scoring_orientation_world_xyzw=start_orientation,
+            ),
+        ]
+        for index in range(1, waypoint_count + 1):
+            fraction = index / waypoint_count
+            point = [
+                start_value + (destination_value - start_value) * fraction
+                for start_value, destination_value in zip(
+                    lifted_start_contact, lifted_destination_contact, strict=True
+                )
+            ]
+            expected_scoring = [
+                start_value + (destination_value - start_value) * fraction
+                + lift_world[axis] * lift
+                for axis, (start_value, destination_value) in enumerate(
+                    zip(start, destination, strict=True)
+                )
+            ]
+            scoring_orientation = _slerp_xyzw(
+                start_orientation, destination_orientation, fraction
+            )
+            phases.append(
+                _phase(
+                    f"relocate_{index:02d}",
+                    point,
+                    gripper_state="closed",
+                    gate_ids=(
+                        "relocation_path",
+                        "grasp_retention",
+                        "workspace_containment",
+                    ),
+                    orientation_world_xyzw=_quaternion_product_xyzw(
+                        scoring_orientation,
+                        affordance["gripper_orientation_scoring_frame_xyzw"],
+                    ),
+                    expected_scoring_position_world_m=expected_scoring,
+                    expected_scoring_orientation_world_xyzw=scoring_orientation,
+                )
+            )
+        phases.extend(
+            [
+                _phase(
+                    "place",
+                    contact_destination,
+                    gripper_state="closed",
+                    gate_ids=("destination_containment", "support_contact"),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "release",
+                    contact_destination,
+                    gripper_state="open",
+                    gate_ids=("release",),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "settle_observe",
+                    [
+                        contact_destination[index]
+                        + destination_approach_world[index] * pregrasp_clearance
+                        for index in range(3)
+                    ],
+                    gripper_state="open",
+                    gate_ids=("support_stability", "destination_containment"),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "retreat",
+                    [
+                        contact_destination[index]
+                        + destination_approach_world[index] * pregrasp_clearance
+                        for index in range(3)
+                    ],
+                    gripper_state="open",
+                    gate_ids=("retreat",),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
+                _phase(
+                    "recovery",
+                    pregrasp,
+                    gripper_state="open",
+                    gate_ids=("recovery", "reset_readback"),
+                    orientation_world_xyzw=start_gripper_orientation,
+                    expected_scoring_position_world_m=start,
+                    expected_scoring_orientation_world_xyzw=start_orientation,
+                ),
+            ]
+        )
+        gate_contract = {
         "pregrasp_reachability": "native_end_effector_pose_readback",
         "base_collision_clearance": "native_robot_scene_contact_readback",
         "grasp_contact": "native_task_robot_contact_force_readback",
@@ -1689,10 +1816,11 @@ def materialize_rigid_construction_phase_plan(
         "workspace_containment": "native_task_root_pose_workspace_bounds_readback",
         "recovery": "native_end_effector_pose_readback",
         "reset_readback": "native_robot_and_object_reset_replay",
-    }
+        }
     result: dict[str, Any] = {
         "schema_version": RIGID_SCHEMA_VERSION,
         "task_kind": "rigid_pick_place",
+        "manipulation_strategy": manipulation_strategy,
         "scene_plan_digest": plan.get("plan_digest"),
         "subject_asset_id": subject.get("asset_id"),
         "interaction_affordance": affordance,
@@ -1834,23 +1962,33 @@ def evaluate_rigid_construction_gates(
         and sample.get("locked_joint_containment_violation") is False
         for sample in all_samples
     )
-    grasp_rows = samples("grasp_contact")
-    grasp_contact = max(
+    strategy = str(phase_plan.get("manipulation_strategy") or "pick_and_place")
+    push = strategy == "planar_push"
+    contact_phase_id = "push_contact" if push else "grasp_contact"
+    contact_rows = samples(contact_phase_id)
+    initial_contact = max(
         float(row.get("task_robot_contact_peak_force_n", 0.0))
-        for row in grasp_rows
+        for row in contact_rows
     ) >= contact_threshold
-    lift_position = position(samples("lift_clearance")[-1])
-    lift_delta = [lift_position[index] - start[index] for index in range(3)]
-    support_clearance = sum(
-        lift_delta[index]
-        * float(phase_plan["interaction_affordance"]["lift_unit_world"][index])
-        for index in range(3)
-    ) + 1.0e-9 >= float(thresholds["minimum_lift_m"])
-    relocation_ids = [
-        phase_id
-        for phase_id in expected_ids
-        if phase_id.startswith("relocate_")
-    ]
+    if push:
+        support_clearance = True
+        relocation_ids = [
+            phase_id for phase_id in expected_ids if phase_id.startswith("push_")
+            and phase_id not in {"push_contact", "push_release"}
+        ]
+    else:
+        lift_position = position(samples("lift_clearance")[-1])
+        lift_delta = [lift_position[index] - start[index] for index in range(3)]
+        support_clearance = sum(
+            lift_delta[index]
+            * float(phase_plan["interaction_affordance"]["lift_unit_world"][index])
+            for index in range(3)
+        ) + 1.0e-9 >= float(thresholds["minimum_lift_m"])
+        relocation_ids = [
+            phase_id
+            for phase_id in expected_ids
+            if phase_id.startswith("relocate_")
+        ]
     relocation_terminal_samples = [samples(phase_id)[-1] for phase_id in relocation_ids]
     phase_by_id = {row["phase_id"]: row for row in phase_plan["phases"]}
     relocation_tracking = all(
@@ -1874,37 +2012,51 @@ def evaluate_rigid_construction_gates(
         >= float(thresholds["minimum_translation_m"])
     )
     relocation_path = relocation_tracking and relocation_progress
-    closed_motion_ids = ["lift_clearance", *relocation_ids, "place"]
+    closed_motion_ids = (
+        [contact_phase_id, *relocation_ids]
+        if push
+        else ["lift_clearance", *relocation_ids, "place"]
+    )
     closed_motion_samples = [
         sample for phase_id in closed_motion_ids for sample in samples(phase_id)
     ]
     contact_local = phase_plan["interaction_affordance"][
         "contact_point_scoring_frame_m"
     ]
-    grasp_retention = relocation_path and all(
-        math.dist(
-            [
-                pose(sample)[index]
-                + _quaternion_rotate_xyzw(pose(sample)[3:], contact_local)[index]
-                for index in range(3)
-            ],
-            _finite_vector(
-                sample.get("grasp_frame_position_world_m"),
-                length=3,
-                error="native_rigid_construction_grasp_frame_readback_invalid",
-            ),
+    if push:
+        contact_maintained = relocation_path and all(
+            float(sample.get("task_robot_contact_peak_force_n", 0.0))
+            >= contact_threshold
+            and float(sample.get("task_support_contact_peak_force_n", 0.0))
+            >= contact_threshold
+            for sample in closed_motion_samples
         )
-        <= float(thresholds["relocation_tracking_tolerance_m"])
-        and float(sample.get("task_robot_contact_peak_force_n", 0.0))
-        >= contact_threshold
-        for sample in closed_motion_samples
-    )
-    release_rows = samples("release")
+    else:
+        contact_maintained = relocation_path and all(
+            math.dist(
+                [
+                    pose(sample)[index]
+                    + _quaternion_rotate_xyzw(pose(sample)[3:], contact_local)[index]
+                    for index in range(3)
+                ],
+                _finite_vector(
+                    sample.get("grasp_frame_position_world_m"),
+                    length=3,
+                    error="native_rigid_construction_grasp_frame_readback_invalid",
+                ),
+            )
+            <= float(thresholds["relocation_tracking_tolerance_m"])
+            and float(sample.get("task_robot_contact_peak_force_n", 0.0))
+            >= contact_threshold
+            for sample in closed_motion_samples
+        )
+    release_phase_id = "push_release" if push else "release"
+    release_rows = samples(release_phase_id)
     release = (
-        observed["release"].get("gripper_state") == "open"
+        observed[release_phase_id].get("gripper_state") == "open"
         and release_rows[-1].get("finger_separation_m") is not None
         and float(release_rows[-1]["finger_separation_m"])
-        > float(grasp_rows[-1].get("finger_separation_m", float("inf")))
+        > float(contact_rows[-1].get("finger_separation_m", float("inf")))
         and float(release_rows[-1].get("task_robot_contact_peak_force_n", float("inf")))
         < contact_threshold
     )
@@ -1960,12 +2112,7 @@ def evaluate_rigid_construction_gates(
         for phase_id in expected_ids
     )
     gate_values = {
-        "pregrasp_reachability": observed["pregrasp"].get("target_reached") is True,
         "base_collision_clearance": collision_clear,
-        "grasp_contact": grasp_contact,
-        "grasp_retention": support_clearance and grasp_retention,
-        "support_clearance": support_clearance,
-        "relocation_path": relocation_path,
         "release": release,
         "retreat": observed["retreat"].get("target_reached") is True,
         "support_contact": support_contact,
@@ -1976,6 +2123,28 @@ def evaluate_rigid_construction_gates(
         "workspace_containment": workspace_containment,
         "recovery": observed["recovery"].get("target_reached") is True,
         "reset_readback": reset_replay.get("passed") is True,
+        **(
+            {
+                "precontact_reachability": observed["precontact"].get(
+                    "target_reached"
+                )
+                is True,
+                "push_contact": initial_contact,
+                "push_contact_maintained": contact_maintained,
+                "push_path": relocation_path,
+            }
+            if push
+            else {
+                "pregrasp_reachability": observed["pregrasp"].get(
+                    "target_reached"
+                )
+                is True,
+                "grasp_contact": initial_contact,
+                "grasp_retention": support_clearance and contact_maintained,
+                "support_clearance": support_clearance,
+                "relocation_path": relocation_path,
+            }
+        ),
     }
     gate_rows = [
         {

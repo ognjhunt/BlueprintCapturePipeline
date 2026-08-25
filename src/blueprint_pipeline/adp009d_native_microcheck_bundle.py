@@ -1115,6 +1115,7 @@ def build_native_microcheck_bundle(
         "adp009d_policy_server_worker.py",
         "adp009d_groot_worker_identity.py",
         "adp009d_gated_backbone.py",
+        "adp009d_groot_wire_wheels.py",
         "groot_n17_droid_policy_runtime.py",
         # The pi05 server is Blueprint's identity-bound wrapper, not openpi's
         # stock serve_policy.py, so the wrapper and the constant it imports
