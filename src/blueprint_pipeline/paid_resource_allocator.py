@@ -198,6 +198,7 @@ from .native_task_arena_vast import (
     run_native_task_arena_vast,
 )
 from .native_task_arena_paid_authority import (
+    native_task_arena_attempt_budget_blockers,
     validate_native_task_arena_paid_attempt_authority,
 )
 from .native_task_arena_warm_authority import (
@@ -5055,10 +5056,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("native_task_arena_paid_attempt_authority_missing")
             if args.provider != "vast":
                 blockers.append("native_task_arena_provider_must_be_vast")
-            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
-                blockers.append("native_task_arena_budget_invalid")
-            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
-                blockers.append("native_task_arena_hard_ttl_invalid")
+            blockers.extend(
+                native_task_arena_attempt_budget_blockers(
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                )
+            )
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("native_task_arena_allowed_active_instance_id_invalid")
             native_policy_execution_spec: dict[str, Any] | None = None

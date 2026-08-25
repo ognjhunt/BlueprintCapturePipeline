@@ -53,6 +53,7 @@ from blueprint_pipeline.native_task_arena_policy_diagnostic_bundle import (
     validate_policy_diagnostic_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_paid_authority import (
+    native_task_arena_attempt_budget_blockers,
     validate_native_task_arena_paid_attempt_authority,
 )
 from blueprint_pipeline.native_task_arena_warm_authority import (
@@ -209,8 +210,13 @@ def _lane_blockers(
     def blockers(context: LaneLiveProfileContext) -> list[str]:
         found: list[str] = []
         diagnostic = link.probe_kind == POLICY_DIAGNOSTIC_PROBE_KIND
-        if not 0 < context.max_hourly_rate_usd <= context.max_spend_usd:
-            found.append("native_task_arena_budget_invalid")
+        found.extend(
+            native_task_arena_attempt_budget_blockers(
+                max_hourly_rate_usd=context.max_hourly_rate_usd,
+                hard_cap_usd=context.max_spend_usd,
+                hard_ttl_seconds=context.hard_ttl_seconds,
+            )
+        )
         receipt = context.receipt
         if receipt.get("implementation_commit") not in (None, context.source_commit):
             found.append(

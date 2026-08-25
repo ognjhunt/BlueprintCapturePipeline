@@ -64,6 +64,46 @@ MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
 
 
+def native_task_arena_attempt_budget_blockers(
+    *,
+    max_hourly_rate_usd: Any,
+    hard_cap_usd: Any,
+    hard_ttl_seconds: Any,
+) -> tuple[str, ...]:
+    """Validate rate, total cap, and TTL without comparing unlike units."""
+
+    blockers: list[str] = []
+    numeric_budget = not any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in (max_hourly_rate_usd, hard_cap_usd)
+    )
+    if numeric_budget:
+        rate = float(max_hourly_rate_usd)
+        cap = float(hard_cap_usd)
+        numeric_budget = (
+            math.isfinite(rate)
+            and math.isfinite(cap)
+            and rate > 0
+            and 0 < cap <= MAX_HARD_CAP_USD
+        )
+    if not numeric_budget:
+        blockers.append("native_task_arena_budget_invalid")
+
+    ttl_valid = (
+        not isinstance(hard_ttl_seconds, bool)
+        and isinstance(hard_ttl_seconds, int)
+        and MIN_TTL_SECONDS <= hard_ttl_seconds <= MAX_TTL_SECONDS
+    )
+    if not ttl_valid:
+        blockers.append("native_task_arena_hard_ttl_invalid")
+
+    if numeric_budget and ttl_valid:
+        projected_cost = hard_ttl_seconds * rate / 3600
+        if not math.isfinite(projected_cost) or projected_cost > cap:
+            blockers.append("native_task_arena_runtime_cost_exceeds_hard_cap")
+    return tuple(blockers)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -789,13 +829,16 @@ def materialize_native_task_arena_paid_attempt_authority(
     campaign_inputs_partial = (policy_campaign_path is None) != (
         campaign_member_id is None
     )
+    budget_blockers = native_task_arena_attempt_budget_blockers(
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+    )
     if (
         not authorization_reference.strip()
         or not authorized_by.strip()
         or not authorized_on.strip()
-        or not 0 < max_hourly_rate_usd <= hard_cap_usd <= MAX_HARD_CAP_USD
-        or not MIN_TTL_SECONDS <= hard_ttl_seconds <= MAX_TTL_SECONDS
-        or hard_ttl_seconds * max_hourly_rate_usd / 3600 > hard_cap_usd
+        or budget_blockers
         or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
         or (retain_warm_session and mode != "controls")
@@ -907,7 +950,13 @@ def validate_native_task_arena_paid_attempt_authority(
         "same_goal_concurrent": (),
     }
     observed_allowlist = normalize_active_instance_allowlist(value.get("active_instance_allowlist"))
-    errors: list[str] = []
+    errors = list(
+        native_task_arena_attempt_budget_blockers(
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+        )
+    )
     expected = {
         "schema_version": AUTHORITY_SCHEMA_VERSION,
         "purpose": "one_shot_native_task_arena_execution",

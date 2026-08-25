@@ -255,6 +255,44 @@ def test_two_member_campaign_binds_both_caps_and_member_authority(
     assert binding["sibling_resource_name"] == GROOT_RESOURCE
 
 
+def test_campaign_accepts_rate_above_cap_when_ttl_projection_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign_path, campaign, _bundles = _campaign(
+        tmp_path,
+        monkeypatch,
+        pi_rate=0.64,
+        groot_rate=0.64,
+        pi_cap=0.5,
+        groot_cap=0.5,
+        pi_ttl=2_800,
+        groot_ttl=2_800,
+    )
+
+    assert campaign_path.is_file()
+    assert campaign_module.validate_native_task_arena_policy_campaign(campaign)[
+        "maximum_campaign_spend_usd"
+    ] == 1.0
+
+
+def test_campaign_rejects_ttl_projection_above_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(
+        ValueError, match="native_task_arena_policy_campaign_member_invalid"
+    ):
+        _campaign(
+            tmp_path,
+            monkeypatch,
+            pi_rate=0.64,
+            groot_rate=0.64,
+            pi_cap=0.5,
+            groot_cap=0.5,
+            pi_ttl=2_813,
+            groot_ttl=2_813,
+        )
+
+
 def test_campaign_validator_reads_only_staged_receipts_and_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

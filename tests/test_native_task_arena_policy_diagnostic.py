@@ -368,11 +368,11 @@ def test_allocator_routes_explicit_diagnostic_probe_without_official_admission(
         "--adp-job-dir",
         str(tmp_path / "diagnostic-job"),
         "--adp-max-hourly-rate-usd",
-        "0.8",
+        "0.64",
         "--adp-max-spend-usd",
-        "1.0",
+        "0.5",
         "--adp-hard-ttl-seconds",
-        "5400",
+        "2800",
     ]
 
     assert allocator.main(args) == 0
