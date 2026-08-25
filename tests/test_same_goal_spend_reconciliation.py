@@ -114,7 +114,17 @@ def _fixture(root: Path, *, instance_id: int = 47593142, amount: float = 0.025) 
         root / "billing.json",
         {
             "results": [
-                {"source": f"instance-{instance_id}", "amount": amount},
+                {
+                    "source": f"instance-{instance_id}",
+                    "amount": amount,
+                    "items": [
+                        {
+                            "type": "gpu",
+                            "description": "0.05 hours at $0.500/hour",
+                            "amount": amount,
+                        }
+                    ],
+                },
                 {"source": "instance-999", "amount": 0.5},
             ]
         },
@@ -665,6 +675,18 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
         authorized_on="2026-08-25T15:15:00+00:00",
         output_path=project_output,
     )
+    assert project["posted_billing_maturity"] == [
+        {
+            "attempt_id": "fixture-attempt-1",
+            "provider_instance_id": 47593142,
+            "official_billing_response_sha256": (
+                "sha256:" + hashlib.sha256(fixture["billing"].read_bytes()).hexdigest()
+            ),
+            "cost_usd": 0.025,
+            "gpu_hours": 0.05,
+            "status": "mature_nonzero_gpu_time",
+        }
+    ]
     _, record = validate_project_spend_reconciliation(project_output)
     authority = _write(
         tmp_path / "authority.json",
@@ -693,6 +715,63 @@ def test_live_profile_expands_new_lane_project_spend_genesis(tmp_path: Path) -> 
         output.resolve(),
         *(path.resolve() for path in fixture.values()),
     }
+
+
+def test_project_spend_retains_full_cap_for_preliminary_disk_only_billing(
+    tmp_path: Path,
+) -> None:
+    """A posted row with zero GPU time cannot replace an allocated-run reserve."""
+
+    fixture = _fixture(tmp_path / "fixture")
+    billing = json.loads(fixture["billing"].read_text(encoding="utf-8"))
+    billing["results"][0]["items"] = [
+        {
+            "type": "gpu",
+            "description": "0.0 hours at $0.500/hour",
+            "amount": 0.0,
+        },
+        {
+            "type": "disk",
+            "description": "0.1 hours at $0.069/hour",
+            "amount": 0.007,
+        },
+    ]
+    billing["results"][0]["amount"] = 0.007
+    fixture["billing"].write_text(json.dumps(billing), encoding="utf-8")
+    billing_source = json.loads(fixture["billing_source"].read_text(encoding="utf-8"))
+    billing_source["sources"][0]["response_digest"] = (
+        "sha256:" + hashlib.sha256(fixture["billing"].read_bytes()).hexdigest()
+    )
+    billing_source["sources"][0]["response_size_bytes"] = fixture[
+        "billing"
+    ].stat().st_size
+    billing_source["receipt_digest"] = canonical_digest(
+        billing_source, digest_field="receipt_digest"
+    )
+    fixture["billing_source"].write_text(
+        json.dumps(billing_source), encoding="utf-8"
+    )
+    output, reconciliation = _materialize(
+        tmp_path / "fixture", "native_task_arena", fixture
+    )
+    baseline = _project_baseline_authority(
+        tmp_path / "baseline-authority.json", total=41.549914
+    )
+
+    with pytest.raises(
+        ValueError, match="project_spend_official_billing_immature"
+    ):
+        materialize_project_spend_reconciliation(
+            baseline_authority_path=baseline,
+            posted_reconciliation_paths=[output],
+            expected_coverage_ids=[
+                str(reconciliation["entries"][0]["attempt_id"])
+            ],
+            completeness_reference="retained queue and billing inventory",
+            authorized_by="user",
+            authorized_on="2026-08-25T16:15:00+00:00",
+            output_path=tmp_path / "project-spend.json",
+        )
 
 
 def test_live_profile_rejects_changed_nested_prior_spend_bytes(tmp_path: Path) -> None:

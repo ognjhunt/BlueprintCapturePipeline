@@ -113,6 +113,91 @@ def _finite(value: Any) -> bool:
     )
 
 
+def _positive_gpu_hours(description: Any) -> float | None:
+    """Read Vast's retained GPU-hours description without trusting charge rounding."""
+
+    words = str(description or "").strip().split()
+    if len(words) < 2 or words[1] not in {"hour", "hours"}:
+        return None
+    try:
+        hours = float(words[0])
+    except ValueError:
+        return None
+    return hours if math.isfinite(hours) and hours > 0 else None
+
+
+def _official_billing_maturity(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Prove a posted Vast row includes nonzero GPU time for an allocated run.
+
+    Vast can publish a disk-only row before its GPU charge matures.  Such a row
+    is official provider output, but it is not yet a safe replacement for the
+    authority's full-cap reserve.  Project-wide reconciliation therefore
+    accepts a ``fully_bound_official_billing`` entry only after the exact bound
+    response contains a matching instance row with positive GPU hours.
+    """
+
+    if entry.get("evidence_kind") != "fully_bound_official_billing":
+        return None
+    instance_id = entry.get("provider_instance_id")
+    if isinstance(instance_id, bool) or not isinstance(instance_id, int) or instance_id <= 0:
+        raise ValueError("project_spend_official_billing_immature")
+    sources = entry.get("source_receipts")
+    if not isinstance(sources, list):
+        raise ValueError("project_spend_official_billing_immature")
+    billing_record: Mapping[str, Any] | None = None
+    for source in sources:
+        if not isinstance(source, Mapping) or source.get("role") != "official_billing_response":
+            continue
+        record = source.get("record")
+        if billing_record is not None or not isinstance(record, Mapping):
+            raise ValueError("project_spend_official_billing_immature")
+        billing_record = record
+    if billing_record is None:
+        raise ValueError("project_spend_official_billing_immature")
+    billing_path = str(billing_record.get("path") or "")
+    source_path, billing = _read(
+        billing_path, code="project_spend_official_billing_immature"
+    )
+    if (
+        billing_record.get("path") != str(source_path)
+        or billing_record.get("size_bytes") != source_path.stat().st_size
+        or billing_record.get("sha256") != _sha256(source_path)
+    ):
+        raise ValueError("project_spend_official_billing_immature")
+    expected_source = f"instance-{instance_id}"
+    matches = [
+        row
+        for row in billing.get("results") or []
+        if isinstance(row, Mapping) and row.get("source") == expected_source
+    ]
+    observed_amount = matches[0].get("amount") if len(matches) == 1 else None
+    entry_cost = entry.get("cost_usd")
+    if (
+        len(matches) != 1
+        or not _finite(observed_amount)
+        or not _finite(entry_cost)
+        or float(observed_amount) != float(entry_cost)
+    ):
+        raise ValueError("project_spend_official_billing_immature")
+    gpu_hours = math.fsum(
+        hours
+        for item in matches[0].get("items") or []
+        if isinstance(item, Mapping)
+        and item.get("type") == "gpu"
+        and (hours := _positive_gpu_hours(item.get("description"))) is not None
+    )
+    if gpu_hours <= 0:
+        raise ValueError("project_spend_official_billing_immature")
+    return {
+        "attempt_id": str(entry.get("attempt_id") or ""),
+        "provider_instance_id": instance_id,
+        "official_billing_response_sha256": billing_record["sha256"],
+        "cost_usd": float(entry["cost_usd"]),
+        "gpu_hours": gpu_hours,
+        "status": "mature_nonzero_gpu_time",
+    }
+
+
 def _baseline(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     source, value = _read(path, code="project_spend_baseline_invalid")
     total = value.get("aggregate_goal_spend_before_attempt_usd")
@@ -186,6 +271,7 @@ def materialize_project_spend_reconciliation(
     baseline, baseline_record = _baseline(baseline_authority_path)
     posted_records: list[dict[str, Any]] = []
     posted_entries: list[dict[str, Any]] = []
+    posted_billing_maturity: list[dict[str, Any]] = []
     attempt_ids: set[str] = set()
     authority_digests: set[str] = set()
     for raw_path in posted_reconciliation_paths:
@@ -201,7 +287,11 @@ def materialize_project_spend_reconciliation(
             attempt_ids.add(attempt_id)
             if authority_digest:
                 authority_digests.add(authority_digest)
-            posted_entries.append(json.loads(json.dumps(entry, allow_nan=False)))
+            retained_entry = json.loads(json.dumps(entry, allow_nan=False))
+            maturity = _official_billing_maturity(retained_entry)
+            if maturity is not None:
+                posted_billing_maturity.append(maturity)
+            posted_entries.append(retained_entry)
 
     unposted_records: list[dict[str, Any]] = []
     unposted_cap_total = 0.0
@@ -232,6 +322,7 @@ def materialize_project_spend_reconciliation(
         "posted_reconciliations": posted_records,
         "posted_entries": posted_entries,
         "posted_entry_count": len(posted_entries),
+        "posted_billing_maturity": posted_billing_maturity,
         "posted_increment_total_cost_usd": posted_total,
         "unposted_authorities": unposted_records,
         "unposted_full_cap_total_usd": unposted_cap_total,
@@ -296,8 +387,17 @@ def validate_project_spend_reconciliation(
 
     posted_records = value.get("posted_reconciliations")
     posted_entries = value.get("posted_entries")
+    posted_billing_maturity = value.get("posted_billing_maturity")
     unposted_records = value.get("unposted_authorities")
-    if not all(isinstance(item, list) for item in (posted_records, posted_entries, unposted_records)):
+    if not all(
+        isinstance(item, list)
+        for item in (
+            posted_records,
+            posted_entries,
+            posted_billing_maturity,
+            unposted_records,
+        )
+    ):
         raise ValueError("project_spend_reconciliation_invalid")
     reopened_entries: list[dict[str, Any]] = []
     for record in posted_records:
@@ -313,6 +413,13 @@ def validate_project_spend_reconciliation(
         posted_entries
     ):
         raise ValueError("project_spend_posted_entries_mismatch")
+    reopened_maturity = [
+        maturity
+        for entry in posted_entries
+        if (maturity := _official_billing_maturity(entry)) is not None
+    ]
+    if reopened_maturity != posted_billing_maturity:
+        raise ValueError("project_spend_billing_maturity_mismatch")
 
     authority_digests = {
         str(entry.get("authority_digest") or "")
