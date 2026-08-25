@@ -123,8 +123,11 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
     installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'SERVICE_USER="${SERVICE_USER:-blueprint}"' in installer
     assert 'SERVICE_GROUP="${SERVICE_GROUP:-blueprint}"' in installer
+    assert 'CREDENTIALS_DIR="${CREDENTIALS_DIR:-${ENV_DIR}/credentials}"' in installer
     assert '"${HANDOFF_DIR}"' in installer
     assert '-m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}"' in installer
+    assert '-m 0750 -o root -g "${SERVICE_GROUP}"' in installer
+    assert '"${CREDENTIALS_DIR}"' in installer
     assert 'install -o root -g "${SERVICE_GROUP}" -m 0640' in installer
     assert 'install -d -m 0755 "${SYSTEMD_DIR}" "${ENV_DIR}" "${HANDOFF_DIR}"' not in installer
 
