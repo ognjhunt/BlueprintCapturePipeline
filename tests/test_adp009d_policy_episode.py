@@ -1199,6 +1199,100 @@ def test_exact_first_observation_survives_multicamera_persistence_failure(
     assert resumed_artifacts == artifacts
 
 
+def test_failed_second_query_reports_partial_multicamera_evidence(
+    tmp_path,
+) -> None:
+    class _SecondCameraReadFails(_Environment):
+        def __init__(self):
+            super().__init__()
+            self.evaluation_camera_reads = 0
+
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 40, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 80, dtype=np.uint8
+            )
+            return inputs
+
+        def read_evaluation_camera_inputs(self):
+            self.evaluation_camera_reads += 1
+            if self.evaluation_camera_reads == 2:
+                raise RuntimeError("forced_second_multicamera_failure")
+            return {
+                "external": np.full((24, 32, 3), 40, dtype=np.uint8),
+                "wrist": np.full((24, 32, 3), 80, dtype=np.uint8),
+                "overview": np.full((24, 32, 3), 160, dtype=np.uint8),
+            }
+
+        def read_control_observation_metadata(self):
+            calibration = {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": [
+                    [20.0, 0.0, 16.0],
+                    [0.0, 20.0, 12.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                "world_from_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "resolution": [32, 24],
+                "near_m": 0.01,
+                "far_m": 10.0,
+            }
+            camera_ids = ("external", "wrist", "overview")
+            return {
+                "timestamp_ns": 100 * self.evaluation_camera_reads,
+                "simulation_time_s": float(self.evaluation_camera_reads - 1),
+                "calibrations": {
+                    camera_id: calibration for camera_id in camera_ids
+                },
+                "source_devices": {camera_id: "cpu" for camera_id in camera_ids},
+                "synchronizations": {
+                    camera_id: {"host_bytes_ready": True, "method": "test"}
+                    for camera_id in camera_ids
+                },
+            }
+
+    progress: dict = {}
+    environment = _SecondCameraReadFails()
+    with pytest.raises(RuntimeError, match="forced_second_multicamera_failure"):
+        _run(
+            environment=environment,
+            max_policy_queries=2,
+            open_loop_horizon=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="second-query-multicamera-failure",
+            progress=progress,
+        )
+
+    assert len(progress["candidate_exact_policy_input_frames"]) == 2
+    visual, artifacts = progress["_failure_media_finalizer"](
+        failure_reason="RuntimeError:forced_second_multicamera_failure"
+    )
+    assert visual["status"] == "incomplete_after_first_observation"
+    assert visual["exact_policy_observation_count"] == 2
+    assert visual["multicamera_policy_observation_count"] == 1
+    assert visual["multicamera_policy_observation_retained"] is True
+    assert visual["multicamera_policy_observation_complete"] is False
+    manifest_row = next(
+        row
+        for row in artifacts
+        if row["role"] == "failed_episode_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_row["relative_path"]).read_text(encoding="utf-8")
+    )
+    assert len(manifest["candidate_exact_policy_input_frames"]) == 2
+    assert len(manifest["multicamera_policy_input_observations"]) == 1
+
+
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
     tmp_path, candidate_id: str

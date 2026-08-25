@@ -857,7 +857,7 @@ def run_policy_episode(
         phase_started = time.monotonic()
         native_multicamera_incomplete = bool(
             multicamera_evaluation_available
-            and not retained_multicamera_observations
+            and len(retained_multicamera_observations) != len(retained_policy_frames)
         )
         if failure_reason is not None:
             # Failure sealing is observation-only. Never issue a fresh camera,
@@ -971,7 +971,16 @@ def run_policy_episode(
                 ),
             }
             visual_evidence["exact_policy_observation_retained"] = True
-            visual_evidence["multicamera_policy_observation_retained"] = False
+            visual_evidence["multicamera_policy_observation_retained"] = bool(
+                retained_multicamera_observations
+            )
+            visual_evidence["multicamera_policy_observation_complete"] = False
+            visual_evidence["exact_policy_observation_count"] = len(
+                retained_policy_frames
+            )
+            visual_evidence["multicamera_policy_observation_count"] = len(
+                retained_multicamera_observations
+            )
             visual_evidence["missing_required_evidence"] = [
                 "native_external_camera_frames",
                 "native_wrist_camera_frames",

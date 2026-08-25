@@ -920,7 +920,7 @@ def _verified_multicamera_manifest(
     episode_id: str,
     artifact: Mapping[str, Any],
     visual: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     verified = _verify_artifact(root, artifact, role=f"{episode_id}:manifest")
     path = _inside(root, verified["relative_path"], role=f"{episode_id}:manifest")
     try:
@@ -984,6 +984,7 @@ def _verified_multicamera_manifest(
             "lossless_frame_count": len(frames),
         },
         frames,
+        manifest,
     )
 
 
@@ -992,6 +993,7 @@ def _verified_exact_policy_input_frames(
     *,
     episode_id: str,
     receipt: Mapping[str, Any],
+    multicamera_manifest: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     if receipt.get("schema_version") != "adp009d_policy_episode.v3":
         return []
@@ -1010,14 +1012,35 @@ def _verified_exact_policy_input_frames(
         )
 
     candidate_id = str(receipt.get("candidate_id") or "")
+    policy_observations = multicamera_manifest.get("policy_input_observations")
+    if (
+        not isinstance(policy_observations, list)
+        or len(policy_observations) != expected_count
+    ):
+        raise EpisodeEvidenceIndexError(
+            f"episode_exact_policy_input_multicamera_count_invalid:{episode_id}"
+        )
     frames: list[dict[str, Any]] = []
     try:
         for expected_index, raw_frame in enumerate(raw_frames):
             if not isinstance(raw_frame, Mapping):
                 raise ValueError("exact_policy_input_frame_not_mapping")
             frame = _verified_retained_rgb_frame(raw_frame, output_dir=root)
+            observation = policy_observations[expected_index]
+            if not isinstance(observation, Mapping):
+                raise ValueError("exact_policy_input_multicamera_not_mapping")
             view_order = frame.get("view_order")
             view_shapes = frame.get("view_shapes")
+            raw_camera_bindings = frame.get("raw_policy_input_camera_bindings")
+            expected_raw_camera_bindings = {
+                camera_id: {
+                    "frame_digest": observation["views"][camera_id]["frame_digest"],
+                    "raw_rgb_sha256": observation["views"][camera_id][
+                        "raw_rgb_sha256"
+                    ],
+                }
+                for camera_id in ("external", "wrist")
+            }
             if (
                 frame.get("frame_index") != expected_index
                 or frame.get("kind") != "policy-input"
@@ -1028,6 +1051,9 @@ def _verified_exact_policy_input_frames(
                 or len(set(view_order)) != len(view_order)
                 or not isinstance(view_shapes, Mapping)
                 or set(view_shapes) != set(view_order)
+                or frame.get("multicamera_observation_digest")
+                != observation.get("observation_digest")
+                or raw_camera_bindings != expected_raw_camera_bindings
                 or frame.get("frame_manifest_digest")
                 != canonical_digest(frame, digest_field="frame_manifest_digest")
             ):
@@ -1055,7 +1081,7 @@ def _verified_exact_policy_input_frames(
                     "frame_manifest_digest": frame["frame_manifest_digest"],
                 }
             )
-    except (OSError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, TypeError, ValueError) as exc:
         raise EpisodeEvidenceIndexError(
             f"episode_exact_policy_input_invalid:{episode_id}:{exc}"
         ) from exc
@@ -1106,16 +1132,19 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
     ]
     if len(manifests) != 1:
         raise EpisodeEvidenceIndexError(f"episode_frame_manifest_not_unique:{episode_id}")
-    manifest, lossless_camera_frames = _verified_multicamera_manifest(
-        root,
-        episode_id=episode_id,
-        artifact=manifests[0],
-        visual=visual,
+    manifest, lossless_camera_frames, multicamera_manifest = (
+        _verified_multicamera_manifest(
+            root,
+            episode_id=episode_id,
+            artifact=manifests[0],
+            visual=visual,
+        )
     )
     exact_policy_input_frames = _verified_exact_policy_input_frames(
         root,
         episode_id=episode_id,
         receipt=receipt,
+        multicamera_manifest=multicamera_manifest,
     )
 
     visual_videos = visual.get("videos")
@@ -1142,6 +1171,15 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
         video_binding = visual_videos.get(camera_id)
         if (
             not isinstance(video_binding, Mapping)
+            or video_binding.get("camera_id") != camera_id
+            or any(
+                video_binding.get(field) != videos[camera_id].get(field)
+                for field in (
+                    "relative_path",
+                    "sha256",
+                    "size_bytes",
+                )
+            )
             or video_binding.get("derived_from_frame_manifest_digest")
             != manifest["frame_manifest_digest"]
         ):
