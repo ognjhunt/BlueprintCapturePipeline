@@ -1043,6 +1043,69 @@ def test_native_policy_sigterm_before_admission_seals_typed_media_gap(
     )
 
 
+def test_native_policy_post_admission_result_propagates_typed_media_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal allocator result remains the media-gap authority after admission."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    expected_visual = {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "vast_probe_interrupted_before_completion",
+        },
+    }
+
+    def _runner(_argv: list[str]) -> int:
+        _write(tmp_path / "admission.json", {"status": "admitted"})
+        _write(tmp_path / "bound-request.json", {"status": "bound"})
+        _write(
+            tmp_path / "allocator-result.json",
+            {
+                "schema_version": "native_task_arena_vast_run.v1",
+                "status": "blocked",
+                "continuing_spend_from_this_run": False,
+                "retry_cap": 0,
+                "visual_evidence": expected_visual,
+            },
+        )
+        return -15
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=_runner,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["allocator_invoked"] is True
+    assert receipt["provider_mutation_attempted"] is True
+    assert (
+        receipt["provider_mutation_evidence"]["status"]
+        == "allocator_boundary_artifacts_present"
+    )
+    assert receipt["visual_evidence"] == expected_visual
+    assert receipt["terminal_evidence"]["visual_evidence"] == expected_visual
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
 def test_native_policy_missing_result_does_not_invent_preobservation_after_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
