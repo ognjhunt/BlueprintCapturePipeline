@@ -103,6 +103,7 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
             assert observation["prompt"] == "pick"
             return {
                 "actions": np.zeros((10, 8)),
+                "policy_timing": {"infer_ms": 30.0},
                 "server_timing": {"infer_ms": 31.25},
             }
 
@@ -161,6 +162,10 @@ def test_websocket_client_records_completed_query_before_response_refusal(
         (
             {"actions": [], "action_chunk": []},
             "openpi_inference_response_unexpected_keys:action_chunk",
+        ),
+        (
+            {"actions": [], "policy_timing": 1.0},
+            "openpi_inference_response_policy_timing_not_object",
         ),
         (
             {"actions": [], "server_timing": 1.0},
