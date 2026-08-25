@@ -11,6 +11,7 @@ ENV_FILE="${ENV_FILE:-${ENV_DIR}/pipeline-control-plane.env}"
 STATE_DIR="${STATE_DIR:-/var/lib/blueprint/pipeline-control-plane}"
 HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
+CREDENTIALS_DIR="${CREDENTIALS_DIR:-${ENV_DIR}/credentials}"
 LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
 CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
@@ -40,6 +41,7 @@ Environment overrides:
   STATE_DIR=/var/lib/blueprint/pipeline-control-plane
   HANDOFF_DIR=/var/lib/blueprint/pubsub-handoffs
   PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
+  CREDENTIALS_DIR=/etc/blueprint/credentials
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
   CAPTURE_RECONSTRUCTION_POLICY_DIR=/etc/blueprint/capture-reconstruction-policies
   CADDY_SITE_FILE=/etc/caddy/Caddyfile
@@ -110,6 +112,8 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${HANDOFF_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${PROVIDER_SECRETS_DIR}"
+run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
+  "${CREDENTIALS_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${LAUNCH_PROFILE_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \

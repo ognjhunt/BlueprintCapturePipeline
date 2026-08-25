@@ -516,8 +516,9 @@ Cloud Run `pipeline-runner` identity. Grant it `roles/pubsub.subscriber` on the
 exact `blueprint-pipeline-handoff-listener` subscription and
 `roles/storage.objectViewer` on the exact capture bucket—no project-wide runner,
 Firestore, logging, metrics, write, or admin role. Store its JSON credential at
-`/etc/blueprint/credentials/pipeline-handoff-listener.json`, owned by
-`root:blueprint` with mode `0640`, and set `GOOGLE_APPLICATION_CREDENTIALS` plus
+`/etc/blueprint/credentials/pipeline-handoff-listener.json`, with the parent
+directory owned by `root:blueprint` at mode `0750` and the file owned by
+`root:blueprint` at mode `0640`, and set `GOOGLE_APPLICATION_CREDENTIALS` plus
 `GOOGLE_CLOUD_PROJECT` in `/etc/blueprint/pipeline-control-plane.env`. Rotate by
 creating a replacement key, atomically replacing the protected file, restarting
 and proving two timer pulls, then deleting the prior key. A short subscription ID
