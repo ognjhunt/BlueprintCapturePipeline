@@ -9,6 +9,7 @@ provider authority.
 from __future__ import annotations
 
 import fcntl
+import ipaddress
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import tempfile
 from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .company_policy_container_contract_v2 import (
     CompanyPolicyContainerContractV2Error,
@@ -30,6 +31,7 @@ REQUEST_SCHEMA_VERSION = "company_policy_container_admission_request.v1"
 RECEIPT_SCHEMA_VERSION = "company_policy_container_admission_receipt.v1"
 DEFAULT_CLAIM_CEILING = "development_only"
 ADMISSION_ROOT_ENV = "BLUEPRINT_COMPANY_POLICY_CONTAINER_ADMISSION_ROOT"
+ALLOWED_REGISTRIES_ENV = "BLUEPRINT_COMPANY_POLICY_ALLOWED_REGISTRIES"
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
@@ -183,6 +185,31 @@ def default_company_policy_container_admission_root(work_root: Path) -> Path:
     )
 
 
+def _registry_host(image: str) -> str:
+    repository = image.split("@sha256:", 1)[0]
+    first = repository.split("/", 1)[0].lower()
+    if "." not in first and ":" not in first:
+        return "docker.io"
+    host = re.sub(r":\d+$", "", first)
+    if (
+        "." not in host
+        or host == "localhost"
+        or host.endswith((".localhost", ".local", ".internal"))
+    ):
+        raise CompanyPolicyContainerAdmissionError(
+            ["company_policy_container_admission_registry_origin_invalid"],
+            status_code=403,
+        )
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return first
+    raise CompanyPolicyContainerAdmissionError(
+        ["company_policy_container_admission_registry_ip_literal_forbidden"],
+        status_code=403,
+    )
+
+
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     encoded = (json.dumps(dict(payload), sort_keys=True, indent=2) + "\n").encode("utf-8")
@@ -210,11 +237,31 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def stage_company_policy_container_admission(
-    *, value: Mapping[str, Any], root: Path
+    *,
+    value: Mapping[str, Any],
+    root: Path,
+    allowed_registry_hosts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Durably stage one admission without consuming credentials or launching."""
 
     request = validate_company_policy_container_admission_request(value)
+    configured_hosts = (
+        list(allowed_registry_hosts)
+        if allowed_registry_hosts is not None
+        else str(os.getenv(ALLOWED_REGISTRIES_ENV) or "").split(",")
+    )
+    allowed = {str(host).strip().lower() for host in configured_hosts if str(host).strip()}
+    if not allowed:
+        raise CompanyPolicyContainerAdmissionError(
+            ["company_policy_container_admission_registry_allowlist_not_configured"],
+            status_code=503,
+        )
+    registry_host = _registry_host(str(request["contract"]["container"]["image"]))
+    if registry_host not in allowed:
+        raise CompanyPolicyContainerAdmissionError(
+            ["company_policy_container_admission_registry_not_allowed"],
+            status_code=403,
+        )
     request_digest = cross_runtime_canonical_digest(request)
     identity_material = {
         "tenant_id": request["tenant_id"],

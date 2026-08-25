@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.company_policy_container_admission import (
     ADMISSION_ROOT_ENV,
+    ALLOWED_REGISTRIES_ENV,
     CompanyPolicyContainerAdmissionError,
     stage_company_policy_container_admission,
     validate_company_policy_container_admission_request,
@@ -157,7 +158,9 @@ def _request(*, private: bool = True) -> dict[str, Any]:
 
 
 def test_admission_is_digest_bound_secret_free_and_no_spend(tmp_path: Path) -> None:
-    receipt = stage_company_policy_container_admission(value=_request(), root=tmp_path)
+    receipt = stage_company_policy_container_admission(
+        value=_request(), root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+    )
 
     assert receipt["accepted"] is True
     assert receipt["status"] == "admitted_no_spend"
@@ -176,15 +179,21 @@ def test_admission_is_digest_bound_secret_free_and_no_spend(tmp_path: Path) -> N
 
 def test_admission_retry_is_idempotent_and_conflict_fails_closed(tmp_path: Path) -> None:
     request = _request()
-    first = stage_company_policy_container_admission(value=request, root=tmp_path)
-    second = stage_company_policy_container_admission(value=request, root=tmp_path)
+    first = stage_company_policy_container_admission(
+        value=request, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+    )
+    second = stage_company_policy_container_admission(
+        value=request, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+    )
     assert first["admission_id"] == second["admission_id"]
     assert second["already_exists"] is True
 
     conflict = copy.deepcopy(request)
     conflict["contract"]["display_name"] = "Tampered"
     with pytest.raises(CompanyPolicyContainerAdmissionError) as excinfo:
-        stage_company_policy_container_admission(value=conflict, root=tmp_path)
+        stage_company_policy_container_admission(
+            value=conflict, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+        )
     assert any("contract_digest_mismatch" in item for item in excinfo.value.blockers)
 
 
@@ -214,9 +223,32 @@ def test_public_image_forbids_credential_lease() -> None:
     assert "company_policy_container_admission_public_lease_forbidden" in excinfo.value.blockers
 
 
+def test_staging_requires_an_allowlisted_nonlocal_registry(tmp_path: Path) -> None:
+    with pytest.raises(CompanyPolicyContainerAdmissionError) as excinfo:
+        stage_company_policy_container_admission(
+            value=_request(), root=tmp_path, allowed_registry_hosts=[]
+        )
+    assert excinfo.value.status_code == 503
+    assert "company_policy_container_admission_registry_allowlist_not_configured" in excinfo.value.blockers
+
+    request = _request()
+    contract = copy.deepcopy(request["contract"])
+    contract["container"]["image"] = "localhost:5000/policy@sha256:" + "c" * 64
+    contract.pop("contract_digest", None)
+    contract = validate_company_policy_container_contract_v2(contract)
+    request["contract"] = contract
+    request["contract_digest"] = contract["contract_digest"]
+    with pytest.raises(CompanyPolicyContainerAdmissionError) as excinfo:
+        stage_company_policy_container_admission(
+            value=request, root=tmp_path, allowed_registry_hosts=["localhost:5000"]
+        )
+    assert "company_policy_container_admission_registry_origin_invalid" in excinfo.value.blockers
+
+
 def test_http_intake_requires_signed_admission_and_never_queues(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "admissions"
     monkeypatch.setenv(ADMISSION_ROOT_ENV, str(root))
+    monkeypatch.setenv(ALLOWED_REGISTRIES_ENV, "registry.acme.example")
     monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "intake-work"))
     monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "test-intake-token")
     monkeypatch.setenv(
