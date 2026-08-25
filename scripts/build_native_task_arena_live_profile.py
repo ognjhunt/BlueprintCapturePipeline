@@ -636,6 +636,97 @@ def _immutable_inputs(link: ArenaLink):
                 )
             return path
 
+        def append_bound_record(name: str, record: Mapping[str, Any]) -> Path:
+            path = append_file(name, str(record.get("path") or ""))
+            if (
+                record.get("sha256") != file_digest(path)
+                or record.get("size_bytes") != path.stat().st_size
+            ):
+                raise TaskEvaluationLaunchError(
+                    f"native_task_arena_immutable_input_binding_invalid:{name}"
+                )
+            return path
+
+        preallocation_zero_seen: set[Path] = set()
+
+        def append_preallocation_provider_zero_closure(
+            name: str, provider_zero_path: Path
+        ) -> None:
+            """Expose every file the paid-authority validator reopens.
+
+            A preallocation closeout is a graph, not a leaf receipt: its
+            terminal result binds the original allocator result, watchdog, and
+            object-store cleanup, while the provider-zero receipt additionally
+            binds the API inventory observation and may bind a sibling
+            closeout.  The production publisher can grant the service account
+            access only to paths declared here, so retain the complete exact-
+            digest closure in the profile.
+            """
+
+            resolved = provider_zero_path.resolve()
+            if resolved in preallocation_zero_seen:
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_preallocation_provider_zero_cycle"
+                )
+            preallocation_zero_seen.add(resolved)
+            zero = _read_mapping(
+                resolved,
+                error="native_task_arena_preallocation_provider_zero_invalid",
+            )
+            if not (
+                zero.get("schema_version") == "native_task_arena_provider_zero.v1"
+                and zero.get("status") == "completed_preallocation_provider_zero"
+            ):
+                return
+
+            bound: dict[str, Path] = {}
+            for field in (
+                "attempt_authority",
+                "teardown",
+                "terminal_result",
+                "watchdog",
+                "object_store_cleanup",
+                "api_provider_zero",
+            ):
+                record = zero.get(field)
+                if not isinstance(record, Mapping):
+                    raise TaskEvaluationLaunchError(
+                        "native_task_arena_preallocation_provider_zero_invalid"
+                    )
+                bound[field] = append_bound_record(f"{name}_{field}", record)
+
+            terminal_result = _read_mapping(
+                bound["terminal_result"],
+                error="native_task_arena_preallocation_terminal_result_invalid",
+            )
+            for field in (
+                "original_allocator_result",
+                "watchdog_handoff",
+                "object_store_cleanup",
+            ):
+                record = terminal_result.get(field)
+                if not isinstance(record, Mapping):
+                    raise TaskEvaluationLaunchError(
+                        "native_task_arena_preallocation_terminal_result_invalid"
+                    )
+                append_bound_record(f"{name}_terminal_{field}", record)
+
+            siblings = zero.get("sibling_preallocation_closeouts")
+            if not isinstance(siblings, list):
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_preallocation_provider_zero_invalid"
+                )
+            for index, record in enumerate(siblings):
+                if not isinstance(record, Mapping):
+                    raise TaskEvaluationLaunchError(
+                        "native_task_arena_preallocation_provider_zero_invalid"
+                    )
+                sibling_name = f"{name}_sibling_{index}"
+                sibling_path = append_bound_record(sibling_name, record)
+                append_preallocation_provider_zero_closure(
+                    sibling_name, sibling_path
+                )
+
         def append_bundle_closure(name: str, receipt_path: str | Path) -> None:
             receipt_file = append_file(f"{name}_receipt", receipt_path)
             receipt = _read_mapping(
@@ -655,9 +746,13 @@ def _immutable_inputs(link: ArenaLink):
             for name in ("authority", "terminal_result", "provider_zero"):
                 record = predecessor.get(name)
                 if isinstance(record, Mapping):
-                    append_file(
-                        f"prior_terminal_{name}", str(record.get("path") or "")
+                    predecessor_path = append_bound_record(
+                        f"prior_terminal_{name}", record
                     )
+                    if name == "provider_zero":
+                        append_preallocation_provider_zero_closure(
+                            "prior_terminal_provider_zero", predecessor_path
+                        )
         campaign_binding = authority.get("policy_campaign_binding")
         if campaign_binding is not None:
             campaign_record = (
