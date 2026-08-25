@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import stat
 import zipfile
@@ -33,6 +34,10 @@ from .native_task_runtime_source_packet import (
 
 
 SCHEMA_VERSION = "native_task_arena_provider_bundle.v1"
+
+
+def digest_pinned_container_image(value: Any) -> bool:
+    return re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", str(value or "")) is not None
 DEFAULT_EXPECTED_OUTPUT_FILENAME = "native_task_arena_construction_result.v1.json"
 RESULT_SCHEMA_BY_MODE = {
     "runtime_preflight": "native_task_arena_runtime_preflight.v1",
@@ -441,7 +446,7 @@ def build_native_task_arena_bundle(
             ["native_task_arena_bundle_output_filename_invalid"]
         )
     image = str(container_image).strip()
-    if "@sha256:" not in image or len(image.rsplit("@sha256:", 1)[-1]) != 64:
+    if not digest_pinned_container_image(image):
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_container_image_not_digest_pinned"]
         )
@@ -759,4 +764,5 @@ __all__ = [
     "POLICY_RUNTIME_ROOT_MODULE_NAMES",
     "SCHEMA_VERSION",
     "build_native_task_arena_bundle",
+    "digest_pinned_container_image",
 ]

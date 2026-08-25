@@ -24,6 +24,46 @@ from blueprint_pipeline.groot_n17_wire_client import (
 )
 
 
+def test_staged_wire_deps_sibling_directory_wins_sys_path(
+    tmp_path, monkeypatch
+) -> None:
+    """The staged pinned codec must precede Isaac's bundled msgpack/pyzmq.
+
+    Pins installed into the kit environment never win against Isaac's own
+    newer copies (live 20260825T134736Z self-check refusal), so the module
+    prepends its staged sibling directory before importing the codec.
+    """
+
+    import sys
+
+    from blueprint_pipeline import groot_n17_wire_client as client
+
+    module_file = tmp_path / "groot_n17_wire_client.py"
+    module_file.write_text("# staged copy\n", encoding="utf-8")
+    staged = tmp_path / client.STAGED_WIRE_DEPS_DIRNAME
+    staged.mkdir()
+    # Simulate the staged dir already present later in the path: the prepend
+    # must deduplicate and still land it first.
+    monkeypatch.setattr(
+        sys, "path", ["/isaac/bundled", str(staged), *sys.path]
+    )
+
+    location = client._prepend_staged_wire_deps(str(module_file))
+
+    assert location == str(staged)
+    assert sys.path[0] == str(staged)
+    assert sys.path.count(str(staged)) == 1
+
+
+def test_missing_staged_wire_deps_directory_is_a_no_op(tmp_path) -> None:
+    from blueprint_pipeline import groot_n17_wire_client as client
+
+    module_file = tmp_path / "groot_n17_wire_client.py"
+    module_file.write_text("# staged copy\n", encoding="utf-8")
+
+    assert client._prepend_staged_wire_deps(str(module_file)) is None
+
+
 def test_wire_client_imports_without_gr00t_transformers_or_torch() -> None:
     source_root = Path(__file__).resolve().parents[1] / "src"
     code = r'''

@@ -325,12 +325,39 @@ def publish_profiles(
     catalog_payload = build_catalog_payload(target_root)
     catalog_path = Path(webapp_catalog_out).expanduser().resolve()
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    catalog_path.write_bytes(catalog_payload)
+    if catalog_path.is_symlink():
+        raise TaskEvaluationLaunchError("launch_profile_catalog_symlink")
+    temporary_catalog = catalog_path.with_name(
+        f".{catalog_path.name}.tmp-{os.getpid()}"
+    )
+    try:
+        with temporary_catalog.open("xb") as stream:
+            stream.write(catalog_payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_catalog, catalog_path)
+    except OSError as exc:
+        temporary_catalog.unlink(missing_ok=True)
+        raise TaskEvaluationLaunchError("launch_profile_catalog_write_failed") from exc
+    try:
+        os.chown(catalog_path, -1, gid)
+        catalog_path.chmod(stat.S_IRUSR | stat.S_IRGRP)
+    except OSError as exc:
+        raise TaskEvaluationLaunchError(
+            "launch_profile_catalog_permission_install_failed"
+        ) from exc
+    catalog_digest = "sha256:" + hashlib.sha256(catalog_payload).hexdigest()
+    if _digest_as_account(catalog_path, account=account, uid=uid) != catalog_digest:
+        raise TaskEvaluationLaunchError(
+            "launch_profile_catalog_consumer_unreadable"
+        )
     return {
         "schema_version": "task_evaluation_launch_profile_publication.v1",
         "status": "published",
         "profiles": published,
         "webapp_catalog_path": str(catalog_path),
+        "webapp_catalog_digest": catalog_digest,
+        "service_account_readback_verified": True,
         "webapp_catalog_contains_allocator_arguments": False,
         "webapp_catalog_contains_secret_values": False,
     }
@@ -355,6 +382,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "for production roots and the account's primary group elsewhere."
         ),
     )
+    parser.add_argument(
+        "--receipt-out",
+        help="Optional publication and full-byte readback receipt destination.",
+    )
     args = parser.parse_args(argv)
     try:
         result = publish_profiles(
@@ -377,6 +408,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 2
+    if args.receipt_out:
+        destination = Path(args.receipt_out).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(result)
+        payload["published_profile_readback"] = [
+            {
+                **row,
+                "size_bytes": Path(row["path"]).stat().st_size,
+                "sha256": "sha256:"
+                + hashlib.sha256(Path(row["path"]).read_bytes()).hexdigest(),
+            }
+            for row in result["profiles"]
+        ]
+        catalog = Path(result["webapp_catalog_path"])
+        payload["webapp_catalog_readback"] = {
+            "path": str(catalog),
+            "size_bytes": catalog.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(catalog.read_bytes()).hexdigest(),
+            "service_account_readback_verified": result[
+                "service_account_readback_verified"
+            ],
+        }
+        destination.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     print(json.dumps(result, sort_keys=True))
     return 0
 

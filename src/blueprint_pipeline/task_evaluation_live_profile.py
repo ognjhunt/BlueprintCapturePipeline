@@ -101,7 +101,11 @@ def expand_prior_spend_immutable_inputs(
             raise TaskEvaluationLaunchError(
                 f"live_profile_authority_input_invalid:{name}"
             )
+        reconciliation_kind = "prior_spend"
         reconciliation_record = authority.get("prior_spend_reconciliation")
+        if reconciliation_record is None:
+            reconciliation_kind = "project_spend"
+            reconciliation_record = authority.get("project_spend_reconciliation")
         if reconciliation_record is None:
             continue
         if not isinstance(reconciliation_record, Mapping):
@@ -112,16 +116,21 @@ def expand_prior_spend_immutable_inputs(
             str(reconciliation_record.get("path") or "")
         ).expanduser().resolve()
         uses_shared_lane_reconciliation = (
-            "prior_terminal_attempts" in authority
-            and "prior_actual_provider_spend_usd" in authority
+            reconciliation_kind == "project_spend"
+            or (
+                "prior_terminal_attempts" in authority
+                and "prior_actual_provider_spend_usd" in authority
+            )
         )
         try:
             if uses_shared_lane_reconciliation:
                 reconciliation, observed_record = (
                     validate_same_goal_spend_reconciliation(
                         reconciliation_path,
-                        expected_total_cost_usd=authority.get(
-                            "prior_actual_provider_spend_usd"
+                        expected_total_cost_usd=(
+                            authority.get("aggregate_goal_spend_before_attempt_usd")
+                            if reconciliation_kind == "project_spend"
+                            else authority.get("prior_actual_provider_spend_usd")
                         ),
                     )
                 )
@@ -177,7 +186,7 @@ def expand_prior_spend_immutable_inputs(
                 continue
             expanded.append(
                 {
-                    "name": f"{name}_prior_spend_{suffix}",
+                    "name": f"{name}_{reconciliation_kind}_{suffix}",
                     "path": resolved,
                     "digest": str(record.get("sha256") or ""),
                 }
