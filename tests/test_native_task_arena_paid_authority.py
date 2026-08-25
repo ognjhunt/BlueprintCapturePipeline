@@ -301,9 +301,9 @@ def test_terminal_continuation_uses_newer_conservative_project_spend(
     monkeypatch.setattr(
         paid,
         "validate_project_spend_reconciliation",
-        lambda *_args, **_kwargs: (
+        lambda path, **_kwargs: (
             {"total_cost_usd": 43.197914},
-            project_record,
+            _record(Path(path)),
         ),
     )
 
@@ -327,6 +327,29 @@ def test_terminal_continuation_uses_newer_conservative_project_spend(
     assert authority["lineage_kind"] == "terminal_predecessor"
     assert authority["aggregate_goal_spend_before_attempt_usd"] == 43.197914
     assert authority["project_spend_reconciliation"] == project_record
+
+    staged_project_path = tmp_path / "staged" / "project-spend.input"
+    staged_project_path.parent.mkdir()
+    staged_project_path.write_bytes(project_path.read_bytes())
+    original_resolver = paid.resolve_immutable_input
+
+    def resolve_staged_project(
+        original_path: str | Path,
+        *,
+        expected_digest: str,
+        expected_size_bytes: int,
+    ) -> Path:
+        if Path(original_path).resolve() == project_path.resolve():
+            assert expected_digest == project_record["sha256"]
+            assert expected_size_bytes == project_record["size_bytes"]
+            return staged_project_path
+        return original_resolver(
+            original_path,
+            expected_digest=expected_digest,
+            expected_size_bytes=expected_size_bytes,
+        )
+
+    monkeypatch.setattr(paid, "resolve_immutable_input", resolve_staged_project)
     assert paid.validate_native_task_arena_paid_attempt_authority(
         authority,
         prepared_bundle=prepared,
@@ -334,6 +357,25 @@ def test_terminal_continuation_uses_newer_conservative_project_spend(
         hard_cap_usd=0.75,
         hard_ttl_seconds=3_300,
     )["authorization_digest"] == authority["authorization_digest"]
+
+    monkeypatch.setattr(
+        paid,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (
+            {"total_cost_usd": 43.197914},
+            {**_record(Path(path)), "sha256": "sha256:" + "f" * 64},
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="native_task_arena_authority_invalid:prior_terminal_spend_invalid"
+    ):
+        paid.validate_native_task_arena_paid_attempt_authority(
+            authority,
+            prepared_bundle=prepared,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+        )
 
 
 def test_new_lane_genesis_refuses_stale_provider_zero(

@@ -170,6 +170,24 @@ def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
     return path, dict(value)
 
 
+def _bound_record_matches_observed(
+    bound_record: Mapping[str, Any], observed_record: Mapping[str, Any]
+) -> bool:
+    """Compare a sealed source record with a validator's staged readback.
+
+    Dispatcher children reopen an immutable input through its digest-named
+    staged snapshot.  Validators therefore observe the staged filename even
+    though the authority must retain the original sealed source identity.
+    ``_bound_record`` has already proved that exact source path, size, and
+    digest map to the staged bytes, so only the transient readback path may
+    differ here; every other field remains exact and fail-closed.
+    """
+
+    normalized_observed = dict(observed_record)
+    normalized_observed["path"] = bound_record.get("path")
+    return dict(bound_record) == normalized_observed
+
+
 def _finite_cost(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("native_task_arena_terminal_cost_invalid")
@@ -1366,7 +1384,9 @@ def validate_native_task_arena_paid_attempt_authority(
                 )
                 project_total = round(float(project_spend["total_cost_usd"]), 6)
                 if (
-                    project_record != observed_project_record
+                    not _bound_record_matches_observed(
+                        project_record, observed_project_record
+                    )
                     or project_total < terminal_actual_after
                 ):
                     raise ValueError("project_spend_continuation_mismatch")
