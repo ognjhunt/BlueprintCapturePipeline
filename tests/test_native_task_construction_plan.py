@@ -316,6 +316,16 @@ def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> N
             }
         )
 
+    # The worker retains every approach step while moving from precontact to
+    # first contact. Those early samples must not be interpreted as a failure
+    # to maintain contact during the subsequent push path.
+    push_contact = next(
+        row for row in phase_results if row["phase_id"] == "push_contact"
+    )
+    approach_sample = dict(push_contact["task_sample"])
+    approach_sample["task_robot_contact_peak_force_n"] = 0.0
+    push_contact["task_samples"].insert(0, approach_sample)
+
     passed = evaluate_rigid_construction_gates(
         phase_plan=plan,
         phase_results=phase_results,
