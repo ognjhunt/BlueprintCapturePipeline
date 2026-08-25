@@ -523,6 +523,21 @@ def test_campaign_rejects_resource_name_without_strong_member_entropy(
         campaign_module.validate_native_task_arena_policy_campaign(altered)
 
 
+def test_campaign_rejects_strong_entropy_outside_watchdog_policy_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _path, campaign, _bundles = _campaign(tmp_path, monkeypatch)
+    altered = json.loads(json.dumps(campaign))
+    altered["members"][0]["resource_name"] = "blueprint-policy-pi05-" + "c" * 32
+    altered["campaign_digest"] = canonical_digest(
+        altered, digest_field="campaign_digest"
+    )
+    with pytest.raises(
+        ValueError, match="native_task_arena_policy_campaign_member_invalid"
+    ):
+        campaign_module.validate_native_task_arena_policy_campaign(altered)
+
+
 def _inventory(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, object]]) -> None:
     monkeypatch.setattr(
         vast,

@@ -52,11 +52,16 @@ POLICY_EXECUTION_MODES = frozenset({"policy", "policy_diagnostic"})
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]{1,192}$")
-# Campaign resource names are exact provider labels, not prefixes.  The final
-# 128 bits are operator-generated entropy sealed before either member starts;
-# this makes the sibling identity collision-resistant without depending on a
-# provider-assigned instance id that does not exist at authority issuance.
-_RESOURCE_NAME = re.compile(r"^blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}$")
+# Campaign resource names are exact provider labels, not prefixes.  They must
+# remain inside the Native Task Arena policy family accepted by the independent
+# watchdog; accepting an arbitrary ``blueprint-*`` label lets authority issue
+# successfully and then guarantees a before-allocation watchdog failure.  The
+# final 128 bits are operator-generated entropy sealed before either member
+# starts, keeping the sibling identity collision-resistant without depending
+# on a provider-assigned instance id that does not exist at authority issuance.
+_RESOURCE_NAME = re.compile(
+    r"^blueprint-native-task-policy-[a-z0-9-]{1,60}-[0-9a-f]{32}$"
+)
 _POLICY_SPEC_ARCHIVE_PATH = (
     "provider_runtime/runtime_inputs/"
     "native_task_arena_policy_execution_spec.v1.json"
