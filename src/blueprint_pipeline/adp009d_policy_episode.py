@@ -64,7 +64,9 @@ except ModuleNotFoundError:  # repository package
 try:  # flat provider-bundle layout
     from adp009d_droid_observation import (
         CANDIDATE_REQUIRED_VIEWS,
+        DROID_EXTERIOR_VIEW_1,
         DROID_OBSERVATION_SCHEMA_VERSION,
+        DROID_WRIST_VIEW,
         DroidObservationError,
         build_droid_observation,
         describe_observation_conversion,
@@ -72,7 +74,9 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .adp009d_droid_observation import (
         CANDIDATE_REQUIRED_VIEWS,
+        DROID_EXTERIOR_VIEW_1,
         DROID_OBSERVATION_SCHEMA_VERSION,
+        DROID_WRIST_VIEW,
         DroidObservationError,
         build_droid_observation,
         describe_observation_conversion,
@@ -351,6 +355,7 @@ def _persist_evaluation_camera_observation(
     episode_id: str,
     observation_index: int,
     kind: str,
+    exact_policy_input_camera_rgb: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     image_reader = getattr(environment, "read_evaluation_camera_inputs", None)
     metadata_reader = getattr(environment, "read_control_observation_metadata", None)
@@ -359,6 +364,21 @@ def _persist_evaluation_camera_observation(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:overview_camera_contract_missing"]
         )
     images = dict(image_reader())
+    if exact_policy_input_camera_rgb is not None:
+        if kind != "policy-input":
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_camera_override_kind_invalid"]
+            )
+        exact_policy_inputs = dict(exact_policy_input_camera_rgb)
+        if set(exact_policy_inputs) != {"external", "wrist"}:
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_camera_override_invalid"]
+            )
+        # These are the exact raw arrays used to build the observation passed
+        # to the policy.  The independent evaluation-camera read is retained
+        # only for the overview stream; it must not silently substitute a
+        # second external/wrist read for the policy's actual input bytes.
+        images.update(exact_policy_inputs)
     missing = {"external", "wrist", "overview"} - set(images)
     if missing:
         raise PolicyEpisodeError(
@@ -633,6 +653,7 @@ def run_policy_episode(
     media_output_dir: str | Path | None = None,
     episode_id: str | None = None,
     scoring_authorized: bool = True,
+    require_complete_multicamera_media: bool = False,
     progress: dict[str, Any] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -689,6 +710,17 @@ def run_policy_episode(
     multicamera_evaluation_available = callable(
         getattr(environment, "read_evaluation_camera_inputs", None)
     ) and callable(getattr(environment, "read_control_observation_metadata", None))
+    if require_complete_multicamera_media and (
+        media_root is None
+        or episode_id is None
+        or not multicamera_evaluation_available
+    ):
+        raise PolicyEpisodeError(
+            [
+                f"{BLOCKER_ENVIRONMENT_CONTRACT}:"
+                "complete_multicamera_media_contract_missing"
+            ]
+        )
     episode_progress = progress if progress is not None else {}
     if progress is not None:
         progress.clear()
@@ -1037,14 +1069,34 @@ def run_policy_episode(
             episode_progress["exact_policy_observation_retained"] = True
             _emit_progress("first_observation")
             if multicamera_evaluation_available:
-                retained_multicamera_observations.append(
-                    _persist_evaluation_camera_observation(
-                        environment,
-                        output_dir=media_root,
-                        episode_id=episode_id,
-                        observation_index=media_observation_index,
-                        kind="policy-input",
-                    )
+                multicamera_observation = _persist_evaluation_camera_observation(
+                    environment,
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    observation_index=media_observation_index,
+                    kind="policy-input",
+                    exact_policy_input_camera_rgb={
+                        "external": camera_rgb[DROID_EXTERIOR_VIEW_1],
+                        "wrist": camera_rgb[DROID_WRIST_VIEW],
+                    },
+                )
+                retained_multicamera_observations.append(multicamera_observation)
+                exact_frame["multicamera_observation_digest"] = (
+                    multicamera_observation["observation_digest"]
+                )
+                exact_frame["raw_policy_input_camera_bindings"] = {
+                    camera_id: {
+                        "frame_digest": multicamera_observation["views"][camera_id][
+                            "frame_digest"
+                        ],
+                        "raw_rgb_sha256": multicamera_observation["views"][camera_id][
+                            "raw_rgb_sha256"
+                        ],
+                    }
+                    for camera_id in ("external", "wrist")
+                }
+                exact_frame["frame_manifest_digest"] = canonical_digest(
+                    exact_frame, digest_field="frame_manifest_digest"
                 )
                 media_observation_index += 1
                 episode_progress["multicamera_policy_observation_retained"] = True
@@ -1367,6 +1419,54 @@ def run_policy_episode(
     )
 
     visual_evidence, media_artifacts = _seal_terminal_visual_evidence()
+    if require_complete_multicamera_media:
+        required_cameras = {"external", "wrist", "overview"}
+        visual = visual_evidence if isinstance(visual_evidence, Mapping) else {}
+        videos = visual.get("videos")
+        if (
+            visual.get("status") != "complete"
+            or visual.get("episode_terminal_status") != "completed"
+            or set(visual.get("required_camera_ids") or ()) != required_cameras
+            or set(visual.get("review_only_camera_ids") or ()) != {"overview"}
+            or visual.get("terminal_observation_present") is not True
+            or not isinstance(videos, Mapping)
+            or set(videos) != required_cameras
+            or len(retained_policy_frames) != len(queries)
+            or len(retained_multicamera_observations) != len(retained_policy_frames)
+            or visual.get("policy_input_observation_count") != len(queries)
+            or visual.get("policy_input_frame_count") != 2 * len(queries)
+            or any(
+                frame.get("frame_manifest_digest")
+                != canonical_digest(frame, digest_field="frame_manifest_digest")
+                or frame.get("multicamera_observation_digest")
+                != observation.get("observation_digest")
+                or any(
+                    (frame.get("raw_policy_input_camera_bindings") or {}).get(
+                        camera_id
+                    )
+                    != {
+                        "frame_digest": observation["views"][camera_id][
+                            "frame_digest"
+                        ],
+                        "raw_rgb_sha256": observation["views"][camera_id][
+                            "raw_rgb_sha256"
+                        ],
+                    }
+                    for camera_id in ("external", "wrist")
+                )
+                for frame, observation in zip(
+                    retained_policy_frames,
+                    retained_multicamera_observations,
+                    strict=True,
+                )
+            )
+        ):
+            raise PolicyEpisodeError(
+                [
+                    f"{BLOCKER_ENVIRONMENT_CONTRACT}:"
+                    "complete_multicamera_media_invalid"
+                ]
+            )
 
     timings_seconds = {
         key: round(float(value), 6) for key, value in timings_seconds.items()

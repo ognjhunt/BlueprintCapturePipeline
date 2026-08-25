@@ -749,6 +749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             media_output_dir=output_root / "episodes",
             episode_id=episode_id,
             scoring_authorized=not diagnostic,
+            require_complete_multicamera_media=True,
             progress=episode_progress,
             progress_callback=retain_episode_progress,
         )

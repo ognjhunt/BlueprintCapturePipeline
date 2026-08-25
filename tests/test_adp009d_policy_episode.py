@@ -814,7 +814,14 @@ def test_failed_candidate_seals_all_retained_cameras_without_terminal_read(
             self.policy_input_reads += 1
             if self.policy_input_reads > 1:
                 raise AssertionError("terminal_policy_input_read_forbidden")
-            return super().read_policy_inputs()
+            inputs = super().read_policy_inputs()
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 40, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 80, dtype=np.uint8
+            )
+            return inputs
 
         def read_evaluation_camera_inputs(self):
             self.evaluation_camera_reads += 1
@@ -1192,10 +1199,25 @@ def test_exact_first_observation_survives_multicamera_persistence_failure(
     assert resumed_artifacts == artifacts
 
 
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
-    tmp_path,
+    tmp_path, candidate_id: str
 ) -> None:
     class _OverviewEnvironment(_Environment):
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            # Deliberately differ from the independent evaluation-camera read
+            # below. The retained external/wrist files must be these exact raw
+            # policy-input bytes, while only overview comes from the second
+            # camera read.
+            inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+                (24, 32, 3), 41, dtype=np.uint8
+            )
+            inputs[DROID_WRIST_VIEW] = np.full(
+                (24, 32, 3), 83, dtype=np.uint8
+            )
+            return inputs
+
         def read_evaluation_camera_inputs(self):
             return {
                 "external": np.full((24, 32, 3), 40, dtype=np.uint8),
@@ -1238,18 +1260,23 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
             }
 
     policy = _Policy()
+    if candidate_id == "groot_n17_droid":
+        policy.action_space = ACTION_SPACE_JOINT_POSITION
     receipt = _run(
         _OverviewEnvironment(),
         policy,
+        candidate_id=candidate_id,
         max_policy_queries=1,
         settle_window_samples=2,
         media_output_dir=tmp_path,
         episode_id="overview-episode",
+        require_complete_multicamera_media=True,
     )
 
     visual = receipt["visual_evidence"]
     assert set(visual["videos"]) == {"external", "wrist", "overview"}
     assert visual["review_only_camera_ids"] == ["overview"]
+    assert visual["policy_input_observation_count"] == receipt["policy_queries"]
     assert visual["policy_input_frame_count"] == 2
     assert visual["review_observation_count"] == 1
     assert visual["review_frame_count"] == 3
@@ -1257,11 +1284,41 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
     exact = receipt["candidate_exact_policy_input_frames"]
     assert len(exact) == 1
     assert exact[0]["candidate_exact_policy_input"] is True
-    assert exact[0]["view_order"] == [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
-    assert exact[0]["width"] == 448
-    assert exact[0]["height"] == 224
+    expected_view_order = [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
+    assert exact[0]["view_order"] == expected_view_order
+    assert exact[0]["width"] == sum(
+        exact[0]["view_shapes"][view][1] for view in expected_view_order
+    )
+    assert exact[0]["height"] == exact[0]["view_shapes"][expected_view_order[0]][0]
     assert exact[0]["frame_manifest_digest"].startswith("sha256:")
     assert (tmp_path / exact[0]["relative_path"]).is_file()
+    manifest_artifact = next(
+        row
+        for row in receipt["media_artifacts"]
+        if row["role"] == "multicamera_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+    )
+    first_observation = manifest["policy_input_observations"][0]
+    from PIL import Image
+
+    for camera_id, expected_value in (("external", 41), ("wrist", 83)):
+        frame = first_observation["views"][camera_id]
+        with Image.open(tmp_path / frame["relative_path"]) as image:
+            pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        assert np.all(pixels == expected_value)
+        assert exact[0]["raw_policy_input_camera_bindings"][camera_id] == {
+            "frame_digest": frame["frame_digest"],
+            "raw_rgb_sha256": frame["raw_rgb_sha256"],
+        }
+    assert (
+        exact[0]["multicamera_observation_digest"]
+        == first_observation["observation_digest"]
+    )
+    assert exact[0]["frame_manifest_digest"] == canonical_digest(
+        exact[0], digest_field="frame_manifest_digest"
+    )
     assert receipt["observation_trace_digest"].startswith("sha256:")
 
 
@@ -1270,6 +1327,24 @@ def test_media_output_and_episode_identity_must_be_bound_together(tmp_path) -> N
         _run(media_output_dir=tmp_path)
 
     assert any("policy_media_binding_incomplete" in error for error in excinfo.value.errors)
+
+
+def test_required_complete_multicamera_media_rejects_legacy_profile(tmp_path) -> None:
+    environment = _Environment()
+
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(
+            environment=environment,
+            media_output_dir=tmp_path,
+            episode_id="legacy-profile-refused",
+            require_complete_multicamera_media=True,
+        )
+
+    assert environment.reset_count == 0
+    assert any(
+        "complete_multicamera_media_contract_missing" in error
+        for error in excinfo.value.errors
+    )
 
 
 def test_the_settle_window_releases_the_gripper() -> None:
