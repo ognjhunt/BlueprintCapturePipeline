@@ -5242,6 +5242,7 @@ def _prelaunch_inventory_guard(
     generated_at: str,
     api_key: str,
     allowed_active_instance_ids: Iterable[Any] = (),
+    allowed_active_resource_names: Sequence[str] = (),
     lane_label_prefix: str = "",
 ) -> dict[str, Any]:
     """Refuse to launch beside an instance this lane could mistake for its own.
@@ -5292,11 +5293,43 @@ def _prelaunch_inventory_guard(
             blockers.append("vast_prelaunch_inventory_query_failed")
             break
     allowed_ids = _machine_id_set(allowed_active_instance_ids)
+    allowed_names = tuple(
+        sorted(
+            {
+                _string(value)
+                for value in allowed_active_resource_names
+                if _string(value)
+            }
+        )
+    )
+    if any(
+        not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}", value)
+        for value in allowed_names
+    ):
+        blockers.append("vast_prelaunch_allowed_resource_name_invalid")
     unlisted = [
         row for row in active_instances if int(_number(row.get("id")) or -1) not in allowed_ids
     ]
     prefix = _string(lane_label_prefix)
-    if prefix:
+    campaign_name_scope = bool(allowed_names)
+    allowed_named_active_instances: list[dict[str, Any]] = []
+    if campaign_name_scope:
+        # Campaign members do not know the sibling's provider-assigned id at
+        # issuance time. They do know its exact, campaign-bound resource name.
+        # In this stricter mode every non-ID instance must match that
+        # exact label; arbitrary foreign labels and unlabeled spend both refuse.
+        def _is_allowed_campaign_name(row: Mapping[str, Any]) -> bool:
+            label = _string(row.get("label"))
+            return bool(label) and label in allowed_names
+
+        allowed_named_active_instances = [
+            row for row in unlisted if _is_allowed_campaign_name(row)
+        ]
+        unexpected_active_instances = [
+            row for row in unlisted if not _is_allowed_campaign_name(row)
+        ]
+        foreign_active_instances = []
+    elif prefix:
         # Ours, or unattributable. An instance carrying this lane's prefix is
         # ours and unaccounted for. An instance carrying no label at all cannot
         # be attributed to another lane either, and unattributable spend
@@ -5322,6 +5355,12 @@ def _prelaunch_inventory_guard(
         "active_instance_count": len(active_instances),
         "active_instances": active_instances,
         "allowed_active_instance_ids": sorted(allowed_ids),
+        "allowed_active_resource_names": list(allowed_names),
+        "allowed_named_active_instance_count": len(
+            allowed_named_active_instances
+        ),
+        "allowed_named_active_instances": allowed_named_active_instances,
+        "campaign_name_scope_active": campaign_name_scope,
         "unexpected_active_instance_count": len(unexpected_active_instances),
         "unexpected_active_instances": unexpected_active_instances,
         "lane_label_prefix": prefix,
@@ -6553,6 +6592,7 @@ def run_vast_provider_adapter(
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     allowed_active_instance_ids: Iterable[Any] = (),
+    allowed_active_resource_names: Sequence[str] = (),
     session_budget_ledger_path: str | Path | None = None,
     session_max_live_minutes: int | None = DEFAULT_SESSION_MAX_LIVE_MINUTES,
     verify_staging_urls: bool = False,
@@ -6567,6 +6607,7 @@ def run_vast_provider_adapter(
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     vast_launch_lock_file: str | Path | None = None,
     instance_label_prefix: str = "blueprint-vast-probe-",
+    instance_label_exact: str | None = None,
     started_instance_id_path: str | Path | None = None,
     retain_instance_on_runtime_failure: bool = False,
     retain_native_task_arena_warm_session: bool = False,
@@ -6575,6 +6616,7 @@ def run_vast_provider_adapter(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
     allowed_geolocation_country_codes: Iterable[str] = (),
+    stale_offer_create_retry_limit: int | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -6593,6 +6635,34 @@ def run_vast_provider_adapter(
     resolved_label_prefix = _string(instance_label_prefix)
     if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}", resolved_label_prefix):
         raise ValueError("invalid_vast_instance_label_prefix")
+    resolved_label_exact = _string(instance_label_exact)
+    if resolved_label_exact and not re.fullmatch(
+        r"blueprint-[a-z0-9-]{1,100}", resolved_label_exact
+    ):
+        raise ValueError("invalid_vast_instance_label_exact")
+    resolved_allowed_active_resource_names = tuple(
+        sorted(
+            {
+                _string(value)
+                for value in allowed_active_resource_names
+                if _string(value)
+            }
+        )
+    )
+    if any(
+        not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}", value)
+        for value in resolved_allowed_active_resource_names
+    ):
+        raise ValueError("invalid_vast_allowed_active_resource_name")
+    if (
+        stale_offer_create_retry_limit is not None
+        and (
+            isinstance(stale_offer_create_retry_limit, bool)
+            or not isinstance(stale_offer_create_retry_limit, int)
+            or stale_offer_create_retry_limit < 0
+        )
+    ):
+        raise ValueError("invalid_vast_stale_offer_create_retry_limit")
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
     resolved_machine_avoidlist_path = (
@@ -7546,6 +7616,7 @@ def run_vast_provider_adapter(
         generated_at=generated_at,
         api_key=api_key,
         allowed_active_instance_ids=resolved_allowed_active_instance_ids,
+        allowed_active_resource_names=resolved_allowed_active_resource_names,
         lane_label_prefix=resolved_label_prefix,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
@@ -7724,7 +7795,11 @@ def run_vast_provider_adapter(
         )
         create_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
-        max_stale_offer_retries = _vast_stale_offer_create_retry_attempts()
+        max_stale_offer_retries = (
+            stale_offer_create_retry_limit
+            if stale_offer_create_retry_limit is not None
+            else _vast_stale_offer_create_retry_attempts()
+        )
         create_status = 0
         create_response: dict[str, Any] = {}
         create_payload: dict[str, Any] = {}
@@ -7839,7 +7914,11 @@ def run_vast_provider_adapter(
             )
             create_payload = _create_payload(
                 image=create_request_image,
-                label=f"{resolved_label_prefix}{int(time.time())}",
+                label=(
+                    resolved_label_exact
+                    if resolved_label_exact
+                    else f"{resolved_label_prefix}{int(time.time())}"
+                ),
                 launch_mode=launch_mode,
                 probe_script=probe_script,
                 disk_gb=resolved_disk_gb,

@@ -41,6 +41,7 @@ from .adp009d_gated_backbone import MODEL_ID as GATED_BACKBONE_MODEL_ID
 from .adp009d_gated_backbone import REVISION as GATED_BACKBONE_REVISION
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES, PROGRAM_ID
 from .adp009d_policy_server_worker import (
+    CANDIDATE_DEFAULT_PORTS,
     CANDIDATE_TRANSPORTS,
     TRANSPORT_OPENPI_WEBSOCKET,
 )
@@ -161,22 +162,33 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
     """Install this candidate's client into Isaac's interpreter."""
 
     source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
-    subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(candidate_id)
-    if subpackage is None:
-        # GR00T's client lives inside its main package rather than a thin one,
-        # so it is installed without dependencies: the episode needs the ZMQ
-        # client class, and pulling GR00T's full tree into Isaac would risk
-        # the torch conflict this design exists to avoid.
+    if candidate_id == "groot_n17_droid":
+        # GR00T's upstream ``gr00t.policy`` package initializer eagerly imports
+        # server/model code (including transformers).  The episode needs only
+        # the protocol-pinned Blueprint wire module staged in RUNTIME_DIR, so
+        # do not install the full editable package into Isaac at all.
         return [
             f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
-            f'--no-deps -e "{source}"',
-            # Exact thin-client dependencies from the frozen GR00T pyproject.
-            # ``server_client.py`` imports msgpack_numpy at module import, so
-            # omitting it fails only after the server and Isaac have both paid
-            # their startup cost.
-            f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
             '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8"',
+            f'"{ISAAC_PYTHON_EXECUTABLE}" '
+            '"$RUNTIME_DIR/groot_n17_wire_client.py"',
         ]
+    subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(candidate_id)
+    if subpackage is None:
+        # Historical GR00T N1.6 remains a compatibility candidate. Its source
+        # is not protocol-bound to the N1.7 server_client digest, so preserve
+        # its prior no-deps client installation rather than silently routing it
+        # through a different frozen protocol.
+        if candidate_id == "groot_n16_droid":
+            return [
+                f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
+                f'--no-deps -e "{source}"',
+                f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
+                '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8"',
+            ]
+        raise PolicyProvisioningError(
+            [f"policy_isaac_client_subpackage_missing:{candidate_id}"]
+        )
     return [
         f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
         f'-e "{source}/{subpackage}"',
@@ -217,7 +229,7 @@ CHECKPOINT_INVENTORY_STAGED_NAME = "adp009d_openpi_checkpoint_inventory.json"
 
 
 def build_provisioning_script(
-    candidate_id: str, *, stop_after_round_trip: bool = False
+    candidate_id: str, *, stop_after_handshake: bool = False
 ) -> str:
     """Emit the worker-side provisioning script for one candidate."""
 
@@ -251,7 +263,7 @@ def build_provisioning_script(
     )
     gated_backbone = ""
     server_lifecycle_arg = (
-        " \\\n  --stop-after-round-trip" if stop_after_round_trip else ""
+        " \\\n  --stop-after-handshake" if stop_after_handshake else ""
     )
     if candidate_id == "groot_n17_droid":
         credential_contract = f'''case "${{{GATED_BACKBONE_AUTH_ENV}:-false}}" in
@@ -378,11 +390,13 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:co
 
 {identity}
 {gated_backbone}
-# Readiness is a completed inference round trip, not a listening socket: one
+# Readiness is an identity-bound transport and modality handshake, not a
+# listening socket: one
 # shipped server writes "model_loaded_ready_to_serve" before it serves at all,
 # and loading 12.4 GB of weights takes far longer than binding a port.  The
-# worker starts the server, waits for a real inference returning a well-formed
-# chunk, and leaves it running for the episode.
+# worker starts the server, verifies the exact identity and modality surface
+# without inference, and leaves it running. The first policy query is made only
+# after the episode has sealed its exact lossless observation.
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:started"
 "{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
   --candidate-id "{candidate_id}" \
@@ -416,7 +430,7 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "checkpoint_revision": plan["checkpoint_revision"],
         "expected_total_bytes": plan["expected_total_bytes"],
         "endpoint_host": POLICY_HOST,
-        "endpoint_port": POLICY_PORT,
+        "endpoint_port": CANDIDATE_DEFAULT_PORTS[CANDIDATE_TRANSPORTS[candidate_id]],
         "credentials_forwarded": False,
         "credentials_retained_for_server": False,
         "gated_backbone": (

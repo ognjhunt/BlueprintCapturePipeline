@@ -1,4 +1,4 @@
-"""Build a provider bundle for one real, outcome-blind policy inference."""
+"""Build a provider bundle for an outcome-blind policy readiness handshake."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .openpi_droid_policy_runtime import load_policy_spec
 
 
 PROBE_KIND = "adp009d-policy-runtime-smoke"
-SCHEMA_VERSION = "adp009d_policy_runtime_smoke_bundle.v1"
+SCHEMA_VERSION = "adp009d_policy_runtime_smoke_bundle.v2"
 RESULT_FILENAME = "adp009d_native_microcheck.json"
 ALLOWED_CANDIDATES = frozenset({"pi05_droid", "groot_n17_droid"})
 PROVISION_TIMEOUT_SECONDS = 2_700
@@ -107,7 +107,7 @@ def build_policy_runtime_smoke_bundle(
     implementation_commit: str,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build immutable bytes for one server startup and synthetic inference."""
+    """Build immutable bytes for one zero-inference server handshake."""
 
     if candidate_id not in ALLOWED_CANDIDATES or candidate_id not in EXPECTED_CANDIDATES:
         raise ValueError("policy_runtime_smoke_candidate_invalid")
@@ -139,7 +139,7 @@ def build_policy_runtime_smoke_bundle(
         identity_inputs = _stage_openpi_identity(runtime, source.parents[1])
     _write_executable(
         runtime / f"adp009d_policy_provisioning.{candidate_id}.sh",
-        build_provisioning_script(candidate_id, stop_after_round_trip=True),
+        build_provisioning_script(candidate_id, stop_after_handshake=True),
     )
     _write_executable(
         runtime / "run_adp_arena_provider_runtime.sh",
@@ -156,7 +156,8 @@ def build_policy_runtime_smoke_bundle(
         "checkpoint_repository": expected["checkpoint_repository"],
         "checkpoint_revision": expected["checkpoint_revision"],
         "checkpoint_inventory_digest": expected["checkpoint_inventory_digest"],
-        "synthetic_query_count": 1,
+        "synthetic_query_count": 0,
+        "readiness_method": "identity_bound_transport_handshake_without_inference",
         "actions_executed": False,
         "task_scene_loaded": False,
         **identity_inputs,
@@ -170,7 +171,7 @@ def build_policy_runtime_smoke_bundle(
         "execution_mode": "outcome_blind_policy_runtime_smoke",
         "implementation_commit": implementation_commit,
         "policy_candidate_id": candidate_id,
-        "candidate_policy_queried": True,
+        "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "controls_requested": False,
         "input_digest": input_digest,

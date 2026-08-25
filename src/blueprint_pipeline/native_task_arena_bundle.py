@@ -41,14 +41,22 @@ RESULT_SCHEMA_BY_MODE = {
     "policy": "native_task_arena_policy_result.v1",
     "policy_diagnostic": "native_task_arena_policy_diagnostic_result.v1",
 }
+POLICY_EXECUTION_AUTHORITY_BY_MODE = {
+    "policy": "qualified_controls_evaluation",
+    "policy_diagnostic": (
+        "development_only_unqualified_controls_canonical_diagnostic"
+    ),
+}
 POLICY_RUNTIME_ROOT_MODULE_NAMES = (
     "adp009d_checkpoint_fetch_worker.py",
     "adp009d_gated_backbone.py",
     "adp009d_groot_worker_identity.py",
     "adp009d_policy_server_worker.py",
     "adp009d_provisioning_preflight.py",
+    "adp009d_policy_rights.py",
     "decision_evidence_contracts.py",
     "droid_policy_bridge.py",
+    "groot_n17_wire_client.py",
     "groot_n17_droid_policy_runtime.py",
     "openpi_droid_policy_runtime.py",
 )
@@ -395,7 +403,6 @@ def build_native_task_arena_bundle(
     implementation_commit: str,
     execution_mode: str = "construction_canary",
     policy_candidate_id: str | None = None,
-    policy_rights_binding: Mapping[str, Any] | None = None,
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
     container_image: str = DEFAULT_IMAGE,
     runtime_source_packet_receipt: str | Path | None = None,
@@ -425,25 +432,6 @@ def build_native_task_arena_bundle(
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_policy_binding_invalid"]
         )
-    if execution_mode == "policy":
-        if not isinstance(policy_rights_binding, Mapping):
-            raise NativeTaskArenaBundleError(
-                ["native_task_arena_bundle_policy_rights_binding_missing"]
-            )
-        try:
-            sealed_policy_rights_binding = json.loads(
-                json.dumps(policy_rights_binding, allow_nan=False)
-            )
-        except (TypeError, ValueError) as exc:
-            raise NativeTaskArenaBundleError(
-                ["native_task_arena_bundle_policy_rights_binding_invalid"]
-            ) from exc
-    elif policy_rights_binding is not None:
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_policy_rights_binding_unexpected"]
-        )
-    else:
-        sealed_policy_rights_binding = None
     pure_output = PurePosixPath(str(expected_output_filename))
     if (
         pure_output.name != str(expected_output_filename)
@@ -526,6 +514,9 @@ def build_native_task_arena_bundle(
     runtime_root_rows: list[dict[str, Any]] = []
     policy_provisioning_script_name: str | None = None
     policy_provisioning_record: dict[str, Any] | None = None
+    policy_execution_spec_digest: str | None = None
+    policy_execution_authority: str | None = None
+    policy_rights_binding: dict[str, Any] | None = None
     if is_policy_mode:
         from .adp009d_policy_provisioning import (
             CHECKPOINT_INVENTORY_STAGED_NAME,
@@ -576,6 +567,40 @@ def build_native_task_arena_bundle(
             raise NativeTaskArenaBundleError(
                 ["native_task_arena_policy_execution_spec_staging_missing"]
             )
+        try:
+            sealed_execution_spec = json.loads(
+                execution_spec_source.read_text(encoding="utf-8")
+            )
+            sealed_rights = sealed_execution_spec.get("candidate_rights_binding")
+        except (AttributeError, OSError, json.JSONDecodeError) as exc:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_policy_execution_spec_staging_invalid"]
+            ) from exc
+        if (
+            not isinstance(sealed_execution_spec, dict)
+            or sealed_execution_spec.get("candidate_id") != candidate
+            or sealed_execution_spec.get("execution_spec_digest")
+            != canonical_digest(
+                sealed_execution_spec, digest_field="execution_spec_digest"
+            )
+            or sealed_execution_spec.get("execution_authority")
+            != POLICY_EXECUTION_AUTHORITY_BY_MODE[execution_mode]
+            or not isinstance(sealed_rights, Mapping)
+            or sealed_rights.get("rights_receipt_digest")
+            != canonical_digest(sealed_rights, digest_field="rights_receipt_digest")
+        ):
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_policy_execution_spec_staging_invalid"]
+            )
+        policy_execution_spec_digest = str(
+            sealed_execution_spec["execution_spec_digest"]
+        )
+        policy_execution_authority = str(
+            sealed_execution_spec["execution_authority"]
+        )
+        policy_rights_binding = json.loads(
+            json.dumps(sealed_rights, allow_nan=False)
+        )
         shutil.copy2(
             execution_spec_source,
             runtime / POLICY_EXECUTION_SPEC_STAGED_NAME,
@@ -664,8 +689,12 @@ def build_native_task_arena_bundle(
         "expected_output_filename": str(expected_output_filename),
         "policy_candidate_id": policy_candidate_id,
         **(
-            {"policy_rights_binding": sealed_policy_rights_binding}
-            if execution_mode == "policy"
+            {
+                "policy_execution_spec_digest": policy_execution_spec_digest,
+                "policy_execution_authority": policy_execution_authority,
+                "policy_rights_binding": policy_rights_binding,
+            }
+            if is_policy_mode
             else {}
         ),
         "candidate_policy_queried": False,

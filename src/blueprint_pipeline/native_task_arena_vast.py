@@ -393,6 +393,23 @@ def _run_native_task_arena_policy_vast(
     )
     if execute and authority is None:
         raise ValueError("native_task_arena_paid_execution_authority_missing")
+    campaign_binding = (
+        authority.get("policy_campaign_binding")
+        if isinstance(authority, Mapping)
+        else None
+    )
+    if campaign_binding is not None and not isinstance(campaign_binding, Mapping):
+        raise ValueError("native_task_arena_policy_campaign_binding_invalid")
+    member_resource_name = (
+        str(campaign_binding.get("resource_name") or "")
+        if isinstance(campaign_binding, Mapping)
+        else ""
+    )
+    sibling_resource_names = (
+        (str(campaign_binding.get("sibling_resource_name") or ""),)
+        if isinstance(campaign_binding, Mapping)
+        else ()
+    )
     if candidate == "groot_n17_droid" and not authorize_gated_backbone:
         raise ValueError("native_task_arena_groot_gated_backbone_authority_missing")
     if candidate != "groot_n17_droid" and authorize_gated_backbone:
@@ -423,9 +440,11 @@ def _run_native_task_arena_policy_vast(
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy/{candidate}",
         instance_label_prefix=label_prefix,
+        instance_label_exact=member_resource_name or None,
         blocker_prefix=blocker_prefix,
         min_gpu_ram_mb=46_000,
         allowed_active_instance_ids=allowed_ids,
+        allowed_active_resource_names=sibling_resource_names,
         # Policy and controls share the provider-wide semaphore even when a
         # predecessor GPU is explicitly allowlisted. The allowlist governs
         # inventory admission; it is not permission to bypass launch slots.
@@ -436,6 +455,10 @@ def _run_native_task_arena_policy_vast(
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
         authorization_consumption=consumption,
+        # The paid authority is retry-0. Vast's ordinary convenience retry for
+        # a stale offer is therefore disabled explicitly for every policy
+        # launch, campaign or standalone, so at most one create request occurs.
+        stale_offer_create_retry_limit=0,
     )
 
 

@@ -3,10 +3,10 @@
 The released pi05-DROID checkpoint outputs the original DROID action space:
 seven joint-velocity dimensions and one absolute gripper command.  Arena's
 available DROID embodiment accepts absolute joint-position targets instead,
-so each clipped velocity row is converted to a bounded position increment from
-the *currently observed* joints.  Treating the raw row as seven positions made
-448/480 actions hit joint limits in a paid run and was a harness fault, not a
-policy result.
+so each bounds-validated velocity row is converted to a bounded position
+increment from the *currently observed* joints.  Treating the raw row as seven
+positions made 448/480 actions hit joint limits in a paid run and was a harness
+fault, not a policy result.
 
 The environment's ``sim.dt = 1/120`` with ``decimation = 8`` means one
 ``env.step()`` advances 1/15 s, exactly DROID's 15 Hz control rate.  So one
@@ -65,6 +65,16 @@ BLOCKER_CHUNK_NONFINITE = "droid_action_chunk_nonfinite"
 BLOCKER_HORIZON_UNAVAILABLE = "droid_action_chunk_shorter_than_open_loop_horizon"
 BLOCKER_CONTROL_RATE_MISMATCH = "isaac_step_rate_does_not_match_droid_control_hz"
 BLOCKER_GRIPPER_CONVENTION_UNMEASURED = "isaac_gripper_convention_unmeasured"
+BLOCKER_JOINT_VELOCITY_BOUNDS = "candidate_action_joint_velocity_bounds_invalid"
+BLOCKER_JOINT_POSITION_BOUNDS = "candidate_action_joint_position_bounds_invalid"
+BLOCKER_GRIPPER_BOUNDS = "candidate_action_gripper_bounds_invalid"
+
+# The released pi05 DROID checkpoint emits normalized joint-velocity commands.
+# The bridge maps each inclusive [-1, 1] value to at most this candidate-space
+# delta. Values outside that raw interval are not evidence merely because the
+# compatibility bridge could clip them.
+DROID_NORMALIZED_JOINT_VELOCITY_BOUNDS = (-1.0, 1.0)
+DROID_GRIPPER_BOUNDS = (0.0, 1.0)
 
 
 class DroidActionExecutionError(ValueError):
@@ -137,6 +147,106 @@ def validate_action_chunk(chunk: Any, *, horizon: int = DROID_OPEN_LOOP_HORIZON)
     return values
 
 
+def validate_candidate_action_bounds(
+    chunk: Any,
+    *,
+    action_space: str,
+    joint_limits: Sequence[Sequence[float]] | None = None,
+) -> dict[str, Any]:
+    """Validate every raw candidate row before adaptation or clipping.
+
+    The open-loop executor may deliberately use only a chunk prefix, but the
+    retained candidate response is one scientific output. Every returned row
+    therefore has to satisfy the frozen candidate action-space contract.
+    """
+
+    import numpy as np
+
+    values = validate_action_chunk(chunk, horizon=1)
+    errors: list[str] = []
+
+    gripper_lower, gripper_upper = DROID_GRIPPER_BOUNDS
+    invalid_gripper = np.argwhere(
+        (values[:, ARM_JOINT_COUNT] < gripper_lower)
+        | (values[:, ARM_JOINT_COUNT] > gripper_upper)
+    )
+    if invalid_gripper.size:
+        row_index = int(invalid_gripper[0, 0])
+        errors.append(
+            f"{BLOCKER_GRIPPER_BOUNDS}:count={len(invalid_gripper)}:"
+            f"first_row={row_index}:value={values[row_index, ARM_JOINT_COUNT]!r}:"
+            f"bounds=[{gripper_lower},{gripper_upper}]"
+        )
+
+    if action_space == ACTION_SPACE_JOINT_VELOCITY:
+        arm_lower, arm_upper = DROID_NORMALIZED_JOINT_VELOCITY_BOUNDS
+        invalid_arm = np.argwhere(
+            (values[:, :ARM_JOINT_COUNT] < arm_lower)
+            | (values[:, :ARM_JOINT_COUNT] > arm_upper)
+        )
+        if invalid_arm.size:
+            row_index, dimension_index = (
+                int(invalid_arm[0, 0]),
+                int(invalid_arm[0, 1]),
+            )
+            errors.append(
+                f"{BLOCKER_JOINT_VELOCITY_BOUNDS}:count={len(invalid_arm)}:"
+                f"first_row={row_index}:first_dimension={dimension_index}:"
+                f"value={values[row_index, dimension_index]!r}:"
+                f"bounds=[{arm_lower},{arm_upper}]"
+            )
+        arm_contract: dict[str, Any] = {
+            "kind": "normalized_joint_velocity",
+            "inclusive_bounds": [arm_lower, arm_upper],
+            "maximum_mapped_joint_delta_rad": DROID_MAX_JOINT_DELTA_RAD,
+        }
+    elif action_space == ACTION_SPACE_JOINT_POSITION:
+        limits = np.asarray(joint_limits, dtype=float)
+        if (
+            limits.shape != (ARM_JOINT_COUNT, 2)
+            or not np.isfinite(limits).all()
+            or np.any(limits[:, 0] > limits[:, 1])
+        ):
+            raise DroidActionExecutionError(["isaac_joint_limits_invalid"])
+        invalid_arm = np.argwhere(
+            (values[:, :ARM_JOINT_COUNT] < limits[None, :, 0])
+            | (values[:, :ARM_JOINT_COUNT] > limits[None, :, 1])
+        )
+        if invalid_arm.size:
+            row_index, dimension_index = (
+                int(invalid_arm[0, 0]),
+                int(invalid_arm[0, 1]),
+            )
+            errors.append(
+                f"{BLOCKER_JOINT_POSITION_BOUNDS}:count={len(invalid_arm)}:"
+                f"first_row={row_index}:first_dimension={dimension_index}:"
+                f"value={values[row_index, dimension_index]!r}:"
+                f"bounds=[{limits[dimension_index, 0]!r},"
+                f"{limits[dimension_index, 1]!r}]"
+            )
+        arm_contract = {
+            "kind": "absolute_joint_position_rad",
+            "inclusive_bounds_by_joint": limits.tolist(),
+        }
+    else:
+        raise DroidActionExecutionError(
+            [f"droid_action_space_unsupported:{action_space}"]
+        )
+
+    if errors:
+        raise DroidActionExecutionError(errors)
+    return {
+        "action_space": action_space,
+        "validated_rows": int(values.shape[0]),
+        "arm_contract": arm_contract,
+        "gripper_contract": {
+            "kind": "absolute_gripper_scalar",
+            "inclusive_bounds": [gripper_lower, gripper_upper],
+        },
+        "raw_candidate_clipping_permitted": False,
+    }
+
+
 def droid_row_to_isaac_action(
     row: Sequence[float],
     *,
@@ -166,6 +276,11 @@ def droid_row_to_isaac_action(
     limits = np.asarray(joint_limits, dtype=float)
     if limits.shape != (ARM_JOINT_COUNT, 2) or not np.isfinite(limits).all():
         raise DroidActionExecutionError(["isaac_joint_limits_invalid"])
+    validate_candidate_action_bounds(
+        values[None, :],
+        action_space=action_space,
+        joint_limits=limits,
+    )
 
     if action_space == ACTION_SPACE_JOINT_VELOCITY:
         try:
@@ -181,19 +296,19 @@ def droid_row_to_isaac_action(
         velocity_command = [float(v) for v in values[:ARM_JOINT_COUNT]]
         joint_limit_clamped = bool(mapped["joint_limit_clamped"])
         source_action_space = SOURCE_DROID_VELOCITY
-        position_adapter = "observed_joint_plus_clipped_velocity_delta"
+        position_adapter = "observed_joint_plus_validated_normalized_velocity_delta"
         adapter_max_delta: float | None = DROID_MAX_JOINT_DELTA_RAD
     elif action_space == ACTION_SPACE_JOINT_POSITION:
         current = np.asarray(current_joint_position, dtype=float)
         if current.shape != (ARM_JOINT_COUNT,) or not np.isfinite(current).all():
             raise DroidActionExecutionError(["isaac_current_joint_position_invalid"])
         raw_target = values[:ARM_JOINT_COUNT]
-        target = np.clip(raw_target, limits[:, 0], limits[:, 1])
-        clipped_source = [*target.tolist(), float(values[ARM_JOINT_COUNT])]
+        target = raw_target.copy()
+        clipped_source = [float(value) for value in values]
         velocity_command = []
-        joint_limit_clamped = bool(np.any(np.abs(target - raw_target) > 1e-12))
+        joint_limit_clamped = False
         source_action_space = SOURCE_GROOT_POSITION
-        position_adapter = "decoded_absolute_joint_position_direct_with_limit_clamp"
+        position_adapter = "decoded_absolute_joint_position_direct_within_limits"
         adapter_max_delta = None
     else:
         raise DroidActionExecutionError(
@@ -214,6 +329,7 @@ def droid_row_to_isaac_action(
         "source_action_space": source_action_space,
         "position_adapter": position_adapter,
         "position_adapter_max_joint_delta_rad": adapter_max_delta,
+        "raw_candidate_bounds_validated": True,
     }
 
 
@@ -233,11 +349,11 @@ def plan_chunk_execution(
     values = validate_action_chunk(chunk, horizon=horizon)
     if action_space == ACTION_SPACE_JOINT_VELOCITY:
         source_action_space = SOURCE_DROID_VELOCITY
-        position_adapter = "observed_joint_plus_clipped_velocity_delta"
+        position_adapter = "observed_joint_plus_validated_normalized_velocity_delta"
         adapter_max_delta: float | None = DROID_MAX_JOINT_DELTA_RAD
     elif action_space == ACTION_SPACE_JOINT_POSITION:
         source_action_space = SOURCE_GROOT_POSITION
-        position_adapter = "decoded_absolute_joint_position_direct_with_limit_clamp"
+        position_adapter = "decoded_absolute_joint_position_direct_within_limits"
         adapter_max_delta = None
     else:
         raise DroidActionExecutionError(

@@ -4,34 +4,34 @@ import threading
 import time
 import json
 
-import numpy as np
 import pytest
 
 from blueprint_pipeline import adp009d_policy_server_worker as worker
 
 
-def test_readiness_requires_a_completed_round_trip_not_a_listening_port(
+def test_readiness_requires_a_completed_handshake_not_a_listening_port(
     monkeypatch,
 ) -> None:
     """One shipped server declares itself ready before it can serve at all."""
 
     attempts = {"n": 0}
 
-    def _flaky(host, port, transport=None):
+    def _flaky(*args, **kwargs):
+        del args, kwargs
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise ConnectionRefusedError("not up yet")
-        return {"action_chunk_rows": 10, "action_chunk_width": 8}
+        return {"handshake_completed": True, "candidate_policy_queried": False}
 
-    monkeypatch.setattr(worker, "attempt_round_trip", _flaky)
+    monkeypatch.setattr(worker, "attempt_handshake", _flaky)
     monkeypatch.setattr(worker, "READINESS_POLL_SECONDS", 0.0)
 
-    result = worker.wait_for_round_trip(
+    result = worker.wait_for_handshake(
         host="127.0.0.1", port=8000, timeout_seconds=30.0, process=None
     )
 
     assert result["readiness_attempts"] == 3
-    assert result["action_chunk_width"] == 8
+    assert result["candidate_policy_queried"] is False
 
 
 def test_a_server_that_exits_is_reported_immediately_not_waited_out(
@@ -46,11 +46,11 @@ def test_a_server_that_exits_is_reported_immediately_not_waited_out(
             return 1
 
     monkeypatch.setattr(
-        worker, "attempt_round_trip", lambda h, p: pytest.fail("should not be called")
+        worker, "attempt_handshake", lambda *a, **k: pytest.fail("should not be called")
     )
 
     with pytest.raises(RuntimeError) as excinfo:
-        worker.wait_for_round_trip(
+        worker.wait_for_handshake(
             host="127.0.0.1", port=8000, timeout_seconds=30.0, process=_Dead()
         )
     assert "exited_before_ready" in str(excinfo.value)
@@ -63,16 +63,17 @@ def test_one_blocked_attempt_cannot_starve_the_readiness_deadline(
 
     never = threading.Event()
 
-    def _blocked(host, port, transport=None):
+    def _blocked(*args, **kwargs):
+        del args, kwargs
         never.wait(60.0)
         raise AssertionError("unreachable")
 
-    monkeypatch.setattr(worker, "attempt_round_trip", _blocked)
-    monkeypatch.setattr(worker, "ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(worker, "attempt_handshake", _blocked)
+    monkeypatch.setattr(worker, "HANDSHAKE_ATTEMPT_TIMEOUT_SECONDS", 0.02)
 
     started = time.monotonic()
     with pytest.raises(RuntimeError) as excinfo:
-        worker.wait_for_round_trip(
+        worker.wait_for_handshake(
             host="127.0.0.1",
             port=5555,
             timeout_seconds=1.0,
@@ -81,14 +82,12 @@ def test_one_blocked_attempt_cannot_starve_the_readiness_deadline(
         )
 
     assert time.monotonic() - started < 0.5
-    assert "round_trip_attempt_timed_out" in str(excinfo.value)
+    assert "handshake_attempt_timed_out" in str(excinfo.value)
 
 
-def test_attempt_bound_has_measured_pi05_cold_start_headroom() -> None:
-    """The bound must not reject the observed 53-second pi05 first inference."""
-
-    assert worker.ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS >= 2 * 53.0
-    assert worker.ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS < worker.READINESS_TIMEOUT_SECONDS
+def test_handshake_attempt_is_bounded_below_the_overall_readiness_deadline() -> None:
+    assert 0 < worker.HANDSHAKE_ATTEMPT_TIMEOUT_SECONDS
+    assert worker.HANDSHAKE_ATTEMPT_TIMEOUT_SECONDS < worker.READINESS_TIMEOUT_SECONDS
 
 
 def test_failed_server_log_is_digest_bound_and_embedded_in_receipt(tmp_path) -> None:
@@ -127,59 +126,51 @@ def test_failed_readiness_stops_the_server_before_isaac_can_start() -> None:
     assert process.terminated is True
 
 
-def test_a_malformed_chunk_is_not_readiness(monkeypatch) -> None:
-    """A server answering with the wrong shape is not ready; it is broken."""
+def test_openpi_readiness_validates_identity_without_inference(monkeypatch) -> None:
+    observed = {"infer_calls": 0, "close_calls": 0}
 
-    import sys
-    import types
+    class _Spec:
+        def __init__(self, **kwargs):
+            observed["spec"] = kwargs
 
-    def _install_client(actions):
-        class _Client:
-            def __init__(self, **kwargs):
-                pass
+    class _Client:
+        candidate_policy_queried = False
 
-            def get_server_metadata(self):
-                # a correctly served policy publishes identity metadata; the
-                # episode client refuses a server that does not
-                return {"policy_id": "pi05_droid", "local_checkpoint_verified": True}
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
 
-            def infer(self, observation):
-                return {"actions": actions}
+        def infer(self, observation):
+            del observation
+            observed["infer_calls"] += 1
+            pytest.fail("readiness must not query the candidate")
 
-        transport = types.ModuleType("openpi_client.websocket_client_policy")
-        transport.WebsocketClientPolicy = _Client
-        package = types.ModuleType("openpi_client")
-        package.websocket_client_policy = transport
-        monkeypatch.setitem(sys.modules, "openpi_client", package)
-        monkeypatch.setitem(
-            sys.modules, "openpi_client.websocket_client_policy", transport
-        )
+        def evidence_summary(self):
+            return {
+                "identity_verified": True,
+                "server_metadata": {"policy_id": "pi05_droid_jointpos_polaris"},
+                "last_inference_evidence": None,
+            }
 
-    # Wrong width.
-    _install_client(np.zeros((10, 7)))
-    with pytest.raises(RuntimeError) as excinfo:
-        worker.attempt_round_trip("127.0.0.1", 8000)
-    assert "chunk_shape_invalid" in str(excinfo.value)
+        def close(self):
+            observed["close_calls"] += 1
 
-    # Too few rows for the open-loop horizon.
-    _install_client(np.zeros((4, 8)))
-    with pytest.raises(RuntimeError) as excinfo:
-        worker.attempt_round_trip("127.0.0.1", 8000)
-    assert "chunk_too_short" in str(excinfo.value)
+    monkeypatch.setattr(
+        worker,
+        "_openpi_adapter_types",
+        lambda: (_Client, _Spec, lambda **kwargs: observed.update(kwargs)),
+    )
+    result = worker.attempt_handshake(
+        "127.0.0.1",
+        8000,
+        policy_spec={"policy_id": "pi05_droid_jointpos_polaris"},
+        candidate_id="pi05_droid",
+    )
 
-    # Non-finite values.
-    bad = np.zeros((10, 8))
-    bad[0, 0] = np.nan
-    _install_client(bad)
-    with pytest.raises(RuntimeError) as excinfo:
-        worker.attempt_round_trip("127.0.0.1", 8000)
-    assert "nonfinite" in str(excinfo.value)
-
-    # A well-formed chunk is accepted.
-    _install_client(np.zeros((10, 8)))
-    result = worker.attempt_round_trip("127.0.0.1", 8000)
-    assert result["action_chunk_rows"] == 10
-    assert result["action_chunk_width"] == 8
+    assert result["handshake_completed"] is True
+    assert result["candidate_policy_queried"] is False
+    assert result["policy_state_advanced"] is False
+    assert observed["infer_calls"] == 0
+    assert observed["close_calls"] == 1
 
 
 def test_groot_readiness_uses_the_identity_bound_nested_droid_adapter(monkeypatch) -> None:
@@ -189,15 +180,24 @@ def test_groot_readiness_uses_the_identity_bound_nested_droid_adapter(monkeypatc
         pass
 
     class _Client:
+        candidate_policy_queried = False
+
         def __init__(self, **kwargs):
             observed.update(kwargs)
 
         def infer(self, observation):
-            observed["observation"] = observation
-            return np.zeros((40, 8), dtype=float)
+            del observation
+            pytest.fail("readiness must not query the candidate")
 
         def evidence_summary(self):
-            return {"identity_verified": True, "transport": "groot"}
+            return {
+                "identity_verified": True,
+                "transport": "groot",
+                "last_inference_evidence": None,
+            }
+
+        def close(self):
+            observed["close_calls"] = observed.get("close_calls", 0) + 1
 
     monkeypatch.setattr(
         worker,
@@ -206,7 +206,7 @@ def test_groot_readiness_uses_the_identity_bound_nested_droid_adapter(monkeypatc
     )
     identity_receipt = {"status": "verified", "checkpoint_files_sha256": "a" * 64}
 
-    result = worker.attempt_round_trip(
+    result = worker.attempt_handshake(
         "127.0.0.1",
         5555,
         worker.TRANSPORT_GROOT_ZMQ,
@@ -214,9 +214,44 @@ def test_groot_readiness_uses_the_identity_bound_nested_droid_adapter(monkeypatc
     )
 
     assert observed["worker_identity_receipt"] is identity_receipt
-    assert observed["observation"]["observation/eef_9d"].shape == (9,)
-    assert result["action_chunk_rows"] == 40
+    assert result["candidate_inference_performed"] is False
     assert result["policy_adapter_evidence"]["identity_verified"] is True
+    assert observed["close_calls"] == 1
+
+
+def test_groot_readiness_closes_client_when_handshake_evidence_is_invalid(monkeypatch) -> None:
+    observed = {"close_calls": 0}
+
+    class _Spec:
+        pass
+
+    class _Client:
+        candidate_policy_queried = False
+
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def evidence_summary(self):
+            return {"identity_verified": False, "last_inference_evidence": None}
+
+        def close(self):
+            observed["close_calls"] += 1
+
+    monkeypatch.setattr(
+        worker,
+        "_groot_adapter_types",
+        lambda: (_Client, _Spec, lambda receipt, expected: dict(receipt)),
+    )
+
+    with pytest.raises(RuntimeError, match="identity_not_verified"):
+        worker.attempt_handshake(
+            "127.0.0.1",
+            5555,
+            worker.TRANSPORT_GROOT_ZMQ,
+            {"status": "verified"},
+        )
+
+    assert observed["close_calls"] == 1
 
 
 def test_invalid_groot_identity_never_launches_a_server(tmp_path, monkeypatch) -> None:
@@ -256,22 +291,73 @@ def test_invalid_groot_identity_never_launches_a_server(tmp_path, monkeypatch) -
     assert receipt["server_pid"] is None
 
 
-def test_the_probe_observation_matches_what_the_episode_will_send() -> None:
-    """A shape mismatch must surface at startup, not mid-episode."""
+def test_ready_receipt_proves_zero_inference_handshake(tmp_path, monkeypatch) -> None:
+    class _Process:
+        pid = 1234
 
-    from blueprint_pipeline.adp009d_droid_observation import (
-        DROID_EXTERIOR_VIEW_1,
-        DROID_WRIST_VIEW,
+        def poll(self):
+            return None
+
+    policy_spec = tmp_path / "execution-spec.json"
+    policy_spec.write_text(
+        json.dumps({"policy_spec": {"policy_id": "pi05_droid_jointpos_polaris"}}),
+        encoding="utf-8",
     )
-    from blueprint_pipeline.droid_policy_bridge import validate_droid_observation
+    receipt_path = tmp_path / "server-receipt.json"
+    monkeypatch.setattr(worker, "build_serve_command", lambda **kwargs: ["server"])
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda *args, **kwargs: _Process())
+    monkeypatch.setattr(
+        worker,
+        "wait_for_handshake",
+        lambda **kwargs: {
+            "handshake_completed": True,
+            "candidate_policy_queried": False,
+            "candidate_inference_performed": False,
+            "policy_state_advanced": False,
+            "readiness_method": (
+                "identity_bound_transport_handshake_without_inference"
+            ),
+        },
+    )
 
-    observation = worker._probe_observation()
+    exit_code = worker.main(
+        [
+            "--candidate-id",
+            "pi05_droid",
+            "--source-root",
+            str(tmp_path / "source"),
+            "--checkpoint-root",
+            str(tmp_path / "checkpoint"),
+            "--python",
+            "/venv/bin/python",
+            "--log",
+            str(tmp_path / "server.log"),
+            "--receipt",
+            str(receipt_path),
+            "--policy-spec",
+            str(policy_spec),
+            "--checkpoint-inventory",
+            str(tmp_path / "inventory.json"),
+        ]
+    )
 
-    assert DROID_EXTERIOR_VIEW_1 in observation
-    assert DROID_WRIST_VIEW in observation
-    assert observation[DROID_EXTERIOR_VIEW_1].shape == (224, 224, 3)
-    # It must satisfy the repository's own DROID contract.
-    assert validate_droid_observation(observation) == []
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert receipt["schema_version"] == "adp009d_policy_server_worker.v2"
+    assert receipt["status"] == "ready"
+    assert receipt["handshake_completed"] is True
+    assert receipt["candidate_policy_queried"] is False
+    assert receipt["candidate_inference_performed"] is False
+    assert receipt["policy_state_advanced"] is False
+
+
+def test_readiness_source_contains_no_synthetic_observation_or_inference() -> None:
+    import inspect
+
+    source = inspect.getsource(worker.attempt_handshake)
+    assert "observation" not in source
+    assert ".infer(" not in source
+    assert "candidate_policy_queried" in source
 
 
 def test_the_server_is_loopback_only() -> None:
@@ -473,36 +559,27 @@ def test_readiness_refuses_a_server_the_episode_would_refuse(monkeypatch) -> Non
     queries. Fail at the cheap end instead.
     """
 
-    import sys
-    import types
-
-    import numpy as np
-    import pytest as _pytest
-
-    from blueprint_pipeline import adp009d_policy_server_worker as worker
-
-    class _StockClient:
-        """OpenPI's stock server: answers inference, publishes no identity."""
-
+    class _Spec:
         def __init__(self, **kwargs):
-            pass
+            del kwargs
 
-        def get_server_metadata(self):
-            return {}
+    class _RefusingClient:
+        def __init__(self, **kwargs):
+            del kwargs
+            raise ValueError("policy_server_metadata_mismatch")
 
-        def infer(self, observation):
-            return {"actions": np.zeros((20, 8), dtype=float)}
-
-    transport = types.ModuleType("openpi_client.websocket_client_policy")
-    transport.WebsocketClientPolicy = _StockClient
-    package = types.ModuleType("openpi_client")
-    package.websocket_client_policy = transport
-    monkeypatch.setitem(sys.modules, "openpi_client", package)
-
-    with _pytest.raises(RuntimeError) as excinfo:
-        worker.attempt_round_trip(host="127.0.0.1", port=8000)
-
-    assert "policy_server_publishes_no_identity_metadata" in str(excinfo.value)
+    monkeypatch.setattr(
+        worker,
+        "_openpi_adapter_types",
+        lambda: (_RefusingClient, _Spec, lambda **kwargs: None),
+    )
+    with pytest.raises(ValueError, match="policy_server_metadata_mismatch"):
+        worker.attempt_handshake(
+            host="127.0.0.1",
+            port=8000,
+            policy_spec={"policy_id": "pi05_droid_jointpos_polaris"},
+            candidate_id="pi05_droid",
+        )
 
 
 def test_serve_command_uses_the_shared_arena_device_constant() -> None:
@@ -535,41 +612,40 @@ def test_readiness_accepts_a_server_that_publishes_identity(monkeypatch) -> None
     the passing direction is pinned too.
     """
 
-    import sys
-    import types
-
-    import numpy as np
-
-    from blueprint_pipeline import adp009d_policy_server_worker as worker
+    class _Spec:
+        def __init__(self, **kwargs):
+            del kwargs
 
     class _IdentityBoundClient:
-        """Blueprint's wrapper: same upstream server, exact identity metadata."""
+        candidate_policy_queried = False
 
         def __init__(self, **kwargs):
-            pass
+            del kwargs
 
-        def get_server_metadata(self):
+        def evidence_summary(self):
             return {
-                "schema_version": "openpi_droid_policy_server_metadata.v1",
-                "policy_id": "pi05_droid",
-                "identity_sha256": "d" * 64,
-                "local_checkpoint_verified": True,
+                "identity_verified": True,
+                "server_metadata": {"policy_id": "pi05_droid_jointpos_polaris"},
+                "last_inference_evidence": None,
             }
 
-        def infer(self, observation):
-            return {"actions": np.zeros((15, 8), dtype=float)}
+        def close(self):
+            pass
 
-    transport = types.ModuleType("openpi_client.websocket_client_policy")
-    transport.WebsocketClientPolicy = _IdentityBoundClient
-    package = types.ModuleType("openpi_client")
-    package.websocket_client_policy = transport
-    monkeypatch.setitem(sys.modules, "openpi_client", package)
+    monkeypatch.setattr(
+        worker,
+        "_openpi_adapter_types",
+        lambda: (_IdentityBoundClient, _Spec, lambda **kwargs: None),
+    )
+    result = worker.attempt_handshake(
+        host="127.0.0.1",
+        port=8000,
+        policy_spec={"policy_id": "pi05_droid_jointpos_polaris"},
+        candidate_id="pi05_droid",
+    )
 
-    result = worker.attempt_round_trip(host="127.0.0.1", port=8000)
-
-    assert result["action_chunk_rows"] == 15
-    assert result["action_chunk_width"] == 8
-    assert result["server_metadata"]["policy_id"] == "pi05_droid"
+    assert result["handshake_completed"] is True
+    assert result["server_metadata"]["policy_id"] == "pi05_droid_jointpos_polaris"
 
 
 def test_provisioning_passes_the_staged_identity_inputs_to_the_server() -> None:

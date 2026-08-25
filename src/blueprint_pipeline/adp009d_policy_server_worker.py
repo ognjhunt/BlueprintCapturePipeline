@@ -1,4 +1,4 @@
-"""Start the policy server on the worker and prove it answers before declaring it up.
+"""Start the policy server and prove its identity-bound control plane is ready.
 
 A listening socket is not readiness.  One shipped server in this repo writes
 ``model_loaded_ready_to_serve`` before it calls ``serve_forever``, so a port
@@ -6,10 +6,12 @@ check would report a server that cannot yet serve.  Loading a 12.4 GB checkpoint
 also takes far longer than binding a port, and an episode that starts too early
 fails in a way that looks like a policy problem rather than a startup race.
 
-So readiness here means one completed inference round trip returning a
-well-formed action chunk.  Nothing weaker is accepted, and the observation used
-to probe it is built by the same adapter the episode will use, so a shape
-mismatch surfaces here rather than mid-episode.
+Readiness here means a completed transport handshake plus exact server identity
+and modality validation.  It deliberately sends no observation and requests no
+action: a synthetic readiness inference would advance policy RNG/history before
+the first retained episode observation.  Action shape and finite-value checks
+therefore remain at the episode boundary, where the queried observation is
+already sealed.
 
 Runs under the policy venv's interpreter, never Isaac's.
 """
@@ -40,7 +42,7 @@ except ModuleNotFoundError:  # flat provider-bundle layout
         "BLUEPRINT_NATIVE_TASK_ARENA_DEVICE"
     ]
 
-SCHEMA_VERSION = "adp009d_policy_server_worker.v1"
+SCHEMA_VERSION = "adp009d_policy_server_worker.v2"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -48,20 +50,16 @@ DEFAULT_PORT = 8000
 READINESS_TIMEOUT_SECONDS = 900.0
 READINESS_POLL_SECONDS = 10.0
 # A readiness deadline is meaningless if one import, client constructor, ping,
-# or inference can occupy the polling thread forever.  This bound is shorter
+# or metadata call can occupy the polling thread forever.  This bound is shorter
 # than the overall model-load allowance and leaves the outer loop free to
 # observe process exit and its own deadline.
-# The released pi05-DROID server has taken about 53 seconds for its first cold
-# inference on the qualified worker class.  A 30 second guard therefore killed
-# a healthy server before it could prove readiness.  Keep the vendor call
-# bounded, but leave measured cold-start headroom; this remains far below the
-# 15-minute overall readiness budget and still turns the prior 47-minute GR00T
-# hang into a typed failure.
-ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS = 120.0
+# Identity/modality handshakes should be much cheaper than inference, while
+# model loading can still delay the first successful metadata response. Keep a
+# bounded attempt so a vendor client constructor cannot starve the outer
+# readiness deadline.
+HANDSHAKE_ATTEMPT_TIMEOUT_SECONDS = 120.0
 SERVER_LOG_TAIL_BYTES = 32_768
 FAILED_SERVER_TERMINATE_TIMEOUT_SECONDS = 10.0
-DROID_ACTION_WIDTH = 8
-DROID_OPEN_LOOP_HORIZON = 8
 
 TRANSPORT_OPENPI_WEBSOCKET = "openpi_websocket"
 TRANSPORT_GROOT_ZMQ = "groot_zmq"
@@ -84,7 +82,7 @@ CANDIDATE_DEFAULT_PORTS = {
 }
 
 
-class RoundTripAttemptTimeout(TimeoutError):
+class HandshakeAttemptTimeout(TimeoutError):
     """One readiness attempt starved the poll loop past its own bound."""
 
 
@@ -177,28 +175,6 @@ def build_serve_command(
     ]
 
 
-def _probe_observation() -> dict:
-    """The observation the episode will send, so a shape error surfaces now."""
-
-    import numpy as np
-
-    frame = np.zeros((224, 224, 3), dtype=np.uint8)
-    return {
-        "observation/exterior_image_1_left": frame,
-        "observation/wrist_image_left": frame,
-        "observation/joint_position": np.zeros(7, dtype=float),
-        "observation/gripper_position": np.zeros(1, dtype=float),
-        # Identity pose after NVIDIA's documented DROID frame correction.
-        "observation/eef_9d": np.asarray(
-            [0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0],
-            dtype=float,
-        ),
-        "observation_history/exterior_image_1_left_t_minus_15": frame,
-        "observation_history/wrist_image_left_t_minus_15": frame,
-        "prompt": "pick up the can",
-    }
-
-
 def _groot_adapter_types():
     try:  # flat provider bundle
         from groot_n17_droid_policy_runtime import (
@@ -219,78 +195,95 @@ def _groot_adapter_types():
     )
 
 
-def attempt_round_trip(
+def _openpi_adapter_types():
+    try:  # flat provider bundle
+        from openpi_droid_policy_runtime import (
+            OpenPIDroidPolicySpec,
+            OpenPIWebsocketDroidPolicyClient,
+            validate_arena_candidate_policy_binding,
+        )
+    except ModuleNotFoundError:  # repository package
+        from .openpi_droid_policy_runtime import (
+            OpenPIDroidPolicySpec,
+            OpenPIWebsocketDroidPolicyClient,
+            validate_arena_candidate_policy_binding,
+        )
+    return (
+        OpenPIWebsocketDroidPolicyClient,
+        OpenPIDroidPolicySpec,
+        validate_arena_candidate_policy_binding,
+    )
+
+
+def attempt_handshake(
     host: str,
     port: int,
     transport: str = TRANSPORT_OPENPI_WEBSOCKET,
     worker_identity_receipt: Mapping[str, Any] | None = None,
+    policy_spec: Mapping[str, Any] | None = None,
+    candidate_id: str | None = None,
 ) -> dict:
-    """One real inference over this candidate's transport, or raises."""
+    """Validate the candidate's control plane without querying the policy."""
 
-    import numpy as np
-
-    if transport == TRANSPORT_GROOT_ZMQ:
-        if worker_identity_receipt is None:
-            raise RuntimeError("groot_worker_identity_receipt_missing")
-        client_type, spec_type, _ = _groot_adapter_types()
-        client = client_type(
-            spec=spec_type(),
-            worker_identity_receipt=worker_identity_receipt,
-            host=host,
-            port=int(port),
-        )
-        chunk = np.asarray(client.infer(_probe_observation()), dtype=float)
-        adapter_evidence = client.evidence_summary()
-    else:
-        from openpi_client import websocket_client_policy
-
-        client = websocket_client_policy.WebsocketClientPolicy(
-            host=host, port=int(port)
-        )
-        # Readiness must fail for a server the EPISODE would refuse. The arena
-        # policy worker builds OpenPIWebsocketDroidPolicyClient, whose __init__
-        # validates 14 identity fields plus local checkpoint verification. A
-        # stock `serve_policy.py` publishes none of them, so readiness passing
-        # here while the episode refuses later means a full Isaac boot and
-        # scene build are paid for and zero policy queries run. Check the same
-        # contract now, at the cheap end.
-        metadata = getattr(client, "get_server_metadata", lambda: {})() or {}
-        if not metadata:
-            raise RuntimeError(
-                "policy_server_publishes_no_identity_metadata:"
-                "the episode client requires it, so this server would be refused"
+    client = None
+    try:
+        if transport == TRANSPORT_GROOT_ZMQ:
+            if worker_identity_receipt is None:
+                raise RuntimeError("groot_worker_identity_receipt_missing")
+            client_type, spec_type, _ = _groot_adapter_types()
+            client = client_type(
+                spec=spec_type(),
+                worker_identity_receipt=worker_identity_receipt,
+                host=host,
+                port=int(port),
             )
-        response = client.infer(_probe_observation())
-        actions = response["actions"] if isinstance(response, dict) else response
-        chunk = np.asarray(actions, dtype=float)
-        adapter_evidence = None
-    if chunk.ndim != 2 or chunk.shape[1] != DROID_ACTION_WIDTH:
-        raise RuntimeError(f"policy_round_trip_chunk_shape_invalid:{chunk.shape}")
-    if chunk.shape[0] < DROID_OPEN_LOOP_HORIZON:
-        raise RuntimeError(f"policy_round_trip_chunk_too_short:{chunk.shape[0]}")
-    if not np.isfinite(chunk).all():
-        raise RuntimeError("policy_round_trip_chunk_nonfinite")
-    result = {
-        "action_chunk_rows": int(chunk.shape[0]),
-        "action_chunk_width": int(chunk.shape[1]),
-        "server_metadata": (
-            client.get_server_metadata()
-            if hasattr(client, "get_server_metadata")
-            else None
-        ),
-    }
-    if adapter_evidence is not None:
-        result["policy_adapter_evidence"] = adapter_evidence
-    return result
+            adapter_evidence = client.evidence_summary()
+        else:
+            if policy_spec is None:
+                raise RuntimeError("openpi_policy_spec_missing_for_handshake")
+            if candidate_id is None:
+                raise RuntimeError("openpi_candidate_id_missing_for_handshake")
+            client_type, spec_type, validate_binding = _openpi_adapter_types()
+            spec = spec_type(**dict(policy_spec))
+            validate_binding(candidate_id=candidate_id, spec=spec)
+            client = client_type(
+                spec=spec,
+                host=host,
+                port=int(port),
+            )
+            adapter_evidence = client.evidence_summary()
+        if adapter_evidence.get("identity_verified") is not True:
+            raise RuntimeError("policy_server_identity_not_verified")
+        if adapter_evidence.get("last_inference_evidence") is not None:
+            raise RuntimeError("policy_server_handshake_advanced_policy_state")
+        if getattr(client, "candidate_policy_queried", False) is not False:
+            raise RuntimeError("policy_server_handshake_queried_candidate")
+        result = {
+            "handshake_completed": True,
+            "readiness_method": "identity_bound_transport_handshake_without_inference",
+            "candidate_policy_queried": False,
+            "candidate_inference_performed": False,
+            "policy_state_advanced": False,
+            "server_metadata": adapter_evidence.get("server_metadata"),
+            "policy_adapter_evidence": adapter_evidence,
+        }
+        return result
+    finally:
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
 
-def _attempt_round_trip_with_timeout(
+def _attempt_handshake_with_timeout(
     *,
     host: str,
     port: int,
     transport: str,
     timeout_seconds: float,
     worker_identity_receipt: Mapping[str, Any] | None = None,
+    policy_spec: Mapping[str, Any] | None = None,
+    candidate_id: str | None = None,
 ) -> dict:
     """Run one vendor attempt in a daemon thread with a real wall deadline.
 
@@ -302,32 +295,34 @@ def _attempt_round_trip_with_timeout(
 
     timeout = float(timeout_seconds)
     if timeout <= 0:
-        raise RoundTripAttemptTimeout("policy_server_round_trip_attempt_timeout_invalid")
+        raise HandshakeAttemptTimeout("policy_server_handshake_attempt_timeout_invalid")
 
     result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
 
     def _run() -> None:
         try:
-            if worker_identity_receipt is None:
-                payload = attempt_round_trip(host, port, transport)
-            else:
-                payload = attempt_round_trip(
-                    host, port, transport, worker_identity_receipt
-                )
+            payload = attempt_handshake(
+                host,
+                port,
+                transport,
+                worker_identity_receipt,
+                policy_spec,
+                candidate_id,
+            )
             result_queue.put((True, payload))
         except BaseException as exc:  # noqa: BLE001 - re-raised on the polling thread
             result_queue.put((False, exc))
 
     thread = threading.Thread(
         target=_run,
-        name=f"policy-round-trip-{transport}",
+        name=f"policy-handshake-{transport}",
         daemon=True,
     )
     thread.start()
     thread.join(timeout)
     if thread.is_alive():
-        raise RoundTripAttemptTimeout(
-            f"policy_server_round_trip_attempt_timed_out:{timeout:.3f}s"
+        raise HandshakeAttemptTimeout(
+            f"policy_server_handshake_attempt_timed_out:{timeout:.3f}s"
         )
 
     succeeded, payload = result_queue.get_nowait()
@@ -335,7 +330,7 @@ def _attempt_round_trip_with_timeout(
         return dict(payload)
     if isinstance(payload, BaseException):
         raise payload
-    raise RuntimeError("policy_server_round_trip_attempt_returned_invalid_result")
+    raise RuntimeError("policy_server_handshake_attempt_returned_invalid_result")
 
 
 def _server_log_summary(path: Path) -> dict[str, Any]:
@@ -384,7 +379,7 @@ def _stop_failed_server(process: subprocess.Popen | None) -> dict[str, Any]:
         return {"status": "killed", "exit_code": int(exit_code)}
 
 
-def wait_for_round_trip(
+def wait_for_handshake(
     *,
     host: str,
     port: int,
@@ -392,8 +387,10 @@ def wait_for_round_trip(
     process: subprocess.Popen | None,
     transport: str = TRANSPORT_OPENPI_WEBSOCKET,
     worker_identity_receipt: Mapping[str, Any] | None = None,
+    policy_spec: Mapping[str, Any] | None = None,
+    candidate_id: str | None = None,
 ) -> dict:
-    """Poll until one inference succeeds, the process dies, or time runs out."""
+    """Poll until the identity-bound handshake succeeds or the server fails."""
 
     started = time.monotonic()
     attempts = 0
@@ -405,19 +402,21 @@ def wait_for_round_trip(
             )
         attempts += 1
         remaining = float(timeout_seconds) - (time.monotonic() - started)
-        attempt_timeout = min(ROUND_TRIP_ATTEMPT_TIMEOUT_SECONDS, remaining)
+        attempt_timeout = min(HANDSHAKE_ATTEMPT_TIMEOUT_SECONDS, remaining)
         try:
-            result = _attempt_round_trip_with_timeout(
+            result = _attempt_handshake_with_timeout(
                 host=host,
                 port=port,
                 transport=transport,
                 timeout_seconds=attempt_timeout,
                 worker_identity_receipt=worker_identity_receipt,
+                policy_spec=policy_spec,
+                candidate_id=candidate_id,
             )
             result["readiness_attempts"] = attempts
             result["readiness_seconds"] = round(time.monotonic() - started, 3)
             return result
-        except RoundTripAttemptTimeout as exc:
+        except HandshakeAttemptTimeout as exc:
             # Do not start another vendor call while the timed-out daemon may
             # still be blocked.  Preserve this exact diagnosis immediately.
             raise RuntimeError(str(exc)) from exc
@@ -426,7 +425,7 @@ def wait_for_round_trip(
             remaining = float(timeout_seconds) - (time.monotonic() - started)
             if remaining > 0:
                 time.sleep(min(READINESS_POLL_SECONDS, remaining))
-    raise RuntimeError(f"policy_server_never_answered:{last_error}")
+    raise RuntimeError(f"policy_server_handshake_never_completed:{last_error}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -445,10 +444,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--policy-spec")
     parser.add_argument("--checkpoint-inventory")
     parser.add_argument(
-        "--stop-after-round-trip",
+        "--stop-after-handshake",
         action="store_true",
         help=(
-            "Stop the policy server immediately after the one readiness inference. "
+            "Stop the policy server immediately after the readiness handshake. "
             "Used by outcome-blind runtime smokes; episode serving leaves it running."
         ),
     )
@@ -489,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
     process: subprocess.Popen | None = None
     try:
         worker_identity_receipt = None
+        policy_spec = None
         if transport == TRANSPORT_GROOT_ZMQ:
             if not args.worker_identity_receipt:
                 raise RuntimeError("groot_worker_identity_receipt_missing")
@@ -503,33 +503,43 @@ def main(argv: list[str] | None = None) -> int:
                 worker_identity_receipt, expected=spec_type()
             )
             receipt["worker_identity_receipt"] = worker_identity_receipt
+        else:
+            if not args.policy_spec:
+                raise RuntimeError("openpi_policy_spec_file_missing")
+            execution_spec = json.loads(
+                Path(args.policy_spec).read_text(encoding="utf-8")
+            )
+            policy_spec = execution_spec.get("policy_spec")
+            if not isinstance(policy_spec, Mapping):
+                raise RuntimeError("openpi_policy_spec_invalid")
         with log_path.open("wb") as log_handle:
             process = subprocess.Popen(  # noqa: S603
                 command, stdout=log_handle, stderr=subprocess.STDOUT
             )
-            round_trip = wait_for_round_trip(
+            handshake = wait_for_handshake(
                 host=args.host,
                 port=port,
                 timeout_seconds=float(args.timeout_seconds),
                 process=process,
                 transport=transport,
                 worker_identity_receipt=worker_identity_receipt,
+                policy_spec=policy_spec,
+                candidate_id=args.candidate_id,
             )
         receipt.update(
             {
                 "status": "ready",
                 "server_pid": process.pid,
-                "round_trip_completed": True,
-                **round_trip,
+                **handshake,
             }
         )
-        if args.stop_after_round_trip:
+        if args.stop_after_handshake:
             server_cleanup = _stop_failed_server(process)
-            receipt["server_stopped_after_round_trip"] = server_cleanup.get(
+            receipt["server_stopped_after_handshake"] = server_cleanup.get(
                 "status"
             ) in {"already_exited", "terminated", "killed"}
             receipt["server_cleanup"] = server_cleanup
-            if receipt["server_stopped_after_round_trip"] is not True:
+            if receipt["server_stopped_after_handshake"] is not True:
                 raise RuntimeError("policy_server_smoke_cleanup_failed")
         exit_code = 0
     except Exception as exc:  # noqa: BLE001 - the failure is the evidence
@@ -537,7 +547,10 @@ def main(argv: list[str] | None = None) -> int:
         receipt.update(
             {
                 "status": "blocked",
-                "round_trip_completed": False,
+                "handshake_completed": False,
+                "candidate_policy_queried": False,
+                "candidate_inference_performed": False,
+                "policy_state_advanced": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "server_pid": process.pid if process else None,
                 "server_exit_code": failed_server_cleanup["exit_code"],

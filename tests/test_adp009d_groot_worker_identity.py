@@ -9,6 +9,13 @@ import venv
 from blueprint_pipeline import adp009d_groot_worker_identity as identity
 
 
+def _git_blob_sha1(value: bytes) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)
+    digest.update(f"blob {len(value)}\0".encode("ascii"))
+    digest.update(value)
+    return digest.hexdigest()
+
+
 def test_checkpoint_inventory_binds_paths_sizes_and_bytes_but_not_hf_cache(tmp_path) -> None:
     root = tmp_path / "checkpoint"
     (root / "weights").mkdir(parents=True)
@@ -38,6 +45,15 @@ def test_checkpoint_inventory_binds_paths_sizes_and_bytes_but_not_hf_cache(tmp_p
         "file_count": 2,
         "total_bytes": sum(row["size_bytes"] for row in rows),
         "checkpoint_files_sha256": expected,
+        "checkpoint_files": [
+            {
+                **row,
+                "git_blob_sha1": _git_blob_sha1(
+                    (root / row["path"]).read_bytes()
+                ),
+            }
+            for row in rows
+        ],
     }
 
 
@@ -50,6 +66,11 @@ def test_identity_is_verified_only_after_source_bytes_and_environment_are_observ
     checkpoint.mkdir()
     (checkpoint / "model.bin").write_bytes(b"frozen")
     monkeypatch.setattr(identity, "EXPECTED_CHECKPOINT_BYTES", len(b"frozen"))
+    monkeypatch.setattr(
+        identity,
+        "EXPECTED_CHECKPOINT_FILE_MANIFEST",
+        (("model.bin", 6, "sha256", hashlib.sha256(b"frozen").hexdigest()),),
+    )
 
     def _run(command):
         if command[0] == "git":
@@ -82,6 +103,61 @@ def test_identity_is_verified_only_after_source_bytes_and_environment_are_observ
     assert receipt["publisher_inventory_role"] == (
         "fetch_admission_not_local_content_digest"
     )
+    assert receipt["checkpoint_content_manifest_digest"] == (
+        identity.expected_checkpoint_content_binding()["file_manifest_digest"]
+    )
+
+
+def test_same_size_checkpoint_tamper_blocks_exact_content_identity(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    checkpoint = tmp_path / "checkpoint"
+    source.mkdir()
+    checkpoint.mkdir()
+    expected_bytes = b"frozen"
+    tampered_bytes = b"tamper"
+    assert len(expected_bytes) == len(tampered_bytes)
+    (checkpoint / "model.bin").write_bytes(tampered_bytes)
+    monkeypatch.setattr(
+        identity,
+        "EXPECTED_CHECKPOINT_FILE_MANIFEST",
+        (
+            (
+                "model.bin",
+                len(expected_bytes),
+                "sha256",
+                hashlib.sha256(expected_bytes).hexdigest(),
+            ),
+        ),
+    )
+
+    def _run(command):
+        if command[0] == "git":
+            return identity.GROOT_SOURCE_REVISION
+        return json.dumps(
+            {
+                "schema_version": "python_distribution_inventory.v1",
+                "python": {"executable": "/venv/bin/python", "version": "3.12"},
+                "distributions": [
+                    {"name": "gr00t", "version": "1.0", "direct_url": None}
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    monkeypatch.setattr(identity, "_run_text", _run)
+    receipt = identity.build_worker_identity(
+        source_root=source, checkpoint_root=checkpoint, python="/venv/bin/python"
+    )
+
+    assert receipt["file_count"] == 1
+    assert receipt["total_bytes"] == len(expected_bytes)
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == [
+        "groot_worker_checkpoint_file_identity_mismatch:model.bin"
+    ]
 
 
 def test_byte_count_or_source_drift_blocks_identity(tmp_path, monkeypatch) -> None:

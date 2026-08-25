@@ -36,6 +36,10 @@ from .paid_attempt_authority import (
     validate_bound_lane_prior_spend,
 )
 from .spend_authority_consumption_root import consumption_root
+from .task_evaluation_immutable_input_resolver import (
+    ImmutableInputResolutionError,
+    resolve_immutable_input,
+)
 
 
 AUTHORITY_SCHEMA_VERSION = "native_task_arena_paid_attempt_authority.v1"
@@ -43,12 +47,12 @@ PROVIDER_ZERO_SCHEMA_VERSION = "native_task_arena_provider_zero.v1"
 #: Written when the watchdog was armed but the run ended before allocating.
 WATCHDOG_HANDOFF_SCHEMA_VERSION = "vast_independent_watchdog_handoff.v1"
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
-# Explicitly expanded by the active Task Arena goal owner on 2026-08-21 so the
+# Explicitly expanded by the active Task Arena goal owner on 2026-08-24 so the
 # controls and two frozen policy candidates can keep using ordinary 24 GB GPU
 # offers.  The aggregate ceiling does not weaken the per-attempt contract:
 # every authority remains single-use, retry-0, provider-zero-gated, and bounded
 # by ``MAX_HARD_CAP_USD`` below.
-AGGREGATE_GOAL_SPEND_CAP_USD = 40.0
+AGGREGATE_GOAL_SPEND_CAP_USD = 50.0
 MAX_HARD_CAP_USD = 2.0
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
@@ -79,7 +83,14 @@ def _read(path: Path, code: str) -> dict[str, Any]:
 def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
     if not isinstance(value, Mapping):
         raise ValueError(code)
-    path = Path(str(value.get("path") or "")).expanduser().resolve()
+    try:
+        path = resolve_immutable_input(
+            str(value.get("path") or ""),
+            expected_digest=str(value.get("sha256") or ""),
+            expected_size_bytes=value.get("size_bytes"),
+        )
+    except ImmutableInputResolutionError as exc:
+        raise ValueError(code) from exc
     if (
         path.is_symlink()
         or not path.is_file()
@@ -228,6 +239,75 @@ def _bundle_loader(mode: str):
     }[mode]
 
 
+def _native_policy_campaign_binding(
+    *,
+    campaign_path: str | Path,
+    expected_campaign_record: Mapping[str, Any] | None = None,
+    campaign_member_id: str,
+    prepared_bundle: Mapping[str, Any],
+    blueprint_commit: str,
+    prior_spend: float,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+    allowed_active_instance_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Load one member without making the ordinary authority path campaign-aware."""
+
+    from .native_task_arena_policy_campaign import (
+        campaign_member,
+        load_verified_native_task_arena_policy_campaign,
+        verify_native_task_arena_policy_campaign_bundles,
+    )
+
+    campaign, campaign_record = load_verified_native_task_arena_policy_campaign(
+        campaign_path,
+        expected_blueprint_commit=blueprint_commit,
+    )
+    member, sibling = campaign_member(campaign, member_id=campaign_member_id)
+    try:
+        verify_native_task_arena_policy_campaign_bundles(
+            campaign, expected_blueprint_commit=blueprint_commit
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "native_task_arena_policy_campaign_member_binding_invalid"
+        ) from exc
+    controls_ids = tuple(campaign["controls_allowed_active_instance_ids"])
+    if (
+        prepared_bundle.get("execution_mode") not in {"policy", "policy_diagnostic"}
+        or member.get("candidate_id") != prepared_bundle.get("policy_candidate_id")
+        or member.get("execution_mode") != prepared_bundle.get("execution_mode")
+        or member.get("bundle_sha256") != prepared_bundle.get("bundle_sha256")
+        or member.get("bundle_input_digest") != prepared_bundle.get("input_digest")
+        or member.get("blueprint_commit") != prepared_bundle.get("implementation_commit")
+        or member.get("maximum_hourly_rate_usd") != max_hourly_rate_usd
+        or member.get("hard_attempt_spend_cap_usd") != hard_cap_usd
+        or member.get("maximum_single_resource_ttl_seconds") != hard_ttl_seconds
+        or campaign.get("prior_official_spend", {}).get(
+            "aggregate_goal_spend_before_campaign_usd"
+        )
+        != prior_spend
+        or controls_ids != tuple(sorted(set(allowed_active_instance_ids)))
+    ):
+        raise ValueError("native_task_arena_policy_campaign_member_binding_invalid")
+    return {
+        "campaign": (
+            dict(expected_campaign_record)
+            if expected_campaign_record is not None
+            else campaign_record
+        ),
+        "campaign_id": campaign["campaign_id"],
+        "campaign_digest": campaign["campaign_digest"],
+        "member_id": member["member_id"],
+        "launch_id": member["launch_id"],
+        "resource_name": member["resource_name"],
+        "sibling_member_id": sibling["member_id"],
+        "sibling_launch_id": sibling["launch_id"],
+        "sibling_resource_name": sibling["resource_name"],
+    }
+
+
 def materialize_native_task_arena_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -245,6 +325,8 @@ def materialize_native_task_arena_paid_attempt_authority(
     output_path: str | Path,
     allowed_active_instance_ids: Sequence[int] = (),
     retain_warm_session: bool = False,
+    policy_campaign_path: str | Path | None = None,
+    campaign_member_id: str | None = None,
 ) -> dict[str, Any]:
     """Seal one zero-retry authority against a bundle and terminal predecessor."""
 
@@ -281,6 +363,12 @@ def materialize_native_task_arena_paid_attempt_authority(
     # impossible to issue: taking ``min`` here permanently froze the chain at
     # its first value even after the owner expanded the active goal budget.
     aggregate_cap = AGGREGATE_GOAL_SPEND_CAP_USD
+    campaign_inputs_complete = (
+        policy_campaign_path is not None and campaign_member_id is not None
+    )
+    campaign_inputs_partial = (policy_campaign_path is None) != (
+        campaign_member_id is None
+    )
     if (
         not authorization_reference.strip()
         or not authorized_by.strip()
@@ -291,8 +379,24 @@ def materialize_native_task_arena_paid_attempt_authority(
         or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
         or (retain_warm_session and mode != "controls")
+        or campaign_inputs_partial
     ):
         raise ValueError("native_task_arena_authority_configuration_invalid")
+    campaign_binding = (
+        _native_policy_campaign_binding(
+            campaign_path=policy_campaign_path,
+            campaign_member_id=str(campaign_member_id),
+            prepared_bundle=bundle,
+            blueprint_commit=blueprint_commit,
+            prior_spend=prior_spend,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            allowed_active_instance_ids=allowed,
+        )
+        if campaign_inputs_complete
+        else None
+    )
     authority: dict[str, Any] = {
         "schema_version": AUTHORITY_SCHEMA_VERSION,
         "authority_kind": "explicit_user_direction_in_current_goal",
@@ -337,6 +441,11 @@ def materialize_native_task_arena_paid_attempt_authority(
             "external_provider_owned": list(allowed),
             "same_goal_concurrent": [],
         },
+        **(
+            {"policy_campaign_binding": campaign_binding}
+            if campaign_binding is not None
+            else {}
+        ),
         "raw_nonredistributable_bytes_uploaded": False,
         "canonical_interiorgs_uploaded_or_mutated": False,
         "simulator_output_is_not_physical_evidence": True,
@@ -418,9 +527,19 @@ def validate_native_task_arena_paid_attempt_authority(
         errors.append("digest_invalid")
     if observed_allowlist != expected_allowlist:
         errors.append("active_instance_allowlist_mismatch")
+    actual_after: float | None = None
     try:
-        receipt_path, _ = _bound_record(value.get("bundle_receipt"), "bundle_receipt_unbound")
-        if receipt_path != Path(str(prepared_bundle.get("bundle_path"))).parent / "native_task_arena_provider_bundle_receipt.v1.json":
+        _receipt_path, receipt_record = _bound_record(
+            value.get("bundle_receipt"), "bundle_receipt_unbound"
+        )
+        expected_receipt_path = (
+            Path(str(prepared_bundle.get("bundle_path"))).parent
+            / "native_task_arena_provider_bundle_receipt.v1.json"
+        )
+        recorded_receipt_path = Path(
+            os.path.abspath(str(Path(str(receipt_record.get("path") or "")).expanduser()))
+        )
+        if recorded_receipt_path != expected_receipt_path:
             errors.append("bundle_receipt_path_mismatch")
         predecessor = value.get("prior_terminal_attempt")
         if not isinstance(predecessor, Mapping):
@@ -457,6 +576,31 @@ def validate_native_task_arena_paid_attempt_authority(
             errors.append("prior_terminal_spend_mismatch")
     except ValueError:
         errors.append("prior_terminal_spend_invalid")
+    campaign_binding = value.get("policy_campaign_binding")
+    if campaign_binding is not None:
+        try:
+            if not isinstance(campaign_binding, Mapping) or actual_after is None:
+                raise ValueError("campaign_binding_invalid")
+            campaign_path, campaign_record = _bound_record(
+                campaign_binding.get("campaign"),
+                "policy_campaign_unbound",
+            )
+            observed_campaign_binding = _native_policy_campaign_binding(
+                campaign_path=campaign_path,
+                expected_campaign_record=campaign_record,
+                campaign_member_id=str(campaign_binding.get("member_id") or ""),
+                prepared_bundle=prepared_bundle,
+                blueprint_commit=str(prepared_bundle.get("implementation_commit") or ""),
+                prior_spend=actual_after,
+                max_hourly_rate_usd=max_hourly_rate_usd,
+                hard_cap_usd=hard_cap_usd,
+                hard_ttl_seconds=hard_ttl_seconds,
+                allowed_active_instance_ids=allowed_active_instance_ids,
+            )
+            if dict(campaign_binding) != observed_campaign_binding:
+                errors.append("policy_campaign_binding_mismatch")
+        except ValueError:
+            errors.append("policy_campaign_binding_invalid")
     if errors:
         raise ValueError("native_task_arena_authority_invalid:" + ",".join(sorted(set(errors))))
     return value
@@ -474,6 +618,18 @@ def consume_native_task_arena_authority_once(authority: Mapping[str, Any]) -> di
         "blueprint_commit": authority.get("blueprint_commit"),
         "consumed_at": utc_now_iso(),
         "maximum_provider_allocations": 1,
+        **(
+            {
+                "policy_campaign_digest": (
+                    authority.get("policy_campaign_binding") or {}
+                ).get("campaign_digest"),
+                "policy_campaign_member_id": (
+                    authority.get("policy_campaign_binding") or {}
+                ).get("member_id"),
+            }
+            if authority.get("policy_campaign_binding") is not None
+            else {}
+        ),
     }
     raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
     try:

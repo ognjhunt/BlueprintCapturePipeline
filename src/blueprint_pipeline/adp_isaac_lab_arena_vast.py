@@ -383,6 +383,9 @@ def run_arena_native_control_vast(
     enable_isaac_smoke: bool = True,
     forward_hf_token: bool = False,
     allowed_active_instance_ids: Sequence[int] = (),
+    allowed_active_resource_names: Sequence[str] = (),
+    instance_label_exact: str | None = None,
+    stale_offer_create_retry_limit: int | None = None,
     vast_launch_lock_file: str | Path | None = None,
     candidate_policy_query_expected: bool = False,
     preferred_gpu_keywords: tuple[str, ...] = (
@@ -587,7 +590,9 @@ def run_arena_native_control_vast(
             max_live_minutes=remaining_live_minutes,
             generated_at=generated,
             allowed_active_instance_ids=allowed_active_instance_ids,
+            allowed_active_resource_names=allowed_active_resource_names,
             pod_name_prefix=instance_label_prefix,
+            resource_name_exact=instance_label_exact,
         )
         if watchdog_handle is None:
             cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -662,6 +667,7 @@ def run_arena_native_control_vast(
                     if watchdog_handle is not None
                     else instance_label_prefix
                 ),
+                instance_label_exact=instance_label_exact,
                 started_instance_id_path=(
                     watchdog_handle.started_instance_id_path
                     if watchdog_handle is not None
@@ -670,9 +676,11 @@ def run_arena_native_control_vast(
                 retention_watchdog_handoff=watchdog_handoff,
                 forward_hf_token=forward_hf_token,
                 allowed_active_instance_ids=allowed_active_instance_ids,
+                allowed_active_resource_names=allowed_active_resource_names,
                 vast_launch_lock_file=vast_launch_lock_file,
                 paid_resource_admission_grant=paid_resource_admission_grant,
                 retain_native_task_arena_warm_session=retain_warm_instance,
+                stale_offer_create_retry_limit=stale_offer_create_retry_limit,
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {

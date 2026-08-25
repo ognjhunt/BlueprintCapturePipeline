@@ -95,6 +95,31 @@ def test_provider_output_recognizes_arena_runtime_preflight(tmp_path: Path) -> N
     assert result["runtime_result"]["blockers"] == ["measured_preflight_blocker"]
 
 
+def test_provider_output_recognizes_native_policy_diagnostic_result(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "arena-policy-diagnostic-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "native_task_arena_policy_diagnostic_result.v1.json",
+            json.dumps(
+                {
+                    "schema_version": "native_task_arena_policy_diagnostic_result.v1",
+                    "status": "blocked",
+                    "blockers": ["measured_policy_diagnostic_blocker"],
+                }
+            ),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "blocked"
+    assert result["runtime_result"]["blockers"] == [
+        "measured_policy_diagnostic_blocker"
+    ]
+
+
 def test_provider_output_recognizes_artifixer3d_result(tmp_path: Path) -> None:
     output_zip = tmp_path / "artifixer3d-output.zip"
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:

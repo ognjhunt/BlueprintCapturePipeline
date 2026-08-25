@@ -36,23 +36,31 @@ try:  # flat provider-bundle layout
     from adp009d_droid_action_execution import (
         ACTION_SPACE_JOINT_VELOCITY,
         ARM_JOINT_COUNT,
+        BLOCKER_CHUNK_NONFINITE,
+        BLOCKER_CHUNK_SHAPE,
+        DROID_ACTION_WIDTH,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
         DroidActionExecutionError,
         GripperConvention,
         droid_row_to_isaac_action,
         plan_chunk_execution,
+        validate_candidate_action_bounds,
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_droid_action_execution import (
         ACTION_SPACE_JOINT_VELOCITY,
         ARM_JOINT_COUNT,
+        BLOCKER_CHUNK_NONFINITE,
+        BLOCKER_CHUNK_SHAPE,
+        DROID_ACTION_WIDTH,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
         DroidActionExecutionError,
         GripperConvention,
         droid_row_to_isaac_action,
         plan_chunk_execution,
+        validate_candidate_action_bounds,
     )
 try:  # flat provider-bundle layout
     from adp009d_droid_observation import (
@@ -112,6 +120,7 @@ except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 try:  # flat provider-bundle layout
     from episode_visual_evidence import (
+        finalize_failed_policy_visual_evidence,
         finalize_manipulation_evaluation_visual_evidence,
         finalize_visual_evidence,
         persist_multicamera_observation,
@@ -119,6 +128,7 @@ try:  # flat provider-bundle layout
     )
 except ModuleNotFoundError:  # repository package
     from .episode_visual_evidence import (
+        finalize_failed_policy_visual_evidence,
         finalize_manipulation_evaluation_visual_evidence,
         finalize_visual_evidence,
         persist_multicamera_observation,
@@ -440,6 +450,83 @@ def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
     return values
 
 
+def _json_safe_policy_action(value: Any) -> Any:
+    """Retain candidate output before numerical validation, including NaN tags."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_policy_action(item) for key, item in value.items()}
+    if isinstance(value, (str, bool, int)) or value is None:
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {"nonfinite_float": repr(value)}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe_policy_action(item) for item in value]
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return _json_safe_policy_action(tolist())
+    item = getattr(value, "item", None)
+    if callable(item):
+        return _json_safe_policy_action(item())
+    return {"unsupported_type": f"{type(value).__module__}.{type(value).__name__}"}
+
+
+def _raw_policy_action_evidence(chunk: Any, *, query_index: int) -> dict[str, Any]:
+    retained = _json_safe_policy_action(chunk)
+    record = {
+        "query_index": int(query_index),
+        "wire_value_type": f"{type(chunk).__module__}.{type(chunk).__name__}",
+        "raw_action_chunk": retained,
+        "shape_validated": False,
+        "finite_values_validated": False,
+        "raw_bounds_validated": False,
+        "chunk_contract_validated": False,
+    }
+    record["raw_action_chunk_digest"] = canonical_digest(
+        {"raw_action_chunk": retained}
+    )
+    return record
+
+
+def _prevalidation_vendor_action_evidence(
+    inference_evidence: Any, *, query_index: int
+) -> dict[str, Any] | None:
+    """Project a digest-verified vendor response into the episode query log."""
+
+    if not isinstance(inference_evidence, Mapping):
+        return None
+    retained = inference_evidence.get("raw_vendor_action_response")
+    observed_digest = inference_evidence.get(
+        "raw_vendor_action_response_digest"
+    )
+    if (
+        inference_evidence.get("server_response_received") is not True
+        or retained is None
+        or observed_digest
+        != canonical_digest({"raw_vendor_action_response": retained})
+    ):
+        return None
+    return {
+        "query_index": int(query_index),
+        "wire_value_type": str(
+            inference_evidence.get("wire_response_type") or "unknown"
+        ),
+        "raw_vendor_action_response": retained,
+        "raw_vendor_action_response_digest": observed_digest,
+        "raw_vendor_action_response_role": inference_evidence.get(
+            "raw_vendor_action_response_role"
+        ),
+        "action_payload_returned": (
+            inference_evidence.get("action_payload_returned") is True
+        ),
+        "shape_validated": False,
+        "finite_values_validated": False,
+        "raw_bounds_validated": False,
+        "chunk_contract_validated": False,
+    }
+
+
 def _motion_and_command_evidence(
     *,
     joint_trace: Sequence[Sequence[float]],
@@ -591,7 +678,8 @@ def run_policy_episode(
     media_output_dir: str | Path | None = None,
     episode_id: str | None = None,
     scoring_authorized: bool = True,
-    media_progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    progress: dict[str, Any] | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -649,28 +737,62 @@ def run_policy_episode(
     policy_input_history: deque[tuple[int, Mapping[str, Any]]] = deque(
         maxlen=GROOT_HISTORY_STEPS + 1
     )
+    episode_progress = progress if progress is not None else {}
+    if progress is not None:
+        progress.clear()
+    episode_progress.update(
+        {
+            "first_observation_retained": False,
+            "exact_policy_observation_retained": False,
+            "multicamera_policy_observation_retained": False,
+            "candidate_policy_query_attempted": False,
+            "candidate_policy_queried": False,
+            "candidate_action_returned": False,
+            "candidate_action_shape_validated": False,
+            "candidate_action_finite_validated": False,
+            "candidate_action_bounds_validated": False,
+            "candidate_action_validated": False,
+            "candidate_native_command_validated": False,
+            "candidate_joint_state_validated": False,
+            "candidate_action_applied": False,
+            "episode_running": False,
+        }
+    )
 
-    def report_media_progress() -> None:
-        if media_progress_callback is None:
-            return
-        media_progress_callback(
-            json.loads(
-                json.dumps(
-                    {
-                        "media_output_dir": str(media_root),
-                        "episode_id": episode_id,
-                        "candidate_id": candidate_id,
-                        "prompt": str(prompt),
-                        "candidate_exact_policy_input_frames": retained_policy_frames,
-                        "multicamera_policy_input_observations": (
-                            retained_multicamera_observations
-                        ),
-                        "review_observations": retained_review_observations,
-                    },
-                    allow_nan=False,
-                )
+    def _emit_progress(phase: str) -> None:
+        episode_progress["phase"] = phase
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    key: episode_progress[key]
+                    for key in (
+                        "phase",
+                        "first_observation_retained",
+                        "exact_policy_observation_retained",
+                        "multicamera_policy_observation_retained",
+                        "candidate_policy_query_attempted",
+                        "candidate_policy_queried",
+                        "candidate_action_returned",
+                        "candidate_action_shape_validated",
+                        "candidate_action_finite_validated",
+                        "candidate_action_bounds_validated",
+                        "candidate_action_validated",
+                        "candidate_native_command_validated",
+                        "candidate_joint_state_validated",
+                        "candidate_action_applied",
+                        "episode_running",
+                    )
+                }
+                | {
+                    key: episode_progress[key]
+                    for key in (
+                        "candidate_policy_action_queries",
+                        "commanded_actions",
+                        "candidate_exact_policy_input_frames",
+                    )
+                    if key in episode_progress
+                }
             )
-        )
 
     episode_started = time.monotonic()
     timings_seconds = {
@@ -712,7 +834,201 @@ def run_policy_episode(
     queries: list[dict[str, Any]] = []
     last_action: list[float] | None = None
     commanded_actions: list[dict[str, Any]] = []
+    candidate_policy_action_queries: list[dict[str, Any]] = []
     command_response_rows = 0
+    episode_progress["commanded_actions"] = commanded_actions
+    episode_progress["candidate_policy_action_queries"] = (
+        candidate_policy_action_queries
+    )
+
+    media_sealed = False
+    sealed_visual_evidence: dict[str, Any] | None = None
+    sealed_media_artifacts: list[dict[str, Any]] = []
+    terminal_observation_record: dict[str, Any] | None = None
+
+    def _seal_terminal_visual_evidence(
+        *, failure_reason: str | None = None
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """Seal retained media while the simulator is still readable.
+
+        The worker invokes this closure if the episode raises after its first
+        observation.  That keeps calibration, timestamps, exact RGB digests,
+        manifests, and H.264 review videos from disappearing merely because a
+        later policy/action/scoring step failed.
+        """
+
+        nonlocal media_observation_index
+        nonlocal media_sealed
+        nonlocal sealed_visual_evidence
+        nonlocal sealed_media_artifacts
+        nonlocal terminal_observation_record
+        if media_sealed:
+            return sealed_visual_evidence, sealed_media_artifacts
+        if (
+            media_root is None
+            or episode_id is None
+            or not retained_policy_frames
+        ):
+            return None, []
+        phase_started = time.monotonic()
+        native_multicamera_incomplete = bool(
+            multicamera_evaluation_available
+            and not retained_multicamera_observations
+        )
+        if failure_reason is not None:
+            # Failure sealing is observation-only. Never issue a fresh camera,
+            # joint, or simulator read and never manufacture a scientific
+            # terminal frame after the exception that stopped the episode.
+            visual_evidence, media_artifacts = (
+                finalize_failed_policy_visual_evidence(
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    identity={
+                        "candidate_id": candidate_id,
+                        "prompt": str(prompt),
+                        "policy_input_camera_ids": ["external", "wrist"],
+                        "review_only_camera_ids": ["overview"],
+                        "overview_camera_used_by_policy": False,
+                        "overview_camera_used_by_grader": False,
+                    },
+                    exact_policy_input_frames=retained_policy_frames,
+                    multicamera_policy_input_observations=(
+                        retained_multicamera_observations
+                    ),
+                    review_observations=retained_review_observations,
+                    failure_reason=str(failure_reason),
+                )
+            )
+        elif multicamera_evaluation_available and retained_multicamera_observations:
+            if terminal_observation_record is None:
+                terminal_observation_record = _persist_evaluation_camera_observation(
+                    environment,
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    observation_index=media_observation_index,
+                    kind="terminal-observation",
+                )
+                media_observation_index += 1
+            visual_evidence, media_artifacts = (
+                finalize_manipulation_evaluation_visual_evidence(
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    identity={
+                        "candidate_id": candidate_id,
+                        "prompt": str(prompt),
+                        "policy_input_camera_ids": ["external", "wrist"],
+                        "review_only_camera_ids": ["overview"],
+                        "overview_camera_used_by_policy": False,
+                        "overview_camera_used_by_grader": False,
+                    },
+                    policy_input_observations=retained_multicamera_observations,
+                    review_observations=retained_review_observations,
+                    terminal_observation=terminal_observation_record,
+                )
+            )
+        else:
+            if terminal_observation_record is None:
+                terminal_inputs = environment.read_policy_inputs()
+                _retain_policy_input_sample(
+                    policy_input_history, step_index=step_index, inputs=terminal_inputs
+                )
+                terminal_camera_rgb = {
+                    view: terminal_inputs[view]
+                    for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                    if view in terminal_inputs
+                }
+                try:
+                    terminal_policy_observation = build_droid_observation(
+                        candidate_id=candidate_id,
+                        camera_rgb=terminal_camera_rgb,
+                        joint_position=terminal_inputs["joint_position"],
+                        gripper_position=terminal_inputs["gripper_position"],
+                        prompt=prompt,
+                        eef_9d=terminal_inputs.get("eef_9d"),
+                        historical_camera_rgb=_historical_camera_rgb(
+                            policy_input_history,
+                            candidate_id=candidate_id,
+                            step_index=step_index,
+                        ),
+                    )
+                except KeyError as exc:
+                    raise PolicyEpisodeError(
+                        [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
+                    ) from exc
+                terminal_observation_record = persist_observation_frame(
+                    _policy_view_composite(
+                        terminal_policy_observation, candidate_id=candidate_id
+                    ),
+                    output_dir=media_root,
+                    episode_id=episode_id,
+                    frame_index=len(retained_policy_frames),
+                    kind="terminal-observation",
+                )
+            visual_evidence, media_artifacts = finalize_visual_evidence(
+                output_dir=media_root,
+                episode_id=episode_id,
+                identity={
+                    "candidate_id": candidate_id,
+                    "prompt": str(prompt),
+                    "policy_input_view_order": (
+                        [
+                            GROOT_HISTORICAL_VIEW_KEYS[view]
+                            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                        ]
+                        if candidate_id == "groot_n17_droid"
+                        else []
+                    )
+                    + list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
+                    "legacy_media_profile": True,
+                },
+                policy_input_frames=retained_policy_frames,
+                terminal_observation=terminal_observation_record,
+            )
+        visual_evidence = dict(visual_evidence)
+        if native_multicamera_incomplete:
+            # The exact lossless composite was already retained before native
+            # evaluation-camera persistence was attempted. Preserve its
+            # digest-bound manifest and review video, but do not promote that
+            # useful subset into a complete media claim: external/wrist raw
+            # frames, calibration, and timestamps are still required.
+            visual_evidence["status"] = "incomplete_after_first_observation"
+            visual_evidence["media_gap"] = {
+                "type": "after_first_observation_evidence_incomplete",
+                "reason": (
+                    str(failure_reason)
+                    if failure_reason
+                    else "native_multicamera_policy_observation_not_retained"
+                ),
+            }
+            visual_evidence["exact_policy_observation_retained"] = True
+            visual_evidence["multicamera_policy_observation_retained"] = False
+            visual_evidence["missing_required_evidence"] = [
+                "native_external_camera_frames",
+                "native_wrist_camera_frames",
+                "native_camera_calibration_and_timestamps",
+                "multicamera_frame_manifest",
+                "per_camera_review_videos",
+            ]
+        visual_evidence["episode_terminal_status"] = (
+            "failed_after_first_observation" if failure_reason else "completed"
+        )
+        if failure_reason:
+            visual_evidence["episode_failure_reason"] = str(failure_reason)
+        timings_seconds["media_persistence"] += time.monotonic() - phase_started
+        sealed_visual_evidence = visual_evidence
+        sealed_media_artifacts = media_artifacts
+        # A typed derived-video gap is a durable failure result, but the
+        # immutable frame manifest can still be re-entered later in the same
+        # worker if the encoder becomes available before teardown.
+        media_sealed = not bool(visual_evidence.get("video_gaps"))
+        episode_progress["visual_evidence"] = visual_evidence
+        episode_progress["media_artifacts"] = media_artifacts
+        if failure_reason is None:
+            _emit_progress("episode_media_sealed")
+        return visual_evidence, media_artifacts
+
+    episode_progress["_failure_media_finalizer"] = _seal_terminal_visual_evidence
+    episode_progress["candidate_exact_policy_input_frames"] = retained_policy_frames
 
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
@@ -788,6 +1104,13 @@ def run_policy_episode(
             )
             exact_frame["frame_manifest_digest"] = canonical_digest(exact_frame)
             retained_policy_frames.append(exact_frame)
+            # This exact lossless composite is the authority for whether a first
+            # policy observation was retained. Native evaluation-camera capture
+            # is additional evidence and may fail independently after this byte
+            # sequence is already durable.
+            episode_progress["first_observation_retained"] = True
+            episode_progress["exact_policy_observation_retained"] = True
+            _emit_progress("first_observation")
             if multicamera_evaluation_available:
                 retained_multicamera_observations.append(
                     _persist_evaluation_camera_observation(
@@ -799,12 +1122,53 @@ def run_policy_episode(
                     )
                 )
                 media_observation_index += 1
-            report_media_progress()
+                episode_progress["multicamera_policy_observation_retained"] = True
+                _emit_progress("multicamera_observation_retained")
             timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
         phase_started = time.monotonic()
-        chunk = policy.infer(observation)
+        episode_progress["candidate_policy_query_attempted"] = True
+        _emit_progress("policy_query_started")
+        try:
+            chunk = policy.infer(observation)
+        except BaseException as exc:
+            timings_seconds["policy_inference"] += time.monotonic() - phase_started
+            inference_evidence_reader = getattr(
+                policy, "last_inference_evidence", None
+            )
+            try:
+                failure_inference_evidence = (
+                    inference_evidence_reader()
+                    if callable(inference_evidence_reader)
+                    else None
+                )
+            except (TypeError, ValueError):
+                failure_inference_evidence = None
+            vendor_action_evidence = _prevalidation_vendor_action_evidence(
+                failure_inference_evidence, query_index=query_index
+            )
+            if vendor_action_evidence is not None:
+                episode_progress["candidate_policy_queried"] = True
+                episode_progress["policy_inference_evidence"] = (
+                    failure_inference_evidence
+                )
+                _emit_progress("policy_response_received")
+                if vendor_action_evidence["action_payload_returned"]:
+                    episode_progress["candidate_action_returned"] = True
+                    candidate_policy_action_queries.append(vendor_action_evidence)
+                    if (
+                        str(exc) == "groot_policy_action_shape_mismatch"
+                        or str(exc).startswith("openpi_inference_response_")
+                    ):
+                        _emit_progress("policy_action_shape_refused")
+                    elif str(exc) == "groot_policy_action_nonfinite":
+                        vendor_action_evidence["shape_validated"] = True
+                        episode_progress["candidate_action_shape_validated"] = True
+                        _emit_progress("policy_action_shape_validated")
+                        _emit_progress("policy_action_finite_refused")
+            raise
         timings_seconds["policy_inference"] += time.monotonic() - phase_started
+        episode_progress["candidate_policy_queried"] = True
         if chunk is None:
             raise PolicyEpisodeError([BLOCKER_CLIENT_RETURNED_NOTHING])
         inference_evidence_reader = getattr(policy, "last_inference_evidence", None)
@@ -813,16 +1177,67 @@ def run_policy_episode(
             if callable(inference_evidence_reader)
             else None
         )
+        episode_progress["candidate_action_returned"] = True
+        episode_progress["policy_inference_evidence"] = policy_inference_evidence
+        raw_action_evidence = _prevalidation_vendor_action_evidence(
+            policy_inference_evidence, query_index=query_index
+        ) or _raw_policy_action_evidence(
+            chunk, query_index=query_index
+        )
+        candidate_policy_action_queries.append(raw_action_evidence)
+        _emit_progress("policy_response_received")
 
         phase_started = time.monotonic()
+        import numpy as np
+
+        try:
+            action_values = np.asarray(chunk, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raw_action_evidence["shape_validation_error"] = f"{type(exc).__name__}:{exc}"
+            _emit_progress("policy_action_shape_refused")
+            raise DroidActionExecutionError(
+                [f"{BLOCKER_CHUNK_SHAPE}:not_numeric"]
+            ) from exc
+        raw_action_evidence["observed_shape"] = list(action_values.shape)
+        if action_values.ndim != 2 or action_values.shape[1] != DROID_ACTION_WIDTH:
+            _emit_progress("policy_action_shape_refused")
+            raise DroidActionExecutionError(
+                [f"{BLOCKER_CHUNK_SHAPE}:{tuple(action_values.shape)}"]
+            )
+        raw_action_evidence["shape_validated"] = True
+        episode_progress["candidate_action_shape_validated"] = True
+        _emit_progress("policy_action_shape_validated")
+        if not np.isfinite(action_values).all():
+            _emit_progress("policy_action_finite_refused")
+            raise DroidActionExecutionError([BLOCKER_CHUNK_NONFINITE])
+        raw_action_evidence["finite_values_validated"] = True
+        episode_progress["candidate_action_finite_validated"] = True
+        _emit_progress("policy_action_finite_validated")
+        try:
+            raw_bound_contract = validate_candidate_action_bounds(
+                action_values,
+                action_space=policy_action_space,
+                joint_limits=joint_limits,
+            )
+        except DroidActionExecutionError as exc:
+            raw_action_evidence["raw_bound_validation_errors"] = list(exc.errors)
+            _emit_progress("policy_action_bounds_refused")
+            raise
+        raw_action_evidence["raw_bounds_validated"] = True
+        raw_action_evidence["raw_bound_contract"] = raw_bound_contract
+        episode_progress["candidate_action_bounds_validated"] = True
+        _emit_progress("policy_action_bounds_validated")
         plan = plan_chunk_execution(
-            chunk,
+            action_values,
             horizon=int(open_loop_horizon),
             action_space=policy_action_space,
         )
         timings_seconds["action_planning"] += time.monotonic() - phase_started
+        raw_action_evidence["chunk_contract_validated"] = True
+        episode_progress["candidate_action_validated"] = True
+        _emit_progress("first_policy_action")
         query_clamped_rows = 0
-        for planned_action in plan["actions"]:
+        for action_index, planned_action in enumerate(plan["actions"]):
             before = list(joint_trace[-1])
             action = droid_row_to_isaac_action(
                 planned_action["droid_action"],
@@ -832,14 +1247,50 @@ def run_policy_episode(
                 action_space=policy_action_space,
             )
             query_clamped_rows += int(action["joint_limit_clamped"])
+            action_record = {
+                "joint_position_target_rad": [
+                    float(value) for value in action["joint_position_target_rad"]
+                ],
+                "joint_velocity_command_rad_s": list(
+                    action["joint_velocity_command_rad_s"]
+                ),
+                "source_arm_command": list(action["source_arm_command"]),
+                "source_action_space": action["source_action_space"],
+                "clipped_droid_action": list(action["clipped_droid_action"]),
+                "observed_before_rad": before,
+                "observed_after_rad": None,
+                "isaac_action": [float(value) for value in action["isaac_action"]],
+                "query_index": query_index,
+                "action_index_within_query": action_index,
+                "step_index": step_index + 1,
+                "native_command_validated": True,
+                "joint_state_before_validated": True,
+                "environment_step_attempted": False,
+                "environment_step_applied": False,
+                "joint_state_after_validated": False,
+            }
+            commanded_actions.append(action_record)
+            episode_progress["candidate_native_command_validated"] = True
+            _emit_progress("native_command_validated")
             phase_started = time.monotonic()
+            action_record["environment_step_attempted"] = True
+            _emit_progress("environment_step_started")
             environment.step(action["isaac_action"])
             timings_seconds["environment_step_including_render"] += (
                 time.monotonic() - phase_started
             )
+            step_index += 1
+            action_record["environment_step_applied"] = True
+            episode_progress["candidate_action_applied"] = True
+            episode_progress["episode_running"] = True
+            _emit_progress("episode_running")
             phase_started = time.monotonic()
             after = _read_arm_joint_positions(environment)
             timings_seconds["joint_state_read"] += time.monotonic() - phase_started
+            action_record["observed_after_rad"] = after
+            action_record["joint_state_after_validated"] = True
+            episode_progress["candidate_joint_state_validated"] = True
+            _emit_progress("joint_state_validated")
             joint_trace.append(after)
             target = [float(value) for value in action["joint_position_target_rad"]]
             response_observed = any(
@@ -848,20 +1299,6 @@ def run_policy_episode(
                 for index in range(ARM_JOINT_COUNT)
             )
             command_response_rows += int(response_observed)
-            commanded_actions.append(
-                {
-                    "joint_position_target_rad": target,
-                    "joint_velocity_command_rad_s": list(
-                        action["joint_velocity_command_rad_s"]
-                    ),
-                    "source_arm_command": list(action["source_arm_command"]),
-                    "source_action_space": action["source_action_space"],
-                    "clipped_droid_action": list(action["clipped_droid_action"]),
-                    "observed_before_rad": before,
-                    "isaac_action": [float(value) for value in action["isaac_action"]],
-                }
-            )
-            step_index += 1
             if (
                 media_root is not None
                 and episode_id is not None
@@ -879,7 +1316,6 @@ def run_policy_episode(
                     )
                 )
                 media_observation_index += 1
-                report_media_progress()
                 timings_seconds["media_persistence"] += (
                     time.monotonic() - phase_started
                 )
@@ -970,7 +1406,6 @@ def run_policy_episode(
                 )
             )
             media_observation_index += 1
-            report_media_progress()
             timings_seconds["media_persistence"] += (
                 time.monotonic() - phase_started
             )
@@ -1024,93 +1459,7 @@ def run_policy_episode(
         command_response_rows=command_response_rows,
     )
 
-    visual_evidence = None
-    media_artifacts: list[dict[str, Any]] = []
-    if media_root is not None and episode_id is not None:
-        phase_started = time.monotonic()
-        if multicamera_evaluation_available:
-            terminal_observation = _persist_evaluation_camera_observation(
-                environment,
-                output_dir=media_root,
-                episode_id=episode_id,
-                observation_index=media_observation_index,
-                kind="terminal-observation",
-            )
-            visual_evidence, media_artifacts = (
-                finalize_manipulation_evaluation_visual_evidence(
-                    output_dir=media_root,
-                    episode_id=episode_id,
-                    identity={
-                        "candidate_id": candidate_id,
-                        "prompt": str(prompt),
-                        "policy_input_camera_ids": ["external", "wrist"],
-                        "review_only_camera_ids": ["overview"],
-                        "overview_camera_used_by_policy": False,
-                        "overview_camera_used_by_grader": False,
-                    },
-                    policy_input_observations=retained_multicamera_observations,
-                    review_observations=retained_review_observations,
-                    terminal_observation=terminal_observation,
-                )
-            )
-        else:
-            terminal_inputs = environment.read_policy_inputs()
-            _retain_policy_input_sample(
-                policy_input_history, step_index=step_index, inputs=terminal_inputs
-            )
-            terminal_camera_rgb = {
-                view: terminal_inputs[view]
-                for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-                if view in terminal_inputs
-            }
-            try:
-                terminal_policy_observation = build_droid_observation(
-                    candidate_id=candidate_id,
-                    camera_rgb=terminal_camera_rgb,
-                    joint_position=terminal_inputs["joint_position"],
-                    gripper_position=terminal_inputs["gripper_position"],
-                    prompt=prompt,
-                    eef_9d=terminal_inputs.get("eef_9d"),
-                    historical_camera_rgb=_historical_camera_rgb(
-                        policy_input_history,
-                        candidate_id=candidate_id,
-                        step_index=step_index,
-                    ),
-                )
-            except KeyError as exc:
-                raise PolicyEpisodeError(
-                    [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
-                ) from exc
-            terminal_frame = persist_observation_frame(
-                _policy_view_composite(
-                    terminal_policy_observation, candidate_id=candidate_id
-                ),
-                output_dir=media_root,
-                episode_id=episode_id,
-                frame_index=len(retained_policy_frames),
-                kind="terminal-observation",
-            )
-            visual_evidence, media_artifacts = finalize_visual_evidence(
-                output_dir=media_root,
-                episode_id=episode_id,
-                identity={
-                    "candidate_id": candidate_id,
-                    "prompt": str(prompt),
-                    "policy_input_view_order": (
-                        [
-                            GROOT_HISTORICAL_VIEW_KEYS[view]
-                            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-                        ]
-                        if candidate_id == "groot_n17_droid"
-                        else []
-                    )
-                    + list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
-                    "legacy_media_profile": True,
-                },
-                policy_input_frames=retained_policy_frames,
-                terminal_observation=terminal_frame,
-            )
-        timings_seconds["media_persistence"] += time.monotonic() - phase_started
+    visual_evidence, media_artifacts = _seal_terminal_visual_evidence()
 
     timings_seconds = {
         key: round(float(value), 6) for key, value in timings_seconds.items()
@@ -1141,6 +1490,8 @@ def run_policy_episode(
             else None
         ),
         "queries": queries,
+        "candidate_policy_action_queries": candidate_policy_action_queries,
+        "commanded_actions": commanded_actions,
         "motion_evidence": motion_evidence,
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "score": score,
@@ -1168,6 +1519,7 @@ def run_policy_episode(
         },
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _emit_progress("episode_complete")
     return receipt
 
 

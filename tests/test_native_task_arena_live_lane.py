@@ -17,21 +17,29 @@ import importlib.util
 import json
 import sys
 import time
+import zipfile
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.adp009d_policy_rights import build_candidate_policy_rights
+from blueprint_pipeline.adp009d_scene_policy_readiness import (
+    load_scene_policy_readiness,
+)
 import blueprint_pipeline.native_task_arena_paid_authority as paid
 import blueprint_pipeline.native_task_arena_warm_authority as warm_authority
 from blueprint_pipeline.native_task_arena_bundle import (
     POLICY_RUNTIME_ROOT_MODULE_NAMES,
 )
-from blueprint_pipeline.native_task_arena_policy_bundle import (
-    expected_policy_candidate_rights_binding,
-)
 from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from blueprint_pipeline.native_task_arena_policy_bundle import (
+    ADP009D_POLICY_READINESS_PATH,
+    ADP009D_SCENARIO_SUITE_PATH,
+    _candidate_runtime_binding,
+)
 import blueprint_pipeline.task_evaluation_live_profile as live_profile
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
@@ -62,6 +70,24 @@ _REHEARSAL_SPEC = importlib.util.spec_from_file_location(
     "rehearse_native_task_arena_terminal",
     REPO_ROOT / "scripts/rehearse_lane_terminal_contract.py",
 )
+
+
+def test_native_profile_output_is_exclusive_and_exactly_idempotent(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "private-profile.json"
+    payload = b'{"profile":"exact"}\n'
+
+    assert builder._write_profile_output_exclusive(output, payload) is True
+    assert builder._write_profile_output_exclusive(output, payload) is False
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="native_task_arena_live_profile_output_conflict",
+    ):
+        builder._write_profile_output_exclusive(
+            output, b'{"profile":"different"}\n'
+        )
+    assert output.read_bytes() == payload
 rehearsal = importlib.util.module_from_spec(_REHEARSAL_SPEC)
 assert _REHEARSAL_SPEC.loader is not None
 _REHEARSAL_SPEC.loader.exec_module(rehearsal)
@@ -135,13 +161,23 @@ def _provider_bundle(
 ) -> Path:
     root.mkdir()
     bundle = root / "native_task_arena_provider_bundle.zip"
-    bundle.write_bytes(f"production-shaped-{link}-bundle".encode())
     mode = {
         "construction": "construction_canary",
         "controls": "controls",
         "policy": "policy",
         "policy-diagnostic": "policy_diagnostic",
     }[link]
+    if link in {"policy", "policy-diagnostic"}:
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr(
+                "provider_runtime/runtime_inputs/"
+                "native_task_arena_policy_execution_spec.v1.json",
+                bound_paths[
+                    "native_task_arena_policy_execution_spec.v1.json"
+                ].read_bytes(),
+            )
+    else:
+        bundle.write_bytes(f"production-shaped-{link}-bundle".encode())
     bound_names = {
         "construction": (),
         "controls": (
@@ -149,12 +185,16 @@ def _provider_bundle(
             "adp_task_control_plan.v1.json",
         ),
         "policy": (
+            "adp009d_scene_840920_policy_readiness.v1.json",
+            "third_scene_840920_task_a_scenario_suite.v1.json",
             "native_task_arena_construction_result.v1.json",
             "native_task_arena_control_result.v1.json",
             "native_task_arena_policy_execution_spec.v1.json",
             "openpi_polaris_checkpoint_inventory.json",
         ),
         "policy-diagnostic": (
+            "adp009d_scene_840920_policy_readiness.v1.json",
+            "third_scene_840920_task_a_scenario_suite.v1.json",
             "native_task_arena_construction_result.v1.json",
             "native_task_arena_control_result.v1.json",
             "native_task_arena_policy_execution_spec.v1.json",
@@ -250,15 +290,25 @@ def _provider_bundle(
         "blockers": [],
         "input_digest": "",
     }
-    if link == "policy":
-        policy_request = json.loads(
+    if link in {"policy", "policy-diagnostic"}:
+        bound_spec = json.loads(
             bound_paths[
                 "native_task_arena_policy_execution_spec.v1.json"
             ].read_text(encoding="utf-8")
         )
-        manifest["policy_rights_binding"] = policy_request[
-            "candidate_rights_binding"
-        ]
+        manifest.update(
+            {
+                "policy_execution_spec_digest": bound_spec[
+                    "execution_spec_digest"
+                ],
+                "policy_execution_authority": bound_spec[
+                    "execution_authority"
+                ],
+                "policy_rights_binding": bound_spec[
+                    "candidate_rights_binding"
+                ],
+            }
+        )
     manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
     receipt = {
         **manifest,
@@ -535,19 +585,38 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         diagnostic_control_value, digest_field="result_digest"
     )
     write_json(diagnostic_control, diagnostic_control_value)
+    policy, endpoint, identity = _candidate_runtime_binding("pi05_droid")
+    policy_identity = asdict(policy)
+    readiness = load_scene_policy_readiness(
+        ADP009D_POLICY_READINESS_PATH,
+        scenario_suite_path=ADP009D_SCENARIO_SUITE_PATH,
+    )
     policy_spec = tmp_path / "policy_execution_spec.json"
     policy_value = {
         "schema_version": "native_task_arena_policy_execution_spec.v1",
+        "candidate_id": "pi05_droid",
         "task_id": TASK_ID,
         "cell_id": "canonical.seed_1",
+        "prompt": "Open the articulated fixture.",
         "scene_plan_digest": scene_plan["plan_digest"],
         "construction_result_digest": construction_value["result_digest"],
         "control_result_digest": control_value["result_digest"],
         "control_pair_digest": control_value["control_pair"]["pair_digest"],
-        "execution_authority": "qualified_controls_evaluation",
-        "candidate_rights_binding": expected_policy_candidate_rights_binding(
-            "pi05_droid"
+        "policy_endpoint": endpoint,
+        "policy_spec": policy_identity,
+        "policy_identity_receipt": identity,
+        "candidate_rights_binding": build_candidate_policy_rights(
+            readiness,
+            candidate_id="pi05_droid",
+            policy_spec=policy_identity,
+            runtime_robot_id=scene_plan["robot"]["robot_id"],
+            scene_plan_digest=scene_plan["plan_digest"],
         ),
+        "max_policy_queries": 56,
+        "open_loop_horizon": policy.open_loop_horizon,
+        "overview_camera_policy_input": False,
+        "policy_may_grade_itself": False,
+        "execution_authority": "qualified_controls_evaluation",
         "execution_spec_digest": "",
     }
     policy_value["execution_spec_digest"] = canonical_digest(
@@ -580,6 +649,12 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     )
     write_json(diagnostic_policy_spec, diagnostic_policy_value)
     bound_paths = {
+        "adp009d_scene_840920_policy_readiness.v1.json": (
+            ADP009D_POLICY_READINESS_PATH
+        ),
+        "third_scene_840920_task_a_scenario_suite.v1.json": (
+            ADP009D_SCENARIO_SUITE_PATH
+        ),
         "native_task_arena_construction_result.v1.json": construction,
         "native_task_arena_control_result.v1.json": control,
         "native_task_arena_policy_execution_spec.v1.json": policy_spec,
@@ -658,6 +733,82 @@ def _build(lane, link: str, **overrides):
         ]
     arguments.update(overrides)
     return builder.build_native_task_arena_live_profile(**arguments)
+
+
+def test_policy_profile_exposes_private_digest_bound_native_policy(lane: dict) -> None:
+    profile = _build(lane, "policy")
+    binding = profile["native_policy_binding"]
+
+    assert binding["candidate_id"] == "pi05_droid"
+    assert binding["robot"]["runtime_robot_id"] == "franka_panda"
+    assert binding["robot"]["rights_embodiment_id"] == "franka"
+    assert binding["robot"]["alias_binding_digest"].startswith("sha256:")
+    assert binding["task"]["task_id"] == TASK_ID
+    assert binding["policy"]["action_adapter"]
+    assert binding["runtime"]["arena_container_digest_pinned"] is True
+    assert binding["runtime"]["candidate_policy_container"] is False
+    assert "@sha256:" in binding["runtime"]["arena_container_image"]
+    assert binding["rights"]["candidate_rights_binding_digest"].startswith(
+        "sha256:"
+    )
+
+
+def test_policy_profile_exposes_campaign_and_makes_it_service_readable(
+    lane: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign_path = lane["packet"].parent / "policy-campaign.json"
+    write_json(campaign_path, {"campaign": "bound"})
+    campaign_binding = {
+        "campaign": _record(campaign_path),
+        "campaign_id": "scene-840920-policy-pair-1",
+        "campaign_digest": "sha256:" + "9" * 64,
+        "member_id": "pi05_droid",
+        "launch_id": "launch-policy-pi05-campaign-1",
+        "resource_name": "blueprint-native-task-policy-pi05-" + "a" * 32,
+        "sibling_member_id": "groot_n17_droid",
+        "sibling_launch_id": "launch-policy-groot-campaign-1",
+        "sibling_resource_name": "blueprint-native-task-policy-groot-" + "b" * 32,
+    }
+    authority_path = lane["authorities"]["policy"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["policy_campaign_binding"] = campaign_binding
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+    monkeypatch.setattr(
+        paid,
+        "_native_policy_campaign_binding",
+        lambda **_kwargs: campaign_binding,
+    )
+
+    profile = _build(lane, "policy")
+
+    assert profile["native_policy_binding"]["policy_campaign"] == {
+        key: campaign_binding[key]
+        for key in (
+            "campaign_id",
+            "campaign_digest",
+            "member_id",
+            "launch_id",
+            "resource_name",
+            "sibling_member_id",
+            "sibling_launch_id",
+            "sibling_resource_name",
+        )
+    }
+    campaign_inputs = [
+        row
+        for row in profile["immutable_inputs"]
+        if row["name"] == "native_task_arena_policy_campaign"
+    ]
+    assert campaign_inputs == [
+        {
+            "name": "native_task_arena_policy_campaign",
+            "path": str(campaign_path.resolve()),
+            "digest": _sha(campaign_path),
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -872,17 +1023,31 @@ def test_provider_bundle_byte_tamper_is_refused_before_allocation(lane) -> None:
         _build(lane, "construction")
 
 
-def test_policy_profile_refuses_rights_binding_not_carried_by_bundle(lane) -> None:
-    spec_path = lane["policy_spec"]
-    spec = json.loads(spec_path.read_text(encoding="utf-8"))
-    spec["candidate_rights_binding"] = {
-        **spec["candidate_rights_binding"],
-        "rights_ready": False,
+def test_policy_profile_refuses_bundle_rights_not_bound_to_external_spec(
+    lane, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path = lane["bundle_receipts"]["policy"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["policy_rights_binding"] = {
+        **receipt["policy_rights_binding"],
+        "rights_receipt_digest": "sha256:" + "0" * 64,
     }
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
+    receipt["input_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key not in {"bundle_path", "bundle_size_bytes", "bundle_sha256"}
+        },
+        digest_field="input_digest",
     )
-    write_json(spec_path, spec)
+    monkeypatch.setattr(
+        builder,
+        "BUNDLE_LOADERS",
+        {
+            **builder.BUNDLE_LOADERS,
+            builder.POLICY_PROBE_KIND: lambda *_args, **_kwargs: receipt,
+        },
+    )
 
     with pytest.raises(
         TaskEvaluationLaunchError,

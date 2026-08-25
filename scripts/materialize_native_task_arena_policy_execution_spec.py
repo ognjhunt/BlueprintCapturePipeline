@@ -25,15 +25,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scene-plan", required=True)
     parser.add_argument("--construction-result", required=True)
     parser.add_argument("--control-result", required=True)
+    parser.add_argument("--scene-policy-readiness")
+    parser.add_argument("--scenario-suite")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
+        optional = {}
+        if args.scene_policy_readiness:
+            optional["scene_policy_readiness_path"] = args.scene_policy_readiness
+        if args.scenario_suite:
+            optional["scenario_suite_path"] = args.scenario_suite
         result = build_native_task_policy_execution_spec(
             candidate_id=args.candidate_id,
             scene_plan_path=args.scene_plan,
             construction_result_path=args.construction_result,
             control_result_path=args.control_result,
             output_path=args.output,
+            **optional,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(

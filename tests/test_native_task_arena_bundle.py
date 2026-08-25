@@ -17,6 +17,10 @@ from blueprint_pipeline import native_task_arena_controls_bundle as controls_bun
 from blueprint_pipeline import native_task_arena_policy_bundle as policy_bundle_module
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.adp009d_policy_rights import build_candidate_policy_rights
+from blueprint_pipeline.adp009d_scene_policy_readiness import (
+    load_scene_policy_readiness,
+)
 from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
     _entrypoint,
@@ -40,11 +44,13 @@ from blueprint_pipeline.native_task_arena_execution_contract import (
     native_task_arena_execution_transport_completed,
 )
 from blueprint_pipeline.native_task_arena_policy_bundle import (
+    ADP009D_POLICY_READINESS_PATH,
+    ADP009D_SCENARIO_SUITE_PATH,
     build_native_task_arena_policy_bundle,
     build_native_task_policy_execution_spec,
-    expected_policy_candidate_rights_binding,
     load_verified_native_task_arena_policy_bundle,
     materialize_native_task_policy_execution_spec,
+    validate_native_task_policy_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import (
     PROBE_KIND as RUNTIME_PREFLIGHT_PROBE_KIND,
@@ -455,6 +461,7 @@ def _articulated_packet(root: Path) -> tuple[Path, dict]:
         "schema_version": "native_task_arena_scene_plan.v1",
         "task_id": "fixture_articulated_task",
         "task_kind": "articulated_open_close",
+        "robot": {"robot_id": "franka_panda"},
         "scenario": {"cell_id": "articulated-canonical", "seed": 17},
         "articulation": {"motion_geometry": motion},
         "task_spec": {
@@ -637,11 +644,19 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
         "overview_camera_policy_input": False,
         "policy_may_grade_itself": False,
         "execution_authority": "qualified_controls_evaluation",
-        "candidate_rights_binding": expected_policy_candidate_rights_binding(
-            "pi05_droid"
-        ),
         "execution_spec_digest": "",
     }
+    readiness = load_scene_policy_readiness(
+        ADP009D_POLICY_READINESS_PATH,
+        scenario_suite_path=ADP009D_SCENARIO_SUITE_PATH,
+    )
+    spec["candidate_rights_binding"] = build_candidate_policy_rights(
+        readiness,
+        candidate_id="pi05_droid",
+        policy_spec=spec["policy_spec"],
+        runtime_robot_id=scene["robot"]["robot_id"],
+        scene_plan_digest=scene["plan_digest"],
+    )
     spec["execution_spec_digest"] = canonical_digest(
         spec, digest_field="execution_spec_digest"
     )
@@ -672,15 +687,40 @@ def _groot_policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
                     "adp009d_groot_worker_identity.groot_n17_droid.json"
                 ),
             },
-            "candidate_rights_binding": expected_policy_candidate_rights_binding(
-                "groot_n17_droid"
-            ),
         }
+    )
+    readiness = load_scene_policy_readiness(
+        ADP009D_POLICY_READINESS_PATH,
+        scenario_suite_path=ADP009D_SCENARIO_SUITE_PATH,
+    )
+    spec["candidate_rights_binding"] = build_candidate_policy_rights(
+        readiness,
+        candidate_id="groot_n17_droid",
+        policy_spec=spec["policy_spec"],
+        runtime_robot_id=scene["robot"]["robot_id"],
+        scene_plan_digest=scene["plan_digest"],
     )
     spec["execution_spec_digest"] = canonical_digest(
         spec, digest_field="execution_spec_digest"
     )
     return spec
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "policy.example", "10.0.0.7"])
+def test_policy_execution_spec_refuses_non_loopback_endpoint(
+    tmp_path: Path, host: str
+) -> None:
+    _, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    spec = _groot_policy_spec(scene, construction, controls)
+    spec["policy_endpoint"]["host"] = host
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+
+    with pytest.raises(ValueError, match="native_task_policy_endpoint_invalid"):
+        validate_native_task_policy_execution_spec(spec)
 
 
 def test_policy_bundle_requires_exact_qualified_construction_and_controls(
@@ -689,29 +729,38 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
     packet, scene = _articulated_packet(tmp_path)
     construction = _qualified_construction(tmp_path, scene)
     controls = _qualified_controls(tmp_path, scene, construction)
+    policy_spec = _policy_spec(scene, construction, controls)
     receipt = build_native_task_arena_policy_bundle(
         job_dir=tmp_path / "policy-bundle",
         packet_dir=packet,
         construction_result_path=construction,
         control_result_path=controls,
-        policy_execution_spec=_policy_spec(scene, construction, controls),
+        policy_execution_spec=policy_spec,
         runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="d" * 40,
         generated_at="fixed",
-    )
-    assert receipt["policy_rights_binding"] == (
-        expected_policy_candidate_rights_binding("pi05_droid")
     )
 
     assert receipt["execution_mode"] == "policy"
     assert receipt["policy_candidate_id"] == "pi05_droid"
     assert receipt["candidate_policy_queried"] is False
+    assert receipt["policy_execution_spec_digest"] == policy_spec[
+        "execution_spec_digest"
+    ]
+    assert receipt["policy_execution_authority"] == (
+        "qualified_controls_evaluation"
+    )
+    assert receipt["policy_rights_binding"] == policy_spec[
+        "candidate_rights_binding"
+    ]
     assert receipt["expected_output_filename"] == (
         "native_task_arena_policy_result.v1.json"
     )
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
         assert {
+            "provider_runtime/runtime_inputs/adp009d_scene_840920_policy_readiness.v1.json",
+            "provider_runtime/runtime_inputs/third_scene_840920_task_a_scenario_suite.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_control_result.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_policy_execution_spec.v1.json",
@@ -790,6 +839,41 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
         )
 
 
+def test_policy_bundle_rejects_self_digested_forged_rights_projection(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    spec = _policy_spec(scene, construction, controls)
+    spec["candidate_rights_binding"]["rights"]["provider_use_status"] = (
+        "caller_asserted_but_not_authoritative"
+    )
+    spec["candidate_rights_binding"]["rights_receipt_digest"] = canonical_digest(
+        spec["candidate_rights_binding"], digest_field="rights_receipt_digest"
+    )
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+
+    # The narrow syntax validator deliberately has no filesystem authority;
+    # the bundle gate must compare it to the separately bound readiness bytes.
+    validate_native_task_policy_execution_spec(spec)
+    with pytest.raises(
+        ValueError,
+        match="candidate_policy_rights_authoritative_projection_mismatch",
+    ):
+        build_native_task_arena_policy_bundle(
+            job_dir=tmp_path / "forged-policy-bundle",
+            packet_dir=packet,
+            construction_result_path=construction,
+            control_result_path=controls,
+            policy_execution_spec=spec,
+            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+            implementation_commit="d" * 40,
+        )
+
+
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_policy_provisioning_shell_failures_retain_typed_media_gap(
     candidate_id: str,
@@ -844,6 +928,48 @@ def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
         )
 
 
+def test_policy_bundle_cli_forwards_explicit_authority_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "policy-spec.json"
+    spec.write_text("{}", encoding="utf-8")
+    observed = {}
+    monkeypatch.setattr(
+        policy_bundle_module,
+        "build_native_task_arena_policy_bundle",
+        lambda **kwargs: observed.update(kwargs) or {"status": "ready"},
+    )
+
+    exit_code = policy_bundle_module.main(
+        [
+            "--job-dir",
+            str(tmp_path / "job"),
+            "--packet-dir",
+            str(tmp_path / "packet"),
+            "--construction-result",
+            str(tmp_path / "construction.json"),
+            "--control-result",
+            str(tmp_path / "controls.json"),
+            "--runtime-source-packet-receipt",
+            str(tmp_path / "runtime.json"),
+            "--implementation-commit",
+            "a" * 40,
+            "--policy-execution-spec",
+            str(spec),
+            "--scene-policy-readiness-path",
+            str(tmp_path / "readiness.json"),
+            "--scenario-suite-path",
+            str(tmp_path / "suite.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["scene_policy_readiness_path"] == str(
+        tmp_path / "readiness.json"
+    )
+    assert observed["scenario_suite_path"] == str(tmp_path / "suite.json")
+
+
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_provider_free_spec_builder_derives_each_frozen_candidate(
     tmp_path: Path, candidate_id: str
@@ -866,9 +992,6 @@ def test_provider_free_spec_builder_derives_each_frozen_candidate(
     assert result["prompt"] == scene["task_spec"]["prompt"]
     assert result["max_policy_queries"] == 56
     assert result["policy_may_grade_itself"] is False
-    assert result["candidate_rights_binding"] == (
-        expected_policy_candidate_rights_binding(candidate_id)
-    )
     assert result["execution_spec_digest"] == canonical_digest(
         result, digest_field="execution_spec_digest"
     )
@@ -880,28 +1003,6 @@ def test_provider_free_spec_builder_derives_each_frozen_candidate(
     else:
         assert result["policy_identity_receipt"] == (
             policy_bundle_module.GROOT_RUNTIME_IDENTITY_DECLARATION
-        )
-
-
-@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
-def test_qualified_policy_spec_refuses_self_asserted_or_tampered_rights(
-    tmp_path: Path, candidate_id: str
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    request = (
-        _policy_spec(scene, construction, controls)
-        if candidate_id == "pi05_droid"
-        else _groot_policy_spec(scene, construction, controls)
-    )
-    request["candidate_rights_binding"]["rights_ready"] = False
-    request.pop("execution_spec_digest")
-
-    with pytest.raises(ValueError, match="native_task_policy_rights_binding_invalid"):
-        materialize_native_task_policy_execution_spec(
-            request=request,
-            output_path=tmp_path / f"{candidate_id}-tampered-rights.json",
         )
 
 
@@ -1020,6 +1121,11 @@ def test_groot_execution_spec_refuses_predeclared_verified_runtime_identity(
             55,
             "native_task_policy_shared_query_budget_mismatch",
         ),
+        (
+            "execution_authority",
+            None,
+            "native_task_policy_execution_authority_invalid",
+        ),
     ),
 )
 def test_policy_bundle_binds_prompt_and_shared_query_budget_to_task(
@@ -1119,6 +1225,95 @@ def test_canonical_allocator_routes_native_task_policy_bundle(
     assert observed["allowed_active_instance_ids"] == [47373597]
     admission = json.loads((tmp_path / "policy-admission.json").read_text())
     assert admission["candidate_policy_queried"] is True
+
+
+def test_allocator_refuses_prebuilt_bundle_with_a_different_external_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    runtime_sources = _runtime_source_packet(tmp_path)
+    bundled_spec = _policy_spec(scene, construction, controls)
+    bundle_job = tmp_path / "bound-policy-bundle"
+    build_native_task_arena_policy_bundle(
+        job_dir=bundle_job,
+        packet_dir=packet,
+        construction_result_path=construction,
+        control_result_path=controls,
+        policy_execution_spec=bundled_spec,
+        runtime_source_packet_receipt=runtime_sources,
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+    )
+    external_spec = json.loads(json.dumps(bundled_spec))
+    external_spec["max_policy_queries"] -= 1
+    external_spec["execution_spec_digest"] = canonical_digest(
+        external_spec, digest_field="execution_spec_digest"
+    )
+    external_path = tmp_path / "different-policy-execution.json"
+    external_path.write_text(json.dumps(external_spec), encoding="utf-8")
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "d" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_native_task_arena_policy_vast",
+        lambda **_kwargs: {"status": "dry_run_ready"},
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        "native-task-arena-policy",
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "mismatch-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "mismatch-adapter.json"),
+        "--pod-name",
+        "native-task-policy-mismatch",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(runtime_sources),
+        "--native-task-arena-construction-result",
+        str(construction),
+        "--native-task-arena-control-result",
+        str(controls),
+        "--native-task-arena-policy-execution-spec",
+        str(external_path),
+        "--native-task-arena-bundle-receipt",
+        str(bundle_job / "native_task_arena_provider_bundle_receipt.v1.json"),
+        "--adp-job-dir",
+        str(tmp_path / "policy-mismatch-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+    ]
+
+    assert allocator.main(args) == 0
+    admission = json.loads(
+        (tmp_path / "mismatch-admission.json").read_text(encoding="utf-8")
+    )
+    assert "native_task_arena_policy_execution_binding_mismatch" in admission[
+        "blockers"
+    ]
 
 
 def test_canonical_allocator_binds_groot_gated_backbone_authority(
@@ -1411,20 +1606,6 @@ def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None
 
     assert excinfo.value.errors == (
         "native_task_arena_bundle_policy_binding_invalid",
-    )
-
-    with pytest.raises(NativeTaskArenaBundleError) as excinfo:
-        build_native_task_arena_bundle(
-            job_dir=tmp_path / "job-without-rights",
-            packet_dir=packet,
-            worker_source=worker,
-            runtime_module_sources=[],
-            implementation_commit="d" * 40,
-            execution_mode="policy",
-            policy_candidate_id="pi05_droid",
-        )
-    assert excinfo.value.errors == (
-        "native_task_arena_bundle_policy_rights_binding_missing",
     )
 
 

@@ -188,6 +188,9 @@ dev = [
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
     "pyzmq>=26.0",
+    # Protocol-pinned GR00T wire-client codec. The paid Isaac worker installs
+    # this exact version too; CPU tests must exercise the same no-pickle seam.
+    "msgpack-numpy==0.4.8",
 ]
 
 # SAPIEN's wheel declares the GUI OpenCV distribution, which overlaps the
@@ -240,6 +243,7 @@ dev = [
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
     "pyzmq>=26.0",
+    "msgpack-numpy==0.4.8",
 ]
 
 [project.scripts]

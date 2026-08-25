@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -133,7 +134,9 @@ def _owner_teardown_cancel_request(
     return dict(payload)
 
 
-def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, Any]:
+def _vast_billable_inventory(
+    *, provider: Any, name_prefix: str, resource_name_exact: str | None = None
+) -> dict[str, Any]:
     """Return active Vast instances whose launch labels match ``name_prefix``.
 
     ``VastRenderProvider.stop`` already destroys an instance, but its generic
@@ -207,7 +210,9 @@ def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, An
         if not label:
             ambiguous_live_rows += 1
             continue
-        if prefix and not label.startswith(prefix):
+        if resource_name_exact and label != resource_name_exact:
+            continue
+        if not resource_name_exact and prefix and not label.startswith(prefix):
             continue
         resources.append(
             {
@@ -237,6 +242,7 @@ def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, An
         "status": "observed",
         "provider": "vast",
         "name_prefix": prefix,
+        "resource_name_exact": resource_name_exact,
         "live_resource_count": len(resources),
         "resources": resources,
         "api_confirmed": True,
@@ -245,14 +251,23 @@ def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, An
     }
 
 
-def _billable_inventory(*, provider: Any, provider_name: str, name_prefix: str) -> dict[str, Any]:
+def _billable_inventory(
+    *,
+    provider: Any,
+    provider_name: str,
+    name_prefix: str,
+    resource_name_exact: str | None = None,
+) -> dict[str, Any]:
     if provider_name == "vast":
-        return _vast_billable_inventory(provider=provider, name_prefix=name_prefix)
+        kwargs: dict[str, Any] = {"provider": provider, "name_prefix": name_prefix}
+        if resource_name_exact:
+            kwargs["resource_name_exact"] = resource_name_exact
+        return _vast_billable_inventory(**kwargs)
     return provider.billable_inventory(name_prefix=name_prefix)
 
 
 def _inventory_contains_only_allowed_resources(
-    inventory: Mapping[str, Any], *, allowed_instance_ids: set[str]
+    inventory: Mapping[str, Any], *, allowed_instance_ids: set[str], allowed_resource_names: set[str]
 ) -> bool:
     """Prove global inventory contains only explicitly authorized siblings."""
 
@@ -271,10 +286,14 @@ def _inventory_contains_only_allowed_resources(
         if not isinstance(row, Mapping):
             return False
         instance_id = str(row.get("instance_id") or "").strip()
-        if not instance_id:
+        resource_name = str(row.get("name") or "").strip()
+        if not instance_id or (
+            instance_id not in allowed_instance_ids
+            and resource_name not in allowed_resource_names
+        ):
             return False
         observed.add(instance_id)
-    return len(observed) == count and observed.issubset(allowed_instance_ids)
+    return len(observed) == count
 
 
 def _recorded_vast_instance(*, armed: Mapping[str, Any], pod_name_prefix: str) -> dict[str, Any]:
@@ -419,11 +438,28 @@ def arm_watchdog(
     pid: int | None = None,
     provider_name: str = "runpod",
     allowed_active_instance_ids: Sequence[int] = (),
+    allowed_active_resource_names: Sequence[str] = (),
+    resource_name_exact: str | None = None,
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     if not pod_name_prefix.startswith(CANARY_NAME_PREFIXES):
         raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
+    exact_name = str(resource_name_exact or "").strip()
+    if exact_name and (
+        exact_name != pod_name_prefix
+        or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name)
+        is None
+    ):
+        raise ValueError("watchdog_exact_resource_name_invalid")
+    allowed_names = sorted(
+        {str(value).strip() for value in allowed_active_resource_names}
+    )
+    if any(
+        not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}", value)
+        for value in allowed_names
+    ):
+        raise ValueError("watchdog_allowed_active_resource_names_invalid")
     if float(deadline_epoch) <= time.time() + 60:
         raise ValueError("watchdog_deadline_must_be_more_than_60_seconds_future")
     resolved_provider = _provider_name(provider_name)
@@ -438,6 +474,8 @@ def arm_watchdog(
         "allowed_active_instance_ids": sorted(
             {int(value) for value in allowed_active_instance_ids}
         ),
+        "allowed_active_resource_names": allowed_names,
+        "resource_name_exact": exact_name or None,
         "pod_name_prefix": pod_name_prefix,
         # Reconstruction executors use the provider-neutral ``name_prefix``
         # spelling while the historical watchdog contract uses
@@ -459,6 +497,7 @@ def terminate_canary_resources(
     pod_name_prefix: str,
     armed: Mapping[str, Any],
     provider_name: str | None = None,
+    resource_name_exact: str | None = None,
 ) -> dict[str, Any]:
     resolved_provider = _provider_name(
         provider_name or armed.get("provider") or getattr(provider, "name", None)
@@ -476,6 +515,7 @@ def terminate_canary_resources(
             provider=provider,
             provider_name=resolved_provider,
             name_prefix=pod_name_prefix,
+            resource_name_exact=resource_name_exact,
         )
     except Exception as exc:  # noqa: BLE001 - persist terminal watchdog uncertainty
         if resolved_provider != "vast":
@@ -618,6 +658,7 @@ def terminate_canary_resources(
             provider=provider,
             provider_name=resolved_provider,
             name_prefix=pod_name_prefix,
+            resource_name_exact=resource_name_exact,
         )
         final_error_type = None
     except Exception as exc:  # noqa: BLE001 - persist terminal watchdog uncertainty
@@ -657,6 +698,8 @@ def run_watchdog(
     deadline_epoch: float,
     provider_name: str = "runpod",
     allowed_active_instance_ids: Sequence[int] = (),
+    allowed_active_resource_names: Sequence[str] = (),
+    resource_name_exact: str | None = None,
     provider_factory: Callable[[str], Any] = get_render_provider,
     clock: Callable[[], float] = time.time,
     sleeper: Callable[[float], None] = time.sleep,
@@ -670,12 +713,19 @@ def run_watchdog(
     }
     if len(allowed_ids) != len(tuple(allowed_active_instance_ids)):
         raise ValueError("watchdog_allowed_active_instance_ids_invalid")
+    allowed_names = {
+        str(value).strip() for value in allowed_active_resource_names if str(value).strip()
+    }
+    if len(allowed_names) != len(tuple(allowed_active_resource_names)):
+        raise ValueError("watchdog_allowed_active_resource_names_invalid")
     armed = arm_watchdog(
         out_dir=root,
         pod_name_prefix=pod_name_prefix,
         deadline_epoch=deadline_epoch,
         provider_name=resolved_provider,
         allowed_active_instance_ids=[int(value) for value in sorted(allowed_ids)],
+        allowed_active_resource_names=sorted(allowed_names),
+        resource_name_exact=resource_name_exact,
     )
     owner_teardown_cancel: dict[str, Any] = {}
     cancel_zero_result: dict[str, Any] = {}
@@ -694,6 +744,7 @@ def run_watchdog(
                     provider=cancel_provider,
                     provider_name=resolved_provider,
                     name_prefix=pod_name_prefix,
+                    resource_name_exact=resource_name_exact,
                 )
                 first_global_zero = _billable_inventory(
                     provider=cancel_provider,
@@ -704,6 +755,7 @@ def run_watchdog(
                     provider=cancel_provider,
                     provider_name=resolved_provider,
                     name_prefix=pod_name_prefix,
+                    resource_name_exact=resource_name_exact,
                 )
                 second_global_zero = _billable_inventory(
                     provider=cancel_provider,
@@ -758,6 +810,7 @@ def run_watchdog(
                 _inventory_contains_only_allowed_resources(
                     inventory,
                     allowed_instance_ids=allowed_ids,
+                    allowed_resource_names=allowed_names,
                 )
                 for inventory in (first_global_zero, second_global_zero)
             )
@@ -772,6 +825,8 @@ def run_watchdog(
                 and exact_contract_zero
                 and (
                     resolved_provider == "vast"
+                    and not resource_name_exact
+                    and not allowed_names
                     or global_inventory_admitted
                 )
             )
@@ -799,7 +854,9 @@ def run_watchdog(
                     cancel_zero_result["provider_absence_scope"] = (
                         "recorded_instance_and_lane_prefix"
                     )
-                    cancel_zero_result["global_inventory_informational_only"] = True
+                    cancel_zero_result["global_inventory_informational_only"] = not bool(
+                        resource_name_exact or allowed_names
+                    )
                 break
         sleeper(min(10.0, max(0.0, deadline_epoch - clock())))
     if cancel_zero_result:
@@ -823,6 +880,7 @@ def run_watchdog(
                 pod_name_prefix=pod_name_prefix,
                 armed=armed,
                 provider_name=resolved_provider,
+                resource_name_exact=resource_name_exact,
             )
     result["owner_teardown_cancel_requested"] = bool(owner_teardown_cancel)
     result["owner_teardown_cancel_request_valid"] = bool(owner_teardown_cancel)
@@ -1014,6 +1072,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=[],
     )
+    parser.add_argument(
+        "--allowed-active-resource-name",
+        action="append",
+        default=[],
+    )
+    parser.add_argument("--resource-name-exact")
     args = parser.parse_args(argv)
     result = run_watchdog(
         out_dir=args.out_dir,
@@ -1021,6 +1085,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         deadline_epoch=args.deadline_epoch,
         provider_name=args.provider,
         allowed_active_instance_ids=args.allowed_active_instance_id,
+        allowed_active_resource_names=args.allowed_active_resource_name,
+        resource_name_exact=args.resource_name_exact,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "provider_terminal" else 2

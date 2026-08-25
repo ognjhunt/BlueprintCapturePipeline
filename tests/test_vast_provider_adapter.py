@@ -2525,6 +2525,70 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     assert teardown["continuing_spend_from_this_run"] is False
 
 
+def test_vast_adapter_exact_campaign_label_and_zero_stale_offer_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    exact_name = "blueprint-native-task-policy-pi05-" + "a" * 32
+    created_payloads: list[dict[str, object]] = []
+
+    def fake_api_json(
+        *, method: str, path: str, api_key: str, payload=None, timeout_seconds: int = 30
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 301,
+                        "ask_contract_id": 301,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 49152,
+                        "dph_total": 0.25,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9301,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    }
+                ]
+            }
+        if method == "PUT" and path == "/asks/301/":
+            created_payloads.append(dict(payload))
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/301/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b'{"msg":"no_such_ask Instance type is not available"}'),
+            )
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+        instance_label_prefix="blueprint-native-task-policy-diagnostic-",
+        instance_label_exact=exact_name,
+        stale_offer_create_retry_limit=0,
+    )
+
+    assert len(created_payloads) == 1
+    assert created_payloads[0]["label"] == exact_name
+    assert result["status"] == "failed"
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert offer["create_retry_attempts"] == []
+
+
 def test_vast_adapter_does_not_retry_unrelated_create_http_400() -> None:
     error = urllib.error.HTTPError(
         "https://vast.invalid/api/v0/asks/301/",
@@ -2636,6 +2700,9 @@ def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
     )
 
     assert created_payloads
+    non_campaign_label = str(created_payloads[0]["label"])
+    assert non_campaign_label.startswith("blueprint-vast-probe-")
+    assert non_campaign_label.removeprefix("blueprint-vast-probe-").isdigit()
     assert result["status"] == "completed"
     assert result["selected_container_image"] == DEFAULT_ISAAC_IMAGE
     assert result["vast_launch_mode"] == "args"

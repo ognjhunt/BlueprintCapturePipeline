@@ -74,6 +74,43 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _json_safe_vendor_response(value: Any) -> Any:
+    """Retain the decoded OpenPI response before normalization or validation."""
+
+    import math
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_safe_vendor_response(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (str, bool, int)) or value is None:
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {"nonfinite_float": repr(value)}
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return [_json_safe_vendor_response(item) for item in value]
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return _json_safe_vendor_response(tolist())
+    item = getattr(value, "item", None)
+    if callable(item):
+        return _json_safe_vendor_response(item())
+    return {"unsupported_type": f"{type(value).__module__}.{type(value).__name__}"}
+
+
+def _action_payload_returned(response: Any) -> bool:
+    if isinstance(response, Mapping):
+        return any(key in response for key in ("actions", "action", "action_chunk"))
+    # OpenPI's contract requires an envelope, but an ndarray returned in its
+    # place is still a genuine action payload that must be retained and refused.
+    return callable(getattr(response, "tolist", None))
+
+
 @dataclass(frozen=True)
 class OpenPIDroidPolicySpec:
     policy_id: str
@@ -400,19 +437,67 @@ class OpenPIWebsocketDroidPolicyClient:
         if not isinstance(raw_metadata, Mapping):
             raise ValueError("policy_server_metadata_not_object")
         self.server_metadata = validate_server_metadata(raw_metadata, expected=spec)
+        self._last_inference_evidence: dict[str, Any] | None = None
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
-        response = self._client.infer(dict(observation))
-        # The server completed a real inference query even if the returned
-        # envelope is rejected by the strict normalization below.
+        """Extract the action chunk and retain truthful wire-response evidence."""
+
+        raw_response = self._client.infer(dict(observation))
+        retained_response = _json_safe_vendor_response(raw_response)
+        response_keys = (
+            sorted(str(key) for key in raw_response)
+            if isinstance(raw_response, Mapping)
+            else []
+        )
+        self._last_inference_evidence = {
+            "server_response_received": True,
+            "wire_response_type": type(raw_response).__name__,
+            "wire_response_keys": response_keys,
+            "raw_vendor_action_response": retained_response,
+            "raw_vendor_action_response_digest": (
+                "sha256:"
+                + canonical_sha256(
+                    {"raw_vendor_action_response": retained_response}
+                )
+            ),
+            "raw_vendor_action_response_role": (
+                "genuine_decoded_vendor_wire_response_before_candidate_normalization"
+            ),
+            "action_payload_returned": _action_payload_returned(raw_response),
+            "actions_extracted": False,
+        }
+        # A response from the frozen server is a completed candidate query even
+        # when the envelope is subsequently refused by our strict boundary.
         self.candidate_policy_queried = True
-        return normalize_openpi_inference_response(response)
+        actions = normalize_openpi_inference_response(raw_response)
+        self._last_inference_evidence.update(
+            {
+                "actions_extracted": True,
+                "action_chunk_shape": list(getattr(actions, "shape", ())),
+            }
+        )
+        return actions
+
+    def last_inference_evidence(self) -> dict[str, Any]:
+        if self._last_inference_evidence is None:
+            raise ValueError("openpi_policy_inference_evidence_missing")
+        return json.loads(json.dumps(self._last_inference_evidence, allow_nan=False))
+
+    def close(self) -> None:
+        closer = getattr(self._client, "close", None)
+        if callable(closer):
+            closer()
 
     def evidence_summary(self) -> dict[str, Any]:
         return {
             "transport": "openpi_websocket_msgpack_numpy",
             "identity_verified": True,
             "server_metadata": self.server_metadata,
+            "last_inference_evidence": (
+                self.last_inference_evidence()
+                if self._last_inference_evidence is not None
+                else None
+            ),
         }
 
 

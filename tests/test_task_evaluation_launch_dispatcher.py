@@ -27,6 +27,10 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_public_launch_profile_descriptor,
 )
 from blueprint_pipeline.task_evaluation_launch_reconciler import reconcile_launches
+from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
+    ImmutableInputResolutionError,
+    resolve_immutable_input,
+)
 from scripts.publish_task_evaluation_launch_profiles import publish_profiles
 
 
@@ -178,6 +182,304 @@ def _request(profile: dict) -> dict:
     return request
 
 
+def _write_profile_and_request(
+    tmp_path: Path, profile: dict
+) -> tuple[Path, Path]:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_path = profile_dir / f"{profile['profile_id']}.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(_request(profile)), encoding="utf-8")
+    return profile_dir, request_path
+
+
+def test_dispatcher_stages_exact_input_and_child_isolated_from_late_source_tamper(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    source_path = Path(profile["immutable_inputs"][0]["path"])
+    original = source_path.read_bytes()
+    profile["allocator"]["argv"].extend(["--exact-input", str(source_path)])
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    observed: dict[str, object] = {}
+
+    def runner(argv: list[str]) -> int:
+        staged = Path(argv[argv.index("--exact-input") + 1])
+        observed["staged"] = staged
+        assert staged != source_path
+        assert staged.read_bytes() == original
+        source_path.write_bytes(b'{"scene":"tampered-after-copy"}\n')
+        assert staged.read_bytes() == original
+        assert resolve_immutable_input(
+            source_path,
+            expected_digest=_path_digest(staged),
+            expected_size_bytes=len(original),
+        ) == staged
+        return 0
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=runner,
+    )
+
+    assert receipt["status"] == "dry_run_completed"
+    staging = json.loads(
+        (
+            tmp_path
+            / "state"
+            / "launch-interiorgs-sage-001"
+            / "immutable_input_staging_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert staging["status"] == "staged"
+    row = next(
+        item for item in staging["inputs"] if item["name"] == "source_bundle_manifest"
+    )
+    assert row["allocator_argv_indices"]
+    assert Path(row["staged_path"]) == observed["staged"]
+    assert row["staged_digest"] == row["expected_digest"]
+    assert staging["source_paths_forwarded_to_allocator"] is False
+
+
+def test_child_resolver_fails_closed_for_missing_or_tampered_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    source_path = Path(profile["immutable_inputs"][0]["path"])
+    expected_digest = _path_digest(source_path)
+    receipt, _argv = dispatcher_module._stage_profile_immutable_inputs(
+        profile=profile,
+        run_root=tmp_path / "run",
+        allocator_argv=[],
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_TASK_EVALUATION_IMMUTABLE_INPUT_STAGING_RECEIPT",
+        str(tmp_path / "run" / "immutable_input_staging_receipt.json"),
+    )
+    with pytest.raises(
+        ImmutableInputResolutionError,
+        match="immutable_input_staging_mapping_missing",
+    ):
+        resolve_immutable_input(
+            tmp_path / "not-declared.json",
+            expected_digest="sha256:" + "0" * 64,
+            expected_size_bytes=0,
+        )
+
+    staged = Path(receipt["inputs"][0]["staged_path"])
+    staged.write_bytes(b"tampered")
+    with pytest.raises(
+        ImmutableInputResolutionError,
+        match="immutable_input_staging_target_identity_mismatch",
+    ):
+        resolve_immutable_input(
+            source_path,
+            expected_digest=expected_digest,
+            expected_size_bytes=source_path.stat().st_size,
+        )
+
+
+def test_dispatcher_projects_declared_packet_files_and_rewrites_directory(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    packet_dir = tmp_path / "native-packet"
+    packet_dir.mkdir()
+    packet_files = {
+        "native_task_arena_packet_receipt.v1.json": b'{"receipt":"sealed"}\n',
+        "native_task_arena_packet_request.v1.json": b'{"request":"sealed"}\n',
+        "native_task_arena_scene_plan.v1.json": b'{"scene":"sealed"}\n',
+    }
+    for name, payload in packet_files.items():
+        path = packet_dir / name
+        path.write_bytes(payload)
+        profile["immutable_inputs"].append(
+            {
+                "name": name.removesuffix(".v1.json"),
+                "path": str(path.resolve()),
+                "digest": _path_digest(path),
+            }
+        )
+    (packet_dir / "provider-secret.txt").write_text(
+        "must-not-be-copied", encoding="utf-8"
+    )
+    profile["allocator"]["argv"].extend(
+        ["--native-task-arena-packet", str(packet_dir.resolve())]
+    )
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    observed: dict[str, Path] = {}
+
+    def runner(argv: list[str]) -> int:
+        staged_dir = Path(argv[argv.index("--native-task-arena-packet") + 1])
+        observed["staged_dir"] = staged_dir
+        assert staged_dir != packet_dir
+        assert not (staged_dir / "provider-secret.txt").exists()
+        for name, payload in packet_files.items():
+            assert (staged_dir / name).read_bytes() == payload
+            (packet_dir / name).write_bytes(b'{"tampered":true}\n')
+            assert (staged_dir / name).read_bytes() == payload
+        return 0
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=runner,
+    )
+
+    assert receipt["status"] == "dry_run_completed"
+    staging = json.loads(
+        (
+            tmp_path
+            / "state"
+            / "launch-interiorgs-sage-001"
+            / "immutable_input_staging_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert staging["directory_projection_count"] == 1
+    projection = staging["directory_projections"][0]
+    assert Path(projection["staged_directory"]) == observed["staged_dir"]
+    assert projection["allocator_argv_indices"]
+    assert {item["relative_path"] for item in projection["inputs"]} == set(
+        packet_files
+    )
+
+
+def test_dispatcher_blocks_source_tamper_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    source_path = Path(profile["immutable_inputs"][0]["path"])
+    profile["allocator"]["argv"].extend(["--exact-input", str(source_path)])
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    real_stage = dispatcher_module._stage_profile_immutable_inputs
+
+    def tamper_then_stage(**kwargs: object):  # type: ignore[no-untyped-def]
+        source_path.write_bytes(b'{"scene":"tampered-before-copy"}\n')
+        return real_stage(**kwargs)
+
+    monkeypatch.setattr(
+        dispatcher_module, "_stage_profile_immutable_inputs", tamper_then_stage
+    )
+    calls: list[list[str]] = []
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert any(
+        "immutable_input_staging_source_digest_mismatch" in blocker
+        for blocker in receipt["blockers"]
+    )
+    assert calls == []
+
+
+def test_dispatcher_refuses_embedded_immutable_input_path(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    source_path = profile["immutable_inputs"][0]["path"]
+    profile["allocator"]["argv"].append(f"--exact-input={source_path}")
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert any(
+        "immutable_input_allocator_path_not_exactly_rewritable" in blocker
+        for blocker in receipt["blockers"]
+    )
+    assert calls == []
+
+
+def test_concurrent_immutable_input_staging_is_byte_idempotent(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    source_path = profile["immutable_inputs"][0]["path"]
+    argv = ["--exact-input", source_path]
+    run_root = tmp_path / "run"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: dispatcher_module._stage_profile_immutable_inputs(
+                    profile=profile,
+                    run_root=run_root,
+                    allocator_argv=argv,
+                ),
+                range(2),
+            )
+        )
+
+    assert results[0][1] == results[1][1]
+    assert Path(results[0][1][1]).read_bytes() == Path(source_path).read_bytes()
+    receipt = json.loads(
+        (run_root / "immutable_input_staging_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def _native_policy_binding() -> dict:
+    return {
+        "schema_version": "native_task_arena_policy_binding.v1",
+        "candidate_id": "pi05_droid",
+        "robot": {
+            "runtime_robot_id": "franka_panda",
+            "rights_embodiment_id": "franka",
+            "alias_binding_digest": "sha256:" + "0" * 64,
+            "config_digest": "sha256:" + "1" * 64,
+        },
+        "task": {
+            "task_id": "task_a_washer_door_open",
+            "config_digest": "sha256:" + "2" * 64,
+        },
+        "policy": {
+            "spec_digest": "sha256:" + "3" * 64,
+            "input_schema_digest": "sha256:" + "4" * 64,
+            "output_schema_digest": "sha256:" + "5" * 64,
+            "action_adapter": "normalized_joint_position_v1",
+        },
+        "runtime": {
+            "arena_container_image": "docker.io/blueprint/arena@sha256:" + "6" * 64,
+            "arena_container_digest_pinned": True,
+            "candidate_policy_container": False,
+        },
+        "rights": {
+            "scene_policy_readiness_digest": "sha256:" + "7" * 64,
+            "candidate_rights_binding_digest": "sha256:" + "8" * 64,
+        },
+    }
+
+
 def _write(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
@@ -301,6 +603,118 @@ def test_contract_binds_web_authority_to_pipeline_owned_profile(tmp_path: Path) 
     assert receipt["status"] == "blocked"
     assert "source_bundle_profile_binding_mismatch" in receipt["blockers"]
     assert calls == []
+
+
+def test_native_policy_binding_binds_robot_policy_and_shared_arena_runtime(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    assert validate_launch_profile(profile) == []
+    request = _request(profile)
+    # WebApp execution authority and frozen-candidate checkpoint rights are
+    # independent authorities and must not be forced to share a digest.
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda _argv: 0,
+    )
+
+    assert receipt["status"] == "dry_run_completed"
+
+
+def test_native_policy_campaign_binds_the_exact_webapp_launch_id(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    binding = _native_policy_binding()
+    binding["policy_campaign"] = {
+        "campaign_id": "scene-840920-policy-pair-1",
+        "campaign_digest": "sha256:" + "9" * 64,
+        "member_id": "pi05_droid",
+        "launch_id": "launch-policy-pi05-campaign-1",
+        "resource_name": "blueprint-native-task-policy-pi05-" + "a" * 32,
+        "sibling_member_id": "groot_n17_droid",
+        "sibling_launch_id": "launch-policy-groot-campaign-1",
+        "sibling_resource_name": "blueprint-native-task-policy-groot-" + "b" * 32,
+    }
+    profile["native_policy_binding"] = binding
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    assert validate_launch_profile(profile) == []
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+
+    mismatched = _request(profile)
+    mismatched["request_digest"] = canonical_digest(
+        mismatched, digest_field="request_digest"
+    )
+    mismatch_path = tmp_path / "mismatched-request.json"
+    _write(mismatch_path, mismatched)
+    blocked = dispatch_launch_request(
+        request_path=mismatch_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "blocked-state",
+        allocator_runner=lambda _argv: 0,
+    )
+    assert blocked["status"] == "blocked"
+    assert "native_policy_campaign_launch_id_mismatch" in blocked["blockers"]
+
+    matched = _request(profile)
+    matched["launch_id"] = "launch-policy-pi05-campaign-1"
+    matched["idempotency_key"] = matched["launch_id"]
+    matched["request_digest"] = canonical_digest(
+        matched, digest_field="request_digest"
+    )
+    matched_path = tmp_path / "matched-request.json"
+    _write(matched_path, matched)
+    accepted = dispatch_launch_request(
+        request_path=matched_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "accepted-state",
+        allocator_runner=lambda _argv: 0,
+    )
+    assert accepted["status"] == "dry_run_completed"
+
+
+def test_native_policy_binding_refuses_tagged_or_empty_arena_container(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["native_policy_binding"]["runtime"]["arena_container_image"] = (
+        "docker.io/blueprint/arena:latest"
+    )
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    assert "native_policy_binding_arena_container_invalid" in validate_launch_profile(
+        profile
+    )
+
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["native_policy_binding"]["runtime"]["arena_container_image"] = (
+        "@sha256:" + "6" * 64
+    )
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    assert "native_policy_binding_arena_container_invalid" in validate_launch_profile(
+        profile
+    )
 
 
 def test_stage_is_immutable_and_idempotent(tmp_path: Path) -> None:
