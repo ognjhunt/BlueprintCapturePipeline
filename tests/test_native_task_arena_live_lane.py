@@ -183,6 +183,7 @@ def _provider_bundle(
         "controls": (
             "native_task_arena_construction_result.v1.json",
             "adp_task_control_plan.v1.json",
+            "adp_task_control_execution_spec.v1.json",
         ),
         "policy": (
             "adp009d_scene_840920_policy_readiness.v1.json",
@@ -543,6 +544,34 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         construction_value, digest_field="result_digest"
     )
     write_json(construction, construction_value)
+    control_plan_value = {
+        "schema_version": "adp_task_control_plan.v1",
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "construction_result_digest": construction_value["result_digest"],
+        "candidate_policy_queried": False,
+        "plan_digest": "",
+    }
+    control_plan_value["plan_digest"] = canonical_digest(
+        control_plan_value, digest_field="plan_digest"
+    )
+    control_plan = tmp_path / "adp_task_control_plan.v1.json"
+    write_json(control_plan, control_plan_value)
+    control_execution_spec_value = {
+        "schema_version": "adp_task_control_execution_spec.v1",
+        "control_selection": "control_pair",
+        "task_kind": scene_plan["task_kind"],
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "construction_result_digest": construction_value["result_digest"],
+        "control_plan_digest": control_plan_value["plan_digest"],
+        "candidate_policy_queried": False,
+        "prior_zero_action_result_digest": None,
+        "execution_spec_digest": "",
+    }
+    control_execution_spec_value["execution_spec_digest"] = canonical_digest(
+        control_execution_spec_value, digest_field="execution_spec_digest"
+    )
+    control_execution_spec = tmp_path / "adp_task_control_execution_spec.v1.json"
+    write_json(control_execution_spec, control_execution_spec_value)
     control = tmp_path / "control_result.json"
     control_value = {
         "schema_version": "native_task_arena_control_result.v1",
@@ -656,6 +685,8 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             ADP009D_SCENARIO_SUITE_PATH
         ),
         "native_task_arena_construction_result.v1.json": construction,
+        "adp_task_control_plan.v1.json": control_plan,
+        "adp_task_control_execution_spec.v1.json": control_execution_spec,
         "native_task_arena_control_result.v1.json": control,
         "native_task_arena_policy_execution_spec.v1.json": policy_spec,
     }
