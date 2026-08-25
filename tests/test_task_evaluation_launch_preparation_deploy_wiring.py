@@ -53,7 +53,7 @@ def test_canonical_installer_installs_and_enables_preparation_pair() -> None:
     ) in installer
 
 
-def test_exact_sha_deployer_installs_and_arms_only_no_spend_preparation() -> None:
+def test_exact_sha_deployer_installs_and_arms_both_no_spend_intake_paths() -> None:
     assert "blueprint-task-evaluation-launch-preparation.service" in (
         deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     )
@@ -62,6 +62,7 @@ def test_exact_sha_deployer_installs_and_arms_only_no_spend_preparation() -> Non
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-launch-activation.path",
     )
     assert "blueprint-task-evaluation-launch-dispatcher.path" not in (
         deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
