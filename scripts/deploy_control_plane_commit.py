@@ -65,7 +65,13 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-task-evaluation-launch-dispatcher.path",
 )
+#: The only unit kinds a release may install.  The oneshot ``.service`` and its
+#: queue-watching ``.path`` are a pair: installing one without the other left
+#: the durable queue watched by stale bytes (or by nothing on a rebuilt host).
+#: Timers, sockets, and anything else stay operator-managed and are refused.
+DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path")
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "/etc/systemd/system/blueprint-pipeline-intake.service.d/"
@@ -466,9 +472,14 @@ def _install_release_systemd_units(
     Promoting a detached release without refreshing its installed unit left the
     dispatcher on older concurrency and watchdog-survival semantics.  The
     allocator then ran exact new Python under stale systemd controls and failed
-    before provider allocation.  Install only the dispatcher unit here; the
+    before provider allocation.  Install only the dispatcher pair here; the
     ordinary restart seam immediately daemon-reloads it, and the next queue
     activation therefore uses the same release that authored the profile.
+
+    The pair includes the queue-watching ``.path`` unit: a release that changed
+    how the queue wakes the dispatcher (PR #1057 added ``PathChanged=``) was
+    otherwise deployed with only its ``.service`` refreshed, leaving the
+    watcher on whatever bytes an operator had once copied by hand.
     """
 
     release = Path(release_path).expanduser().resolve()
@@ -476,7 +487,9 @@ def _install_release_systemd_units(
     destination_root.mkdir(parents=True, exist_ok=True)
     receipts: list[dict[str, Any]] = []
     for unit in units:
-        if Path(unit).name != unit or not unit.endswith(".service"):
+        if Path(unit).name != unit or not unit.endswith(
+            DEPLOYED_SYSTEMD_UNIT_SUFFIXES
+        ):
             raise ControlPlaneDeployError("deploy_systemd_unit_name_invalid")
         source = release / "deploy" / "systemd" / unit
         destination = destination_root / unit
@@ -521,6 +534,66 @@ def _install_release_systemd_units(
             }
         )
     return receipts
+
+
+def _activate_installed_path_units(
+    installed_units: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Enable and restart every installed ``.path`` watcher, and prove it waits.
+
+    Installing the dispatcher's ``.path`` bytes without activating them leaves
+    the durable queue watched by whatever unit systemd loaded before the
+    deploy -- or by nothing at all on a rebuilt host.  The watcher is the wake
+    seam for atomically published launch requests, so after its bytes move the
+    deploy must show the running watcher is the new one: enabled for boot,
+    restarted under the already-reloaded daemon, and reporting ``active``
+    (waiting) afterwards.
+
+    The paired oneshot ``.service`` is deliberately never restarted here:
+    starting it would dispatch the queue in the middle of the deploy, inside
+    the held paid-launch locks.  The watcher triggers it on the next queue
+    publication instead.  Runs after the intake runtime probe, so a watcher
+    only starts watching once every other surface has proven the new commit.
+    """
+
+    activated: list[dict[str, Any]] = []
+    for entry in installed_units:
+        unit = str(entry.get("unit") or "")
+        if not unit.endswith(".path"):
+            continue
+        for verb in ("enable", "restart"):
+            result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+                ["systemctl", verb, unit],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise ControlPlaneDeployError(
+                    f"deploy_path_unit_activation_failed:{unit}:{verb}"
+                )
+        checks: dict[str, str] = {}
+        for probe, expected in (("is-enabled", "enabled"), ("is-active", "active")):
+            result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+                ["systemctl", probe, unit],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            state = result.stdout.strip()
+            if state != expected:
+                raise ControlPlaneDeployError(
+                    f"deploy_path_unit_not_{expected}:{unit}:{state or 'unknown'}"
+                )
+            checks[probe] = state
+        activated.append(
+            {
+                "unit": unit,
+                "enabled": checks["is-enabled"],
+                "state": checks["is-active"],
+            }
+        )
+    return activated
 
 
 def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
@@ -829,6 +902,12 @@ def deploy_control_plane_commit(
         runtime = _verify_intake_runtime(
             intake_version_url, expected_commit=commit
         )
+        # Last inside the held locks: the queue watcher only starts watching
+        # once the restarted intake has proven the new commit, and no launch
+        # can slip in between the watcher restart and the lock release.
+        activated_path_units = _activate_installed_path_units(
+            installed_systemd_units
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -843,6 +922,7 @@ def deploy_control_plane_commit(
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
         "installed_systemd_units": installed_systemd_units,
+        "activated_path_units": activated_path_units,
         "intake_runtime_binding": runtime_binding,
         "intake_runtime": runtime,
         # Every slot actually held, not the one base path the caller named.
