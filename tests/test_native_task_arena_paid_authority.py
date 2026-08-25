@@ -977,6 +977,103 @@ def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execut
     assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
 
 
+def test_preallocation_closeout_chain_validates_from_dispatcher_staged_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sibling = _watchdog_not_armed_fixture(tmp_path / "sibling")
+    sibling_value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=sibling["authority"],
+        allocator_result_path=sibling["result"],
+        watchdog_handoff_path=sibling["watchdog"],
+        object_store_cleanup_path=sibling["cleanup"],
+        api_provider_zero_path=sibling["api_zero"],
+        output_dir=tmp_path / "sibling-closeout",
+    )
+    primary = _watchdog_not_armed_fixture(tmp_path / "primary")
+    authority = json.loads(primary["authority"].read_text())
+    authority["authority_reference"] = "primary"
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(primary["authority"], authority)
+    result = json.loads(primary["result"].read_text())
+    result["authorization_consumption"]["authorization_digest"] = authority[
+        "authorization_digest"
+    ]
+    write_json(primary["result"], result)
+    primary_value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=primary["authority"],
+        allocator_result_path=primary["result"],
+        watchdog_handoff_path=primary["watchdog"],
+        object_store_cleanup_path=primary["cleanup"],
+        api_provider_zero_path=primary["api_zero"],
+        sibling_preallocation_closeout_paths=[sibling_value["provider_zero_path"]],
+        output_dir=tmp_path / "primary-closeout",
+    )
+
+    primary_result = Path(primary_value["terminal_result_path"])
+    primary_zero = Path(primary_value["provider_zero_path"])
+    sibling_result = Path(sibling_value["terminal_result_path"])
+    sibling_zero = Path(sibling_value["provider_zero_path"])
+    primary_teardown = Path(json.loads(primary_zero.read_text())["teardown"]["path"])
+    sibling_teardown = Path(json.loads(sibling_zero.read_text())["teardown"]["path"])
+    declared = list(
+        dict.fromkeys(
+            (
+                primary["authority"],
+                primary_result,
+                primary_zero,
+                primary["result"],
+                primary["watchdog"],
+                primary["cleanup"],
+                primary["api_zero"],
+                primary_teardown,
+                sibling["authority"],
+                sibling_result,
+                sibling_zero,
+                sibling["result"],
+                sibling["watchdog"],
+                sibling["cleanup"],
+                sibling["api_zero"],
+                sibling_teardown,
+            )
+        )
+    )
+    records = {path: _record(path) for path in declared}
+    profile = {
+        "profile_id": "preallocation-closeout-staging-test",
+        "profile_digest": "sha256:" + "0" * 64,
+        "immutable_inputs": [
+            {"name": f"input-{index}", "path": str(path), "digest": _sha(path)}
+            for index, path in enumerate(declared)
+        ],
+    }
+    run_root = tmp_path / "staged-run"
+    dispatcher._stage_profile_immutable_inputs(
+        profile=profile,
+        run_root=run_root,
+        allocator_argv=[],
+    )
+    monkeypatch.setenv(
+        STAGING_RECEIPT_ENV,
+        str(run_root / "immutable_input_staging_receipt.json"),
+    )
+    staged_authority = paid._bound_record(records[primary["authority"]], "authority")[0]
+    staged_result = paid._bound_record(records[primary_result], "result")[0]
+    staged_zero = paid._bound_record(records[primary_zero], "zero")[0]
+
+    for path in declared:
+        path.unlink()
+
+    chain = paid.validate_terminal_spend_chain(
+        authority_path=staged_authority,
+        result_path=staged_result,
+        provider_zero_path=staged_zero,
+    )
+    assert chain["attempt_cost_usd"] == 0.0
+    assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [

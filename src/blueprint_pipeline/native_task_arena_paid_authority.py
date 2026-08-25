@@ -75,6 +75,26 @@ def _record(path: Path) -> dict[str, Any]:
     return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
 
 
+def _lexical_absolute_path(value: Any, code: str) -> Path:
+    raw = str(value or "")
+    expanded = Path(raw).expanduser()
+    if not raw or not expanded.is_absolute():
+        raise ValueError(code)
+    return Path(os.path.abspath(str(expanded)))
+
+
+def _recorded_path(record: Mapping[str, Any], code: str) -> Path:
+    """Return the source path sealed by one byte-verified record.
+
+    Dispatcher children read digest-named staged snapshots, while closeout
+    layout assertions still describe the original attempt tree.  The record
+    has already been verified by :func:`_bound_record`, so those assertions
+    must use its sealed source identity, not the transient staged filename.
+    """
+
+    return _lexical_absolute_path(record.get("path"), code)
+
+
 def _read(path: Path, code: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -270,30 +290,30 @@ def _validate_preallocation_closed_chain(
     allow_siblings: bool = True,
 ) -> None:
     _validate_preallocation_provider_zero_value(zero)
-    zero_authority_path, _ = _bound_record(
+    zero_authority_path, _zero_authority_record = _bound_record(
         zero.get("attempt_authority"),
         "native_task_arena_preallocation_authority_unbound",
     )
-    original_path, _ = _bound_record(
+    original_path, original_record = _bound_record(
         result.get("original_allocator_result"),
         "native_task_arena_preallocation_original_result_unbound",
     )
-    watchdog_path, _ = _bound_record(
+    watchdog_path, watchdog_record = _bound_record(
         result.get("watchdog_handoff"),
         "native_task_arena_preallocation_watchdog_unbound",
     )
-    cleanup_path, _ = _bound_record(
+    cleanup_path, cleanup_record = _bound_record(
         result.get("object_store_cleanup"),
         "native_task_arena_preallocation_cleanup_unbound",
     )
-    teardown_path, _ = _bound_record(
+    teardown_path, teardown_record = _bound_record(
         zero.get("teardown"), "native_task_arena_preallocation_teardown_unbound"
     )
-    zero_result_path, _ = _bound_record(
+    _zero_result_path, zero_result_record = _bound_record(
         zero.get("terminal_result"),
         "native_task_arena_preallocation_terminal_result_unbound",
     )
-    api_zero_path, _ = _bound_record(
+    api_zero_path, api_zero_record = _bound_record(
         zero.get("api_provider_zero"),
         "native_task_arena_preallocation_api_zero_unbound",
     )
@@ -334,6 +354,22 @@ def _validate_preallocation_closed_chain(
     }
     attempt_root_raw = str(original.get("attempt_root") or "")
     sibling_records = zero.get("sibling_preallocation_closeouts")
+    recorded_original_path = _recorded_path(
+        original_record, "native_task_arena_preallocation_original_result_unbound"
+    )
+    recorded_watchdog_path = _recorded_path(
+        watchdog_record, "native_task_arena_preallocation_watchdog_unbound"
+    )
+    recorded_cleanup_path = _recorded_path(
+        cleanup_record, "native_task_arena_preallocation_cleanup_unbound"
+    )
+    recorded_teardown_path = _recorded_path(
+        teardown_record, "native_task_arena_preallocation_teardown_unbound"
+    )
+    recorded_zero_result_path = _recorded_path(
+        zero_result_record,
+        "native_task_arena_preallocation_terminal_result_unbound",
+    )
     if (
         result.get("closeout_kind") != PREALLOCATION_CLOSEOUT_KIND
         or zero_authority != dict(authority)
@@ -360,9 +396,9 @@ def _validate_preallocation_closed_chain(
         or original.get("provider_create_attempted") not in (None, False)
         or not _preallocation_attempt_layout_valid(
             authority=authority,
-            original_path=original_path,
-            watchdog_path=watchdog_path,
-            cleanup_path=cleanup_path,
+            original_path=recorded_original_path,
+            watchdog_path=recorded_watchdog_path,
+            cleanup_path=recorded_cleanup_path,
             attempt_root_raw=attempt_root_raw,
         )
         or original.get("independent_watchdog") != watchdog
@@ -380,20 +416,28 @@ def _validate_preallocation_closed_chain(
         or teardown.get("continuing_spend_from_this_run") is not False
         or teardown.get("receipt_digest")
         != canonical_digest(teardown, digest_field="receipt_digest")
-        or teardown.get("original_allocator_result") != _record(original_path)
-        or teardown.get("watchdog_handoff") != _record(watchdog_path)
-        or result.get("teardown_manifest_path") != str(teardown_path)
+        or teardown.get("original_allocator_result") != original_record
+        or teardown.get("watchdog_handoff") != watchdog_record
+        or _lexical_absolute_path(
+            result.get("teardown_manifest_path"),
+            "native_task_arena_preallocation_teardown_unbound",
+        )
+        != recorded_teardown_path
         or zero.get("attempt_authority_digest") != authorization_digest
         or zero.get("evidence_times") != expected_times
         or zero_at < result_at
         or zero_at > closeout_at
         or (closeout_at - zero_at).total_seconds()
         > MAX_PREALLOCATION_API_ZERO_AGE_SECONDS
-        or zero_result_path != Path(str(result.get("closeout_path") or "")).resolve()
-        or zero.get("teardown") != _record(teardown_path)
-        or zero.get("watchdog") != _record(watchdog_path)
-        or zero.get("object_store_cleanup") != _record(cleanup_path)
-        or zero.get("api_provider_zero") != _record(api_zero_path)
+        or _lexical_absolute_path(
+            result.get("closeout_path"),
+            "native_task_arena_preallocation_terminal_result_unbound",
+        )
+        != recorded_zero_result_path
+        or zero.get("teardown") != teardown_record
+        or zero.get("watchdog") != watchdog_record
+        or zero.get("object_store_cleanup") != cleanup_record
+        or zero.get("api_provider_zero") != api_zero_record
         or not isinstance(sibling_records, list)
         or (bool(sibling_records) and not allow_siblings)
     ):
