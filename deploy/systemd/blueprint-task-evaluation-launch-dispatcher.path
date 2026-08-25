@@ -2,6 +2,10 @@
 Description=Watch the durable Blueprint Task Evaluation launch queue
 
 [Path]
+# Wake on every atomic request publication into the queue directory.  Keep the
+# existence glob as crash/restart recovery for requests already present when
+# this path unit starts.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending
 PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending/*.json
 Unit=blueprint-task-evaluation-launch-dispatcher.service
 
