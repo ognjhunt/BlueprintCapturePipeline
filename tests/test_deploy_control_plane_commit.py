@@ -274,31 +274,160 @@ def test_restart_reloads_drop_ins_before_restarting_the_intake(monkeypatch) -> N
 
 def test_deploy_installs_exact_dispatcher_unit_bytes_atomically(tmp_path: Path) -> None:
     release = tmp_path / "release"
-    source = release / "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service"
-    source.parent.mkdir(parents=True)
-    source.write_text("[Service]\nKillMode=process\n", encoding="utf-8")
+    unit_dir = release / "deploy/systemd"
+    unit_dir.mkdir(parents=True)
+    service = unit_dir / "blueprint-task-evaluation-launch-dispatcher.service"
+    service.write_text("[Service]\nKillMode=process\n", encoding="utf-8")
+    path_unit = unit_dir / "blueprint-task-evaluation-launch-dispatcher.path"
+    path_unit.write_text(
+        "[Path]\nPathChanged=/queue/pending\n"
+        "PathExistsGlob=/queue/pending/*.json\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
-    destination = systemd / source.name
-    destination.write_text("[Service]\nKillMode=control-group\n", encoding="utf-8")
+    (systemd / service.name).write_text(
+        "[Service]\nKillMode=control-group\n", encoding="utf-8"
+    )
+    # The hand-copied watcher this deploy must replace byte-for-byte.
+    (systemd / path_unit.name).write_text(
+        "[Path]\nPathExistsGlob=/queue/pending/*.json\n", encoding="utf-8"
+    )
 
     receipts = deploy._install_release_systemd_units(
         release_path=release,
         systemd_dir=systemd,
     )
 
-    assert destination.read_bytes() == source.read_bytes()
-    assert destination.stat().st_mode & 0o777 == 0o644
-    assert receipts == [
-        {
-            "unit": source.name,
-            "source_path": str(source),
-            "installed_path": str(destination),
-            "sha256": deploy._sha256_bytes(source.read_bytes()),
-            "size_bytes": len(source.read_bytes()),
-            "mode": "0644",
-        }
+    expected = []
+    for source in (service, path_unit):
+        destination = systemd / source.name
+        assert destination.read_bytes() == source.read_bytes()
+        assert destination.stat().st_mode & 0o777 == 0o644
+        expected.append(
+            {
+                "unit": source.name,
+                "source_path": str(source),
+                "installed_path": str(destination),
+                "sha256": deploy._sha256_bytes(source.read_bytes()),
+                "size_bytes": len(source.read_bytes()),
+                "mode": "0644",
+            }
+        )
+    assert receipts == expected
+
+
+def test_the_deployed_unit_set_is_the_dispatcher_service_and_path_pair() -> None:
+    """Deploying one half of the pair is how the watcher went stale.
+
+    PR #1057 changed how the queue wakes the dispatcher (``PathChanged=``),
+    and the canonical deploy would have installed only the ``.service`` --
+    leaving the watcher on whatever bytes an operator once copied by hand.
+    """
+
+    assert deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS == (
+        "blueprint-task-evaluation-launch-dispatcher.service",
+        "blueprint-task-evaluation-launch-dispatcher.path",
+    )
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "blueprint-task-evaluation-launch-dispatcher.timer",
+        "blueprint-task-evaluation-launch-dispatcher.socket",
+        "../blueprint-task-evaluation-launch-dispatcher.service",
+        "dispatcher",
+    ],
+)
+def test_only_service_and_path_unit_suffixes_may_be_installed(
+    tmp_path: Path, unit: str
+) -> None:
+    with pytest.raises(
+        deploy.ControlPlaneDeployError, match="deploy_systemd_unit_name_invalid"
+    ):
+        deploy._install_release_systemd_units(
+            release_path=tmp_path / "release",
+            systemd_dir=tmp_path / "systemd",
+            units=(unit,),
+        )
+
+
+def test_path_unit_activation_enables_restarts_and_proves_waiting(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-active"]:
+            stdout = "active\n"
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = "enabled\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+
+    activated = deploy._activate_installed_path_units(
+        [
+            {"unit": "blueprint-task-evaluation-launch-dispatcher.service"},
+            {"unit": "blueprint-task-evaluation-launch-dispatcher.path"},
+        ]
+    )
+
+    path_unit = "blueprint-task-evaluation-launch-dispatcher.path"
+    assert calls == [
+        ("systemctl", "enable", path_unit),
+        ("systemctl", "restart", path_unit),
+        ("systemctl", "is-enabled", path_unit),
+        ("systemctl", "is-active", path_unit),
+    ], "the oneshot service must never be started by the deploy itself"
+    assert activated == [
+        {"unit": path_unit, "enabled": "enabled", "state": "active"}
     ]
+
+
+def test_path_unit_activation_failure_names_the_unit_and_verb(monkeypatch) -> None:
+    def completed(argv, **kwargs):
+        code = 1 if argv[:2] == ["systemctl", "restart"] else 0
+        return subprocess.CompletedProcess(argv, code, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+
+    with pytest.raises(
+        deploy.ControlPlaneDeployError,
+        match=(
+            "deploy_path_unit_activation_failed:"
+            "blueprint-task-evaluation-launch-dispatcher.path:restart"
+        ),
+    ):
+        deploy._activate_installed_path_units(
+            [{"unit": "blueprint-task-evaluation-launch-dispatcher.path"}]
+        )
+
+
+def test_a_watcher_that_is_not_waiting_after_restart_blocks_the_deploy(
+    monkeypatch,
+) -> None:
+    def completed(argv, **kwargs):
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = "enabled\n"
+        if argv[:2] == ["systemctl", "is-active"]:
+            stdout = "failed\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+
+    with pytest.raises(
+        deploy.ControlPlaneDeployError,
+        match=(
+            "deploy_path_unit_not_active:"
+            "blueprint-task-evaluation-launch-dispatcher.path:failed"
+        ),
+    ):
+        deploy._activate_installed_path_units(
+            [{"unit": "blueprint-task-evaluation-launch-dispatcher.path"}]
+        )
 
 
 def test_the_deploy_holds_the_lock_for_its_whole_duration(tmp_path: Path) -> None:
@@ -528,7 +657,10 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     monkeypatch.setattr(
         deploy,
         "_install_release_systemd_units",
-        lambda **kwargs: [{"unit": "blueprint-task-evaluation-launch-dispatcher.service"}],
+        lambda **kwargs: [
+            {"unit": "blueprint-task-evaluation-launch-dispatcher.service"},
+            {"unit": "blueprint-task-evaluation-launch-dispatcher.path"},
+        ],
     )
 
     def assert_lock_held(stage: str):
@@ -550,6 +682,18 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
             or {"commit_proven": True, "source_commit": commit}
         ),
     )
+    monkeypatch.setattr(
+        deploy,
+        "_activate_installed_path_units",
+        lambda installed: (
+            assert_lock_held("path_activation")
+            or [
+                {"unit": entry["unit"], "enabled": "enabled", "state": "active"}
+                for entry in installed
+                if str(entry["unit"]).endswith(".path")
+            ]
+        ),
+    )
 
     receipt = deploy.deploy_control_plane_commit(
         source_repo=source,
@@ -562,12 +706,19 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         intake_runtime_drop_in=tmp_path / "drop-in",
     )
 
-    assert observed == ["restart", "runtime_probe"]
+    assert observed == ["restart", "runtime_probe", "path_activation"]
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
     assert receipt["installed_systemd_units"][0]["unit"] == (
         "blueprint-task-evaluation-launch-dispatcher.service"
     )
+    assert receipt["activated_path_units"] == [
+        {
+            "unit": "blueprint-task-evaluation-launch-dispatcher.path",
+            "enabled": "enabled",
+            "state": "active",
+        }
+    ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
 
