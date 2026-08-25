@@ -970,6 +970,179 @@ def test_live_dispatch_blocks_without_independent_execute_environment(
     assert receipt["provider_mutation_attempted"] is False
 
 
+def test_native_policy_sigterm_before_admission_seals_typed_media_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed allocator used to leave neither its result nor the mandatory
+    typed pre-observation media gap, while claiming a provider mutation attempt
+    solely because the subprocess had been invoked."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda _argv: -15,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["execute_requested"] is True
+    assert receipt["allocator_invoked"] is True
+    assert receipt["allocator_exit_code"] == -15
+    assert receipt["provider_mutation_attempted"] is False
+    assert receipt["provider_mutation_evidence"] == {
+        "schema_version": "task_evaluation_provider_mutation_evidence.v1",
+        "status": "absent_before_paid_admission",
+        "allocator_invoked": True,
+        "admission_artifact_path_configured": True,
+        "bound_request_artifact_path_configured": True,
+        "adapter_output_artifact_path_configured": True,
+        "all_boundary_artifact_paths_configured": True,
+        "admission_artifact_present": False,
+        "bound_request_artifact_present": False,
+        "adapter_output_artifact_present": False,
+        "terminal_result_artifact_present": False,
+        "raw_secret_values_recorded": False,
+    }
+    expected_visual = {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "allocator_terminated_before_paid_admission",
+        },
+    }
+    assert receipt["visual_evidence"] == expected_visual
+    assert receipt["terminal_evidence"]["visual_evidence"] == expected_visual
+    assert "allocator_terminal_result_missing" in receipt["blockers"]
+    assert "canonical_allocator_nonzero_exit" in receipt["blockers"]
+    persisted = json.loads(
+        (
+            tmp_path
+            / "state"
+            / request["launch_id"]
+            / "launch_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted == receipt
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_native_policy_missing_result_does_not_invent_preobservation_after_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the paid admission artifact exists, a missing result cannot prove
+    whether the provider reached its first observation."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    def _runner(_argv: list[str]) -> int:
+        _write(tmp_path / "admission.json", {"status": "admitted"})
+        return -15
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=_runner,
+    )
+
+    assert receipt["execute_requested"] is True
+    assert receipt["allocator_invoked"] is True
+    assert receipt["provider_mutation_attempted"] is True
+    assert (
+        receipt["provider_mutation_evidence"]["status"]
+        == "allocator_boundary_artifacts_present"
+    )
+    assert receipt["provider_mutation_evidence"]["admission_artifact_present"] is True
+    assert "visual_evidence" not in receipt
+    assert "visual_evidence" not in receipt["terminal_evidence"]
+
+
+@pytest.mark.parametrize(
+    "removed_flags",
+    [
+        ("--admission-out",),
+        ("--admission-out", "--bound-request-out", "--adapter-output"),
+    ],
+)
+def test_native_policy_missing_boundary_paths_stays_conservative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    removed_flags: tuple[str, ...],
+) -> None:
+    """Uninstrumented argv cannot prove that no paid boundary was crossed."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile["native_policy_binding"] = _native_policy_binding()
+    argv = profile["allocator"]["argv"]
+    for flag in removed_flags:
+        index = argv.index(flag)
+        del argv[index : index + 2]
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda _argv: -15,
+    )
+
+    assert receipt["execute_requested"] is True
+    assert receipt["allocator_invoked"] is True
+    assert receipt["provider_mutation_attempted"] is True
+    evidence = receipt["provider_mutation_evidence"]
+    assert evidence["status"] == "boundary_artifact_paths_unconfigured"
+    assert evidence["all_boundary_artifact_paths_configured"] is False
+    for flag, field in (
+        ("--admission-out", "admission_artifact_path_configured"),
+        ("--bound-request-out", "bound_request_artifact_path_configured"),
+        ("--adapter-output", "adapter_output_artifact_path_configured"),
+    ):
+        assert evidence[field] is (flag not in removed_flags)
+    assert "visual_evidence" not in receipt
+    assert "visual_evidence" not in receipt["terminal_evidence"]
+
+
 def test_live_dispatch_blocks_dry_only_profile_and_secret_profile_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2264,10 +2437,9 @@ def test_one_use_standing_authority_is_atomic_across_distinct_website_launches(
         receipts = list(executor.map(dispatch, request_paths))
 
     assert len(calls) == 1
-    assert sum(receipt["provider_mutation_attempted"] is True for receipt in receipts) == 1
-    refused = next(
-        receipt for receipt in receipts if receipt["provider_mutation_attempted"] is False
-    )
+    assert sum(receipt["allocator_invoked"] is True for receipt in receipts) == 1
+    assert all(receipt["provider_mutation_attempted"] is False for receipt in receipts)
+    refused = next(receipt for receipt in receipts if receipt["allocator_invoked"] is False)
     assert "standing_authorization_consumption_not_recorded" in refused["blockers"]
     assert "standing_authorization_launches_exhausted" in refused["blockers"]
     consumption_records = list(

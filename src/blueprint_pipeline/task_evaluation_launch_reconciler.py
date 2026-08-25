@@ -325,10 +325,12 @@ def _terminal_teardown_evidence(
 def _terminal_preprovider_admission_blocked(*, receipt: Mapping[str, Any]) -> bool:
     """Recognize the allocator's retained fail-closed pre-provider result.
 
-    ``provider_mutation_attempted`` means the dispatcher crossed the canonical
-    allocator boundary; it does not prove that the allocator reached a provider
-    API.  An exact, digest-bound allocator admission rejection therefore has no
-    teardown obligation.  Any other missing teardown remains a closure blocker.
+    ``allocator_invoked`` records the process boundary.  A true
+    ``provider_mutation_attempted`` now additionally requires a retained
+    canonical admission, bound-request, adapter-output, or terminal-result
+    artifact; it still does not prove that the allocator reached a provider API.
+    An exact, digest-bound allocator admission rejection therefore has no
+    teardown obligation. Any other missing teardown remains a closure blocker.
     """
 
     terminal = receipt.get("terminal_evidence")
