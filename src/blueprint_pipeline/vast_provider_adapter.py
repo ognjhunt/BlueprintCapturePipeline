@@ -1379,6 +1379,21 @@ def _offer_hourly_rate(offer: Mapping[str, Any]) -> float | None:
     return None
 
 
+def _offer_compute_hourly_rate(offer: Mapping[str, Any]) -> float | None:
+    """Return compute-only hourly cost when Vast exposes it separately.
+
+    Vast offer search reports ``dph_base`` as compute cost and ``dph_total`` as
+    the same cost plus the offer's small default disk.  Selection later prices
+    the caller's requested disk, so using ``dph_total`` there would count the
+    default disk twice.
+    """
+
+    base = _number(offer.get("dph_base"))
+    if base is not None and base >= 0:
+        return base
+    return _offer_hourly_rate(offer)
+
+
 def _gpu_name(offer: Mapping[str, Any]) -> str:
     return (
         _string(offer.get("gpu_name"))
@@ -1416,6 +1431,16 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
 
 
 def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) -> float | None:
+    # In offer-search rows ``storage_total_cost`` is the hourly cost of Vast's
+    # default 8 GB disk, not of the disk requested by our create payload.  The
+    # adjacent ``storage_cost`` is the monthly per-GB price and is therefore the
+    # authoritative pre-create input for a non-default request.  A 200 GB policy
+    # run otherwise looks 25x cheaper until after the instance is created.
+    monthly_per_gb = _number(offer.get("storage_cost"))
+    if monthly_per_gb is None:
+        monthly_per_gb = _number(_mapping(offer.get("pricing")).get("storage_cost"))
+    if monthly_per_gb is not None and monthly_per_gb >= 0 and disk_gb > 0:
+        return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
     direct = _number(offer.get("storage_total_cost"))
     if direct is not None and direct >= 0:
         return direct
@@ -1424,9 +1449,6 @@ def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) ->
         direct = _number(section.get("diskHour"))
         if direct is not None and direct >= 0:
             return direct
-    monthly_per_gb = _number(offer.get("storage_cost"))
-    if monthly_per_gb is None:
-        monthly_per_gb = _number(_mapping(offer.get("pricing")).get("storage_cost"))
     if monthly_per_gb is None or monthly_per_gb < 0 or disk_gb <= 0:
         return None
     return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
@@ -1437,7 +1459,7 @@ def _offer_summary(offer: Mapping[str, Any], *, disk_gb: int = 0) -> dict[str, A
     driver = _driver_version(offer)
     driver_status = _isaac_driver_support_status(driver)
     compute_cap = offer.get("compute_cap")
-    compute_hourly_rate = _offer_hourly_rate(offer)
+    compute_hourly_rate = _offer_compute_hourly_rate(offer)
     storage_hourly_rate = _offer_storage_hourly_rate(offer, disk_gb=disk_gb)
     all_in_hourly_rate = (
         compute_hourly_rate + storage_hourly_rate

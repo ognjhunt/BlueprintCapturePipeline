@@ -2900,6 +2900,56 @@ def test_vast_adapter_rejects_offer_without_requested_disk_capacity() -> None:
     assert selected["provider_available_disk_gb"] == 160.0
 
 
+def test_vast_offer_prices_requested_disk_before_instance_creation() -> None:
+    """Offer search must not price only Vast's default 8 GB disk.
+
+    The provider row observed in production exposed a 200 GB request as
+    ``storage_total_cost=0.005925...`` before create, then charged
+    ``0.148148...`` after create.  ``storage_cost`` is the monthly per-GB value
+    that resolves both sides to the same amount.
+    """
+
+    summary = vpa._offer_summary(
+        {
+            "ask_contract_id": 48064193,
+            "gpu_name": "RTX 6000Ada",
+            "dph_base": 0.5733333333333334,
+            "dph_total": 0.5792592592592593,
+            "storage_cost": 0.5333333333333332,
+            "storage_total_cost": 0.005925925925925925,
+            "gpu_ram": 49_140,
+            "driver_version": "580.119.02",
+        },
+        disk_gb=200,
+    )
+
+    assert summary["compute_hourly_rate_usd"] == pytest.approx(0.5733333333333334)
+    assert summary["storage_hourly_rate_usd"] == pytest.approx(0.1481481481481481)
+    assert summary["hourly_rate_usd"] == pytest.approx(0.7214814814814815)
+
+
+def test_vast_offer_selection_rejects_requested_disk_all_in_rate_over_cap() -> None:
+    selected = _select_offer(
+        [
+            {
+                "ask_contract_id": 48064193,
+                "gpu_name": "RTX 6000Ada",
+                "dph_base": 0.5733333333333334,
+                "dph_total": 0.5792592592592593,
+                "storage_cost": 0.5333333333333332,
+                "storage_total_cost": 0.005925925925925925,
+                "gpu_ram": 49_140,
+                "driver_version": "580.119.02",
+            }
+        ],
+        max_hourly_rate=0.64,
+        disk_gb=200,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is None
+
+
 def test_vast_adapter_caps_host_total_memory_for_known_4090_model() -> None:
     selected = _select_offer(
         [
