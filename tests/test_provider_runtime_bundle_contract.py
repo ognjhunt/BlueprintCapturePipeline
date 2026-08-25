@@ -5,6 +5,8 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline.provider_runtime_bundle_contract import (
+    PROVIDER_RUNTIME_BUNDLE_KINDS,
+    provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
 
@@ -77,3 +79,25 @@ def test_wam_registered_alternative_validates_powered_layout(tmp_path: Path) -> 
     assert not wam_registered_alternative_inputs_present(
         bundle_path=invalid_path, zip_entries=invalid_entries
     )
+
+
+def test_scene_configuration_runtime_contract_is_closed_and_fail_closed() -> None:
+    root = Path(__file__).resolve().parents[1]
+    entrypoint = (
+        root / "scripts/run_task_evaluation_scene_configuration_provider.sh"
+    ).read_text(encoding="utf-8")
+    runner = (
+        root / "scripts/task_evaluation_scene_configuration_provider_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "task_evaluation_scene_configuration" in PROVIDER_RUNTIME_BUNDLE_KINDS
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        entrypoint_text="#!/bin/sh\nexit 0\n",
+        runner_text=runner,
+    ) == ["provider_entrypoint_missing_runtime_result_crash_fallback"]

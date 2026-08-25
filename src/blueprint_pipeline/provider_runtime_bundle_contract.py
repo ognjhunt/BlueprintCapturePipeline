@@ -37,6 +37,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_inpaint360_interiorgs",
     "adp_gaussian_excision",
     "adp_retained_scene_render",
+    "task_evaluation_scene_configuration",
 )
 
 
@@ -527,6 +528,30 @@ def provider_runtime_contract_blockers(
             and "unitree_unifolm_policy_action_command_ran" in runner_text
         )
         runner_blocker = "provider_runner_missing_unitree_unifolm_runtime_contract"
+    elif provider_bundle_kind == "task_evaluation_scene_configuration":
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "task_evaluation_scene_configuration_provider_result.v1.json",
+                "scene_configuration_provider_runner_failed_without_result",
+                "scene_configuration_provider_python_runtime_missing",
+                "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "execute_scene_configuration_stage_chain",
+                "portable_construction_envelope.v1.json",
+                "candidate_policy_queried",
+                "evaluation_episode_executed",
+                "provider_zero_required_after_return",
+                "_hydrate_envelope",
+            )
+        )
+        runner_blocker = (
+            "provider_runner_missing_task_evaluation_scene_configuration_contract"
+        )
     elif provider_bundle_kind == "unitree_groot_n17_sonic":
         entrypoint_valid = (
             "unitree_groot_n17_sonic_provider_runner_failed_without_runtime_result"

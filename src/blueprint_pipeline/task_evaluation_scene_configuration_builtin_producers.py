@@ -59,6 +59,10 @@ _SECRET_ENVIRONMENT_FILES = (
     "OPENAI_API_KEY_FILE",
     "BLUEPRINT_OPENAI_ADMIN_KEY_FILE",
 )
+_RAW_SECRET_ENVIRONMENT_NAMES = (
+    "OPENAI_API_KEY",
+    "BLUEPRINT_OPENAI_ADMIN_KEY",
+)
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -211,6 +215,18 @@ def _validate_toolchain(
     return manifest, entrypoints
 
 
+def validate_scene_configuration_toolchain(
+    *, root: str | Path, expected_source_commit: str
+) -> dict[str, Any]:
+    """Validate every toolchain byte without constructing executable handlers."""
+
+    manifest, _entrypoints = _validate_toolchain(
+        root=Path(root).expanduser().resolve(),
+        expected_source_commit=expected_source_commit,
+    )
+    return manifest
+
+
 def _secret_values(environment: Mapping[str, str]) -> list[str]:
     values: list[str] = []
     for name in _SECRET_ENVIRONMENT_FILES:
@@ -272,6 +288,7 @@ def _handler(
             "configuration_sha256": _sha256(configuration_path),
             "source_commit": expected_source_commit,
             "toolchain_digest": toolchain_digest,
+            "construction_envelope": dict(envelope),
         }
         input_path.write_text(canonical_json(input_value) + "\n", encoding="utf-8")
         dependency_path.write_text(
@@ -286,6 +303,10 @@ def _handler(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_RESULT": str(result_path),
         }
+        if any(str(run_environment.get(name) or "").strip() for name in _RAW_SECRET_ENVIRONMENT_NAMES):
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                "scene_configuration_raw_secret_environment_forbidden"
+            )
         secrets = _secret_values(run_environment)
         completed = runner(
             [str(executable)],
@@ -357,4 +378,5 @@ __all__ = [
     "TOOLCHAIN_ROOT_ENV",
     "TOOLCHAIN_SCHEMA_VERSION",
     "builtin_scene_configuration_stage_producer_registry",
+    "validate_scene_configuration_toolchain",
 ]
