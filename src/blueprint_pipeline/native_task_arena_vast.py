@@ -35,6 +35,11 @@ DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/native-task-arena"
 MINIMUM_DRIVER_VERSION = "580.65.06"
 NO_POLICY_MIN_GPU_RAM_MB = 24_000
 NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
+# The frozen GR00T N1.7 dependency set pins FlashAttention 2.8.3, whose CUDA
+# backend starts at Ampere.  Both frozen candidates must see the same provider
+# pool, so the paired policy lane shares that evidence-backed floor while the
+# generic Vast transport keeps its compatibility default of no floor.
+POLICY_MIN_COMPUTE_CAP = 800
 
 
 def run_native_task_arena_vast(
@@ -443,6 +448,7 @@ def _run_native_task_arena_policy_vast(
         instance_label_exact=member_resource_name or None,
         blocker_prefix=blocker_prefix,
         min_gpu_ram_mb=46_000,
+        min_compute_cap=POLICY_MIN_COMPUTE_CAP,
         allowed_active_instance_ids=allowed_ids,
         allowed_active_resource_names=sibling_resource_names,
         # Policy and controls share the provider-wide semaphore even when a
@@ -467,6 +473,7 @@ __all__ = [
     "MINIMUM_DRIVER_VERSION",
     "NO_POLICY_MIN_GPU_RAM_MB",
     "NO_POLICY_PREFERRED_GPU_KEYWORDS",
+    "POLICY_MIN_COMPUTE_CAP",
     "PROBE_KIND",
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_vast",
