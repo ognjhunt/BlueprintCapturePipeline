@@ -72,6 +72,7 @@ def test_authority_cli_supplies_complete_single_attempt_contract(monkeypatch, tm
         "prior_result_path": "prior-result.json",
         "prior_provider_zero_path": "prior-zero.json",
         "prior_spend_reconciliation_path": "prior-spend.json",
+        "supplemental_prior_result_paths": [],
         "authorization_reference": "explicit-user-goal",
         "authorized_by": "user",
         "authorized_on": "2026-08-13",
@@ -170,6 +171,53 @@ def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_
         "authority_path": "authority.json",
         "result_path": "result.json",
         "output_path": str(output),
+    }
+
+
+def test_preallocation_closeout_cli_supplies_exact_zero_cost_evidence(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load("seal_native_task_arena_preallocation_closeout")
+    observed = {}
+
+    def fake_materialize(**kwargs):
+        observed.update(kwargs)
+        return {
+            "provider_zero_receipt_digest": "sha256:" + "a" * 64,
+            "provider_mutation_performed": False,
+        }
+
+    monkeypatch.setattr(
+        module, "materialize_native_task_arena_preallocation_closeout", fake_materialize
+    )
+    result = module.main(
+        [
+            "--authority",
+            "authority.json",
+            "--allocator-result",
+            "result.json",
+            "--watchdog-handoff",
+            "watchdog.json",
+            "--object-store-cleanup",
+            "cleanup.json",
+            "--api-provider-zero",
+            "zero.json",
+            "--sibling-preallocation-closeout",
+            "sibling.json",
+            "--output-dir",
+            str(tmp_path / "closeout"),
+        ]
+    )
+
+    assert result == 0
+    assert observed == {
+        "authority_path": "authority.json",
+        "allocator_result_path": "result.json",
+        "watchdog_handoff_path": "watchdog.json",
+        "object_store_cleanup_path": "cleanup.json",
+        "api_provider_zero_path": "zero.json",
+        "sibling_preallocation_closeout_paths": ["sibling.json"],
+        "output_dir": str(tmp_path / "closeout"),
     }
 
 

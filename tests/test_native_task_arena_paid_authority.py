@@ -760,7 +760,290 @@ def test_a_recovered_predecessor_zero_is_still_chainable() -> None:
     assert paid.ACCEPTED_PREDECESSOR_ZERO_STATUSES == {
         "completed",
         "completed_recovered_provider_zero",
+        "completed_preallocation_provider_zero",
     }
+
+
+def test_authority_adds_digest_bound_supplemental_actuals_without_assigning_them_to_primary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    predecessor = _predecessor(tmp_path / "predecessor")
+    receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
+    monkeypatch.setattr(
+        paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
+    )
+    supplemental = [tmp_path / "old-pi.json", tmp_path / "retained-controls.json"]
+    for path in supplemental:
+        write_json(path, {"status": "blocked"})
+    reconciled = {
+        "prior_terminal_attempts": [
+            {
+                "result": _record(predecessor["canonical_result"]),
+                "actual_provider_charge_usd": 0.1,
+            },
+            {
+                "result": _record(supplemental[0]),
+                "actual_provider_charge_usd": 0.3,
+            },
+            {
+                "result": _record(supplemental[1]),
+                "actual_provider_charge_usd": 1.157,
+            },
+        ],
+        "reconciliation": {
+            "path": str(tmp_path / "reconciliation.json"),
+            "sha256": "sha256:" + "9" * 64,
+        },
+        "actual_total_usd": 1.557,
+    }
+    observed = {}
+
+    def bind(**kwargs):
+        observed.update(kwargs)
+        return reconciled
+
+    monkeypatch.setattr(paid, "bind_lane_prior_spend", bind)
+    monkeypatch.setattr(
+        paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
+    )
+    authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_authority_path=predecessor["authority"],
+        prior_result_path=predecessor["result"],
+        prior_provider_zero_path=predecessor["zero"],
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+        supplemental_prior_result_paths=supplemental,
+        authorization_reference="complete historical spend",
+        authorized_by="user",
+        authorized_on="2026-08-25",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.2,
+        hard_cap_usd=0.5,
+        hard_ttl_seconds=9000,
+        output_path=tmp_path / "attempt_authority.json",
+    )
+
+    assert len(observed["prior_result_paths"]) == 3
+    assert authority["prior_terminal_attempt"]["actual_provider_charge_usd"] == 0.1
+    assert authority["prior_actual_provider_spend_usd"] == 1.557
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 12.768507
+
+
+def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
+    root.mkdir()
+    observed_at = datetime.now(timezone.utc)
+    authority = {
+        "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
+        "execution_mode": "policy_diagnostic",
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "hard_attempt_spend_cap_usd": 0.5,
+        "maximum_single_resource_ttl_seconds": 9000,
+        "aggregate_goal_spend_before_attempt_usd": 39.540914,
+        "aggregate_goal_spend_cap_usd": 50.0,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = root / "authority.json"
+    write_json(authority_path, authority)
+    watchdog = {
+        "schema_version": paid.WATCHDOG_HANDOFF_SCHEMA_VERSION,
+        "status": "blocked",
+        "watchdog_armed_before_allocation": False,
+        "independent_process": False,
+        "provider_mutations_performed": 0,
+    }
+    watchdog_path = root / "watchdog_handoff.json"
+    write_json(watchdog_path, watchdog)
+    cleanup = {
+        "schema_version": "wam_provider_object_store_cleanup.v1",
+        "status": "completed",
+        "blockers": [],
+        "cleanup_attempts": 1,
+        "exact_object_count": 2,
+        "staging_manifest_sha256": "c" * 64,
+        "all_objects_absent": True,
+        "signed_url_files_removed": True,
+    }
+    cleanup_path = root / "cleanup.json"
+    write_json(cleanup_path, cleanup)
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "generated_at": observed_at.isoformat(),
+        "status": "blocked",
+        "blockers": [
+            "native_task_arena_policy_diagnostic_independent_watchdog_not_armed"
+        ],
+        "provider_mutations_performed": 0,
+        "all_staged_objects_absent": True,
+        "attempt_root": str(root),
+        "retry_cap": 0,
+        "authorization_consumption": {
+            "status": "consumed",
+            "authorization_digest": authority["authorization_digest"],
+        },
+        "independent_watchdog": watchdog,
+    }
+    result_path = root / "allocator_result.json"
+    write_json(result_path, result)
+    api_zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": observed_at.isoformat(),
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "api_command": ["vastai", "show", "instances", "--raw"],
+        "raw_secret_values_recorded": False,
+        "stderr_present": False,
+        "provider_zero_digest": "",
+    }
+    api_zero["provider_zero_digest"] = canonical_digest(
+        api_zero, digest_field="provider_zero_digest"
+    )
+    api_zero_path = root / "api_zero.json"
+    write_json(api_zero_path, api_zero)
+    return {
+        "authority": authority_path,
+        "result": result_path,
+        "watchdog": watchdog_path,
+        "cleanup": cleanup_path,
+        "api_zero": api_zero_path,
+    }
+
+
+def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execution(
+    tmp_path: Path,
+) -> None:
+    fixture = _watchdog_not_armed_fixture(tmp_path / "attempt")
+    output = tmp_path / "closeout"
+    value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=fixture["authority"],
+        allocator_result_path=fixture["result"],
+        watchdog_handoff_path=fixture["watchdog"],
+        object_store_cleanup_path=fixture["cleanup"],
+        api_provider_zero_path=fixture["api_zero"],
+        output_dir=output,
+    )
+
+    closed_result = Path(value["terminal_result_path"])
+    provider_zero = Path(value["provider_zero_path"])
+    result = json.loads(closed_result.read_text())
+    assert result["status"] == "sealed_blocked_attempt"
+    assert result["estimated_cost_usd"] == 0.0
+    assert result["scientific_attempt_started"] is False
+    assert result["candidate_policy_queried"] is False
+    chain = paid.validate_terminal_spend_chain(
+        authority_path=fixture["authority"],
+        result_path=closed_result,
+        provider_zero_path=provider_zero,
+    )
+    assert chain["attempt_cost_usd"] == 0.0
+    assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("estimated_cost_usd",), 0.01),
+        (("continuing_spend_from_this_run",), True),
+        (("retry_cap",), 1),
+        (("authorization_consumption", "status"), "available"),
+        (("instance_id",), 48600001),
+    ],
+)
+def test_preallocation_closeout_refuses_contradictory_original_state(
+    tmp_path: Path, path: tuple[str, ...], value: object
+) -> None:
+    fixture = _watchdog_not_armed_fixture(tmp_path / "attempt")
+    result = json.loads(fixture["result"].read_text())
+    target = result
+    for component in path[:-1]:
+        target = target[component]
+    target[path[-1]] = value
+    write_json(fixture["result"], result)
+    with pytest.raises(ValueError, match="preallocation_evidence_invalid"):
+        paid.materialize_native_task_arena_preallocation_closeout(
+            authority_path=fixture["authority"],
+            allocator_result_path=fixture["result"],
+            watchdog_handoff_path=fixture["watchdog"],
+            object_store_cleanup_path=fixture["cleanup"],
+            api_provider_zero_path=fixture["api_zero"],
+            output_dir=tmp_path / "closeout",
+        )
+
+
+def test_preallocation_closeout_requires_the_canonical_authenticated_api_contract(
+    tmp_path: Path,
+) -> None:
+    fixture = _watchdog_not_armed_fixture(tmp_path / "attempt")
+    zero = json.loads(fixture["api_zero"].read_text())
+    zero["api_command"] = ["echo", "[]"]
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    write_json(fixture["api_zero"], zero)
+    with pytest.raises(ValueError, match="preallocation_api_zero_invalid"):
+        paid.materialize_native_task_arena_preallocation_closeout(
+            authority_path=fixture["authority"],
+            allocator_result_path=fixture["result"],
+            watchdog_handoff_path=fixture["watchdog"],
+            object_store_cleanup_path=fixture["cleanup"],
+            api_provider_zero_path=fixture["api_zero"],
+            output_dir=tmp_path / "closeout",
+        )
+
+
+def test_preallocation_closeout_binds_one_zero_cost_sibling_and_rejects_tamper(
+    tmp_path: Path,
+) -> None:
+    sibling = _watchdog_not_armed_fixture(tmp_path / "sibling")
+    sibling_value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=sibling["authority"],
+        allocator_result_path=sibling["result"],
+        watchdog_handoff_path=sibling["watchdog"],
+        object_store_cleanup_path=sibling["cleanup"],
+        api_provider_zero_path=sibling["api_zero"],
+        output_dir=tmp_path / "sibling-closeout",
+    )
+    primary = _watchdog_not_armed_fixture(tmp_path / "primary")
+    # The two concurrent authorities have distinct identities.
+    authority = json.loads(primary["authority"].read_text())
+    authority["authority_reference"] = "primary"
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(primary["authority"], authority)
+    result = json.loads(primary["result"].read_text())
+    result["authorization_consumption"]["authorization_digest"] = authority[
+        "authorization_digest"
+    ]
+    write_json(primary["result"], result)
+    value = paid.materialize_native_task_arena_preallocation_closeout(
+        authority_path=primary["authority"],
+        allocator_result_path=primary["result"],
+        watchdog_handoff_path=primary["watchdog"],
+        object_store_cleanup_path=primary["cleanup"],
+        api_provider_zero_path=primary["api_zero"],
+        sibling_preallocation_closeout_paths=[sibling_value["provider_zero_path"]],
+        output_dir=tmp_path / "primary-closeout",
+    )
+    zero_path = Path(value["provider_zero_path"])
+    zero = json.loads(zero_path.read_text())
+    assert len(zero["sibling_preallocation_closeouts"]) == 1
+
+    sibling_zero = Path(sibling_value["provider_zero_path"])
+    sibling_payload = json.loads(sibling_zero.read_text())
+    sibling_payload["scientific_attempt_started"] = True
+    write_json(sibling_zero, sibling_payload)
+    with pytest.raises(ValueError, match="sibling_unbound"):
+        paid.validate_terminal_spend_chain(
+            authority_path=primary["authority"],
+            result_path=value["terminal_result_path"],
+            provider_zero_path=zero_path,
+        )
 
 
 def _no_allocation_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
