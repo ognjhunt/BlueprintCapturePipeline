@@ -72,6 +72,7 @@ DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "90-blueprint-deploy-identity.conf"
 )
 DEFAULT_INTAKE_VERSION_URL = "http://127.0.0.1:8765/api/live-pipeline/version"
+INTAKE_START_TIMEOUT_SECONDS = 180
 DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
 SUPERSEDED_ITERATION_PROVENANCE_NAME = (
     "deploy-release-provenance.iteration-superseded.json"
@@ -574,6 +575,7 @@ def _install_intake_runtime_identity_drop_in(
         "# Loaded after the base unit credential EnvironmentFile.\n"
         "[Service]\n"
         f"EnvironmentFile={identity_env}\n"
+        f"TimeoutStartSec={INTAKE_START_TIMEOUT_SECONDS}s\n"
     )
 
     def atomic_write(path: Path, content: str) -> None:
@@ -618,6 +620,7 @@ def _install_intake_runtime_identity_drop_in(
         "source_repo": str(source_repo),
         "source_commit": source_commit,
         "pythonpath": str(source_repo / "src"),
+        "timeout_start_seconds": INTAKE_START_TIMEOUT_SECONDS,
         "credential_environment_file_opened": False,
         "credential_values_recorded": False,
     }
