@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import ipaddress
 import base64
+import hashlib
+import hmac
 import json
 import re
+from pathlib import PurePosixPath
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from typing import Any
@@ -109,6 +112,13 @@ def _exact_text(value: Any, *, blocker: str, pattern: re.Pattern[str]) -> str:
     return text
 
 
+def _absolute_profile_path(value: str, *, blocker: str) -> str:
+    path = PurePosixPath(str(value))
+    if not path.is_absolute() or ".." in path.parts or not str(path).startswith("/etc/blueprint/"):
+        raise CompanyPolicySandboxV2Error([blocker])
+    return str(path)
+
+
 def build_company_policy_sandbox_plan(
     *,
     admission_receipt: Mapping[str, Any],
@@ -120,8 +130,10 @@ def build_company_policy_sandbox_plan(
     blueprint_proxy_image: str,
     blueprint_proxy_contract_digest: str,
     seccomp_profile_id: str,
+    seccomp_profile_path: str,
     seccomp_profile_digest: str,
     apparmor_profile_id: str,
+    apparmor_profile_source_path: str,
     apparmor_profile_digest: str,
     registry_addresses: Sequence[str],
     allowed_registry_hosts: Sequence[str],
@@ -176,6 +188,14 @@ def build_company_policy_sandbox_plan(
         blockers.append("company_policy_sandbox_proxy_image_not_digest_pinned")
     if blockers:
         raise CompanyPolicySandboxV2Error(blockers)
+    seccomp_path = _absolute_profile_path(
+        seccomp_profile_path,
+        blocker="company_policy_sandbox_seccomp_profile_path_invalid",
+    )
+    apparmor_source_path = _absolute_profile_path(
+        apparmor_profile_source_path,
+        blocker="company_policy_sandbox_apparmor_profile_source_path_invalid",
+    )
 
     image = str(normalized_contract["container"]["image"])
     registry_host = company_policy_registry_host(image)
@@ -204,7 +224,7 @@ def build_company_policy_sandbox_plan(
         "--read-only",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true",
-        f"--security-opt=seccomp={seccomp_profile_id}",
+        f"--security-opt=seccomp={seccomp_path}",
         f"--security-opt=apparmor={apparmor_profile_id}",
         "--pids-limit",
         str(resources["pids_limit"]),
@@ -235,7 +255,7 @@ def build_company_policy_sandbox_plan(
         "--read-only",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true",
-        f"--security-opt=seccomp={seccomp_profile_id}",
+        f"--security-opt=seccomp={seccomp_path}",
         f"--security-opt=apparmor={apparmor_profile_id}",
         "--pids-limit=64",
         "--memory=256m",
@@ -275,8 +295,12 @@ def build_company_policy_sandbox_plan(
         "registry": {
             "host": registry_host,
             "resolved_global_addresses": addresses,
-            "redirects_allowed": False,
             "pull_by_digest_only": True,
+            "redirect_behavior_observed": "not_measured_by_docker_engine",
+            "scene_confidentiality_basis": (
+                "signed_dedicated_worker_boot_receipt_proves_no_scene_or_"
+                "observation_bytes_exist_during_pull"
+            ),
         },
         "credential_broker_request_binding": {
             "schema_version": "company_policy_registry_credential_claim.v1",
@@ -313,8 +337,10 @@ def build_company_policy_sandbox_plan(
             "customer_visible_output": "aggregate_metrics_and_redacted_status_only",
             "raw_actions_customer_visible": False,
             "seccomp_profile_id": seccomp_profile_id,
+            "seccomp_profile_path": seccomp_path,
             "seccomp_profile_digest": seccomp_profile_digest,
             "apparmor_profile_id": apparmor_profile_id,
+            "apparmor_profile_source_path": apparmor_source_path,
             "apparmor_profile_digest": apparmor_profile_digest,
         },
         "images": {
@@ -334,6 +360,38 @@ def build_company_policy_sandbox_plan(
             "first_observation_permitted",
         ],
         "commands": {
+            "runtime_preflight": [
+                ["docker", "info", "--format", "{{json .Runtimes}}"],
+                ["docker", "version", "--format", "{{.Server.Version}}"],
+            ],
+            "proxy_image_pull": ["docker", "pull", blueprint_proxy_image],
+            "runtime_smoke": [
+                "docker",
+                "run",
+                "--rm",
+                "--runtime",
+                runtime_class,
+                "--network=none",
+                "--read-only",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges:true",
+                f"--security-opt=seccomp={seccomp_path}",
+                f"--security-opt=apparmor={apparmor_profile_id}",
+                *(["--gpus", "all"] if normalized_contract["container"]["gpu_required"] else []),
+                blueprint_proxy_image,
+                "python",
+                "-c",
+                (
+                    "import os;"
+                    "required="
+                    + ("True" if normalized_contract["container"]["gpu_required"] else "False")
+                    + ";"
+                    "present=any(os.path.exists(p) for p in "
+                    "('/dev/nvidiactl','/dev/dxg'));"
+                    "assert (not required) or present;"
+                    "print('runsc-smoke-ok')"
+                ),
+            ],
             "image_pull": ["docker", "--config", docker_config_dir, "pull", image],
             "proxy_run": proxy_run_argv,
             "policy_run": policy_run_argv,
@@ -342,6 +400,53 @@ def build_company_policy_sandbox_plan(
                 ["docker", "rm", "--force", proxy_name],
                 ["docker", "image", "rm", image],
             ],
+            "network_probes": {
+                "dns_resolution": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "dns",
+                    "--host", "example.com", "--port", "443",
+                ],
+                "public_ipv4": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "1.1.1.1", "--port", "443",
+                ],
+                "public_ipv6": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "2606:4700:4700::1111", "--port", "443",
+                ],
+                "rfc1918": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "10.255.255.1", "--port", "443",
+                ],
+                "host_gateway": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "172.17.0.1", "--port", "2375",
+                ],
+                "link_local": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "169.254.1.1", "--port", "80",
+                ],
+                "cloud_metadata": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "169.254.169.254", "--port", "80",
+                ],
+                "registry_after_pull": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", addresses[0], "--port", "443",
+                ],
+                "redirect_target": [
+                    "docker", "exec", proxy_name, "python", "-m",
+                    "blueprint_pipeline.company_policy_proxy", "probe", "--kind", "tcp",
+                    "--host", "93.184.216.34", "--port", "80",
+                ],
+            },
         },
         "cleanup_targets": {
             "policy_container": policy_name,
@@ -362,12 +467,41 @@ def build_company_policy_sandbox_plan(
 
 
 def evaluate_preobservation_sandbox_qualification(
-    *, plan: Mapping[str, Any], evidence: Mapping[str, Any]
+    *,
+    plan: Mapping[str, Any],
+    executor_receipt: Mapping[str, Any],
+    attestation_key: bytes,
 ) -> dict[str, Any]:
-    """Require measured denial and conformance before observation 1."""
+    """Require attested executor evidence before observation 1."""
 
     blockers: list[str] = []
     expected_plan_digest = cross_runtime_canonical_digest(plan, digest_field="plan_digest")
+    unsigned_receipt = dict(executor_receipt)
+    signature = str(unsigned_receipt.pop("attestation_hmac_sha256", ""))
+    expected_receipt_digest = cross_runtime_canonical_digest(
+        unsigned_receipt, digest_field="receipt_digest"
+    )
+    expected_signature = hmac.new(
+        attestation_key,
+        expected_receipt_digest.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if (
+        len(attestation_key) < 32
+        or executor_receipt.get("schema_version")
+        != "company_policy_sandbox_executor_receipt.v1"
+        or executor_receipt.get("source")
+        != "trusted_company_policy_sandbox_executor"
+        or executor_receipt.get("status") != "qualified_before_first_observation"
+        or executor_receipt.get("plan_digest") != expected_plan_digest
+        or executor_receipt.get("receipt_digest") != expected_receipt_digest
+        or not hmac.compare_digest(signature, expected_signature)
+    ):
+        blockers.append("company_policy_sandbox_executor_attestation_invalid")
+    evidence_value = executor_receipt.get("evidence")
+    evidence = evidence_value if isinstance(evidence_value, Mapping) else {}
+    if not evidence:
+        blockers.append("company_policy_sandbox_executor_evidence_missing")
     if plan.get("plan_digest") != expected_plan_digest:
         blockers.append("company_policy_sandbox_plan_digest_mismatch")
     if evidence.get("plan_digest") != expected_plan_digest:
@@ -380,6 +514,19 @@ def evaluate_preobservation_sandbox_qualification(
         blockers.append("company_policy_sandbox_docker_config_not_deleted_before_start")
     if evidence.get("dedicated_worker_verified") is not True:
         blockers.append("company_policy_sandbox_dedicated_worker_unverified")
+    if not _DIGEST.fullmatch(str(evidence.get("worker_boot_receipt_digest") or "")):
+        blockers.append("company_policy_sandbox_worker_boot_receipt_missing")
+    if evidence.get("scene_bytes_present_during_pull") is not False:
+        blockers.append("company_policy_sandbox_scene_bytes_present_during_pull")
+    if evidence.get("observation_bytes_present_during_pull") is not False:
+        blockers.append("company_policy_sandbox_observation_bytes_present_during_pull")
+    if (
+        evidence.get("registry_redirect_behavior")
+        != "not_measured_by_docker_engine"
+    ):
+        blockers.append("company_policy_sandbox_registry_redirect_claim_invalid")
+    if not _DIGEST.fullmatch(str(evidence.get("image_pull_receipt_digest") or "")):
+        blockers.append("company_policy_sandbox_image_pull_receipt_missing")
     if evidence.get("isolated_runtime_verified") is not True:
         blockers.append("company_policy_sandbox_runtime_unverified")
     if evidence.get("raw_container_logs_retained") is not False:

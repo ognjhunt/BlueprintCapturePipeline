@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import socket
 import urllib.error
 import urllib.request
 from typing import Any
@@ -254,13 +255,59 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+def run_network_probe(*, kind: str, host: str, port: int, timeout_ms: int) -> dict[str, Any]:
+    """Measure reachability from the proxy/policy network namespace."""
+
+    if kind not in {"dns", "tcp"}:
+        raise ValueError("company_policy_proxy_probe_kind_invalid")
+    reached = False
+    try:
+        if kind == "dns":
+            socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            reached = True
+        else:
+            with socket.create_connection((host, port), timeout=timeout_ms / 1000.0):
+                reached = True
+    except OSError:
+        reached = False
+    return {
+        "status": "reachable" if reached else "denied",
+        "kind": kind,
+        "target": f"{host}:{port}",
+        "redirect_followed": False,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--unix-socket", required=True)
-    parser.add_argument("--upstream", required=True)
-    parser.add_argument("--route", required=True)
-    parser.add_argument("--action-schema-b64", required=True)
+    commands = parser.add_subparsers(dest="command", required=True)
+    serve = commands.add_parser("serve")
+    serve.add_argument("--unix-socket", required=True)
+    serve.add_argument("--upstream", required=True)
+    serve.add_argument("--route", required=True)
+    serve.add_argument("--action-schema-b64", required=True)
+    probe = commands.add_parser("probe")
+    probe.add_argument("--kind", choices=("dns", "tcp"), required=True)
+    probe.add_argument("--host", required=True)
+    probe.add_argument("--port", type=int, required=True)
+    probe.add_argument("--timeout-ms", type=int, default=1000)
     args = parser.parse_args()
+    if args.command == "probe":
+        if not 1 <= args.port <= 65535 or not 1 <= args.timeout_ms <= 10_000:
+            raise SystemExit("company_policy_proxy_probe_argument_invalid")
+        print(
+            json.dumps(
+                run_network_probe(
+                    kind=args.kind,
+                    host=args.host,
+                    port=args.port,
+                    timeout_ms=args.timeout_ms,
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return 0
     if args.route != ACTION_ROUTE:
         raise SystemExit("company_policy_proxy_action_route_invalid")
     match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]{4,5})", args.upstream)

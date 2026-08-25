@@ -39,8 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy-image", required=True)
     parser.add_argument("--proxy-contract-digest", required=True)
     parser.add_argument("--seccomp-profile-id", required=True)
+    parser.add_argument("--seccomp-profile-path", required=True)
     parser.add_argument("--seccomp-profile-digest", required=True)
     parser.add_argument("--apparmor-profile-id", required=True)
+    parser.add_argument("--apparmor-profile-source-path", required=True)
     parser.add_argument("--apparmor-profile-digest", required=True)
     parser.add_argument("--registry-address", action="append", default=[], required=True)
     parser.add_argument("--allowed-registry-host", action="append", default=[], required=True)
@@ -62,8 +64,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         blueprint_proxy_image=args.proxy_image,
         blueprint_proxy_contract_digest=args.proxy_contract_digest,
         seccomp_profile_id=args.seccomp_profile_id,
+        seccomp_profile_path=args.seccomp_profile_path,
         seccomp_profile_digest=args.seccomp_profile_digest,
         apparmor_profile_id=args.apparmor_profile_id,
+        apparmor_profile_source_path=args.apparmor_profile_source_path,
         apparmor_profile_digest=args.apparmor_profile_digest,
         registry_addresses=args.registry_address,
         allowed_registry_hosts=args.allowed_registry_host,
