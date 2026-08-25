@@ -42,7 +42,7 @@ from typing import Any, Callable, Mapping, Sequence
 import jsonschema
 
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
-NATIVE_CONTEXT_SCHEMA_VERSION = "native_task_arena_launch_preparation_context.v1"
+NATIVE_CONTEXT_SCHEMA_VERSION = "native_task_arena_launch_preparation_context.v2"
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
 
@@ -759,10 +759,58 @@ def _canonical_mapping_digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def _canonical_artifact_digest(
+    value: Mapping[str, Any], *, digest_field: str
+) -> str:
+    body = dict(value)
+    body.pop(digest_field, None)
+    return _canonical_mapping_digest(body)
+
+
+def _load_scene_claim_reference(
+    *,
+    path: Any,
+    expected_digest: Any,
+    expected_schema: str,
+    expected_status: str,
+    digest_field: str,
+    scene_id: str,
+) -> tuple[Path, dict[str, Any]]:
+    unresolved = Path(str(path or "")).expanduser()
+    if unresolved.is_symlink():
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_scene_claim_reference_invalid"
+        )
+    source = unresolved.resolve()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_scene_claim_reference_unreadable"
+        ) from exc
+    if (
+        not source.is_file()
+        or not isinstance(value, Mapping)
+        or value.get("schema_version") != expected_schema
+        or value.get("status") != expected_status
+        or value.get("scene_id") != scene_id
+        or value.get(digest_field) != expected_digest
+        or value.get(digest_field)
+        != _canonical_artifact_digest(value, digest_field=digest_field)
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_scene_claim_reference_invalid"
+        )
+    return source, dict(value)
+
+
 def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, Any]:
     """Load and reopen independent scene/task/robot/runtime references."""
 
-    source = Path(path).expanduser().resolve()
+    unresolved_source = Path(path).expanduser()
+    if unresolved_source.is_symlink():
+        raise PaidLaneLaunchPreparationError("native_task_arena_context_invalid")
+    source = unresolved_source.resolve()
     try:
         value = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -770,8 +818,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             "native_task_arena_context_unreadable"
         ) from exc
     if (
-        source.is_symlink()
-        or not isinstance(value, Mapping)
+        not isinstance(value, Mapping)
         or value.get("schema_version") != NATIVE_CONTEXT_SCHEMA_VERSION
         or value.get("lane") != expected_lane
         or not str(value.get("team_namespace") or "").strip()
@@ -779,7 +826,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         raise PaidLaneLaunchPreparationError("native_task_arena_context_invalid")
     schema_path = (
         Path(__file__).resolve().parents[1]
-        / "docs/schemas/native_task_arena_launch_preparation_context.v1.schema.json"
+        / "docs/schemas/native_task_arena_launch_preparation_context.v2.schema.json"
     )
     try:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -815,12 +862,33 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
     runtime = references["runtime"]
     if not all(isinstance(item, Mapping) for item in (scene, task, robot, runtime)):
         raise PaidLaneLaunchPreparationError("native_task_arena_reference_invalid")
-    packet_dir = Path(str(scene.get("packet_dir") or "")).expanduser().resolve()
+    unresolved_packet_dir = Path(str(scene.get("packet_dir") or "")).expanduser()
+    unresolved_runtime_source = Path(
+        str(runtime.get("source_packet") or "")
+    ).expanduser()
+    reference_symlink_present = (
+        unresolved_packet_dir.is_symlink() or unresolved_runtime_source.is_symlink()
+    )
+    packet_dir = unresolved_packet_dir.resolve()
     packet_receipt_path = packet_dir / "native_task_arena_packet_receipt.v1.json"
     runtime_contract_path = packet_dir / "native_task_runtime_contract.v1.json"
-    runtime_source_path = Path(
-        str(runtime.get("source_packet") or "")
-    ).expanduser().resolve()
+    runtime_source_path = unresolved_runtime_source.resolve()
+    source_manifest_path, _source_manifest = _load_scene_claim_reference(
+        path=scene.get("source_manifest"),
+        expected_digest=scene.get("source_manifest_digest"),
+        expected_schema="task_evaluation_scene_source_manifest.v1",
+        expected_status="retained",
+        digest_field="source_manifest_digest",
+        scene_id=str(scene.get("scene_id") or ""),
+    )
+    rights_admission_path, rights_admission = _load_scene_claim_reference(
+        path=scene.get("rights_admission"),
+        expected_digest=scene.get("rights_admission_digest"),
+        expected_schema="task_evaluation_scene_rights_admission.v1",
+        expected_status="admitted",
+        digest_field="rights_admission_digest",
+        scene_id=str(scene.get("scene_id") or ""),
+    )
     try:
         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
         runtime_contract = json.loads(runtime_contract_path.read_text(encoding="utf-8"))
@@ -831,8 +899,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         ) from exc
     container_image = str(runtime.get("container_image") or "")
     if (
-        packet_dir.is_symlink()
-        or runtime_source_path.is_symlink()
+        reference_symlink_present
         or packet_receipt.get("scene_id") != scene.get("scene_id")
         or packet_receipt.get("task_id") != task.get("task_id")
         or packet_receipt.get("receipt_digest")
@@ -844,6 +911,11 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         != robot.get("configuration_digest")
         or runtime_source.get("receipt_digest")
         != runtime.get("source_packet_receipt_digest")
+        or rights_admission.get("private_provider_processing_allowed") is not True
+        or rights_admission.get("provider_training_allowed") is not False
+        or not isinstance(
+            rights_admission.get("public_redistribution_allowed"), bool
+        )
         or "@sha256:" not in container_image
         or len(container_image.rsplit("@sha256:", 1)[-1]) != 64
     ):
@@ -877,6 +949,8 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
                 "runtime": dict(runtime),
                 "context_path": str(source),
                 "context_sha256": _sha256_file(source),
+                "source_manifest_path": str(source_manifest_path),
+                "rights_admission_path": str(rights_admission_path),
             },
             "python": str(operations.get("python") or sys.executable),
             "service_account": str(

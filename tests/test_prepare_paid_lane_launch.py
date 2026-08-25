@@ -295,6 +295,36 @@ def test_native_context_reopens_independent_versioned_references(
         json.dumps({"receipt_digest": "sha256:" + "3" * 64}),
         encoding="utf-8",
     )
+    source_manifest = tmp_path / "source-manifest.json"
+    source_manifest_value = {
+        "schema_version": "task_evaluation_scene_source_manifest.v1",
+        "status": "retained",
+        "scene_id": "public-scene-17",
+        "artifacts": [],
+        "source_manifest_digest": "",
+    }
+    source_manifest_value["source_manifest_digest"] = (
+        prep._canonical_artifact_digest(
+            source_manifest_value, digest_field="source_manifest_digest"
+        )
+    )
+    source_manifest.write_text(json.dumps(source_manifest_value), encoding="utf-8")
+    rights_admission = tmp_path / "rights-admission.json"
+    rights_admission_value = {
+        "schema_version": "task_evaluation_scene_rights_admission.v1",
+        "status": "admitted",
+        "scene_id": "public-scene-17",
+        "private_provider_processing_allowed": True,
+        "provider_training_allowed": False,
+        "public_redistribution_allowed": True,
+        "rights_admission_digest": "",
+    }
+    rights_admission_value["rights_admission_digest"] = (
+        prep._canonical_artifact_digest(
+            rights_admission_value, digest_field="rights_admission_digest"
+        )
+    )
+    rights_admission.write_text(json.dumps(rights_admission_value), encoding="utf-8")
     context_file = tmp_path / "context.json"
     context_file.write_text(
         json.dumps(
@@ -307,6 +337,14 @@ def test_native_context_reopens_independent_versioned_references(
                         "scene_id": "public-scene-17",
                         "packet_dir": str(packet),
                         "packet_receipt_digest": "sha256:" + "1" * 64,
+                        "source_manifest": str(source_manifest),
+                        "source_manifest_digest": source_manifest_value[
+                            "source_manifest_digest"
+                        ],
+                        "rights_admission": str(rights_admission),
+                        "rights_admission_digest": rights_admission_value[
+                            "rights_admission_digest"
+                        ],
                     },
                     "task": {
                         "task_id": "move-can-v2",
@@ -362,6 +400,92 @@ def test_native_context_reopens_independent_versioned_references(
     assert context["packet_dir"] == str(packet.resolve())
     assert context["runtime_source_packet"] == str(runtime_source.resolve())
     assert context["reference_bindings"]["robot"]["robot_id"] == "customer_arm_v3"
+    assert context["reference_bindings"]["source_manifest_path"] == str(
+        source_manifest.resolve()
+    )
+    assert context["reference_bindings"]["rights_admission_path"] == str(
+        rights_admission.resolve()
+    )
+
+    rights_admission_value["provider_training_allowed"] = True
+    rights_admission_value["rights_admission_digest"] = (
+        prep._canonical_artifact_digest(
+            rights_admission_value, digest_field="rights_admission_digest"
+        )
+    )
+    rights_admission.write_text(json.dumps(rights_admission_value), encoding="utf-8")
+    context_value = json.loads(context_file.read_text(encoding="utf-8"))
+    context_value["references"]["scene"]["rights_admission_digest"] = (
+        rights_admission_value["rights_admission_digest"]
+    )
+    context_file.write_text(json.dumps(context_value), encoding="utf-8")
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_reference_binding_invalid",
+    ):
+        prep._load_native_context(
+            context_file, expected_lane="native_task_arena_construction"
+        )
+
+
+def test_scene_claim_reference_refuses_tampering_and_symlinks(tmp_path: Path) -> None:
+    value = {
+        "schema_version": "task_evaluation_scene_rights_admission.v1",
+        "status": "admitted",
+        "scene_id": "scene-1",
+        "private_provider_processing_allowed": True,
+        "provider_training_allowed": False,
+        "public_redistribution_allowed": False,
+        "rights_admission_digest": "",
+    }
+    value["rights_admission_digest"] = prep._canonical_artifact_digest(
+        value, digest_field="rights_admission_digest"
+    )
+    source = tmp_path / "rights.json"
+    source.write_text(json.dumps(value), encoding="utf-8")
+
+    prep._load_scene_claim_reference(
+        path=source,
+        expected_digest=value["rights_admission_digest"],
+        expected_schema="task_evaluation_scene_rights_admission.v1",
+        expected_status="admitted",
+        digest_field="rights_admission_digest",
+        scene_id="scene-1",
+    )
+
+    value["provider_training_allowed"] = True
+    source.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_scene_claim_reference_invalid",
+    ):
+        prep._load_scene_claim_reference(
+            path=source,
+            expected_digest=value["rights_admission_digest"],
+            expected_schema="task_evaluation_scene_rights_admission.v1",
+            expected_status="admitted",
+            digest_field="rights_admission_digest",
+            scene_id="scene-1",
+        )
+
+    value["rights_admission_digest"] = prep._canonical_artifact_digest(
+        value, digest_field="rights_admission_digest"
+    )
+    source.write_text(json.dumps(value), encoding="utf-8")
+    symlink = tmp_path / "rights-link.json"
+    symlink.symlink_to(source)
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_scene_claim_reference_invalid",
+    ):
+        prep._load_scene_claim_reference(
+            path=symlink,
+            expected_digest=value["rights_admission_digest"],
+            expected_schema="task_evaluation_scene_rights_admission.v1",
+            expected_status="admitted",
+            digest_field="rights_admission_digest",
+            scene_id="scene-1",
+        )
 
 
 def test_native_context_refuses_operational_reference_override(tmp_path: Path) -> None:
