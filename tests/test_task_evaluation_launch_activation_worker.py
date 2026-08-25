@@ -215,7 +215,7 @@ def _release_window(request: dict[str, object], now: datetime) -> bytes:
             "catalog_synchronization",
             "standing_authorization",
         ],
-        "provider_allowlist": [],
+        "provider_allowlist": ["vast"],
         "maximum_hard_cap_usd": 1.0,
         "issued_at": (now - timedelta(minutes=1)).isoformat(),
         "expires_at": (now + timedelta(minutes=10)).isoformat(),
@@ -341,6 +341,7 @@ def test_worker_cross_binds_preparation_window_and_no_execution_publication(tmp_
     assert run["results"][0]["provider_mutation_performed"] is False
     assert run["results"][0]["paid_execution_requested"] is False
     assert observed_context["lane"] == "native_task_arena_construction"
+    assert observed_context["operations"]["provider"] == "vast"
     assert observed_context["references"]["scene"]["scene_id"] == (
         preparation["scene"]["identity"]["id"]
     )

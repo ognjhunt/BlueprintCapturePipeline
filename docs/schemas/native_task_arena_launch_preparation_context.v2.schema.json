@@ -137,7 +137,8 @@
         "authorized_on",
         "maximum_hourly_rate_usd",
         "hard_total_spend_cap_usd",
-        "hard_ttl_seconds"
+        "hard_ttl_seconds",
+        "provider"
       ],
       "properties": {
         "set_root": {"type": "string", "minLength": 1},
@@ -156,6 +157,7 @@
         "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
         "hard_total_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0},
         "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 9000},
+        "provider": {"enum": ["runpod", "vast", "digitalocean", "aws"]},
         "project_spend_reconciliation": {"type": "string", "minLength": 1},
         "initial_provider_zero": {"type": "string", "minLength": 1},
         "prior_authority": {"type": "string", "minLength": 1},

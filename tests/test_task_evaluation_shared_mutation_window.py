@@ -25,7 +25,7 @@ def window(now: datetime) -> dict[str, object]:
             "catalog_synchronization",
             "standing_authorization",
         ],
-        "provider_allowlist": [],
+        "provider_allowlist": ["vast"],
         "maximum_hard_cap_usd": 1.0,
         "issued_at": (now - timedelta(minutes=1)).isoformat(),
         "expires_at": (now + timedelta(minutes=10)).isoformat(),
@@ -48,7 +48,7 @@ def test_exact_window_releases_only_no_execution_mutations() -> None:
         activation_intent_digest="sha256:" + "1" * 64,
         team_namespace="team-a",
         expected_production_commit="a" * 40,
-        provider_allowlist=[],
+        provider_allowlist=["vast"],
         hard_cap_usd=0.75,
         now=now,
     ) == value
@@ -69,7 +69,7 @@ def test_window_fails_closed_on_stale_commit_cap_or_time() -> None:
             activation_intent_digest="sha256:" + "1" * 64,
             team_namespace="team-a",
             expected_production_commit="b" * 40,
-            provider_allowlist=[],
+            provider_allowlist=["vast"],
             hard_cap_usd=0.75,
             now=now,
         )
@@ -83,7 +83,7 @@ def test_window_fails_closed_on_stale_commit_cap_or_time() -> None:
             activation_intent_digest="sha256:" + "1" * 64,
             team_namespace="team-a",
             expected_production_commit="a" * 40,
-            provider_allowlist=[],
+            provider_allowlist=["vast"],
             hard_cap_usd=1.01,
             now=now,
         )
@@ -97,7 +97,7 @@ def test_window_fails_closed_on_stale_commit_cap_or_time() -> None:
             activation_intent_digest="sha256:" + "1" * 64,
             team_namespace="team-a",
             expected_production_commit="a" * 40,
-            provider_allowlist=[],
+            provider_allowlist=["vast"],
             hard_cap_usd=0.75,
             now=now + timedelta(hours=1),
         )
@@ -117,7 +117,7 @@ def test_window_fails_closed_when_activation_intent_changes_after_release() -> N
             activation_intent_digest="sha256:" + "2" * 64,
             team_namespace="team-a",
             expected_production_commit="a" * 40,
-            provider_allowlist=[],
+            provider_allowlist=["vast"],
             hard_cap_usd=0.75,
             now=now,
         )

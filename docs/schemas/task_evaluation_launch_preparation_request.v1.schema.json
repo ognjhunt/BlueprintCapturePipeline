@@ -246,15 +246,17 @@
     },
     "spend": {
       "type": "object",
-      "required": ["maximum_hourly_rate_usd", "hard_cap_usd", "hard_ttl_seconds", "retry_cap", "provider_allowlist"],
+      "required": ["maximum_hourly_rate_usd", "hard_cap_usd", "hard_ttl_seconds", "retry_cap", "selected_provider", "provider_allowlist"],
       "additionalProperties": false,
       "properties": {
         "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
         "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 50},
         "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 9000},
         "retry_cap": {"const": 0},
+        "selected_provider": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]},
         "provider_allowlist": {
           "type": "array",
+          "minItems": 1,
           "maxItems": 16,
           "uniqueItems": true,
           "items": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]}

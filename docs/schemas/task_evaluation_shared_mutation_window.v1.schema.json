@@ -51,6 +51,7 @@
     },
     "provider_allowlist": {
       "type": "array",
+      "minItems": 1,
       "maxItems": 16,
       "uniqueItems": true,
       "items": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]}

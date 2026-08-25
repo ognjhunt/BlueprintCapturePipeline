@@ -112,7 +112,8 @@ def request() -> dict[str, object]:
             "hard_cap_usd": 0.75,
             "hard_ttl_seconds": 3300,
             "retry_cap": 0,
-            "provider_allowlist": [],
+            "selected_provider": "vast",
+            "provider_allowlist": ["vast"],
         },
     }
 
@@ -123,6 +124,25 @@ def test_accepts_scene_neutral_customer_contract_and_has_stable_digest() -> None
     assert launch_preparation_request_digest(value) == launch_preparation_request_digest(
         copy.deepcopy(value)
     )
+
+
+def test_selected_provider_must_be_allowed_and_have_an_admitted_adapter() -> None:
+    value = request()
+    value["spend"]["provider_allowlist"] = ["runpod"]
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_selected_provider_not_allowed",
+    ):
+        validate_launch_preparation_request(value)
+
+    value = request()
+    value["spend"]["selected_provider"] = "runpod"
+    value["spend"]["provider_allowlist"] = ["runpod"]
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_execution_adapter_provider_unavailable",
+    ):
+        validate_launch_preparation_request(value)
 
 
 @pytest.mark.parametrize(

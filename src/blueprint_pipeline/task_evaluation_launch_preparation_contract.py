@@ -26,6 +26,9 @@ SCHEMA_PATH = (
     / "schemas"
     / "task_evaluation_launch_preparation_request.v1.schema.json"
 )
+EXECUTION_ADAPTER_PROVIDER_CAPABILITIES = {
+    ("native_task_arena", "v1"): frozenset({"vast"}),
+}
 
 
 class TaskEvaluationLaunchPreparationContractError(ValueError):
@@ -81,12 +84,21 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             "launch_preparation_gpu_requirement_missing"
         )
     adapter = request["execution_adapter"]
-    if (adapter["kind"], adapter["version"]) != (
-        "native_task_arena",
-        "v1",
-    ):
+    capability = EXECUTION_ADAPTER_PROVIDER_CAPABILITIES.get(
+        (adapter["kind"], adapter["version"])
+    )
+    if capability is None:
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_execution_adapter_unavailable"
+        )
+    selected_provider = request["spend"]["selected_provider"]
+    if selected_provider not in request["spend"]["provider_allowlist"]:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_selected_provider_not_allowed"
+        )
+    if selected_provider not in capability:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_execution_adapter_provider_unavailable"
         )
     output_mounts = [
         mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
@@ -112,6 +124,7 @@ def launch_preparation_request_digest(value: Mapping[str, Any]) -> str:
 __all__ = [
     "SCHEMA_PATH",
     "SCHEMA_VERSION",
+    "EXECUTION_ADAPTER_PROVIDER_CAPABILITIES",
     "TaskEvaluationLaunchPreparationContractError",
     "launch_preparation_request_digest",
     "preparation_request_schema",

@@ -766,6 +766,19 @@ def _build(lane, link: str, **overrides):
     return builder.build_native_task_arena_live_profile(**arguments)
 
 
+def test_profile_binds_the_explicit_admitted_provider(lane: dict) -> None:
+    profile = _build(lane, "construction", provider="vast")
+
+    argv = profile["allocator"]["argv"]
+    assert argv[argv.index("--provider") + 1] == "vast"
+    assert profile["reconciliation"]["required_providers"] == ["vast"]
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="native_task_arena_provider_adapter_unavailable",
+    ):
+        _build(lane, "construction", provider="runpod")
+
+
 def test_policy_profile_exposes_private_digest_bound_native_policy(lane: dict) -> None:
     profile = _build(lane, "policy")
     binding = profile["native_policy_binding"]

@@ -79,6 +79,9 @@ from blueprint_pipeline.task_evaluation_live_profile import (
     build_lane_live_profile,
     file_digest,
 )
+from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
+    EXECUTION_ADAPTER_PROVIDER_CAPABILITIES,
+)
 
 
 def _write_profile_output_exclusive(path: Path, payload: bytes) -> bool:
@@ -972,6 +975,7 @@ def _spec(
     with_avoidlist: bool = False,
     with_warm_session: bool = False,
     authorize_gated_backbone: bool = False,
+    provider: str = "vast",
 ) -> LaneLiveProfileSpec:
     if isinstance(link, str):
         # Shared builder-contract probes call candidate factories with a
@@ -1014,6 +1018,8 @@ def _spec(
             *(("warm_session",) if with_warm_session else ()),
             *link.predecessors,
         ),
+        required_providers=(provider,),
+        provider=provider,
     )
 
 
@@ -1039,10 +1045,17 @@ def build_native_task_arena_live_profile(
     max_spend_usd: float = 2.0,
     hard_ttl_seconds: int = 7_200,
     preferred_geolocation_regex: str = "",
+    provider: str = "vast",
 ) -> dict[str, Any]:
     """Derive a live profile from the packet receipt the link will run."""
 
     entry = LINKS[link]
+    if provider not in EXECUTION_ADAPTER_PROVIDER_CAPABILITIES[
+        ("native_task_arena", "v1")
+    ]:
+        raise TaskEvaluationLaunchError(
+            "native_task_arena_provider_adapter_unavailable"
+        )
     scene_id = _identifier(expected_scene_id, field="scene_id")
     task_id = _identifier(expected_task_id, field="task_id")
     packet = Path(packet_dir).expanduser().resolve()
@@ -1102,6 +1115,7 @@ def build_native_task_arena_live_profile(
             with_avoidlist=machine_avoidlist_path is not None,
             with_warm_session=warm_session_path is not None,
             authorize_gated_backbone=authorize_gated_backbone,
+            provider=provider,
         ),
         bundle_receipt_path=bundle_receipt_path,
         source_commit=source_commit,
@@ -1135,6 +1149,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         target.add_argument("--source-commit", required=True)
         target.add_argument("--scene-id", required=True)
         target.add_argument("--task-id", required=True)
+        target.add_argument(
+            "--provider",
+            required=True,
+            choices=("runpod", "vast", "digitalocean", "aws"),
+        )
         target.add_argument(
             "--raw-manifest-uri",
             required=True,
@@ -1189,6 +1208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw_manifest_uri=args.raw_manifest_uri,
             expected_scene_id=args.scene_id,
             expected_task_id=args.task_id,
+            provider=args.provider,
             construction_result_path=getattr(args, "construction_result", None),
             control_result_path=getattr(args, "control_result", None),
             policy_execution_spec_path=getattr(args, "policy_execution_spec", None),

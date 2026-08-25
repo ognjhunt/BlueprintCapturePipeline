@@ -275,6 +275,7 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "maximum_hourly_rate_usd",
         "hard_total_spend_cap_usd",
         "hard_ttl_seconds",
+        "provider",
         "aggregate_goal_spend_before_usd",
         "aggregate_goal_spend_cap_usd",
         # Native Task Arena contexts derive these from the versioned context
@@ -341,7 +342,11 @@ def test_native_lane_prepares_rehearses_then_publishes_once(lane: str) -> None:
     ]
     dry_run = prep.LANES[lane][order.index("allocator_dry_run")]
     assert "--execute" not in dry_run.argv
-    assert dry_run.argv[dry_run.argv.index("--provider") + 1] == "vast"
+    assert dry_run.argv[dry_run.argv.index("--provider") + 1] == "{provider}"
+    live_profile = prep.LANES[lane][order.index("live_profile")]
+    assert live_profile.argv[live_profile.argv.index("--provider") + 1] == (
+        "{provider}"
+    )
     expected_probe = (
         lane.replace("_", "-")
         if lane == "native_task_arena_construction"
@@ -521,6 +526,7 @@ def test_native_context_reopens_independent_versioned_references(
                     "maximum_hourly_rate_usd": 0.8,
                     "hard_total_spend_cap_usd": 0.75,
                     "hard_ttl_seconds": 3300,
+                    "provider": "vast",
                     "project_spend_reconciliation": str(
                         tmp_path / "project-spend.json"
                     ),
@@ -539,6 +545,7 @@ def test_native_context_reopens_independent_versioned_references(
     assert context["task_id"] == "move-can-v2"
     assert context["packet_dir"] == str(packet.resolve())
     assert context["runtime_source_packet"] == str(runtime_source.resolve())
+    assert context["provider"] == "vast"
     assert context["reference_bindings"]["robot"]["robot_id"] == "customer_arm_v3"
     assert context["reference_bindings"]["source_manifest_path"] == str(
         source_manifest.resolve()

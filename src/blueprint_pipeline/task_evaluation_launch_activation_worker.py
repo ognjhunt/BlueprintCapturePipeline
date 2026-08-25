@@ -425,6 +425,7 @@ def _build_native_context(
         ],
         "hard_total_spend_cap_usd": preparation_request["spend"]["hard_cap_usd"],
         "hard_ttl_seconds": preparation_request["spend"]["hard_ttl_seconds"],
+        "provider": preparation_request["spend"]["selected_provider"],
         "machine_avoidlist": "",
         "python": sys.executable,
         "service_account": service_account,
