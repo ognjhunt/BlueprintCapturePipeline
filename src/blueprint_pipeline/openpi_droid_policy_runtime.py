@@ -39,7 +39,9 @@ EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
 SERVER_METADATA_SCHEMA_VERSION = "openpi_droid_policy_server_metadata.v1"
 SUPPORTED_ACTION_SPACES = frozenset({"joint_position"})
 SUPPORTED_ACTION_CHUNK_ROWS = frozenset({10, 15})
-OPENPI_INFERENCE_RESPONSE_KEYS = frozenset({"actions", "server_timing"})
+OPENPI_INFERENCE_RESPONSE_KEYS = frozenset(
+    {"actions", "policy_timing", "server_timing"}
+)
 LOCAL_VERIFICATION_FIELDS = frozenset(
     {
         "local_checkpoint_verified",
@@ -417,11 +419,12 @@ class OpenPIWebsocketDroidPolicyClient:
 def normalize_openpi_inference_response(response: Any) -> Any:
     """Return only the action chunk from the pinned OpenPI wire response.
 
-    At the frozen OpenPI revision, ``DroidOutputs`` emits ``actions`` and the
-    websocket server adds optional ``server_timing`` metadata.  Passing that
-    complete mapping to the numeric action validator attempts to convert the
-    mapping itself to a float array.  Keep the transport envelope at this
-    boundary and reject alternate or ambiguous action fields fail-closed.
+    At the frozen OpenPI revision, ``DroidOutputs`` emits ``actions``, the
+    policy adds ``policy_timing``, and the websocket server adds
+    ``server_timing``. Passing that complete mapping to the numeric action
+    validator attempts to convert the mapping itself to a float array. Keep
+    the transport envelope at this boundary and reject alternate or ambiguous
+    action fields fail-closed.
     """
 
     if not isinstance(response, Mapping):
@@ -436,10 +439,11 @@ def normalize_openpi_inference_response(response: Any) -> Any:
         )
     if "actions" not in response:
         raise ValueError("openpi_inference_response_actions_missing")
-    if "server_timing" in response and not isinstance(
-        response["server_timing"], Mapping
-    ):
-        raise ValueError("openpi_inference_response_server_timing_not_object")
+    for timing_key in ("policy_timing", "server_timing"):
+        if timing_key in response and not isinstance(response[timing_key], Mapping):
+            raise ValueError(
+                f"openpi_inference_response_{timing_key}_not_object"
+            )
     return response["actions"]
 
 
