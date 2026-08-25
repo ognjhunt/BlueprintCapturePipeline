@@ -1,0 +1,15 @@
+{
+  "schema_version": "company_policy_container_webapp_handoff_manifest.v2",
+  "handoff_version": "2",
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "2654590dfcb872a575035c781aea401ca61408e1db1d815d6a6f4fffba6ddb8d"
+    },
+    {
+      "path": "contract.schema.json",
+      "sha256": "7c61519b59e3f8af51e53c97658976cd2cdc2a07f7540561ed6b003eaa104351"
+    }
+  ],
+  "manifest_self_excluded": true
+}
