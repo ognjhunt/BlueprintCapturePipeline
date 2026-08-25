@@ -256,6 +256,28 @@ def _persist_progress(output: Path, progress: Mapping[str, Any]) -> None:
     os.replace(temporary, output)
 
 
+def _announce_bounded_orientation_ik_progress(
+    *, output_root: Path, progress: Mapping[str, Any]
+) -> None:
+    """Persist and print one heartbeat around every bounded IK solve."""
+
+    _persist_progress(
+        output_root / "contact_open_bounded_orientation_ik.progress.v1.json",
+        progress,
+    )
+    print(
+        "BLUEPRINT_BOUNDED_ORIENTATION_IK_PROGRESS:"
+        f"event={progress.get('event')}:"
+        f"candidate={int(progress.get('candidate_index') or 0) + 1}/"
+        f"{int(progress.get('total_candidate_count') or 0)}:"
+        f"phase={progress.get('phase_id')}:"
+        f"solve_calls={int(progress.get('solve_call_count') or 0)}:"
+        f"solution_returned={progress.get('phase_solution_returned')}:"
+        f"reason={progress.get('reason')}",
+        flush=True,
+    )
+
+
 def _announce_contact_acquisition_cell(progress: Mapping[str, Any]) -> None:
     """Emit one compact timeout-harvestable numeric summary per cell."""
 
@@ -3955,6 +3977,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 jaw_selection=jaw_selection,
                 sweep=sweep,
             )
+
             def _solve_bounded_orientation(
                 phase_id,
                 target_position,
@@ -3982,6 +4005,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return dict(selected) if isinstance(selected, Mapping) else None
 
+            def _bounded_orientation_ik_progress(
+                progress: Mapping[str, Any],
+            ) -> None:
+                _announce_bounded_orientation_ik_progress(
+                    output_root=output_root,
+                    progress=progress,
+                )
+
             bounded_postures, bounded_orientation_report = (
                 build_bounded_orientation_postures(
                     variant_plans=(
@@ -3995,6 +4026,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     solve_phase=_solve_bounded_orientation,
                     reference_joint_seeds=bounded_reference_seeds,
+                    progress_callback=_bounded_orientation_ik_progress,
                 )
             )
             if bounded_postures:

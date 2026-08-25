@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from blueprint_pipeline.native_franka_global_seed_search import (
+    high_margin_joint_seeds,
+)
 from blueprint_pipeline.native_franka_pose_servo import (
     NativeFrankaDifferentialIkServo,
     NativeFrankaPoseServoError,
@@ -501,6 +505,116 @@ def test_predicted_grasp_frame_fk_uses_pink_to_tcp_binding() -> None:
     assert predicted == pytest.approx(
         [1.4, 2.12, 3.2, 0.0, 0.0, 0.0, 1.0]
     )
+
+
+def test_pinocchio_pose_jacobian_pair_reuses_fk_without_changing_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"forward": 0, "placements": 0, "jacobian": 0}
+    data = SimpleNamespace(
+        configuration=np.zeros(1, dtype=float),
+        oMf=[
+            SimpleNamespace(
+                translation=np.zeros(3, dtype=float),
+                rotation=np.eye(3, dtype=float),
+            )
+        ],
+    )
+    model = SimpleNamespace(getFrameId=lambda name: 0 if name == "panda_hand" else -1)
+
+    def forward_kinematics(_model, frame_data, vector):
+        calls["forward"] += 1
+        frame_data.configuration = np.array(vector, dtype=float)
+
+    def update_frame_placements(_model, frame_data):
+        calls["placements"] += 1
+        frame_data.oMf[0] = SimpleNamespace(
+            translation=np.array(
+                [frame_data.configuration[0], 0.0, 0.0], dtype=float
+            ),
+            rotation=np.eye(3, dtype=float),
+        )
+
+    def compute_frame_jacobian(_model, frame_data, vector, _frame_id, _frame):
+        calls["jacobian"] += 1
+        assert frame_data.configuration == pytest.approx(vector)
+        return np.array(
+            [[1.0], [0.0], [0.0], [0.0], [0.0], [0.0]],
+            dtype=float,
+        )
+
+    class _Quaternion:
+        def __init__(self, _rotation):
+            pass
+
+        @staticmethod
+        def coeffs():
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+
+    pinocchio = SimpleNamespace(
+        LOCAL_WORLD_ALIGNED=object(),
+        Quaternion=_Quaternion,
+        neutral=lambda _model: np.zeros(1, dtype=float),
+        forwardKinematics=forward_kinematics,
+        updateFramePlacements=update_frame_placements,
+        computeFrameJacobian=compute_frame_jacobian,
+    )
+    monkeypatch.setitem(sys.modules, "pinocchio", pinocchio)
+
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo.binding = {"arm_joint_names": ["panda_joint1"]}
+    servo._pink_controller = SimpleNamespace(
+        _configuration=SimpleNamespace(model=model, data=data)
+    )
+    probes = servo._pinocchio_frame_probes()
+    assert probes is not None
+    cached_pose, cached_jacobian = probes
+    pose_calls = 0
+    jacobian_calls = 0
+
+    def counted_pose(joints):
+        nonlocal pose_calls
+        pose_calls += 1
+        return cached_pose(joints)
+
+    def counted_jacobian(joints):
+        nonlocal jacobian_calls
+        jacobian_calls += 1
+        return cached_jacobian(joints)
+
+    kwargs = {
+        "seeds": [[0.0], [0.8]],
+        "target_position_m": [0.4, 0.0, 0.0],
+        "target_quaternion_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "lower_joint_position_limits_rad": [-1.0],
+        "upper_joint_position_limits_rad": [1.0],
+        "position_tolerance_m": 0.001,
+        "orientation_tolerance_rad": 0.01,
+        "max_iterations": 20,
+    }
+    cached_report = high_margin_joint_seeds(
+        frame_pose=counted_pose,
+        frame_jacobian=counted_jacobian,
+        **kwargs,
+    )
+
+    def reference_pose(joints):
+        return [float(joints[0]), 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]
+
+    def reference_jacobian(_joints):
+        return [[1.0], [0.0], [0.0], [0.0], [0.0], [0.0]]
+
+    reference_report = high_margin_joint_seeds(
+        frame_pose=reference_pose,
+        frame_jacobian=reference_jacobian,
+        **kwargs,
+    )
+
+    assert cached_report == reference_report
+    assert jacobian_calls > 0
+    assert calls["jacobian"] == jacobian_calls
+    assert calls["forward"] == calls["placements"] == pose_calls
+    assert calls["forward"] < pose_calls + jacobian_calls
 
 
 def test_global_joint_solution_replay_stays_under_native_command_bounds() -> None:

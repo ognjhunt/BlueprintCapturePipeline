@@ -1816,20 +1816,37 @@ class NativeFrankaDifferentialIkServo:
             vector[:arm] = np.array([float(value) for value in joints], dtype=float)
             return vector
 
+        # ``high_margin_joint_seeds`` always asks for the pose and then the
+        # Jacobian at the same configuration.  Both probes used to repeat
+        # forward kinematics and frame placement for that pair, which doubled
+        # the dominant Pinocchio work across every global seed and iteration.
+        # Keep this deliberately one-shot: only the immediately following
+        # Jacobian probe may consume a pose probe's kinematics.  A later pose or
+        # a Jacobian at another configuration recomputes from the model, so the
+        # shared PINK data cannot leave a stale configuration cached across
+        # independent callers.
+        pending_pose_key: tuple[float, ...] | None = None
+
         def frame_pose(joints):
+            nonlocal pending_pose_key
             vector = _configuration_vector(joints)
             pin.forwardKinematics(model, data, vector)
             pin.updateFramePlacements(model, data)
             placement = data.oMf[frame_id]
+            pending_pose_key = tuple(float(value) for value in vector[:arm])
             return (
                 [float(value) for value in placement.translation],
                 [float(value) for value in pin.Quaternion(placement.rotation).coeffs()],
             )
 
         def frame_jacobian(joints):
+            nonlocal pending_pose_key
             vector = _configuration_vector(joints)
-            pin.forwardKinematics(model, data, vector)
-            pin.updateFramePlacements(model, data)
+            key = tuple(float(value) for value in vector[:arm])
+            if pending_pose_key != key:
+                pin.forwardKinematics(model, data, vector)
+                pin.updateFramePlacements(model, data)
+            pending_pose_key = None
             jacobian = pin.computeFrameJacobian(
                 model, data, vector, frame_id, pin.LOCAL_WORLD_ALIGNED
             )
