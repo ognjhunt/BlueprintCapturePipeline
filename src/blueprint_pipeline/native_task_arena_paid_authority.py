@@ -167,6 +167,83 @@ def _expected_watchdog_blocker(authority: Mapping[str, Any]) -> str:
     return f"native_task_arena_{mode}_independent_watchdog_not_armed"
 
 
+def _expected_job_dir(authority: Mapping[str, Any]) -> str:
+    return {
+        "construction_canary": "arena-construction-job",
+        "controls": "arena-controls-job",
+        "policy": "arena-policy-job",
+        "policy_diagnostic": "arena-policy-diagnostic-job",
+    }[str(authority.get("execution_mode") or "")]
+
+
+def _lower_hex(value: Any, *, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _preallocation_cleanup_valid(value: Mapping[str, Any]) -> bool:
+    objects = value.get("objects")
+    if (
+        value.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or value.get("status") != "completed"
+        or value.get("blockers") != []
+        or value.get("raw_secret_values_recorded") is not False
+        or not isinstance(value.get("cleanup_attempts"), int)
+        or value.get("cleanup_attempts", 0) < 1
+        or not isinstance(objects, list)
+        or not objects
+        or value.get("exact_object_count") != len(objects)
+        or not _lower_hex(value.get("staging_manifest_sha256"), length=64)
+        or value.get("all_objects_absent") is not True
+        or value.get("signed_url_files_removed") is not True
+    ):
+        return False
+    for row in objects:
+        if not isinstance(row, Mapping):
+            return False
+        absence = row.get("absence")
+        if (
+            not _lower_hex(row.get("key_sha256"), length=64)
+            or not isinstance(absence, Mapping)
+            or absence.get("absence_confirmed") is not True
+            or absence.get("http_status_code") != 404
+            or absence.get("status") != "passed"
+            or absence.get("raw_secret_values_recorded") is not False
+        ):
+            return False
+    return True
+
+
+def _preallocation_attempt_layout_valid(
+    *,
+    authority: Mapping[str, Any],
+    original_path: Path,
+    watchdog_path: Path,
+    cleanup_path: Path,
+    attempt_root_raw: str,
+) -> bool:
+    if not attempt_root_raw.startswith("/"):
+        return False
+    attempt_root = Path(attempt_root_raw).resolve()
+    suffix = attempt_root.name.removeprefix("attempt_")
+    return (
+        attempt_root.name.startswith("attempt_")
+        and len(suffix) == 3
+        and suffix.isdigit()
+        and attempt_root.parent.name == "attempts"
+        and attempt_root.parent.parent.name == _expected_job_dir(authority)
+        and original_path == attempt_root / "adp_arena_vast_result.json"
+        and watchdog_path == attempt_root / "vast_independent_watchdog_handoff.json"
+        and cleanup_path
+        == attempt_root
+        / "object_store_staging"
+        / "wam_provider_object_store_cleanup.json"
+    )
+
+
 def _validate_preallocation_provider_zero_value(value: Mapping[str, Any]) -> dict[str, Any]:
     if (
         value.get("schema_version") != PROVIDER_ZERO_SCHEMA_VERSION
@@ -256,9 +333,6 @@ def _validate_preallocation_closed_chain(
         "maximum_api_zero_age_seconds": MAX_PREALLOCATION_API_ZERO_AGE_SECONDS,
     }
     attempt_root_raw = str(original.get("attempt_root") or "")
-    attempt_root = Path(attempt_root_raw).resolve()
-    cleanup_in_attempt = attempt_root in cleanup_path.parents
-    watchdog_in_attempt = attempt_root in watchdog_path.parents
     sibling_records = zero.get("sibling_preallocation_closeouts")
     if (
         result.get("closeout_kind") != PREALLOCATION_CLOSEOUT_KIND
@@ -284,26 +358,20 @@ def _validate_preallocation_closed_chain(
         or original.get("vast_instance_ids") not in (None, [], ())
         or original.get("provider_instance_ids") not in (None, [], ())
         or original.get("provider_create_attempted") not in (None, False)
-        or not attempt_root_raw.startswith("/")
-        or not cleanup_in_attempt
-        or not watchdog_in_attempt
+        or not _preallocation_attempt_layout_valid(
+            authority=authority,
+            original_path=original_path,
+            watchdog_path=watchdog_path,
+            cleanup_path=cleanup_path,
+            attempt_root_raw=attempt_root_raw,
+        )
         or original.get("independent_watchdog") != watchdog
         or watchdog.get("schema_version") != WATCHDOG_HANDOFF_SCHEMA_VERSION
         or watchdog.get("status") != "blocked"
         or watchdog.get("watchdog_armed_before_allocation") is not False
         or watchdog.get("independent_process") is not False
         or watchdog.get("provider_mutations_performed") != 0
-        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
-        or cleanup.get("all_objects_absent") is not True
-        or cleanup.get("signed_url_files_removed") is not True
-        or cleanup.get("status") != "completed"
-        or cleanup.get("blockers") != []
-        or not isinstance(cleanup.get("cleanup_attempts"), int)
-        or cleanup.get("cleanup_attempts", 0) < 1
-        or not isinstance(cleanup.get("exact_object_count"), int)
-        or cleanup.get("exact_object_count", -1) < 0
-        or not isinstance(cleanup.get("staging_manifest_sha256"), str)
-        or len(cleanup.get("staging_manifest_sha256", "")) != 64
+        or not _preallocation_cleanup_valid(cleanup)
         or teardown.get("schema_version") != PREALLOCATION_TEARDOWN_SCHEMA_VERSION
         or teardown.get("status")
         != "not_required_independent_watchdog_not_armed_before_allocation"
@@ -1219,7 +1287,6 @@ def materialize_native_task_arena_preallocation_closeout(
         "native_task_arena_preallocation_api_zero_time_invalid",
     )
     attempt_root_raw = str(original.get("attempt_root") or "")
-    attempt_root = Path(attempt_root_raw).resolve()
     if (
         authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or authority_digest
@@ -1239,26 +1306,20 @@ def materialize_native_task_arena_preallocation_closeout(
         or original.get("vast_instance_ids") not in (None, [], ())
         or original.get("provider_instance_ids") not in (None, [], ())
         or original.get("provider_create_attempted") not in (None, False)
-        or not attempt_root_raw.startswith("/")
-        or attempt_root not in cleanup_file.parents
-        or attempt_root not in watchdog_file.parents
+        or not _preallocation_attempt_layout_valid(
+            authority=authority,
+            original_path=original_file,
+            watchdog_path=watchdog_file,
+            cleanup_path=cleanup_file,
+            attempt_root_raw=attempt_root_raw,
+        )
         or original.get("independent_watchdog") != watchdog
         or watchdog.get("schema_version") != WATCHDOG_HANDOFF_SCHEMA_VERSION
         or watchdog.get("status") != "blocked"
         or watchdog.get("watchdog_armed_before_allocation") is not False
         or watchdog.get("independent_process") is not False
         or watchdog.get("provider_mutations_performed") != 0
-        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
-        or cleanup.get("all_objects_absent") is not True
-        or cleanup.get("signed_url_files_removed") is not True
-        or cleanup.get("status") != "completed"
-        or cleanup.get("blockers") != []
-        or not isinstance(cleanup.get("cleanup_attempts"), int)
-        or cleanup.get("cleanup_attempts", 0) < 1
-        or not isinstance(cleanup.get("exact_object_count"), int)
-        or cleanup.get("exact_object_count", -1) < 0
-        or not isinstance(cleanup.get("staging_manifest_sha256"), str)
-        or len(cleanup.get("staging_manifest_sha256", "")) != 64
+        or not _preallocation_cleanup_valid(cleanup)
         or zero_at < result_at
         or zero_at > materialized_at
         or (materialized_at - zero_at).total_seconds()

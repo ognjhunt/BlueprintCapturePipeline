@@ -831,6 +831,14 @@ def test_authority_adds_digest_bound_supplemental_actuals_without_assigning_them
 
 def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
     root.mkdir()
+    attempt_root = (
+        root
+        / "allocator"
+        / "arena-policy-diagnostic-job"
+        / "attempts"
+        / "attempt_001"
+    )
+    (attempt_root / "object_store_staging").mkdir(parents=True)
     observed_at = datetime.now(timezone.utc)
     authority = {
         "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
@@ -854,7 +862,7 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
         "independent_process": False,
         "provider_mutations_performed": 0,
     }
-    watchdog_path = root / "watchdog_handoff.json"
+    watchdog_path = attempt_root / "vast_independent_watchdog_handoff.json"
     write_json(watchdog_path, watchdog)
     cleanup = {
         "schema_version": "wam_provider_object_store_cleanup.v1",
@@ -863,10 +871,35 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
         "cleanup_attempts": 1,
         "exact_object_count": 2,
         "staging_manifest_sha256": "c" * 64,
+        "raw_secret_values_recorded": False,
+        "objects": [
+            {
+                "key_sha256": "d" * 64,
+                "absence": {
+                    "absence_confirmed": True,
+                    "http_status_code": 404,
+                    "status": "passed",
+                    "raw_secret_values_recorded": False,
+                },
+            },
+            {
+                "key_sha256": "e" * 64,
+                "absence": {
+                    "absence_confirmed": True,
+                    "http_status_code": 404,
+                    "status": "passed",
+                    "raw_secret_values_recorded": False,
+                },
+            },
+        ],
         "all_objects_absent": True,
         "signed_url_files_removed": True,
     }
-    cleanup_path = root / "cleanup.json"
+    cleanup_path = (
+        attempt_root
+        / "object_store_staging"
+        / "wam_provider_object_store_cleanup.json"
+    )
     write_json(cleanup_path, cleanup)
     result = {
         "schema_version": "native_task_arena_vast_run.v1",
@@ -877,7 +910,7 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
         ],
         "provider_mutations_performed": 0,
         "all_staged_objects_absent": True,
-        "attempt_root": str(root),
+        "attempt_root": str(attempt_root),
         "retry_cap": 0,
         "authorization_consumption": {
             "status": "consumed",
@@ -885,7 +918,7 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
         },
         "independent_watchdog": watchdog,
     }
-    result_path = root / "allocator_result.json"
+    result_path = attempt_root / "adp_arena_vast_result.json"
     write_json(result_path, result)
     api_zero = {
         "schema_version": "adp_paid_provider_zero.v1",
@@ -993,6 +1026,39 @@ def test_preallocation_closeout_requires_the_canonical_authenticated_api_contrac
             object_store_cleanup_path=fixture["cleanup"],
             api_provider_zero_path=fixture["api_zero"],
             output_dir=tmp_path / "closeout",
+        )
+
+
+def test_preallocation_closeout_rejects_broad_attempt_root_and_empty_cleanup_claim(
+    tmp_path: Path,
+) -> None:
+    broad = _watchdog_not_armed_fixture(tmp_path / "broad")
+    result = json.loads(broad["result"].read_text())
+    result["attempt_root"] = "/"
+    write_json(broad["result"], result)
+    with pytest.raises(ValueError, match="preallocation_evidence_invalid"):
+        paid.materialize_native_task_arena_preallocation_closeout(
+            authority_path=broad["authority"],
+            allocator_result_path=broad["result"],
+            watchdog_handoff_path=broad["watchdog"],
+            object_store_cleanup_path=broad["cleanup"],
+            api_provider_zero_path=broad["api_zero"],
+            output_dir=tmp_path / "broad-closeout",
+        )
+
+    empty = _watchdog_not_armed_fixture(tmp_path / "empty")
+    cleanup = json.loads(empty["cleanup"].read_text())
+    cleanup["objects"] = []
+    cleanup["exact_object_count"] = 0
+    write_json(empty["cleanup"], cleanup)
+    with pytest.raises(ValueError, match="preallocation_evidence_invalid"):
+        paid.materialize_native_task_arena_preallocation_closeout(
+            authority_path=empty["authority"],
+            allocator_result_path=empty["result"],
+            watchdog_handoff_path=empty["watchdog"],
+            object_store_cleanup_path=empty["cleanup"],
+            api_provider_zero_path=empty["api_zero"],
+            output_dir=tmp_path / "empty-closeout",
         )
 
 
