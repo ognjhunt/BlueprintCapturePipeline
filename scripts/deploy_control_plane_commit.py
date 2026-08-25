@@ -63,6 +63,10 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
     "/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
 )
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
+DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
+    "blueprint-task-evaluation-launch-dispatcher.service",
+)
+DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "/etc/systemd/system/blueprint-pipeline-intake.service.d/"
     "90-blueprint-deploy-identity.conf"
@@ -450,6 +454,74 @@ def _restart_units(units: Sequence[str]) -> list[dict[str, Any]]:
     return restarted
 
 
+def _install_release_systemd_units(
+    *,
+    release_path: str | Path,
+    systemd_dir: str | Path,
+    units: Sequence[str] = DEFAULT_DEPLOYED_SYSTEMD_UNITS,
+) -> list[dict[str, Any]]:
+    """Install exact release-owned unit bytes before daemon reload.
+
+    Promoting a detached release without refreshing its installed unit left the
+    dispatcher on older concurrency and watchdog-survival semantics.  The
+    allocator then ran exact new Python under stale systemd controls and failed
+    before provider allocation.  Install only the dispatcher unit here; the
+    ordinary restart seam immediately daemon-reloads it, and the next queue
+    activation therefore uses the same release that authored the profile.
+    """
+
+    release = Path(release_path).expanduser().resolve()
+    destination_root = Path(systemd_dir).expanduser().resolve()
+    destination_root.mkdir(parents=True, exist_ok=True)
+    receipts: list[dict[str, Any]] = []
+    for unit in units:
+        if Path(unit).name != unit or not unit.endswith(".service"):
+            raise ControlPlaneDeployError("deploy_systemd_unit_name_invalid")
+        source = release / "deploy" / "systemd" / unit
+        destination = destination_root / unit
+        if source.is_symlink() or not source.is_file():
+            raise ControlPlaneDeployError(f"deploy_systemd_unit_source_invalid:{unit}")
+        if destination.is_symlink():
+            raise ControlPlaneDeployError(
+                f"deploy_systemd_unit_destination_symlink:{unit}"
+            )
+        try:
+            payload = source.read_bytes()
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{unit}.", suffix=".tmp", dir=destination_root
+            )
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(temporary, 0o644)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+            reopened = destination.read_bytes()
+        except OSError as exc:
+            raise ControlPlaneDeployError(
+                f"deploy_systemd_unit_install_failed:{unit}"
+            ) from exc
+        if reopened != payload or destination.stat().st_mode & 0o777 != 0o644:
+            raise ControlPlaneDeployError(
+                f"deploy_systemd_unit_readback_mismatch:{unit}"
+            )
+        receipts.append(
+            {
+                "unit": unit,
+                "source_path": str(source),
+                "installed_path": str(destination),
+                "sha256": _sha256_bytes(reopened),
+                "size_bytes": len(reopened),
+                "mode": "0644",
+            }
+        )
+    return receipts
+
+
 def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
     """The intake restart is mandatory; callers may only add units."""
 
@@ -611,6 +683,7 @@ def deploy_control_plane_commit(
     paid_launch_locks: Sequence[str] = DEFAULT_PAID_LAUNCH_LOCKS,
     intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
     intake_version_url: str = DEFAULT_INTAKE_VERSION_URL,
+    systemd_dir: str | Path = DEFAULT_SYSTEMD_DIR,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
@@ -723,6 +796,11 @@ def deploy_control_plane_commit(
                 "deploy_surfaces_disagree:" + ",".join(disagreeing)
             )
 
+        installed_systemd_units = _install_release_systemd_units(
+            release_path=release["release_path"],
+            systemd_dir=systemd_dir,
+        )
+
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
             source_repo=source,
@@ -761,6 +839,7 @@ def deploy_control_plane_commit(
         "release_provenance": installed_provenance,
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
+        "installed_systemd_units": installed_systemd_units,
         "intake_runtime_binding": runtime_binding,
         "intake_runtime": runtime,
         # Every slot actually held, not the one base path the caller named.
@@ -811,6 +890,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--systemd-dir",
+        default=DEFAULT_SYSTEMD_DIR,
+        help="systemd unit directory receiving exact release-owned unit bytes",
+    )
+    parser.add_argument(
         "--restart-unit",
         action="append",
         default=None,
@@ -848,6 +932,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             paid_launch_locks=tuple(args.paid_launch_lock or DEFAULT_PAID_LAUNCH_LOCKS),
             intake_runtime_drop_in=args.intake_runtime_drop_in,
             intake_version_url=args.intake_version_url,
+            systemd_dir=args.systemd_dir,
         )
     except (OSError, ControlPlaneDeployError, ControlPlaneReleaseError) as exc:
         print(

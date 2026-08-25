@@ -221,6 +221,7 @@ def test_iteration_accepts_a_commit_that_is_on_origin_main(
             source_commit=merged,
             release_provenance=None,
             iteration=True,
+            systemd_dir=tmp_path / "systemd",
             **roots,
         )
     # It fails later on this synthetic host, but NOT on ancestry.
