@@ -144,6 +144,10 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
     ):
         assert binding in dispatcher
+    assert (
+        "PathChanged=/var/lib/blueprint/pipeline-control-plane/"
+        "task-evaluation-launches/pending"
+    ) in path_unit
     assert "PathExistsGlob=" in path_unit
     assert "task-evaluation-launches/pending/*.json" in path_unit
 
