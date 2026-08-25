@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import math
 import time
-from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -68,8 +67,6 @@ try:  # flat provider-bundle layout
         DROID_EXTERIOR_VIEW_1,
         DROID_OBSERVATION_SCHEMA_VERSION,
         DROID_WRIST_VIEW,
-        GROOT_HISTORICAL_VIEW_KEYS,
-        GROOT_HISTORY_STEPS,
         DroidObservationError,
         build_droid_observation,
         describe_observation_conversion,
@@ -80,8 +77,6 @@ except ModuleNotFoundError:  # repository package
         DROID_EXTERIOR_VIEW_1,
         DROID_OBSERVATION_SCHEMA_VERSION,
         DROID_WRIST_VIEW,
-        GROOT_HISTORICAL_VIEW_KEYS,
-        GROOT_HISTORY_STEPS,
         DroidObservationError,
         build_droid_observation,
         describe_observation_conversion,
@@ -338,11 +333,6 @@ def _policy_view_composite(
     import numpy as np
 
     view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
-    if candidate_id == "groot_n17_droid":
-        view_order = [
-            GROOT_HISTORICAL_VIEW_KEYS[view]
-            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-        ] + view_order
     views = [np.asarray(observation[name]) for name in view_order]
     if not views or any(
         view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3
@@ -356,17 +346,6 @@ def _policy_view_composite(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_height_mismatch"]
         )
     return np.ascontiguousarray(np.concatenate(views, axis=1))
-
-
-def _retain_policy_input_sample(
-    history: deque[tuple[int, Mapping[str, Any]]],
-    *,
-    step_index: int,
-    inputs: Mapping[str, Any],
-) -> None:
-    if history and history[-1][0] == int(step_index):
-        history.pop()
-    history.append((int(step_index), dict(inputs)))
 
 
 def _persist_evaluation_camera_observation(
@@ -421,30 +400,6 @@ def _persist_evaluation_camera_observation(
         source_devices=metadata["source_devices"],
         synchronizations=metadata["synchronizations"],
     )
-
-
-def _historical_camera_rgb(
-    history: deque[tuple[int, Mapping[str, Any]]],
-    *,
-    candidate_id: str,
-    step_index: int,
-) -> dict[str, Any] | None:
-    if candidate_id != "groot_n17_droid":
-        return None
-    target_index = max(0, int(step_index) - GROOT_HISTORY_STEPS)
-    sample = next(
-        (inputs for index, inputs in history if index == target_index),
-        None,
-    )
-    if sample is None:
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:groot_history_step_missing:{target_index}"]
-        )
-    return {
-        view: sample[view]
-        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-        if view in sample
-    }
 
 
 def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
@@ -766,9 +721,6 @@ def run_policy_episode(
                 "complete_multicamera_media_contract_missing"
             ]
         )
-    policy_input_history: deque[tuple[int, Mapping[str, Any]]] = deque(
-        maxlen=GROOT_HISTORY_STEPS + 1
-    )
     episode_progress = progress if progress is not None else {}
     if progress is not None:
         progress.clear()
@@ -961,9 +913,6 @@ def run_policy_episode(
         else:
             if terminal_observation_record is None:
                 terminal_inputs = environment.read_policy_inputs()
-                _retain_policy_input_sample(
-                    policy_input_history, step_index=step_index, inputs=terminal_inputs
-                )
                 terminal_camera_rgb = {
                     view: terminal_inputs[view]
                     for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
@@ -977,11 +926,6 @@ def run_policy_episode(
                         gripper_position=terminal_inputs["gripper_position"],
                         prompt=prompt,
                         eef_9d=terminal_inputs.get("eef_9d"),
-                        historical_camera_rgb=_historical_camera_rgb(
-                            policy_input_history,
-                            candidate_id=candidate_id,
-                            step_index=step_index,
-                        ),
                     )
                 except KeyError as exc:
                     raise PolicyEpisodeError(
@@ -1002,15 +946,9 @@ def run_policy_episode(
                 identity={
                     "candidate_id": candidate_id,
                     "prompt": str(prompt),
-                    "policy_input_view_order": (
-                        [
-                            GROOT_HISTORICAL_VIEW_KEYS[view]
-                            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-                        ]
-                        if candidate_id == "groot_n17_droid"
-                        else []
-                    )
-                    + list(CANDIDATE_REQUIRED_VIEWS[candidate_id]),
+                    "policy_input_view_order": list(
+                        CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                    ),
                     "legacy_media_profile": True,
                 },
                 policy_input_frames=retained_policy_frames,
@@ -1065,9 +1003,6 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
-        _retain_policy_input_sample(
-            policy_input_history, step_index=step_index, inputs=inputs
-        )
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
@@ -1092,11 +1027,6 @@ def run_policy_episode(
                 gripper_position=inputs["gripper_position"],
                 prompt=prompt,
                 eef_9d=inputs.get("eef_9d"),
-                historical_camera_rgb=_historical_camera_rgb(
-                    policy_input_history,
-                    candidate_id=candidate_id,
-                    step_index=step_index,
-                ),
             )
         except KeyError as exc:
             raise PolicyEpisodeError(
@@ -1111,11 +1041,6 @@ def run_policy_episode(
         if media_root is not None and episode_id is not None:
             phase_started = time.monotonic()
             view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
-            if candidate_id == "groot_n17_droid":
-                view_order = [
-                    GROOT_HISTORICAL_VIEW_KEYS[view]
-                    for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-                ] + view_order
             exact_frame = persist_observation_frame(
                 _policy_view_composite(observation, candidate_id=candidate_id),
                 output_dir=media_root,
@@ -1283,6 +1208,7 @@ def run_policy_episode(
             action_values,
             horizon=int(open_loop_horizon),
             action_space=policy_action_space,
+            candidate_id=candidate_id,
         )
         timings_seconds["action_planning"] += time.monotonic() - phase_started
         raw_action_evidence["chunk_contract_validated"] = True
@@ -1297,6 +1223,7 @@ def run_policy_episode(
                 joint_limits=joint_limits,
                 gripper=gripper,
                 action_space=policy_action_space,
+                candidate_id=candidate_id,
             )
             query_clamped_rows += int(action["joint_limit_clamped"])
             action_record = {
@@ -1369,17 +1296,6 @@ def run_policy_episode(
                 )
                 media_observation_index += 1
                 timings_seconds["media_persistence"] += (
-                    time.monotonic() - phase_started
-                )
-            if candidate_id == "groot_n17_droid":
-                phase_started = time.monotonic()
-                post_step_inputs = environment.read_policy_inputs()
-                _retain_policy_input_sample(
-                    policy_input_history,
-                    step_index=step_index,
-                    inputs=post_step_inputs,
-                )
-                timings_seconds["policy_input_read"] += (
                     time.monotonic() - phase_started
                 )
             phase_started = time.monotonic()
@@ -1461,15 +1377,6 @@ def run_policy_episode(
             timings_seconds["media_persistence"] += (
                 time.monotonic() - phase_started
             )
-        if candidate_id == "groot_n17_droid":
-            phase_started = time.monotonic()
-            post_step_inputs = environment.read_policy_inputs()
-            _retain_policy_input_sample(
-                policy_input_history,
-                step_index=step_index,
-                inputs=post_step_inputs,
-            )
-            timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         phase_started = time.monotonic()
         samples.append(
             _sample_with_index(

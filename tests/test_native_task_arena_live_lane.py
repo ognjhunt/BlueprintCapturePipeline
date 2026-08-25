@@ -1444,3 +1444,35 @@ def test_a_scene_plan_that_cannot_be_read_blocks_rather_than_passes(lane) -> Non
         _build(lane, "construction")
 
     assert "native_task_arena_scene_plan" in str(excinfo.value)
+
+
+
+def test_every_link_defaults_to_the_durable_machine_avoidlist() -> None:
+    """A machine proven bad by a paid run must not be relearned by the next one.
+
+    The adapter already records a host whose container never reaches its
+    onstart heartbeat, but its default avoidlist lives under the per-launch job
+    root, so each launch started blind. On 2026-08-25 Vast machine 144209 took
+    three consecutive GR00T launches that way -- GPU allocated, container gone,
+    torn down -- while the same bundle had completed a full episode elsewhere.
+
+    Defaulting the shared link parser to one durable path under the launch
+    state root makes the exclusion cumulative across launches.
+    """
+
+    source = (
+        REPO_ROOT / "scripts" / "build_native_task_arena_live_profile.py"
+    ).read_text(encoding="utf-8")
+
+    # One declaration, shared by construction/controls/policy/policy-diagnostic.
+    assert source.count('target.add_argument(\n            "--machine-avoidlist"') == 1
+    assert "default=DEFAULT_MACHINE_AVOIDLIST_PATH," in source
+
+    durable = builder.DEFAULT_MACHINE_AVOIDLIST_PATH
+    assert durable.endswith(
+        "/task-evaluation-launch-runs/vast_machine_avoidlist.json"
+    )
+    # Durable means outside any single run: the state root itself, never a
+    # launch-scoped or attempt-scoped subdirectory.
+    assert "/attempts/" not in durable
+    assert "-codex" not in durable

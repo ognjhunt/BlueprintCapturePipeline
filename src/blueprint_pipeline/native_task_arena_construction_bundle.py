@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_bundle import (
+    build_native_task_arena_bundle,
+    digest_pinned_container_image,
+)
 from .native_task_arena_execution_contract import (
     CONSTRUCTION_RUNTIME_MODULE_NAMES,
 )
@@ -41,6 +44,7 @@ def build_native_task_arena_construction_bundle(
     packet_dir: str | Path,
     runtime_source_packet_receipt: str | Path,
     implementation_commit: str,
+    container_image: str = NATIVE_TASK_ARENA_IMAGE,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Package one sealed task packet for the native Panda construction worker."""
@@ -64,7 +68,7 @@ def build_native_task_arena_construction_bundle(
             runtime_module_sources=construction_runtime_sources(),
             implementation_commit=implementation_commit,
             execution_mode="construction_canary",
-            container_image=NATIVE_TASK_ARENA_IMAGE,
+            container_image=container_image,
             generated_at=generated_at,
         )
     frozen = materialize_native_task_construction_phase_plan(scene_plan)
@@ -82,7 +86,7 @@ def build_native_task_arena_construction_bundle(
             runtime_module_sources=construction_runtime_sources(),
             implementation_commit=implementation_commit,
             execution_mode="construction_canary",
-            container_image=NATIVE_TASK_ARENA_IMAGE,
+            container_image=container_image,
             bound_runtime_inputs={phase_path.name: phase_path},
             generated_at=generated_at,
         )
@@ -128,7 +132,7 @@ def load_verified_native_task_arena_construction_bundle(
         errors.append("native_task_arena_bundle_receipt_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
         errors.append("native_task_arena_bundle_implementation_commit_mismatch")
-    if receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE:
+    if not digest_pinned_container_image(receipt.get("container_image")):
         errors.append("native_task_arena_bundle_container_image_mismatch")
     if expected_packet_receipt_digest and (
         receipt.get("packet_receipt_digest") != expected_packet_receipt_digest
@@ -187,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--packet-dir", dest="packet_dir", required=True)
     parser.add_argument("--runtime-source-packet-receipt", dest="runtime_source_packet_receipt", required=True)
     parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
+    parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
     args = parser.parse_args(argv)
 
@@ -196,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             packet_dir=args.packet_dir,
             runtime_source_packet_receipt=args.runtime_source_packet_receipt,
             implementation_commit=args.implementation_commit,
+            container_image=args.container_image,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:

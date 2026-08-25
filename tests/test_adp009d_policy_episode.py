@@ -13,12 +13,12 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
     BLOCKER_JOINT_VELOCITY_BOUNDS,
     DroidActionExecutionError,
     GripperConvention,
+    SOURCE_GROOT_POSITION,
+    SOURCE_PI05_POSITION,
 )
 from blueprint_pipeline.adp009d_droid_observation import (
-    CANDIDATE_REQUIRED_VIEWS,
     DROID_EXTERIOR_VIEW_1,
     DROID_WRIST_VIEW,
-    GROOT_HISTORICAL_VIEW_KEYS,
 )
 from blueprint_pipeline.adp009d_groot_worker_identity import (
     expected_checkpoint_content_binding,
@@ -312,7 +312,9 @@ def test_policy_episode_rejects_actions_beyond_frozen_articulated_budget() -> No
     assert environment.reset_count == 0
 
 
-def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
+def test_groot_absolute_joint_actions_take_the_direct_position_path(tmp_path) -> None:
+    from PIL import Image
+
     class _AbsolutePolicy(_Policy):
         action_space = "joint_position"
 
@@ -337,17 +339,28 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         candidate_id="groot_n17_droid",
         max_policy_queries=1,
         settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="groot-current-frame-contract",
     )
 
     assert environment.steps[0][:7] == pytest.approx(
         [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
     )
-    assert receipt["action_space"] == (
-        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+    assert receipt["candidate_id"] == "groot_n17_droid"
+    assert receipt["action_space"] == SOURCE_GROOT_POSITION
+    assert receipt["queries"][0]["source_action_space"] == SOURCE_GROOT_POSITION
+    assert receipt["commanded_actions"][0]["source_action_space"] == (
+        SOURCE_GROOT_POSITION
+    )
+    assert receipt["commanded_action_magnitudes"]["source_action_space"] == (
+        SOURCE_GROOT_POSITION
     )
     assert receipt["queries"][0]["position_adapter"] == (
         "decoded_absolute_joint_position_direct_within_limits"
     )
+    assert receipt["queries"][0]["chunk_shape"] == [40, 8]
+    assert receipt["queries"][0]["executed_rows"] == 8
+    assert receipt["queries"][0]["discarded_rows"] == 32
     assert receipt["queries"][0]["policy_inference_evidence"] == {
         "native_action_chunk_shape": [40, 17],
         "native_action_chunk_sha256": "a" * 64,
@@ -356,6 +369,51 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         "joint_velocity_command_max_abs_rad_s"
     ] == 0.0
     assert "observation/eef_9d" in policy.observations[0]
+    exact = receipt["candidate_exact_policy_input_frames"][0]
+    assert exact["view_order"] == [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
+    with Image.open(tmp_path / exact["relative_path"]) as image:
+        assert image.size == (640, 180)
+        pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    assert np.array_equal(
+        pixels[:, :320], policy.observations[0][DROID_EXTERIOR_VIEW_1]
+    )
+    assert np.array_equal(
+        pixels[:, 320:], policy.observations[0][DROID_WRIST_VIEW]
+    )
+
+
+def test_pi05_absolute_joint_actions_retain_candidate_identity_in_receipt() -> None:
+    class _AbsolutePi05Policy(_Policy):
+        action_space = "joint_position"
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((10, 8), dtype=float)
+            chunk[:, :7] = [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+            chunk[:, 7] = 1.0
+            return chunk
+
+    environment = _Environment()
+    receipt = _run(
+        environment,
+        _AbsolutePi05Policy(),
+        candidate_id="pi05_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+    )
+
+    assert environment.steps[0][:7] == pytest.approx(
+        [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+    )
+    assert receipt["candidate_id"] == "pi05_droid"
+    assert receipt["action_space"] == SOURCE_PI05_POSITION
+    assert receipt["queries"][0]["source_action_space"] == SOURCE_PI05_POSITION
+    assert receipt["commanded_actions"][0]["source_action_space"] == (
+        SOURCE_PI05_POSITION
+    )
+    assert receipt["commanded_action_magnitudes"]["source_action_space"] == (
+        SOURCE_PI05_POSITION
+    )
 
 
 class _ForcedGrootVendorClient:
@@ -369,7 +427,7 @@ class _ForcedGrootVendorClient:
         return {
             "video": {
                 "modality_keys": ["exterior_image_1_left", "wrist_image_left"],
-                "delta_indices": [-15, 0],
+                "delta_indices": [0],
             },
             "state": {
                 "modality_keys": ["eef_9d", "gripper_position", "joint_position"],
@@ -590,7 +648,7 @@ def test_openpi_refused_vendor_action_is_retained_before_episode_application(
         assert retained[0][0] == {"nonfinite_float": "nan"}
 
 
-def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -> None:
+def test_groot_observation_contains_no_unserved_historical_video() -> None:
     class _TemporalEnvironment(_Environment):
         def read_policy_inputs(self):
             inputs = super().read_policy_inputs()
@@ -616,12 +674,9 @@ def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -
         settle_window_samples=1,
     )
 
-    third = policy.observations[2]  # query steps are 0, 8, 16
+    third = policy.observations[2]
     assert third[DROID_EXTERIOR_VIEW_1][0, 0, 0] == 16
-    assert (
-        third["observation_history/exterior_image_1_left_t_minus_15"][0, 0, 0]
-        == 1
-    )
+    assert not any(key.startswith("observation_history/") for key in third)
 
 
 def test_successful_episode_retains_exact_policy_inputs_and_review_video(
@@ -1229,14 +1284,7 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
     exact = receipt["candidate_exact_policy_input_frames"]
     assert len(exact) == 1
     assert exact[0]["candidate_exact_policy_input"] is True
-    expected_view_order = (
-        [
-            GROOT_HISTORICAL_VIEW_KEYS[view]
-            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-        ]
-        if candidate_id == "groot_n17_droid"
-        else []
-    ) + list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
+    expected_view_order = [DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW]
     assert exact[0]["view_order"] == expected_view_order
     assert exact[0]["width"] == sum(
         exact[0]["view_shapes"][view][1] for view in expected_view_order

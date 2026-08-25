@@ -1473,7 +1473,7 @@ def test_public_task_evaluation_profile_catalog_fails_closed(
     assert str(catalog_path) not in response.text
 
 
-def test_task_evaluation_launch_systemd_path_mode_never_shells_out(
+def test_task_evaluation_launch_systemd_path_mode_checks_read_only_active_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     profile_dir = tmp_path / "profiles"
@@ -1483,11 +1483,14 @@ def test_task_evaluation_launch_systemd_path_mode_never_shells_out(
     monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV, "systemd_path")
     monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV, raising=False)
-    monkeypatch.setattr(
-        service.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("systemd path mode must not call systemctl"),
-    )
+    calls: list[list[str]] = []
+
+    def completed(argv, **_kwargs):
+        calls.append(list(argv))
+        stdout = "enabled\n" if argv[1] == "is-enabled" else "active\n"
+        return service.subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(service.subprocess, "run", completed)
 
     result = service._trigger_task_evaluation_launch_dispatcher()
 
@@ -1496,6 +1499,51 @@ def test_task_evaluation_launch_systemd_path_mode_never_shells_out(
         "performed": True,
         "allowed": True,
         "trigger_mode": "systemd_path",
+        "systemd_path_unit": "blueprint-task-evaluation-launch-dispatcher.path",
+        "systemd_path_enabled_state": "enabled",
+        "systemd_path_active_state": "active",
+        "provider_mutation_performed": False,
+    }
+    assert calls == [
+        [
+            "systemctl",
+            "is-enabled",
+            "blueprint-task-evaluation-launch-dispatcher.path",
+        ],
+        [
+            "systemctl",
+            "is-active",
+            "blueprint-task-evaluation-launch-dispatcher.path",
+        ],
+    ]
+
+
+def test_task_evaluation_launch_systemd_path_mode_refuses_inactive_watcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV, "systemd_path")
+
+    def completed(argv, **_kwargs):
+        stdout = "enabled\n" if argv[1] == "is-enabled" else "inactive\n"
+        return service.subprocess.CompletedProcess(argv, 3, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(service.subprocess, "run", completed)
+
+    result = service._trigger_task_evaluation_launch_dispatcher()
+
+    assert result == {
+        "status": "blocked",
+        "performed": False,
+        "allowed": True,
+        "trigger_mode": "systemd_path",
+        "systemd_path_unit": "blueprint-task-evaluation-launch-dispatcher.path",
+        "systemd_path_enabled_state": "enabled",
+        "systemd_path_active_state": "inactive",
+        "blockers": ["task_evaluation_launch_systemd_path_inactive"],
         "provider_mutation_performed": False,
     }
 

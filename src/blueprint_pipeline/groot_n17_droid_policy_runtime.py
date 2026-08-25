@@ -24,16 +24,19 @@ LANGUAGE_KEY = "annotation.language.language_instruction"
 VIDEO_KEYS = ("exterior_image_1_left", "wrist_image_left")
 STATE_KEYS = ("eef_9d", "gripper_position", "joint_position")
 ACTION_KEYS = ("gripper_position", "joint_position")
-HISTORICAL_EXTERIOR_KEY = (
-    "observation_history/exterior_image_1_left_t_minus_15"
-)
-HISTORICAL_WRIST_KEY = "observation_history/wrist_image_left_t_minus_15"
 # The released DROID bridge executes eight rows from every policy chunk.  Keep
 # this module flat-bundle safe: it is copied beside the worker scripts rather
 # than imported as part of ``blueprint_pipeline`` on the rented host.
 DROID_OPEN_LOOP_HORIZON = 8
 DROID_ACTION_CHUNK_ROWS = 40
-FROZEN_VIDEO_DELTA_INDICES = (-15, 0)
+# The exact checkpoint root ``processor_config.json`` is what
+# ``AutoProcessor.from_pretrained(model_dir)`` loads.  At frozen revision
+# 05e7cc97... that 2,833-byte Git blob (55b4d74b...) declares one current
+# video frame.  The older ``experiment_cfg/config.yaml`` retained beside the
+# checkpoint says ``[-15, 0]``, but the server never loads that training
+# artifact.  Requiring its two-frame history makes the identity handshake
+# deterministically refuse the genuine checkpoint before the first query.
+FROZEN_VIDEO_DELTA_INDICES = (0,)
 FROZEN_STATE_DELTA_INDICES = (0,)
 FROZEN_ACTION_DELTA_INDICES = tuple(range(DROID_ACTION_CHUNK_ROWS))
 FROZEN_LANGUAGE_DELTA_INDICES = (0,)
@@ -314,16 +317,14 @@ class GrootN17DroidPolicyClient:
 
         exterior = _resize_with_pad(observation.get("observation/exterior_image_1_left"))
         wrist = _resize_with_pad(observation.get("observation/wrist_image_left"))
-        historical_exterior = _resize_with_pad(observation.get(HISTORICAL_EXTERIOR_KEY))
-        historical_wrist = _resize_with_pad(observation.get(HISTORICAL_WRIST_KEY))
         joints = np.asarray(observation.get("observation/joint_position"), dtype=np.float32)
         gripper = np.asarray(observation.get("observation/gripper_position"), dtype=np.float32)
         eef = np.asarray(observation.get("observation/eef_9d"), dtype=np.float32)
         prompt = str(observation.get("prompt") or "").strip()
         if joints.shape != (7,) or gripper.shape != (1,) or eef.shape != (9,) or not prompt:
             raise ValueError("groot_droid_observation_state_invalid")
-        exterior_video = np.stack((historical_exterior, exterior))[None, ...]
-        wrist_video = np.stack((historical_wrist, wrist))[None, ...]
+        exterior_video = exterior[None, None, ...]
+        wrist_video = wrist[None, None, ...]
         request = {
             "video": {
                 VIDEO_KEYS[0]: exterior_video,
@@ -411,7 +412,7 @@ class GrootN17DroidPolicyClient:
         return json.loads(json.dumps(self._last_inference_evidence, allow_nan=False))
 
     def reset(self) -> None:
-        """Clear cross-episode image history and reset the remote policy."""
+        """Reset the remote policy without carrying state across episodes."""
 
         response = self._client.reset()
         if not isinstance(response, Mapping):
@@ -432,7 +433,7 @@ class GrootN17DroidPolicyClient:
             "state_delta_indices": list(self._state_delta_indices),
             "action_delta_indices": list(self._action_delta_indices),
             "language_delta_indices": list(self._language_delta_indices),
-            "video_history_source": "caller_supplied_exact_simulator_control_steps",
+            "video_history_source": "current_policy_query_observation_only",
             "action_chunk_rows": self.action_chunk_rows,
             "last_inference_evidence": (
                 self.last_inference_evidence()

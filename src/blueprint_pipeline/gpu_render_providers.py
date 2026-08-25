@@ -1878,7 +1878,14 @@ class VastRenderProvider(GpuRenderProvider):
         from .vast_provider_adapter import (
             VAST_API_BASE, _create_payload, _search_payload,
         )
-        search_payload = _search_payload(limit=100, max_hourly_rate=spec.max_hourly_rate_usd)
+        search_payload = _search_payload(
+            limit=100,
+            max_hourly_rate=spec.max_hourly_rate_usd,
+            excluded_machine_ids=spec.excluded_machine_ids,
+            min_gpu_ram_mb=spec.min_gpu_ram_mb,
+            max_compute_cap=vcc.resolve_max_compute_cap(),
+            required_provider_disk_gb=spec.container_disk_gb,
+        )
         launch_mode = str(spec.vast_launch_mode or "").strip().lower()
         if launch_mode not in VAST_RENDER_LAUNCH_MODES:
             raise ValueError(f"vast_render_launch_mode_unsupported:{launch_mode}")
@@ -1973,10 +1980,36 @@ class VastRenderProvider(GpuRenderProvider):
         require_avx = req.get("require_avx") is True
         require_direct_port = req.get("require_direct_port") is True
         preferred_gpu_keywords = _string_list(req.get("preferred_gpu_keywords"))
-        search_payload = _mapping(req.get("search_payload")) or _search_payload(
+        selection_overrides = vcc.capacity_selection_overrides(req)
+        min_compute_cap = int(selection_overrides["min_compute_cap"])
+        max_compute_cap = int(selection_overrides["max_compute_cap"])
+        minimum_driver_version = str(req.get("minimum_driver_version") or "").strip()
+        disk_gb = _positive_int(req.get("container_disk_gb")) or _positive_int(
+            req.get("disk")
+        ) or 0
+        required_provider_disk_gb = (
+            _positive_int(req.get("required_provider_disk_gb")) or disk_gb
+        )
+        allowed_machine_ids = _string_list(req.get("allowed_machine_ids"))
+        excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
+        required_search_payload = _search_payload(
             limit=100,
             max_hourly_rate=max_rate,
+            allowed_machine_ids=allowed_machine_ids,
+            excluded_machine_ids=excluded_machine_ids,
+            minimum_driver_version=minimum_driver_version,
+            min_gpu_ram_mb=min_ram,
+            min_compute_cap=min_compute_cap,
+            max_compute_cap=max_compute_cap,
+            required_provider_disk_gb=required_provider_disk_gb,
         )
+        # Preserve caller-specific provider filters without letting a stale
+        # payload compiled before effective RAM/driver/disk policy weaken the
+        # bounded-page constraints.
+        search_payload = {
+            **_mapping(req.get("search_payload")),
+            **required_search_payload,
+        }
         if require_avx:
             # Ask Vast to narrow the catalog, then independently enforce the
             # capability on the returned offers below. The client-side check is
@@ -2027,11 +2060,15 @@ class VastRenderProvider(GpuRenderProvider):
             "min_reliability": min_reliability,
             "require_direct_port": require_direct_port,
             "preferred_gpu_keywords": preferred_gpu_keywords,
-            **vcc.capacity_selection_overrides(req),
+            "minimum_driver_version": minimum_driver_version,
+            "disk_gb": disk_gb,
+            "required_provider_disk_gb": required_provider_disk_gb,
+            **selection_overrides,
         }
-        excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
         if excluded_machine_ids:
             selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
+        if allowed_machine_ids:
+            selection_kwargs["allowed_machine_ids"] = allowed_machine_ids
         allowed_geolocation_country_codes = _string_list(
             req.get("allowed_geolocation_country_codes")
         )
@@ -2063,20 +2100,81 @@ class VastRenderProvider(GpuRenderProvider):
                 float(row.get("hourly_rate_usd") or math.inf),
             )
         )
+        hard_ttl_seconds = _positive_int(req.get("hard_ttl_seconds"))
+        if hard_ttl_seconds is None:
+            max_live_minutes = _positive_int(req.get("max_live_minutes"))
+            hard_ttl_seconds = max_live_minutes * 60 if max_live_minutes else None
+        hard_cap_usd = _positive_float(req.get("hard_cap_usd"))
+        budget_requested = hard_ttl_seconds is not None or hard_cap_usd is not None
+        blockers: list[str] = []
+        if budget_requested and (hard_ttl_seconds is None or hard_cap_usd is None):
+            blockers.append("vast_capacity_budget_binding_incomplete")
+        retry_cap = req.get("retry_cap")
+        if retry_cap is not None and retry_cap != 0:
+            blockers.append("vast_capacity_retry_cap_must_be_zero")
+        if hard_ttl_seconds is not None:
+            for row in viable:
+                row["projected_full_ttl_cost_usd"] = (
+                    float(row["hourly_rate_usd"]) * hard_ttl_seconds / 3600.0
+                )
+            if selected:
+                selected = dict(selected)
+                selected["projected_full_ttl_cost_usd"] = (
+                    float(selected["hourly_rate_usd"])
+                    * hard_ttl_seconds
+                    / 3600.0
+                )
+        if hard_cap_usd is not None and hard_ttl_seconds is not None:
+            viable = [
+                row
+                for row in viable
+                if float(row.get("projected_full_ttl_cost_usd") or math.inf)
+                <= hard_cap_usd
+            ]
+            if selected and float(
+                selected.get("projected_full_ttl_cost_usd") or math.inf
+            ) > hard_cap_usd:
+                selected = None
+                blockers.append("vast_capacity_full_ttl_exceeds_hard_cap")
+        global_inventory = None
+        if req.get("require_global_inventory_zero") is True:
+            global_inventory = self.billable_inventory(name_prefix="")
+            if (
+                global_inventory.get("api_confirmed") is not True
+                or global_inventory.get("live_resource_count") != 0
+            ):
+                blockers.append("vast_capacity_global_inventory_not_zero")
+        selected_id = str(_mapping(selected).get("ask_contract_id") or "")
+        viable.sort(
+            key=lambda row: (
+                str(row.get("ask_contract_id") or "") != selected_id,
+                float(row.get("hourly_rate_usd") or math.inf),
+            )
+        )
+        if not selected:
+            blockers.append("vast_offer_capacity_unavailable")
+        blockers = sorted(set(blockers))
         return {
-            "status": "available" if selected else "blocked",
+            "status": "available" if selected and not blockers else "blocked",
             "provider": self.name,
             "http": status,
-            "blockers": [] if selected else ["vast_offer_capacity_unavailable"],
+            "blockers": blockers,
             "offer_count": len(offers),
             "viable_gpu_types": viable,
             "selected_offer": viable[0] if viable else None,
             "selection_policy": {
                 **vcc.capacity_selection_policy(req, selection_kwargs),
+                "minimum_driver_version": minimum_driver_version or None,
+                "disk_gb": disk_gb,
+                "required_provider_disk_gb": required_provider_disk_gb,
+                "hard_ttl_seconds": hard_ttl_seconds,
+                "hard_cap_usd": hard_cap_usd,
+                "retry_cap": retry_cap,
                 "allowed_geolocation_country_codes": sorted(
                     allowed_geolocation_country_codes
                 ),
             },
+            "global_billable_inventory": global_inventory,
             "reservation_proven": False,
             "capacity_confidence": "advisory" if selected else "unavailable",
             "authoritative_capacity_source": "provider_create_response",
@@ -2120,10 +2218,13 @@ class VastRenderProvider(GpuRenderProvider):
                 "allocation_created": False, "spend_occurred": False,
             }
         from .vast_provider_adapter import (
-            _api_json, _offer_id, _offers_from_response, _select_offer,
+            _api_json,
+            _offer_id,
+            _offers_from_response,
+            _search_payload,
+            _select_offer,
         )
         attempts: list[dict] = []
-        search_payload = request.get("search_payload") or {}
         max_rate = float(request.get("max_hourly_rate_usd") or 2.0)
         min_ram = int(request.get("min_gpu_ram_mb") or 0)
         min_reliability = _positive_float(request.get("min_reliability")) or 0.0
@@ -2142,9 +2243,34 @@ class VastRenderProvider(GpuRenderProvider):
         excluded_machine_ids = _string_list(
             request.get("excluded_machine_ids")
         )
+        allowed_machine_ids = _string_list(request.get("allowed_machine_ids"))
         allowed_geolocation_country_codes = _string_list(
             request.get("allowed_geolocation_country_codes")
         )
+        selection_overrides = vcc.capacity_selection_overrides(request)
+        minimum_driver_version = str(
+            request.get("minimum_driver_version") or ""
+        ).strip()
+        disk_gb = _positive_int(request.get("container_disk_gb")) or _positive_int(
+            request.get("disk")
+        ) or 0
+        required_provider_disk_gb = (
+            _positive_int(request.get("required_provider_disk_gb")) or disk_gb
+        )
+        search_payload = {
+            **_mapping(request.get("search_payload")),
+            **_search_payload(
+                limit=100,
+                max_hourly_rate=max_rate,
+                allowed_machine_ids=allowed_machine_ids,
+                excluded_machine_ids=excluded_machine_ids,
+                minimum_driver_version=minimum_driver_version,
+                min_gpu_ram_mb=min_ram,
+                min_compute_cap=int(selection_overrides["min_compute_cap"]),
+                max_compute_cap=int(selection_overrides["max_compute_cap"]),
+                required_provider_disk_gb=required_provider_disk_gb,
+            ),
+        }
         if require_avx:
             search_payload = {**search_payload, "has_avx": {"eq": True}}
         try:
@@ -2189,9 +2315,15 @@ class VastRenderProvider(GpuRenderProvider):
                 "min_reliability": min_reliability,
                 "require_direct_port": require_direct_port,
                 "preferred_gpu_keywords": preferred_gpu_keywords,
+                "minimum_driver_version": minimum_driver_version,
+                "disk_gb": disk_gb,
+                "required_provider_disk_gb": required_provider_disk_gb,
+                **selection_overrides,
             }
             if excluded_machine_ids:
                 selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
+            if allowed_machine_ids:
+                selection_kwargs["allowed_machine_ids"] = allowed_machine_ids
             if allowed_geolocation_country_codes:
                 selection_kwargs["allowed_geolocation_country_codes"] = (
                     allowed_geolocation_country_codes
