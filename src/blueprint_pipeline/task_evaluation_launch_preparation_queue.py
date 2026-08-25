@@ -1,0 +1,299 @@
+"""Immutable no-spend queue for customer Task Evaluation preparation requests."""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_launch_preparation_contract import (
+    TaskEvaluationLaunchPreparationContractError,
+    launch_preparation_request_digest,
+    validate_launch_preparation_request,
+)
+
+
+ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
+IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_preparation_identity.v1"
+INTAKE_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_preparation_intake_receipt.v1"
+QUEUE_STATES = ("pending", "processing", "completed", "blocked")
+
+
+class TaskEvaluationLaunchPreparationQueueError(ValueError):
+    """The immutable preparation request could not be staged safely."""
+
+
+def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode()
+
+
+def _ensure_queue_root(queue_root: str | Path) -> Path:
+    root = Path(queue_root).expanduser()
+    if root.is_symlink():
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_root_unsafe"
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        resolved = root.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as exc:
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_root_unavailable"
+        ) from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_root_unsafe"
+        )
+    for state in QUEUE_STATES:
+        child = resolved / state
+        if child.is_symlink():
+            raise TaskEvaluationLaunchPreparationQueueError(
+                "launch_preparation_queue_state_unsafe"
+            )
+        child.mkdir(mode=0o750, exist_ok=True)
+    identities = resolved / "identities"
+    if identities.is_symlink():
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_identity_root_unsafe"
+        )
+    identities.mkdir(mode=0o750, exist_ok=True)
+    return resolved
+
+
+def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+    payload = _canonical_bytes(value)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o440,
+        )
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short immutable preparation queue write")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o440)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if path.exists() and not path.is_symlink():
+            path.unlink(missing_ok=True)
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_write_failed"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def stage_launch_preparation_request(
+    *,
+    value: Mapping[str, Any],
+    queue_root: str | Path,
+    submitted_by: str,
+) -> dict[str, Any]:
+    """Validate and immutably queue one no-spend preparation request."""
+
+    try:
+        request = validate_launch_preparation_request(value)
+    except TaskEvaluationLaunchPreparationContractError:
+        raise
+    preparation_id = str(request["preparation_id"])
+    request_digest = launch_preparation_request_digest(request)
+    root = _ensure_queue_root(queue_root)
+    identity_path = root / "identities" / f"{preparation_id}.json"
+    identity: dict[str, Any] = {
+        "schema_version": IDENTITY_SCHEMA_VERSION,
+        "preparation_id": preparation_id,
+        "request_digest": request_digest,
+        "identity_digest": "",
+    }
+    identity["identity_digest"] = canonical_digest(
+        identity, digest_field="identity_digest"
+    )
+    try:
+        _write_exclusive(identity_path, identity)
+    except FileExistsError:
+        try:
+            existing_identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationLaunchPreparationQueueError(
+                "launch_preparation_queue_identity_invalid"
+            ) from exc
+        if (
+            identity_path.is_symlink()
+            or not isinstance(existing_identity, Mapping)
+            or existing_identity.get("schema_version") != IDENTITY_SCHEMA_VERSION
+            or existing_identity.get("identity_digest")
+            != canonical_digest(existing_identity, digest_field="identity_digest")
+            or existing_identity.get("preparation_id") != preparation_id
+        ):
+            raise TaskEvaluationLaunchPreparationQueueError(
+                "launch_preparation_queue_identity_invalid"
+            )
+        if existing_identity.get("request_digest") != request_digest:
+            raise TaskEvaluationLaunchPreparationQueueError(
+                "launch_preparation_id_immutable_conflict"
+            )
+    matches = [
+        path
+        for state in QUEUE_STATES
+        for path in (root / state).glob(f"{preparation_id}-*.json")
+    ]
+    if matches:
+        exact_name = f"{preparation_id}-{request_digest.removeprefix('sha256:')}.json"
+        exact = [path for path in matches if path.name == exact_name]
+        if len(exact) == 1 and len(matches) == 1:
+            return _intake_receipt(
+                request=request,
+                request_digest=request_digest,
+                queue_path=exact[0],
+                already_exists=True,
+            )
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_identity_ambiguous"
+        )
+    envelope: dict[str, Any] = {
+        "schema_version": ENVELOPE_SCHEMA_VERSION,
+        "request_digest": request_digest,
+        "request": request,
+        "submitted_by": submitted_by,
+        "submitted_at_iso": datetime.now(timezone.utc).isoformat(),
+        "provider_mutation_performed_inside_intake": False,
+        "catalog_mutation_performed_inside_intake": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    destination = (
+        root
+        / "pending"
+        / f"{preparation_id}-{request_digest.removeprefix('sha256:')}.json"
+    )
+    try:
+        _write_exclusive(destination, envelope)
+    except FileExistsError:
+        return _intake_receipt(
+            request=request,
+            request_digest=request_digest,
+            queue_path=destination,
+            already_exists=True,
+        )
+    return _intake_receipt(
+        request=request,
+        request_digest=request_digest,
+        queue_path=destination,
+        already_exists=False,
+    )
+
+
+def _intake_receipt(
+    *,
+    request: Mapping[str, Any],
+    request_digest: str,
+    queue_path: Path,
+    already_exists: bool,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "schema_version": INTAKE_RECEIPT_SCHEMA_VERSION,
+        "status": "queued_for_no_spend_preparation",
+        "accepted": True,
+        "already_exists": already_exists,
+        "preparation_id": request["preparation_id"],
+        "run_id": request["run_id"],
+        "team_namespace": request["team_namespace"],
+        "request_digest": request_digest,
+        "queue_path": str(queue_path),
+        "provider_mutation_performed_inside_http_request": False,
+        "catalog_mutation_performed_inside_http_request": False,
+        "paid_execution_requested": False,
+        "canonical_allocator_required_for_later_execution": True,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
+def launch_preparation_status(
+    *, preparation_id: str, queue_root: str | Path
+) -> dict[str, Any]:
+    """Return the one immutable queue state without exposing request bytes."""
+
+    root = _ensure_queue_root(queue_root)
+    matches = [
+        (state, path)
+        for state in QUEUE_STATES
+        for path in (root / state).glob(f"{preparation_id}-*.json")
+    ]
+    if not matches:
+        return {
+            "schema_version": "task_evaluation_launch_preparation_status.v1",
+            "status": "not_found",
+            "preparation_id": preparation_id,
+            "provider_mutation_performed_by_status_read": False,
+        }
+    if len(matches) != 1:
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_identity_ambiguous"
+        )
+    state, path = matches[0]
+    try:
+        envelope = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_envelope_invalid"
+        ) from exc
+    if (
+        path.is_symlink()
+        or not isinstance(envelope, Mapping)
+        or envelope.get("schema_version") != ENVELOPE_SCHEMA_VERSION
+        or envelope.get("envelope_digest")
+        != canonical_digest(envelope, digest_field="envelope_digest")
+    ):
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_queue_envelope_invalid"
+        )
+    return {
+        "schema_version": "task_evaluation_launch_preparation_status.v1",
+        "status": state,
+        "preparation_id": preparation_id,
+        "run_id": envelope["request"]["run_id"],
+        "team_namespace": envelope["request"]["team_namespace"],
+        "request_digest": envelope["request_digest"],
+        "provider_mutation_performed_by_status_read": False,
+    }
+
+
+__all__ = [
+    "ENVELOPE_SCHEMA_VERSION",
+    "IDENTITY_SCHEMA_VERSION",
+    "INTAKE_RECEIPT_SCHEMA_VERSION",
+    "TaskEvaluationLaunchPreparationQueueError",
+    "launch_preparation_status",
+    "stage_launch_preparation_request",
+]
