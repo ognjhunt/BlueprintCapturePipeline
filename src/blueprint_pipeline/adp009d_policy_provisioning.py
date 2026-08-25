@@ -173,13 +173,20 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
         # site-packages on sys.path, so an in-environment install can never
         # win (the 20260825T134736Z run observed msgpack 1.2.1/pyzmq 27.1.0
         # over freshly installed pins and correctly refused).  --no-deps keeps
-        # numpy out: the previous in-environment install dragged numpy 2.5.2
-        # into Isaac's interpreter as a side effect.  The wire client prepends
-        # this sibling directory to sys.path before importing the codec.
+        # transitive resolution out of Isaac's interpreter; numpy is pinned
+        # into the staged directory explicitly because the bare kit
+        # interpreter has no numpy at all outside Isaac's bootstrapped
+        # extension path (the 20260825T144455Z self-check failed on
+        # ``import numpy`` once the old in-environment side-effect install
+        # stopped providing it).  In-episode, Isaac's own already-imported
+        # numpy wins via sys.modules; the staged copy serves only the bare
+        # self-check.  The wire client prepends this sibling directory to
+        # sys.path before importing the codec.
         return [
             f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
             '--no-deps --target "$RUNTIME_DIR/groot_wire_deps" '
-            '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8"',
+            '"pyzmq==27.0.1" "msgpack==1.1.0" "msgpack-numpy==0.4.8" '
+            '"numpy==2.5.2"',
             f'"{ISAAC_PYTHON_EXECUTABLE}" '
             '"$RUNTIME_DIR/groot_n17_wire_client.py"',
         ]
