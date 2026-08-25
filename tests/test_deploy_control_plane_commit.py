@@ -272,7 +272,7 @@ def test_restart_reloads_drop_ins_before_restarting_the_intake(monkeypatch) -> N
     ]
 
 
-def test_deploy_installs_exact_dispatcher_unit_bytes_atomically(tmp_path: Path) -> None:
+def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> None:
     release = tmp_path / "release"
     unit_dir = release / "deploy/systemd"
     unit_dir.mkdir(parents=True)
@@ -282,6 +282,18 @@ def test_deploy_installs_exact_dispatcher_unit_bytes_atomically(tmp_path: Path) 
     path_unit.write_text(
         "[Path]\nPathChanged=/queue/pending\n"
         "PathExistsGlob=/queue/pending/*.json\n",
+        encoding="utf-8",
+    )
+    preparation_service = (
+        unit_dir / "blueprint-task-evaluation-launch-preparation.service"
+    )
+    preparation_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-prepare\n", encoding="utf-8"
+    )
+    preparation_path = unit_dir / "blueprint-task-evaluation-launch-preparation.path"
+    preparation_path.write_text(
+        "[Path]\nPathChanged=/preparations/pending\n"
+        "PathExistsGlob=/preparations/pending/*.json\n",
         encoding="utf-8",
     )
     systemd = tmp_path / "systemd"
@@ -300,7 +312,7 @@ def test_deploy_installs_exact_dispatcher_unit_bytes_atomically(tmp_path: Path) 
     )
 
     expected = []
-    for source in (service, path_unit):
+    for source in (service, path_unit, preparation_service, preparation_path):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
         assert destination.stat().st_mode & 0o777 == 0o644
@@ -317,7 +329,7 @@ def test_deploy_installs_exact_dispatcher_unit_bytes_atomically(tmp_path: Path) 
     assert receipts == expected
 
 
-def test_the_deployed_unit_set_is_the_dispatcher_service_and_path_pair() -> None:
+def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     """Deploying one half of the pair is how the watcher went stale.
 
     PR #1057 changed how the queue wakes the dispatcher (``PathChanged=``),
@@ -328,6 +340,11 @@ def test_the_deployed_unit_set_is_the_dispatcher_service_and_path_pair() -> None
     assert deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS == (
         "blueprint-task-evaluation-launch-dispatcher.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
+        "blueprint-task-evaluation-launch-preparation.service",
+        "blueprint-task-evaluation-launch-preparation.path",
+    )
+    assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
+        "blueprint-task-evaluation-launch-preparation.path",
     )
 
 
@@ -504,6 +521,63 @@ def test_fresh_path_unit_stays_disabled_until_explicit_arm(monkeypatch) -> None:
     ]
     assert restored[0]["before"] == {"enabled": "disabled", "state": "inactive"}
     assert restored[0]["operator_freeze_preserved"] is True
+
+
+def test_no_spend_preparation_watcher_arms_without_paid_dispatcher(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    enabled: dict[str, str] = {
+        "blueprint-task-evaluation-launch-dispatcher.path": "disabled",
+        "blueprint-task-evaluation-launch-preparation.path": "enabled",
+    }
+    active: dict[str, str] = {
+        "blueprint-task-evaluation-launch-dispatcher.path": "inactive",
+        "blueprint-task-evaluation-launch-preparation.path": "active",
+    }
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        unit = argv[-1]
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = enabled[unit] + "\n"
+        elif argv[:2] == ["systemctl", "is-active"]:
+            stdout = active[unit] + "\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    paid = "blueprint-task-evaluation-launch-dispatcher.path"
+    preparation = "blueprint-task-evaluation-launch-preparation.path"
+    restored = deploy._restore_installed_path_units(
+        [{"unit": paid}, {"unit": preparation}],
+        before={},
+        arm_path_units=False,
+        always_arm_units=(preparation,),
+    )
+
+    assert calls[:2] == [
+        ("systemctl", "disable", paid),
+        ("systemctl", "stop", paid),
+    ]
+    assert calls[4:6] == [
+        ("systemctl", "enable", preparation),
+        ("systemctl", "restart", preparation),
+    ]
+    assert restored == [
+        {
+            "unit": paid,
+            "before": {"enabled": "disabled", "state": "inactive"},
+            "requested_intent": "preserve",
+            "after": {"enabled": "disabled", "state": "inactive"},
+            "operator_freeze_preserved": True,
+        },
+        {
+            "unit": preparation,
+            "before": {"enabled": "disabled", "state": "inactive"},
+            "requested_intent": "arm_no_spend",
+            "after": {"enabled": "enabled", "state": "active"},
+            "operator_freeze_preserved": False,
+        },
+    ]
 
 
 def test_active_watcher_is_quiesced_before_release_surfaces_move(monkeypatch) -> None:

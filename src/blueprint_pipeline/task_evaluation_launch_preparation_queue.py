@@ -21,7 +21,7 @@ from .task_evaluation_launch_preparation_contract import (
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_preparation_identity.v1"
 INTAKE_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_preparation_intake_receipt.v1"
-QUEUE_STATES = ("pending", "processing", "completed", "blocked")
+QUEUE_STATES = ("pending", "processing", "materialized", "completed", "blocked")
 
 
 class TaskEvaluationLaunchPreparationQueueError(ValueError):
@@ -35,7 +35,7 @@ def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
     ).encode()
 
 
-def _ensure_queue_root(queue_root: str | Path) -> Path:
+def ensure_launch_preparation_queue_root(queue_root: str | Path) -> Path:
     root = Path(queue_root).expanduser()
     if root.is_symlink():
         raise TaskEvaluationLaunchPreparationQueueError(
@@ -69,7 +69,9 @@ def _ensure_queue_root(queue_root: str | Path) -> Path:
     return resolved
 
 
-def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+def write_launch_preparation_record_exclusive(
+    path: Path, value: Mapping[str, Any]
+) -> None:
     payload = _canonical_bytes(value)
     descriptor = -1
     try:
@@ -122,7 +124,7 @@ def stage_launch_preparation_request(
         raise
     preparation_id = str(request["preparation_id"])
     request_digest = launch_preparation_request_digest(request)
-    root = _ensure_queue_root(queue_root)
+    root = ensure_launch_preparation_queue_root(queue_root)
     identity_path = root / "identities" / f"{preparation_id}.json"
     identity: dict[str, Any] = {
         "schema_version": IDENTITY_SCHEMA_VERSION,
@@ -134,7 +136,7 @@ def stage_launch_preparation_request(
         identity, digest_field="identity_digest"
     )
     try:
-        _write_exclusive(identity_path, identity)
+        write_launch_preparation_record_exclusive(identity_path, identity)
     except FileExistsError:
         try:
             existing_identity = json.loads(identity_path.read_text(encoding="utf-8"))
@@ -194,7 +196,7 @@ def stage_launch_preparation_request(
         / f"{preparation_id}-{request_digest.removeprefix('sha256:')}.json"
     )
     try:
-        _write_exclusive(destination, envelope)
+        write_launch_preparation_record_exclusive(destination, envelope)
     except FileExistsError:
         return _intake_receipt(
             request=request,
@@ -244,7 +246,7 @@ def launch_preparation_status(
 ) -> dict[str, Any]:
     """Return the one immutable queue state without exposing request bytes."""
 
-    root = _ensure_queue_root(queue_root)
+    root = ensure_launch_preparation_queue_root(queue_root)
     matches = [
         (state, path)
         for state in QUEUE_STATES
@@ -278,7 +280,7 @@ def launch_preparation_status(
         raise TaskEvaluationLaunchPreparationQueueError(
             "launch_preparation_queue_envelope_invalid"
         )
-    return {
+    status: dict[str, Any] = {
         "schema_version": "task_evaluation_launch_preparation_status.v1",
         "status": state,
         "preparation_id": preparation_id,
@@ -287,6 +289,56 @@ def launch_preparation_status(
         "request_digest": envelope["request_digest"],
         "provider_mutation_performed_by_status_read": False,
     }
+    result_path = root / "results" / path.name
+    conflict_paths = sorted(
+        (root / "results" / "conflicts").glob(f"{path.stem}-*.json")
+    ) if (root / "results" / "conflicts").is_dir() else []
+    if len(conflict_paths) > 1:
+        raise TaskEvaluationLaunchPreparationQueueError(
+            "launch_preparation_result_conflict_ambiguous"
+        )
+    if conflict_paths:
+        result_path = conflict_paths[0]
+    if result_path.exists():
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationLaunchPreparationQueueError(
+                "launch_preparation_result_invalid"
+            ) from exc
+        if (
+            result_path.is_symlink()
+            or not isinstance(result, Mapping)
+            or result.get("schema_version")
+            != "task_evaluation_launch_preparation_result.v1"
+            or result.get("result_digest")
+            != canonical_digest(result, digest_field="result_digest")
+            or result.get("preparation_id") != preparation_id
+        ):
+            raise TaskEvaluationLaunchPreparationQueueError(
+                "launch_preparation_result_invalid"
+            )
+        status.update(
+            {
+                "worker_status": result.get("status"),
+                "result_digest": result.get("result_digest"),
+                "reference_count": result.get("reference_count"),
+                "full_byte_service_account_readback_passed": result.get(
+                    "full_byte_service_account_readback_passed"
+                ),
+                "blockers": list(result.get("blockers") or []),
+                "provider_mutation_performed_by_worker": result.get(
+                    "provider_mutation_performed"
+                ),
+                "catalog_mutation_performed_by_worker": result.get(
+                    "catalog_mutation_performed"
+                ),
+                "paid_execution_requested": result.get(
+                    "paid_execution_requested"
+                ),
+            }
+        )
+    return status
 
 
 __all__ = [
@@ -294,6 +346,8 @@ __all__ = [
     "IDENTITY_SCHEMA_VERSION",
     "INTAKE_RECEIPT_SCHEMA_VERSION",
     "TaskEvaluationLaunchPreparationQueueError",
+    "ensure_launch_preparation_queue_root",
     "launch_preparation_status",
     "stage_launch_preparation_request",
+    "write_launch_preparation_record_exclusive",
 ]

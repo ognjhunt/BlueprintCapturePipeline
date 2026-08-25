@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch the durable Blueprint Task Evaluation preparation queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending/*.json
+Unit=blueprint-task-evaluation-launch-preparation.service
+
+[Install]
+WantedBy=multi-user.target
+

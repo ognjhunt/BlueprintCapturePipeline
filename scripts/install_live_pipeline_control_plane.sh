@@ -190,6 +190,12 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-dispatcher.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-dispatcher.path"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.path"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"
 run install -m 0644 \
@@ -383,6 +389,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
+  systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
@@ -393,6 +400,7 @@ else
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
+  echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
