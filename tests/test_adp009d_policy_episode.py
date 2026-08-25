@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
-from blueprint_pipeline.adp009d_droid_action_execution import GripperConvention
+from blueprint_pipeline.adp009d_droid_action_execution import (
+    ACTION_SPACE_JOINT_POSITION,
+    ACTION_SPACE_JOINT_VELOCITY,
+    BLOCKER_GRIPPER_BOUNDS,
+    BLOCKER_JOINT_POSITION_BOUNDS,
+    BLOCKER_JOINT_VELOCITY_BOUNDS,
+    DroidActionExecutionError,
+    GripperConvention,
+)
 from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
     DROID_WRIST_VIEW,
+)
+from blueprint_pipeline.adp009d_groot_worker_identity import (
+    expected_checkpoint_content_binding,
 )
 from blueprint_pipeline.adp009d_policy_episode import (
     BLOCKER_CLIENT_RETURNED_NOTHING,
@@ -19,6 +32,20 @@ from blueprint_pipeline.adp009d_task_scoring import (
     CAN_START_POSITION_M,
     GRIPPER_FULL_OPENING_M,
     SUPPORT_PLANE_Z_M,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+    CHECKPOINT_REVISION,
+    EMBODIMENT_TAG,
+    GROOT_SOURCE_REVISION,
+    LANGUAGE_KEY,
+    MODEL_ID,
+    GrootN17DroidPolicyClient,
+    GrootN17DroidPolicySpec,
+)
+from blueprint_pipeline.openpi_droid_policy_runtime import (
+    OpenPIDroidPolicySpec,
+    OpenPIWebsocketDroidPolicyClient,
 )
 
 _MEASURED = GripperConvention(
@@ -125,93 +152,6 @@ def _run(environment=None, policy=None, **overrides):
     return run_policy_episode(**kwargs)
 
 
-@pytest.mark.parametrize(
-    ("candidate_id", "failure_kind"),
-    [
-        ("pi05_droid", "response_envelope_reached_numeric_planner"),
-        ("groot_n17_droid", "policy_client_failed_after_observation"),
-    ],
-)
-def test_post_observation_failures_seal_lossless_manifest_and_review_video(
-    tmp_path, candidate_id: str, failure_kind: str
-) -> None:
-    from pathlib import Path
-
-    from blueprint_pipeline.native_task_arena_policy_worker import (
-        _seal_post_observation_failure_media,
-        _typed_media_gap_for_blocked_result,
-    )
-
-    class _FailingPolicy:
-        def infer(self, observation):
-            assert observation["prompt"]
-            if failure_kind == "response_envelope_reached_numeric_planner":
-                # Exact shape returned by OpenPI before #1031 normalized its
-                # transport envelope at the policy-client boundary.
-                return {
-                    "actions": np.zeros((15, 8), dtype=float),
-                    "policy_timing": {"infer_ms": 10.0},
-                    "server_timing": {"infer_ms": 11.0},
-                }
-            raise RuntimeError("policy_client_failed_after_observation")
-
-    progress: dict = {}
-
-    def retain_progress(value) -> None:
-        progress.clear()
-        progress.update(value)
-
-    with pytest.raises((RuntimeError, TypeError, ValueError)):
-        _run(
-            policy=_FailingPolicy(),
-            candidate_id=candidate_id,
-            media_output_dir=tmp_path / "episodes",
-            episode_id=f"{candidate_id}-failed-episode",
-            media_progress_callback=retain_progress,
-        )
-
-    result = {
-        "status": "blocked",
-        "phase_reached": "policy_client_verified",
-        "blockers": [failure_kind],
-    }
-    _seal_post_observation_failure_media(
-        output_root=tmp_path,
-        result=result,
-        media_progress=progress,
-    )
-    assert (
-        _typed_media_gap_for_blocked_result(
-            output_root=tmp_path, result=result
-        )
-        is None
-    )
-
-    visual = result["visual_evidence"]
-    assert visual["status"] == "complete_failure_evidence"
-    assert visual["candidate_exact_policy_input_frame_count"] == 1
-    assert visual["terminal_observation_present"] is False
-    assert visual["terminal_observation_invented"] is False
-    assert visual["frame_manifest_digest"].startswith("sha256:")
-    assert set(visual["videos"]) == {"exact_policy_input"}
-    index = visual["visual_index"]
-    assert index["visual_index_digest"].startswith("sha256:")
-    assert (tmp_path / "episodes" / index["relative_path"]).is_file()
-    assert any(
-        row["role"] == "policy_input_frame" for row in result["media_artifacts"]
-    )
-    assert any(
-        row["role"] == "failed_episode_review_video"
-        for row in result["media_artifacts"]
-    )
-    manifest_path = next(
-        Path(tmp_path / "episodes" / row["relative_path"])
-        for row in result["media_artifacts"]
-        if row["role"] == "failed_episode_observation_frame_manifest"
-    )
-    assert manifest_path.is_file()
-
-
 def _articulated_task_spec(*, maximum_action_steps: int = 32) -> dict:
     return {
         "schema_version": "adp_task_spec.v1",
@@ -292,6 +232,13 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     # 4 queries x 8 executed rows, plus the settle window.
     assert receipt["environment_steps"] == 4 * 8 + 6
     assert len(environment.steps) == receipt["environment_steps"]
+    assert len(receipt["commanded_actions"]) == 4 * 8
+    first_command = receipt["commanded_actions"][0]
+    assert first_command["observed_before_rad"] == [0.0] * 7
+    assert first_command["observed_after_rad"] == [0.05] + [0.0] * 6
+    assert first_command["query_index"] == 0
+    assert first_command["action_index_within_query"] == 0
+    assert first_command["step_index"] == 1
 
     # The policy actually saw this candidate's observation format.
     assert len(policy.observations) == 4
@@ -397,7 +344,7 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         "groot_decoded_absolute_joint_position_plus_absolute_gripper"
     )
     assert receipt["queries"][0]["position_adapter"] == (
-        "decoded_absolute_joint_position_direct_with_limit_clamp"
+        "decoded_absolute_joint_position_direct_within_limits"
     )
     assert receipt["queries"][0]["policy_inference_evidence"] == {
         "native_action_chunk_shape": [40, 17],
@@ -407,6 +354,238 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         "joint_velocity_command_max_abs_rad_s"
     ] == 0.0
     assert "observation/eef_9d" in policy.observations[0]
+
+
+class _ForcedGrootVendorClient:
+    def __init__(self, response) -> None:
+        self.response = response
+
+    def ping(self) -> bool:
+        return True
+
+    def get_modality_config(self) -> dict:
+        return {
+            "video": {
+                "modality_keys": ["exterior_image_1_left", "wrist_image_left"],
+                "delta_indices": [-15, 0],
+            },
+            "state": {
+                "modality_keys": ["eef_9d", "gripper_position", "joint_position"],
+                "delta_indices": [0],
+            },
+            "action": {
+                "modality_keys": ["eef_9d", "gripper_position", "joint_position"],
+                "delta_indices": list(range(40)),
+            },
+            "language": {
+                "modality_keys": [LANGUAGE_KEY],
+                "delta_indices": [0],
+            },
+        }
+
+    def get_action(self, request):
+        del request
+        return self.response
+
+
+def _forced_groot_policy(response) -> GrootN17DroidPolicyClient:
+    receipt = {
+        "status": "verified",
+        "model_id": MODEL_ID,
+        "embodiment_tag": EMBODIMENT_TAG,
+        "groot_source_revision": GROOT_SOURCE_REVISION,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "checkpoint_files_sha256": "1" * 64,
+        "checkpoint_content_manifest_digest": expected_checkpoint_content_binding()[
+            "file_manifest_digest"
+        ],
+        "environment_lock_sha256": "2" * 64,
+    }
+    vendor = _ForcedGrootVendorClient(response)
+    return GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=receipt,
+        host="127.0.0.1",
+        client_factory=lambda **kwargs: vendor,
+    )
+
+
+def _forced_openpi_policy(response) -> OpenPIWebsocketDroidPolicyClient:
+    spec = OpenPIDroidPolicySpec(
+        policy_id="pi05_droid_jointpos_polaris",
+        config_name="pi05_droid_jointpos_polaris",
+        checkpoint_uri=(
+            "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris"
+        ),
+        checkpoint_object_manifest_sha256="1" * 64,
+        checkpoint_generation_manifest_sha256="2" * 64,
+        checkpoint_inventory_sha256="3" * 64,
+        checkpoint_object_count=1,
+        checkpoint_size_bytes=1,
+        action_space="joint_position",
+        action_chunk_rows=10,
+    )
+
+    class _Vendor:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def get_server_metadata(self):
+            return {
+                **spec.server_metadata(),
+                "local_checkpoint_verified": True,
+                "local_checkpoint_verification_sha256": "4" * 64,
+                "local_checkpoint_object_count": 1,
+                "local_checkpoint_size_bytes": 1,
+            }
+
+        def infer(self, observation):
+            del observation
+            return response
+
+    return OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=_Vendor,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error", "expected_phase", "shape_validated"),
+    [
+        (
+            "shape",
+            "groot_policy_action_shape_mismatch",
+            "policy_action_shape_refused",
+            False,
+        ),
+        (
+            "nonfinite",
+            "groot_policy_action_nonfinite",
+            "policy_action_finite_refused",
+            True,
+        ),
+    ],
+)
+def test_groot_refused_vendor_action_is_retained_before_episode_application(
+    case: str,
+    expected_error: str,
+    expected_phase: str,
+    shape_validated: bool,
+) -> None:
+    joints = np.zeros((1, 40 if case == "nonfinite" else 39, 7), dtype=float)
+    if case == "nonfinite":
+        joints[0, 0, 0] = np.nan
+    response = (
+        {
+            "joint_position": joints,
+            "gripper_position": np.zeros((1, 40, 1), dtype=float),
+            "eef_9d": np.zeros((1, 40, 9), dtype=float),
+        },
+        {"forced_case": case},
+    )
+    environment = _Environment()
+    progress: dict = {}
+
+    with pytest.raises(ValueError, match=expected_error):
+        _run(
+            environment=environment,
+            policy=_forced_groot_policy(response),
+            candidate_id="groot_n17_droid",
+            max_policy_queries=1,
+            settle_window_samples=1,
+            progress=progress,
+        )
+
+    assert progress["phase"] == expected_phase
+    assert progress["candidate_policy_queried"] is True
+    assert progress["candidate_action_returned"] is True
+    assert progress["candidate_action_shape_validated"] is shape_validated
+    assert progress["candidate_action_finite_validated"] is False
+    assert progress["candidate_action_validated"] is False
+    assert progress["candidate_action_applied"] is False
+    assert environment.steps == []
+    query = progress["candidate_policy_action_queries"][0]
+    retained = query["raw_vendor_action_response"]
+    assert query["raw_vendor_action_response_digest"] == canonical_digest(
+        {"raw_vendor_action_response": retained}
+    )
+    assert retained[1] == {"forced_case": case}
+    assert len(retained[0]["joint_position"][0]) == (40 if shape_validated else 39)
+    if case == "nonfinite":
+        assert retained[0]["joint_position"][0][0][0] == {
+            "nonfinite_float": "nan"
+        }
+    json_evidence = progress["policy_inference_evidence"]
+    assert json_evidence["raw_vendor_action_response"] == retained
+    assert canonical_digest(
+        {"raw_vendor_action_response": json_evidence["raw_vendor_action_response"]}
+    ) == json_evidence["raw_vendor_action_response_digest"]
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_error", "expected_phase", "shape_validated"),
+    [
+        (
+            np.asarray([[np.nan] + [0.0] * 7] + [[0.0] * 8] * 9),
+            "openpi_inference_response_not_object",
+            "policy_action_shape_refused",
+            False,
+        ),
+        (
+            {
+                "actions": np.asarray(
+                    [[np.nan] + [0.0] * 7] + [[0.0] * 8] * 9
+                ),
+                "policy_timing": {"infer_ms": 30.0},
+                "server_timing": {"infer_ms": 31.0},
+            },
+            "nonfinite",
+            "policy_action_finite_refused",
+            True,
+        ),
+    ],
+)
+def test_openpi_refused_vendor_action_is_retained_before_episode_application(
+    response,
+    expected_error: str,
+    expected_phase: str,
+    shape_validated: bool,
+) -> None:
+    environment = _Environment()
+    progress: dict = {}
+
+    with pytest.raises((ValueError, DroidActionExecutionError), match=expected_error):
+        _run(
+            environment=environment,
+            policy=_forced_openpi_policy(response),
+            candidate_id="pi05_droid",
+            max_policy_queries=1,
+            settle_window_samples=1,
+            progress=progress,
+        )
+
+    assert progress["phase"] == expected_phase
+    assert progress["candidate_policy_queried"] is True
+    assert progress["candidate_action_returned"] is True
+    assert progress["candidate_action_shape_validated"] is shape_validated
+    assert progress["candidate_action_finite_validated"] is False
+    assert progress["candidate_action_validated"] is False
+    assert progress["candidate_action_applied"] is False
+    assert environment.steps == []
+    query = progress["candidate_policy_action_queries"][0]
+    retained = query["raw_vendor_action_response"]
+    assert query["raw_vendor_action_response_digest"] == canonical_digest(
+        {"raw_vendor_action_response": retained}
+    )
+    assert query["action_payload_returned"] is True
+    if isinstance(response, dict):
+        assert retained["actions"][0][0] == {"nonfinite_float": "nan"}
+        assert retained["policy_timing"] == {"infer_ms": 30.0}
+        assert retained["server_timing"] == {"infer_ms": 31.0}
+    else:
+        assert retained[0][0] == {"nonfinite_float": "nan"}
 
 
 def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -> None:
@@ -472,6 +651,488 @@ def test_successful_episode_retains_exact_policy_inputs_and_review_video(
     assert pixels.shape == (224, 448, 3)
     assert np.array_equal(pixels[:, :224], pixels[:, 224:])
     assert (tmp_path / visual["video"]["relative_path"]).is_file()
+
+
+def test_failure_after_policy_response_preserves_progress_and_seals_media(
+    tmp_path,
+) -> None:
+    class _WireEnvelopePolicy(_Policy):
+        def infer(self, observation):
+            self.observations.append(observation)
+            return {"actions": np.zeros((10, 8), dtype=float)}
+
+    progress: dict = {}
+    updates: list[dict] = []
+    with pytest.raises(DroidActionExecutionError, match="shape_invalid:not_numeric"):
+        _run(
+            policy=_WireEnvelopePolicy(),
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="failed-after-response",
+            progress=progress,
+            progress_callback=lambda update: updates.append(dict(update)),
+        )
+
+    assert progress["first_observation_retained"] is True
+    assert progress["candidate_policy_queried"] is True
+    assert progress["candidate_action_returned"] is True
+    assert progress["candidate_action_shape_validated"] is False
+    assert progress["candidate_action_validated"] is False
+    assert progress["candidate_action_applied"] is False
+    raw = progress["candidate_policy_action_queries"][0]
+    assert raw["raw_action_chunk"]["actions"] == [[0.0] * 8] * 10
+    assert raw["raw_action_chunk_digest"].startswith("sha256:")
+    assert [update["phase"] for update in updates] == [
+        "first_observation",
+        "policy_query_started",
+        "policy_response_received",
+        "policy_action_shape_refused",
+    ]
+
+    visual, artifacts = progress["_failure_media_finalizer"](
+        failure_reason="TypeError:wire envelope was not normalized"
+    )
+    assert visual["status"] == "complete"
+    assert visual["episode_terminal_status"] == "failed_after_first_observation"
+    assert visual["human_review_available"] is True
+    assert visual["terminal_observation_present"] is False
+    assert visual["terminal_observation_invented"] is False
+    assert (
+        tmp_path / visual["videos"]["exact_policy_input"]["relative_path"]
+    ).is_file()
+    assert any(
+        row["role"] == "failed_episode_observation_frame_manifest"
+        for row in artifacts
+    )
+    assert any(
+        row["role"] == "failed_episode_review_video" for row in artifacts
+    )
+
+
+def test_first_episode_inference_uses_an_already_sealed_observation(tmp_path) -> None:
+    progress: dict = {}
+    phases: list[str] = []
+
+    class _OrderingPolicy(_Policy):
+        def infer(self, observation):
+            assert progress["first_observation_retained"] is True
+            assert progress["exact_policy_observation_retained"] is True
+            assert phases[-1] == "policy_query_started"
+            retained = progress["candidate_exact_policy_input_frames"]
+            assert len(retained) == 1
+            assert retained[0]["frame_manifest_digest"].startswith("sha256:")
+            assert (tmp_path / retained[0]["relative_path"]).is_file()
+            return super().infer(observation)
+
+    receipt = _run(
+        policy=_OrderingPolicy(),
+        max_policy_queries=1,
+        settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="sealed-before-first-inference",
+        progress=progress,
+        progress_callback=lambda update: phases.append(str(update["phase"])),
+    )
+
+    assert phases[:3] == [
+        "first_observation",
+        "policy_query_started",
+        "policy_response_received",
+    ]
+    assert receipt["candidate_policy_queried"] is True
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_failed_candidate_seals_all_retained_cameras_without_terminal_read(
+    tmp_path, candidate_id: str
+) -> None:
+    class _OneObservationEnvironment(_Environment):
+        def __init__(self):
+            super().__init__()
+            self.policy_input_reads = 0
+            self.evaluation_camera_reads = 0
+
+        def read_policy_inputs(self):
+            self.policy_input_reads += 1
+            if self.policy_input_reads > 1:
+                raise AssertionError("terminal_policy_input_read_forbidden")
+            return super().read_policy_inputs()
+
+        def read_evaluation_camera_inputs(self):
+            self.evaluation_camera_reads += 1
+            if self.evaluation_camera_reads > 1:
+                raise AssertionError("terminal_evaluation_camera_read_forbidden")
+            return {
+                "external": np.full((24, 32, 3), 40, dtype=np.uint8),
+                "wrist": np.full((24, 32, 3), 80, dtype=np.uint8),
+                "overview": np.full((24, 32, 3), 160, dtype=np.uint8),
+            }
+
+        def read_control_observation_metadata(self):
+            calibration = {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": [
+                    [20.0, 0.0, 16.0],
+                    [0.0, 20.0, 12.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                "world_from_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "resolution": [32, 24],
+                "near_m": 0.01,
+                "far_m": 10.0,
+            }
+            camera_ids = ("external", "wrist", "overview")
+            return {
+                "timestamp_ns": 100,
+                "simulation_time_s": 0.0,
+                "calibrations": {
+                    camera_id: calibration for camera_id in camera_ids
+                },
+                "source_devices": {camera_id: "cpu" for camera_id in camera_ids},
+                "synchronizations": {
+                    camera_id: {"host_bytes_ready": True, "method": "test"}
+                    for camera_id in camera_ids
+                },
+            }
+
+    class _FailAfterObservation:
+        def infer(self, observation):
+            assert observation["prompt"]
+            raise RuntimeError("policy_client_failed_after_observation")
+
+    environment = _OneObservationEnvironment()
+    progress: dict = {}
+    with pytest.raises(RuntimeError, match="policy_client_failed_after_observation"):
+        _run(
+            environment=environment,
+            policy=_FailAfterObservation(),
+            candidate_id=candidate_id,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id=f"{candidate_id}-post-observation-failure",
+            progress=progress,
+        )
+
+    assert environment.policy_input_reads == 1
+    assert environment.evaluation_camera_reads == 1
+    visual, artifacts = progress["_failure_media_finalizer"](
+        failure_reason="RuntimeError:policy_client_failed_after_observation"
+    )
+    assert environment.policy_input_reads == 1
+    assert environment.evaluation_camera_reads == 1
+    assert visual["status"] == "complete"
+    assert visual["terminal_observation_present"] is False
+    assert visual["terminal_observation_invented"] is False
+    assert set(visual["videos"]) == {"external", "wrist", "overview"}
+    assert visual["candidate_exact_policy_input_frame_count"] == 1
+    assert visual["multicamera_policy_input_observation_count"] == 1
+    assert len(
+        [row for row in artifacts if row["role"] == "policy_input_camera_frame"]
+    ) == 3
+    manifest_row = next(
+        row
+        for row in artifacts
+        if row["role"] == "failed_episode_observation_frame_manifest"
+    )
+    manifest = json.loads(
+        (tmp_path / manifest_row["relative_path"]).read_text(encoding="utf-8")
+    )
+    assert manifest["terminal_observation_present"] is False
+    assert manifest["terminal_observation_invented"] is False
+
+
+def test_failure_media_finalizer_reenters_after_partial_video_failure(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.episode_visual_evidence as media
+
+    class _MalformedPolicy(_Policy):
+        def infer(self, observation):
+            self.observations.append(observation)
+            return {"actions": np.zeros((10, 8), dtype=float)}
+
+    progress: dict = {}
+    with pytest.raises(DroidActionExecutionError, match="shape_invalid:not_numeric"):
+        _run(
+            policy=_MalformedPolicy(),
+            media_output_dir=tmp_path,
+            episode_id="failure-finalizer-reentry",
+            progress=progress,
+        )
+
+    original = media._encode_episode_video_unpublished
+
+    def _leave_partial_then_fail(*args, video_path, **kwargs):
+        del args, kwargs
+        video_path.write_bytes(b"partial-mp4")
+        raise RuntimeError("forced_failure_media_video_interrupt")
+
+    monkeypatch.setattr(
+        media, "_encode_episode_video_unpublished", _leave_partial_then_fail
+    )
+    incomplete, incomplete_artifacts = progress["_failure_media_finalizer"](
+        failure_reason="malformed response"
+    )
+    assert incomplete["status"] == "incomplete_after_first_observation"
+    assert incomplete["terminal_observation_present"] is False
+    assert incomplete["terminal_observation_invented"] is False
+    assert incomplete["video_gaps"] == [
+        {
+            "type": "derived_review_video_unavailable",
+            "camera_id": "exact_policy_input",
+            "reason": "RuntimeError:forced_failure_media_video_interrupt",
+        }
+    ]
+    assert any(
+        row["role"] == "failed_episode_observation_frame_manifest"
+        for row in incomplete_artifacts
+    )
+
+    monkeypatch.setattr(media, "_encode_episode_video_unpublished", original)
+    visual, artifacts = progress["_failure_media_finalizer"](
+        failure_reason="malformed response"
+    )
+    assert visual["status"] == "complete"
+    assert visual["episode_terminal_status"] == "failed_after_first_observation"
+    assert visual["terminal_observation_present"] is False
+    assert visual["terminal_observation_invented"] is False
+    assert any(row["role"] == "failed_episode_review_video" for row in artifacts)
+
+
+def test_nonfinite_candidate_action_is_retained_before_finite_validation() -> None:
+    class _NonfinitePolicy(_Policy):
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((10, 8), dtype=float)
+            chunk[0, 2] = np.nan
+            return chunk
+
+    progress: dict = {}
+    with pytest.raises(DroidActionExecutionError, match="chunk_nonfinite"):
+        _run(policy=_NonfinitePolicy(), progress=progress)
+
+    assert progress["candidate_action_shape_validated"] is True
+    assert progress["candidate_action_finite_validated"] is False
+    raw = progress["candidate_policy_action_queries"][0]
+    assert raw["shape_validated"] is True
+    assert raw["finite_values_validated"] is False
+    assert raw["raw_action_chunk"][0][2] == {"nonfinite_float": "nan"}
+    assert raw["raw_action_chunk_digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    (
+        "action_space",
+        "candidate_id",
+        "bad_dimension",
+        "bad_value",
+        "expected_blocker",
+    ),
+    [
+        (
+            ACTION_SPACE_JOINT_VELOCITY,
+            "pi05_droid",
+            0,
+            100.0,
+            BLOCKER_JOINT_VELOCITY_BOUNDS,
+        ),
+        (
+            ACTION_SPACE_JOINT_VELOCITY,
+            "pi05_droid",
+            7,
+            1.01,
+            BLOCKER_GRIPPER_BOUNDS,
+        ),
+        (
+            ACTION_SPACE_JOINT_POSITION,
+            "groot_n17_droid",
+            0,
+            100.0,
+            BLOCKER_JOINT_POSITION_BOUNDS,
+        ),
+        (
+            ACTION_SPACE_JOINT_POSITION,
+            "groot_n17_droid",
+            7,
+            -0.01,
+            BLOCKER_GRIPPER_BOUNDS,
+        ),
+    ],
+)
+def test_out_of_contract_raw_action_never_reaches_simulator_step(
+    action_space: str,
+    candidate_id: str,
+    bad_dimension: int,
+    bad_value: float,
+    expected_blocker: str,
+) -> None:
+    class _OutOfBoundsPolicy(_Policy):
+        def __init__(self):
+            super().__init__()
+            self.action_space = action_space
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((40 if candidate_id == "groot_n17_droid" else 10, 8))
+            chunk[0, bad_dimension] = bad_value
+            return chunk
+
+    environment = _Environment()
+    progress: dict = {}
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        _run(
+            environment=environment,
+            policy=_OutOfBoundsPolicy(),
+            candidate_id=candidate_id,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            progress=progress,
+        )
+
+    assert any(error.startswith(expected_blocker) for error in excinfo.value.errors)
+    assert environment.steps == []
+    assert progress["phase"] == "policy_action_bounds_refused"
+    assert progress["candidate_action_shape_validated"] is True
+    assert progress["candidate_action_finite_validated"] is True
+    assert progress["candidate_action_bounds_validated"] is False
+    assert progress["candidate_action_validated"] is False
+    assert progress["candidate_native_command_validated"] is False
+    assert progress["candidate_action_applied"] is False
+    assert progress["commanded_actions"] == []
+    raw = progress["candidate_policy_action_queries"][0]
+    assert raw["raw_action_chunk"][0][bad_dimension] == bad_value
+    assert raw["raw_action_chunk_digest"].startswith("sha256:")
+    assert raw["raw_bounds_validated"] is False
+    assert any(
+        error.startswith(expected_blocker)
+        for error in raw["raw_bound_validation_errors"]
+    )
+
+
+def test_applied_command_is_retained_when_joint_readback_fails() -> None:
+    class _ReadbackFailureEnvironment(_Environment):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        def read_arm_joint_positions(self):
+            self.reads += 1
+            if self.reads > 1:
+                raise RuntimeError("forced_post_step_joint_readback_failure")
+            return super().read_arm_joint_positions()
+
+    environment = _ReadbackFailureEnvironment()
+    progress: dict = {}
+    with pytest.raises(RuntimeError, match="forced_post_step_joint_readback_failure"):
+        _run(environment=environment, progress=progress)
+
+    assert len(environment.steps) == 1
+    assert progress["candidate_native_command_validated"] is True
+    assert progress["candidate_action_applied"] is True
+    assert progress["candidate_joint_state_validated"] is False
+    command = progress["commanded_actions"][0]
+    assert command["native_command_validated"] is True
+    assert command["joint_state_before_validated"] is True
+    assert command["environment_step_attempted"] is True
+    assert command["environment_step_applied"] is True
+    assert command["joint_state_after_validated"] is False
+    assert command["observed_after_rad"] is None
+
+
+def test_failed_environment_step_is_attempted_but_not_claimed_applied() -> None:
+    class _StepFailureEnvironment(_Environment):
+        def step(self, isaac_action):
+            self.steps.append(list(isaac_action))
+            raise RuntimeError("forced_environment_step_failure")
+
+    progress: dict = {}
+    with pytest.raises(RuntimeError, match="forced_environment_step_failure"):
+        _run(environment=_StepFailureEnvironment(), progress=progress)
+
+    assert progress["candidate_native_command_validated"] is True
+    assert progress["candidate_action_applied"] is False
+    command = progress["commanded_actions"][0]
+    assert command["environment_step_attempted"] is True
+    assert command["environment_step_applied"] is False
+
+
+def test_native_command_validation_is_distinct_from_chunk_validation() -> None:
+    class _InvalidNativeLimitsEnvironment(_Environment):
+        def joint_limits(self):
+            return [[-2.9, 2.9]] * 6
+
+    progress: dict = {}
+    with pytest.raises(DroidActionExecutionError, match="isaac_joint_limits_invalid"):
+        _run(environment=_InvalidNativeLimitsEnvironment(), progress=progress)
+
+    assert progress["candidate_action_shape_validated"] is True
+    assert progress["candidate_action_finite_validated"] is True
+    assert progress["candidate_action_bounds_validated"] is True
+    assert progress["candidate_action_validated"] is True
+    assert progress["candidate_native_command_validated"] is False
+    assert progress["candidate_action_applied"] is False
+    assert progress["commanded_actions"] == []
+
+
+def test_exact_first_observation_survives_multicamera_persistence_failure(
+    tmp_path,
+) -> None:
+    class _BrokenNativeMediaEnvironment(_Environment):
+        def read_evaluation_camera_inputs(self):
+            raise RuntimeError("forced_multicamera_persistence_failure")
+
+        def read_control_observation_metadata(self):
+            return {}
+
+    progress: dict = {}
+    with pytest.raises(RuntimeError, match="forced_multicamera_persistence_failure"):
+        _run(
+            environment=_BrokenNativeMediaEnvironment(),
+            media_output_dir=tmp_path,
+            episode_id="multicamera-persist-failure",
+            progress=progress,
+        )
+
+    assert progress["first_observation_retained"] is True
+    assert progress["exact_policy_observation_retained"] is True
+    assert progress["multicamera_policy_observation_retained"] is False
+    exact = progress["candidate_exact_policy_input_frames"][0]
+    assert (tmp_path / exact["relative_path"]).is_file()
+    visual, artifacts = progress["_failure_media_finalizer"](
+        failure_reason="RuntimeError:forced_multicamera_persistence_failure"
+    )
+    assert visual["status"] == "incomplete_after_first_observation"
+    assert visual["episode_terminal_status"] == "failed_after_first_observation"
+    assert visual["exact_policy_observation_retained"] is True
+    assert visual["multicamera_policy_observation_retained"] is False
+    assert visual["media_gap"] == {
+        "type": "after_first_observation_evidence_incomplete",
+        "reason": "RuntimeError:forced_multicamera_persistence_failure",
+    }
+    assert "multicamera_frame_manifest" in visual["missing_required_evidence"]
+    assert any(
+        row["role"] == "failed_episode_observation_frame_manifest"
+        for row in artifacts
+    )
+    assert any(
+        row["role"] == "failed_episode_review_video" for row in artifacts
+    )
+    assert not any(
+        row["role"] == "multicamera_observation_frame_manifest"
+        for row in artifacts
+    )
+    resumed_visual, resumed_artifacts = progress["_failure_media_finalizer"](
+        failure_reason="RuntimeError:forced_multicamera_persistence_failure"
+    )
+    assert resumed_visual == visual
+    assert resumed_artifacts == artifacts
 
 
 def test_native_evaluation_media_adds_review_only_overview_without_policy_input(

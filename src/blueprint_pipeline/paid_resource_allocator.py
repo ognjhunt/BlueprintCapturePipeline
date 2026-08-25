@@ -5036,6 +5036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             native_policy_execution_spec: dict[str, Any] | None = None
             gated_backbone_access: dict[str, Any] | None = None
             if any_policy_requested and args.native_task_arena_policy_execution_spec:
+                selected_candidate = ""
                 try:
                     native_policy_execution_spec = json.loads(
                         Path(args.native_task_arena_policy_execution_spec).read_text(
@@ -5046,8 +5047,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                         native_policy_execution_spec.get("candidate_id") or ""
                     )
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                    selected_candidate = ""
-                    blockers.append("native_task_arena_policy_execution_spec_unreadable")
+                    blockers.append(
+                        "native_task_arena_policy_execution_spec_unreadable"
+                    )
+                if native_policy_execution_spec is not None:
+                    try:
+                        if policy_diagnostic_requested:
+                            from .native_task_arena_policy_diagnostic_bundle import (
+                                validate_policy_diagnostic_execution_spec,
+                            )
+
+                            native_policy_execution_spec = (
+                                validate_policy_diagnostic_execution_spec(
+                                    native_policy_execution_spec
+                                )
+                            )
+                        else:
+                            from .native_task_arena_policy_bundle import (
+                                validate_native_task_policy_execution_spec,
+                            )
+
+                            native_policy_execution_spec = (
+                                validate_native_task_policy_execution_spec(
+                                    native_policy_execution_spec
+                                )
+                            )
+                    except (TypeError, ValueError):
+                        blockers.append(
+                            "native_task_arena_candidate_rights_binding_invalid"
+                        )
                 groot_selected = selected_candidate == "groot_n17_droid"
                 if groot_selected and not args.adp009d_authorize_gated_backbone:
                     blockers.append("native_task_arena_groot_gated_backbone_authority_missing")
@@ -5161,13 +5189,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"native_task_arena_bundle_preparation_failed:{type(exc).__name__}"
                     )
             if (
-                policy_requested
+                any_policy_requested
                 and prepared_bundle is not None
                 and native_policy_execution_spec is not None
-                and prepared_bundle.get("policy_rights_binding")
-                != native_policy_execution_spec.get("candidate_rights_binding")
+                and (
+                    prepared_bundle.get("policy_execution_spec_digest")
+                    != native_policy_execution_spec.get("execution_spec_digest")
+                    or prepared_bundle.get("policy_execution_authority")
+                    != native_policy_execution_spec.get("execution_authority")
+                    or prepared_bundle.get("policy_rights_binding")
+                    != native_policy_execution_spec.get(
+                        "candidate_rights_binding"
+                    )
+                )
             ):
-                blockers.append("native_task_arena_policy_rights_binding_mismatch")
+                blockers.append(
+                    "native_task_arena_policy_execution_binding_mismatch"
+                )
             if args.native_task_arena_attempt_authority:
                 try:
                     native_authority = _load(

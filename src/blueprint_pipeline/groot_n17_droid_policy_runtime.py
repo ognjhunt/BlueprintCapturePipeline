@@ -1,6 +1,7 @@
 """Identity-bound GR00T N1.7 DROID client for the Franka simulator loop.
 
-This is deliberately a thin translation around NVIDIA's public ``PolicyClient``.
+This is deliberately a thin translation around Blueprint's protocol-pinned
+wire-only implementation of NVIDIA's public ``PolicyClient``.
 It does not load a model, allocate a GPU, or add another simulator.  The adapter
 converts Blueprint's existing DROID observation into GR00T's nested modality
 format and returns the joint-position-plus-gripper chunk used by the existing
@@ -31,6 +32,11 @@ HISTORICAL_WRIST_KEY = "observation_history/wrist_image_left_t_minus_15"
 # this module flat-bundle safe: it is copied beside the worker scripts rather
 # than imported as part of ``blueprint_pipeline`` on the rented host.
 DROID_OPEN_LOOP_HORIZON = 8
+DROID_ACTION_CHUNK_ROWS = 40
+FROZEN_VIDEO_DELTA_INDICES = (-15, 0)
+FROZEN_STATE_DELTA_INDICES = (0,)
+FROZEN_ACTION_DELTA_INDICES = tuple(range(DROID_ACTION_CHUNK_ROWS))
+FROZEN_LANGUAGE_DELTA_INDICES = (0,)
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
@@ -38,6 +44,35 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
         dict(value), sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_safe_vendor_response(value: Any) -> Any:
+    """Retain the decoded vendor response without admitting nonfinite values."""
+
+    import math
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_safe_vendor_response(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (str, bool, int)) or value is None:
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {"nonfinite_float": repr(value)}
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return [_json_safe_vendor_response(item) for item in value]
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return _json_safe_vendor_response(tolist())
+    item = getattr(value, "item", None)
+    if callable(item):
+        return _json_safe_vendor_response(item())
+    return {"unsupported_type": f"{type(value).__module__}.{type(value).__name__}"}
 
 
 def _is_git_sha1(value: str) -> bool:
@@ -120,6 +155,11 @@ def validate_worker_identity_receipt(
 ) -> dict[str, Any]:
     """Require materialized worker evidence; a server endpoint cannot self-identify."""
 
+    try:  # flat provider-bundle layout
+        from adp009d_groot_worker_identity import expected_checkpoint_content_binding
+    except ModuleNotFoundError:  # repository package
+        from .adp009d_groot_worker_identity import expected_checkpoint_content_binding
+
     expected_identity = expected.identity()
     blockers: list[str] = []
     if receipt.get("status") != "verified":
@@ -140,6 +180,10 @@ def validate_worker_identity_receipt(
     ):
         if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             blockers.append(f"worker_receipt_{label}_sha256_invalid")
+    if receipt.get("checkpoint_content_manifest_digest") != (
+        expected_checkpoint_content_binding()["file_manifest_digest"]
+    ):
+        blockers.append("worker_receipt_checkpoint_content_manifest_mismatch")
     if blockers:
         raise ValueError(";".join(sorted(blockers)))
     return dict(receipt)
@@ -190,44 +234,79 @@ class GrootN17DroidPolicyClient:
             raise ValueError("groot_policy_server_endpoint_invalid")
         if client_factory is None:
             try:
-                from gr00t.policy.server_client import PolicyClient
-            except ImportError as exc:  # pragma: no cover - GPU runtime only
-                raise RuntimeError("groot_policy_client_not_installed") from exc
-            client_factory = PolicyClient
+                from groot_n17_wire_client import GrootN17WirePolicyClient
+            except ModuleNotFoundError:  # repository package
+                from .groot_n17_wire_client import GrootN17WirePolicyClient
+            client_factory = GrootN17WirePolicyClient
         self._spec = spec
         self._worker_receipt = validate_worker_identity_receipt(
             worker_identity_receipt, expected=spec
         )
-        self._client = client_factory(
+        client = client_factory(
             host=str(host),
             port=int(port),
             timeout_ms=int(timeout_ms),
             api_token=api_token,
             strict=False,
         )
-        if self._client.ping() is not True:
-            raise ValueError("groot_policy_server_unreachable")
-        modality = self._client.get_modality_config()
-        if not isinstance(modality, Mapping):
-            raise ValueError("groot_modality_config_invalid")
-        for name in ("video", "state", "action", "language"):
-            if name not in modality:
-                raise ValueError(f"groot_modality_missing:{name}")
-        if _modality_keys(modality["video"]) != VIDEO_KEYS:
-            raise ValueError("groot_droid_video_keys_mismatch")
-        if _modality_keys(modality["state"]) != STATE_KEYS:
-            raise ValueError("groot_droid_state_keys_mismatch")
-        if set(_modality_keys(modality["action"])) != set(ACTION_KEYS + ("eef_9d",)):
-            raise ValueError("groot_droid_action_keys_mismatch")
-        language_keys = _modality_keys(modality["language"])
-        if language_keys != (LANGUAGE_KEY,):
-            raise ValueError("groot_droid_language_key_mismatch")
-        self._video_delta_indices = _delta_indices(modality["video"])
-        if self._video_delta_indices not in {(0,), (-15, 0)}:
-            raise ValueError("groot_droid_video_history_unsupported")
-        self.action_chunk_rows = len(_delta_indices(modality["action"]))
-        if self.action_chunk_rows < DROID_OPEN_LOOP_HORIZON:
-            raise ValueError("groot_droid_action_chunk_too_short")
+        try:
+            if client.ping() is not True:
+                raise ValueError("groot_policy_server_unreachable")
+            modality = client.get_modality_config()
+            if not isinstance(modality, Mapping):
+                raise ValueError("groot_modality_config_invalid")
+            for name in ("video", "state", "action", "language"):
+                if name not in modality:
+                    raise ValueError(f"groot_modality_missing:{name}")
+            if _modality_keys(modality["video"]) != VIDEO_KEYS:
+                raise ValueError("groot_droid_video_keys_mismatch")
+            if _modality_keys(modality["state"]) != STATE_KEYS:
+                raise ValueError("groot_droid_state_keys_mismatch")
+            if set(_modality_keys(modality["action"])) != set(
+                ACTION_KEYS + ("eef_9d",)
+            ):
+                raise ValueError("groot_droid_action_keys_mismatch")
+            language_keys = _modality_keys(modality["language"])
+            if language_keys != (LANGUAGE_KEY,):
+                raise ValueError("groot_droid_language_key_mismatch")
+            self._video_delta_indices = _delta_indices(modality["video"])
+            self._state_delta_indices = _delta_indices(modality["state"])
+            self._action_delta_indices = _delta_indices(modality["action"])
+            self._language_delta_indices = _delta_indices(modality["language"])
+            for name, actual, expected in (
+                (
+                    "video",
+                    self._video_delta_indices,
+                    FROZEN_VIDEO_DELTA_INDICES,
+                ),
+                (
+                    "state",
+                    self._state_delta_indices,
+                    FROZEN_STATE_DELTA_INDICES,
+                ),
+                (
+                    "action",
+                    self._action_delta_indices,
+                    FROZEN_ACTION_DELTA_INDICES,
+                ),
+                (
+                    "language",
+                    self._language_delta_indices,
+                    FROZEN_LANGUAGE_DELTA_INDICES,
+                ),
+            ):
+                if actual != expected:
+                    raise ValueError(f"groot_droid_{name}_delta_indices_mismatch")
+            self.action_chunk_rows = DROID_ACTION_CHUNK_ROWS
+        except BaseException:
+            closer = getattr(client, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
+            raise
+        self._client = client
         self._last_inference_evidence: dict[str, Any] | None = None
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
@@ -243,12 +322,8 @@ class GrootN17DroidPolicyClient:
         prompt = str(observation.get("prompt") or "").strip()
         if joints.shape != (7,) or gripper.shape != (1,) or eef.shape != (9,) or not prompt:
             raise ValueError("groot_droid_observation_state_invalid")
-        if self._video_delta_indices == (0,):
-            exterior_video = exterior[None, None, ...]
-            wrist_video = wrist[None, None, ...]
-        else:
-            exterior_video = np.stack((historical_exterior, exterior))[None, ...]
-            wrist_video = np.stack((historical_wrist, wrist))[None, ...]
+        exterior_video = np.stack((historical_exterior, exterior))[None, ...]
+        wrist_video = np.stack((historical_wrist, wrist))[None, ...]
         request = {
             "video": {
                 VIDEO_KEYS[0]: exterior_video,
@@ -262,6 +337,23 @@ class GrootN17DroidPolicyClient:
             "language": {LANGUAGE_KEY: [[prompt]]},
         }
         response = self._client.get_action(request)
+        retained_response = _json_safe_vendor_response(response)
+        self._last_inference_evidence = {
+            "server_response_received": True,
+            "wire_response_type": type(response).__name__,
+            "raw_vendor_action_response": retained_response,
+            "raw_vendor_action_response_digest": (
+                "sha256:"
+                + _canonical_sha256(
+                    {"raw_vendor_action_response": retained_response}
+                )
+            ),
+            "raw_vendor_action_response_role": (
+                "genuine_decoded_vendor_wire_response_before_candidate_validation"
+            ),
+            "action_payload_returned": True,
+            "actions_extracted": False,
+        }
         if not isinstance(response, Sequence) or len(response) != 2:
             raise ValueError("groot_policy_response_invalid")
         actions = response[0]
@@ -290,23 +382,26 @@ class GrootN17DroidPolicyClient:
             "gripper_position": gripper_chunk[0].tolist(),
             "joint_position": joint_chunk[0].tolist(),
         }
-        self._last_inference_evidence = {
-            "native_action_chunk_shape": [self.action_chunk_rows, 17],
-            "native_action_component_order": [
-                "eef_9d",
-                "gripper_position",
-                "joint_position",
-            ],
-            "native_action_components": native_components,
-            "native_action_chunk_sha256": _canonical_sha256(native_components),
-            "execution_projection": (
-                "joint_position_plus_binarized_gripper_first_8_rows;"
-                "eef_9d_retained_not_executed"
-            ),
-            "joint_position_server_output": (
-                "absolute_after_checkpoint_relative_action_decode"
-            ),
-        }
+        self._last_inference_evidence.update(
+            {
+                "native_action_chunk_shape": [self.action_chunk_rows, 17],
+                "native_action_component_order": [
+                    "eef_9d",
+                    "gripper_position",
+                    "joint_position",
+                ],
+                "native_action_components": native_components,
+                "native_action_chunk_sha256": _canonical_sha256(native_components),
+                "execution_projection": (
+                    "joint_position_plus_binarized_gripper_first_8_rows;"
+                    "eef_9d_retained_not_executed"
+                ),
+                "joint_position_server_output": (
+                    "absolute_after_checkpoint_relative_action_decode"
+                ),
+                "actions_extracted": True,
+            }
+        )
         chunk[:, 7] = (chunk[:, 7] > 0.5).astype(float)
         return chunk
 
@@ -322,6 +417,11 @@ class GrootN17DroidPolicyClient:
         if not isinstance(response, Mapping):
             raise ValueError("groot_policy_reset_response_invalid")
 
+    def close(self) -> None:
+        closer = getattr(self._client, "close", None)
+        if callable(closer):
+            closer()
+
     def evidence_summary(self) -> dict[str, Any]:
         return {
             "transport": "nvidia_groot_zmq_msgpack",
@@ -329,6 +429,9 @@ class GrootN17DroidPolicyClient:
             "policy_identity": self._spec.identity(),
             "worker_identity_receipt": self._worker_receipt,
             "video_delta_indices": list(self._video_delta_indices),
+            "state_delta_indices": list(self._state_delta_indices),
+            "action_delta_indices": list(self._action_delta_indices),
+            "language_delta_indices": list(self._language_delta_indices),
             "video_history_source": "caller_supplied_exact_simulator_control_steps",
             "action_chunk_rows": self.action_chunk_rows,
             "last_inference_evidence": (

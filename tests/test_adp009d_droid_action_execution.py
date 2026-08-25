@@ -5,7 +5,11 @@ import pytest
 
 from blueprint_pipeline.adp009d_droid_action_execution import (
     ACTION_SPACE_JOINT_POSITION,
+    ACTION_SPACE_JOINT_VELOCITY,
+    BLOCKER_GRIPPER_BOUNDS,
     BLOCKER_GRIPPER_CONVENTION_UNMEASURED,
+    BLOCKER_JOINT_POSITION_BOUNDS,
+    BLOCKER_JOINT_VELOCITY_BOUNDS,
     DROID_OPEN_LOOP_HORIZON,
     DroidActionExecutionError,
     GripperConvention,
@@ -14,6 +18,7 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
     isaac_steps_per_droid_action,
     plan_chunk_execution,
     validate_action_chunk,
+    validate_candidate_action_bounds,
 )
 
 # Franka limits, wide enough that only deliberate tests clamp.
@@ -98,7 +103,7 @@ def test_droid_gripper_scalar_maps_through_the_measured_convention() -> None:
 
 def test_joint_targets_are_clamped_to_limits_and_the_clamp_is_reported() -> None:
     row = np.zeros(8)
-    row[:7] = [5.0, -5.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    row[:7] = [1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     current = [2.8, -2.8, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     result = droid_row_to_isaac_action(
@@ -139,7 +144,7 @@ def test_groot_decoded_absolute_joints_are_not_integrated_as_velocities() -> Non
         "groot_decoded_absolute_joint_position_plus_absolute_gripper"
     )
     assert result["position_adapter"] == (
-        "decoded_absolute_joint_position_direct_with_limit_clamp"
+        "decoded_absolute_joint_position_direct_within_limits"
     )
     assert result["position_adapter_max_joint_delta_rad"] is None
 
@@ -206,7 +211,7 @@ def test_plan_matches_the_repository_droid_velocity_action_semantics() -> None:
     )
 
     row = np.zeros(8)
-    row[:7] = [5.0, -5.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    row[:7] = [1.0, -1.0, 0.1, 0.2, 0.3, 0.4, 0.5]
     row[7] = 0.9
 
     mine = droid_row_to_isaac_action(
@@ -227,6 +232,65 @@ def test_plan_matches_the_repository_droid_velocity_action_semantics() -> None:
     # Both read "closed" from the same scalar, even though the command differs.
     assert mine["gripper_closed"] is True
     assert theirs["gripper_position_target_m"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("action_space", "bad_dimension", "bad_value", "expected_blocker"),
+    [
+        (
+            ACTION_SPACE_JOINT_VELOCITY,
+            0,
+            100.0,
+            BLOCKER_JOINT_VELOCITY_BOUNDS,
+        ),
+        (
+            ACTION_SPACE_JOINT_POSITION,
+            0,
+            100.0,
+            BLOCKER_JOINT_POSITION_BOUNDS,
+        ),
+        (
+            ACTION_SPACE_JOINT_VELOCITY,
+            7,
+            1.01,
+            BLOCKER_GRIPPER_BOUNDS,
+        ),
+        (
+            ACTION_SPACE_JOINT_POSITION,
+            7,
+            -0.01,
+            BLOCKER_GRIPPER_BOUNDS,
+        ),
+    ],
+)
+def test_raw_candidate_bounds_refuse_instead_of_clipping(
+    action_space: str,
+    bad_dimension: int,
+    bad_value: float,
+    expected_blocker: str,
+) -> None:
+    chunk = np.zeros((10, 8), dtype=float)
+    chunk[0, bad_dimension] = bad_value
+
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        validate_candidate_action_bounds(
+            chunk,
+            action_space=action_space,
+            joint_limits=_LIMITS,
+        )
+    assert any(error.startswith(expected_blocker) for error in excinfo.value.errors)
+
+    with pytest.raises(DroidActionExecutionError) as row_excinfo:
+        droid_row_to_isaac_action(
+            chunk[0],
+            current_joint_position=_ZERO_JOINTS,
+            joint_limits=_LIMITS,
+            gripper=_MEASURED,
+            action_space=action_space,
+        )
+    assert any(
+        error.startswith(expected_blocker) for error in row_excinfo.value.errors
+    )
 
 
 def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> None:

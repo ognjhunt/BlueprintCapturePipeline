@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -43,10 +45,12 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     PROBE_KIND as POLICY_PROBE_KIND,
     load_verified_native_task_arena_policy_bundle,
+    validate_native_task_policy_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_policy_diagnostic_bundle import (
     PROBE_KIND as POLICY_DIAGNOSTIC_PROBE_KIND,
     load_verified_native_task_arena_policy_diagnostic_bundle,
+    validate_policy_diagnostic_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_paid_authority import (
     validate_native_task_arena_paid_attempt_authority,
@@ -73,6 +77,33 @@ from blueprint_pipeline.task_evaluation_live_profile import (
     build_lane_live_profile,
     file_digest,
 )
+
+
+def _write_profile_output_exclusive(path: Path, payload: bytes) -> bool:
+    """Create one profile without replacing historical bytes."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o644)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_live_profile_output_conflict"
+                )
+            return False
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
 
 # The allocator refuses anything outside this band for all three probe kinds.
 MIN_TTL_SECONDS = 1_800
@@ -398,11 +429,16 @@ def _lane_blockers(
                     != controls.get("result_digest")
                     or policy_spec.get("control_pair_digest")
                     != pair.get("pair_digest")
-                    or (
-                        not diagnostic
-                        and (prepared_bundle or {}).get("policy_rights_binding")
-                        != policy_spec.get("candidate_rights_binding")
+                    or (prepared_bundle or {}).get(
+                        "policy_execution_spec_digest"
                     )
+                    != policy_spec.get("execution_spec_digest")
+                    or (prepared_bundle or {}).get(
+                        "policy_execution_authority"
+                    )
+                    != policy_spec.get("execution_authority")
+                    or (prepared_bundle or {}).get("policy_rights_binding")
+                    != policy_spec.get("candidate_rights_binding")
                     or bound_inputs.get(
                         "native_task_arena_policy_execution_spec.v1.json"
                     )
@@ -411,6 +447,10 @@ def _lane_blockers(
                     raise ValueError(
                         "native_task_arena_policy_execution_spec_invalid"
                     )
+                if diagnostic:
+                    validate_policy_diagnostic_execution_spec(policy_spec)
+                else:
+                    validate_native_task_policy_execution_spec(policy_spec)
             except (OSError, ValueError, json.JSONDecodeError):
                 found.append("native_task_arena_policy_execution_spec_invalid")
         authority_path = context.extra_paths.get("attempt_authority")
@@ -578,6 +618,79 @@ def _immutable_inputs(link: ArenaLink):
                 "digest": file_digest(context.extra_paths["attempt_authority"]),
             },
         ]
+        authority = _read_mapping(
+            context.extra_paths["attempt_authority"],
+            error="native_task_arena_attempt_authority_invalid",
+        )
+
+        def append_file(name: str, raw_path: str | Path) -> Path:
+            candidate = Path(raw_path).expanduser()
+            if candidate.is_symlink() or not candidate.is_file():
+                raise TaskEvaluationLaunchError(
+                    f"native_task_arena_immutable_input_invalid:{name}"
+                )
+            path = candidate.resolve()
+            if not any(Path(row["path"]).resolve() == path for row in rows):
+                rows.append(
+                    {"name": name, "path": str(path), "digest": file_digest(path)}
+                )
+            return path
+
+        def append_bundle_closure(name: str, receipt_path: str | Path) -> None:
+            receipt_file = append_file(f"{name}_receipt", receipt_path)
+            receipt = _read_mapping(
+                receipt_file,
+                error=f"native_task_arena_{name}_receipt_invalid",
+            )
+            append_file(f"{name}_bundle", str(receipt.get("bundle_path") or ""))
+
+        append_bundle_closure("candidate", context.receipt_path)
+        bundle_record = authority.get("bundle_receipt")
+        if isinstance(bundle_record, Mapping):
+            append_bundle_closure(
+                "authority_candidate", str(bundle_record.get("path") or "")
+            )
+        predecessor = authority.get("prior_terminal_attempt")
+        if isinstance(predecessor, Mapping):
+            for name in ("authority", "terminal_result", "provider_zero"):
+                record = predecessor.get(name)
+                if isinstance(record, Mapping):
+                    append_file(
+                        f"prior_terminal_{name}", str(record.get("path") or "")
+                    )
+        campaign_binding = authority.get("policy_campaign_binding")
+        if campaign_binding is not None:
+            campaign_record = (
+                campaign_binding.get("campaign")
+                if isinstance(campaign_binding, Mapping)
+                else None
+            )
+            if not isinstance(campaign_record, Mapping):
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_policy_campaign_binding_invalid"
+                )
+            campaign_path = Path(
+                str(campaign_record.get("path") or "")
+            ).expanduser().resolve()
+            append_file("native_task_arena_policy_campaign", campaign_path)
+            campaign = _read_mapping(
+                campaign_path,
+                error="native_task_arena_policy_campaign_invalid",
+            )
+            for member in campaign.get("members") or []:
+                if not isinstance(member, Mapping):
+                    raise TaskEvaluationLaunchError(
+                        "native_task_arena_policy_campaign_member_invalid"
+                    )
+                receipt_record = member.get("bundle_receipt")
+                if not isinstance(receipt_record, Mapping):
+                    raise TaskEvaluationLaunchError(
+                        "native_task_arena_policy_campaign_bundle_unbound"
+                    )
+                append_bundle_closure(
+                    f"campaign_{member.get('member_id')}",
+                    str(receipt_record.get("path") or ""),
+                )
         execution_admission = (
             context.extra_paths["packet_dir"] / EXECUTION_ADMISSION_NAME
         )
@@ -608,6 +721,105 @@ def _immutable_inputs(link: ArenaLink):
         return rows
 
     return inputs
+
+
+def _native_policy_profile_fields(link: ArenaLink):
+    """Expose private frozen-policy identity without claiming generic OCI support."""
+
+    def fields(context: LaneLiveProfileContext) -> Mapping[str, Any]:
+        if "policy_execution_spec" not in link.predecessors:
+            return {}
+        spec = _read_mapping(
+            context.extra_paths["policy_execution_spec"],
+            error="native_task_arena_policy_execution_spec_invalid",
+        )
+        scene = _read_mapping(
+            context.extra_paths["packet_dir"] / SCENE_PLAN_NAME,
+            error="native_task_arena_scene_plan_invalid",
+        )
+        rights = spec.get("candidate_rights_binding") or {}
+        interface = rights.get("interface_identity") or {}
+        container_image = str(context.receipt.get("container_image") or "")
+        if "@sha256:" not in container_image:
+            raise TaskEvaluationLaunchError(
+                "native_task_arena_candidate_container_not_digest_pinned"
+            )
+        authority = _read_mapping(
+            context.extra_paths["attempt_authority"],
+            error="native_task_arena_attempt_authority_invalid",
+        )
+        campaign_binding = authority.get("policy_campaign_binding")
+        campaign_profile_binding: dict[str, Any] | None = None
+        if campaign_binding is not None:
+            if not isinstance(campaign_binding, Mapping):
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_policy_campaign_binding_invalid"
+                )
+            campaign_profile_binding = {
+                key: campaign_binding.get(key)
+                for key in (
+                    "campaign_id",
+                    "campaign_digest",
+                    "member_id",
+                    "launch_id",
+                    "resource_name",
+                    "sibling_member_id",
+                    "sibling_launch_id",
+                    "sibling_resource_name",
+                )
+            }
+        return {
+            "native_policy_binding": {
+                "schema_version": "native_task_arena_policy_binding.v1",
+                "candidate_id": spec.get("candidate_id"),
+                "robot": {
+                    "runtime_robot_id": (scene.get("robot") or {}).get(
+                        "robot_id"
+                    ),
+                    "rights_embodiment_id": (
+                        rights.get("robot_binding") or {}
+                    ).get("embodiment_id"),
+                    "alias_binding_digest": canonical_digest(
+                        rights.get("robot_binding") or {}
+                    ),
+                    "config_digest": canonical_digest(scene.get("robot") or {}),
+                },
+                "task": {
+                    "task_id": spec.get("task_id"),
+                    "config_digest": canonical_digest(scene.get("task_spec") or {}),
+                },
+                "policy": {
+                    "spec_digest": canonical_digest(spec.get("policy_spec") or {}),
+                    "input_schema_digest": canonical_digest(
+                        interface.get("policy_input_schema") or {}
+                    ),
+                    "output_schema_digest": canonical_digest(
+                        interface.get("policy_output_schema") or {}
+                    ),
+                    "action_adapter": interface.get("action_adapter"),
+                },
+                "runtime": {
+                    "arena_container_image": container_image,
+                    "arena_container_digest_pinned": True,
+                    "candidate_policy_container": False,
+                },
+                "rights": {
+                    "scene_policy_readiness_digest": rights.get(
+                        "source_readiness_digest"
+                    ),
+                    "candidate_rights_binding_digest": rights.get(
+                        "rights_receipt_digest"
+                    ),
+                },
+                **(
+                    {"policy_campaign": campaign_profile_binding}
+                    if campaign_profile_binding is not None
+                    else {}
+                ),
+            }
+        }
+
+    return fields
 
 
 def _spec(
@@ -649,6 +861,7 @@ def _spec(
             expected_scene_id=expected_scene_id,
             expected_task_id=expected_task_id,
         ),
+        profile_fields=_native_policy_profile_fields(link),
         # The skeleton requires every declared path, so the optional
         # avoidlist is only declared on the calls that actually supply one.
         extra_path_names=(
@@ -855,8 +1068,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     output = Path(args.output).expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(profile, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    payload = (json.dumps(profile, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        output_created = _write_profile_output_exclusive(output, payload)
+    except (OSError, TaskEvaluationLaunchError) as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_version": "task_evaluation_launch_profile.v1",
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
     print(
         json.dumps(
             {
@@ -866,6 +1093,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "profile_digest": profile["profile_digest"],
                 "max_spend_usd": profile["allocator"]["max_spend_usd"],
                 "output": str(output),
+                "output_created": output_created,
                 "provider_mutation_performed": False,
             },
             sort_keys=True,

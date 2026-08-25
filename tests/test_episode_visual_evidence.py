@@ -55,11 +55,12 @@ def test_review_video_fails_closed_without_ffmpeg_toolchain(
         )
 
 
-def _candidate_exact_policy_input_frame(
-    tmp_path, *, episode_id: str, candidate_id: str = "pi05_droid"
-) -> dict:
+def test_failed_policy_seal_rehashes_retained_png_and_raw_rgb(tmp_path) -> None:
+    from PIL import Image
+
+    episode_id = "failed-frame-tamper"
     frame = persist_observation_frame(
-        np.full((32, 64, 3), 17, dtype=np.uint8),
+        np.full((8, 8, 3), 17, dtype=np.uint8),
         output_dir=tmp_path,
         episode_id=episode_id,
         frame_index=0,
@@ -67,63 +68,28 @@ def _candidate_exact_policy_input_frame(
     )
     frame.update(
         {
-            "candidate_id": candidate_id,
+            "candidate_id": "pi05_droid",
             "candidate_exact_policy_input": True,
             "view_order": ["base_0_rgb", "left_wrist_0_rgb"],
             "view_shapes": {
-                "base_0_rgb": [224, 224, 3],
-                "left_wrist_0_rgb": [224, 224, 3],
+                "base_0_rgb": [8, 4, 3],
+                "left_wrist_0_rgb": [8, 4, 3],
             },
         }
     )
     frame["frame_manifest_digest"] = canonical_digest(frame)
-    return frame
-
-
-def test_failed_policy_media_keeps_lossless_manifest_when_video_is_unavailable(
-    tmp_path, monkeypatch
-) -> None:
-    episode_id = "failed-no-encoder"
-    frame = _candidate_exact_policy_input_frame(
-        tmp_path, episode_id=episode_id
-    )
-    monkeypatch.setattr("shutil.which", lambda _name: None)
-
-    index = finalize_failed_policy_visual_evidence(
-        output_dir=tmp_path,
-        episode_id=episode_id,
-        identity={"candidate_id": "pi05_droid"},
-        exact_policy_input_frames=[frame],
-        failure_reason="response_normalization_failed",
+    Image.fromarray(np.full((8, 8, 3), 29, dtype=np.uint8), mode="RGB").save(
+        tmp_path / frame["relative_path"], format="PNG"
     )
 
-    visual = index["visual_evidence"]
-    assert visual["status"] == "lossless_frames_complete_review_video_unavailable"
-    assert visual["human_review_available"] is False
-    assert visual["videos"] == {}
-    assert visual["video_gaps"] == [
-        {
-            "type": "derived_review_video_unavailable",
-            "camera_id": "exact_policy_input",
-            "reason": "RuntimeError:episode_video_ffmpeg_toolchain_unavailable",
-        }
-    ]
-    assert visual["terminal_observation_present"] is False
-    assert visual["terminal_observation_invented"] is False
-    assert (tmp_path / index["relative_path"]).is_file()
-    manifest_artifact = next(
-        row
-        for row in index["media_artifacts"]
-        if row["role"] == "failed_episode_observation_frame_manifest"
-    )
-    manifest = json.loads(
-        (tmp_path / manifest_artifact["relative_path"]).read_text(
-            encoding="utf-8"
+    with pytest.raises(ValueError, match="retained_policy_frame_png_digest_mismatch"):
+        finalize_failed_policy_visual_evidence(
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            identity={"candidate_id": "pi05_droid"},
+            exact_policy_input_frames=[frame],
+            failure_reason="policy_failed",
         )
-    )
-    assert manifest["candidate_exact_policy_input_frames"] == [frame]
-    assert manifest["terminal_observation_present"] is False
-    assert manifest["terminal_observation_invented"] is False
 
 
 def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
@@ -204,6 +170,112 @@ def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
         )
 
 
+def test_visual_finalization_resumes_after_manifest_precedes_video_failure(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.episode_visual_evidence as media
+
+    episode_id = "episode-resume-after-manifest"
+    policy_input = persist_observation_frame(
+        np.full((16, 32, 3), 17, dtype=np.uint8),
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        frame_index=0,
+        kind="policy-input",
+    )
+    terminal = persist_observation_frame(
+        np.full((16, 32, 3), 43, dtype=np.uint8),
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        frame_index=1,
+        kind="terminal-observation",
+    )
+    original = media._encode_episode_video
+    monkeypatch.setattr(
+        media,
+        "_encode_episode_video",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("forced_video_failure_after_manifest")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="forced_video_failure_after_manifest"):
+        finalize_visual_evidence(
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            identity={"policy_id": "pi05_droid"},
+            policy_input_frames=[policy_input],
+            terminal_observation=terminal,
+        )
+    manifest = tmp_path / "media" / episode_id / "frame_manifest.json"
+    manifest_bytes = manifest.read_bytes()
+
+    monkeypatch.setattr(media, "_encode_episode_video", original)
+    visual, _ = finalize_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={"policy_id": "pi05_droid"},
+        policy_input_frames=[policy_input],
+        terminal_observation=terminal,
+    )
+
+    assert visual["status"] == "complete"
+    assert manifest.read_bytes() == manifest_bytes
+    assert (tmp_path / visual["video"]["relative_path"]).is_file()
+
+
+def test_partial_mp4_is_never_published_and_manifest_resume_completes(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.episode_visual_evidence as media
+
+    episode_id = "episode-resume-after-partial-mp4"
+    policy_input = persist_observation_frame(
+        np.full((16, 32, 3), 17, dtype=np.uint8),
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        frame_index=0,
+        kind="policy-input",
+    )
+    terminal = persist_observation_frame(
+        np.full((16, 32, 3), 43, dtype=np.uint8),
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        frame_index=1,
+        kind="terminal-observation",
+    )
+    original = media._encode_episode_video_unpublished
+
+    def _leave_partial_then_fail(*args, video_path, **kwargs):
+        del args, kwargs
+        video_path.write_bytes(b"partial-mp4")
+        raise RuntimeError("forced_partial_mp4_failure")
+
+    monkeypatch.setattr(
+        media, "_encode_episode_video_unpublished", _leave_partial_then_fail
+    )
+    with pytest.raises(RuntimeError, match="forced_partial_mp4_failure"):
+        finalize_visual_evidence(
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            identity={"policy_id": "pi05_droid"},
+            policy_input_frames=[policy_input],
+            terminal_observation=terminal,
+        )
+    assert not (tmp_path / "media" / episode_id / "episode.mp4").exists()
+    assert not list((tmp_path / "media" / episode_id).glob(".episode-*"))
+
+    monkeypatch.setattr(media, "_encode_episode_video_unpublished", original)
+    visual, _ = finalize_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={"policy_id": "pi05_droid"},
+        policy_input_frames=[policy_input],
+        terminal_observation=terminal,
+    )
+    assert visual["status"] == "complete"
+    assert (tmp_path / visual["video"]["relative_path"]).is_file()
+
+
 def _calibration(width: int = 64, height: int = 32) -> dict:
     return {
         "camera_model": "pinhole",
@@ -255,67 +327,6 @@ def _multicamera_observation(
             for camera_id in images
         },
     )
-
-
-def test_failed_policy_media_seals_all_manipulation_cameras_without_terminal(
-    tmp_path,
-) -> None:
-    episode_id = "failed-multicamera-policy"
-    exact = _candidate_exact_policy_input_frame(
-        tmp_path, episode_id=episode_id, candidate_id="groot_n17_droid"
-    )
-    camera_ids = ("external", "wrist", "overview")
-    observation = persist_multicamera_observation(
-        {
-            camera_id: np.full(
-                (32, 64, 3), 20 + index, dtype=np.uint8
-            )
-            for index, camera_id in enumerate(camera_ids)
-        },
-        output_dir=tmp_path,
-        episode_id=episode_id,
-        observation_index=0,
-        kind="policy-input",
-        timestamp_ns=100,
-        simulation_time_s=0.0,
-        calibrations={camera_id: _calibration() for camera_id in camera_ids},
-        source_devices={camera_id: "cuda:0" for camera_id in camera_ids},
-        synchronizations={
-            camera_id: {"host_bytes_ready": True, "method": "test"}
-            for camera_id in camera_ids
-        },
-    )
-
-    index = finalize_failed_policy_visual_evidence(
-        output_dir=tmp_path,
-        episode_id=episode_id,
-        identity={"candidate_id": "groot_n17_droid"},
-        exact_policy_input_frames=[exact],
-        multicamera_policy_input_observations=[observation],
-        failure_reason="policy_client_failed_after_observation",
-    )
-
-    visual = index["visual_evidence"]
-    assert visual["status"] == "complete_failure_evidence"
-    assert visual["human_review_available"] is True
-    assert visual["multicamera_policy_input_observation_count"] == 1
-    assert set(visual["videos"]) == set(camera_ids)
-    assert visual["terminal_observation_present"] is False
-    assert visual["terminal_observation_invented"] is False
-    assert len(
-        [
-            row
-            for row in index["media_artifacts"]
-            if row["role"] == "failed_episode_review_video"
-        ]
-    ) == 3
-    assert len(
-        [
-            row
-            for row in index["media_artifacts"]
-            if row["role"] == "policy_input_camera_frame"
-        ]
-    ) == 3
 
 
 def test_multicamera_media_retains_exact_views_calibration_and_timestamps(
@@ -370,6 +381,54 @@ def test_multicamera_media_retains_exact_views_calibration_and_timestamps(
     assert [
         row["timestamp_ns"] for row in manifest["policy_input_observations"]
     ] == [100, 101]
+
+
+def test_multicamera_finalization_resumes_after_first_video_is_written(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.episode_visual_evidence as media
+
+    episode_id = "episode-resume-after-first-camera-video"
+    observation = _multicamera_observation(
+        tmp_path, episode_id=episode_id, index=0, kind="policy-input"
+    )
+    terminal = _multicamera_observation(
+        tmp_path, episode_id=episode_id, index=1, kind="terminal-observation"
+    )
+    original = media._encode_episode_video
+    calls = 0
+
+    def _fail_after_first_video(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("forced_failure_after_first_camera_video")
+        return result
+
+    monkeypatch.setattr(media, "_encode_episode_video", _fail_after_first_video)
+    with pytest.raises(RuntimeError, match="forced_failure_after_first_camera_video"):
+        finalize_multicamera_visual_evidence(
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            identity={"policy_id": "pi05_droid"},
+            policy_input_observations=[observation],
+            terminal_observation=terminal,
+        )
+    assert (tmp_path / "media" / episode_id / "external.mp4").is_file()
+
+    monkeypatch.setattr(media, "_encode_episode_video", original)
+    visual, _ = finalize_multicamera_visual_evidence(
+        output_dir=tmp_path,
+        episode_id=episode_id,
+        identity={"policy_id": "pi05_droid"},
+        policy_input_observations=[observation],
+        terminal_observation=terminal,
+    )
+
+    assert visual["status"] == "complete"
+    assert visual["videos"]["external"]["resumed_existing_immutable_video"] is True
+    assert set(visual["videos"]) == {"external", "wrist"}
 
 
 def test_manipulation_profile_requires_review_only_overview_video(tmp_path) -> None:

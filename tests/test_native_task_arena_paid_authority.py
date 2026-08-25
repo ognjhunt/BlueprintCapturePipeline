@@ -10,6 +10,10 @@ import pytest
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_paid_authority as paid
+import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
+from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
+    STAGING_RECEIPT_ENV,
+)
 
 
 COMMIT = "a" * 40
@@ -136,13 +140,50 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     # A current program-level ceiling may explicitly supersede the lower
     # immutable ceiling recorded by the predecessor.  Per-attempt limits and
     # the predecessor's spend still remain digest-bound.
-    assert authority["aggregate_goal_spend_cap_usd"] == 40.0
+    assert authority["aggregate_goal_spend_cap_usd"] == 50.0
     assert authority["prior_terminal_attempt"]["attempt_cost_usd"] == 0.092936
     assert authority["prior_terminal_attempt"]["actual_provider_charge_usd"] == 0.025
     assert authority["prior_terminal_attempt"]["terminal_result"]["path"] == str(
         predecessor["canonical_result"]
     )
     assert authority["retain_warm_session"] is False
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.6,
+        hard_cap_usd=0.6,
+        hard_ttl_seconds=3600,
+    )["authorization_digest"] == authority["authorization_digest"]
+
+    declared = [
+        receipt_path,
+        predecessor["authority"],
+        predecessor["canonical_result"],
+        predecessor["zero"],
+    ]
+    profile = {
+        "profile_id": "authority-closure-test",
+        "profile_digest": "sha256:" + "0" * 64,
+        "immutable_inputs": [
+            {
+                "name": f"input-{index}",
+                "path": str(path.resolve()),
+                "digest": _sha(path),
+            }
+            for index, path in enumerate(declared)
+        ],
+    }
+    dispatcher._stage_profile_immutable_inputs(
+        profile=profile,
+        run_root=tmp_path / "staged-run",
+        allocator_argv=[],
+    )
+    monkeypatch.setenv(
+        STAGING_RECEIPT_ENV,
+        str(tmp_path / "staged-run" / "immutable_input_staging_receipt.json"),
+    )
+    for path in declared:
+        path.write_bytes(b"tampered-after-staging")
     assert paid.validate_native_task_arena_paid_attempt_authority(
         authority,
         prepared_bundle=prepared,
@@ -804,7 +845,7 @@ def test_legacy_preflight_exit_with_missing_cost_can_seal_and_chain(
             "hard_attempt_spend_cap_usd": 2.0,
             "maximum_single_resource_ttl_seconds": 3600,
             "aggregate_goal_spend_before_attempt_usd": 1.0,
-            "aggregate_goal_spend_cap_usd": 40.0,
+            "aggregate_goal_spend_cap_usd": 50.0,
         }
     )
     authority["authorization_digest"] = canonical_digest(

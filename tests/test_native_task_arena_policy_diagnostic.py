@@ -84,6 +84,52 @@ def _diagnostic_controls(root: Path, scene: dict, construction: Path) -> Path:
     return path
 
 
+def test_policy_diagnostic_bundle_cli_forwards_explicit_authority_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "policy-spec.json"
+    spec.write_text("{}", encoding="utf-8")
+    observed = {}
+    monkeypatch.setattr(
+        diagnostic_bundle_module,
+        "build_native_task_arena_policy_diagnostic_bundle",
+        lambda **kwargs: observed.update(kwargs)
+        or {
+            "bundle_sha256": "sha256:" + "1" * 64,
+            "policy_candidate_id": "groot_n17_droid",
+        },
+    )
+
+    exit_code = diagnostic_bundle_module.main(
+        [
+            "--job-dir",
+            str(tmp_path / "job"),
+            "--packet-dir",
+            str(tmp_path / "packet"),
+            "--construction-result",
+            str(tmp_path / "construction.json"),
+            "--control-result",
+            str(tmp_path / "controls.json"),
+            "--runtime-source-packet-receipt",
+            str(tmp_path / "runtime.json"),
+            "--implementation-commit",
+            "a" * 40,
+            "--policy-execution-spec",
+            str(spec),
+            "--scene-policy-readiness-path",
+            str(tmp_path / "readiness.json"),
+            "--scenario-suite-path",
+            str(tmp_path / "suite.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["scene_policy_readiness_path"] == str(
+        tmp_path / "readiness.json"
+    )
+    assert observed["scenario_suite_path"] == str(tmp_path / "suite.json")
+
+
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_diagnostic_spec_is_canonical_reset_and_cannot_claim_scoring(
     tmp_path: Path, candidate_id: str

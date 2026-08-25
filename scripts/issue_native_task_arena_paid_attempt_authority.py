@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hard-ttl-seconds", required=True, type=int)
     parser.add_argument("--allow-active-instance", action="append", default=[], type=int)
     parser.add_argument("--retain-warm-session", action="store_true")
+    parser.add_argument("--policy-campaign")
+    parser.add_argument("--campaign-member-id")
     parser.add_argument("--output", required=True)
     return parser
 
@@ -40,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        campaign = {}
+        if args.policy_campaign is not None or args.campaign_member_id is not None:
+            campaign = {
+                "policy_campaign_path": args.policy_campaign,
+                "campaign_member_id": args.campaign_member_id,
+            }
         authority = materialize_native_task_arena_paid_attempt_authority(
             bundle_receipt_path=args.bundle_receipt,
             prior_authority_path=args.prior_authority,
@@ -56,6 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output,
             allowed_active_instance_ids=tuple(args.allow_active_instance),
             retain_warm_session=args.retain_warm_session,
+            **campaign,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(

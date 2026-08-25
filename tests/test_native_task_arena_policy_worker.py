@@ -93,6 +93,9 @@ def test_groot_episode_consumes_runtime_measured_worker_identity(tmp_path) -> No
     from blueprint_pipeline.groot_n17_droid_policy_runtime import (
         GrootN17DroidPolicySpec,
     )
+    from blueprint_pipeline.adp009d_groot_worker_identity import (
+        expected_checkpoint_content_binding,
+    )
     from blueprint_pipeline.native_task_arena_policy_worker import (
         GROOT_RUNTIME_IDENTITY_FILENAME,
         _runtime_groot_worker_identity,
@@ -106,6 +109,9 @@ def test_groot_episode_consumes_runtime_measured_worker_identity(tmp_path) -> No
         "groot_source_revision": policy_spec.groot_source_revision,
         "checkpoint_revision": policy_spec.checkpoint_revision,
         "checkpoint_files_sha256": "4" * 64,
+        "checkpoint_content_manifest_digest": expected_checkpoint_content_binding()[
+            "file_manifest_digest"
+        ],
         "environment_lock_sha256": "5" * 64,
     }
     path = tmp_path / GROOT_RUNTIME_IDENTITY_FILENAME
@@ -260,6 +266,8 @@ def test_pi05_worker_accepts_the_checkpoint_inventory_required_by_its_bundle(
     )
 
     assert set(_inputs(runtime, manifest)) == {
+        "adp009d_scene_840920_policy_readiness.v1.json",
+        "third_scene_840920_task_a_scenario_suite.v1.json",
         "native_task_arena_construction_result.v1.json",
         "native_task_arena_control_result.v1.json",
         "native_task_arena_policy_execution_spec.v1.json",
@@ -283,6 +291,21 @@ def test_each_policy_admission_relation_reports_which_one_failed(
             "manifest",
             "policy_candidate_id",
             "groot_n17_droid",
+        ),
+        "execution_spec_digest_vs_manifest": (
+            "manifest",
+            "policy_execution_spec_digest",
+            other,
+        ),
+        "execution_authority_vs_manifest": (
+            "manifest",
+            "policy_execution_authority",
+            "wrong_authority",
+        ),
+        "candidate_rights_binding_vs_manifest": (
+            "manifest",
+            "policy_rights_binding",
+            {"rights_receipt_digest": other},
         ),
         "construction_result_digest_vs_execution_spec": (
             "construction",
@@ -310,6 +333,16 @@ def test_each_policy_admission_relation_reports_which_one_failed(
         broken = {key: dict(item) for key, item in inputs.items()}
         broken[artifact][field] = value
         assert set(_admission_binding_mismatches(**broken)) == {relation}, relation
+
+    broken = {key: dict(item) for key, item in inputs.items()}
+    diagnostic_authority = (
+        "development_only_unqualified_controls_canonical_diagnostic"
+    )
+    broken["spec"]["execution_authority"] = diagnostic_authority
+    broken["manifest"]["policy_execution_authority"] = diagnostic_authority
+    assert set(_admission_binding_mismatches(**broken)) == {
+        "qualified_execution_authority"
+    }
 
     broken = {key: dict(item) for key, item in inputs.items()}
     broken["controls"]["control_pair"] = {
@@ -356,17 +389,72 @@ def test_policy_admission_refuses_two_absent_digests() -> None:
 
     assert set(mismatches) == {
         "execution_spec_candidate_id_vs_manifest",
+        "execution_spec_digest_vs_manifest",
+        "execution_authority_vs_manifest",
+        "candidate_rights_binding_vs_manifest",
         "construction_result_digest_vs_execution_spec",
         "control_result_digest_vs_execution_spec",
         "control_pair_digest_vs_execution_spec",
         "scene_plan_digest_vs_execution_spec",
         "construction_gate_qualified",
         "controls_qualified",
+        "qualified_execution_authority",
         "control_pair_cell_admitted_for_policy_execution",
         "qualified_execution_authority",
         "candidate_rights_binding_vs_manifest",
         "execution_spec_prompt_vs_task_spec",
         "execution_spec_query_budget_vs_task_spec",
+    }
+
+
+def test_episode_progress_is_monotonic_and_phase_ordered() -> None:
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _apply_episode_progress,
+    )
+
+    result = {
+        "phase_reached": "policy_client_verified",
+        "candidate_policy_queried": False,
+    }
+    _apply_episode_progress(
+        result,
+        {
+            "phase": "policy_response_received",
+            "candidate_policy_queried": True,
+            "candidate_action_returned": True,
+            "policy_inference_evidence": {
+                "server_response_received": True,
+                "raw_vendor_action_response_digest": "sha256:" + "a" * 64,
+            },
+        },
+    )
+    _apply_episode_progress(
+        result,
+        {
+            "phase": "policy_action_bounds_refused",
+            "candidate_action_shape_validated": True,
+            "candidate_action_finite_validated": True,
+            "candidate_action_bounds_validated": False,
+        },
+    )
+    _apply_episode_progress(
+        result,
+        {
+            "phase": "first_observation",
+            "candidate_policy_queried": False,
+            "candidate_action_returned": False,
+        },
+    )
+
+    assert result["phase_reached"] == "policy_action_bounds_refused"
+    assert result["candidate_policy_queried"] is True
+    assert result["candidate_action_returned"] is True
+    assert result["candidate_action_shape_validated"] is True
+    assert result["candidate_action_finite_validated"] is True
+    assert result["candidate_action_bounds_validated"] is False
+    assert result["policy_inference_evidence"] == {
+        "server_response_received": True,
+        "raw_vendor_action_response_digest": "sha256:" + "a" * 64,
     }
 
 
@@ -403,8 +491,8 @@ def test_blocked_result_before_first_observation_retains_typed_media_gap(
     }
 
 
-def test_media_gap_not_asserted_when_episode_media_exists(tmp_path) -> None:
-    """Retained frames refute 'before first observation'; assert no gap."""
+def test_arbitrary_media_bytes_do_not_refute_before_first_observation(tmp_path) -> None:
+    """A loose PNG is not a retained, digest-bound first observation."""
 
     from blueprint_pipeline.native_task_arena_policy_worker import (
         _typed_media_gap_for_blocked_result,
@@ -418,6 +506,85 @@ def test_media_gap_not_asserted_when_episode_media_exists(tmp_path) -> None:
         "blockers": ["native_task_policy_failed_at_policy_client_verified:X:y"],
         "phase_reached": "policy_client_verified",
         "candidate_policy_queried": False,
+    }
+
+    gap = _typed_media_gap_for_blocked_result(output_root=tmp_path, result=result)
+    assert gap is not None
+    assert gap["status"] == "unavailable_before_first_observation"
+
+
+def test_first_observation_without_sealed_media_gets_typed_partial_gap(
+    tmp_path,
+) -> None:
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    result = {
+        "status": "blocked",
+        "blockers": ["native_task_policy_failed_at_policy_response_received:X:y"],
+        "phase_reached": "policy_response_received",
+        "first_observation_retained": True,
+        "candidate_policy_queried": True,
+    }
+
+    gap = _typed_media_gap_for_blocked_result(output_root=tmp_path, result=result)
+    assert gap == {
+        "status": "incomplete_after_first_observation",
+        "media_gap": {
+            "type": "after_first_observation_evidence_incomplete",
+            "reason": "native_task_policy_failed_at_policy_response_received:X:y",
+        },
+    }
+
+
+def test_detailed_post_observation_media_gap_preserves_retained_artifacts(
+    tmp_path,
+) -> None:
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    visual = {
+        "status": "incomplete_after_first_observation",
+        "episode_terminal_status": "failed_after_first_observation",
+        "exact_policy_observation_retained": True,
+        "multicamera_policy_observation_retained": False,
+        "frame_manifest_digest": "sha256:" + "1" * 64,
+        "video": {"relative_path": "media/e1/episode.mp4"},
+        "media_gap": {
+            "type": "after_first_observation_evidence_incomplete",
+            "reason": "RuntimeError:native cameras failed",
+        },
+    }
+    result = {
+        "status": "blocked",
+        "blockers": ["native cameras failed"],
+        "phase_reached": "first_observation",
+        "first_observation_retained": True,
+        "visual_evidence": visual,
+    }
+
+    assert _typed_media_gap_for_blocked_result(
+        output_root=tmp_path, result=result
+    ) == visual
+
+
+def test_sealed_failure_media_satisfies_post_observation_contract(tmp_path) -> None:
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _typed_media_gap_for_blocked_result,
+    )
+
+    result = {
+        "status": "blocked",
+        "blockers": ["boom"],
+        "phase_reached": "policy_response_received",
+        "first_observation_retained": True,
+        "candidate_policy_queried": True,
+        "visual_evidence": {
+            "status": "complete",
+            "episode_terminal_status": "failed_after_first_observation",
+        },
     }
 
     assert (

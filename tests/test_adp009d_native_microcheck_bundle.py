@@ -3329,8 +3329,8 @@ def test_the_episode_clients_share_the_same_candidate_adapters_as_readiness() ->
     assert "worker_identity_receipt" in block
 
 
-def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> None:
-    """They disagreed once, and the disagreement passed readiness."""
+def test_readiness_does_not_query_before_the_episode_seals_observation() -> None:
+    """Readiness must not advance candidate history with synthetic input."""
 
     import inspect
     from pathlib import Path as _Path
@@ -3338,9 +3338,10 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
     from blueprint_pipeline import adp009d_policy_server_worker as worker
 
-    probe = inspect.getsource(worker.attempt_round_trip)
+    probe = inspect.getsource(worker.attempt_handshake)
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
-    assert "isinstance(response, dict)" in probe
+    assert ".infer(" not in probe
+    assert "candidate_policy_queried" in probe
     assert "isinstance(response, dict)" in episode
 
 

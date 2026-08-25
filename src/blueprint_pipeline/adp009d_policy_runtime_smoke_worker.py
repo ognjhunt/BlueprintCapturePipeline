@@ -1,4 +1,4 @@
-"""Seal one outcome-blind real policy-server inference smoke receipt."""
+"""Seal one outcome-blind, zero-inference policy-server handshake receipt."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "adp009d_policy_runtime_smoke.v1"
+SCHEMA_VERSION = "adp009d_policy_runtime_smoke.v2"
 EXPECTED_CANDIDATES = frozenset({"pi05_droid", "groot_n17_droid"})
 FORBIDDEN_OUTCOME_KEYS = frozenset(
     {
@@ -52,7 +52,7 @@ def seal_policy_runtime_smoke(
     server_receipt_path: str | Path,
     provisioning_exit_code: int,
 ) -> dict[str, Any]:
-    """Validate one real round trip without importing task or outcome state."""
+    """Validate readiness without importing task state or querying the policy."""
 
     blockers: list[str] = []
     receipt_path = Path(server_receipt_path).expanduser().resolve()
@@ -67,18 +67,15 @@ def seal_policy_runtime_smoke(
         blockers.append("policy_runtime_smoke_provisioning_failed")
     if server.get("candidate_id") != candidate_id:
         blockers.append("policy_runtime_smoke_candidate_identity_mismatch")
-    if server.get("status") != "ready" or server.get("round_trip_completed") is not True:
-        blockers.append("policy_runtime_smoke_round_trip_not_completed")
-    rows = server.get("action_chunk_rows")
-    width = server.get("action_chunk_width")
-    if (
-        isinstance(rows, bool)
-        or not isinstance(rows, int)
-        or rows < 8
-        or width != 8
-    ):
-        blockers.append("policy_runtime_smoke_action_shape_invalid")
-    if server.get("server_stopped_after_round_trip") is not True:
+    if server.get("status") != "ready" or server.get("handshake_completed") is not True:
+        blockers.append("policy_runtime_smoke_handshake_not_completed")
+    if server.get("candidate_policy_queried") is not False:
+        blockers.append("policy_runtime_smoke_candidate_was_queried")
+    if server.get("candidate_inference_performed") is not False:
+        blockers.append("policy_runtime_smoke_inference_was_performed")
+    if server.get("policy_state_advanced") is not False:
+        blockers.append("policy_runtime_smoke_policy_state_was_advanced")
+    if server.get("server_stopped_after_handshake") is not True:
         blockers.append("policy_runtime_smoke_server_not_stopped")
     pid = server.get("server_pid")
     if isinstance(pid, int) and not isinstance(pid, bool) and Path(f"/proc/{pid}").exists():
@@ -94,20 +91,20 @@ def seal_policy_runtime_smoke(
         "schema_version": SCHEMA_VERSION,
         "status": "completed" if not blockers else "blocked",
         "candidate_id": candidate_id,
-        "candidate_policy_queried": server.get("round_trip_completed") is True,
+        "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
-        "synthetic_observation_query_count": (
-            1 if server.get("round_trip_completed") is True else 0
-        ),
+        "synthetic_observation_query_count": 0,
+        "handshake_completed": server.get("handshake_completed") is True,
+        "policy_state_advanced": False,
         "server_receipt_sha256": receipt_sha256,
         "server_transport": server.get("transport"),
-        "action_chunk_shape": [rows, width] if rows is not None else None,
-        "server_stopped_after_round_trip": server.get(
-            "server_stopped_after_round_trip"
+        "server_stopped_after_handshake": server.get(
+            "server_stopped_after_handshake"
         ),
         "claim_boundary": {
-            "real_checkpoint_inference_observed": not blockers,
-            "synthetic_static_observation_only": True,
+            "real_checkpoint_inference_observed": False,
+            "synthetic_static_observation_only": False,
+            "identity_and_modality_handshake_observed": not blockers,
             "actions_executed": False,
             "task_scene_loaded": False,
             "controls_executed": False,

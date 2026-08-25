@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import socket
+import threading
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
+import zmq
 
+from blueprint_pipeline.adp009d_groot_worker_identity import (
+    expected_checkpoint_content_binding,
+)
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     CHECKPOINT_REVISION,
     EMBODIMENT_TAG,
@@ -14,6 +20,10 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     GrootN17DroidPolicyClient,
     GrootN17DroidPolicySpec,
     droid_eef_9d,
+)
+from blueprint_pipeline.groot_n17_wire_client import (
+    decode_wire_message,
+    encode_wire_message,
 )
 
 
@@ -31,6 +41,9 @@ def _receipt() -> dict:
         "groot_source_revision": GROOT_SOURCE_REVISION,
         "checkpoint_revision": CHECKPOINT_REVISION,
         "checkpoint_files_sha256": "1" * 64,
+        "checkpoint_content_manifest_digest": expected_checkpoint_content_binding()[
+            "file_manifest_digest"
+        ],
         "environment_lock_sha256": "2" * 64,
     }
 
@@ -40,6 +53,7 @@ class _FakePolicyClient:
         self.kwargs = kwargs
         self.requests = []
         self.reset_calls = 0
+        self.close_calls = 0
 
     def ping(self) -> bool:
         return True
@@ -62,6 +76,9 @@ class _FakePolicyClient:
     def reset(self):
         self.reset_calls += 1
         return {}
+
+    def close(self):
+        self.close_calls += 1
 
 
 def _observation() -> dict:
@@ -113,6 +130,11 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     assert len(native["native_action_components"]["eef_9d"]) == 40
     assert len(native["native_action_chunk_sha256"]) == 64
     assert native["execution_projection"].endswith("eef_9d_retained_not_executed")
+    evidence = client.evidence_summary()
+    assert evidence["video_delta_indices"] == [-15, 0]
+    assert evidence["state_delta_indices"] == [0]
+    assert evidence["action_delta_indices"] == list(range(40))
+    assert evidence["language_delta_indices"] == [0]
 
     client.reset()
     assert fake.reset_calls == 1
@@ -129,6 +151,159 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
         reset_request["video"]["exterior_image_1_left"][:, 0],
         reset_request["video"]["exterior_image_1_left"][:, 1],
     )
+    client.close()
+    assert fake.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("modality_name", "replacement", "expected_error"),
+    [
+        (
+            "video",
+            _Modality(("exterior_image_1_left", "wrist_image_left"), (0,)),
+            "groot_droid_video_delta_indices_mismatch",
+        ),
+        (
+            "state",
+            _Modality(("eef_9d", "gripper_position", "joint_position"), (-1, 0)),
+            "groot_droid_state_delta_indices_mismatch",
+        ),
+        (
+            "action",
+            _Modality(("eef_9d", "gripper_position", "joint_position"), tuple(range(8))),
+            "groot_droid_action_delta_indices_mismatch",
+        ),
+        (
+            "language",
+            _Modality((LANGUAGE_KEY,), (-1, 0)),
+            "groot_droid_language_delta_indices_mismatch",
+        ),
+    ],
+)
+def test_client_refuses_any_drift_from_frozen_modality_delta_indices(
+    modality_name: str,
+    replacement: _Modality,
+    expected_error: str,
+) -> None:
+    class _DriftedModalityClient(_FakePolicyClient):
+        def get_modality_config(self) -> dict:
+            modality = super().get_modality_config()
+            modality[modality_name] = replacement
+            return modality
+
+    fake = _DriftedModalityClient()
+    with pytest.raises(ValueError, match=expected_error):
+        GrootN17DroidPolicyClient(
+            spec=GrootN17DroidPolicySpec(),
+            worker_identity_receipt=_receipt(),
+            host="127.0.0.1",
+            client_factory=lambda **kwargs: fake,
+        )
+
+    assert fake.close_calls == 1
+
+
+def test_failed_client_readiness_closes_wire_resources() -> None:
+    fake = _FakePolicyClient()
+    fake.ping = lambda: False
+
+    with pytest.raises(ValueError, match="groot_policy_server_unreachable"):
+        GrootN17DroidPolicyClient(
+            spec=GrootN17DroidPolicySpec(),
+            worker_identity_receipt=_receipt(),
+            host="127.0.0.1",
+            client_factory=lambda **kwargs: fake,
+        )
+
+    assert fake.close_calls == 1
+
+
+def test_default_factory_uses_wire_only_client_for_real_loopback_round_trip() -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    ready = threading.Event()
+
+    def server() -> None:
+        context = zmq.Context()
+        reply = context.socket(zmq.REP)
+        reply.bind(f"tcp://127.0.0.1:{port}")
+        ready.set()
+        try:
+            for _ in range(3):
+                request = decode_wire_message(reply.recv())
+                if request["endpoint"] == "ping":
+                    response = {"status": "ok"}
+                elif request["endpoint"] == "get_modality_config":
+                    response = {
+                        "video": {
+                            "__ModalityConfig__": True,
+                            "as_json": {
+                                "modality_keys": [
+                                    "exterior_image_1_left",
+                                    "wrist_image_left",
+                                ],
+                                "delta_indices": [-15, 0],
+                            },
+                        },
+                        "state": {
+                            "__ModalityConfig__": True,
+                            "as_json": {
+                                "modality_keys": [
+                                    "eef_9d",
+                                    "gripper_position",
+                                    "joint_position",
+                                ],
+                                "delta_indices": [0],
+                            },
+                        },
+                        "action": {
+                            "__ModalityConfig__": True,
+                            "as_json": {
+                                "modality_keys": [
+                                    "eef_9d",
+                                    "gripper_position",
+                                    "joint_position",
+                                ],
+                                "delta_indices": list(range(40)),
+                            },
+                        },
+                        "language": {
+                            "__ModalityConfig__": True,
+                            "as_json": {
+                                "modality_keys": [LANGUAGE_KEY],
+                                "delta_indices": [0],
+                            },
+                        },
+                    }
+                else:
+                    assert request["endpoint"] == "get_action"
+                    response = [
+                        {
+                            "joint_position": np.zeros((1, 40, 7), dtype=np.float32),
+                            "gripper_position": np.zeros((1, 40, 1), dtype=np.float32),
+                            "eef_9d": np.zeros((1, 40, 9), dtype=np.float32),
+                        },
+                        {},
+                    ]
+                reply.send(encode_wire_message(response))
+        finally:
+            reply.close(linger=0)
+            context.term()
+
+    thread = threading.Thread(target=server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=2.0)
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        port=port,
+    )
+    assert client.infer(_observation()).shape == (40, 8)
+    client.close()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
 
 
 def test_client_rejects_unverified_or_mismatched_worker_identity() -> None:

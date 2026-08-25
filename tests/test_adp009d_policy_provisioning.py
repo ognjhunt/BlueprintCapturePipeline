@@ -10,9 +10,11 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     BLOCKER_SHARED_INTERPRETER,
     ISAAC_INTERPRETER,
     ISAAC_PYTHON_EXECUTABLE,
+    POLICY_SOURCE_ROOT,
     PolicyProvisioningError,
     build_provisioning_script,
     describe_provisioning,
+    policy_venv_root,
     validate_provisioning,
 )
 
@@ -115,8 +117,12 @@ def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> N
     assert '"pyzmq==27.0.1"' in script
     assert '"msgpack==1.1.0"' in script
     assert '"msgpack-numpy==0.4.8"' in script
-    assert script.index("--no-deps -e") < script.index(
-        '"msgpack-numpy==0.4.8"'
+    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
+    assert script.index('"msgpack-numpy==0.4.8"') < script.index(
+        '"$RUNTIME_DIR/groot_n17_wire_client.py"'
+    )
+    assert script.index('"$RUNTIME_DIR/groot_n17_wire_client.py"') < script.index(
+        "_checkpoint:started"
     )
 
 
@@ -165,6 +171,8 @@ def test_every_frozen_candidate_provisions_and_validates() -> None:
         receipt = describe_provisioning(candidate_id)
         assert validate_provisioning(receipt) == []
         assert receipt["materialize_on"] == "gpu_worker"
+    assert describe_provisioning("pi05_droid")["endpoint_port"] == 8000
+    assert describe_provisioning("groot_n17_droid")["endpoint_port"] == 5555
 
 
 def test_a_non_loopback_endpoint_is_refused() -> None:
@@ -423,13 +431,8 @@ def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
     )
 
 
-def test_groots_client_reaches_isaac_without_its_dependency_tree() -> None:
-    """Its client lives in the main package rather than a thin one.
-
-    Installed without dependencies: the episode needs the ZMQ client class,
-    and pulling GR00T's full tree into Isaac would risk exactly the torch
-    conflict the separate-interpreter design exists to avoid.
-    """
+def test_groots_wire_client_reaches_isaac_without_installing_groot() -> None:
+    """Isaac receives the pinned wire module, never GR00T's model package."""
 
     from blueprint_pipeline.adp009d_policy_provisioning import (
         ISAAC_INTERPRETER,
@@ -437,13 +440,17 @@ def test_groots_client_reaches_isaac_without_its_dependency_tree() -> None:
     )
 
     script = build_provisioning_script("groot_n17_droid")
-    assert (
-        f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" '
-        "--no-deps -e"
-        in script
-    )
+    assert f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}"' in script
+    assert f'--no-deps -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"' not in script
+    assert '"$RUNTIME_DIR/groot_n17_wire_client.py"' in script
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
     assert "pyzmq" in script and "msgpack" in script
+    # The separate server venv still installs the full, frozen GR00T checkout.
+    assert (
+        f'VIRTUAL_ENV="{policy_venv_root("groot_n17_droid")}" "$UV" '
+        f'pip install -e "{POLICY_SOURCE_ROOT}/groot_n17_droid"'
+        in script
+    )
 
 
 def test_the_client_install_follows_the_verified_checkout() -> None:

@@ -28,6 +28,48 @@ GROOT_RUNTIME_IDENTITY_FILENAME = (
     "adp009d_groot_worker_identity.groot_n17_droid.json"
 )
 
+_EPISODE_PROGRESS_BOOLEAN_FIELDS = (
+    "first_observation_retained",
+    "exact_policy_observation_retained",
+    "multicamera_policy_observation_retained",
+    "candidate_policy_query_attempted",
+    "candidate_policy_queried",
+    "candidate_action_returned",
+    "candidate_action_shape_validated",
+    "candidate_action_finite_validated",
+    "candidate_action_bounds_validated",
+    "candidate_action_validated",
+    "candidate_native_command_validated",
+    "candidate_joint_state_validated",
+    "candidate_action_applied",
+    "episode_running",
+)
+_EPISODE_PHASE_ORDER = {
+    "first_observation": 1,
+    "multicamera_observation_retained": 2,
+    "policy_query_started": 3,
+    "policy_response_received": 4,
+    "policy_action_shape_refused": 5,
+    "policy_action_shape_validated": 5,
+    "policy_action_finite_refused": 6,
+    "policy_action_finite_validated": 6,
+    "policy_action_bounds_refused": 7,
+    "policy_action_bounds_validated": 7,
+    "first_policy_action": 8,
+    "native_command_validated": 9,
+    "environment_step_started": 10,
+    "episode_running": 11,
+    "joint_state_validated": 12,
+    "episode_media_sealed": 13,
+    "episode_complete": 14,
+}
+_EPISODE_PROGRESS_EVIDENCE_FIELDS = (
+    "candidate_policy_action_queries",
+    "commanded_actions",
+    "candidate_exact_policy_input_frames",
+    "policy_inference_evidence",
+)
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -68,6 +110,41 @@ def _to_tensor(value: Any) -> Any:
     raise TypeError(f"unsupported_sim_array:{module}.{type(value).__name__}")
 
 
+def _apply_episode_progress(
+    result: dict[str, Any], update: Mapping[str, Any]
+) -> None:
+    """Merge paid episode milestones without allowing truth to regress."""
+
+    for field in _EPISODE_PROGRESS_BOOLEAN_FIELDS:
+        if update.get(field) is True:
+            result[field] = True
+        elif field not in result:
+            result[field] = False
+    for field in _EPISODE_PROGRESS_EVIDENCE_FIELDS:
+        if field in update:
+            result[field] = json.loads(json.dumps(update[field], allow_nan=False))
+    phase = str(update.get("phase") or "")
+    current = str(result.get("phase_reached") or "")
+    if phase in _EPISODE_PHASE_ORDER and _EPISODE_PHASE_ORDER[phase] >= (
+        _EPISODE_PHASE_ORDER.get(current, 0)
+    ):
+        result["phase_reached"] = phase
+
+
+def _public_episode_progress(progress: Mapping[str, Any]) -> dict[str, Any]:
+    """Return only JSON evidence; never leak the in-process media finalizer."""
+
+    keys = {
+        *_EPISODE_PROGRESS_BOOLEAN_FIELDS,
+        "phase",
+        "policy_inference_evidence",
+        *_EPISODE_PROGRESS_EVIDENCE_FIELDS,
+        "visual_evidence",
+        "media_artifacts",
+    }
+    return {key: progress[key] for key in sorted(keys) if key in progress}
+
+
 def _inputs(runtime: Path, manifest: Mapping[str, Any]) -> dict[str, Path]:
     verified: dict[str, Path] = {}
     for row in manifest.get("bound_runtime_inputs") or []:
@@ -82,6 +159,8 @@ def _inputs(runtime: Path, manifest: Mapping[str, Any]) -> dict[str, Path]:
             raise RuntimeError(f"native_task_policy_input_identity_mismatch:{relative}")
         verified[Path(relative).name] = path
     required = {
+        "adp009d_scene_840920_policy_readiness.v1.json",
+        "third_scene_840920_task_a_scenario_suite.v1.json",
         "native_task_arena_construction_result.v1.json",
         "native_task_arena_control_result.v1.json",
         "native_task_arena_policy_execution_spec.v1.json",
@@ -111,25 +190,40 @@ def _typed_media_gap_for_blocked_result(
 
     The doctrine refuses completed episodes without lossless media and refuses
     pre-observation failures without an explicit typed gap; a bare blocked
-    receipt is indistinguishable from lost media.  The discriminator here is
-    observable truth rather than a phase label: whether any episode media byte
-    was retained under this run's media root.
+    receipt is indistinguishable from lost media.  Arbitrary bytes under the
+    media root are not evidence that a complete observation was retained.  The
+    episode's monotonic first-observation milestone is the authority.
     """
 
-    if (
-        result.get("status") == "completed"
-        or "episode" in result
-        or "visual_evidence" in result
-    ):
-        return None
-    episodes_root = output_root / "episodes"
-    if episodes_root.is_dir() and any(
-        path.is_file() for path in episodes_root.rglob("*")
-    ):
+    del output_root  # retained in the call contract for flat-bundle compatibility
+    if result.get("status") == "completed" or "episode" in result:
         return None
     reason = next(iter(result.get("blockers") or []), "")
     if not reason:
         reason = f"failed_at_{result.get('phase_reached') or 'unknown'}"
+    if result.get("first_observation_retained") is True:
+        visual = result.get("visual_evidence")
+        if isinstance(visual, Mapping) and visual.get("status") == "complete":
+            return None
+        if (
+            isinstance(visual, Mapping)
+            and visual.get("status") == "incomplete_after_first_observation"
+            and isinstance(visual.get("media_gap"), Mapping)
+            and visual["media_gap"].get("type")
+            == "after_first_observation_evidence_incomplete"
+            and str(visual["media_gap"].get("reason") or "").strip()
+        ):
+            # Preserve the episode finalizer's digest-bound exact-composite
+            # artifacts and precise missing-multicamera diagnosis. Replacing it
+            # with the generic gap below would erase useful retained evidence.
+            return json.loads(json.dumps(visual, allow_nan=False))
+        return {
+            "status": "incomplete_after_first_observation",
+            "media_gap": {
+                "type": "after_first_observation_evidence_incomplete",
+                "reason": str(reason),
+            },
+        }
     return {
         "status": "unavailable_before_first_observation",
         "media_gap": {
@@ -137,74 +231,6 @@ def _typed_media_gap_for_blocked_result(
             "reason": str(reason),
         },
     }
-
-
-def _seal_post_observation_failure_media(
-    *,
-    output_root: Path,
-    result: dict[str, Any],
-    media_progress: Mapping[str, Any],
-) -> None:
-    """Attach a sealed visual index when execution fails after observation."""
-
-    exact_frames = media_progress.get("candidate_exact_policy_input_frames")
-    if result.get("status") == "completed" or not isinstance(exact_frames, list):
-        return
-    if not exact_frames:
-        return
-    reason = next(iter(result.get("blockers") or []), "") or (
-        f"failed_at_{result.get('phase_reached') or 'unknown'}"
-    )
-    try:
-        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-        from blueprint_pipeline.episode_visual_evidence import (
-            finalize_failed_policy_visual_evidence,
-        )
-
-        index = finalize_failed_policy_visual_evidence(
-            output_dir=output_root / "episodes",
-            episode_id=str(media_progress["episode_id"]),
-            identity={
-                "candidate_id": str(media_progress["candidate_id"]),
-                "prompt": str(media_progress["prompt"]),
-                "episode_status": "failed_after_first_observation",
-            },
-            exact_policy_input_frames=exact_frames,
-            multicamera_policy_input_observations=list(
-                media_progress.get("multicamera_policy_input_observations") or []
-            ),
-            review_observations=list(
-                media_progress.get("review_observations") or []
-            ),
-            failure_reason=str(reason),
-        )
-        result["visual_evidence"] = {
-            **index["visual_evidence"],
-            "visual_index": {
-                "relative_path": index["relative_path"],
-                "sha256": index["sha256"],
-                "visual_index_digest": index["visual_index_digest"],
-            },
-        }
-        result["media_artifacts"] = index["media_artifacts"]
-        result["candidate_exact_policy_input_frames"] = exact_frames
-        result["candidate_exact_policy_input_manifest_digest"] = canonical_digest(
-            {"frames": exact_frames}
-        )
-    except (KeyError, OSError, TypeError, ValueError, RuntimeError) as exc:
-        result["visual_evidence"] = {
-            "status": "post_observation_evidence_sealing_failed",
-            "media_gap": {
-                "type": "after_first_observation_evidence_sealing_failed",
-                "reason": f"{type(exc).__name__}:{exc}",
-            },
-            "lossless_policy_input_files_retained": True,
-            "terminal_observation_invented": False,
-        }
-        result["blockers"].append(
-            "native_task_policy_post_observation_media_seal_failed:"
-            f"{type(exc).__name__}:{exc}"
-        )
 
 
 def _admission_binding_mismatches(
@@ -228,6 +254,24 @@ def _admission_binding_mismatches(
     candidate = spec.get("candidate_id")
     if not candidate or candidate != manifest.get("policy_candidate_id"):
         mismatched.append("execution_spec_candidate_id_vs_manifest")
+    if (
+        not _bound_digest(spec.get("execution_spec_digest"))
+        or spec.get("execution_spec_digest")
+        != manifest.get("policy_execution_spec_digest")
+    ):
+        mismatched.append("execution_spec_digest_vs_manifest")
+    if (
+        not str(spec.get("execution_authority") or "")
+        or spec.get("execution_authority")
+        != manifest.get("policy_execution_authority")
+    ):
+        mismatched.append("execution_authority_vs_manifest")
+    if (
+        not isinstance(spec.get("candidate_rights_binding"), Mapping)
+        or spec.get("candidate_rights_binding")
+        != manifest.get("policy_rights_binding")
+    ):
+        mismatched.append("candidate_rights_binding_vs_manifest")
     digests = (
         (
             "construction_result_digest_vs_execution_spec",
@@ -304,12 +348,6 @@ def _admission_binding_mismatches(
                     "qualified_execution_authority",
                     spec.get("execution_authority")
                     == "qualified_controls_evaluation",
-                ),
-                (
-                    "candidate_rights_binding_vs_manifest",
-                    isinstance(spec.get("candidate_rights_binding"), Mapping)
-                    and spec.get("candidate_rights_binding")
-                    == manifest.get("policy_rights_binding"),
                 ),
                 ("controls_qualified", controls.get("controls_qualified")),
                 (
@@ -463,6 +501,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         "blockers": [],
         "phase_reached": "start",
         "candidate_policy_queried": False,
+        "candidate_policy_query_attempted": False,
+        "candidate_action_returned": False,
+        "candidate_action_shape_validated": False,
+        "candidate_action_finite_validated": False,
+        "candidate_action_bounds_validated": False,
+        "candidate_action_validated": False,
+        "candidate_native_command_validated": False,
+        "candidate_joint_state_validated": False,
+        "candidate_action_applied": False,
+        "first_observation_retained": False,
+        "exact_policy_observation_retained": False,
+        "multicamera_policy_observation_retained": False,
+        "episode_running": False,
         "policy_outcome_interpretable": False,
         "scientific_outcome_admitted": False,
         "ranking_eligible": False,
@@ -472,13 +523,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "claim_ceiling": DIAGNOSTIC_CLAIM_CEILING if diagnostic else None,
     }
     simulation_app = None
+    policy_client = None
     policy_query_tracker = None
-    media_progress: dict[str, Any] = {}
-
-    def record_media_progress(progress: Mapping[str, Any]) -> None:
-        media_progress.clear()
-        media_progress.update(progress)
-
+    episode_progress: dict[str, Any] = {}
     try:
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
         manifest = initial_manifest
@@ -507,15 +554,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             != canonical_digest(spec, digest_field="execution_spec_digest")
         ):
             raise RuntimeError("native_task_policy_execution_spec_invalid")
+        packet = runtime / "native_task_packet"
+        scene_plan = json.loads(
+            (packet / "native_task_arena_scene_plan.v1.json").read_text()
+        )
+        readiness = json.loads(
+            inputs[
+                "adp009d_scene_840920_policy_readiness.v1.json"
+            ].read_text()
+        )
+        scenario_suite = json.loads(
+            inputs[
+                "third_scene_840920_task_a_scenario_suite.v1.json"
+            ].read_text()
+        )
+        from blueprint_pipeline.adp009d_policy_rights import (
+            CandidatePolicyRightsError,
+            validate_candidate_policy_rights_authorities,
+        )
+
+        try:
+            rights_binding = validate_candidate_policy_rights_authorities(
+                spec.get("candidate_rights_binding") or {},
+                readiness=readiness,
+                scenario_suite=scenario_suite,
+                candidate_id=str(spec["candidate_id"]),
+                policy_spec=spec.get("policy_spec") or {},
+                runtime_robot_id=str(
+                    (scene_plan.get("robot") or {}).get("robot_id") or ""
+                ),
+                scene_plan_digest=str(spec.get("scene_plan_digest") or ""),
+            )
+        except CandidatePolicyRightsError as exc:
+            raise RuntimeError(
+                "native_task_policy_candidate_rights_binding_invalid:"
+                + ",".join(exc.errors)
+            ) from exc
         construction = json.loads(
             inputs["native_task_arena_construction_result.v1.json"].read_text()
         )
         controls = json.loads(
             inputs["native_task_arena_control_result.v1.json"].read_text()
-        )
-        packet = runtime / "native_task_packet"
-        scene_plan = json.loads(
-            (packet / "native_task_arena_scene_plan.v1.json").read_text()
         )
         admission_mismatches = _admission_binding_mismatches(
             manifest=manifest,
@@ -530,6 +609,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "native_task_policy_admission_binding_mismatch:"
                 + ",".join(sorted(admission_mismatches))
             )
+        result["candidate_rights_verified"] = True
+        result["scene_policy_readiness_digest"] = rights_binding[
+            "source_readiness_digest"
+        ]
+        result["candidate_rights_binding_digest"] = rights_binding[
+            "rights_receipt_digest"
+        ]
         result["phase_reached"] = "inputs_verified"
 
         from blueprint_pipeline.native_task_isaaclab_launch import (
@@ -634,14 +720,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 groot_worker_identity_receipt,
                 result["policy_runtime_identity"],
             ) = _runtime_groot_worker_identity(output_root=output_root, spec=spec)
-        policy_query_tracker = _PolicyQueryTracker(
-            _policy_client(
-                spec,
-                groot_worker_identity_receipt=groot_worker_identity_receipt,
-            )
+        policy_client = _policy_client(
+            spec,
+            groot_worker_identity_receipt=groot_worker_identity_receipt,
         )
+        policy_query_tracker = _PolicyQueryTracker(policy_client)
         result["phase_reached"] = "policy_client_verified"
         episode_id = f"{scene_plan['task_id']}--{spec['cell_id']}--{spec['candidate_id']}"
+
+        def retain_episode_progress(update: Mapping[str, Any]) -> None:
+            _apply_episode_progress(result, update)
+            _persist(output, result)
+
         episode = run_policy_episode(
             environment=episode_environment,
             policy=policy_query_tracker,
@@ -659,8 +749,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             media_output_dir=output_root / "episodes",
             episode_id=episode_id,
             scoring_authorized=not diagnostic,
-            media_progress_callback=record_media_progress,
+            progress=episode_progress,
+            progress_callback=retain_episode_progress,
         )
+        _apply_episode_progress(result, episode_progress)
         result["episode"] = episode
         if diagnostic:
             result["policy_outcome_interpretable"] = False
@@ -681,26 +773,70 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["status"] = "completed"
         result["phase_reached"] = "episode_complete"
     except BaseException as exc:  # noqa: BLE001 - retain every paid failure
+        if policy_query_tracker is not None:
+            if policy_query_tracker.candidate_policy_queried:
+                episode_progress["candidate_policy_queried"] = True
+            inference_evidence_reader = getattr(
+                policy_query_tracker, "last_inference_evidence", None
+            )
+            if callable(inference_evidence_reader):
+                try:
+                    inference_evidence = inference_evidence_reader()
+                except (TypeError, ValueError):
+                    inference_evidence = None
+                if (
+                    isinstance(inference_evidence, Mapping)
+                    and inference_evidence.get("server_response_received") is True
+                ):
+                    episode_progress["candidate_policy_queried"] = True
+                    episode_progress["policy_inference_evidence"] = dict(
+                        inference_evidence
+                    )
+        _apply_episode_progress(result, episode_progress)
+        failure_phase = result["phase_reached"]
         result["exception"] = {
             "type": type(exc).__name__,
             "message": str(exc),
-            "phase": result["phase_reached"],
+            "phase": failure_phase,
             "traceback": traceback.format_exc(),
         }
         result["blockers"].append(
-            f"native_task_policy_failed_at_{result['phase_reached']}:"
+            f"native_task_policy_failed_at_{failure_phase}:"
             f"{type(exc).__name__}:{exc}"
         )
+        failure_media_finalizer = episode_progress.get("_failure_media_finalizer")
+        if (
+            episode_progress.get("first_observation_retained") is True
+            and callable(failure_media_finalizer)
+        ):
+            try:
+                visual_evidence, media_artifacts = failure_media_finalizer(
+                    failure_reason=f"{type(exc).__name__}:{exc}"
+                )
+                if visual_evidence is None:
+                    raise RuntimeError("post_observation_media_not_sealed")
+                result["visual_evidence"] = visual_evidence
+                result["media_artifacts"] = media_artifacts
+            except BaseException as media_exc:  # noqa: BLE001
+                result["visual_evidence"] = {
+                    "status": "incomplete_after_first_observation",
+                    "media_gap": {
+                        "type": "after_first_observation_evidence_incomplete",
+                        "reason": f"{type(media_exc).__name__}:{media_exc}",
+                    },
+                }
+                result["blockers"].append(
+                    "native_task_policy_post_observation_media_finalization_failed:"
+                    f"{type(media_exc).__name__}:{media_exc}"
+                )
+        if episode_progress:
+            result["partial_episode"] = _public_episode_progress(episode_progress)
     finally:
-        if policy_query_tracker is not None:
-            result["candidate_policy_queried"] = (
-                policy_query_tracker.candidate_policy_queried
-            )
-        _seal_post_observation_failure_media(
-            output_root=output_root,
-            result=result,
-            media_progress=media_progress,
-        )
+        if (
+            policy_query_tracker is not None
+            and policy_query_tracker.candidate_policy_queried
+        ):
+            result["candidate_policy_queried"] = True
         result["blockers"] = sorted(set(result["blockers"]))
         media_gap = _typed_media_gap_for_blocked_result(
             output_root=output_root, result=result
@@ -709,6 +845,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["visual_evidence"] = media_gap
         result["completed_at_unix_ns"] = time.time_ns()
         _persist(output, result)
+        if policy_client is not None:
+            try:
+                closer = getattr(policy_client, "close", None)
+                if callable(closer):
+                    closer()
+            except Exception:  # noqa: BLE001 - receipt already sealed
+                pass
         if simulation_app is not None:
             try:
                 simulation_app.close()

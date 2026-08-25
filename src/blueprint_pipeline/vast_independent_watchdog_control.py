@@ -44,6 +44,8 @@ class VastWatchdogHandle:
     deadline_epoch: float
     started_instance_id_path: Path
     allowed_active_instance_ids: tuple[int, ...]
+    allowed_active_resource_names: tuple[str, ...]
+    resource_name_exact: str | None
     caller_exit_survival_contract: str
 
 
@@ -106,6 +108,8 @@ def _retained_watchdog_result(
         "watchdog_pid": handle.process.pid,
         "watchdog_deadline_epoch": handle.deadline_epoch,
         "pod_name_prefix": handle.pod_name_prefix,
+        "resource_name_exact": handle.resource_name_exact,
+        "allowed_active_resource_names": list(handle.allowed_active_resource_names),
         "watchdog_retention_liveness_confirmed": alive,
         "watchdog_caller_exit_survival_confirmed": survival_proven,
         "caller_exit_survival_contract": handle.caller_exit_survival_contract,
@@ -171,6 +175,7 @@ def _terminal_evidence_matches_handle(
         evidence.get("final_global_inventory"),
     )
     allowed_ids = {str(value) for value in handle.allowed_active_instance_ids}
+    allowed_names = set(handle.allowed_active_resource_names)
     try:
         observed_deadline = float(evidence.get("deadline_epoch") or 0)
     except (TypeError, ValueError):
@@ -192,6 +197,7 @@ def _terminal_evidence_matches_handle(
             and row.get("status") == "observed"
             and row.get("provider") == "vast"
             and row.get("name_prefix") == handle.pod_name_prefix
+            and row.get("resource_name_exact") == handle.resource_name_exact
             and row.get("api_confirmed") is True
             and row.get("live_resource_count") == 0
             and row.get("resources") == []
@@ -199,7 +205,9 @@ def _terminal_evidence_matches_handle(
         )
         and all(
             isinstance(row, Mapping)
-            and _global_inventory_contains_only_allowed(row, allowed_ids=allowed_ids)
+            and _global_inventory_contains_only_allowed(
+                row, allowed_ids=allowed_ids, allowed_names=allowed_names
+            )
             for row in global_inventories
         )
         and evidence.get("raw_secret_values_recorded") is False
@@ -220,7 +228,7 @@ def _terminal_evidence_matches_handle(
 
 
 def _global_inventory_contains_only_allowed(
-    value: Mapping[str, Any], *, allowed_ids: set[str]
+    value: Mapping[str, Any], *, allowed_ids: set[str], allowed_names: set[str]
 ) -> bool:
     resources = value.get("resources")
     count = value.get("live_resource_count")
@@ -235,16 +243,16 @@ def _global_inventory_contains_only_allowed(
         or len(resources) != count
     ):
         return False
-    observed = {
-        str(row.get("instance_id") or "")
-        for row in resources
-        if isinstance(row, Mapping)
-    }
-    return (
-        len(observed) == count
-        and all(observed)
-        and observed.issubset(allowed_ids)
-    )
+    observed: set[str] = set()
+    for row in resources:
+        if not isinstance(row, Mapping):
+            return False
+        instance_id = str(row.get("instance_id") or "")
+        name = str(row.get("name") or "")
+        if not instance_id or (instance_id not in allowed_ids and name not in allowed_names):
+            return False
+        observed.add(instance_id)
+    return len(observed) == count
 
 
 def _safe_suffix(value: str) -> str:
@@ -287,15 +295,22 @@ def arm_independent_vast_watchdog(
     pod_name_prefix: str,
     startup_wait_seconds: float = 10.0,
     allowed_active_instance_ids: Sequence[int] = (),
+    allowed_active_resource_names: Sequence[str] = (),
+    resource_name_exact: str | None = None,
 ) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
     out_dir = job_dir / WATCHDOG_DIR_NAME
     ensure_dir(out_dir)
     prefix_base = str(pod_name_prefix or "").strip()
+    exact_name = str(resource_name_exact or "").strip()
     if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
         raise ValueError("independent_vast_watchdog_prefix_invalid")
-    prefix = f"{prefix_base}{_safe_suffix(generated_at)}-"
+    if exact_name and not re.fullmatch(
+        r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name
+    ):
+        raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
+    prefix = exact_name or f"{prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {
             "schema_version": HANDOFF_SCHEMA,
@@ -332,8 +347,18 @@ def arm_independent_vast_watchdog(
         "vast",
     ]
     allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    allowed_names = tuple(sorted({str(value).strip() for value in allowed_active_resource_names}))
+    if any(
+        not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}", value)
+        for value in allowed_names
+    ):
+        raise ValueError("independent_vast_watchdog_allowed_resource_name_invalid")
     for instance_id in allowed_ids:
         command.extend(["--allowed-active-instance-id", str(instance_id)])
+    for resource_name in allowed_names:
+        command.extend(["--allowed-active-resource-name", resource_name])
+    if exact_name:
+        command.extend(["--resource-name-exact", exact_name])
     try:
         process = subprocess.Popen(  # noqa: S603  # nosec B603 - fixed module and argv
             command,
@@ -407,6 +432,8 @@ def arm_independent_vast_watchdog(
         "watchdog_out_dir": str(out_dir),
         "started_instance_id_path": str(out_dir / "started_vast_instance_id.txt"),
         "allowed_active_instance_ids": list(allowed_ids),
+        "allowed_active_resource_names": list(allowed_names),
+        "resource_name_exact": exact_name or None,
         "provider_mutations_performed": 0,
         "blockers": [] if passed else ["independent_vast_watchdog_not_armed"],
         "raw_secret_values_recorded": False,
@@ -428,6 +455,8 @@ def arm_independent_vast_watchdog(
         deadline_epoch=deadline,
         started_instance_id_path=out_dir / "started_vast_instance_id.txt",
         allowed_active_instance_ids=allowed_ids,
+        allowed_active_resource_names=allowed_names,
+        resource_name_exact=exact_name or None,
         caller_exit_survival_contract=caller_exit_survival,
     )
 

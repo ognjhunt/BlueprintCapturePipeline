@@ -14,8 +14,10 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,12 +35,17 @@ from .task_evaluation_standing_launch_authorization import (
     consumption_totals,
     standing_authorization_admits,
 )
+from .task_evaluation_immutable_input_resolver import (
+    STAGING_RECEIPT_ENV,
+    STAGING_SCHEMA_VERSION,
+)
 
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
+IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION = STAGING_SCHEMA_VERSION
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 
 EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
@@ -177,6 +184,92 @@ def _is_uri(value: Any, *, authority: bool = False) -> bool:
     return text.startswith(_AUTHORITY_URI_SCHEMES if authority else _URI_SCHEMES)
 
 
+def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
+    """Validate private identity metadata for the frozen native policy lane."""
+
+    raw = profile.get("native_policy_binding")
+    if raw is None:
+        return []
+    binding = _mapping(raw)
+    robot = _mapping(binding.get("robot"))
+    task = _mapping(binding.get("task"))
+    policy = _mapping(binding.get("policy"))
+    runtime = _mapping(binding.get("runtime"))
+    rights = _mapping(binding.get("rights"))
+    raw_campaign = binding.get("policy_campaign")
+    blockers: list[str] = []
+    if (
+        binding.get("schema_version") != "native_task_arena_policy_binding.v1"
+        or not _is_identifier(binding.get("candidate_id"))
+    ):
+        blockers.append("native_policy_binding_identity_invalid")
+    if (
+        not _is_identifier(robot.get("runtime_robot_id"))
+        or not _is_identifier(robot.get("rights_embodiment_id"))
+        or not _is_digest(robot.get("alias_binding_digest"))
+        or not _is_digest(robot.get("config_digest"))
+    ):
+        blockers.append("native_policy_binding_robot_invalid")
+    if not _is_identifier(task.get("task_id")) or not _is_digest(
+        task.get("config_digest")
+    ):
+        blockers.append("native_policy_binding_task_invalid")
+    if (
+        not _is_digest(policy.get("spec_digest"))
+        or not _is_digest(policy.get("input_schema_digest"))
+        or not _is_digest(policy.get("output_schema_digest"))
+        or not str(policy.get("action_adapter") or "").strip()
+    ):
+        blockers.append("native_policy_binding_policy_invalid")
+    image = str(runtime.get("arena_container_image") or "")
+    image_repository, separator, image_digest = image.rpartition("@sha256:")
+    if (
+        runtime.get("arena_container_digest_pinned") is not True
+        or runtime.get("candidate_policy_container") is not False
+        or separator != "@sha256:"
+        or not image_repository.strip()
+        or len(image_digest) != 64
+        or any(character not in "0123456789abcdef" for character in image_digest)
+    ):
+        blockers.append("native_policy_binding_arena_container_invalid")
+    if not _is_digest(
+        rights.get("scene_policy_readiness_digest")
+    ) or not _is_digest(rights.get("candidate_rights_binding_digest")):
+        blockers.append("native_policy_binding_rights_invalid")
+    if raw_campaign is not None:
+        campaign = _mapping(raw_campaign)
+        resource_name = str(campaign.get("resource_name") or "")
+        sibling_name = str(campaign.get("sibling_resource_name") or "")
+        if (
+            set(campaign)
+            != {
+                "campaign_id",
+                "campaign_digest",
+                "member_id",
+                "launch_id",
+                "resource_name",
+                "sibling_member_id",
+                "sibling_launch_id",
+                "sibling_resource_name",
+            }
+            or not _is_identifier(campaign.get("campaign_id"))
+            or not _is_digest(campaign.get("campaign_digest"))
+            or campaign.get("member_id") != binding.get("candidate_id")
+            or not _is_identifier(campaign.get("launch_id"))
+            or not _is_identifier(campaign.get("sibling_member_id"))
+            or campaign.get("sibling_member_id") == campaign.get("member_id")
+            or not _is_identifier(campaign.get("sibling_launch_id"))
+            or campaign.get("sibling_launch_id") == campaign.get("launch_id")
+            or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", resource_name)
+            is None
+            or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", sibling_name)
+            is None
+            or resource_name == sibling_name
+        ):
+            blockers.append("native_policy_binding_campaign_invalid")
+    return blockers
+
+
 def _is_truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -303,6 +396,7 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
 def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     profile = _mapping(value)
     blockers: list[str] = []
+    blockers.extend(_native_policy_binding_blockers(profile))
     if profile.get("schema_version") != LAUNCH_PROFILE_SCHEMA_VERSION:
         blockers.append("launch_profile_schema_version_mismatch")
     if not _is_identifier(profile.get("profile_id")):
@@ -783,6 +877,262 @@ def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
     return sorted(set(blockers))
 
 
+def _write_exclusive_private_bytes(path: Path, payload: bytes) -> bool:
+    """Create one private file, allowing only byte-identical concurrent creation."""
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+                raise TaskEvaluationLaunchError(
+                    f"immutable_input_staging_conflict:{path.name}"
+                )
+            return False
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _stage_profile_immutable_inputs(
+    *,
+    profile: Mapping[str, Any],
+    run_root: Path,
+    allocator_argv: Sequence[str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Snapshot immutable inputs and redirect exact allocator path arguments."""
+
+    stage_root = run_root / "immutable_inputs"
+    stage_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        stage_root.chmod(0o700)
+    except OSError as exc:
+        raise TaskEvaluationLaunchError(
+            "immutable_input_staging_directory_not_private"
+        ) from exc
+
+    rows: list[dict[str, Any]] = []
+    replacements: dict[str, str] = {}
+    replacement_sources: dict[str, str] = {}
+    staged_sources: dict[Path, Path] = {}
+    for index, item in enumerate(profile.get("immutable_inputs") or []):
+        immutable_input = _mapping(item)
+        name = str(immutable_input.get("name") or "invalid")
+        declared_source = str(immutable_input.get("path") or "")
+        source = Path(declared_source).expanduser()
+        expected_digest = str(immutable_input.get("digest") or "")
+        if source.is_symlink() or not source.is_file():
+            raise TaskEvaluationLaunchError(
+                f"immutable_input_staging_source_missing:{name}"
+            )
+        source = source.resolve()
+        payload = source.read_bytes()
+        observed_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
+        if observed_digest != expected_digest:
+            raise TaskEvaluationLaunchError(
+                f"immutable_input_staging_source_digest_mismatch:{name}"
+            )
+        destination = (
+            stage_root
+            / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX):]}.input"
+        )
+        _write_exclusive_private_bytes(destination, payload)
+        readback = destination.read_bytes()
+        staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
+        if readback != payload or staged_digest != expected_digest:
+            raise TaskEvaluationLaunchError(
+                f"immutable_input_staging_readback_mismatch:{name}"
+            )
+        prior = replacements.get(str(source))
+        if prior is not None and prior != str(destination):
+            raise TaskEvaluationLaunchError(
+                f"immutable_input_staging_duplicate_source:{name}"
+            )
+        replacements[str(source)] = str(destination)
+        staged_sources[source] = destination
+        for spelling in {declared_source, str(source)}:
+            observed_source = replacement_sources.get(spelling)
+            if observed_source is not None and observed_source != str(source):
+                raise TaskEvaluationLaunchError(
+                    f"immutable_input_staging_path_alias_collision:{name}"
+                )
+            replacement_sources[spelling] = str(source)
+        rows.append(
+            {
+                "name": name,
+                "source_path": str(source),
+                "expected_digest": expected_digest,
+                "staged_path": str(destination),
+                "staged_size_bytes": len(readback),
+                "staged_digest": staged_digest,
+            }
+        )
+
+    directory_replacements: dict[str, str] = {}
+    directory_rows: list[dict[str, Any]] = []
+    for argument in allocator_argv:
+        candidate = Path(argument).expanduser()
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        source_directory = candidate.resolve()
+        contained = {
+            source: staged
+            for source, staged in staged_sources.items()
+            if source.is_relative_to(source_directory)
+        }
+        if not contained:
+            continue
+        if candidate.is_symlink():
+            raise TaskEvaluationLaunchError(
+                "immutable_input_allocator_directory_symlink"
+            )
+        if str(source_directory) in directory_replacements:
+            continue
+        directory_key = hashlib.sha256(
+            str(source_directory).encode("utf-8")
+        ).hexdigest()
+        projection = stage_root / "directories" / directory_key
+        projection.mkdir(mode=0o700, parents=True, exist_ok=True)
+        projection.chmod(0o700)
+        projected_inputs: list[dict[str, Any]] = []
+        for source, staged in sorted(
+            contained.items(), key=lambda item: str(item[0])
+        ):
+            relative_path = source.relative_to(source_directory)
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise TaskEvaluationLaunchError(
+                    "immutable_input_directory_projection_path_escape"
+                )
+            projected = projection / relative_path
+            payload = staged.read_bytes()
+            _write_exclusive_private_bytes(projected, payload)
+            projected.chmod(0o600)
+            readback = projected.read_bytes()
+            digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
+            expected_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
+            if readback != payload or digest != expected_digest:
+                raise TaskEvaluationLaunchError(
+                    "immutable_input_directory_projection_readback_mismatch"
+                )
+            projected_inputs.append(
+                {
+                    "source_path": str(source),
+                    "relative_path": str(relative_path),
+                    "projected_path": str(projected),
+                    "digest": digest,
+                    "size_bytes": len(readback),
+                }
+            )
+        directory_replacements[str(source_directory)] = str(projection)
+        directory_rows.append(
+            {
+                "source_directory": str(source_directory),
+                "staged_directory": str(projection),
+                "inputs": projected_inputs,
+                "allocator_argv_indices": [],
+            }
+        )
+
+    rewritten: list[str] = []
+    rewrite_indices: dict[str, list[int]] = {path: [] for path in replacements}
+    source_parent_paths = {
+        str(parent)
+        for source in staged_sources
+        for parent in source.parents
+        if parent != parent.parent
+    }
+    for index, argument in enumerate(allocator_argv):
+        canonical_source = replacement_sources.get(argument)
+        if canonical_source is not None:
+            replacement = replacements[canonical_source]
+            rewritten.append(replacement)
+            rewrite_indices[canonical_source].append(index)
+            continue
+        directory_argument = Path(argument).expanduser()
+        canonical_directory = None
+        if directory_argument.exists() and directory_argument.is_dir():
+            canonical_directory = str(directory_argument.resolve())
+        if canonical_directory in directory_replacements:
+            rewritten.append(directory_replacements[canonical_directory])
+            next(
+                row
+                for row in directory_rows
+                if row["source_directory"] == canonical_directory
+            )["allocator_argv_indices"].append(index)
+            continue
+        if any(path and path in argument for path in replacement_sources):
+            raise TaskEvaluationLaunchError(
+                "immutable_input_allocator_path_not_exactly_rewritable"
+            )
+        embedded_value = argument.rsplit("=", 1)[-1]
+        embedded_directory = Path(embedded_value).expanduser()
+        if embedded_value != argument and embedded_directory.is_dir():
+            if embedded_directory.is_symlink():
+                raise TaskEvaluationLaunchError(
+                    "immutable_input_allocator_directory_symlink"
+                )
+            if str(embedded_directory.resolve()) in directory_replacements:
+                raise TaskEvaluationLaunchError(
+                    "immutable_input_allocator_path_not_exactly_rewritable"
+                )
+        if embedded_value != argument:
+            lexical_embedded = Path(os.path.abspath(str(embedded_directory)))
+            if str(lexical_embedded) in source_parent_paths:
+                raise TaskEvaluationLaunchError(
+                    "immutable_input_allocator_path_not_exactly_rewritable"
+                )
+        lexical_argument = Path(os.path.abspath(str(Path(argument).expanduser())))
+        if str(lexical_argument) in source_parent_paths:
+            raise TaskEvaluationLaunchError(
+                "immutable_input_allocator_path_not_exactly_rewritable"
+            )
+        rewritten.append(argument)
+
+    for row in rows:
+        row["allocator_argv_indices"] = rewrite_indices[row["source_path"]]
+    receipt: dict[str, Any] = {
+        "schema_version": IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION,
+        "status": "staged",
+        "profile_id": profile.get("profile_id"),
+        "profile_digest": profile.get("profile_digest"),
+        "input_count": len(rows),
+        "inputs": rows,
+        "directory_projection_count": len(directory_rows),
+        "directory_projections": directory_rows,
+        "source_paths_forwarded_to_allocator": False,
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = run_root / "immutable_input_staging_receipt.json"
+    _write_exclusive_private_bytes(
+        receipt_path, (_canonical_json(receipt) + "\n").encode("utf-8")
+    )
+    if _read_json(receipt_path) != receipt:
+        raise TaskEvaluationLaunchError(
+            "immutable_input_staging_receipt_readback_mismatch"
+        )
+    return receipt, rewritten
+
+
 @contextlib.contextmanager
 def _scoped_runtime_environment(values: Mapping[str, Any]):
     """Apply an already-validated profile environment only around the allocator call."""
@@ -908,6 +1258,15 @@ def dispatch_launch_request(
             blockers.append("launch_required_controls_profile_binding_mismatch")
         if request.get("claim_ceiling") != profile.get("claim_ceiling"):
             blockers.append("launch_claim_ceiling_profile_binding_mismatch")
+        policy_campaign = _mapping(
+            _mapping(profile.get("native_policy_binding")).get(
+                "policy_campaign"
+            )
+        )
+        if policy_campaign and request.get("launch_id") != policy_campaign.get(
+            "launch_id"
+        ):
+            blockers.append("native_policy_campaign_launch_id_mismatch")
         approved_spend = _mapping(_mapping(request.get("authorization")).get("spend")).get(
             "max_spend_usd"
         )
@@ -974,6 +1333,29 @@ def dispatch_launch_request(
     _write_immutable(run_root / "launch_request.json", request)
     if profile:
         _write_immutable(run_root / "launch_profile.json", profile)
+    immutable_input_staging: dict[str, Any] = {
+        "schema_version": IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION,
+        "status": "not_started",
+        "inputs": [],
+        "raw_secret_values_recorded": False,
+    }
+    allocator_argv: list[str] = []
+    if not blockers and profile:
+        allocator = _mapping(profile.get("allocator"))
+        rendered_allocator_argv = [
+            _render_launch_path(item, run_root=run_root)
+            for item in list(allocator.get("argv") or [])
+        ]
+        try:
+            immutable_input_staging, allocator_argv = (
+                _stage_profile_immutable_inputs(
+                    profile=profile,
+                    run_root=run_root,
+                    allocator_argv=rendered_allocator_argv,
+                )
+            )
+        except (OSError, TaskEvaluationLaunchError) as exc:
+            blockers.append(f"immutable_input_staging_failed:{exc}")
     bound = {
         "schema_version": "task_evaluation_launch_binding.v1",
         "launch_id": request.get("launch_id"),
@@ -988,6 +1370,9 @@ def dispatch_launch_request(
         "execute_env_allowed": live_allowed,
         "secret_profile_id_match": secret_profile_match,
         "profile_live_enabled": execution_admission.get("live_enabled"),
+        "immutable_input_staging_receipt_digest": immutable_input_staging.get(
+            "receipt_digest"
+        ),
     }
     bound["binding_digest"] = canonical_digest(bound, digest_field="binding_digest")
     _write_immutable(run_root / "launch_binding.json", bound)
@@ -1070,13 +1455,9 @@ def dispatch_launch_request(
             blockers.append("standing_authorization_consumption_not_recorded")
 
     if not blockers and profile:
-        allocator = _mapping(profile.get("allocator"))
         argv = [
             "gpu-canary",
-            *[
-                _render_launch_path(item, run_root=run_root)
-                for item in list(allocator.get("argv") or [])
-            ],
+            *allocator_argv,
         ]
         if live_requested:
             argv.append("--execute")
@@ -1090,6 +1471,9 @@ def dispatch_launch_request(
                             profile.get("runtime_environment")
                         ).items()
                     }
+                )
+                child_environment[STAGING_RECEIPT_ENV] = str(
+                    run_root / "immutable_input_staging_receipt.json"
                 )
                 completed = subprocess.run(  # nosec B603 - fixed module plus validated profile argv
                     [
@@ -1126,7 +1510,13 @@ def dispatch_launch_request(
             try:
                 with (
                     _scoped_runtime_environment(
-                        _mapping(profile.get("runtime_environment"))
+                        {
+                            **_mapping(profile.get("runtime_environment")),
+                            STAGING_RECEIPT_ENV: str(
+                                run_root
+                                / "immutable_input_staging_receipt.json"
+                            ),
+                        }
                     ),
                     contextlib.redirect_stdout(stdout),
                     contextlib.redirect_stderr(stderr),
@@ -1169,6 +1559,16 @@ def dispatch_launch_request(
         "execute_launch_id": execution_scope_launch_id if live_requested else None,
         "provider_mutation_attempted": bool(live_requested and allocator_exit_code is not None),
         "prelaunch_skill_execution": prelaunch_skill_execution,
+        "immutable_input_staging": {
+            key: immutable_input_staging.get(key)
+            for key in (
+                "schema_version",
+                "status",
+                "input_count",
+                "receipt_digest",
+                "raw_secret_values_recorded",
+            )
+        },
         "terminal_evidence": terminal,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,

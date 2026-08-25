@@ -59,6 +59,7 @@ def _exact_terminal_evidence(
         "status": "observed",
         "provider": "vast",
         "name_prefix": handle.pod_name_prefix,
+        "resource_name_exact": handle.resource_name_exact,
         "api_confirmed": True,
         "live_resource_count": 0,
         "resources": [],
@@ -123,6 +124,90 @@ def test_watchdog_is_armed_detached_before_allocation(
     assert handoff["caller_exit_survival_contract"] == "detached_posix_session"
     index = handle.process.command.index("--allowed-active-instance-id")
     assert handle.process.command[index + 1] == "47226054"
+
+
+def test_campaign_watchdog_binds_exact_member_and_sibling_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    own = "blueprint-native-task-policy-pi05-" + "a" * 32
+    sibling = "blueprint-native-task-policy-groot-" + "b" * 32
+    handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-25T00:00:00+00:00",
+        pod_name_prefix="blueprint-native-task-policy-diagnostic-",
+        resource_name_exact=own,
+        allowed_active_instance_ids=[48610674],
+        allowed_active_resource_names=[sibling],
+    )
+
+    assert handle is not None
+    assert handle.pod_name_prefix == own
+    assert handle.resource_name_exact == own
+    assert handle.allowed_active_resource_names == (sibling,)
+    assert handoff["resource_name_exact"] == own
+    assert handoff["allowed_active_resource_names"] == [sibling]
+    command = handle.process.command
+    assert command[command.index("--resource-name-exact") + 1] == own
+    assert command[command.index("--allowed-active-resource-name") + 1] == sibling
+
+
+@pytest.mark.parametrize("observed_name", ["impostor", ""])
+def test_campaign_terminal_evidence_accepts_only_exact_named_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observed_name: str,
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    own = "blueprint-native-task-policy-pi05-" + "a" * 32
+    sibling = "blueprint-native-task-policy-groot-" + "b" * 32
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-25T00:00:00+00:00",
+        pod_name_prefix="blueprint-native-task-policy-diagnostic-",
+        resource_name_exact=own,
+        allowed_active_resource_names=[sibling],
+    )
+    assert handle is not None
+    evidence = _exact_terminal_evidence(handle, 48620000)
+    name = sibling if observed_name == "impostor" else observed_name
+    if observed_name == "impostor":
+        name = sibling + "-near-match"
+    resource = {"instance_id": "48620001", "name": name}
+    for key in ("initial_global_inventory", "final_global_inventory"):
+        evidence[key].update({"live_resource_count": 1, "resources": [resource]})
+    assert (
+        control._terminal_evidence_matches_handle(
+            evidence, handle=handle, instance_id="48620000"
+        )
+        is False
+    )
+
+
+def test_campaign_terminal_evidence_accepts_exact_named_live_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    own = "blueprint-native-task-policy-pi05-" + "a" * 32
+    sibling = "blueprint-native-task-policy-groot-" + "b" * 32
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-25T00:00:00+00:00",
+        pod_name_prefix="blueprint-native-task-policy-diagnostic-",
+        resource_name_exact=own,
+        allowed_active_resource_names=[sibling],
+    )
+    assert handle is not None
+    evidence = _exact_terminal_evidence(handle, 48620000)
+    resource = {"instance_id": "48620001", "name": sibling}
+    for key in ("initial_global_inventory", "final_global_inventory"):
+        evidence[key].update({"live_resource_count": 1, "resources": [resource]})
+    assert control._terminal_evidence_matches_handle(
+        evidence, handle=handle, instance_id="48620000"
+    )
 
 
 def test_dispatcher_systemd_unit_preserves_retained_watchdog_cgroup() -> None:

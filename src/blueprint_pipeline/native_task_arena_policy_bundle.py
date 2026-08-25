@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import zipfile
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -20,6 +21,10 @@ from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .task_evaluation_immutable_input_resolver import (
+    ImmutableInputResolutionError,
+    resolve_immutable_input,
+)
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_result.v1"
@@ -34,23 +39,21 @@ GROOT_RUNTIME_IDENTITY_DECLARATION = {
     "relative_path": GROOT_RUNTIME_IDENTITY_FILENAME,
 }
 QUALIFIED_EXECUTION_AUTHORITY = "qualified_controls_evaluation"
-POLICY_RIGHTS_BINDING_SCHEMA_VERSION = (
-    "adp009d_policy_candidate_rights_binding.v1"
-)
-POLICY_READINESS_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs/arm_decision_proof_v1/manifests/"
-    "adp009d_scene_840920_policy_readiness.v1.json"
-)
-POLICY_SCENARIO_SUITE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs/arm_decision_proof_v1/manifests/"
-    "third_scene_840920_task_a_scenario_suite.v1.json"
-)
+POLICY_ENDPOINT_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 OPENPI_CHECKPOINT_INVENTORY_PATH = (
     Path(__file__).resolve().parents[2]
     / "docs/experiments/policy_ranking_thesis_20260726/"
     "openpi_polaris_checkpoint_inventory.json"
+)
+ADP009D_POLICY_READINESS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs/arm_decision_proof_v1/manifests/"
+    "adp009d_scene_840920_policy_readiness.v1.json"
+)
+ADP009D_SCENARIO_SUITE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs/arm_decision_proof_v1/manifests/"
+    "third_scene_840920_task_a_scenario_suite.v1.json"
 )
 
 
@@ -116,71 +119,40 @@ def _verified_openpi_checkpoint_inventory(
     return path
 
 
-def expected_policy_candidate_rights_binding(
-    candidate_id: str,
-) -> dict[str, Any]:
-    """Derive the execution binding from the validated committed readiness.
+def _verified_policy_authority_inputs(
+    *,
+    spec: Mapping[str, Any],
+    scene_plan: Mapping[str, Any],
+    scene_policy_readiness_path: str | Path,
+    scenario_suite_path: str | Path,
+) -> tuple[Path, Path]:
+    """Verify and return the full-byte authorities behind a narrow spec."""
 
-    The readiness receipt used to stop at documentation.  Re-deriving this
-    value here makes an ordinary policy spec depend on the exact validated
-    rights record instead of a caller-supplied ``rights_ready`` boolean.
-    """
-
+    readiness_path = Path(scene_policy_readiness_path).expanduser().resolve()
+    suite_path = Path(scenario_suite_path).expanduser().resolve()
+    from .adp009d_policy_rights import (
+        validate_candidate_policy_rights_authorities,
+    )
     from .adp009d_scene_policy_readiness import load_scene_policy_readiness
 
-    if candidate_id not in FROZEN_CANDIDATES:
-        raise ValueError("native_task_policy_candidate_invalid")
     readiness = load_scene_policy_readiness(
-        POLICY_READINESS_PATH,
-        scenario_suite_path=POLICY_SCENARIO_SUITE_PATH,
+        readiness_path, scenario_suite_path=suite_path
     )
-    candidates = [
-        dict(row)
-        for row in readiness.get("candidates") or []
-        if isinstance(row, Mapping) and row.get("candidate_id") == candidate_id
-    ]
-    if len(candidates) != 1:
-        raise ValueError("native_task_policy_rights_candidate_missing")
-    candidate = candidates[0]
-    binding: dict[str, Any] = {
-        "schema_version": POLICY_RIGHTS_BINDING_SCHEMA_VERSION,
-        "candidate_id": candidate_id,
-        "scene_id": readiness["scene_id"],
-        "task_id": readiness["task_id"],
-        "scene_policy_readiness_digest": readiness["readiness_digest"],
-        "scenario_suite_digest": readiness["scenario_suite_digest"],
-        "rights_ready": candidate["rights_ready"],
-        "candidate_readiness": candidate,
-        "outcome_blind_source": readiness["outcome_blind"],
-        "provider_execution_performed_by_source": readiness[
-            "provider_execution_performed"
-        ],
-        "binding_digest": "",
-    }
-    binding["binding_digest"] = canonical_digest(
-        binding, digest_field="binding_digest"
+    suite = _read(
+        suite_path, error="native_task_policy_scenario_authority_invalid"
     )
-    return binding
-
-
-def validate_policy_candidate_rights_binding(
-    value: Mapping[str, Any], *, candidate_id: str
-) -> dict[str, Any]:
-    """Require byte-exact equality with the committed validated binding."""
-
-    try:
-        binding = json.loads(json.dumps(value, allow_nan=False))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("native_task_policy_rights_binding_invalid") from exc
-    expected = expected_policy_candidate_rights_binding(candidate_id)
-    if (
-        not isinstance(binding, dict)
-        or binding.get("binding_digest")
-        != canonical_digest(binding, digest_field="binding_digest")
-        or binding != expected
-    ):
-        raise ValueError("native_task_policy_rights_binding_invalid")
-    return binding
+    validate_candidate_policy_rights_authorities(
+        spec.get("candidate_rights_binding") or {},
+        readiness=readiness,
+        scenario_suite=suite,
+        candidate_id=str(spec.get("candidate_id") or ""),
+        policy_spec=spec.get("policy_spec") or {},
+        runtime_robot_id=str(
+            (scene_plan.get("robot") or {}).get("robot_id") or ""
+        ),
+        scene_plan_digest=str(scene_plan.get("plan_digest") or ""),
+    )
+    return readiness_path, suite_path
 
 
 def validate_native_task_policy_execution_spec(
@@ -206,7 +178,7 @@ def validate_native_task_policy_execution_spec(
         port = endpoint.get("port")
         credential_env = str(endpoint.get("credential_env") or "")
         if (
-            not host
+            host not in POLICY_ENDPOINT_LOOPBACK_HOSTS
             or isinstance(port, bool)
             or not isinstance(port, int)
             or not 1 <= port <= 65535
@@ -259,6 +231,20 @@ def validate_native_task_policy_execution_spec(
                     != GROOT_RUNTIME_IDENTITY_DECLARATION
                 ):
                     raise ValueError("groot_runtime_identity_declaration_invalid")
+            from .adp009d_policy_rights import validate_candidate_policy_rights
+
+            validated_rights = validate_candidate_policy_rights(
+                payload.get("candidate_rights_binding") or {},
+                candidate_id=candidate,
+                policy_spec=payload["policy_spec"],
+            )
+            if (
+                (validated_rights.get("robot_binding") or {}).get(
+                    "scene_plan_digest"
+                )
+                != payload.get("scene_plan_digest")
+            ):
+                raise ValueError("candidate_rights_scene_plan_mismatch")
         except (TypeError, ValueError):
             errors.append("native_task_policy_spec_or_identity_invalid")
         if payload["policy_spec"].get("open_loop_horizon") != payload.get(
@@ -273,14 +259,6 @@ def validate_native_task_policy_execution_spec(
         errors.append("native_task_policy_overview_input_invalid")
     if payload.get("policy_may_grade_itself") is not False:
         errors.append("native_task_policy_self_grading_invalid")
-    if payload.get("execution_authority") == QUALIFIED_EXECUTION_AUTHORITY:
-        try:
-            validate_policy_candidate_rights_binding(
-                payload.get("candidate_rights_binding") or {},
-                candidate_id=candidate,
-            )
-        except ValueError:
-            errors.append("native_task_policy_rights_binding_invalid")
     if payload.get("execution_spec_digest") != canonical_digest(
         payload, digest_field="execution_spec_digest"
     ):
@@ -323,6 +301,8 @@ def build_native_task_policy_execution_spec(
     construction_result_path: str | Path,
     control_result_path: str | Path,
     output_path: str | Path,
+    scene_policy_readiness_path: str | Path = ADP009D_POLICY_READINESS_PATH,
+    scenario_suite_path: str | Path = ADP009D_SCENARIO_SUITE_PATH,
 ) -> dict[str, Any]:
     """Derive and seal one candidate spec from authoritative predecessors.
 
@@ -391,7 +371,20 @@ def build_native_task_policy_execution_spec(
         raise ValueError(";".join(sorted(set(errors))))
 
     policy, endpoint, identity = _candidate_runtime_binding(candidate_id)
-    rights_binding = expected_policy_candidate_rights_binding(candidate_id)
+    from .adp009d_policy_rights import build_candidate_policy_rights
+    from .adp009d_scene_policy_readiness import load_scene_policy_readiness
+
+    readiness = load_scene_policy_readiness(
+        scene_policy_readiness_path,
+        scenario_suite_path=scenario_suite_path,
+    )
+    candidate_rights = build_candidate_policy_rights(
+        readiness,
+        candidate_id=candidate_id,
+        policy_spec=asdict(policy),
+        runtime_robot_id=str((scene.get("robot") or {}).get("robot_id") or ""),
+        scene_plan_digest=str(scene_digest or ""),
+    )
 
     request = {
         "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
@@ -406,6 +399,7 @@ def build_native_task_policy_execution_spec(
         "policy_endpoint": endpoint,
         "policy_spec": asdict(policy),
         "policy_identity_receipt": identity,
+        "candidate_rights_binding": candidate_rights,
         "max_policy_queries": maximum_policy_queries_for_task_spec(
             task_spec, open_loop_horizon=policy.open_loop_horizon
         ),
@@ -413,7 +407,6 @@ def build_native_task_policy_execution_spec(
         "overview_camera_policy_input": False,
         "policy_may_grade_itself": False,
         "execution_authority": QUALIFIED_EXECUTION_AUTHORITY,
-        "candidate_rights_binding": rights_binding,
     }
     return materialize_native_task_policy_execution_spec(
         request=request, output_path=output_path
@@ -492,6 +485,8 @@ def build_native_task_arena_policy_bundle(
     runtime_source_packet_receipt: str | Path,
     implementation_commit: str,
     generated_at: str | None = None,
+    scene_policy_readiness_path: str | Path = ADP009D_POLICY_READINESS_PATH,
+    scenario_suite_path: str | Path = ADP009D_SCENARIO_SUITE_PATH,
 ) -> dict[str, Any]:
     """Require successful construction and controls before bundling a candidate."""
 
@@ -509,9 +504,11 @@ def build_native_task_arena_policy_bundle(
     spec = validate_native_task_policy_execution_spec(policy_execution_spec)
     if spec.get("execution_authority") != QUALIFIED_EXECUTION_AUTHORITY:
         raise ValueError("native_task_policy_execution_authority_invalid")
-    rights_binding = validate_policy_candidate_rights_binding(
-        spec.get("candidate_rights_binding") or {},
-        candidate_id=str(spec.get("candidate_id") or ""),
+    readiness_path, suite_path = _verified_policy_authority_inputs(
+        spec=spec,
+        scene_plan=scene_plan,
+        scene_policy_readiness_path=scene_policy_readiness_path,
+        scenario_suite_path=scenario_suite_path,
     )
     pair = controls.get("control_pair") or {}
     errors: list[str] = []
@@ -569,6 +566,8 @@ def build_native_task_arena_policy_bundle(
         sources = set(controls_runtime_sources())
         sources.update(package / name for name in POLICY_EXTRA_RUNTIME_MODULE_NAMES)
         bound_inputs = {
+            "adp009d_scene_840920_policy_readiness.v1.json": readiness_path,
+            "third_scene_840920_task_a_scenario_suite.v1.json": suite_path,
             "native_task_arena_construction_result.v1.json": construction_path,
             "native_task_arena_control_result.v1.json": controls_path,
             execution_path.name: execution_path,
@@ -586,13 +585,51 @@ def build_native_task_arena_policy_bundle(
             implementation_commit=implementation_commit,
             execution_mode="policy",
             policy_candidate_id=spec["candidate_id"],
-            policy_rights_binding=rights_binding,
             expected_output_filename=RESULT_FILENAME,
             container_image=NATIVE_TASK_ARENA_IMAGE,
             bound_runtime_inputs=bound_inputs,
             generated_at=generated_at,
         )
     return receipt
+
+
+def validate_policy_bundle_execution_binding(
+    receipt: Mapping[str, Any], *, bundle: Path, diagnostic: bool
+) -> dict[str, Any]:
+    """Reprove the receipt's policy identity from its exact staged spec bytes."""
+
+    try:
+        with zipfile.ZipFile(bundle) as archive:
+            spec = json.loads(
+                archive.read(
+                    "provider_runtime/runtime_inputs/"
+                    "native_task_arena_policy_execution_spec.v1.json"
+                )
+            )
+    except (KeyError, OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise ValueError("native_task_policy_bundle_execution_binding_invalid") from exc
+    if diagnostic:
+        from .native_task_arena_policy_diagnostic_bundle import (
+            DIAGNOSTIC_EXECUTION_AUTHORITY,
+            validate_policy_diagnostic_execution_spec,
+        )
+
+        validated = validate_policy_diagnostic_execution_spec(spec)
+        expected_authority = DIAGNOSTIC_EXECUTION_AUTHORITY
+    else:
+        validated = validate_native_task_policy_execution_spec(spec)
+        expected_authority = QUALIFIED_EXECUTION_AUTHORITY
+    if (
+        validated.get("execution_authority") != expected_authority
+        or receipt.get("policy_execution_spec_digest")
+        != validated.get("execution_spec_digest")
+        or receipt.get("policy_execution_authority")
+        != validated.get("execution_authority")
+        or receipt.get("policy_rights_binding")
+        != validated.get("candidate_rights_binding")
+    ):
+        raise ValueError("native_task_policy_bundle_execution_binding_invalid")
+    return validated
 
 
 def load_verified_native_task_arena_policy_bundle(
@@ -607,8 +644,16 @@ def load_verified_native_task_arena_policy_bundle(
     receipt = _read(
         receipt_path, error="native_task_policy_bundle_receipt_invalid"
     )
-    bundle = Path(str(receipt.get("bundle_path") or "")).expanduser().resolve()
     errors: list[str] = []
+    try:
+        bundle = resolve_immutable_input(
+            str(receipt.get("bundle_path") or ""),
+            expected_digest=str(receipt.get("bundle_sha256") or ""),
+            expected_size_bytes=receipt.get("bundle_size_bytes"),
+        )
+    except ImmutableInputResolutionError:
+        bundle = None
+        errors.append("native_task_policy_bundle_bytes_identity_mismatch")
     input_names = {
         Path(str(row.get("relative_path") or "")).name
         for row in receipt.get("bound_runtime_inputs") or []
@@ -616,6 +661,8 @@ def load_verified_native_task_arena_policy_bundle(
     }
     candidate_id = str(receipt.get("policy_candidate_id") or "")
     expected_input_names = {
+        "adp009d_scene_840920_policy_readiness.v1.json",
+        "third_scene_840920_task_a_scenario_suite.v1.json",
         "native_task_arena_construction_result.v1.json",
         "native_task_arena_control_result.v1.json",
         "native_task_arena_policy_execution_spec.v1.json",
@@ -643,16 +690,6 @@ def load_verified_native_task_arena_policy_bundle(
         != set(POLICY_RUNTIME_ROOT_MODULE_NAMES)
     ):
         errors.append("native_task_policy_bundle_contract_invalid")
-    try:
-        rights_binding = validate_policy_candidate_rights_binding(
-            receipt.get("policy_rights_binding") or {},
-            candidate_id=candidate_id,
-        )
-    except ValueError:
-        errors.append("native_task_policy_bundle_rights_binding_invalid")
-    else:
-        if rights_binding.get("candidate_id") != candidate_id:
-            errors.append("native_task_policy_bundle_rights_binding_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
         errors.append("native_task_policy_bundle_commit_mismatch")
     if receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE:
@@ -676,11 +713,19 @@ def load_verified_native_task_arena_policy_bundle(
     ):
         errors.append("native_task_policy_bundle_input_digest_invalid")
     if (
-        not bundle.is_file()
+        bundle is None
+        or not bundle.is_file()
         or receipt.get("bundle_size_bytes") != bundle.stat().st_size
         or receipt.get("bundle_sha256") != _sha256(bundle)
     ):
         errors.append("native_task_policy_bundle_bytes_identity_mismatch")
+    elif not errors and bundle is not None:
+        try:
+            validate_policy_bundle_execution_binding(
+                receipt, bundle=bundle, diagnostic=False
+            )
+        except ValueError:
+            errors.append("native_task_policy_bundle_execution_binding_invalid")
     if errors:
         raise ValueError(";".join(sorted(set(errors))))
     return receipt
@@ -691,18 +736,14 @@ __all__ = [
     "GROOT_RUNTIME_IDENTITY_DECLARATION",
     "GROOT_RUNTIME_IDENTITY_FILENAME",
     "PROBE_KIND",
-    "POLICY_READINESS_PATH",
-    "POLICY_RIGHTS_BINDING_SCHEMA_VERSION",
-    "POLICY_SCENARIO_SUITE_PATH",
     "RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",
     "build_native_task_arena_policy_bundle",
     "build_native_task_policy_execution_spec",
-    "expected_policy_candidate_rights_binding",
     "load_verified_native_task_arena_policy_bundle",
     "materialize_native_task_policy_execution_spec",
+    "validate_policy_bundle_execution_binding",
     "validate_native_task_policy_execution_spec",
-    "validate_policy_candidate_rights_binding",
 ]
 
 def main(argv: list[str] | None = None) -> int:
@@ -732,6 +773,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--generated-at", dest="generated_at")
     parser.add_argument("--policy-execution-spec", dest="policy_execution_spec", required=True,
                         help="Path to the JSON execution spec.")
+    parser.add_argument(
+        "--scene-policy-readiness-path",
+        default=str(ADP009D_POLICY_READINESS_PATH),
+    )
+    parser.add_argument(
+        "--scenario-suite-path",
+        default=str(ADP009D_SCENARIO_SUITE_PATH),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -744,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
             runtime_source_packet_receipt=args.runtime_source_packet_receipt,
             implementation_commit=args.implementation_commit,
             policy_execution_spec=spec,
+            scene_policy_readiness_path=args.scene_policy_readiness_path,
+            scenario_suite_path=args.scenario_suite_path,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:

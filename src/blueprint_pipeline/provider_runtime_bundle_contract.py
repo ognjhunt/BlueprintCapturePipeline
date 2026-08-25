@@ -175,7 +175,7 @@ def provider_runtime_contract_blockers(
                 "candidate_policy_queried",
                 "candidate_outcomes_accessed",
                 "synthetic_observation_query_count",
-                "server_stopped_after_round_trip",
+                "server_stopped_after_handshake",
                 "task_success_claimed",
             )
         )

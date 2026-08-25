@@ -115,6 +115,37 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
     )
     response = client.infer({"prompt": "pick"})
     assert response.shape == (10, 8)
+    evidence = client.last_inference_evidence()
+    assert evidence == {
+        "server_response_received": True,
+        "wire_response_type": "dict",
+        "wire_response_keys": ["actions", "policy_timing", "server_timing"],
+        "raw_vendor_action_response": {
+            "actions": [[0.0] * 8] * 10,
+            "policy_timing": {"infer_ms": 30.0},
+            "server_timing": {"infer_ms": 31.25},
+        },
+        "raw_vendor_action_response_digest": evidence[
+            "raw_vendor_action_response_digest"
+        ],
+        "raw_vendor_action_response_role": (
+            "genuine_decoded_vendor_wire_response_before_candidate_normalization"
+        ),
+        "action_payload_returned": True,
+        "actions_extracted": True,
+        "action_chunk_shape": [10, 8],
+    }
+    assert evidence["raw_vendor_action_response_digest"] == (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                {"raw_vendor_action_response": evidence["raw_vendor_action_response"]},
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     assert client.evidence_summary()["identity_verified"] is True
 
 
@@ -148,6 +179,59 @@ def test_websocket_client_records_completed_query_before_response_refusal(
     ):
         client.infer({"prompt": "pick"})
     assert client.candidate_policy_queried is True
+    evidence = client.last_inference_evidence()
+    assert evidence == {
+        "server_response_received": True,
+        "wire_response_type": "dict",
+        "wire_response_keys": ["action"],
+        "raw_vendor_action_response": {"action": [[0.0] * 8] * 10},
+        "raw_vendor_action_response_digest": evidence[
+            "raw_vendor_action_response_digest"
+        ],
+        "raw_vendor_action_response_role": (
+            "genuine_decoded_vendor_wire_response_before_candidate_normalization"
+        ),
+        "action_payload_returned": True,
+        "actions_extracted": False,
+    }
+
+
+def test_websocket_client_retains_malformed_nonfinite_ndarray_envelope(
+    tmp_path: Path,
+) -> None:
+    spec = load_policy_spec(
+        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
+    )
+    malformed = np.zeros((10, 8), dtype=float)
+    malformed[0, 0] = np.nan
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            return malformed
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+
+    with pytest.raises(ValueError, match="openpi_inference_response_not_object"):
+        client.infer({"prompt": "pick"})
+    evidence = client.last_inference_evidence()
+    assert evidence["action_payload_returned"] is True
+    assert evidence["actions_extracted"] is False
+    assert evidence["raw_vendor_action_response"][0][0] == {
+        "nonfinite_float": "nan"
+    }
+    assert json.loads(json.dumps(evidence, allow_nan=False)) == evidence
 
 
 @pytest.mark.parametrize(

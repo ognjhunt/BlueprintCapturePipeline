@@ -71,7 +71,7 @@ def test_committed_runtime_smoke_measurement_is_complete_and_claim_bounded() -> 
 
 
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
-def test_bundle_is_one_query_outcome_blind_and_stops_server(
+def test_bundle_is_zero_query_outcome_blind_and_stops_server(
     tmp_path: Path, candidate_id: str
 ) -> None:
     receipt = build_policy_runtime_smoke_bundle(
@@ -84,7 +84,8 @@ def test_bundle_is_one_query_outcome_blind_and_stops_server(
     assert receipt["status"] == "ready"
     assert receipt["execution_mode"] == "outcome_blind_policy_runtime_smoke"
     assert receipt["policy_candidate_id"] == candidate_id
-    assert receipt["identity_binding"]["synthetic_query_count"] == 1
+    assert receipt["identity_binding"]["synthetic_query_count"] == 0
+    assert receipt["candidate_policy_queried"] is False
     assert receipt["identity_binding"]["actions_executed"] is False
     assert receipt["identity_binding"]["task_scene_loaded"] is False
     assert receipt["controls_requested"] is False
@@ -97,7 +98,7 @@ def test_bundle_is_one_query_outcome_blind_and_stops_server(
         entrypoint = archive.read(
             "provider_runtime/run_adp_arena_provider_runtime.sh"
         ).decode()
-    assert "--stop-after-round-trip" in provisioning
+    assert "--stop-after-handshake" in provisioning
     assert "provider_runtime/adp009d_policy_runtime_smoke_worker.py" in names
     assert "adp009d_native_microcheck.json" in entrypoint
     assert "task_success" not in entrypoint
@@ -140,7 +141,7 @@ def test_bundle_cli_rebuilds_each_candidate_without_provider(
 
 
 def test_normal_episode_provisioning_keeps_server_running() -> None:
-    assert "--stop-after-round-trip" not in build_provisioning_script("pi05_droid")
+    assert "--stop-after-handshake" not in build_provisioning_script("pi05_droid")
 
 
 def test_vast_provider_accepts_and_routes_policy_runtime_smoke_bundle(
@@ -215,10 +216,11 @@ def _server_receipt(**updates: object) -> dict[str, object]:
     value: dict[str, object] = {
         "candidate_id": "pi05_droid",
         "status": "ready",
-        "round_trip_completed": True,
-        "action_chunk_rows": 15,
-        "action_chunk_width": 8,
-        "server_stopped_after_round_trip": True,
+        "handshake_completed": True,
+        "candidate_policy_queried": False,
+        "candidate_inference_performed": False,
+        "policy_state_advanced": False,
+        "server_stopped_after_handshake": True,
         "server_pid": 999_999_999,
         "transport": "openpi_websocket",
     }
@@ -226,7 +228,7 @@ def _server_receipt(**updates: object) -> dict[str, object]:
     return value
 
 
-def test_worker_seals_one_runtime_query_without_task_claim(tmp_path: Path) -> None:
+def test_worker_seals_zero_query_readiness_without_task_claim(tmp_path: Path) -> None:
     server = tmp_path / "server.json"
     server.write_text(json.dumps(_server_receipt()), encoding="utf-8")
 
@@ -237,8 +239,9 @@ def test_worker_seals_one_runtime_query_without_task_claim(tmp_path: Path) -> No
     )
 
     assert result["status"] == "completed"
-    assert result["synthetic_observation_query_count"] == 1
-    assert result["candidate_policy_queried"] is True
+    assert result["synthetic_observation_query_count"] == 0
+    assert result["candidate_policy_queried"] is False
+    assert result["policy_state_advanced"] is False
     assert result["candidate_outcomes_accessed"] is False
     assert result["claim_boundary"]["actions_executed"] is False
     assert result["claim_boundary"]["task_scene_loaded"] is False
