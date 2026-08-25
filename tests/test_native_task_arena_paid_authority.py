@@ -270,7 +270,9 @@ def test_warm_retention_intent_is_digest_bound(
 
 
 def test_authority_consumption_is_one_use(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(paid, "consumption_root", lambda: tmp_path / "consumption")
+    consumption = tmp_path / "consumption"
+    consumption.mkdir(mode=0o700)
+    monkeypatch.setattr(paid, "prepare_consumption_root", lambda: consumption)
     authority = {"authorization_digest": "sha256:" + "a" * 64, "bundle_sha256": "b"}
     assert paid.consume_native_task_arena_authority_once(authority)["status"] == "consumed"
     second = paid.consume_native_task_arena_authority_once(authority)
@@ -278,6 +280,22 @@ def test_authority_consumption_is_one_use(tmp_path: Path, monkeypatch: pytest.Mo
         "status": "blocked",
         "blockers": ["native_task_arena_authority_consumed"],
     }
+
+
+def test_authority_consumption_tightens_owned_reconciler_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spend_root = tmp_path / "spend-authority"
+    consumption = spend_root / "consumed"
+    consumption.mkdir(parents=True)
+    consumption.chmod(0o710)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(spend_root))
+    authority = {"authorization_digest": "sha256:" + "b" * 64, "bundle_sha256": "c"}
+
+    result = paid.consume_native_task_arena_authority_once(authority)
+
+    assert result["status"] == "consumed"
+    assert consumption.stat().st_mode & 0o777 == 0o700
 
 
 def test_provider_zero_requires_watchdog_api_inventory(tmp_path: Path) -> None:

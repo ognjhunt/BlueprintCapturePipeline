@@ -36,7 +36,7 @@ from .paid_attempt_authority import (
     normalize_active_instance_allowlist,
     validate_bound_lane_prior_spend,
 )
-from .spend_authority_consumption_root import consumption_root
+from .spend_authority_consumption_root import prepare_consumption_root
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -1250,7 +1250,18 @@ def consume_native_task_arena_authority_once(authority: Mapping[str, Any]) -> di
     digest = str(authority.get("authorization_digest") or "")
     if not digest.startswith("sha256:") or len(digest) != 71:
         return {"status": "blocked", "blockers": ["native_task_arena_authority_identity_invalid"]}
-    root = consumption_root()
+    try:
+        # The reconciler may have created this owned directory with a group
+        # traversal bit (0710). Tighten it through the shared hardened helper
+        # before enforcing the single-use record. Refusing the repairable
+        # directory here previously blocked every native Task Arena attempt
+        # before provider allocation.
+        root = prepare_consumption_root()
+    except (OSError, ValueError):
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_authority_consumption_failed"],
+        }
     payload = {
         "schema_version": CONSUMPTION_SCHEMA_VERSION,
         "authorization_digest": digest,
@@ -1273,7 +1284,6 @@ def consume_native_task_arena_authority_once(authority: Mapping[str, Any]) -> di
     }
     raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
     try:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
         stat = root.stat()
         if root.is_symlink() or stat.st_uid != os.getuid() or stat.st_mode & 0o077:
             raise OSError("insecure_root")
