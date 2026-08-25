@@ -1134,10 +1134,10 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
         raise EpisodeEvidenceIndexError(f"episode_frame_manifest_not_unique:{episode_id}")
     manifest, lossless_camera_frames, multicamera_manifest = (
         _verified_multicamera_manifest(
-        root,
-        episode_id=episode_id,
-        artifact=manifests[0],
-        visual=visual,
+            root,
+            episode_id=episode_id,
+            artifact=manifests[0],
+            visual=visual,
         )
     )
     exact_policy_input_frames = _verified_exact_policy_input_frames(
@@ -1171,6 +1171,15 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
         video_binding = visual_videos.get(camera_id)
         if (
             not isinstance(video_binding, Mapping)
+            or video_binding.get("camera_id") != camera_id
+            or any(
+                video_binding.get(field) != videos[camera_id].get(field)
+                for field in (
+                    "relative_path",
+                    "sha256",
+                    "size_bytes",
+                )
+            )
             or video_binding.get("derived_from_frame_manifest_digest")
             != manifest["frame_manifest_digest"]
         ):

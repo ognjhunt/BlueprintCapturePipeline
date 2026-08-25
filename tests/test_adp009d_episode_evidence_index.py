@@ -897,6 +897,44 @@ def test_portable_episode_index_rejects_tampered_video(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["relative_path", "sha256", "size_bytes"])
+def test_portable_episode_index_rejects_resealed_video_binding_mismatch(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    receipt_path = _receipt(
+        tmp_path,
+        episode_id="canonical-pi05",
+        subject_id="pi05_droid",
+        learned=True,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    mismatch: object = {
+        "relative_path": "media/canonical-pi05/unrelated.mp4",
+        "sha256": "sha256:" + "f" * 64,
+        "size_bytes": 999,
+    }[field]
+    receipt["visual_evidence"]["videos"]["external"][field] = mismatch
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_camera_video_manifest_binding_invalid:canonical-pi05:external",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[receipt_path],
+            run_identity={
+                "scene_id": "840796",
+                "task_id": "upper_refrigerator_door_open",
+                "scenario_suite_digest": "sha256:frozen-suite",
+            },
+        )
+
+
 def test_portable_episode_index_rejects_overview_as_policy_input(tmp_path: Path) -> None:
     receipt_path = _receipt(
         tmp_path,
