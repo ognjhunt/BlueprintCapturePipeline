@@ -19,14 +19,42 @@ from __future__ import annotations
 import functools
 import io
 import json
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from importlib import metadata
+from pathlib import Path
 from typing import Any
 
-import msgpack
-import msgpack_numpy as mnp
-import numpy as np
-import zmq
+#: Wire codec distributions staged by provisioning next to this module.
+#: Isaac's kit interpreter ships its own newer msgpack/pyzmq ahead of its
+#: site-packages on sys.path, so pins installed *into* the kit environment can
+#: never win -- the 20260825T134736Z GR00T run failed its self-check with
+#: msgpack 1.2.1/pyzmq 27.1.0 observed over the freshly installed pins.
+#: Provisioning therefore installs the exact pins with --no-deps into this
+#: sibling directory, this module puts it first on sys.path before importing
+#: the codec, and the kit environment itself is never mutated.
+STAGED_WIRE_DEPS_DIRNAME = "groot_wire_deps"
+
+
+def _prepend_staged_wire_deps(module_file: str = __file__) -> str | None:
+    """Put the staged pinned codec first, or no-op where none is staged."""
+
+    staged = Path(module_file).resolve().parent / STAGED_WIRE_DEPS_DIRNAME
+    if not staged.is_dir():
+        return None
+    location = str(staged)
+    while location in sys.path:
+        sys.path.remove(location)
+    sys.path.insert(0, location)
+    return location
+
+
+_STAGED_WIRE_DEPS_LOCATION = _prepend_staged_wire_deps()
+
+import msgpack  # noqa: E402
+import msgpack_numpy as mnp  # noqa: E402
+import numpy as np  # noqa: E402
+import zmq  # noqa: E402
 
 
 GROOT_SOURCE_REVISION = "b9955401d50c92a29258732e3ad6ccd579f1bdc0"

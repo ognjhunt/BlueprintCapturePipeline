@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .adp009d_gated_backbone import EXPECTED_TOTAL_BYTES as GROOT_BACKBONE_BYTES
+from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 from .native_task_arena_construction_bundle import (
     PROVIDER_BUNDLE_KIND,
@@ -35,6 +37,40 @@ DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/native-task-arena"
 MINIMUM_DRIVER_VERSION = "580.65.06"
 NO_POLICY_MIN_GPU_RAM_MB = 24_000
 NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
+# Policy provisioning still fetches a revision-pinned source tree and locked
+# packages outside the sealed checkpoint/runtime packets.  The completed pi0.5
+# episode used 4.66 GB beyond its three immutable byte sources.  Reserve 8 GB
+# for those inputs, and 1 GB for the digest-bound result upload, so a provider
+# offer's non-hourly bandwidth rates participate in the hard-cap decision.
+POLICY_PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 8_000_000_000
+POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES = 4_500_000_000
+POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES = 1_000_000_000
+POLICY_RESULT_UPLOAD_BYTES = 1_000_000_000
+
+
+def _policy_provider_transfer_byte_budget(
+    candidate: str,
+) -> tuple[int, int]:
+    expected = EXPECTED_CANDIDATES.get(candidate) or {}
+    checkpoint_bytes = int(expected.get("checkpoint_total_bytes") or 0)
+    if checkpoint_bytes <= 0:
+        raise ValueError("native_task_arena_policy_transfer_budget_inputs_invalid")
+    gated_bytes = GROOT_BACKBONE_BYTES if candidate == "groot_n17_droid" else 0
+    return (
+        checkpoint_bytes
+        + POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES
+        + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES
+        + gated_bytes
+        + POLICY_PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
+        POLICY_RESULT_UPLOAD_BYTES,
+    )
+
+
+# The frozen GR00T N1.7 dependency set pins FlashAttention 2.8.3, whose CUDA
+# backend starts at Ampere.  Both frozen candidates must see the same provider
+# pool, so the paired policy lane shares that evidence-backed floor while the
+# generic Vast transport keeps its compatibility default of no floor.
+POLICY_MIN_COMPUTE_CAP = 800
 
 
 def run_native_task_arena_vast(
@@ -414,6 +450,9 @@ def _run_native_task_arena_policy_vast(
         raise ValueError("native_task_arena_groot_gated_backbone_authority_missing")
     if candidate != "groot_n17_droid" and authorize_gated_backbone:
         raise ValueError("native_task_arena_gated_backbone_authority_without_groot")
+    expected_download_bytes, expected_upload_bytes = _policy_provider_transfer_byte_budget(
+        candidate
+    )
     consumption = consume_native_task_arena_authority_once(authority) if execute else None
     if consumption is not None and consumption.get("status") != "consumed":
         return {
@@ -443,6 +482,7 @@ def _run_native_task_arena_policy_vast(
         instance_label_exact=member_resource_name or None,
         blocker_prefix=blocker_prefix,
         min_gpu_ram_mb=46_000,
+        min_compute_cap=POLICY_MIN_COMPUTE_CAP,
         allowed_active_instance_ids=allowed_ids,
         allowed_active_resource_names=sibling_resource_names,
         # Policy and controls share the provider-wide semaphore even when a
@@ -459,6 +499,8 @@ def _run_native_task_arena_policy_vast(
         # a stale offer is therefore disabled explicitly for every policy
         # launch, campaign or standalone, so at most one create request occurs.
         stale_offer_create_retry_limit=0,
+        expected_provider_download_bytes=expected_download_bytes,
+        expected_provider_upload_bytes=expected_upload_bytes,
     )
 
 
@@ -467,6 +509,7 @@ __all__ = [
     "MINIMUM_DRIVER_VERSION",
     "NO_POLICY_MIN_GPU_RAM_MB",
     "NO_POLICY_PREFERRED_GPU_KEYWORDS",
+    "POLICY_MIN_COMPUTE_CAP",
     "PROBE_KIND",
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_vast",

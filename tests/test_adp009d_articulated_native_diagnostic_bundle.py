@@ -332,15 +332,25 @@ def test_paid_offer_and_post_create_gates_include_storage_in_hourly_cap(
     binding = bind_all_in_cost(
         tmp_path,
         selected_offer=admitted,
-        instance_payload={"dph_total": 0.86, "storage_total_cost": 0.16},
+        instance_payload={
+            "dph_total": 0.86,
+            "storage_total_cost": 0.16,
+            "inet_down_cost": 0.005,
+            "inet_up_cost": 0.007,
+        },
         instance_id=9,
         disk_gb=200,
         max_live_minutes=60,
         hard_cap_usd=1.0,
         max_hourly_rate_usd=0.80,
+        expected_provider_download_bytes=20_000_000_000,
+        expected_provider_upload_bytes=1_000_000_000,
     )
     assert binding["all_in_hourly_rate_usd"] == pytest.approx(0.86)
     assert binding["all_in_hourly_rate_under_max_hourly"] is False
+    assert binding["projected_runtime_cost_usd"] == pytest.approx(0.86)
+    assert binding["projected_provider_transfer_cost_usd"] == pytest.approx(0.107)
+    assert binding["projected_all_in_cost_usd"] == pytest.approx(0.967)
 
 
 def test_runtime_capability_probe_reports_complete_missing_module_set() -> None:

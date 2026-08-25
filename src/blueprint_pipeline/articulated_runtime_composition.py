@@ -97,8 +97,13 @@ def plan_articulated_runtime_composition(
     scorer_joint_ids: set[str] = set()
     scorer_joint_roles: dict[str, str] = {}
     scorer_joint_types: dict[str, str] = {}
-    if task_spec.get("schema_version") == "adp_task_spec.v2":
-        graph = task_spec.get("articulation_graph")
+    graph = task_spec.get("articulation_graph")
+    graph_required = (
+        articulated
+        or resolved_object_type == "ARTICULATION"
+        or graph is not None
+    )
+    if task_spec.get("schema_version") == "adp_task_spec.v2" and graph_required:
         if not isinstance(graph, Mapping):
             errors.append("articulated_runtime_composition_graph_missing")
         else:

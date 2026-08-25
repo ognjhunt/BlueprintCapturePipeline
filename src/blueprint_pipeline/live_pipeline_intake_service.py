@@ -141,6 +141,9 @@ TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV = (
 )
 TASK_EVALUATION_LAUNCH_EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE"
+TASK_EVALUATION_LAUNCH_PATH_UNIT = (
+    "blueprint-task-evaluation-launch-dispatcher.path"
+)
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT"
 )
@@ -1484,11 +1487,43 @@ def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:
             "blockers": sorted(set(blockers)),
         }
     if mode == "systemd_path":
+        # Read-only verification only. HTTP intake must never arm or start a
+        # release watcher: an operator may have stopped it to freeze paid
+        # submissions, and accepting a request as "armed" while it is inactive
+        # leaves the durable queue silently unclaimed.
+        observed: dict[str, str] = {}
+        for probe in ("is-enabled", "is-active"):
+            completed = subprocess.run(  # nosec B603 B607 - fixed read-only argv
+                ["systemctl", probe, TASK_EVALUATION_LAUNCH_PATH_UNIT],
+                shell=False,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            observed[probe] = completed.stdout.strip() or (
+                "disabled" if probe == "is-enabled" else "inactive"
+            )
+        if observed["is-active"] != "active":
+            return {
+                "status": "blocked",
+                "performed": False,
+                "allowed": True,
+                "trigger_mode": mode,
+                "systemd_path_unit": TASK_EVALUATION_LAUNCH_PATH_UNIT,
+                "systemd_path_enabled_state": observed["is-enabled"],
+                "systemd_path_active_state": observed["is-active"],
+                "blockers": ["task_evaluation_launch_systemd_path_inactive"],
+                "provider_mutation_performed": False,
+            }
         return {
             "status": "armed_by_systemd_path",
             "performed": True,
             "allowed": True,
             "trigger_mode": mode,
+            "systemd_path_unit": TASK_EVALUATION_LAUNCH_PATH_UNIT,
+            "systemd_path_enabled_state": observed["is-enabled"],
+            "systemd_path_active_state": observed["is-active"],
             "provider_mutation_performed": False,
         }
     command_argv = ["systemctl", "start", "--no-block", unit]

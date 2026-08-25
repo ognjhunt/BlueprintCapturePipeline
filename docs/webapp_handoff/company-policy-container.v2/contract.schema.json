@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/company-policy-container/v2/contract.schema.json",
+  "title": "Blueprint Company Policy Container Contract v2",
+  "description": "Immutable, credential-free declaration for a company policy container. Validation does not grant launch authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "company_id",
+    "display_name",
+    "checkpoint_identity",
+    "claim_ceiling",
+    "rights",
+    "container",
+    "robot",
+    "observation_schema",
+    "action_schema"
+  ],
+  "properties": {
+    "schema_version": {"const": "company_policy_container_contract.v2"},
+    "policy_id": {"$ref": "#/$defs/identifier"},
+    "company_id": {"$ref": "#/$defs/identifier"},
+    "display_name": {"type": "string", "minLength": 1},
+    "checkpoint_identity": {"$ref": "#/$defs/checkpoint"},
+    "claim_ceiling": {"const": "development_only"},
+    "rights": {"$ref": "#/$defs/rights"},
+    "container": {"$ref": "#/$defs/container"},
+    "robot": {"$ref": "#/$defs/robot"},
+    "observation_schema": {"$ref": "#/$defs/observation"},
+    "action_schema": {"$ref": "#/$defs/action"},
+    "security_profile": {"$ref": "#/$defs/security_profile"},
+    "contract_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "interval": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "inventory_digest"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "inventory_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "rights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "license",
+        "rights_provenance",
+        "rights_evidence_uri",
+        "rights_evidence_digest",
+        "provider_use_status",
+        "redistribution_status",
+        "rights_ready"
+      ],
+      "properties": {
+        "license": {"type": "string", "minLength": 1},
+        "rights_provenance": {"type": "string", "minLength": 1},
+        "rights_evidence_uri": {"type": "string", "minLength": 1},
+        "rights_evidence_digest": {"$ref": "#/$defs/digest"},
+        "provider_use_status": {"type": "string", "minLength": 1},
+        "redistribution_status": {"type": "string", "minLength": 1},
+        "rights_ready": {"const": true}
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpus",
+        "memory_mib",
+        "pids_limit",
+        "tmpfs_mib",
+        "startup_timeout_seconds",
+        "request_timeout_ms"
+      ],
+      "properties": {
+        "cpus": {"type": "number", "minimum": 0.1, "maximum": 64},
+        "memory_mib": {"type": "integer", "minimum": 256, "maximum": 262144},
+        "pids_limit": {"type": "integer", "minimum": 16, "maximum": 4096},
+        "tmpfs_mib": {"type": "integer", "minimum": 16, "maximum": 65536},
+        "startup_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+        "request_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 120000}
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "visibility",
+        "serve_command",
+        "port",
+        "handshake",
+        "run_as_uid",
+        "run_as_gid",
+        "gpu_required",
+        "resources"
+      ],
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$"
+        },
+        "visibility": {"enum": ["public", "private"]},
+        "serve_command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "handshake": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "protocol_version", "action_route"],
+          "properties": {
+            "kind": {"const": "http_json_v1"},
+            "protocol_version": {"const": "1.0"},
+            "action_route": {"const": "/v1/actions"}
+          }
+        },
+        "run_as_uid": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "run_as_gid": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "gpu_required": {"type": "boolean"},
+        "resources": {"$ref": "#/$defs/resources"}
+      }
+    },
+    "joint_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "lower", "upper", "unit"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "lower": {"type": "number"},
+        "upper": {"type": "number"},
+        "unit": {"type": "string", "minLength": 1}
+      }
+    },
+    "gripper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "command_interval", "unit", "executed_semantics"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "command_interval": {"$ref": "#/$defs/interval"},
+        "unit": {"type": "string", "minLength": 1},
+        "executed_semantics": {"type": "string", "minLength": 1}
+      }
+    },
+    "robot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "embodiment_id",
+        "definition_uri",
+        "definition_digest",
+        "joint_names",
+        "joint_limits",
+        "gripper"
+      ],
+      "properties": {
+        "embodiment_id": {"$ref": "#/$defs/identifier"},
+        "definition_uri": {"type": "string", "minLength": 1},
+        "definition_digest": {"$ref": "#/$defs/digest"},
+        "joint_names": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "joint_limits": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/joint_limit"}
+        },
+        "gripper": {"$ref": "#/$defs/gripper"}
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "width",
+        "height",
+        "color_space",
+        "dtype",
+        "layout",
+        "encoding",
+        "calibration_uri",
+        "calibration_digest"
+      ],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "width": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "height": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "color_space": {"const": "rgb"},
+        "dtype": {"const": "uint8"},
+        "layout": {"const": "hwc"},
+        "encoding": {"const": "lossless_png"},
+        "calibration_uri": {"type": "string", "minLength": 1},
+        "calibration_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "state_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "shape", "dtype", "unit"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "shape": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "integer", "minimum": 1}
+        },
+        "dtype": {"enum": ["float32", "float64"]},
+        "unit": {"type": "string", "minLength": 1}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cameras", "state_fields", "prompt", "control_frequency_hz"],
+      "properties": {
+        "cameras": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/camera"}
+        },
+        "state_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/state_field"}
+        },
+        "prompt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "required"],
+          "properties": {
+            "mode": {"const": "text"},
+            "required": {"const": true}
+          }
+        },
+        "control_frequency_hz": {"type": "number", "minimum": 0.1, "maximum": 240}
+      }
+    },
+    "action_channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "command_interval",
+        "raw_accepted_bounds",
+        "unit",
+        "executed_semantics"
+      ],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "kind": {"enum": ["bounded_continuous", "threshold_scalar"]},
+        "command_interval": {"$ref": "#/$defs/interval"},
+        "raw_accepted_bounds": {"$ref": "#/$defs/interval"},
+        "unit": {"type": "string", "minLength": 1},
+        "executed_semantics": {"type": "string", "minLength": 1}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "chunk_rows", "channels", "normalization"],
+      "properties": {
+        "adapter_id": {"$ref": "#/$defs/identifier"},
+        "chunk_rows": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/action_channel"}
+        },
+        "normalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation", "action", "gripper"],
+          "properties": {
+            "observation": {"type": "string", "minLength": 1},
+            "action": {"type": "string", "minLength": 1},
+            "gripper": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "security_profile": {
+      "const": {
+        "profile_id": "blueprint_company_policy_sandbox_v2",
+        "network_mode": "none_with_blueprint_proxy",
+        "egress_policy": "deny_all_measured_before_first_observation",
+        "dns_available": false,
+        "ipv6_available": false,
+        "host_network_available": false,
+        "scene_mounts_allowed": false,
+        "capture_mounts_allowed": false,
+        "evidence_mounts_allowed": false,
+        "output_mounts_allowed": false,
+        "docker_socket_mounted": false,
+        "registry_credential_mounted": false,
+        "runtime_credential_mounts_allowed": false,
+        "root_filesystem_read_only": true,
+        "capabilities_dropped": "all",
+        "no_new_privileges": true,
+        "raw_logs_after_scene_access": "quarantined_not_customer_visible",
+        "blueprint_owned_proxy_only": true,
+        "container_and_image_removal_required": true
+      }
+    }
+  }
+}

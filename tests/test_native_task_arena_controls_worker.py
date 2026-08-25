@@ -1509,6 +1509,7 @@ def test_requested_downstream_diagnostic_exits_before_unrelated_controls_work() 
         and "downstream_diagnostic_request" in ast.unparse(node.test)
         and "enabled" in ast.unparse(node.test)
         and "is True" in ast.unparse(node.test)
+        and "graph_rigid" not in ast.unparse(node.test)
     )
     assert any(isinstance(node, ast.Return) for node in requested_branch.body)
 
@@ -1519,17 +1520,53 @@ def test_requested_downstream_diagnostic_exits_before_unrelated_controls_work() 
         "run_contact_acquisition_sweep",
         "run_task_neutral_controls",
     }
-    call_lines = {
-        node.func.id: node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in forbidden_calls
-    }
+    call_lines = {}
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Name)
+            or node.func.id not in forbidden_calls
+        ):
+            continue
+        # The rigid task exits through its own scorer before this articulated
+        # diagnostic branch. It is not work that can follow a requested
+        # post-Phase-5 articulated diagnostic.
+        if (
+            node.func.id == "run_task_neutral_controls"
+            and node.lineno < requested_branch.lineno
+        ):
+            continue
+        call_lines[node.func.id] = node.lineno
     assert set(call_lines) == forbidden_calls
     assert all(
         line > requested_branch.end_lineno for line in call_lines.values()
     )
+
+
+def test_graph_rigid_controls_bypass_articulated_contact_diagnostics() -> None:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(main)))
+    rigid_branch = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "graph_rigid"
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "run_task_neutral_controls"
+            for child in ast.walk(node)
+        )
+    )
+
+    assert any(isinstance(node, ast.Return) for node in rigid_branch.body)
+    contact_open_lookup = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and node.value == "contact_open"
+        and node.lineno > rigid_branch.lineno
+    )
+    assert rigid_branch.end_lineno < contact_open_lookup.lineno
 
 
 class _BaseRigidEnvironment:
