@@ -1240,6 +1240,9 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert sp["rentable"] == {"eq": True}
     assert sp["num_gpus"] == {"eq": 1}
     assert sp["dph_total"]["lte"] == pytest.approx(5.0)
+    assert sp["gpu_ram"] == {"gte": spec.min_gpu_ram_mb}
+    assert sp["compute_cap"] == {"lte": 900}
+    assert sp["disk_space"] == {"gte": spec.container_disk_gb}
     # Args mode must override the Isaac image ENTRYPOINT, then pass only bash args.
     cp = req["create_payload"]
     assert cp["image"] == "img:tag"
@@ -1492,14 +1495,21 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
         assert api_key == "vast-secret"
         assert payload["rentable"] == {"eq": True}
         assert payload["has_avx"] == {"eq": True}
+        assert payload["gpu_ram"] == {"gte": 40000}
+        assert payload["compute_cap"] == {"lte": 900}
+        assert payload["driver_version"] == {"gte": "580.65.06"}
+        assert payload["disk_space"] == {"gte": 140}
         return 200, {
             "offers": [
                 {
                     "ask_contract_id": 11,
                     "gpu_name": "L40S",
                     "gpu_ram": 48000,
+                    "dph_base": 0.99,
                     "dph_total": 0.99,
-                    "driver_version": "550.54.15",
+                    "storage_cost": 0.0,
+                    "disk_space": 300,
+                    "driver_version": "580.119.02",
                     "reliability": 0.995,
                     "machine_id": 101,
                     "has_avx": 1,
@@ -1509,8 +1519,11 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
                     "ask_contract_id": 12,
                     "gpu_name": "RTX A6000",
                     "gpu_ram": 48000,
+                    "dph_base": 0.70,
                     "dph_total": 0.70,
-                    "driver_version": "550.54.15",
+                    "storage_cost": 0.0,
+                    "disk_space": 300,
+                    "driver_version": "580.119.02",
                     "reliability": 0.999,
                     "machine_id": 54812,
                     "has_avx": 0,
@@ -1531,8 +1544,9 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": ["L40S"],
+            "minimum_driver_version": "580.65.06",
             "min_compute_cap": 0,
-            "max_compute_cap": 0,
+            "max_compute_cap": 900,
             "prefer_isaac_rt": False,
             "gpu_selection_policy": {
                 "allowed_gpu_keywords": ["L40S"],
@@ -1562,18 +1576,111 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
         "require_direct_port": False,
         "preferred_gpu_keywords": ["L40S"],
         "min_compute_cap": 0,
-        "max_compute_cap": 0,
+        "max_compute_cap": 900,
         "prefer_isaac_rt": False,
         "gpu_selection_policy": {
             "allowed_gpu_keywords": ["L40S"],
             "denied_gpu_keywords": [],
         },
         "allowed_geolocation_country_codes": [],
+        "minimum_driver_version": "580.65.06",
+        "disk_gb": 140,
+        "required_provider_disk_gb": 140,
+        "hard_ttl_seconds": None,
+        "hard_cap_usd": None,
+        "retry_cap": None,
     }
     serialized = json.dumps(result)
     assert "vast-secret" not in serialized
     assert "provider-runtime-secret" not in serialized
     assert "jupyter_token" not in serialized
+
+
+def test_vast_capacity_preflight_prices_requested_disk_and_full_ttl(
+    monkeypatch,
+) -> None:
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        assert (method, path, api_key) == ("POST", "/bundles/", "vast-secret")
+        assert payload["num_gpus"] == {"eq": 1}
+        assert payload["gpu_ram"] == {"gte": 46000}
+        assert payload["compute_cap"] == {"gte": 800, "lte": 900}
+        assert payload["driver_version"] == {"gte": "580.65.06"}
+        assert payload["disk_space"] == {"gte": 200}
+        assert payload["machine_id"] == {"notin": [137570]}
+        return 200, {
+            "offers": [
+                {
+                    "ask_contract_id": 48064193,
+                    "machine_id": 137571,
+                    "gpu_name": "RTX 6000Ada",
+                    "gpu_ram": 49_140,
+                    "compute_cap": 890,
+                    "driver_version": "580.119.02",
+                    "disk_space": 300,
+                    "dph_base": 0.5733333333333334,
+                    "dph_total": 0.5792592592592593,
+                    "storage_cost": 0.5333333333333332,
+                    "storage_total_cost": 0.005925925925925925,
+                    "verified": True,
+                    "rentable": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    monkeypatch.setattr(
+        VastRenderProvider,
+        "billable_inventory",
+        lambda _self, *, name_prefix: {
+            "status": "observed",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+            "name_prefix": name_prefix,
+        },
+    )
+    request = VastRenderProvider().build_request(
+        _spec(
+            container_disk_gb=200,
+            max_hourly_rate_usd=0.80,
+            min_gpu_ram_mb=46_000,
+            excluded_machine_ids=(137570,),
+        ),
+        Path("/unused"),
+    )
+    request.update(
+        {
+            "min_compute_cap": 800,
+            "max_compute_cap": 900,
+            "minimum_driver_version": "580.65.06",
+            "hard_ttl_seconds": 2760,
+            "hard_cap_usd": 0.60,
+            "retry_cap": 0,
+            "require_global_inventory_zero": True,
+            "prefer_isaac_rt": False,
+        }
+    )
+
+    result = VastRenderProvider().capacity_preflight(request)
+
+    assert result["status"] == "available"
+    assert result["blockers"] == []
+    assert result["global_billable_inventory"]["live_resource_count"] == 0
+    selected = result["selected_offer"]
+    assert selected["compute_hourly_rate_usd"] == pytest.approx(0.5733333333333334)
+    assert selected["storage_hourly_rate_usd"] == pytest.approx(0.1481481481481481)
+    assert selected["hourly_rate_usd"] == pytest.approx(0.7214814814814815)
+    assert selected["projected_full_ttl_cost_usd"] == pytest.approx(
+        0.5531358024691358
+    )
+
+    request["hard_cap_usd"] = 0.50
+    blocked = VastRenderProvider().capacity_preflight(request)
+    assert blocked["status"] == "blocked"
+    assert "vast_capacity_full_ttl_exceeds_hard_cap" in blocked["blockers"]
 
 
 def test_vast_capacity_preflight_excludes_immutable_machine_ids(
@@ -1587,6 +1694,8 @@ def test_vast_capacity_preflight_excludes_immutable_machine_ids(
                     "machine_id": 76546,
                     "gpu_name": "RTX 3090",
                     "gpu_ram": 24_000,
+                    "disk_space": 300,
+                    "storage_cost": 0.0,
                     "dph_total": 0.20,
                 },
                 {
@@ -1594,6 +1703,8 @@ def test_vast_capacity_preflight_excludes_immutable_machine_ids(
                     "machine_id": 84216,
                     "gpu_name": "RTX 3090",
                     "gpu_ram": 24_000,
+                    "disk_space": 300,
+                    "storage_cost": 0.0,
                     "dph_total": 0.21,
                 },
             ]
@@ -1630,6 +1741,8 @@ def test_vast_live_selection_uses_authority_envelope_after_advisory_offer_vanish
                         "machine_id": 1001,
                         "gpu_name": "RTX A6000",
                         "gpu_ram": 48_000,
+                        "disk_space": 300,
+                        "storage_cost": 0.0,
                         "dph_total": 0.24,
                         "compute_cap": 860,
                         "geolocation": "texas_us",
@@ -1643,6 +1756,8 @@ def test_vast_live_selection_uses_authority_envelope_after_advisory_offer_vanish
                         "machine_id": 2002,
                         "gpu_name": "RTX 4090",
                         "gpu_ram": 24_000,
+                        "disk_space": 300,
+                        "storage_cost": 0.0,
                         "dph_total": 0.35,
                         "compute_cap": 890,
                         "geolocation": "germany_de",
@@ -1761,6 +1876,8 @@ def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(
                     "ask_contract_id": 10,
                     "gpu_name": "L40S",
                     "gpu_ram": 48_000,
+                    "disk_space": 300,
+                    "storage_cost": 0.0,
                     "dph_total": 0.80,
                     "direct_port_count": 0,
                 },
@@ -1768,6 +1885,8 @@ def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(
                     "ask_contract_id": 11,
                     "gpu_name": "L40S",
                     "gpu_ram": 48_000,
+                    "disk_space": 300,
+                    "storage_cost": 0.0,
                     "dph_total": 0.90,
                     "direct_port_count": 2,
                 },
@@ -2270,6 +2389,13 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "min_reliability": 0.99,
             "require_direct_port": False,
             "preferred_gpu_keywords": ["L40S"],
+            "minimum_driver_version": "",
+            "disk_gb": 140,
+            "required_provider_disk_gb": 140,
+            "min_compute_cap": 0,
+            "max_compute_cap": 900,
+            "prefer_isaac_rt": False,
+            "gpu_selection_policy": None,
         }
     ]
 

@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_bundle import (
+    build_native_task_arena_bundle,
+    digest_pinned_container_image,
+)
 from .native_task_arena_execution_contract import CONTROLS_RUNTIME_MODULE_NAMES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .native_task_control_plan import materialize_native_task_control_plan
@@ -46,6 +49,7 @@ def build_native_task_arena_controls_bundle(
     construction_result_path: str | Path,
     runtime_source_packet_receipt: str | Path,
     implementation_commit: str,
+    container_image: str = NATIVE_TASK_ARENA_IMAGE,
     generated_at: str | None = None,
     enable_synthetic_post_phase5_downstream_diagnostic: bool = False,
     bounded_orientation_reference_joint_positions_rad: Sequence[float]
@@ -133,7 +137,7 @@ def build_native_task_arena_controls_bundle(
             implementation_commit=implementation_commit,
             execution_mode="controls",
             expected_output_filename=RESULT_FILENAME,
-            container_image=NATIVE_TASK_ARENA_IMAGE,
+            container_image=container_image,
             bound_runtime_inputs=bound_runtime_inputs,
             generated_at=generated_at,
         )
@@ -194,7 +198,7 @@ def load_verified_native_task_arena_controls_bundle(
         errors.append("native_task_arena_controls_bundle_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
         errors.append("native_task_arena_controls_bundle_commit_mismatch")
-    if receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE:
+    if not digest_pinned_container_image(receipt.get("container_image")):
         errors.append("native_task_arena_controls_bundle_image_mismatch")
     if expected_packet_receipt_digest and (
         receipt.get("packet_receipt_digest") != expected_packet_receipt_digest
@@ -255,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--construction-result", dest="construction_result_path", required=True)
     parser.add_argument("--runtime-source-packet-receipt", dest="runtime_source_packet_receipt", required=True)
     parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
+    parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
     parser.add_argument(
         "--enable-synthetic-post-phase5-downstream-diagnostic",
@@ -284,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             construction_result_path=args.construction_result_path,
             runtime_source_packet_receipt=args.runtime_source_packet_receipt,
             implementation_commit=args.implementation_commit,
+            container_image=args.container_image,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
             enable_synthetic_post_phase5_downstream_diagnostic=(
                 args.enable_synthetic_post_phase5_downstream_diagnostic

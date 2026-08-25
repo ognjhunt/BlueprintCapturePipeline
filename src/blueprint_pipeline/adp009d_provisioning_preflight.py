@@ -26,7 +26,15 @@ from pathlib import Path
 SCHEMA_VERSION = "adp009d_provisioning_preflight.v1"
 
 # Commands the provisioning script issues directly.
-REQUIRED_COMMANDS = ("curl", "git", "apt-get", "gcc", "cc")
+REQUIRED_COMMANDS = (
+    "curl",
+    "git",
+    "apt-get",
+    "sha256sum",
+    "tar",
+    "gcc",
+    "cc",
+)
 # Headers whose absence broke a live run.  Python.h's directory varies by
 # version, so it is probed rather than assumed at one path.
 REQUIRED_HEADERS = ("linux/input.h",)

@@ -106,6 +106,8 @@ def test_bundle_is_zero_query_outcome_blind_and_stops_server(
     if candidate_id == "pi05_droid":
         assert "provider_runtime/adp009d_policy_execution_spec.json" in names
         assert "provider_runtime/adp009d_openpi_checkpoint_inventory.json" in names
+    else:
+        assert "provider_runtime/adp009d_groot_wire_wheels.py" in names
 
 
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
