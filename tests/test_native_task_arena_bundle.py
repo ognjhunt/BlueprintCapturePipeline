@@ -1457,8 +1457,19 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
         names = set(archive.namelist())
         assert {
             "provider_runtime/runtime_inputs/adp_task_control_plan.v1.json",
+            "provider_runtime/runtime_inputs/adp_task_control_execution_spec.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
         }.issubset(names)
+        execution_spec = json.loads(
+            archive.read(
+                "provider_runtime/runtime_inputs/"
+                "adp_task_control_execution_spec.v1.json"
+            )
+        )
+        assert execution_spec["control_selection"] == "control_pair"
+        assert execution_spec["execution_spec_digest"] == canonical_digest(
+            execution_spec, digest_field="execution_spec_digest"
+        )
         assert {
             f"provider_runtime/blueprint_pipeline/{name}"
             for name in CONTROLS_RUNTIME_MODULE_NAMES
@@ -1534,6 +1545,58 @@ def test_controls_bundle_refuses_invalid_bounded_orientation_reference(
             implementation_commit="c" * 40,
             generated_at="fixed",
             bounded_orientation_reference_joint_positions_rad=[0.0] * 6,
+        )
+
+
+def test_scripted_positive_requires_the_matching_terminal_zero_action(
+    tmp_path: Path,
+) -> None:
+    scene = {"plan_digest": "sha256:" + "1" * 64}
+    construction = {"result_digest": "sha256:" + "2" * 64}
+    value = {
+        "schema_version": "native_task_arena_control_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "control_selection": "zero_action_negative",
+        "controls_qualified": False,
+        "scene_plan_digest": scene["plan_digest"],
+        "construction_result_digest": construction["result_digest"],
+        "control_episode": {
+            "schema_version": "adp_task_control_episode.v1",
+            "control_id": "zero_action_negative",
+            "control_passed": True,
+            "observed_outcome": "never_moved",
+            "grader_authority": "deterministic_simulator_state",
+            "candidate_policy_queried": False,
+            "visual_evidence": {"status": "complete"},
+            "media_artifacts": [{"role": "external_video"}],
+            "receipt_digest": "",
+        },
+        "result_digest": "",
+    }
+    value["control_episode"]["receipt_digest"] = canonical_digest(
+        value["control_episode"], digest_field="receipt_digest"
+    )
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    path = tmp_path / "zero-action-result.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    checked_path, checked = controls_bundle_module._validated_zero_action_result(
+        path, scene_plan=scene, construction=construction
+    )
+
+    assert checked_path == path.resolve()
+    assert checked["result_digest"] == value["result_digest"]
+    value["control_episode"]["control_passed"] = False
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="zero_action_result_invalid"):
+        controls_bundle_module._validated_zero_action_result(
+            path, scene_plan=scene, construction=construction
         )
 
 

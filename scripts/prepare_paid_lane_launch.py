@@ -234,12 +234,24 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
 )
 
 
-def _native_task_arena_steps(link: str) -> tuple[LaneStep, ...]:
+def _native_task_arena_steps(
+    link: str, *, control_selection: str = "control_pair"
+) -> tuple[LaneStep, ...]:
     """Return the reusable construction or controls preparation graph."""
 
     if link not in {"construction", "controls"}:
         raise ValueError(f"native_task_arena_preparation_link_invalid:{link}")
     controls = link == "controls"
+    if (
+        (not controls and control_selection != "control_pair")
+        or control_selection
+        not in {
+            "control_pair",
+            "zero_action_negative",
+            "deterministic_scripted_positive",
+        }
+    ):
+        raise ValueError("native_task_arena_control_selection_invalid")
     bundle_module = (
         "blueprint_pipeline.native_task_arena_controls_bundle"
         if controls
@@ -262,7 +274,18 @@ def _native_task_arena_steps(link: str) -> tuple[LaneStep, ...]:
         "{container_image}",
     ]
     if controls:
-        bundle_argv.extend(("--construction-result", "{construction_result}"))
+        bundle_argv.extend(
+            (
+                "--construction-result",
+                "{construction_result}",
+                "--control-selection",
+                control_selection,
+            )
+        )
+        if control_selection == "deterministic_scripted_positive":
+            bundle_argv.extend(
+                ("--zero-action-result", "{zero_action_result}")
+            )
     authority_lineage = (
         (
             "--prior-authority",
@@ -506,6 +529,12 @@ LANES: dict[str, tuple[LaneStep, ...]] = {
     "semantic_teacher_image_edit": SEMANTIC_TEACHER_IMAGE_EDIT_STEPS,
     "native_task_arena_construction": _native_task_arena_steps("construction"),
     "native_task_arena_controls": _native_task_arena_steps("controls"),
+    "native_task_arena_zero_action": _native_task_arena_steps(
+        "controls", control_selection="zero_action_negative"
+    ),
+    "native_task_arena_scripted_positive": _native_task_arena_steps(
+        "controls", control_selection="deterministic_scripted_positive"
+    ),
 }
 
 

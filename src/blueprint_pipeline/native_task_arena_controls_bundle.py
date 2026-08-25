@@ -7,7 +7,7 @@ import json
 import math
 import tempfile
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import (
@@ -26,6 +26,14 @@ RESULT_FILENAME = "native_task_arena_control_result.v1.json"
 DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME = (
     "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json"
 )
+CONTROL_EXECUTION_SPEC_FILENAME = "adp_task_control_execution_spec.v1.json"
+ZERO_ACTION_RESULT_FILENAME = "native_task_arena_zero_action_result.v1.json"
+CONTROL_PAIR = "control_pair"
+ZERO_ACTION_NEGATIVE = "zero_action_negative"
+SCRIPTED_POSITIVE = "deterministic_scripted_positive"
+CONTROL_SELECTIONS = frozenset(
+    {CONTROL_PAIR, ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE}
+)
 
 def controls_runtime_sources() -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
@@ -42,6 +50,51 @@ def _read_mapping(path: Path, *, error: str) -> dict[str, Any]:
     return value
 
 
+def _validated_zero_action_result(
+    path: str | Path,
+    *,
+    scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    unresolved = Path(path).expanduser()
+    if unresolved.is_symlink():
+        raise ValueError("native_task_controls_zero_action_result_invalid")
+    source = unresolved.resolve()
+    value = _read_mapping(
+        source, error="native_task_controls_zero_action_result_invalid"
+    )
+    episode = value.get("control_episode")
+    visual = episode.get("visual_evidence") if isinstance(episode, Mapping) else None
+    if (
+        value.get("schema_version") != RESULT_SCHEMA_VERSION
+        or value.get("status") != "completed"
+        or value.get("blockers") != []
+        or value.get("control_selection") != ZERO_ACTION_NEGATIVE
+        or value.get("controls_qualified") is not False
+        or value.get("scene_plan_digest") != scene_plan.get("plan_digest")
+        or value.get("construction_result_digest")
+        != construction.get("result_digest")
+        or not isinstance(episode, Mapping)
+        or episode.get("schema_version") != "adp_task_control_episode.v1"
+        or episode.get("control_id") != ZERO_ACTION_NEGATIVE
+        or episode.get("control_passed") is not True
+        or episode.get("observed_outcome") != "never_moved"
+        or episode.get("grader_authority")
+        != "deterministic_simulator_state"
+        or episode.get("candidate_policy_queried") is not False
+        or not isinstance(visual, Mapping)
+        or visual.get("status") != "complete"
+        or not isinstance(episode.get("media_artifacts"), list)
+        or not episode["media_artifacts"]
+        or episode.get("receipt_digest")
+        != canonical_digest(episode, digest_field="receipt_digest")
+        or value.get("result_digest")
+        != canonical_digest(value, digest_field="result_digest")
+    ):
+        raise ValueError("native_task_controls_zero_action_result_invalid")
+    return source, value
+
+
 def build_native_task_arena_controls_bundle(
     *,
     job_dir: str | Path,
@@ -51,11 +104,13 @@ def build_native_task_arena_controls_bundle(
     implementation_commit: str,
     container_image: str = NATIVE_TASK_ARENA_IMAGE,
     generated_at: str | None = None,
+    control_selection: str = CONTROL_PAIR,
+    zero_action_result_path: str | Path | None = None,
     enable_synthetic_post_phase5_downstream_diagnostic: bool = False,
     bounded_orientation_reference_joint_positions_rad: Sequence[float]
     | None = None,
 ) -> dict[str, Any]:
-    """Bind a qualified construction receipt to zero and positive controls."""
+    """Bind a qualified construction receipt to one or both controls."""
 
     packet = Path(packet_dir).expanduser().resolve()
     scene_plan = _read_mapping(
@@ -71,6 +126,31 @@ def build_native_task_arena_controls_bundle(
         scene_plan=scene_plan,
         construction_result=construction,
     )
+    if control_selection not in CONTROL_SELECTIONS:
+        raise ValueError("native_task_controls_selection_invalid")
+    if control_selection != CONTROL_PAIR and not (
+        scene_plan.get("task_kind") == "rigid_pick_place"
+        and (scene_plan.get("task_spec") or {}).get("schema_version")
+        == "adp_task_spec.v2"
+    ):
+        raise ValueError("native_task_controls_single_selection_unsupported")
+    if (
+        control_selection != CONTROL_PAIR
+        and enable_synthetic_post_phase5_downstream_diagnostic
+    ):
+        raise ValueError("native_task_controls_selection_diagnostic_conflict")
+    zero_action_result: dict[str, Any] | None = None
+    zero_action_path: Path | None = None
+    if control_selection == SCRIPTED_POSITIVE:
+        if zero_action_result_path is None:
+            raise ValueError("native_task_controls_zero_action_result_required")
+        zero_action_path, zero_action_result = _validated_zero_action_result(
+            zero_action_result_path,
+            scene_plan=scene_plan,
+            construction=construction,
+        )
+    elif zero_action_result_path is not None:
+        raise ValueError("native_task_controls_zero_action_result_unexpected")
     if bounded_orientation_reference_joint_positions_rad is not None:
         try:
             reference = [
@@ -103,6 +183,34 @@ def build_native_task_arena_controls_bundle(
             "native_task_arena_construction_result.v1.json": construction_path,
             "adp_task_control_plan.v1.json": frozen_plan,
         }
+        execution_spec: dict[str, Any] = {
+            "schema_version": "adp_task_control_execution_spec.v1",
+            "control_selection": control_selection,
+            "task_kind": scene_plan["task_kind"],
+            "scene_plan_digest": scene_plan["plan_digest"],
+            "construction_result_digest": construction["result_digest"],
+            "control_plan_digest": control_plan["plan_digest"],
+            "candidate_policy_queried": False,
+            "prior_zero_action_result_digest": (
+                zero_action_result["result_digest"]
+                if zero_action_result is not None
+                else None
+            ),
+            "execution_spec_digest": "",
+        }
+        execution_spec["execution_spec_digest"] = canonical_digest(
+            execution_spec, digest_field="execution_spec_digest"
+        )
+        execution_spec_path = Path(raw) / CONTROL_EXECUTION_SPEC_FILENAME
+        execution_spec_path.write_text(
+            json.dumps(execution_spec, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        bound_runtime_inputs[CONTROL_EXECUTION_SPEC_FILENAME] = (
+            execution_spec_path
+        )
+        if zero_action_path is not None:
+            bound_runtime_inputs[ZERO_ACTION_RESULT_FILENAME] = zero_action_path
         if enable_synthetic_post_phase5_downstream_diagnostic:
             request: dict[str, Any] = {
                 "schema_version": (
@@ -187,11 +295,19 @@ def load_verified_native_task_arena_controls_bundle(
             {
                 "native_task_arena_construction_result.v1.json",
                 "adp_task_control_plan.v1.json",
+                CONTROL_EXECUTION_SPEC_FILENAME,
             },
             {
                 "native_task_arena_construction_result.v1.json",
                 "adp_task_control_plan.v1.json",
+                CONTROL_EXECUTION_SPEC_FILENAME,
                 DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME,
+            },
+            {
+                "native_task_arena_construction_result.v1.json",
+                "adp_task_control_plan.v1.json",
+                CONTROL_EXECUTION_SPEC_FILENAME,
+                ZERO_ACTION_RESULT_FILENAME,
             },
         )
     ):
@@ -226,11 +342,17 @@ def load_verified_native_task_arena_controls_bundle(
 
 __all__ = [
     "CONTROLS_RUNTIME_MODULE_NAMES",
+    "CONTROL_EXECUTION_SPEC_FILENAME",
+    "CONTROL_PAIR",
+    "CONTROL_SELECTIONS",
     "DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",
+    "SCRIPTED_POSITIVE",
+    "ZERO_ACTION_NEGATIVE",
+    "ZERO_ACTION_RESULT_FILENAME",
     "build_native_task_arena_controls_bundle",
     "controls_runtime_sources",
     "load_verified_native_task_arena_controls_bundle",
@@ -262,6 +384,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
     parser.add_argument(
+        "--control-selection",
+        choices=sorted(CONTROL_SELECTIONS),
+        default=CONTROL_PAIR,
+    )
+    parser.add_argument("--zero-action-result")
+    parser.add_argument(
         "--enable-synthetic-post-phase5-downstream-diagnostic",
         action="store_true",
         help=(
@@ -291,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
             implementation_commit=args.implementation_commit,
             container_image=args.container_image,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
+            control_selection=args.control_selection,
+            zero_action_result_path=args.zero_action_result,
             enable_synthetic_post_phase5_downstream_diagnostic=(
                 args.enable_synthetic_post_phase5_downstream_diagnostic
             ),

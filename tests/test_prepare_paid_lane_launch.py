@@ -209,6 +209,7 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "prior_provider_zero",
         "prior_spend_reconciliation",
         "construction_result",
+        "zero_action_result",
         "standing_authorization_dir",
         "standing_authorization_expires_at",
     }
@@ -237,7 +238,12 @@ def test_shipped_semantic_teacher_lane_keeps_its_required_order() -> None:
 
 @pytest.mark.parametrize(
     "lane",
-    ["native_task_arena_construction", "native_task_arena_controls"],
+    [
+        "native_task_arena_construction",
+        "native_task_arena_controls",
+        "native_task_arena_zero_action",
+        "native_task_arena_scripted_positive",
+    ],
 )
 def test_native_lane_prepares_rehearses_then_publishes_once(lane: str) -> None:
     order = [step.step_id for step in prep.LANES[lane]]
@@ -254,15 +260,31 @@ def test_native_lane_prepares_rehearses_then_publishes_once(lane: str) -> None:
     dry_run = prep.LANES[lane][order.index("allocator_dry_run")]
     assert "--execute" not in dry_run.argv
     assert dry_run.argv[dry_run.argv.index("--provider") + 1] == "vast"
-    assert dry_run.argv[dry_run.argv.index("--probe-kind") + 1] == lane.replace(
-        "_", "-"
+    expected_probe = (
+        lane.replace("_", "-")
+        if lane == "native_task_arena_construction"
+        else "native-task-arena-controls"
     )
+    assert dry_run.argv[dry_run.argv.index("--probe-kind") + 1] == expected_probe
     standing = prep.LANES[lane][order.index("standing_authorization")]
     assert standing.argv[standing.argv.index("--max-launches") + 1] == "1"
     bundle = prep.LANES[lane][order.index("provider_bundle")]
     assert bundle.argv[bundle.argv.index("--container-image") + 1] == (
         "{container_image}"
     )
+    if lane != "native_task_arena_construction":
+        expected = {
+            "native_task_arena_controls": "control_pair",
+            "native_task_arena_zero_action": "zero_action_negative",
+            "native_task_arena_scripted_positive": (
+                "deterministic_scripted_positive"
+            ),
+        }[lane]
+        assert bundle.argv[bundle.argv.index("--control-selection") + 1] == expected
+        if lane == "native_task_arena_scripted_positive":
+            assert bundle.argv[bundle.argv.index("--zero-action-result") + 1] == (
+                "{zero_action_result}"
+            )
 
 
 def test_native_context_reopens_independent_versioned_references(
