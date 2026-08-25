@@ -197,6 +197,41 @@ def test_admission_retry_is_idempotent_and_conflict_fails_closed(tmp_path: Path)
     assert any("contract_digest_mismatch" in item for item in excinfo.value.blockers)
 
 
+def test_admission_recovers_exact_request_only_crash_state(tmp_path: Path) -> None:
+    request = _request()
+    first = stage_company_policy_container_admission(
+        value=request, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+    )
+    admission_root = tmp_path / first["admission_id"]
+    (admission_root / "admission_receipt.json").unlink()
+
+    recovered = stage_company_policy_container_admission(
+        value=request, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+    )
+
+    assert recovered["accepted"] is True
+    assert recovered["already_exists"] is True
+    assert recovered["recovered_incomplete_state"] is True
+    retained = json.loads((admission_root / "admission_receipt.json").read_text())
+    assert retained["request_digest"] == first["request_digest"]
+    assert retained["admission_digest"] == first["admission_digest"]
+
+
+def test_admission_refuses_receipt_only_state(tmp_path: Path) -> None:
+    request = _request()
+    first = stage_company_policy_container_admission(
+        value=request, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+    )
+    admission_root = tmp_path / first["admission_id"]
+    (admission_root / "admission_request.json").unlink()
+
+    with pytest.raises(CompanyPolicyContainerAdmissionError) as excinfo:
+        stage_company_policy_container_admission(
+            value=request, root=tmp_path, allowed_registry_hosts=["registry.acme.example"]
+        )
+    assert "company_policy_container_admission_existing_state_invalid" in excinfo.value.blockers
+
+
 @pytest.mark.parametrize(
     "mutate,blocker",
     [

@@ -281,10 +281,65 @@ def stage_company_policy_container_admission(
     lock_path = admission_root / ".lock"
     request_path = admission_root / "admission_request.json"
     receipt_path = admission_root / "admission_receipt.json"
+    receipt = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "status": "admitted_no_spend",
+        "accepted": True,
+        "already_exists": False,
+        "admission_id": admission_id,
+        "admission_digest": cross_runtime_canonical_digest(
+            {"identity": identity_material, "request_digest": request_digest}
+        ),
+        "request_digest": request_digest,
+        "contract_digest": request["contract_digest"],
+        "tenant_id": request["tenant_id"],
+        "run_id": request["run_id"],
+        "submission_id": request["submission_id"],
+        "company_id": request["company_id"],
+        "registry_credential_lease_id": request["registry_credential_lease_id"],
+        "registry_credential_consumed": False,
+        "profile_published": False,
+        "launch_queued": False,
+        "launch_authority_granted": False,
+        "provider_mutation_authorized": False,
+        "provider_mutation_performed": False,
+        "claim_ceiling": DEFAULT_CLAIM_CEILING,
+        "admitted_at_iso": utc_now_iso(),
+        "proof_boundary": {
+            "contract_validated": True,
+            "immutable_admission_retained": True,
+            "sandbox_qualified": False,
+            "synthetic_conformance_completed": False,
+            "policy_episode_completed": False,
+        },
+    }
     with lock_path.open("a+b") as lock:
         lock_path.chmod(0o600)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if request_path.is_file() or receipt_path.is_file():
+        request_exists = request_path.is_file()
+        receipt_exists = receipt_path.is_file()
+        if request_exists and not receipt_exists:
+            try:
+                existing_request = json.loads(request_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CompanyPolicyContainerAdmissionError(
+                    ["company_policy_container_admission_existing_state_invalid"],
+                    status_code=409,
+                ) from exc
+            if existing_request != request:
+                raise CompanyPolicyContainerAdmissionError(
+                    ["company_policy_container_admission_idempotency_conflict"],
+                    status_code=409,
+                )
+            recovered_receipt = {**receipt, "recovered_incomplete_state": True}
+            _atomic_write_json(receipt_path, recovered_receipt)
+            return {**recovered_receipt, "already_exists": True}
+        if receipt_exists and not request_exists:
+            raise CompanyPolicyContainerAdmissionError(
+                ["company_policy_container_admission_existing_state_invalid"],
+                status_code=409,
+            )
+        if request_exists and receipt_exists:
             try:
                 existing_request = json.loads(request_path.read_text(encoding="utf-8"))
                 existing_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -299,39 +354,6 @@ def stage_company_policy_container_admission(
                     status_code=409,
                 )
             return {**existing_receipt, "already_exists": True}
-
-        receipt = {
-            "schema_version": RECEIPT_SCHEMA_VERSION,
-            "status": "admitted_no_spend",
-            "accepted": True,
-            "already_exists": False,
-            "admission_id": admission_id,
-            "admission_digest": cross_runtime_canonical_digest(
-                {"identity": identity_material, "request_digest": request_digest}
-            ),
-            "request_digest": request_digest,
-            "contract_digest": request["contract_digest"],
-            "tenant_id": request["tenant_id"],
-            "run_id": request["run_id"],
-            "submission_id": request["submission_id"],
-            "company_id": request["company_id"],
-            "registry_credential_lease_id": request["registry_credential_lease_id"],
-            "registry_credential_consumed": False,
-            "profile_published": False,
-            "launch_queued": False,
-            "launch_authority_granted": False,
-            "provider_mutation_authorized": False,
-            "provider_mutation_performed": False,
-            "claim_ceiling": DEFAULT_CLAIM_CEILING,
-            "admitted_at_iso": utc_now_iso(),
-            "proof_boundary": {
-                "contract_validated": True,
-                "immutable_admission_retained": True,
-                "sandbox_qualified": False,
-                "synthetic_conformance_completed": False,
-                "policy_episode_completed": False,
-            },
-        }
         _atomic_write_json(request_path, request)
         _atomic_write_json(receipt_path, receipt)
         return receipt
