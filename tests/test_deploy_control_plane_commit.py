@@ -272,6 +272,35 @@ def test_restart_reloads_drop_ins_before_restarting_the_intake(monkeypatch) -> N
     ]
 
 
+def test_deploy_installs_exact_dispatcher_unit_bytes_atomically(tmp_path: Path) -> None:
+    release = tmp_path / "release"
+    source = release / "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service"
+    source.parent.mkdir(parents=True)
+    source.write_text("[Service]\nKillMode=process\n", encoding="utf-8")
+    systemd = tmp_path / "systemd"
+    systemd.mkdir()
+    destination = systemd / source.name
+    destination.write_text("[Service]\nKillMode=control-group\n", encoding="utf-8")
+
+    receipts = deploy._install_release_systemd_units(
+        release_path=release,
+        systemd_dir=systemd,
+    )
+
+    assert destination.read_bytes() == source.read_bytes()
+    assert destination.stat().st_mode & 0o777 == 0o644
+    assert receipts == [
+        {
+            "unit": source.name,
+            "source_path": str(source),
+            "installed_path": str(destination),
+            "sha256": deploy._sha256_bytes(source.read_bytes()),
+            "size_bytes": len(source.read_bytes()),
+            "mode": "0644",
+        }
+    ]
+
+
 def test_the_deploy_holds_the_lock_for_its_whole_duration(tmp_path: Path) -> None:
     """Not a check-then-deploy: a launch can start between the two.
 
@@ -494,6 +523,11 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         "_install_intake_runtime_identity_drop_in",
         lambda *args, **kwargs: {"source_commit": commit},
     )
+    monkeypatch.setattr(
+        deploy,
+        "_install_release_systemd_units",
+        lambda **kwargs: [{"unit": "blueprint-task-evaluation-launch-dispatcher.service"}],
+    )
 
     def assert_lock_held(stage: str):
         with lock.open("r", encoding="utf-8") as probe:
@@ -529,6 +563,9 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert observed == ["restart", "runtime_probe"]
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
+    assert receipt["installed_systemd_units"][0]["unit"] == (
+        "blueprint-task-evaluation-launch-dispatcher.service"
+    )
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
 
