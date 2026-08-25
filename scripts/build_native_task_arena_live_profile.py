@@ -775,6 +775,13 @@ def _immutable_inputs(link: ArenaLink):
                         append_preallocation_provider_zero_closure(
                             "prior_terminal_provider_zero", predecessor_path
                         )
+        initial_zero = authority.get("initial_provider_zero")
+        if initial_zero is not None:
+            if not isinstance(initial_zero, Mapping):
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_initial_provider_zero_invalid"
+                )
+            append_bound_record("initial_provider_zero", initial_zero)
         campaign_binding = authority.get("policy_campaign_binding")
         if campaign_binding is not None:
             campaign_record = (
