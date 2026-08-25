@@ -15,6 +15,8 @@ authority, or allocates a provider.
 from __future__ import annotations
 
 import ipaddress
+import base64
+import json
 import re
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
@@ -29,9 +31,7 @@ from .decision_evidence_contracts import cross_runtime_canonical_digest
 
 SCHEMA_VERSION = "company_policy_sandbox_plan.v2"
 QUALIFICATION_SCHEMA_VERSION = "company_policy_sandbox_qualification_receipt.v2"
-SUPPORTED_RUNTIME_CLASSES = frozenset(
-    {"runsc", "kata-runtime", "firecracker-containerd"}
-)
+SUPPORTED_RUNTIME_CLASSES = frozenset({"runsc"})
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,191}$")
@@ -252,6 +252,14 @@ def build_company_policy_sandbox_plan(
         f'http://127.0.0.1:{normalized_contract["container"]["port"]}',
         "--route",
         "/v1/actions",
+        "--action-schema-b64",
+        base64.b64encode(
+            json.dumps(
+                normalized_contract["action_schema"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii"),
     ]
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -271,13 +279,20 @@ def build_company_policy_sandbox_plan(
             "pull_by_digest_only": True,
         },
         "credential_broker_request_binding": {
-            "schema_version": "company_policy_registry_credential_consume.v2",
+            "schema_version": "company_policy_registry_credential_claim.v1",
+            "tenant_id": admission_receipt.get("tenant_id"),
+            "run_id": admission_receipt.get("run_id"),
+            "submission_id": admission_receipt.get("submission_id"),
+            "company_id": admission_receipt.get("company_id"),
+            "contract_digest": contract_digest,
+            "registry_credential_lease_id": admission_receipt.get(
+                "registry_credential_lease_id"
+            ),
             "admission_id": admission_id,
             "admission_digest": admission_digest,
             "sandbox_attempt_id": sandbox_attempt_id,
             "pipeline_release_sha": pipeline_release_sha,
             "worker_identity": worker_identity,
-            "purpose": "pull_digest_pinned_company_policy_image",
             "image": image,
         },
         "blueprint_ipc": {
@@ -295,6 +310,8 @@ def build_company_policy_sandbox_plan(
             "capabilities_dropped": "all",
             "no_new_privileges": True,
             "raw_container_logs_retained": False,
+            "customer_visible_output": "aggregate_metrics_and_redacted_status_only",
+            "raw_actions_customer_visible": False,
             "seccomp_profile_id": seccomp_profile_id,
             "seccomp_profile_digest": seccomp_profile_digest,
             "apparmor_profile_id": apparmor_profile_id,

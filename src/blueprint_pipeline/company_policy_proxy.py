@@ -10,7 +10,9 @@ with no external interfaces, so loopback is their only IP path.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import math
 import os
 import re
 import urllib.error
@@ -40,6 +42,7 @@ _SECRET_KEYS = frozenset(
         "token",
     }
 )
+ACTION_SCHEMA_B64_ENV = "BLUEPRINT_COMPANY_POLICY_PROXY_ACTION_SCHEMA_B64"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -76,12 +79,84 @@ def _upstream_port() -> int:
     return port
 
 
+def _action_schema() -> dict[str, Any]:
+    encoded = str(os.getenv(ACTION_SCHEMA_B64_ENV) or "").strip()
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+        value = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("company_policy_proxy_action_schema_invalid") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("company_policy_proxy_action_schema_invalid")
+    return value
+
+
+def _derived_response_limit(action_schema: dict[str, Any]) -> int:
+    rows = action_schema.get("chunk_rows")
+    channels = action_schema.get("channels")
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows < 1:
+        raise ValueError("company_policy_proxy_action_schema_invalid")
+    if not isinstance(channels, list) or not channels:
+        raise ValueError("company_policy_proxy_action_schema_invalid")
+    return min(65_536, max(1_024, 128 + rows * len(channels) * 32))
+
+
+def validate_action_response(
+    value: Any, *, action_schema: dict[str, Any]
+) -> dict[str, list[list[float]]]:
+    """Admit only the fixed numeric action tensor declared by the contract."""
+
+    if not isinstance(value, dict) or set(value) != {"actions"}:
+        raise ValueError("company_policy_proxy_response_shape_invalid")
+    rows = value.get("actions")
+    expected_rows = action_schema.get("chunk_rows")
+    channels = action_schema.get("channels")
+    if (
+        not isinstance(expected_rows, int)
+        or isinstance(expected_rows, bool)
+        or expected_rows < 1
+        or not isinstance(channels, list)
+        or not channels
+        or not isinstance(rows, list)
+        or len(rows) != expected_rows
+    ):
+        raise ValueError("company_policy_proxy_response_shape_invalid")
+    normalized: list[list[float]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(channels):
+            raise ValueError("company_policy_proxy_response_shape_invalid")
+        normalized_row: list[float] = []
+        for value_item, channel in zip(row, channels, strict=True):
+            if (
+                isinstance(value_item, bool)
+                or not isinstance(value_item, (int, float))
+                or not math.isfinite(float(value_item))
+                or not isinstance(channel, dict)
+            ):
+                raise ValueError("company_policy_proxy_response_value_invalid")
+            bounds = channel.get("raw_accepted_bounds")
+            if (
+                not isinstance(bounds, list)
+                or len(bounds) != 2
+                or isinstance(bounds[0], bool)
+                or isinstance(bounds[1], bool)
+                or not isinstance(bounds[0], (int, float))
+                or not isinstance(bounds[1], (int, float))
+                or not float(bounds[0]) <= float(value_item) <= float(bounds[1])
+            ):
+                raise ValueError("company_policy_proxy_response_value_out_of_bounds")
+            normalized_row.append(float(value_item))
+        normalized.append(normalized_row)
+    return {"actions": normalized}
+
+
 def forward_action_json(
     *,
     payload: dict[str, Any],
     upstream_port: int,
     timeout_ms: int,
     max_response_bytes: int,
+    action_schema: dict[str, Any],
 ) -> dict[str, Any]:
     """Forward one validated JSON object to the fixed loopback action route."""
 
@@ -100,22 +175,21 @@ def forward_action_json(
             content_type = str(response.headers.get("Content-Type") or "").lower()
             if "application/json" not in content_type:
                 raise ValueError("company_policy_proxy_response_content_type_invalid")
-            body = response.read(max_response_bytes + 1)
+            response_limit = min(max_response_bytes, _derived_response_limit(action_schema))
+            body = response.read(response_limit + 1)
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
             raise ValueError("company_policy_proxy_redirect_refused") from exc
         raise ValueError(f"company_policy_proxy_upstream_http_error:{exc.code}") from exc
     except urllib.error.URLError as exc:
         raise ValueError("company_policy_proxy_upstream_unreachable") from exc
-    if len(body) > max_response_bytes:
+    if len(body) > response_limit:
         raise ValueError("company_policy_proxy_response_too_large")
     try:
         result = json.loads(body)
     except json.JSONDecodeError as exc:
         raise ValueError("company_policy_proxy_response_not_json") from exc
-    if not isinstance(result, dict):
-        raise ValueError("company_policy_proxy_response_not_object")
-    return result
+    return validate_action_response(result, action_schema=action_schema)
 
 
 def create_app() -> FastAPI:
@@ -168,6 +242,7 @@ def create_app() -> FastAPI:
                     minimum=1_024,
                     maximum=64 * 1024 * 1024,
                 ),
+                action_schema=_action_schema(),
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -184,6 +259,7 @@ def main() -> int:
     parser.add_argument("--unix-socket", required=True)
     parser.add_argument("--upstream", required=True)
     parser.add_argument("--route", required=True)
+    parser.add_argument("--action-schema-b64", required=True)
     args = parser.parse_args()
     if args.route != ACTION_ROUTE:
         raise SystemExit("company_policy_proxy_action_route_invalid")
@@ -191,6 +267,13 @@ def main() -> int:
     if not match or not 1024 <= int(match.group(1)) <= 65535:
         raise SystemExit("company_policy_proxy_upstream_invalid")
     os.environ[UPSTREAM_PORT_ENV] = match.group(1)
+    try:
+        decoded_schema = base64.b64decode(args.action_schema_b64, validate=True)
+        parsed_schema = json.loads(decoded_schema)
+        _derived_response_limit(parsed_schema)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit("company_policy_proxy_action_schema_invalid") from exc
+    os.environ[ACTION_SCHEMA_B64_ENV] = args.action_schema_b64
     import uvicorn
 
     uvicorn.run(app, uds=args.unix_socket, access_log=False, log_level="warning")

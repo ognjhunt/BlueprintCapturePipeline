@@ -138,6 +138,11 @@ def _admission() -> dict[str, Any]:
         "admission_id": "company-policy-admission-" + "1" * 40,
         "admission_digest": "sha256:" + "2" * 64,
         "contract_digest": contract["contract_digest"],
+        "tenant_id": "tenant-acme-12345678",
+        "run_id": "run-12345678",
+        "submission_id": "policy-candidate-12345678",
+        "company_id": "acme_robotics",
+        "registry_credential_lease_id": "policy-registry-lease-12345678",
         "launch_queued": False,
         "launch_authority_granted": False,
         "provider_mutation_authorized": False,
@@ -215,9 +220,22 @@ def test_plan_has_no_policy_mounts_egress_logs_or_host_network() -> None:
     assert plan["blueprint_ipc"]["policy_socket_mounted"] is False
     assert plan["launch_authority_granted"] is False
     assert plan["provider_mutation_performed"] is False
+    assert plan["security"]["customer_visible_output"] == (
+        "aggregate_metrics_and_redacted_status_only"
+    )
+    assert plan["security"]["raw_actions_customer_visible"] is False
+    assert plan["credential_broker_request_binding"]["schema_version"] == (
+        "company_policy_registry_credential_claim.v1"
+    )
+    assert plan["credential_broker_request_binding"]["tenant_id"] == (
+        "tenant-acme-12345678"
+    )
+    assert "--action-schema-b64" in proxy
 
 
-@pytest.mark.parametrize("runtime", ["runc", "docker", "", "nvidia"])
+@pytest.mark.parametrize(
+    "runtime", ["runc", "docker", "", "nvidia", "kata-runtime", "firecracker-containerd"]
+)
 def test_shared_kernel_runtime_is_refused(runtime: str) -> None:
     with pytest.raises(CompanyPolicySandboxV2Error) as excinfo:
         _plan(runtime_class=runtime)

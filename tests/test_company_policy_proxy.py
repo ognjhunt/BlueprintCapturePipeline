@@ -10,6 +10,16 @@ from fastapi.testclient import TestClient
 from blueprint_pipeline import company_policy_proxy as proxy
 
 
+def _action_schema(rows: int = 1) -> dict[str, Any]:
+    return {
+        "chunk_rows": rows,
+        "channels": [
+            {"name": "joint", "raw_accepted_bounds": [-2.0, 2.0]},
+            {"name": "gripper", "raw_accepted_bounds": [-0.25, 1.25]},
+        ],
+    }
+
+
 class _Response:
     def __init__(self, payload: Any, *, content_type: str = "application/json"):
         self.body = json.dumps(payload).encode("utf-8")
@@ -45,6 +55,7 @@ def test_proxy_forwards_only_json_to_fixed_loopback_route(monkeypatch) -> None:
         upstream_port=8600,
         timeout_ms=2500,
         max_response_bytes=4096,
+        action_schema=_action_schema(),
     )
 
     assert result == {"actions": [[0.0, 1.0]]}
@@ -63,22 +74,43 @@ def test_proxy_refuses_secret_carriers_and_non_object_responses(monkeypatch) -> 
             upstream_port=8600,
             timeout_ms=100,
             max_response_bytes=4096,
+            action_schema=_action_schema(),
         )
     opener = _Opener(_Response([1, 2, 3]))
     monkeypatch.setattr(proxy.urllib.request, "build_opener", lambda *_args: opener)
-    with pytest.raises(ValueError, match="response_not_object"):
+    with pytest.raises(ValueError, match="response_shape_invalid"):
         proxy.forward_action_json(
             payload={"observation": {}},
             upstream_port=8600,
             timeout_ms=100,
             max_response_bytes=4096,
+            action_schema=_action_schema(),
         )
 
 
+@pytest.mark.parametrize(
+    "payload,blocker",
+    [
+        ({"actions": [[0.0, 1.0]], "metadata": "scene-bytes"}, "response_shape_invalid"),
+        ({"actions": [[0.0]]}, "response_shape_invalid"),
+        ({"actions": [[float("nan"), 1.0]]}, "response_value_invalid"),
+        ({"actions": [[0.0, 1.251]]}, "response_value_out_of_bounds"),
+        ({"actions": [[0.0, "encoded-scene"]]}, "response_value_invalid"),
+    ],
+)
+def test_proxy_refuses_action_response_exfiltration_shapes(payload, blocker) -> None:
+    with pytest.raises(ValueError, match=blocker):
+        proxy.validate_action_response(payload, action_schema=_action_schema())
+
+
 def test_http_surface_is_bounded_no_store_and_has_no_docs(monkeypatch) -> None:
-    opener = _Opener(_Response({"actions": [[0.0]]}))
+    opener = _Opener(_Response({"actions": [[0.0, 1.0]]}))
     monkeypatch.setattr(proxy.urllib.request, "build_opener", lambda *_args: opener)
     monkeypatch.setenv(proxy.UPSTREAM_PORT_ENV, "8600")
+    monkeypatch.setenv(
+        proxy.ACTION_SCHEMA_B64_ENV,
+        __import__("base64").b64encode(json.dumps(_action_schema()).encode()).decode(),
+    )
     client = TestClient(proxy.create_app())
 
     assert client.get("/docs").status_code == 404
@@ -88,11 +120,15 @@ def test_http_surface_is_bounded_no_store_and_has_no_docs(monkeypatch) -> None:
     response = client.post("/v1/actions", json={"observation": {}})
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert response.json() == {"actions": [[0.0]]}
+    assert response.json() == {"actions": [[0.0, 1.0]]}
 
 
 def test_invalid_upstream_port_and_oversize_body_fail_closed(monkeypatch) -> None:
     monkeypatch.setenv(proxy.UPSTREAM_PORT_ENV, "80")
+    monkeypatch.setenv(
+        proxy.ACTION_SCHEMA_B64_ENV,
+        __import__("base64").b64encode(json.dumps(_action_schema()).encode()).decode(),
+    )
     monkeypatch.setenv(proxy.MAX_REQUEST_BYTES_ENV, "1024")
     client = TestClient(proxy.create_app())
     invalid = client.post("/v1/actions", json={"observation": {}})
