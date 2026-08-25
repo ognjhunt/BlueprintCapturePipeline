@@ -116,7 +116,11 @@ def _typed_media_gap_for_blocked_result(
     was retained under this run's media root.
     """
 
-    if result.get("status") == "completed" or "episode" in result:
+    if (
+        result.get("status") == "completed"
+        or "episode" in result
+        or "visual_evidence" in result
+    ):
         return None
     episodes_root = output_root / "episodes"
     if episodes_root.is_dir() and any(
@@ -133,6 +137,74 @@ def _typed_media_gap_for_blocked_result(
             "reason": str(reason),
         },
     }
+
+
+def _seal_post_observation_failure_media(
+    *,
+    output_root: Path,
+    result: dict[str, Any],
+    media_progress: Mapping[str, Any],
+) -> None:
+    """Attach a sealed visual index when execution fails after observation."""
+
+    exact_frames = media_progress.get("candidate_exact_policy_input_frames")
+    if result.get("status") == "completed" or not isinstance(exact_frames, list):
+        return
+    if not exact_frames:
+        return
+    reason = next(iter(result.get("blockers") or []), "") or (
+        f"failed_at_{result.get('phase_reached') or 'unknown'}"
+    )
+    try:
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        from blueprint_pipeline.episode_visual_evidence import (
+            finalize_failed_policy_visual_evidence,
+        )
+
+        index = finalize_failed_policy_visual_evidence(
+            output_dir=output_root / "episodes",
+            episode_id=str(media_progress["episode_id"]),
+            identity={
+                "candidate_id": str(media_progress["candidate_id"]),
+                "prompt": str(media_progress["prompt"]),
+                "episode_status": "failed_after_first_observation",
+            },
+            exact_policy_input_frames=exact_frames,
+            multicamera_policy_input_observations=list(
+                media_progress.get("multicamera_policy_input_observations") or []
+            ),
+            review_observations=list(
+                media_progress.get("review_observations") or []
+            ),
+            failure_reason=str(reason),
+        )
+        result["visual_evidence"] = {
+            **index["visual_evidence"],
+            "visual_index": {
+                "relative_path": index["relative_path"],
+                "sha256": index["sha256"],
+                "visual_index_digest": index["visual_index_digest"],
+            },
+        }
+        result["media_artifacts"] = index["media_artifacts"]
+        result["candidate_exact_policy_input_frames"] = exact_frames
+        result["candidate_exact_policy_input_manifest_digest"] = canonical_digest(
+            {"frames": exact_frames}
+        )
+    except (KeyError, OSError, TypeError, ValueError, RuntimeError) as exc:
+        result["visual_evidence"] = {
+            "status": "post_observation_evidence_sealing_failed",
+            "media_gap": {
+                "type": "after_first_observation_evidence_sealing_failed",
+                "reason": f"{type(exc).__name__}:{exc}",
+            },
+            "lossless_policy_input_files_retained": True,
+            "terminal_observation_invented": False,
+        }
+        result["blockers"].append(
+            "native_task_policy_post_observation_media_seal_failed:"
+            f"{type(exc).__name__}:{exc}"
+        )
 
 
 def _admission_binding_mismatches(
@@ -390,6 +462,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     simulation_app = None
     policy_query_tracker = None
+    media_progress: dict[str, Any] = {}
+
+    def record_media_progress(progress: Mapping[str, Any]) -> None:
+        media_progress.clear()
+        media_progress.update(progress)
+
     try:
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
         manifest = initial_manifest
@@ -570,6 +648,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             media_output_dir=output_root / "episodes",
             episode_id=episode_id,
             scoring_authorized=not diagnostic,
+            media_progress_callback=record_media_progress,
         )
         result["episode"] = episode
         if diagnostic:
@@ -606,6 +685,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["candidate_policy_queried"] = (
                 policy_query_tracker.candidate_policy_queried
             )
+        _seal_post_observation_failure_media(
+            output_root=output_root,
+            result=result,
+            media_progress=media_progress,
+        )
         result["blockers"] = sorted(set(result["blockers"]))
         media_gap = _typed_media_gap_for_blocked_result(
             output_root=output_root, result=result

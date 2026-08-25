@@ -28,7 +28,7 @@ import json
 import math
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -591,6 +591,7 @@ def run_policy_episode(
     media_output_dir: str | Path | None = None,
     episode_id: str | None = None,
     scoring_authorized: bool = True,
+    media_progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -648,6 +649,28 @@ def run_policy_episode(
     policy_input_history: deque[tuple[int, Mapping[str, Any]]] = deque(
         maxlen=GROOT_HISTORY_STEPS + 1
     )
+
+    def report_media_progress() -> None:
+        if media_progress_callback is None:
+            return
+        media_progress_callback(
+            json.loads(
+                json.dumps(
+                    {
+                        "media_output_dir": str(media_root),
+                        "episode_id": episode_id,
+                        "candidate_id": candidate_id,
+                        "prompt": str(prompt),
+                        "candidate_exact_policy_input_frames": retained_policy_frames,
+                        "multicamera_policy_input_observations": (
+                            retained_multicamera_observations
+                        ),
+                        "review_observations": retained_review_observations,
+                    },
+                    allow_nan=False,
+                )
+            )
+        )
 
     episode_started = time.monotonic()
     timings_seconds = {
@@ -776,6 +799,7 @@ def run_policy_episode(
                     )
                 )
                 media_observation_index += 1
+            report_media_progress()
             timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
         phase_started = time.monotonic()
@@ -855,6 +879,7 @@ def run_policy_episode(
                     )
                 )
                 media_observation_index += 1
+                report_media_progress()
                 timings_seconds["media_persistence"] += (
                     time.monotonic() - phase_started
                 )
@@ -945,6 +970,7 @@ def run_policy_episode(
                 )
             )
             media_observation_index += 1
+            report_media_progress()
             timings_seconds["media_persistence"] += (
                 time.monotonic() - phase_started
             )

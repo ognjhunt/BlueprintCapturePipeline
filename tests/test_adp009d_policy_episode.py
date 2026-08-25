@@ -125,6 +125,93 @@ def _run(environment=None, policy=None, **overrides):
     return run_policy_episode(**kwargs)
 
 
+@pytest.mark.parametrize(
+    ("candidate_id", "failure_kind"),
+    [
+        ("pi05_droid", "response_envelope_reached_numeric_planner"),
+        ("groot_n17_droid", "policy_client_failed_after_observation"),
+    ],
+)
+def test_post_observation_failures_seal_lossless_manifest_and_review_video(
+    tmp_path, candidate_id: str, failure_kind: str
+) -> None:
+    from pathlib import Path
+
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _seal_post_observation_failure_media,
+        _typed_media_gap_for_blocked_result,
+    )
+
+    class _FailingPolicy:
+        def infer(self, observation):
+            assert observation["prompt"]
+            if failure_kind == "response_envelope_reached_numeric_planner":
+                # Exact shape returned by OpenPI before #1031 normalized its
+                # transport envelope at the policy-client boundary.
+                return {
+                    "actions": np.zeros((15, 8), dtype=float),
+                    "policy_timing": {"infer_ms": 10.0},
+                    "server_timing": {"infer_ms": 11.0},
+                }
+            raise RuntimeError("policy_client_failed_after_observation")
+
+    progress: dict = {}
+
+    def retain_progress(value) -> None:
+        progress.clear()
+        progress.update(value)
+
+    with pytest.raises((RuntimeError, TypeError, ValueError)):
+        _run(
+            policy=_FailingPolicy(),
+            candidate_id=candidate_id,
+            media_output_dir=tmp_path / "episodes",
+            episode_id=f"{candidate_id}-failed-episode",
+            media_progress_callback=retain_progress,
+        )
+
+    result = {
+        "status": "blocked",
+        "phase_reached": "policy_client_verified",
+        "blockers": [failure_kind],
+    }
+    _seal_post_observation_failure_media(
+        output_root=tmp_path,
+        result=result,
+        media_progress=progress,
+    )
+    assert (
+        _typed_media_gap_for_blocked_result(
+            output_root=tmp_path, result=result
+        )
+        is None
+    )
+
+    visual = result["visual_evidence"]
+    assert visual["status"] == "complete_failure_evidence"
+    assert visual["candidate_exact_policy_input_frame_count"] == 1
+    assert visual["terminal_observation_present"] is False
+    assert visual["terminal_observation_invented"] is False
+    assert visual["frame_manifest_digest"].startswith("sha256:")
+    assert set(visual["videos"]) == {"exact_policy_input"}
+    index = visual["visual_index"]
+    assert index["visual_index_digest"].startswith("sha256:")
+    assert (tmp_path / "episodes" / index["relative_path"]).is_file()
+    assert any(
+        row["role"] == "policy_input_frame" for row in result["media_artifacts"]
+    )
+    assert any(
+        row["role"] == "failed_episode_review_video"
+        for row in result["media_artifacts"]
+    )
+    manifest_path = next(
+        Path(tmp_path / "episodes" / row["relative_path"])
+        for row in result["media_artifacts"]
+        if row["role"] == "failed_episode_observation_frame_manifest"
+    )
+    assert manifest_path.is_file()
+
+
 def _articulated_task_spec(*, maximum_action_steps: int = 32) -> dict:
     return {
         "schema_version": "adp_task_spec.v1",
