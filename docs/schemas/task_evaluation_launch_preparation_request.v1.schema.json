@@ -67,10 +67,28 @@
         },
         "rights": {
           "type": "object",
-          "required": ["admission", "source_bytes_redistributable", "provider_disclosure_scope"],
+          "required": ["admission", "evidence", "source_bytes_redistributable", "provider_disclosure_scope"],
           "additionalProperties": false,
           "properties": {
             "admission": {"$ref": "#/$defs/reference"},
+            "evidence": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "required": ["role", "artifact"],
+                "additionalProperties": false,
+                "properties": {
+                  "role": {"enum": ["publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"]},
+                  "artifact": {"$ref": "#/$defs/reference"}
+                }
+              },
+              "allOf": [
+                {"contains": {"type": "object", "properties": {"role": {"const": "publisher_terms"}}, "required": ["role"]}},
+                {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
+              ]
+            },
             "source_bytes_redistributable": {"type": "boolean"},
             "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]}
           }

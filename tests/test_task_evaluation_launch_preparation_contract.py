@@ -51,6 +51,10 @@ def request() -> dict[str, object]:
             },
             "rights": {
                 "admission": ref(10),
+                "evidence": [
+                    {"role": "publisher_terms", "artifact": ref(24)},
+                    {"role": "human_authority_record", "artifact": ref(25)},
+                ],
                 "source_bytes_redistributable": False,
                 "provider_disclosure_scope": "derived_only",
             },
@@ -163,6 +167,19 @@ def test_rejects_rights_disclosure_conflict_and_host_paths() -> None:
     with pytest.raises(
         TaskEvaluationLaunchPreparationContractError,
         match="launch_preparation_scene_disclosure_conflicts_with_rights",
+    ):
+        validate_launch_preparation_request(value)
+
+
+def test_requires_publisher_terms_and_human_rights_authority_bytes() -> None:
+    value = request()
+    value["scene"]["rights"]["evidence"] = [
+        {"role": "publisher_readme", "artifact": ref(24)},
+        {"role": "upstream_license", "artifact": ref(25)},
+    ]
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_request_invalid:scene.rights.evidence",
     ):
         validate_launch_preparation_request(value)
 
