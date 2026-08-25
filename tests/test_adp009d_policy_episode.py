@@ -13,6 +13,8 @@ from blueprint_pipeline.adp009d_droid_action_execution import (
     BLOCKER_JOINT_VELOCITY_BOUNDS,
     DroidActionExecutionError,
     GripperConvention,
+    SOURCE_GROOT_POSITION,
+    SOURCE_PI05_POSITION,
 )
 from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
@@ -340,8 +342,14 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
     assert environment.steps[0][:7] == pytest.approx(
         [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
     )
-    assert receipt["action_space"] == (
-        "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+    assert receipt["candidate_id"] == "groot_n17_droid"
+    assert receipt["action_space"] == SOURCE_GROOT_POSITION
+    assert receipt["queries"][0]["source_action_space"] == SOURCE_GROOT_POSITION
+    assert receipt["commanded_actions"][0]["source_action_space"] == (
+        SOURCE_GROOT_POSITION
+    )
+    assert receipt["commanded_action_magnitudes"]["source_action_space"] == (
+        SOURCE_GROOT_POSITION
     )
     assert receipt["queries"][0]["position_adapter"] == (
         "decoded_absolute_joint_position_direct_within_limits"
@@ -354,6 +362,40 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         "joint_velocity_command_max_abs_rad_s"
     ] == 0.0
     assert "observation/eef_9d" in policy.observations[0]
+
+
+def test_pi05_absolute_joint_actions_retain_candidate_identity_in_receipt() -> None:
+    class _AbsolutePi05Policy(_Policy):
+        action_space = "joint_position"
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((10, 8), dtype=float)
+            chunk[:, :7] = [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+            chunk[:, 7] = 1.0
+            return chunk
+
+    environment = _Environment()
+    receipt = _run(
+        environment,
+        _AbsolutePi05Policy(),
+        candidate_id="pi05_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+    )
+
+    assert environment.steps[0][:7] == pytest.approx(
+        [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
+    )
+    assert receipt["candidate_id"] == "pi05_droid"
+    assert receipt["action_space"] == SOURCE_PI05_POSITION
+    assert receipt["queries"][0]["source_action_space"] == SOURCE_PI05_POSITION
+    assert receipt["commanded_actions"][0]["source_action_space"] == (
+        SOURCE_PI05_POSITION
+    )
+    assert receipt["commanded_action_magnitudes"]["source_action_space"] == (
+        SOURCE_PI05_POSITION
+    )
 
 
 class _ForcedGrootVendorClient:
