@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import task_evaluation_launch_activation_worker as worker
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
@@ -35,6 +36,7 @@ from tests.test_task_evaluation_launch_activation_contract import (
 from tests.test_task_evaluation_launch_preparation_contract import (
     request as preparation_request,
 )
+from tests.test_task_evaluation_configured_scene_revision import revision
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
@@ -52,6 +54,52 @@ def test_release_window_must_use_coordinator_owned_prefix() -> None:
         validate_release_window_uri(
             "s3://blueprint-production-inputs/team-a/forged-window.json",
             prefix=prefix,
+        )
+
+
+def test_configured_revision_rights_substitution_blocks_before_activation(
+    tmp_path: Path,
+) -> None:
+    preparation, result, _payloads, queue, input_root = (
+        _stage_verified_preparation(tmp_path)
+    )
+    result_path = next((queue / "results").glob("*.json"))
+    sealed = json.loads(result_path.read_text(encoding="utf-8"))
+    evidence = next(
+        row
+        for row in sealed["references"]
+        if row["contract_path"]
+        == "scene.configured_revision.source.rights_evidence.0.artifact"
+    )
+    replacement = b"substituted-rights-evidence"
+    Path(evidence["materialized_path"]).write_bytes(replacement)
+    evidence["digest"] = _bytes_digest(replacement)
+    evidence["size_bytes"] = len(replacement)
+    sealed["result_digest"] = canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+    result_path.chmod(0o640)
+    result_path.write_text(json.dumps(sealed), encoding="utf-8")
+    activation_request = {
+        "preparation": {
+            "preparation_id": preparation["preparation_id"],
+            "request_digest": launch_preparation_request_digest(preparation),
+            "result_digest": sealed["result_digest"],
+        },
+        "team_namespace": preparation["team_namespace"],
+        "expected_production_commit": preparation[
+            "expected_production_commit"
+        ],
+    }
+
+    with pytest.raises(
+        TaskEvaluationLaunchActivationWorkerError,
+        match="launch_activation_preparation_reference_invalid",
+    ):
+        worker._load_verified_preparation(
+            activation_request=activation_request,
+            preparation_queue_root=queue,
+            preparation_input_root=input_root,
         )
 
 
@@ -95,6 +143,15 @@ def _stage_verified_preparation(tmp_path: Path):
 
     replace(request)
     scene_id = request["scene"]["identity"]["id"]
+    configured = revision()
+    configured["configuration_run_id"] = "configuration-scene-841007-v1"
+    configured["team_namespace"] = request["team_namespace"]
+    configured["scene_identity"] = request["scene"]["identity"]
+    configured["source_commit"] = request["expected_production_commit"]
+    configured["task_template"]["identity"] = request["task"]["identity"]
+    configured["replacement"]["identity"] = request["task"]["subject"][
+        "identity"
+    ]
     source_bytes = _sealed_claim(
         "task_evaluation_scene_source_manifest.v1",
         "retained",
@@ -107,14 +164,39 @@ def _stage_verified_preparation(tmp_path: Path):
         scene_id,
         "rights_admission_digest",
     )
-    for field, payload in (("source_manifest", source_bytes), ("rights", rights_bytes)):
-        reference = (
-            request["scene"]["source_manifest"]
-            if field == "source_manifest"
-            else request["scene"]["rights"]["admission"]
-        )
+    for field, payload in (("manifest", source_bytes), ("rights_admission", rights_bytes)):
+        reference = configured["source"][field]
         payloads[str(reference["uri"])] = payload
         reference.update(_reference(str(reference["uri"]), payload))
+    for index, evidence in enumerate(configured["source"]["rights_evidence"]):
+        payload = f"rights-evidence:{index}:{evidence['role']}".encode()
+        reference = evidence["artifact"]
+        payloads[str(reference["uri"])] = payload
+        reference.update(_reference(str(reference["uri"]), payload))
+    bundle_payload = b"configured-scene-bundle"
+    configured["configured_scene_bundle"].update(
+        _reference(
+            str(configured["configured_scene_bundle"]["uri"]),
+            bundle_payload,
+        )
+    )
+    payloads[str(configured["configured_scene_bundle"]["uri"])] = bundle_payload
+    configured["revision_digest"] = canonical_digest(
+        configured, digest_field="revision_digest"
+    )
+    configured_bytes = json.dumps(configured, sort_keys=True).encode()
+    request["scene"]["configured_revision"].update(
+        _reference(
+            str(request["scene"]["configured_revision"]["uri"]),
+            configured_bytes,
+        )
+    )
+    request["task"]["configured_scene_revision_digest"] = configured[
+        "revision_digest"
+    ]
+    payloads[str(request["scene"]["configured_revision"]["uri"])] = (
+        configured_bytes
+    )
 
     queue = tmp_path / "preparation-queue"
     intake = stage_launch_preparation_request(
@@ -152,6 +234,45 @@ def _stage_verified_preparation(tmp_path: Path):
                 materialize(child, (*path, str(index)))
 
     materialize(request)
+    transitive_references = [
+        (
+            "scene.configured_revision.configured_scene_bundle",
+            configured["configured_scene_bundle"],
+        ),
+        (
+            "scene.configured_revision.source.manifest",
+            configured["source"]["manifest"],
+        ),
+        (
+            "scene.configured_revision.source.rights_admission",
+            configured["source"]["rights_admission"],
+        ),
+        *[
+            (
+                "scene.configured_revision.source.rights_evidence."
+                f"{index}.artifact",
+                evidence["artifact"],
+            )
+            for index, evidence in enumerate(
+                configured["source"]["rights_evidence"]
+            )
+        ],
+    ]
+    for contract_path, reference in transitive_references:
+        target = preparation_root / str(reference["digest"]).removeprefix(
+            "sha256:"
+        )
+        target.write_bytes(payloads[str(reference["uri"])])
+        reference_rows.append(
+            {
+                "contract_path": contract_path,
+                "uri": reference["uri"],
+                "digest": reference["digest"],
+                "size_bytes": reference["size_bytes"],
+                "materialized_path": str(target),
+                "full_byte_service_account_readback_passed": True,
+            }
+        )
     adapter_root = input_root / request["preparation_id"] / "native-arena-adapter"
     packet_root = adapter_root / "construction-packet"
     runtime_root = adapter_root / "runtime-source"

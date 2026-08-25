@@ -17,6 +17,7 @@ from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
 )
 from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
     TaskEvaluationLaunchPreparationWorkerError,
+    collect_preparation_references,
     default_reference_fetcher,
     main,
     materialize_preparation_references,
@@ -88,6 +89,16 @@ def request_with_fetchable_bytes(
             "source": {
                 "manifest": configured_ref(1),
                 "rights_admission": configured_ref(2),
+                "rights_evidence": [
+                    {
+                        "role": "publisher_terms",
+                        "artifact": configured_ref(25),
+                    },
+                    {
+                        "role": "human_authority_record",
+                        "artifact": configured_ref(26),
+                    },
+                ],
                 "raw_source_sent_to_external_provider": False,
             },
             "appearance": {
@@ -173,6 +184,28 @@ def request_with_fetchable_bytes(
             },
             "revision_digest": "",
         }
+        for label, reference in (
+            ("source-manifest", configured_revision["source"]["manifest"]),
+            (
+                "rights-admission",
+                configured_revision["source"]["rights_admission"],
+            ),
+            *[
+                (
+                    f"rights-evidence-{index}",
+                    evidence["artifact"],
+                )
+                for index, evidence in enumerate(
+                    configured_revision["source"]["rights_evidence"]
+                )
+            ],
+        ):
+            payload = f"configured-revision-{label}".encode()
+            reference["digest"] = (
+                "sha256:" + hashlib.sha256(payload).hexdigest()
+            )
+            reference["size_bytes"] = len(payload)
+            payloads[reference["uri"]] = payload
         configured_revision["revision_digest"] = canonical_digest(
             configured_revision, digest_field="revision_digest"
         )
@@ -283,7 +316,9 @@ def test_materializes_every_reference_and_full_byte_reads_back(tmp_path) -> None
     assert result["status"] == "inputs_materialized_awaiting_construction_adapter"
     # The configured-scene bundle is discovered only after the revision itself
     # is read back and is materialized by the queue worker in the next step.
-    assert result["reference_count"] == len(payloads) - 1
+    assert result["reference_count"] == len(
+        collect_preparation_references(value)
+    )
     assert result["full_byte_service_account_readback_passed"] is True
     assert result["provider_mutation_performed"] is False
     assert result["catalog_mutation_performed"] is False

@@ -90,7 +90,9 @@ def test_authenticated_webapp_can_queue_and_read_no_spend_preparation(
 def test_preparation_api_rejects_host_path_before_queueing(monkeypatch, tmp_path) -> None:
     configure(monkeypatch, tmp_path)
     invalid = request()
-    invalid["scene"]["source_manifest"]["uri"] = "/var/lib/private-scene.json"
+    invalid["scene"]["configured_revision"]["uri"] = (
+        "/var/lib/private-scene.json"
+    )
     body = json.dumps(invalid, separators=(",", ":"))
     response = TestClient(create_app()).post(
         "/api/live-pipeline/task-evaluation-launch-preparations",

@@ -238,6 +238,13 @@ def publish_configured_scene_revision(
         "source": {
             "manifest": dict(scene["source_manifest"]),
             "rights_admission": dict(scene["rights"]["admission"]),
+            "rights_evidence": [
+                {
+                    "role": row["role"],
+                    "artifact": dict(row["artifact"]),
+                }
+                for row in scene["rights"]["evidence"]
+            ],
             "raw_source_sent_to_external_provider": False,
         },
         "appearance": {

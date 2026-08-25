@@ -1272,6 +1272,53 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         scene_id=str(scene.get("scene_id") or ""),
     )
     rights_evidence = _load_rights_evidence(scene.get("rights_evidence"))
+    configured_scene_revision = None
+    if scene.get("configured_scene_revision") is not None:
+        configured_path = Path(
+            str(scene.get("configured_scene_revision") or "")
+        ).expanduser()
+        try:
+            configured_scene_revision = json.loads(
+                configured_path.resolve(strict=True).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_configured_scene_revision_invalid"
+            ) from exc
+        source_binding = configured_scene_revision.get("source") or {}
+        evidence_bindings = source_binding.get("rights_evidence") or []
+        if (
+            configured_path.is_symlink()
+            or configured_scene_revision.get("schema_version")
+            != "task_evaluation_configured_scene_revision.v1"
+            or configured_scene_revision.get("status") != "configured"
+            or configured_scene_revision.get("revision_digest")
+            != scene.get("configured_scene_revision_digest")
+            or configured_scene_revision.get("revision_digest")
+            != _canonical_artifact_digest(
+                configured_scene_revision, digest_field="revision_digest"
+            )
+            or (configured_scene_revision.get("scene_identity") or {}).get(
+                "id"
+            )
+            != scene.get("scene_id")
+            or (source_binding.get("manifest") or {}).get("digest")
+            != _sha256_file(source_manifest_path)
+            or (source_binding.get("rights_admission") or {}).get("digest")
+            != _sha256_file(rights_admission_path)
+            or len(evidence_bindings) != len(rights_evidence)
+            or any(
+                evidence_bindings[index].get("role") != evidence["role"]
+                or (evidence_bindings[index].get("artifact") or {}).get(
+                    "digest"
+                )
+                != evidence["sha256"]
+                for index, evidence in enumerate(rights_evidence)
+            )
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_configured_scene_revision_invalid"
+            )
     try:
         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
         runtime_contract = json.loads(runtime_contract_path.read_text(encoding="utf-8"))
@@ -1361,6 +1408,19 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
                 "source_manifest_path": str(source_manifest_path),
                 "rights_admission_path": str(rights_admission_path),
                 "rights_evidence": rights_evidence,
+                **(
+                    {
+                        "configured_scene_revision": {
+                            "path": str(configured_path.resolve()),
+                            "sha256": _sha256_file(configured_path.resolve()),
+                            "revision_digest": configured_scene_revision[
+                                "revision_digest"
+                            ],
+                        }
+                    }
+                    if configured_scene_revision is not None
+                    else {}
+                ),
                 **(
                     {"prior_webapp_lineage": prior_webapp_lineage}
                     if prior_webapp_lineage is not None

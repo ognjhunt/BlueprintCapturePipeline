@@ -33,11 +33,29 @@
     "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "source": {
       "type": "object",
-      "required": ["manifest", "rights_admission", "raw_source_sent_to_external_provider"],
+      "required": ["manifest", "rights_admission", "rights_evidence", "raw_source_sent_to_external_provider"],
       "additionalProperties": false,
       "properties": {
         "manifest": {"$ref": "#/$defs/reference"},
         "rights_admission": {"$ref": "#/$defs/reference"},
+        "rights_evidence": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["role", "artifact"],
+            "additionalProperties": false,
+            "properties": {
+              "role": {"enum": ["publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"]},
+              "artifact": {"$ref": "#/$defs/reference"}
+            }
+          },
+          "allOf": [
+            {"contains": {"type": "object", "properties": {"role": {"const": "publisher_terms"}}, "required": ["role"]}},
+            {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
+          ]
+        },
         "raw_source_sent_to_external_provider": {"const": false}
       }
     },

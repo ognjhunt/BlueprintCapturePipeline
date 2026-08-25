@@ -38,6 +38,10 @@
             "rights_admission_digest",
             "rights_evidence"
           ],
+          "dependentRequired": {
+            "configured_scene_revision": ["configured_scene_revision_digest"],
+            "configured_scene_revision_digest": ["configured_scene_revision"]
+          },
           "additionalProperties": false,
           "properties": {
             "scene_id": {"type": "string", "minLength": 1},
@@ -47,6 +51,8 @@
             "source_manifest_digest": {"$ref": "#/$defs/digest"},
             "rights_admission": {"type": "string", "minLength": 1},
             "rights_admission_digest": {"$ref": "#/$defs/digest"},
+            "configured_scene_revision": {"type": "string", "minLength": 1},
+            "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
             "rights_evidence": {
               "type": "array",
               "minItems": 2,

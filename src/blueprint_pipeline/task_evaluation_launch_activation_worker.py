@@ -26,6 +26,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_configured_scene_revision import (
+    TaskEvaluationConfiguredSceneRevisionError,
+    validate_configured_scene_revision,
+)
 from .task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
     validate_launch_activation_request,
@@ -288,10 +292,11 @@ def _load_verified_preparation(
             "launch_activation_preparation_binding_mismatch"
         )
     preparation_root = (preparation_input_root / preparation_id).resolve()
-    expected_references = {
+    expected_references: dict[str, tuple[str, int]] = {
         row["contract_path"]: (row["digest"], row["size_bytes"])
         for row in _collect_references(request)
     }
+    materialized_rows: dict[str, Mapping[str, Any]] = {}
     materialized_references: dict[str, Path] = {}
     for row in result.get("references") or []:
         if not isinstance(row, Mapping):
@@ -300,24 +305,70 @@ def _load_verified_preparation(
             )
         contract_path = str(row.get("contract_path") or "")
         path = Path(str(row.get("materialized_path") or "")).resolve()
-        expected = expected_references.get(contract_path)
         if (
-            expected is None
+            not contract_path
+            or contract_path in materialized_rows
             or row.get("full_byte_service_account_readback_passed") is not True
             or not _under(path, preparation_root)
             or path.is_symlink()
             or not path.is_file()
-            or path.stat().st_size != expected[1]
-            or _sha256_file(path) != expected[0]
+            or path.stat().st_size != row.get("size_bytes")
+            or _sha256_file(path) != row.get("digest")
         ):
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_preparation_reference_invalid"
             )
+        materialized_rows[contract_path] = row
         materialized_references[contract_path] = path
+    if request["run_mode"] == "episode_evaluation":
+        revision_path = materialized_references.get("scene.configured_revision")
+        try:
+            revision = validate_configured_scene_revision(
+                _read_json(
+                    revision_path or Path("/nonexistent"),
+                    blocker="launch_activation_configured_revision_invalid",
+                )
+            )
+        except TaskEvaluationConfiguredSceneRevisionError as exc:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_configured_revision_invalid"
+            ) from exc
+        transitive = {
+            "scene.configured_revision.configured_scene_bundle": revision[
+                "configured_scene_bundle"
+            ],
+            "scene.configured_revision.source.manifest": revision["source"][
+                "manifest"
+            ],
+            "scene.configured_revision.source.rights_admission": revision[
+                "source"
+            ]["rights_admission"],
+        }
+        transitive.update(
+            {
+                "scene.configured_revision.source.rights_evidence."
+                f"{index}.artifact": evidence["artifact"]
+                for index, evidence in enumerate(
+                    revision["source"]["rights_evidence"]
+                )
+            }
+        )
+        expected_references.update(
+            {
+                contract_path: (reference["digest"], reference["size_bytes"])
+                for contract_path, reference in transitive.items()
+            }
+        )
     if set(materialized_references) != set(expected_references):
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_preparation_reference_set_invalid"
         )
+    for contract_path, expected in expected_references.items():
+        row = materialized_rows[contract_path]
+        if (row.get("digest"), row.get("size_bytes")) != expected:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_preparation_reference_invalid"
+            )
     adapter_path = (
         preparation_root
         / "native-arena-adapter"
@@ -375,8 +426,37 @@ def _build_native_context(
     service_account: str,
     service_group: str,
 ) -> dict[str, Any]:
-    source_manifest_path = preparation_materialized["scene.source_manifest"]
-    rights_admission_path = preparation_materialized["scene.rights.admission"]
+    configured_revision: dict[str, Any] | None = None
+    if preparation_request["run_mode"] == "episode_evaluation":
+        configured_revision = validate_configured_scene_revision(
+            _read_json(
+                preparation_materialized["scene.configured_revision"],
+                blocker="launch_activation_configured_revision_invalid",
+            )
+        )
+        source_manifest_path = preparation_materialized[
+            "scene.configured_revision.source.manifest"
+        ]
+        rights_admission_path = preparation_materialized[
+            "scene.configured_revision.source.rights_admission"
+        ]
+        rights_evidence_contracts = configured_revision["source"][
+            "rights_evidence"
+        ]
+        rights_evidence_prefix = (
+            "scene.configured_revision.source.rights_evidence"
+        )
+    else:
+        source_manifest_path = preparation_materialized[
+            "scene.source_manifest"
+        ]
+        rights_admission_path = preparation_materialized[
+            "scene.rights.admission"
+        ]
+        rights_evidence_contracts = preparation_request["scene"]["rights"][
+            "evidence"
+        ]
+        rights_evidence_prefix = "scene.rights.evidence"
     source_manifest = _read_json(
         source_manifest_path, blocker="launch_activation_source_manifest_invalid"
     )
@@ -394,8 +474,10 @@ def _build_native_context(
             "launch_activation_runtime_contract_invalid"
         )
     rights_evidence = []
-    for index, evidence in enumerate(preparation_request["scene"]["rights"]["evidence"]):
-        path = preparation_materialized[f"scene.rights.evidence.{index}.artifact"]
+    for index, evidence in enumerate(rights_evidence_contracts):
+        path = preparation_materialized[
+            f"{rights_evidence_prefix}.{index}.artifact"
+        ]
         rights_evidence.append(
             {"role": evidence["role"], "path": str(path), "sha256": _sha256_file(path)}
         )
@@ -471,6 +553,20 @@ def _build_native_context(
                 "rights_admission": str(rights_admission_path),
                 "rights_admission_digest": rights_admission["rights_admission_digest"],
                 "rights_evidence": rights_evidence,
+                **(
+                    {
+                        "configured_scene_revision": str(
+                            preparation_materialized[
+                                "scene.configured_revision"
+                            ]
+                        ),
+                        "configured_scene_revision_digest": (
+                            configured_revision["revision_digest"]
+                        ),
+                    }
+                    if configured_revision is not None
+                    else {}
+                ),
             },
             "task": {
                 "task_id": preparation_request["task"]["identity"]["id"],

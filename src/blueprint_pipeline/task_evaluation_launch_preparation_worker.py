@@ -663,29 +663,61 @@ def process_launch_preparation_queue(
                         "materialized_path"
                     ],
                 )
-                scene_bundle_root = (
+                revision_inputs_root = (
                     Path(input_root)
                     / str(envelope["request"]["preparation_id"])
-                    / "configured-scene-bundle"
+                    / "configured-scene-revision-inputs"
                 )
-                scene_bundle_root.mkdir(parents=True, exist_ok=True, mode=0o750)
-                scene_bundle_rows, _ = _materialize_reference_records(
-                    references=[
-                        {
-                            "contract_path": (
-                                "scene.configured_revision.configured_scene_bundle"
-                            ),
-                            **configured_revision["configured_scene_bundle"],
-                        }
-                    ],
-                    input_root=scene_bundle_root,
+                revision_inputs_root.mkdir(
+                    parents=True, exist_ok=True, mode=0o750
+                )
+                transitive_references = [
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.configured_scene_bundle"
+                        ),
+                        **configured_revision["configured_scene_bundle"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.source.manifest"
+                        ),
+                        **configured_revision["source"]["manifest"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.source.rights_admission"
+                        ),
+                        **configured_revision["source"]["rights_admission"],
+                    },
+                ]
+                transitive_references.extend(
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.source.rights_evidence."
+                            f"{index}.artifact"
+                        ),
+                        **evidence["artifact"],
+                    }
+                    for index, evidence in enumerate(
+                        configured_revision["source"]["rights_evidence"]
+                    )
+                )
+                revision_input_rows, _ = _materialize_reference_records(
+                    references=transitive_references,
+                    input_root=revision_inputs_root,
                     allowed_uri_prefixes=validate_allowed_uri_prefixes(
                         allowed_uri_prefixes
                     ),
                     fetcher=fetcher,
                 )
-                scene_bundle_record = scene_bundle_rows[0]
-                result["references"].append(scene_bundle_record)
+                scene_bundle_record = next(
+                    row
+                    for row in revision_input_rows
+                    if row["contract_path"]
+                    == "scene.configured_revision.configured_scene_bundle"
+                )
+                result["references"].extend(revision_input_rows)
                 result["reference_count"] = len(result["references"])
                 result["unique_object_count"] = len(
                     {

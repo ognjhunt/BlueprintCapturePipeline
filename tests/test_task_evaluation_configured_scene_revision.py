@@ -31,6 +31,10 @@ def revision() -> dict[str, object]:
         "source": {
             "manifest": ref(1),
             "rights_admission": ref(2),
+            "rights_evidence": [
+                {"role": "publisher_terms", "artifact": ref(25)},
+                {"role": "human_authority_record", "artifact": ref(26)},
+            ],
             "raw_source_sent_to_external_provider": False,
         },
         "appearance": {
