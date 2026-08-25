@@ -1321,10 +1321,12 @@ def _search_payload(
     limit: int,
     max_hourly_rate: float | None,
     allowed_machine_ids: Iterable[Any] = (),
+    excluded_machine_ids: Iterable[Any] = (),
     minimum_driver_version: str = "",
     min_gpu_ram_mb: int = 0,
     min_compute_cap: int = 0,
     max_compute_cap: int = 0,
+    required_provider_disk_gb: int = 0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "limit": limit,
@@ -1348,6 +1350,8 @@ def _search_payload(
         compute_cap["lte"] = int(max_compute_cap)
     if compute_cap:
         payload["compute_cap"] = compute_cap
+    if required_provider_disk_gb > 0:
+        payload["disk_space"] = {"gte": int(required_provider_disk_gb)}
     driver_floor = _string(minimum_driver_version)
     if driver_floor:
         # Same bounded-page reasoning as the machine allowlist below: the
@@ -1360,11 +1364,17 @@ def _search_payload(
         # candidate page, it does not replace the fail-closed verification.
         payload["driver_version"] = {"gte": driver_floor}
     allowed = sorted(_machine_id_set(allowed_machine_ids))
-    if allowed:
+    excluded = sorted(_machine_id_set(excluded_machine_ids))
+    if allowed or excluded:
         # Apply the allowlist at the provider query, not only after the
         # response. Otherwise an admitted machine can be omitted by the
         # endpoint's bounded result page even while it is rentable.
-        payload["machine_id"] = {"in": allowed}
+        machine_filter: dict[str, list[int]] = {}
+        if allowed:
+            machine_filter["in"] = allowed
+        if excluded:
+            machine_filter["notin"] = excluded
+        payload["machine_id"] = machine_filter
     return payload
 
 
@@ -1464,7 +1474,12 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) -> float | None:
+def _offer_storage_hourly_rate(
+    offer: Mapping[str, Any],
+    *,
+    disk_gb: int = 0,
+    require_requested_disk_price: bool = False,
+) -> float | None:
     # In offer-search rows ``storage_total_cost`` is the hourly cost of Vast's
     # default 8 GB disk, not of the disk requested by our create payload.  The
     # adjacent ``storage_cost`` is the monthly per-GB price and is therefore the
@@ -1475,6 +1490,11 @@ def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) ->
         monthly_per_gb = _number(_mapping(offer.get("pricing")).get("storage_cost"))
     if monthly_per_gb is not None and monthly_per_gb >= 0 and disk_gb > 0:
         return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
+    if disk_gb > 0 and require_requested_disk_price:
+        # ``storage_total_cost`` on an offer row prices Vast's default disk,
+        # not the caller's requested disk. If the monthly per-GB price is
+        # absent, the requested-disk all-in price is unknowable before create.
+        return None
     direct = _number(offer.get("storage_total_cost"))
     if direct is not None and direct >= 0:
         return direct
@@ -1488,18 +1508,30 @@ def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) ->
     return monthly_per_gb * int(disk_gb) / VAST_BILLING_HOURS_PER_MONTH
 
 
-def _offer_summary(offer: Mapping[str, Any], *, disk_gb: int = 0) -> dict[str, Any]:
+def _offer_summary(
+    offer: Mapping[str, Any],
+    *,
+    disk_gb: int = 0,
+    require_requested_disk_price: bool = False,
+) -> dict[str, Any]:
     gpu = _gpu_name(offer)
     driver = _driver_version(offer)
     driver_status = _isaac_driver_support_status(driver)
     compute_cap = offer.get("compute_cap")
     compute_hourly_rate = _offer_compute_hourly_rate(offer)
-    storage_hourly_rate = _offer_storage_hourly_rate(offer, disk_gb=disk_gb)
-    all_in_hourly_rate = (
-        compute_hourly_rate + storage_hourly_rate
-        if compute_hourly_rate is not None and storage_hourly_rate is not None
-        else compute_hourly_rate
+    storage_hourly_rate = _offer_storage_hourly_rate(
+        offer,
+        disk_gb=disk_gb,
+        require_requested_disk_price=require_requested_disk_price,
     )
+    if compute_hourly_rate is None:
+        all_in_hourly_rate = None
+    elif storage_hourly_rate is not None:
+        all_in_hourly_rate = compute_hourly_rate + storage_hourly_rate
+    elif require_requested_disk_price:
+        all_in_hourly_rate = None
+    else:
+        all_in_hourly_rate = compute_hourly_rate
     provider_reported_gpu_ram_mb = _number(
         offer.get("gpu_ram") or offer.get("gpu_totalram") or offer.get("gpu_ram_mb")
     )
@@ -1784,7 +1816,14 @@ def _select_offer(
         allowed_geolocation_country_codes
     )
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
-    summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
+    summaries = [
+        _offer_summary(
+            offer,
+            disk_gb=disk_gb,
+            require_requested_disk_price=bool(required_provider_disk_gb),
+        )
+        for offer in offers
+    ]
     candidates = [
         item
         for item in summaries
@@ -7099,10 +7138,13 @@ def run_vast_provider_adapter(
         dry_offer_request = _search_payload(
             limit=100,
             max_hourly_rate=max_hourly_rate,
+            allowed_machine_ids=resolved_allowed_machine_ids,
+            excluded_machine_ids=excluded_machine_ids,
             minimum_driver_version=resolved_minimum_driver_version,
             min_gpu_ram_mb=resolved_min_gpu_ram_mb,
             min_compute_cap=resolved_min_compute_cap,
             max_compute_cap=resolved_max_compute_cap,
+            required_provider_disk_gb=required_provider_disk_gb,
         )
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -7894,15 +7936,6 @@ def run_vast_provider_adapter(
             # regular Python exceptions below.
             previous_signal_handlers.pop(signum, None)
     try:
-        search_request = _search_payload(
-            limit=100,
-            max_hourly_rate=max_hourly_rate,
-            allowed_machine_ids=resolved_allowed_machine_ids,
-            minimum_driver_version=resolved_minimum_driver_version,
-            min_gpu_ram_mb=resolved_min_gpu_ram_mb,
-            min_compute_cap=resolved_min_compute_cap,
-            max_compute_cap=resolved_max_compute_cap,
-        )
         create_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = (
@@ -7915,6 +7948,17 @@ def run_vast_provider_adapter(
         create_payload: dict[str, Any] = {}
         image_login_summary: dict[str, Any] = {}
         for create_attempt_index in range(max_stale_offer_retries + 1):
+            search_request = _search_payload(
+                limit=100,
+                max_hourly_rate=max_hourly_rate,
+                allowed_machine_ids=resolved_allowed_machine_ids,
+                excluded_machine_ids=excluded_machine_ids,
+                minimum_driver_version=resolved_minimum_driver_version,
+                min_gpu_ram_mb=resolved_min_gpu_ram_mb,
+                min_compute_cap=resolved_min_compute_cap,
+                max_compute_cap=resolved_max_compute_cap,
+                required_provider_disk_gb=required_provider_disk_gb,
+            )
             _append_phase(
                 resolved_job_dir,
                 "vast_offer_search_started",

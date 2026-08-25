@@ -2476,6 +2476,7 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
         assert "RTX A6000" not in observed["preferred_gpu_keywords"]
     else:
         assert observed["min_gpu_ram_mb"] == 46_000
+        assert observed["min_compute_cap"] == 800
         assert "RTX A6000" in observed["preferred_gpu_keywords"]
 
 
