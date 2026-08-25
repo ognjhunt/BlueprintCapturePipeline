@@ -30,6 +30,7 @@ from .paid_resource_admission import PaidResourceAdmissionGrant
 from .task_evaluation_artifact_manifest import (
     TaskEvaluationArtifactManifestError,
     build_task_evaluation_artifact_manifest,
+    seal_lane_terminal_artifacts,
     seal_unallocated_provider_teardown,
 )
 from .vast_independent_watchdog_control import (
@@ -208,6 +209,33 @@ def _remaining_session_live_minutes(
         max(0.0, hard_cap_usd - prior_cost) * 60.0 / max_hourly_rate_usd
     )
     return max(0, min(runtime_minutes, spend_minutes))
+
+
+def _bounded_spend_gate_open(
+    *,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    remaining_live_minutes: int,
+) -> bool:
+    """Admit a positive session whose compiled runtime fits its dollar cap.
+
+    An hourly rate and a total attempt cap have different units.  Comparing
+    them directly rejects safe short sessions whenever the hourly rate is
+    numerically greater than the total cap.  ``remaining_live_minutes`` is the
+    already-compiled minimum of the TTL and remaining-spend windows, so bind
+    the pre-spend signal to its projected dollars instead.
+    """
+
+    if (
+        not math.isfinite(max_hourly_rate_usd)
+        or not math.isfinite(hard_cap_usd)
+        or max_hourly_rate_usd <= 0.0
+        or hard_cap_usd <= 0.0
+        or remaining_live_minutes < 30
+    ):
+        return False
+    projected_cost_usd = remaining_live_minutes * max_hourly_rate_usd / 60.0
+    return projected_cost_usd <= hard_cap_usd + 1e-12
 
 
 @contextmanager
@@ -480,8 +508,11 @@ def run_arena_native_control_vast(
                 "no_progress_timeout_seconds": 1800,
             },
             spend_gate_open=(
-                0.0 < max_hourly_rate_usd <= hard_cap_usd
-                and remaining_live_minutes >= 30
+                _bounded_spend_gate_open(
+                    max_hourly_rate_usd=max_hourly_rate_usd,
+                    hard_cap_usd=hard_cap_usd,
+                    remaining_live_minutes=remaining_live_minutes,
+                )
             ),
             record_dir=provider_run,
             spend_admission_lock=(
@@ -491,6 +522,25 @@ def run_arena_native_control_vast(
             ),
         )
     except PreSpendPreflightBlocked as exc:
+        observed_preflight_blockers = [
+            str(item) for item in exc.preflight.get("blockers") or [] if str(item)
+        ]
+        preflight_blockers = sorted(
+            {
+                f"{blocker_prefix}_pre_spend_preflight_not_passed",
+                *observed_preflight_blockers,
+            }
+        )
+        media_gap_reason = (
+            observed_preflight_blockers[0]
+            if len(observed_preflight_blockers) == 1
+            else f"{blocker_prefix}_pre_spend_preflight_not_passed"
+        )
+        seal_unallocated_provider_teardown(
+            provider_run,
+            reason=media_gap_reason,
+            generated_at=generated,
+        )
         result = {
             "schema_version": result_schema_version,
             "generated_at": generated,
@@ -498,18 +548,43 @@ def run_arena_native_control_vast(
             "attempt_number": attempt_number,
             "attempt_root": str(attempt_root),
             "provider_mutations_performed": 0,
+            "estimated_cost_usd": 0.0,
+            "hard_cap_usd": hard_cap_usd,
+            "hard_ttl_seconds": hard_ttl_seconds,
+            "retry_cap": 0,
+            "authorization_consumption": authorization_consumption,
+            "candidate_policy_queried": False,
+            "first_observation_reached": False,
+            "scientific_attempt_started": False,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "visual_evidence": {
+                "status": "unavailable_before_first_observation",
+                "media_gap": {
+                    "type": "before_first_observation",
+                    "reason": media_gap_reason,
+                },
+            },
             "pre_spend_preflight": exc.preflight,
-            "blockers": sorted(
-                {
-                    f"{blocker_prefix}_pre_spend_preflight_not_passed",
-                    *(
-                        str(item)
-                        for item in exc.preflight.get("blockers") or []
-                        if str(item)
-                    ),
-                }
-            ),
+            "blockers": preflight_blockers,
+            "raw_secret_values_recorded": False,
         }
+        result = seal_lane_terminal_artifacts(
+            result,
+            attempt_root=attempt_root,
+            lane=provider_bundle_kind,
+            extra_artifact_roots={
+                "pre_spend_preflight": provider_run / "pre_spend_preflight.json"
+            },
+            binding={
+                "attempt_number": attempt_number,
+                "bundle_sha256": bundle.get("bundle_sha256"),
+                "protocol_digest": bundle.get("protocol_digest"),
+                "provider": "vast",
+                "result_schema_version": result_schema_version,
+                "retry_cap": 0,
+            },
+        )
         _write_run_result(job, attempt_root, result)
         return result
     staging_dir = attempt_root / "object_store_staging"

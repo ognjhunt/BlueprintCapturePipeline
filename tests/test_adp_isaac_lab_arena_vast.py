@@ -17,6 +17,7 @@ from blueprint_pipeline.adp_founder_sim_protocol import (
 from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
     PROBE_KIND,
+    _bounded_spend_gate_open,
     _candidate_policy_query_blocker,
     _next_attempt_root,
     _remaining_session_live_minutes,
@@ -237,6 +238,23 @@ def test_successor_ttl_reserves_only_remaining_cumulative_budget(tmp_path: Path)
         == 230
     )
 
+
+def test_spend_gate_compares_projected_cost_not_hourly_rate_to_total_cap() -> None:
+    assert _bounded_spend_gate_open(
+        max_hourly_rate_usd=0.64,
+        hard_cap_usd=0.50,
+        remaining_live_minutes=46,
+    )
+    assert not _bounded_spend_gate_open(
+        max_hourly_rate_usd=0.64,
+        hard_cap_usd=0.50,
+        remaining_live_minutes=47,
+    )
+    assert not _bounded_spend_gate_open(
+        max_hourly_rate_usd=0.64,
+        hard_cap_usd=0.50,
+        remaining_live_minutes=29,
+    )
 
 def test_live_transport_emits_allocator_artifact_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -801,6 +819,23 @@ def test_live_transport_blocks_before_watchdog_storage_or_compute_on_spend_lock_
         "adp_arena_pre_spend_preflight_not_passed",
         "spend_admission:spend_admission_lock_missing_or_symlink",
     ]
+    assert result["candidate_policy_queried"] is False
+    assert result["first_observation_reached"] is False
+    assert result["scientific_attempt_started"] is False
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["visual_evidence"] == {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "spend_admission:spend_admission_lock_missing_or_symlink",
+        },
+    }
+    assert Path(result["teardown_manifest_path"]).is_file()
+    assert Path(result["artifact_manifest_path"]).is_file()
+    teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
+    assert teardown["continuing_spend_from_this_run"] is False
+    manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
+    assert manifest["status"] == "completed"
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:

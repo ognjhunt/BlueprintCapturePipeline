@@ -221,6 +221,47 @@ def test_preallocation_closeout_cli_supplies_exact_zero_cost_evidence(
     }
 
 
+def test_pre_spend_closeout_cli_binds_consumption_and_api_zero(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load("seal_native_task_arena_pre_spend_closeout")
+    observed = {}
+
+    def fake_materialize(**kwargs):
+        observed.update(kwargs)
+        return {
+            "provider_zero_receipt_digest": "sha256:" + "a" * 64,
+            "provider_mutation_performed": False,
+        }
+
+    monkeypatch.setattr(
+        module, "materialize_native_task_arena_pre_spend_closeout", fake_materialize
+    )
+    result = module.main(
+        [
+            "--authority",
+            "authority.json",
+            "--allocator-result",
+            "result.json",
+            "--authority-consumption",
+            "consumption.json",
+            "--api-provider-zero",
+            "zero.json",
+            "--output-dir",
+            str(tmp_path / "closeout"),
+        ]
+    )
+
+    assert result == 0
+    assert observed == {
+        "authority_path": "authority.json",
+        "allocator_result_path": "result.json",
+        "authority_consumption_path": "consumption.json",
+        "api_provider_zero_path": "zero.json",
+        "output_dir": str(tmp_path / "closeout"),
+    }
+
+
 def test_authority_cli_fails_closed_without_provider_mutation(monkeypatch, capsys) -> None:
     module = _load("issue_native_task_arena_paid_attempt_authority")
 

@@ -51,6 +51,7 @@ PREALLOCATION_TEARDOWN_SCHEMA_VERSION = (
     "native_task_arena_preallocation_teardown.v1"
 )
 PREALLOCATION_CLOSEOUT_KIND = "independent_watchdog_not_armed_before_allocation"
+PRE_SPEND_CLOSEOUT_KIND = "pre_spend_preflight_blocked_before_allocation"
 MAX_PREALLOCATION_API_ZERO_AGE_SECONDS = 300
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
 # Explicitly expanded by the active Task Arena goal owner on 2026-08-24 so the
@@ -321,6 +322,154 @@ def _validate_preallocation_provider_zero_value(value: Mapping[str, Any]) -> dic
     if not isinstance(value.get("sibling_preallocation_closeouts"), list):
         raise ValueError("native_task_arena_preallocation_provider_zero_invalid")
     return dict(value)
+
+
+def _validate_pre_spend_closed_chain(
+    *,
+    authority: Mapping[str, Any],
+    result: Mapping[str, Any],
+    zero: Mapping[str, Any],
+) -> None:
+    """Validate a derivative closeout for a block before any provider mutation."""
+
+    _validate_preallocation_provider_zero_value(zero)
+    authority_path, _ = _bound_record(
+        zero.get("attempt_authority"),
+        "native_task_arena_pre_spend_authority_unbound",
+    )
+    original_path, original_record = _bound_record(
+        result.get("original_allocator_result"),
+        "native_task_arena_pre_spend_original_result_unbound",
+    )
+    preflight_path, preflight_record = _bound_record(
+        result.get("pre_spend_preflight"),
+        "native_task_arena_pre_spend_preflight_unbound",
+    )
+    consumption_path, consumption_record = _bound_record(
+        result.get("authority_consumption_record"),
+        "native_task_arena_pre_spend_consumption_unbound",
+    )
+    api_zero_path, _ = _bound_record(
+        zero.get("api_provider_zero"),
+        "native_task_arena_pre_spend_api_zero_unbound",
+    )
+    teardown_path, _ = _bound_record(
+        zero.get("teardown"),
+        "native_task_arena_pre_spend_teardown_unbound",
+    )
+    original = _read(original_path, "native_task_arena_pre_spend_result_invalid")
+    preflight = _read(preflight_path, "native_task_arena_pre_spend_preflight_invalid")
+    consumption = _read(
+        consumption_path, "native_task_arena_pre_spend_consumption_invalid"
+    )
+    api_zero = _validated_api_provider_zero(api_zero_path)
+    teardown = _read(teardown_path, "native_task_arena_pre_spend_teardown_invalid")
+    recorded_original_path = _recorded_path(
+        original_record, "native_task_arena_pre_spend_original_result_unbound"
+    )
+    recorded_preflight_path = _recorded_path(
+        preflight_record, "native_task_arena_pre_spend_preflight_unbound"
+    )
+    recorded_consumption_path = _recorded_path(
+        consumption_record, "native_task_arena_pre_spend_consumption_unbound"
+    )
+    attempt_root_raw = str(original.get("attempt_root") or "")
+    if not attempt_root_raw.startswith("/"):
+        raise ValueError("native_task_arena_pre_spend_closeout_invalid")
+    attempt_root = Path(attempt_root_raw).resolve()
+    expected_blocker = next(
+        (
+            str(item)
+            for item in original.get("blockers") or []
+            if str(item).endswith("_pre_spend_preflight_not_passed")
+        ),
+        "",
+    )
+    observed_preflight_blockers = [
+        str(item) for item in preflight.get("blockers") or [] if str(item)
+    ]
+    expected_blockers = sorted({expected_blocker, *observed_preflight_blockers})
+    reason = (
+        observed_preflight_blockers[0]
+        if len(observed_preflight_blockers) == 1
+        else expected_blocker
+    )
+    expected_visual = {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {"type": "before_first_observation", "reason": reason},
+    }
+    result_at = _aware_time(
+        original.get("generated_at"), "native_task_arena_pre_spend_result_time_invalid"
+    )
+    zero_at = _aware_time(
+        api_zero.get("observed_at_utc"),
+        "native_task_arena_pre_spend_api_zero_time_invalid",
+    )
+    closeout_at = _aware_time(
+        zero.get("generated_at"),
+        "native_task_arena_pre_spend_closeout_time_invalid",
+    )
+    provider_run = attempt_root / "vast_provider_run"
+    if (
+        _read(authority_path, "native_task_arena_pre_spend_authority_invalid")
+        != dict(authority)
+        or result.get("closeout_kind") != PRE_SPEND_CLOSEOUT_KIND
+        or result.get("status") != "sealed_blocked_attempt"
+        or result.get("estimated_cost_usd") != 0.0
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("all_staged_objects_absent") is not True
+        or result.get("candidate_policy_queried") is not False
+        or result.get("scientific_attempt_started") is not False
+        or result.get("visual_evidence") != expected_visual
+        or result.get("receipt_digest")
+        != canonical_digest(result, digest_field="receipt_digest")
+        or original.get("schema_version") != "native_task_arena_vast_run.v1"
+        or original.get("status") != "blocked"
+        or original.get("blockers") != expected_blockers
+        or original.get("provider_mutations_performed") != 0
+        or original.get("estimated_cost_usd") is not None
+        or original.get("continuing_spend_from_this_run") is not None
+        or original.get("instance_id") not in (None, "")
+        or original.get("vast_instance_ids") not in (None, [], ())
+        or original.get("provider_instance_ids") not in (None, [], ())
+        or original.get("provider_create_attempted") not in (None, False)
+        or not expected_blocker
+        or preflight.get("schema_version") != "pre_spend_preflight.v1"
+        or preflight.get("status") != "FAIL"
+        or preflight.get("spend_allowed") is not False
+        or not observed_preflight_blockers
+        or original.get("pre_spend_preflight") != preflight
+        or consumption.get("schema_version") != CONSUMPTION_SCHEMA_VERSION
+        or consumption.get("authorization_digest")
+        != authority.get("authorization_digest")
+        or consumption.get("bundle_sha256") != authority.get("bundle_sha256")
+        or consumption.get("blueprint_commit") != authority.get("blueprint_commit")
+        or consumption.get("maximum_provider_allocations") != 1
+        or result.get("authorization_consumption", {}).get("status") != "consumed"
+        or result.get("authorization_consumption", {}).get("authorization_digest")
+        != authority.get("authorization_digest")
+        or recorded_original_path != attempt_root / "adp_arena_vast_result.json"
+        or recorded_preflight_path != provider_run / "pre_spend_preflight.json"
+        or recorded_consumption_path.name
+        != f"native-task-arena-{str(authority.get('authorization_digest'))[7:]}.json"
+        or attempt_root.name != "attempt_001"
+        or attempt_root.parent.name != "attempts"
+        or attempt_root.parent.parent.name != _expected_job_dir(authority)
+        or (provider_run / "vast_provider_adapter_result.json").exists()
+        or (provider_run / "vast_teardown_manifest.json").exists()
+        or (attempt_root / "object_store_staging").exists()
+        or (attempt_root / "vast_independent_watchdog_handoff.json").exists()
+        or teardown.get("schema_version") != PREALLOCATION_TEARDOWN_SCHEMA_VERSION
+        or teardown.get("status") != "not_required_pre_spend_preflight_blocked"
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or teardown.get("provider_mutations_performed") != 0
+        or teardown.get("vast_instance_ids") != []
+        or zero_at < result_at
+        or closeout_at < zero_at
+        or (closeout_at - zero_at).total_seconds()
+        > MAX_PREALLOCATION_API_ZERO_AGE_SECONDS
+    ):
+        raise ValueError("native_task_arena_pre_spend_closeout_invalid")
 
 
 def _validate_preallocation_closed_chain(
@@ -620,9 +769,14 @@ def validate_terminal_spend_chain(
         and zero.get("status") == "completed_preallocation_provider_zero"
     )
     if preallocation_closeout:
-        _validate_preallocation_closed_chain(
-            authority=authority, result=result, zero=zero
-        )
+        if result.get("closeout_kind") == PRE_SPEND_CLOSEOUT_KIND:
+            _validate_pre_spend_closed_chain(
+                authority=authority, result=result, zero=zero
+            )
+        else:
+            _validate_preallocation_closed_chain(
+                authority=authority, result=result, zero=zero
+            )
     if (
         authorization_digest != canonical_digest(authority, digest_field=authority_digest_field)
         or result.get("schema_version") != result_schema
@@ -1316,6 +1470,223 @@ def _definitive_preallocation_no_allocation(
     )
 
 
+def materialize_native_task_arena_pre_spend_closeout(
+    *,
+    authority_path: str | Path,
+    allocator_result_path: str | Path,
+    authority_consumption_path: str | Path,
+    api_provider_zero_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Seal a consumed authority rejected by the shared gate before allocation.
+
+    The immutable original result stays untouched.  This derivative binds its
+    failed shared pre-spend receipt, the exclusive authority-consumption record,
+    and a later authenticated global Vast-zero observation.  It cannot be used
+    for a result that staged objects, armed a watchdog, or entered the adapter.
+    """
+
+    authority_file = Path(authority_path).expanduser().resolve()
+    original_file = Path(allocator_result_path).expanduser().resolve()
+    consumption_file = Path(authority_consumption_path).expanduser().resolve()
+    api_zero_file = Path(api_provider_zero_path).expanduser().resolve()
+    authority = _read(authority_file, "native_task_arena_pre_spend_authority_invalid")
+    original = _read(original_file, "native_task_arena_pre_spend_result_invalid")
+    consumption = _read(
+        consumption_file, "native_task_arena_pre_spend_consumption_invalid"
+    )
+    api_zero = _validated_api_provider_zero(api_zero_file)
+    authority_digest = str(authority.get("authorization_digest") or "")
+    attempt_root_raw = str(original.get("attempt_root") or "")
+    if not attempt_root_raw.startswith("/"):
+        raise ValueError("native_task_arena_pre_spend_closeout_invalid")
+    attempt_root = Path(attempt_root_raw).resolve()
+    provider_run = attempt_root / "vast_provider_run"
+    preflight_file = provider_run / "pre_spend_preflight.json"
+    preflight = _read(
+        preflight_file, "native_task_arena_pre_spend_preflight_invalid"
+    )
+    expected_blocker = next(
+        (
+            str(item)
+            for item in original.get("blockers") or []
+            if str(item).endswith("_pre_spend_preflight_not_passed")
+        ),
+        "",
+    )
+    observed_preflight_blockers = [
+        str(item) for item in preflight.get("blockers") or [] if str(item)
+    ]
+    expected_blockers = sorted({expected_blocker, *observed_preflight_blockers})
+    result_at = _aware_time(
+        original.get("generated_at"), "native_task_arena_pre_spend_result_time_invalid"
+    )
+    zero_at = _aware_time(
+        api_zero.get("observed_at_utc"),
+        "native_task_arena_pre_spend_api_zero_time_invalid",
+    )
+    materialized_at = datetime.now(timezone.utc)
+    if (
+        authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
+        or authority_digest
+        != canonical_digest(authority, digest_field="authorization_digest")
+        or original.get("schema_version") != "native_task_arena_vast_run.v1"
+        or original.get("status") != "blocked"
+        or original.get("blockers") != expected_blockers
+        or original.get("provider_mutations_performed") != 0
+        or original.get("estimated_cost_usd") is not None
+        or original.get("continuing_spend_from_this_run") is not None
+        or original.get("instance_id") not in (None, "")
+        or original.get("vast_instance_ids") not in (None, [], ())
+        or original.get("provider_instance_ids") not in (None, [], ())
+        or original.get("provider_create_attempted") not in (None, False)
+        or not expected_blocker
+        or not observed_preflight_blockers
+        or original.get("pre_spend_preflight") != preflight
+        or preflight.get("schema_version") != "pre_spend_preflight.v1"
+        or preflight.get("status") != "FAIL"
+        or preflight.get("spend_allowed") is not False
+        or consumption.get("schema_version") != CONSUMPTION_SCHEMA_VERSION
+        or consumption.get("authorization_digest") != authority_digest
+        or consumption.get("bundle_sha256") != authority.get("bundle_sha256")
+        or consumption.get("blueprint_commit") != authority.get("blueprint_commit")
+        or consumption.get("maximum_provider_allocations") != 1
+        or original_file != attempt_root / "adp_arena_vast_result.json"
+        or attempt_root.name != "attempt_001"
+        or attempt_root.parent.name != "attempts"
+        or attempt_root.parent.parent.name != _expected_job_dir(authority)
+        or consumption_file.name != f"native-task-arena-{authority_digest[7:]}.json"
+        or (provider_run / "vast_provider_adapter_result.json").exists()
+        or (provider_run / "vast_teardown_manifest.json").exists()
+        or (attempt_root / "object_store_staging").exists()
+        or (attempt_root / "vast_independent_watchdog_handoff.json").exists()
+        or zero_at < result_at
+        or zero_at > materialized_at
+        or (materialized_at - zero_at).total_seconds()
+        > MAX_PREALLOCATION_API_ZERO_AGE_SECONDS
+    ):
+        raise ValueError("native_task_arena_pre_spend_closeout_invalid")
+
+    destination = Path(output_dir).expanduser().resolve()
+    teardown_path = destination / "native_task_arena_pre_spend_teardown.v1.json"
+    result_path = destination / "native_task_arena_pre_spend_closed_result.v1.json"
+    zero_path = destination / "native_task_arena_provider_zero.v1.json"
+    if any(path.exists() or path.is_symlink() for path in (teardown_path, result_path, zero_path)):
+        raise ValueError("native_task_arena_pre_spend_output_exists")
+    generated_at = materialized_at.isoformat()
+    reason = (
+        observed_preflight_blockers[0]
+        if len(observed_preflight_blockers) == 1
+        else expected_blocker
+    )
+    authorization_consumption = {
+        "status": "consumed",
+        "authorization_digest": authority_digest,
+        "consumption_record_sha256": _sha256(consumption_file),
+    }
+    teardown: dict[str, Any] = {
+        "schema_version": PREALLOCATION_TEARDOWN_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "not_required_pre_spend_preflight_blocked",
+        "vast_instance_ids": [],
+        "provider_mutations_performed": 0,
+        "continuing_spend_from_this_run": False,
+        "original_allocator_result": _record(original_file),
+        "pre_spend_preflight": _record(preflight_file),
+        "authority_consumption_record": _record(consumption_file),
+        "receipt_digest": "",
+    }
+    teardown["receipt_digest"] = canonical_digest(
+        teardown, digest_field="receipt_digest"
+    )
+    result: dict[str, Any] = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "generated_at": generated_at,
+        "status": "sealed_blocked_attempt",
+        "closeout_kind": PRE_SPEND_CLOSEOUT_KIND,
+        "blockers": expected_blockers,
+        "bundle_sha256": authority.get("bundle_sha256"),
+        "estimated_cost_usd": 0.0,
+        "hard_cap_usd": authority.get("hard_attempt_spend_cap_usd"),
+        "hard_ttl_seconds": authority.get("maximum_single_resource_ttl_seconds"),
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "authorization_consumption": authorization_consumption,
+        "original_allocator_result": _record(original_file),
+        "pre_spend_preflight": _record(preflight_file),
+        "authority_consumption_record": _record(consumption_file),
+        "teardown_manifest_path": str(teardown_path),
+        "scientific_attempt_started": False,
+        "first_observation_reached": False,
+        "candidate_policy_queried": False,
+        "visual_evidence": {
+            "status": "unavailable_before_first_observation",
+            "media_gap": {"type": "before_first_observation", "reason": reason},
+        },
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    created: list[Path] = []
+    try:
+        _write_exclusive_json(teardown_path, teardown)
+        created.append(teardown_path)
+        _write_exclusive_json(result_path, result)
+        created.append(result_path)
+        zero: dict[str, Any] = {
+            "schema_version": PROVIDER_ZERO_SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "status": "completed_preallocation_provider_zero",
+            "attempt_authority": _record(authority_file),
+            "attempt_authority_digest": authority_digest,
+            "terminal_result": _record(result_path),
+            "teardown": _record(teardown_path),
+            "pre_spend_preflight": _record(preflight_file),
+            "authority_consumption_record": _record(consumption_file),
+            "api_provider_zero": _record(api_zero_file),
+            "sibling_preallocation_closeouts": [],
+            "estimated_cost_usd": 0.0,
+            "provider_zero_confirmed": True,
+            "inventory": None,
+            "inventory_scope": "no_provider_allocation",
+            "global_inventory": [],
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "scientific_attempt_started": False,
+            "evidence_times": {
+                "allocator_result_generated_at": result_at.isoformat(),
+                "api_provider_zero_observed_at": zero_at.isoformat(),
+                "closeout_generated_at": generated_at,
+                "maximum_api_zero_age_seconds": MAX_PREALLOCATION_API_ZERO_AGE_SECONDS,
+            },
+            "receipt_digest": "",
+        }
+        zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+        _write_exclusive_json(zero_path, zero)
+        created.append(zero_path)
+        _validate_pre_spend_closed_chain(
+            authority=authority, result=result, zero=zero
+        )
+        validate_terminal_spend_chain(
+            authority_path=authority_file,
+            result_path=result_path,
+            provider_zero_path=zero_path,
+        )
+    except BaseException:
+        for path in reversed(created):
+            path.unlink(missing_ok=True)
+        raise
+    return {
+        "terminal_result_path": str(result_path),
+        "teardown_manifest_path": str(teardown_path),
+        "provider_zero_path": str(zero_path),
+        "provider_zero_receipt_digest": zero["receipt_digest"],
+        "attempt_authority_digest": authority_digest,
+        "provider_mutation_performed": False,
+        "scientific_attempt_started": False,
+    }
+
+
 def materialize_native_task_arena_preallocation_closeout(
     *,
     authority_path: str | Path,
@@ -1677,6 +2048,7 @@ __all__ = [
     "PROVIDER_ZERO_SCHEMA_VERSION",
     "consume_native_task_arena_authority_once",
     "materialize_native_task_arena_paid_attempt_authority",
+    "materialize_native_task_arena_pre_spend_closeout",
     "materialize_native_task_arena_preallocation_closeout",
     "materialize_native_task_arena_provider_zero",
     "validate_native_task_arena_paid_attempt_authority",

@@ -947,6 +947,130 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
     }
 
 
+def _pre_spend_blocked_fixture(root: Path) -> dict[str, Path]:
+    root.mkdir()
+    attempt_root = (
+        root
+        / "allocator"
+        / "arena-policy-diagnostic-job"
+        / "attempts"
+        / "attempt_001"
+    )
+    provider_run = attempt_root / "vast_provider_run"
+    provider_run.mkdir(parents=True)
+    observed_at = datetime.now(timezone.utc)
+    authority = {
+        "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
+        "execution_mode": "policy_diagnostic",
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "blueprint_commit": COMMIT,
+        "hard_attempt_spend_cap_usd": 0.5,
+        "maximum_single_resource_ttl_seconds": 2800,
+        "aggregate_goal_spend_before_attempt_usd": 39.540914,
+        "aggregate_goal_spend_cap_usd": 50.0,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = root / "authority.json"
+    write_json(authority_path, authority)
+    preflight = {
+        "schema_version": "pre_spend_preflight.v1",
+        "generated_at": observed_at.isoformat(),
+        "status": "FAIL",
+        "spend_allowed": False,
+        "blockers": ["spend_gate_closed:explicit_spend_approval_missing"],
+    }
+    preflight_path = provider_run / "pre_spend_preflight.json"
+    write_json(preflight_path, preflight)
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "generated_at": observed_at.isoformat(),
+        "status": "blocked",
+        "attempt_root": str(attempt_root),
+        "provider_mutations_performed": 0,
+        "pre_spend_preflight": preflight,
+        "blockers": [
+            "native_task_arena_policy_diagnostic_pre_spend_preflight_not_passed",
+            "spend_gate_closed:explicit_spend_approval_missing",
+        ],
+    }
+    result_path = attempt_root / "adp_arena_vast_result.json"
+    write_json(result_path, result)
+    consumption = {
+        "schema_version": paid.CONSUMPTION_SCHEMA_VERSION,
+        "authorization_digest": authority["authorization_digest"],
+        "bundle_sha256": authority["bundle_sha256"],
+        "blueprint_commit": authority["blueprint_commit"],
+        "consumed_at": observed_at.isoformat(),
+        "maximum_provider_allocations": 1,
+    }
+    consumption_path = (
+        root
+        / f"native-task-arena-{authority['authorization_digest'][7:]}.json"
+    )
+    write_json(consumption_path, consumption)
+    api_zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": observed_at.isoformat(),
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "api_command": ["vastai", "show", "instances", "--raw"],
+        "raw_secret_values_recorded": False,
+        "stderr_present": False,
+        "provider_zero_digest": "",
+    }
+    api_zero["provider_zero_digest"] = canonical_digest(
+        api_zero, digest_field="provider_zero_digest"
+    )
+    api_zero_path = root / "api_zero.json"
+    write_json(api_zero_path, api_zero)
+    return {
+        "authority": authority_path,
+        "result": result_path,
+        "consumption": consumption_path,
+        "api_zero": api_zero_path,
+    }
+
+
+def test_pre_spend_block_closes_without_claiming_policy_execution(
+    tmp_path: Path,
+) -> None:
+    fixture = _pre_spend_blocked_fixture(tmp_path / "attempt")
+    value = paid.materialize_native_task_arena_pre_spend_closeout(
+        authority_path=fixture["authority"],
+        allocator_result_path=fixture["result"],
+        authority_consumption_path=fixture["consumption"],
+        api_provider_zero_path=fixture["api_zero"],
+        output_dir=tmp_path / "closeout",
+    )
+
+    result_path = Path(value["terminal_result_path"])
+    result = json.loads(result_path.read_text())
+    assert result["status"] == "sealed_blocked_attempt"
+    assert result["closeout_kind"] == paid.PRE_SPEND_CLOSEOUT_KIND
+    assert result["candidate_policy_queried"] is False
+    assert result["first_observation_reached"] is False
+    assert result["visual_evidence"] == {
+        "status": "unavailable_before_first_observation",
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "spend_gate_closed:explicit_spend_approval_missing",
+        },
+    }
+    chain = paid.validate_terminal_spend_chain(
+        authority_path=fixture["authority"],
+        result_path=result_path,
+        provider_zero_path=value["provider_zero_path"],
+    )
+    assert chain["attempt_cost_usd"] == 0.0
+    assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
+
+
 def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execution(
     tmp_path: Path,
 ) -> None:
