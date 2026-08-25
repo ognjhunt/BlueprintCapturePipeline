@@ -28,6 +28,9 @@ import blueprint_pipeline.native_task_arena_warm_authority as warm_authority
 from blueprint_pipeline.native_task_arena_bundle import (
     POLICY_RUNTIME_ROOT_MODULE_NAMES,
 )
+from blueprint_pipeline.native_task_arena_policy_bundle import (
+    expected_policy_candidate_rights_binding,
+)
 from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 import blueprint_pipeline.task_evaluation_live_profile as live_profile
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
@@ -247,6 +250,15 @@ def _provider_bundle(
         "blockers": [],
         "input_digest": "",
     }
+    if link == "policy":
+        policy_request = json.loads(
+            bound_paths[
+                "native_task_arena_policy_execution_spec.v1.json"
+            ].read_text(encoding="utf-8")
+        )
+        manifest["policy_rights_binding"] = policy_request[
+            "candidate_rights_binding"
+        ]
     manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
     receipt = {
         **manifest,
@@ -532,6 +544,10 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "construction_result_digest": construction_value["result_digest"],
         "control_result_digest": control_value["result_digest"],
         "control_pair_digest": control_value["control_pair"]["pair_digest"],
+        "execution_authority": "qualified_controls_evaluation",
+        "candidate_rights_binding": expected_policy_candidate_rights_binding(
+            "pi05_droid"
+        ),
         "execution_spec_digest": "",
     }
     policy_value["execution_spec_digest"] = canonical_digest(
@@ -854,6 +870,25 @@ def test_provider_bundle_byte_tamper_is_refused_before_allocation(lane) -> None:
 
     with pytest.raises(TaskEvaluationLaunchError, match="provider_bundle_invalid"):
         _build(lane, "construction")
+
+
+def test_policy_profile_refuses_rights_binding_not_carried_by_bundle(lane) -> None:
+    spec_path = lane["policy_spec"]
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["candidate_rights_binding"] = {
+        **spec["candidate_rights_binding"],
+        "rights_ready": False,
+    }
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+    write_json(spec_path, spec)
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="native_task_arena_policy_execution_spec_invalid",
+    ):
+        _build(lane, "policy")
 
 
 def test_permissive_attempt_authority_is_refused_before_allocation(lane) -> None:

@@ -398,6 +398,11 @@ def _lane_blockers(
                     != controls.get("result_digest")
                     or policy_spec.get("control_pair_digest")
                     != pair.get("pair_digest")
+                    or (
+                        not diagnostic
+                        and (prepared_bundle or {}).get("policy_rights_binding")
+                        != policy_spec.get("candidate_rights_binding")
+                    )
                     or bound_inputs.get(
                         "native_task_arena_policy_execution_spec.v1.json"
                     )

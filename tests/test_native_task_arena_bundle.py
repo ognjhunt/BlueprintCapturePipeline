@@ -42,6 +42,7 @@ from blueprint_pipeline.native_task_arena_execution_contract import (
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
     build_native_task_policy_execution_spec,
+    expected_policy_candidate_rights_binding,
     load_verified_native_task_arena_policy_bundle,
     materialize_native_task_policy_execution_spec,
 )
@@ -635,6 +636,10 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
         "open_loop_horizon": 8,
         "overview_camera_policy_input": False,
         "policy_may_grade_itself": False,
+        "execution_authority": "qualified_controls_evaluation",
+        "candidate_rights_binding": expected_policy_candidate_rights_binding(
+            "pi05_droid"
+        ),
         "execution_spec_digest": "",
     }
     spec["execution_spec_digest"] = canonical_digest(
@@ -667,6 +672,9 @@ def _groot_policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
                     "adp009d_groot_worker_identity.groot_n17_droid.json"
                 ),
             },
+            "candidate_rights_binding": expected_policy_candidate_rights_binding(
+                "groot_n17_droid"
+            ),
         }
     )
     spec["execution_spec_digest"] = canonical_digest(
@@ -690,6 +698,9 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
         runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="d" * 40,
         generated_at="fixed",
+    )
+    assert receipt["policy_rights_binding"] == (
+        expected_policy_candidate_rights_binding("pi05_droid")
     )
 
     assert receipt["execution_mode"] == "policy"
@@ -855,6 +866,9 @@ def test_provider_free_spec_builder_derives_each_frozen_candidate(
     assert result["prompt"] == scene["task_spec"]["prompt"]
     assert result["max_policy_queries"] == 56
     assert result["policy_may_grade_itself"] is False
+    assert result["candidate_rights_binding"] == (
+        expected_policy_candidate_rights_binding(candidate_id)
+    )
     assert result["execution_spec_digest"] == canonical_digest(
         result, digest_field="execution_spec_digest"
     )
@@ -866,6 +880,28 @@ def test_provider_free_spec_builder_derives_each_frozen_candidate(
     else:
         assert result["policy_identity_receipt"] == (
             policy_bundle_module.GROOT_RUNTIME_IDENTITY_DECLARATION
+        )
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_qualified_policy_spec_refuses_self_asserted_or_tampered_rights(
+    tmp_path: Path, candidate_id: str
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    request = (
+        _policy_spec(scene, construction, controls)
+        if candidate_id == "pi05_droid"
+        else _groot_policy_spec(scene, construction, controls)
+    )
+    request["candidate_rights_binding"]["rights_ready"] = False
+    request.pop("execution_spec_digest")
+
+    with pytest.raises(ValueError, match="native_task_policy_rights_binding_invalid"):
+        materialize_native_task_policy_execution_spec(
+            request=request,
+            output_path=tmp_path / f"{candidate_id}-tampered-rights.json",
         )
 
 
@@ -1375,6 +1411,20 @@ def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None
 
     assert excinfo.value.errors == (
         "native_task_arena_bundle_policy_binding_invalid",
+    )
+
+    with pytest.raises(NativeTaskArenaBundleError) as excinfo:
+        build_native_task_arena_bundle(
+            job_dir=tmp_path / "job-without-rights",
+            packet_dir=packet,
+            worker_source=worker,
+            runtime_module_sources=[],
+            implementation_commit="d" * 40,
+            execution_mode="policy",
+            policy_candidate_id="pi05_droid",
+        )
+    assert excinfo.value.errors == (
+        "native_task_arena_bundle_policy_rights_binding_missing",
     )
 
 

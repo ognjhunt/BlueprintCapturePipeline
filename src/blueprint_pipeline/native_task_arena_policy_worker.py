@@ -300,6 +300,17 @@ def _admission_binding_mismatches(
     else:
         qualifications.extend(
             [
+                (
+                    "qualified_execution_authority",
+                    spec.get("execution_authority")
+                    == "qualified_controls_evaluation",
+                ),
+                (
+                    "candidate_rights_binding_vs_manifest",
+                    isinstance(spec.get("candidate_rights_binding"), Mapping)
+                    and spec.get("candidate_rights_binding")
+                    == manifest.get("policy_rights_binding"),
+                ),
                 ("controls_qualified", controls.get("controls_qualified")),
                 (
                     "control_pair_cell_admitted_for_policy_execution",

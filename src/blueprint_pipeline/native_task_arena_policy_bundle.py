@@ -34,6 +34,19 @@ GROOT_RUNTIME_IDENTITY_DECLARATION = {
     "relative_path": GROOT_RUNTIME_IDENTITY_FILENAME,
 }
 QUALIFIED_EXECUTION_AUTHORITY = "qualified_controls_evaluation"
+POLICY_RIGHTS_BINDING_SCHEMA_VERSION = (
+    "adp009d_policy_candidate_rights_binding.v1"
+)
+POLICY_READINESS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs/arm_decision_proof_v1/manifests/"
+    "adp009d_scene_840920_policy_readiness.v1.json"
+)
+POLICY_SCENARIO_SUITE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs/arm_decision_proof_v1/manifests/"
+    "third_scene_840920_task_a_scenario_suite.v1.json"
+)
 OPENPI_CHECKPOINT_INVENTORY_PATH = (
     Path(__file__).resolve().parents[2]
     / "docs/experiments/policy_ranking_thesis_20260726/"
@@ -101,6 +114,73 @@ def _verified_openpi_checkpoint_inventory(
     if any(entry.get(field) != value for field, value in expected.items()):
         raise ValueError("native_task_policy_openpi_checkpoint_inventory_invalid")
     return path
+
+
+def expected_policy_candidate_rights_binding(
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Derive the execution binding from the validated committed readiness.
+
+    The readiness receipt used to stop at documentation.  Re-deriving this
+    value here makes an ordinary policy spec depend on the exact validated
+    rights record instead of a caller-supplied ``rights_ready`` boolean.
+    """
+
+    from .adp009d_scene_policy_readiness import load_scene_policy_readiness
+
+    if candidate_id not in FROZEN_CANDIDATES:
+        raise ValueError("native_task_policy_candidate_invalid")
+    readiness = load_scene_policy_readiness(
+        POLICY_READINESS_PATH,
+        scenario_suite_path=POLICY_SCENARIO_SUITE_PATH,
+    )
+    candidates = [
+        dict(row)
+        for row in readiness.get("candidates") or []
+        if isinstance(row, Mapping) and row.get("candidate_id") == candidate_id
+    ]
+    if len(candidates) != 1:
+        raise ValueError("native_task_policy_rights_candidate_missing")
+    candidate = candidates[0]
+    binding: dict[str, Any] = {
+        "schema_version": POLICY_RIGHTS_BINDING_SCHEMA_VERSION,
+        "candidate_id": candidate_id,
+        "scene_id": readiness["scene_id"],
+        "task_id": readiness["task_id"],
+        "scene_policy_readiness_digest": readiness["readiness_digest"],
+        "scenario_suite_digest": readiness["scenario_suite_digest"],
+        "rights_ready": candidate["rights_ready"],
+        "candidate_readiness": candidate,
+        "outcome_blind_source": readiness["outcome_blind"],
+        "provider_execution_performed_by_source": readiness[
+            "provider_execution_performed"
+        ],
+        "binding_digest": "",
+    }
+    binding["binding_digest"] = canonical_digest(
+        binding, digest_field="binding_digest"
+    )
+    return binding
+
+
+def validate_policy_candidate_rights_binding(
+    value: Mapping[str, Any], *, candidate_id: str
+) -> dict[str, Any]:
+    """Require byte-exact equality with the committed validated binding."""
+
+    try:
+        binding = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("native_task_policy_rights_binding_invalid") from exc
+    expected = expected_policy_candidate_rights_binding(candidate_id)
+    if (
+        not isinstance(binding, dict)
+        or binding.get("binding_digest")
+        != canonical_digest(binding, digest_field="binding_digest")
+        or binding != expected
+    ):
+        raise ValueError("native_task_policy_rights_binding_invalid")
+    return binding
 
 
 def validate_native_task_policy_execution_spec(
@@ -193,6 +273,14 @@ def validate_native_task_policy_execution_spec(
         errors.append("native_task_policy_overview_input_invalid")
     if payload.get("policy_may_grade_itself") is not False:
         errors.append("native_task_policy_self_grading_invalid")
+    if payload.get("execution_authority") == QUALIFIED_EXECUTION_AUTHORITY:
+        try:
+            validate_policy_candidate_rights_binding(
+                payload.get("candidate_rights_binding") or {},
+                candidate_id=candidate,
+            )
+        except ValueError:
+            errors.append("native_task_policy_rights_binding_invalid")
     if payload.get("execution_spec_digest") != canonical_digest(
         payload, digest_field="execution_spec_digest"
     ):
@@ -303,6 +391,7 @@ def build_native_task_policy_execution_spec(
         raise ValueError(";".join(sorted(set(errors))))
 
     policy, endpoint, identity = _candidate_runtime_binding(candidate_id)
+    rights_binding = expected_policy_candidate_rights_binding(candidate_id)
 
     request = {
         "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
@@ -324,6 +413,7 @@ def build_native_task_policy_execution_spec(
         "overview_camera_policy_input": False,
         "policy_may_grade_itself": False,
         "execution_authority": QUALIFIED_EXECUTION_AUTHORITY,
+        "candidate_rights_binding": rights_binding,
     }
     return materialize_native_task_policy_execution_spec(
         request=request, output_path=output_path
@@ -417,6 +507,12 @@ def build_native_task_arena_policy_bundle(
     )
     controls = _read(controls_path, error="native_task_policy_control_result_invalid")
     spec = validate_native_task_policy_execution_spec(policy_execution_spec)
+    if spec.get("execution_authority") != QUALIFIED_EXECUTION_AUTHORITY:
+        raise ValueError("native_task_policy_execution_authority_invalid")
+    rights_binding = validate_policy_candidate_rights_binding(
+        spec.get("candidate_rights_binding") or {},
+        candidate_id=str(spec.get("candidate_id") or ""),
+    )
     pair = controls.get("control_pair") or {}
     errors: list[str] = []
     task_spec = scene_plan.get("task_spec") or {}
@@ -490,6 +586,7 @@ def build_native_task_arena_policy_bundle(
             implementation_commit=implementation_commit,
             execution_mode="policy",
             policy_candidate_id=spec["candidate_id"],
+            policy_rights_binding=rights_binding,
             expected_output_filename=RESULT_FILENAME,
             container_image=NATIVE_TASK_ARENA_IMAGE,
             bound_runtime_inputs=bound_inputs,
@@ -546,6 +643,16 @@ def load_verified_native_task_arena_policy_bundle(
         != set(POLICY_RUNTIME_ROOT_MODULE_NAMES)
     ):
         errors.append("native_task_policy_bundle_contract_invalid")
+    try:
+        rights_binding = validate_policy_candidate_rights_binding(
+            receipt.get("policy_rights_binding") or {},
+            candidate_id=candidate_id,
+        )
+    except ValueError:
+        errors.append("native_task_policy_bundle_rights_binding_invalid")
+    else:
+        if rights_binding.get("candidate_id") != candidate_id:
+            errors.append("native_task_policy_bundle_rights_binding_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:
         errors.append("native_task_policy_bundle_commit_mismatch")
     if receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE:
@@ -584,13 +691,18 @@ __all__ = [
     "GROOT_RUNTIME_IDENTITY_DECLARATION",
     "GROOT_RUNTIME_IDENTITY_FILENAME",
     "PROBE_KIND",
+    "POLICY_READINESS_PATH",
+    "POLICY_RIGHTS_BINDING_SCHEMA_VERSION",
+    "POLICY_SCENARIO_SUITE_PATH",
     "RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",
     "build_native_task_arena_policy_bundle",
     "build_native_task_policy_execution_spec",
+    "expected_policy_candidate_rights_binding",
     "load_verified_native_task_arena_policy_bundle",
     "materialize_native_task_policy_execution_spec",
     "validate_native_task_policy_execution_spec",
+    "validate_policy_candidate_rights_binding",
 ]
 
 def main(argv: list[str] | None = None) -> int:

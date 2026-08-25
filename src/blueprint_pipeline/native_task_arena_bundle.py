@@ -395,6 +395,7 @@ def build_native_task_arena_bundle(
     implementation_commit: str,
     execution_mode: str = "construction_canary",
     policy_candidate_id: str | None = None,
+    policy_rights_binding: Mapping[str, Any] | None = None,
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
     container_image: str = DEFAULT_IMAGE,
     runtime_source_packet_receipt: str | Path | None = None,
@@ -424,6 +425,25 @@ def build_native_task_arena_bundle(
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_policy_binding_invalid"]
         )
+    if execution_mode == "policy":
+        if not isinstance(policy_rights_binding, Mapping):
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_policy_rights_binding_missing"]
+            )
+        try:
+            sealed_policy_rights_binding = json.loads(
+                json.dumps(policy_rights_binding, allow_nan=False)
+            )
+        except (TypeError, ValueError) as exc:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_policy_rights_binding_invalid"]
+            ) from exc
+    elif policy_rights_binding is not None:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_policy_rights_binding_unexpected"]
+        )
+    else:
+        sealed_policy_rights_binding = None
     pure_output = PurePosixPath(str(expected_output_filename))
     if (
         pure_output.name != str(expected_output_filename)
@@ -643,6 +663,11 @@ def build_native_task_arena_bundle(
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "expected_output_filename": str(expected_output_filename),
         "policy_candidate_id": policy_candidate_id,
+        **(
+            {"policy_rights_binding": sealed_policy_rights_binding}
+            if execution_mode == "policy"
+            else {}
+        ),
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "packet_bytes_mutated": False,
