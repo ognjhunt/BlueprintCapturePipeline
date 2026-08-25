@@ -58,10 +58,17 @@ CONTROLS_CONTACT_REQUIRED_JOINT_MARGIN_RAD = 0.005
 # branch does not put the measured fingertip at the handle, the phase still
 # fails honestly.
 # Phases that execute the posture their preflight solved, instead of letting
-# the Cartesian controller re-derive one.  Contact is where the tolerance is
-# tight enough that re-deriving loses: elsewhere a 20 mm departure still lands
-# inside a 20 mm gate.
-HOLD_SOLVED_VECTOR_PHASE_IDS = frozenset({"contact_open", "contact_close"})
+# the Cartesian controller re-derive one.  C85b proved this is not contact-only:
+# approach's selected vector was inside its 20 mm / 0.08 rad gate, but the live
+# Cartesian controller discarded it, commanded a posture 0.145 rad away, and
+# reproducibly stopped 40.9 mm / 0.166 rad from the target.  The arm tracked
+# that wrong command within 0.00014 rad and FK matched measured TCP within
+# 1.3 micrometres.  Prealign remains Cartesian because its full-pose preflight
+# was unsolved; a missing solved vector therefore preserves that explicit
+# fallback rather than inventing a joint target.
+HOLD_SOLVED_VECTOR_PHASE_IDS = frozenset(
+    {"approach", "contact_open", "contact_close"}
+)
 CONTACT_ENTRY_BRANCH_REPLAY_PHASE_ID = "contact_open_branch_replay"
 # The measured anchor replaces the old open-loop replay and keeps its public
 # phase identity.  Phase 3 is now a gated replay of a posture PhysX measured,
@@ -967,7 +974,7 @@ def _with_held_solved_contact_vectors(
     control_plan: Mapping[str, Any],
     scripted_pose_joint_targets: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Give the contact phases the posture their own preflight solved.
+    """Give precision pose phases the posture their own preflight solved.
 
     C42 and C43 measured the Cartesian controller re-deriving a posture from
     scratch and walking 0.19 to 0.53 rad away from the solved vector, onto one
@@ -992,11 +999,30 @@ def _with_held_solved_contact_vectors(
         }
     held_by_phase: dict[str, list[float]] = {}
     for row in scripted_pose_joint_targets:
+        if not isinstance(row, Mapping):
+            raise RuntimeError("native_task_controls_solved_joint_vector_invalid")
         phase_id = str(row.get("phase_id") or "")
+        if phase_id not in HOLD_SOLVED_VECTOR_PHASE_IDS:
+            continue
         joints = row.get("joint_positions_rad")
-        if phase_id in HOLD_SOLVED_VECTOR_PHASE_IDS and isinstance(joints, list):
-            if len(joints) == 7:
-                held_by_phase[phase_id] = [float(value) for value in joints]
+        # An absent solution is the explicit Cartesian fallback already sealed
+        # by the preflight.  A present-but-malformed solution is different: it
+        # must never be silently discarded back onto that fallback path.
+        if joints is None:
+            continue
+        try:
+            values = [float(value) for value in joints]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "native_task_controls_solved_joint_vector_invalid"
+            ) from exc
+        if (
+            len(values) != 7
+            or not all(math.isfinite(value) for value in values)
+            or phase_id in held_by_phase
+        ):
+            raise RuntimeError("native_task_controls_solved_joint_vector_invalid")
+        held_by_phase[phase_id] = values
     applied: list[str] = []
     for raw in actions:
         if not isinstance(raw, Mapping) or raw.get("mode") != "ik_pose":
@@ -1008,10 +1034,22 @@ def _with_held_solved_contact_vectors(
         applied.append(str(raw.get("phase_id") or ""))
     if applied:
         plan["plan_digest"] = _canonical_digest(plan, field="plan_digest")
+    eligible_action_phases = {
+        str(raw.get("phase_id") or "")
+        for raw in actions
+        if isinstance(raw, Mapping)
+        and raw.get("mode") == "ik_pose"
+        and str(raw.get("phase_id") or "") in HOLD_SOLVED_VECTOR_PHASE_IDS
+    }
+    cartesian_fallback_phase_ids = sorted(
+        eligible_action_phases.difference(applied)
+    )
     return plan, {
         "schema_version": "native_task_controls_held_solved_vectors.v1",
         "status": "applied" if applied else "not_applied",
+        "reason": None if applied else "no_solved_joint_vector_available",
         "held_phase_ids": sorted(set(applied)),
+        "cartesian_fallback_phase_ids": cartesian_fallback_phase_ids,
         "source_control_plan_digest": control_plan.get("plan_digest"),
         "derived_control_plan_digest": plan.get("plan_digest"),
         "claim_boundary": (

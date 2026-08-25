@@ -2338,8 +2338,8 @@ def test_an_authored_orientation_that_holds_is_left_alone() -> None:
     assert all(r["target_quaternion_world_xyzw"] == authored for r in rows)
 
 
-def test_a_contact_phase_commands_the_posture_its_preflight_solved() -> None:
-    """C42 and C43 measured the controller discarding the solved vector.
+def test_precision_phases_command_the_postures_their_preflight_solved() -> None:
+    """C42/C43 and C85b measured the controller discarding solved vectors.
 
     The Cartesian controller re-derives a posture from scratch, and it walked
     0.19 to 0.53 rad away from the solved vector -- whose own forward
@@ -2358,11 +2358,22 @@ def test_a_contact_phase_commands_the_posture_its_preflight_solved() -> None:
         _with_held_solved_contact_vectors,
     )
 
-    solved = [0.11, 0.22, 0.33, -0.44, 0.55, 0.66, -0.77]
+    approach_solved = [-0.26, -0.78, 0.50, -3.07, -2.89, 2.44, 1.74]
+    contact_solved = [0.11, 0.22, 0.33, -0.44, 0.55, 0.66, -0.77]
     rows = {r["phase_id"]: r for r in plan["scripted_positive_actions"]}
     derived, receipt = _with_held_solved_contact_vectors(
         control_plan=plan,
         scripted_pose_joint_targets=[
+            {
+                "phase_id": "approach",
+                "target_position_world_m": rows["approach"][
+                    "target_position_world_m"
+                ],
+                "target_quaternion_world_xyzw": rows["approach"][
+                    "target_quaternion_world_xyzw"
+                ],
+                "joint_positions_rad": list(approach_solved),
+            },
             {
                 "phase_id": "contact_open",
                 "target_position_world_m": rows["contact_open"][
@@ -2371,34 +2382,99 @@ def test_a_contact_phase_commands_the_posture_its_preflight_solved() -> None:
                 "target_quaternion_world_xyzw": rows["contact_open"][
                     "target_quaternion_world_xyzw"
                 ],
-                "joint_positions_rad": list(solved),
+                "joint_positions_rad": list(contact_solved),
             }
         ],
     )
     assert receipt["status"] == "applied"
-    assert receipt["held_phase_ids"] == ["contact_open"]
+    assert receipt["held_phase_ids"] == ["approach", "contact_open"]
+    assert receipt["cartesian_fallback_phase_ids"] == ["contact_close"]
     # The plan is re-digested, so the validator accepts it.
     assert derived["plan_digest"] != receipt["source_control_plan_digest"]
 
     validated = validate_task_control_plan(derived, task_spec=task)
 
-    held = [
-        row
+    held = {
+        row["phase_id"]: row
         for row in validated["scripted_positive_actions"]
         if row.get("hold_solved_arm_joint_positions_rad")
-    ]
-    assert held, "the solved vector must survive validation"
-    assert held[0]["hold_solved_arm_joint_positions_rad"] == pytest.approx(solved)
+    }
+    assert held, "the solved vectors must survive validation"
+    assert held["approach"][
+        "hold_solved_arm_joint_positions_rad"
+    ] == pytest.approx(approach_solved)
+    assert held["contact_open"][
+        "hold_solved_arm_joint_positions_rad"
+    ] == pytest.approx(contact_solved)
     # The pose and its gate are untouched: a solved vector that does not put
     # the real fingertip on the target still fails honestly.
-    assert held[0]["mode"] == "ik_pose"
-    assert held[0]["arrival_tolerance_m"] > 0.0
+    assert held["approach"]["mode"] == "ik_pose"
+    assert held["approach"]["arrival_tolerance_m"] > 0.0
     # Phases that did not carry one are unaffected.
     assert any(
         row.get("hold_solved_arm_joint_positions_rad") is None
         for row in validated["scripted_positive_actions"]
         if row.get("mode") == "ik_pose"
     )
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        [0.1] * 6,
+        [0.1] * 6 + [float("nan")],
+        "not-a-joint-vector",
+    ),
+)
+def test_malformed_solved_approach_vector_refuses_instead_of_falling_back(
+    malformed,
+) -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_held_solved_contact_vectors,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+
+    with pytest.raises(
+        RuntimeError,
+        match="native_task_controls_solved_joint_vector_invalid",
+    ):
+        _with_held_solved_contact_vectors(
+            control_plan=plan,
+            scripted_pose_joint_targets=[
+                {
+                    "phase_id": "approach",
+                    "joint_positions_rad": malformed,
+                }
+            ],
+        )
+
+
+def test_missing_solved_approach_vector_preserves_explicit_cartesian_fallback(
+) -> None:
+    from blueprint_pipeline.native_task_arena_controls_worker import (
+        _with_held_solved_contact_vectors,
+    )
+
+    task = _branch_replay_task()
+    plan = _branch_replay_plan(task)
+    derived, receipt = _with_held_solved_contact_vectors(
+        control_plan=plan,
+        scripted_pose_joint_targets=[
+            {"phase_id": "approach", "joint_positions_rad": None}
+        ],
+    )
+
+    assert derived == plan
+    assert receipt["status"] == "not_applied"
+    assert receipt["reason"] == "no_solved_joint_vector_available"
+    assert receipt["held_phase_ids"] == []
+    assert receipt["cartesian_fallback_phase_ids"] == [
+        "approach",
+        "contact_close",
+        "contact_open",
+    ]
 
 
 def test_contact_close_compensates_measured_closed_pad_midpoint_travel() -> None:
