@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from blueprint_pipeline import live_pipeline_intake_service as service
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.live_pipeline_intake_service import create_app
 from tests.test_task_evaluation_launch_preparation_contract import request
 
@@ -70,6 +71,11 @@ def test_authenticated_webapp_can_queue_and_read_no_spend_preparation(
     assert receipt["provider_mutation_performed_inside_http_request"] is False
     assert receipt["catalog_mutation_performed_inside_http_request"] is False
     assert receipt["paid_execution_requested"] is False
+    assert "queue_path" not in receipt
+    assert not any(str(tmp_path) in str(value) for value in receipt.values())
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
 
     status_response = client.get(
         "/api/live-pipeline/task-evaluation-launch-preparations/"

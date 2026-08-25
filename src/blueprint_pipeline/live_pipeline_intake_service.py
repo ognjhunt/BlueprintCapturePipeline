@@ -63,6 +63,7 @@ from .live_pipeline_input_intake import (
     translate_decision_evidence_envelope_to_legacy_execution_request,
 )
 from .core.security_controls import json_shape_within_limits, strict_identifier
+from .decision_evidence_contracts import canonical_digest
 from .scene_placement.robot_profile import default_robot_id_for_embodiment
 from .task_candidate_control_plane import (
     TaskCandidateControlPlaneError,
@@ -2173,7 +2174,16 @@ def create_app() -> FastAPI:
                     "paid_execution_requested": False,
                 },
             )
-        return JSONResponse(status_code=202, content=receipt)
+        # The queue path is an internal worker capability, not part of the
+        # customer-facing intake contract.  Seal a public receipt after
+        # removing it so the WebApp never learns production filesystem layout.
+        public_receipt = {
+            key: value for key, value in receipt.items() if key != "queue_path"
+        }
+        public_receipt["receipt_digest"] = canonical_digest(
+            public_receipt, digest_field="receipt_digest"
+        )
+        return JSONResponse(status_code=202, content=public_receipt)
 
     @app.get(
         "/api/live-pipeline/task-evaluation-launch-preparations/{preparation_id}",
