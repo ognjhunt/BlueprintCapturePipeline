@@ -126,6 +126,27 @@ def test_groot_thin_client_installs_every_frozen_wire_dependency_in_isaac() -> N
     )
 
 
+def test_groot_wire_pins_go_to_a_staged_target_never_into_the_kit_environment() -> None:
+    """Isaac ships newer msgpack/pyzmq ahead of kit site-packages on sys.path.
+
+    Pins installed *into* the kit environment therefore never win: the live
+    20260825T134736Z GR00T run observed msgpack 1.2.1/pyzmq 27.1.0 over its
+    freshly installed pins and the wire self-check correctly refused. The pins
+    must land in the staged sibling directory the wire client prepends, with
+    --no-deps so numpy never leaks into Isaac's interpreter as a side effect
+    (the in-environment install dragged in numpy 2.5.2).
+    """
+
+    script = build_provisioning_script("groot_n17_droid")
+    line = next(
+        item for item in script.splitlines() if '"pyzmq==27.0.1"' in item
+    )
+    assert '--target "$RUNTIME_DIR/groot_wire_deps"' in line
+    assert "--no-deps" in line
+    remaining = line.replace('"msgpack-numpy==0.4.8"', "")
+    assert "numpy==" not in remaining
+
+
 def test_each_candidate_fetches_from_where_its_artifact_actually_lives() -> None:
     gcs = build_provisioning_script("pi05_droid")
     # Read from the frozen record rather than restated, so ratifying a
