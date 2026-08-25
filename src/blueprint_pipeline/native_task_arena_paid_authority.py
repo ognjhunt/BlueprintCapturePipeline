@@ -2045,6 +2045,7 @@ def materialize_native_task_arena_provider_zero(
 
 __all__ = [
     "AUTHORITY_SCHEMA_VERSION",
+    "PRE_SPEND_CLOSEOUT_KIND",
     "PROVIDER_ZERO_SCHEMA_VERSION",
     "consume_native_task_arena_authority_once",
     "materialize_native_task_arena_paid_attempt_authority",

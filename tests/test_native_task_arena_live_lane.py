@@ -866,6 +866,60 @@ def _preallocation_zero_fixture(
     }
 
 
+def _pre_spend_zero_fixture(
+    root: Path, *, authority_path: Path
+) -> tuple[Path, set[Path]]:
+    root.mkdir()
+    original = root / "original.json"
+    preflight = root / "preflight.json"
+    consumption = root / "consumption.json"
+    teardown = root / "teardown.json"
+    api_zero = root / "api-provider-zero.json"
+    for path, value in (
+        (original, {"kind": "allocator-result"}),
+        (preflight, {"kind": "pre-spend-preflight"}),
+        (consumption, {"kind": "authority-consumption"}),
+        (teardown, {"kind": "teardown"}),
+        (api_zero, {"kind": "api-provider-zero"}),
+    ):
+        write_json(path, value)
+    terminal = root / "terminal-result.json"
+    write_json(
+        terminal,
+        {
+            "closeout_kind": "pre_spend_preflight_blocked_before_allocation",
+            "original_allocator_result": _record(original),
+            "pre_spend_preflight": _record(preflight),
+            "authority_consumption_record": _record(consumption),
+        },
+    )
+    zero = root / "provider-zero.json"
+    write_json(
+        zero,
+        {
+            "schema_version": "native_task_arena_provider_zero.v1",
+            "status": "completed_preallocation_provider_zero",
+            "attempt_authority": _record(authority_path),
+            "teardown": _record(teardown),
+            "terminal_result": _record(terminal),
+            "pre_spend_preflight": _record(preflight),
+            "authority_consumption_record": _record(consumption),
+            "api_provider_zero": _record(api_zero),
+            "sibling_preallocation_closeouts": [],
+        },
+    )
+    return zero, {
+        authority_path.resolve(),
+        original.resolve(),
+        preflight.resolve(),
+        consumption.resolve(),
+        teardown.resolve(),
+        api_zero.resolve(),
+        terminal.resolve(),
+        zero.resolve(),
+    }
+
+
 def test_policy_profile_retains_transitive_preallocation_closeout_permissions(
     lane: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -895,6 +949,32 @@ def test_policy_profile_retains_transitive_preallocation_closeout_permissions(
 
     retained = {Path(row["path"]).resolve() for row in profile["immutable_inputs"]}
     assert primary_files | sibling_files <= retained
+
+
+def test_policy_profile_retains_pre_spend_closeout_permissions(
+    lane: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = lane["authorities"]["policy"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    closed_authority_path = Path(
+        authority["prior_terminal_attempt"]["authority"]["path"]
+    )
+    provider_zero, closeout_files = _pre_spend_zero_fixture(
+        tmp_path / "pre-spend-closeout", authority_path=closed_authority_path
+    )
+    authority["prior_terminal_attempt"]["provider_zero"] = _record(provider_zero)
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+    monkeypatch.setattr(
+        builder, "validate_native_task_arena_paid_attempt_authority", lambda *_a, **_k: None
+    )
+
+    profile = _build(lane, "policy")
+
+    retained = {Path(row["path"]).resolve() for row in profile["immutable_inputs"]}
+    assert closeout_files <= retained
 
 
 def test_policy_profile_refuses_tampered_preallocation_closeout_binding(
