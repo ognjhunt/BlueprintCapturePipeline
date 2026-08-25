@@ -332,6 +332,12 @@ def test_each_policy_admission_relation_reports_which_one_failed(
         "execution_spec_query_budget_vs_task_spec"
     }
 
+    broken = {key: dict(item) for key, item in inputs.items()}
+    broken["manifest"]["policy_rights_binding"] = {"binding_digest": "tampered"}
+    assert set(_admission_binding_mismatches(**broken)) == {
+        "candidate_rights_binding_vs_manifest"
+    }
+
 
 def test_policy_admission_refuses_two_absent_digests() -> None:
     """Absent digests are refusals, not agreements.
@@ -357,6 +363,8 @@ def test_policy_admission_refuses_two_absent_digests() -> None:
         "construction_gate_qualified",
         "controls_qualified",
         "control_pair_cell_admitted_for_policy_execution",
+        "qualified_execution_authority",
+        "candidate_rights_binding_vs_manifest",
         "execution_spec_prompt_vs_task_spec",
         "execution_spec_query_budget_vs_task_spec",
     }

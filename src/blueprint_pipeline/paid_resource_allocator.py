@@ -5160,6 +5160,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append(
                         f"native_task_arena_bundle_preparation_failed:{type(exc).__name__}"
                     )
+            if (
+                policy_requested
+                and prepared_bundle is not None
+                and native_policy_execution_spec is not None
+                and prepared_bundle.get("policy_rights_binding")
+                != native_policy_execution_spec.get("candidate_rights_binding")
+            ):
+                blockers.append("native_task_arena_policy_rights_binding_mismatch")
             if args.native_task_arena_attempt_authority:
                 try:
                     native_authority = _load(
