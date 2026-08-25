@@ -484,3 +484,201 @@ def test_the_client_install_follows_the_verified_checkout() -> None:
 
     script = build_provisioning_script("pi05_droid")
     assert script.index("rev-parse HEAD") < script.index("packages/openpi-client")
+
+
+# --- company-supplied policy container seam ----------------------------------
+
+_COMPANY_IMAGE = "registry.acme.example/widget-grasp@sha256:" + "b" * 64
+
+
+def _company_contract(**overrides) -> dict:
+    contract = {
+        "schema_version": "company_policy_container_contract.v1",
+        "policy_id": "acme_widget_grasp_v3",
+        "company_id": "acme_robotics",
+        "display_name": "ACME Widget Grasp v3",
+        "checkpoint_identity": {
+            "repository": "https://models.acme.example/widget-grasp",
+            "revision": "2026.08.1",
+        },
+        "claim_ceiling": "development_only",
+        "rights": {
+            "license": "ACME Evaluation License 2026-08",
+            "rights_provenance": "acme_msa_2026_07_appendix_b",
+            "provider_use_status": "permitted_on_rented_gpu_for_this_evaluation",
+            "redistribution_status": "no_redistribution_weights_stay_in_container",
+            "rights_ready": True,
+        },
+        "container": {
+            "image": _COMPANY_IMAGE,
+            "serve_command": ["python", "-m", "acme_policy.serve", "--port", "8600"],
+            "port": 8600,
+            "handshake_kind": "http_json_v1",
+            "credential_files": ["acme_license_token"],
+            "gpu_required": True,
+        },
+        "observation_schema": {
+            "cameras": [{"name": "wrist_image_left", "width": 320, "height": 180}],
+            "state_keys": ["joint_position"],
+        },
+        "action_schema": {
+            "action_space_id": "acme_joint_velocity_v1",
+            "chunk_rows": 15,
+            "channels": [
+                {
+                    "name": "gripper",
+                    "kind": "threshold_scalar",
+                    "command_interval": [0.0, 1.0],
+                    "raw_accepted_bounds": [-0.25, 1.25],
+                    "executed_semantics": (
+                        "clip_to_command_interval_then_threshold_at_0.5"
+                    ),
+                }
+            ],
+        },
+    }
+    contract["container"].update(overrides)
+    return contract
+
+
+def test_company_commands_pull_by_digest_and_run_on_the_host_loopback() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(company_policy_container_commands(_company_contract()))
+
+    # The digest-pinned image appears verbatim: the pull and the run can only
+    # ever resolve the exact bytes the contract sealed.
+    assert f'docker pull "{_COMPANY_IMAGE}"' in script
+    assert f'"{_COMPANY_IMAGE}"' in script.split("docker run", 1)[1]
+    # Host networking is the loopback doctrine: the container's 127.0.0.1 IS
+    # the worker's 127.0.0.1, and nothing is published off-host.
+    assert "--network host" in script
+    assert '--name "company-policy-acme_widget_grasp_v3"' in script
+    assert "--gpus all" in script
+    # The serve command is included, shell-quoted argv.
+    assert "python -m acme_policy.serve --port 8600" in script
+    # Pull progress is phase-marked at both ends for the stall watchdog.
+    assert "company_policy_acme_widget_grasp_v3_pull:started" in script
+    assert "company_policy_acme_widget_grasp_v3_pull:completed" in script
+
+
+def test_company_credential_mounts_are_read_only_from_the_canonical_dir() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        COMPANY_POLICY_SECRETS_HOST_DIR,
+        COMPANY_POLICY_SECRETS_MOUNT_DIR,
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(company_policy_container_commands(_company_contract()))
+    assert (
+        f'-v "{COMPANY_POLICY_SECRETS_HOST_DIR}/acme_license_token:'
+        f'{COMPANY_POLICY_SECRETS_MOUNT_DIR}/acme_license_token:ro"'
+    ) in script
+    assert COMPANY_POLICY_SECRETS_HOST_DIR == "/etc/blueprint/provider-secrets"
+
+    # No declared credentials, no mounts.
+    bare = "\n".join(
+        company_policy_container_commands(_company_contract(credential_files=[]))
+    )
+    assert "-v " not in bare
+
+
+def test_company_readiness_wait_is_bounded_and_fails_closed() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        COMPANY_POLICY_READINESS_ATTEMPTS,
+        COMPANY_POLICY_READINESS_SLEEP_SECONDS,
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(company_policy_container_commands(_company_contract()))
+    assert f"seq 1 {COMPANY_POLICY_READINESS_ATTEMPTS}" in script
+    assert f"sleep {COMPANY_POLICY_READINESS_SLEEP_SECONDS}" in script
+    assert "company_policy_container_readiness_timeout" in script
+    assert "exit 86" in script
+    # HTTP kinds probe with curl on the loopback port; deliberately no -f so
+    # a 404 from a live websocket server still counts as accepting.
+    assert 'curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:8600/"' in script
+    assert "curl -fsS" not in script
+
+
+def test_company_zmq_readiness_probes_the_socket_with_a_placeholder_note() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    script = "\n".join(
+        company_policy_container_commands(
+            _company_contract(handshake_kind="zmq_msgpack", port=5555)
+        )
+    )
+    assert "socket.create_connection(('127.0.0.1', 5555)" in script
+    assert "zmq ping" in script  # the placeholder comment for the real ping
+    assert "curl" not in script.split("docker run", 1)[1]
+    assert "exit 86" in script
+
+
+def test_company_gpu_flag_is_honored() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    with_gpu = "\n".join(company_policy_container_commands(_company_contract()))
+    assert "--gpus all" in with_gpu
+    without = "\n".join(
+        company_policy_container_commands(_company_contract(gpu_required=False))
+    )
+    assert "--gpus" not in without
+
+
+def test_company_commands_refuse_unvalidated_contracts() -> None:
+    """The seam re-validates: an unpinned image never reaches a docker line."""
+
+    from blueprint_pipeline.company_policy_container_contract import (
+        CompanyPolicyContractError,
+    )
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    with pytest.raises(CompanyPolicyContractError):
+        company_policy_container_commands(
+            _company_contract(image="registry.acme.example/widget-grasp:latest")
+        )
+
+
+def test_company_generated_commands_are_valid_bash(tmp_path) -> None:
+    import subprocess
+
+    from blueprint_pipeline.adp009d_policy_provisioning import (
+        company_policy_container_commands,
+    )
+
+    for handshake_kind in ("http_json_v1", "zmq_msgpack"):
+        script = tmp_path / f"company_{handshake_kind}.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            + "\n".join(
+                company_policy_container_commands(
+                    _company_contract(handshake_kind=handshake_kind)
+                )
+            )
+            + "\n"
+        )
+        completed = subprocess.run(
+            ["bash", "-n", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+
+def test_company_seam_is_not_wired_into_the_frozen_candidate_flow() -> None:
+    """The ADP candidate provisioning scripts stay docker-free and untouched."""
+
+    for candidate_id in EXPECTED_CANDIDATES:
+        script = build_provisioning_script(candidate_id)
+        assert "docker" not in script
+        assert "company-policy" not in script
