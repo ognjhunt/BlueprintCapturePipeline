@@ -32,6 +32,10 @@ from .task_evaluation_launch_preparation_contract import (
 from .task_evaluation_launch_preparation_queue import (
     write_launch_preparation_record_exclusive,
 )
+from .task_evaluation_configured_scene_revision import (
+    TaskEvaluationConfiguredSceneRevisionError,
+    validate_configured_scene_revision,
+)
 
 
 ADAPTER_KIND = "native_task_arena"
@@ -63,8 +67,102 @@ def _identity_bindings(request: Mapping[str, Any]) -> dict[str, Any]:
         "robot": dict(request["robot"]["identity"]),
         "controller": dict(request["controller"]["identity"]),
         "task": dict(request["task"]["identity"]),
+        "task_subject": dict(request["task"]["subject"]["identity"]),
+        "configured_scene_revision_digest": request["task"][
+            "configured_scene_revision_digest"
+        ],
         "runtime": dict(request["runtime"]["identity"]),
     }
+
+
+def _verify_task_subject_binding(
+    *,
+    request: Mapping[str, Any],
+    configured_revision: Mapping[str, Any],
+    packet_root: Path,
+    packet_receipt: Mapping[str, Any],
+) -> None:
+    """Bind the customer task/object declaration to the admitted packet bytes.
+
+    ``rigid_pick_place`` is the legacy native-packet umbrella for both a
+    pick-and-place and a planar push.  The website exposes the clearer external
+    ``rigid_relocation`` kind and an explicit strategy, then this boundary maps
+    and verifies the packet's exact subject and strategy before publication.
+    """
+
+    task = request["task"]
+    subject = task["subject"]
+    subject_identity = subject["identity"]
+    replacement = configured_revision["replacement"]
+    expected_packet_kind = {
+        "rigid_relocation": "rigid_pick_place",
+        "articulated_manipulation": "articulated_open_close",
+    }[task["kind"]]
+    task_object_bindings = [
+        row
+        for row in packet_receipt.get("source_bindings") or []
+        if isinstance(row, Mapping) and row.get("semantic_role") == "task_object"
+    ]
+    if len(task_object_bindings) != 1:
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_task_subject_binding_invalid"
+        )
+    binding = task_object_bindings[0]
+    asset = replacement["asset"]
+    if (
+        subject.get("mode") != "configured_scene_object"
+        or subject.get("physics_authority") != "configured_scene_revision"
+        or task.get("configured_scene_revision_digest")
+        != configured_revision.get("revision_digest")
+        or replacement.get("identity") != subject_identity
+        or binding.get("asset_id") != subject_identity["id"]
+        or binding.get("staged_sha256") != asset["digest"]
+        or binding.get("staged_size_bytes") != asset["size_bytes"]
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_task_subject_binding_mismatch"
+        )
+    try:
+        runtime_contract = json.loads(
+            (packet_root / "native_task_runtime_contract.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_runtime_contract_invalid"
+        ) from exc
+    task_spec = runtime_contract.get("task_spec")
+    if not isinstance(task_spec, Mapping):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_runtime_contract_invalid"
+        )
+    packet_strategy = str(
+        task_spec.get("manipulation_strategy")
+        or (
+            "articulated_open_close"
+            if runtime_contract.get("task_kind") == "articulated_open_close"
+            else "pick_and_place"
+        )
+    )
+    packet_objects = runtime_contract.get("objects")
+    matching_objects = [
+        row
+        for row in packet_objects or []
+        if isinstance(row, Mapping) and row.get("task_subject") is True
+    ]
+    if (
+        runtime_contract.get("task_kind") != expected_packet_kind
+        or runtime_contract.get("task_subject_asset_id") != subject_identity["id"]
+        or task_spec.get("subject_asset_id") != subject_identity["id"]
+        or packet_strategy != task["strategy"]
+        or len(matching_objects) != 1
+        or matching_objects[0].get("asset_id") != subject_identity["id"]
+        or matching_objects[0].get("sha256") != asset["digest"]
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_task_subject_binding_mismatch"
+        )
 
 
 def _validated_relative_path(value: Any) -> PurePosixPath:
@@ -263,7 +361,9 @@ def _extract_verified_bundle(
 def materialize_native_arena_adapter(
     *,
     request: Mapping[str, Any],
-    construction_bundle_path: str | Path,
+    compiled_episode_packet_path: str | Path,
+    compiled_episode_packet_reference: Mapping[str, Any],
+    configured_revision: Mapping[str, Any],
     runtime_source_bundle_path: str | Path,
     output_root: str | Path,
 ) -> dict[str, Any]:
@@ -275,6 +375,29 @@ def materialize_native_arena_adapter(
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_execution_adapter_unavailable"
         )
+    construction = validated["construction"]
+    if construction["mode"] != "reuse_configured_scene":
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_requires_production_compiled_episode"
+        )
+    try:
+        revision = validate_configured_scene_revision(configured_revision)
+    except TaskEvaluationConfiguredSceneRevisionError as exc:
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_configured_revision_invalid"
+        ) from exc
+    if (
+        revision["revision_digest"]
+        != validated["task"]["configured_scene_revision_digest"]
+        or revision["scene_identity"] != validated["scene"]["identity"]
+        or revision["task_template"]["identity"]
+        != validated["task"]["identity"]
+        or revision["replacement"]["identity"]
+        != validated["task"]["subject"]["identity"]
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_configured_revision_binding_mismatch"
+        )
     root = Path(output_root).expanduser()
     if root.exists() or root.is_symlink():
         raise TaskEvaluationNativeArenaAdapterError(
@@ -284,9 +407,9 @@ def materialize_native_arena_adapter(
     root.mkdir(mode=0o750)
     try:
         construction_manifest, packet_root = _extract_verified_bundle(
-            bundle_path=Path(construction_bundle_path).expanduser(),
+            bundle_path=Path(compiled_episode_packet_path).expanduser(),
             request=validated,
-            expected_reference=adapter["construction_packet_bundle"],
+            expected_reference=compiled_episode_packet_reference,
             role="construction_packet",
             destination=root / "construction-packet",
         )
@@ -308,6 +431,12 @@ def materialize_native_arena_adapter(
             raise TaskEvaluationNativeArenaAdapterError(
                 "task_evaluation_adapter_packet_identity_mismatch"
             )
+        _verify_task_subject_binding(
+            request=validated,
+            configured_revision=revision,
+            packet_root=packet_root,
+            packet_receipt=packet_receipt,
+        )
         runtime_receipt_path = (
             runtime_root / "native_task_runtime_source_packet.v1.json"
         )
@@ -340,6 +469,7 @@ def materialize_native_arena_adapter(
             "construction_manifest_digest": construction_manifest[
                 "manifest_digest"
             ],
+            "configured_scene_revision_digest": revision["revision_digest"],
             "runtime_source_manifest_digest": runtime_manifest["manifest_digest"],
             "packet_receipt_digest": packet_receipt["receipt_digest"],
             "runtime_source_receipt_digest": verified_runtime["receipt_digest"],
@@ -369,7 +499,7 @@ def build_task_evaluation_adapter_bundle(
     request: Mapping[str, Any],
     role: str,
 ) -> dict[str, Any]:
-    """Build deterministic customer-uploadable bytes for one adapter role."""
+    """Build deterministic production-owned bytes for one adapter role."""
 
     validated = validate_launch_preparation_request(request)
     if role not in _ROLES:

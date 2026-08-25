@@ -149,6 +149,16 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launch-preparations/blocked" \
   "${STATE_DIR}/task-evaluation-launch-preparations/identities" \
   "${STATE_DIR}/task-evaluation-launch-preparations/results" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/pending" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/processing" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/completed" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/blocked" \
+  "${STATE_DIR}/task-evaluation-scene-constructions/results" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/pending" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/processing" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/completed" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/blocked" \
+  "${STATE_DIR}/task-evaluation-episode-compilations/results" \
   "${STATE_DIR}/task-evaluation-launch-activations" \
   "${STATE_DIR}/task-evaluation-launch-activations/pending" \
   "${STATE_DIR}/task-evaluation-launch-activations/processing" \

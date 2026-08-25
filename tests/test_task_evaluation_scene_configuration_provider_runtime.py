@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_scene_configuration_adapters import (
+    ADMITTED_STAGE_ADAPTER_IDENTITIES,
+    SceneConfigurationAdapterRegistry,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_orchestrator import (
+    STAGE_RESULT_SCHEMA_VERSION,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
+    TaskEvaluationSceneConfigurationProviderRuntimeError,
+    execute_scene_configuration_stage_chain,
+)
+from blueprint_pipeline.task_evaluation_scene_construction_recipe import (
+    CAPABILITY_ORDER,
+)
+
+
+def _inputs(tmp_path: Path):
+    stages = []
+    configurations = {}
+    for index, (capability, identity) in enumerate(
+        zip(CAPABILITY_ORDER, ADMITTED_STAGE_ADAPTER_IDENTITIES, strict=True),
+        start=1,
+    ):
+        stage_id = f"stage-{index}"
+        stage = {
+            "stage_id": stage_id,
+            "capability": capability,
+            "adapter": {"id": identity.adapter_id, "version": identity.version},
+            "execution_class": identity.execution_class,
+            "depends_on": [] if index == 1 else [f"stage-{index - 1}"],
+        }
+        stages.append(stage)
+        path = tmp_path / f"configuration-{index}.json"
+        path.write_text(f'{{"stage":{index}}}\n', encoding="utf-8")
+        configurations[stage_id] = ({"stage": index}, path)
+    envelope = {
+        "run_id": "configure-scene-v1",
+        "recipe": {"stage_sequence": stages},
+    }
+    return envelope, configurations
+
+
+def _registry(observed: list[str], *, nested_mutation: bool = False):
+    handlers = {}
+    for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES:
+        def execute(
+            *,
+            stage,
+            configuration_path,
+            output_root,
+            dependency_results,
+            identity=identity,
+            **_kwargs,
+        ):
+            assert stage["capability"] == identity.capability
+            assert len(dependency_results) == len(observed)
+            observed.append(stage["stage_id"])
+            artifact = output_root / "artifact.json"
+            artifact.write_text("{}\n", encoding="utf-8")
+            result = {
+                "schema_version": STAGE_RESULT_SCHEMA_VERSION,
+                "status": "completed",
+                "stage_id": stage["stage_id"],
+                "capability": stage["capability"],
+                "execution_class": stage["execution_class"],
+                "configuration_digest": "sha256:"
+                + hashlib.sha256(configuration_path.read_bytes()).hexdigest(),
+                "canonical_allocator": None,
+                "provider_mutations_performed": 1 if nested_mutation else 0,
+                "paid_execution_requested": False,
+                "executed_inside_parent_configuration_run": True,
+                "retry_cap": 0,
+                "raw_secret_values_recorded": False,
+                "output_artifacts": [],
+                "stage_result_digest": "",
+            }
+            result["stage_result_digest"] = canonical_digest(
+                result, digest_field="stage_result_digest"
+            )
+            return result
+
+        handlers[identity] = execute
+    return SceneConfigurationAdapterRegistry(handlers)
+
+
+def test_runs_all_six_stages_inside_one_parent_allocation(tmp_path: Path) -> None:
+    envelope, configurations = _inputs(tmp_path)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    observed: list[str] = []
+
+    result = execute_scene_configuration_stage_chain(
+        envelope=envelope,
+        configurations=configurations,
+        output_root=outputs,
+        registry=_registry(observed),
+    )
+
+    assert observed == [f"stage-{index}" for index in range(1, 7)]
+    assert result["stage_count"] == 6
+    assert result["executed_inside_one_parent_provider_run"] is True
+    assert result["nested_provider_mutations_performed"] == 0
+    assert result["evaluation_episode_executed"] is False
+
+
+def test_rejects_any_stage_that_claims_a_nested_provider_mutation(
+    tmp_path: Path,
+) -> None:
+    envelope, configurations = _inputs(tmp_path)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationProviderRuntimeError,
+        match="scene_configuration_provider_stage_result_invalid:stage-1",
+    ):
+        execute_scene_configuration_stage_chain(
+            envelope=envelope,
+            configurations=configurations,
+            output_root=outputs,
+            registry=_registry([], nested_mutation=True),
+        )

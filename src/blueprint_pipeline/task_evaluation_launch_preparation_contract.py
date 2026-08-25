@@ -28,6 +28,7 @@ SCHEMA_PATH = (
 )
 EXECUTION_ADAPTER_PROVIDER_CAPABILITIES = {
     ("native_task_arena", "v1"): frozenset({"vast"}),
+    ("scene_configuration_pipeline", "v1"): frozenset({"vast"}),
 }
 
 
@@ -71,8 +72,8 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             f"launch_preparation_request_invalid:{path}"
         )
 
-    scene_rights = request["scene"]["rights"]
-    if (
+    scene_rights = request["scene"].get("rights")
+    if isinstance(scene_rights, Mapping) and (
         scene_rights["source_bytes_redistributable"] is False
         and scene_rights["provider_disclosure_scope"] == "source_and_derived"
     ):
@@ -83,13 +84,50 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_gpu_requirement_missing"
         )
+    task = request["task"]
+    strategy_by_kind = {
+        "rigid_relocation": {"planar_push", "pick_and_place"},
+        "articulated_manipulation": {"articulated_open_close"},
+    }
+    if task["strategy"] not in strategy_by_kind[task["kind"]]:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_task_strategy_kind_mismatch"
+        )
+    construction = request["construction"]
+    subject = task["subject"]
+    expected_subject_mode = {
+        "reuse_configured_scene": "configured_scene_object",
+        "production_recipe": "construct_from_scene_object",
+    }[construction["mode"]]
+    if subject["mode"] != expected_subject_mode:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_construction_subject_mode_mismatch"
+        )
+    if (
+        construction["mode"] == "production_recipe"
+        and (
+            not isinstance(scene_rights, Mapping)
+            or scene_rights["provider_disclosure_scope"] != "derived_only"
+        )
+    ):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_production_recipe_disclosure_scope_invalid"
+        )
     adapter = request["execution_adapter"]
+    expected_adapter = {
+        "scene_configuration": ("scene_configuration_pipeline", "v1"),
+        "episode_evaluation": ("native_task_arena", "v1"),
+    }[request["run_mode"]]
     capability = EXECUTION_ADAPTER_PROVIDER_CAPABILITIES.get(
         (adapter["kind"], adapter["version"])
     )
     if capability is None:
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_execution_adapter_unavailable"
+        )
+    if (adapter["kind"], adapter["version"]) != expected_adapter:
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_run_mode_adapter_mismatch"
         )
     selected_provider = request["spend"]["selected_provider"]
     if selected_provider not in request["spend"]["provider_allowlist"]:

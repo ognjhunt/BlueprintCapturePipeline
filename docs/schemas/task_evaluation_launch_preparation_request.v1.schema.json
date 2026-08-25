@@ -6,13 +6,13 @@
   "type": "object",
   "required": [
     "schema_version",
+    "run_mode",
     "expected_production_commit",
     "preparation_id",
     "team_namespace",
     "run_id",
     "scene",
-    "robot",
-    "controller",
+    "construction",
     "task",
     "sensors",
     "runtime",
@@ -23,89 +23,129 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "task_evaluation_launch_preparation_request.v1"},
+    "run_mode": {"enum": ["scene_configuration", "episode_evaluation"]},
     "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "preparation_id": {"$ref": "#/$defs/identifier"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
     "run_id": {"$ref": "#/$defs/identifier"},
     "scene": {
-      "type": "object",
-      "required": ["identity", "source_manifest", "appearance", "geometry", "registration", "rights"],
-      "additionalProperties": false,
-      "properties": {
-        "identity": {"$ref": "#/$defs/versionedIdentity"},
-        "source_manifest": {"$ref": "#/$defs/reference"},
-        "appearance": {
+      "oneOf": [
+        {
           "type": "object",
-          "required": ["kind", "representation", "renderer_qualification"],
+          "required": ["mode", "identity", "source_manifest", "appearance", "geometry", "registration", "rights"],
           "additionalProperties": false,
           "properties": {
-            "kind": {"enum": ["interiorgs", "gaussian_splat", "textured_usd", "other_observed"]},
-            "representation": {"$ref": "#/$defs/reference"},
-            "renderer_qualification": {"$ref": "#/$defs/reference"}
-          }
-        },
-        "geometry": {
-          "type": "object",
-          "required": ["kind", "collision", "validation"],
-          "additionalProperties": false,
-          "properties": {
-            "kind": {"enum": ["sage_derived", "observed_mesh", "qualified_cad", "other_derived"]},
-            "collision": {"$ref": "#/$defs/reference"},
-            "validation": {"$ref": "#/$defs/reference"}
-          }
-        },
-        "registration": {
-          "type": "object",
-          "required": ["metric_registration", "support_plane", "robot_base", "camera_calibration"],
-          "additionalProperties": false,
-          "properties": {
-            "metric_registration": {"$ref": "#/$defs/reference"},
-            "support_plane": {"$ref": "#/$defs/reference"},
-            "robot_base": {"$ref": "#/$defs/reference"},
-            "camera_calibration": {"$ref": "#/$defs/reference"}
-          }
-        },
-        "rights": {
-          "type": "object",
-          "required": ["admission", "evidence", "source_bytes_redistributable", "provider_disclosure_scope"],
-          "additionalProperties": false,
-          "properties": {
-            "admission": {"$ref": "#/$defs/reference"},
-            "evidence": {
-              "type": "array",
-              "minItems": 2,
-              "maxItems": 16,
-              "items": {
-                "type": "object",
-                "required": ["role", "artifact"],
-                "additionalProperties": false,
-                "properties": {
-                  "role": {"enum": ["publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"]},
-                  "artifact": {"$ref": "#/$defs/reference"}
-                }
-              },
-              "allOf": [
-                {"contains": {"type": "object", "properties": {"role": {"const": "publisher_terms"}}, "required": ["role"]}},
-                {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
-              ]
+            "mode": {"const": "configure_source_scene"},
+            "identity": {"$ref": "#/$defs/versionedIdentity"},
+            "source_manifest": {"$ref": "#/$defs/reference"},
+            "appearance": {
+              "type": "object",
+              "required": ["kind", "representation", "renderer_qualification"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {"enum": ["interiorgs", "gaussian_splat", "textured_usd", "other_observed"]},
+                "representation": {"$ref": "#/$defs/reference"},
+                "renderer_qualification": {"$ref": "#/$defs/reference"}
+              }
             },
-            "source_bytes_redistributable": {"type": "boolean"},
-            "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]}
+            "geometry": {
+              "type": "object",
+              "required": ["kind", "collision", "validation"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {"enum": ["sage_derived", "observed_mesh", "qualified_cad", "other_derived"]},
+                "collision": {"$ref": "#/$defs/reference"},
+                "validation": {"$ref": "#/$defs/reference"}
+              }
+            },
+            "registration": {
+              "type": "object",
+              "required": ["metric_registration", "support_plane", "robot_mount_interface", "workspace_clearance", "camera_calibration"],
+              "additionalProperties": false,
+              "properties": {
+                "metric_registration": {"$ref": "#/$defs/reference"},
+                "support_plane": {"$ref": "#/$defs/reference"},
+                "robot_mount_interface": {"$ref": "#/$defs/reference"},
+                "workspace_clearance": {"$ref": "#/$defs/reference"},
+                "camera_calibration": {"$ref": "#/$defs/reference"}
+              }
+            },
+            "rights": {
+              "type": "object",
+              "required": ["admission", "evidence", "source_bytes_redistributable", "provider_disclosure_scope"],
+              "additionalProperties": false,
+              "properties": {
+                "admission": {"$ref": "#/$defs/reference"},
+                "evidence": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 16,
+                  "items": {
+                    "type": "object",
+                    "required": ["role", "artifact"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "role": {"enum": ["publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"]},
+                      "artifact": {"$ref": "#/$defs/reference"}
+                    }
+                  },
+                  "allOf": [
+                    {"contains": {"type": "object", "properties": {"role": {"const": "publisher_terms"}}, "required": ["role"]}},
+                    {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
+                  ]
+                },
+                "source_bytes_redistributable": {"type": "boolean"},
+                "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]}
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode", "identity", "configured_revision"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"const": "reuse_configured_revision"},
+            "identity": {"$ref": "#/$defs/versionedIdentity"},
+            "configured_revision": {"$ref": "#/$defs/reference"}
           }
         }
-      }
+      ]
     },
     "robot": {
       "type": "object",
-      "required": ["identity", "configuration", "kinematics", "joint_bounds", "controller_configuration"],
+      "required": ["identity", "configuration", "kinematics", "joint_bounds", "base_registration", "controller_configuration"],
       "additionalProperties": false,
       "properties": {
         "identity": {"$ref": "#/$defs/versionedIdentity"},
         "configuration": {"$ref": "#/$defs/reference"},
         "kinematics": {"$ref": "#/$defs/reference"},
         "joint_bounds": {"$ref": "#/$defs/reference"},
+        "base_registration": {"$ref": "#/$defs/reference"},
         "controller_configuration": {"$ref": "#/$defs/reference"}
       }
+    },
+    "construction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"const": "reuse_configured_scene"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["mode", "recipe", "output_identity"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"const": "production_recipe"},
+            "recipe": {"$ref": "#/$defs/reference"},
+            "output_identity": {"$ref": "#/$defs/versionedIdentity"}
+          }
+        }
+      ]
     },
     "controller": {
       "type": "object",
@@ -126,14 +166,77 @@
     },
     "task": {
       "type": "object",
-      "required": ["identity", "definition", "success_criteria", "execution"],
+      "required": ["identity", "binding_mode", "kind", "strategy", "subject"],
       "additionalProperties": false,
       "properties": {
         "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "binding_mode": {"enum": ["define_configuration_template", "reuse_configured_template"]},
+        "kind": {"enum": ["rigid_relocation", "articulated_manipulation"]},
+        "strategy": {"enum": ["planar_push", "pick_and_place", "articulated_open_close"]},
+        "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+        "subject": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["mode", "identity", "representation_kind", "asset", "physics_validation", "rights_admission", "provider_disclosure_allowed"],
+              "additionalProperties": false,
+              "properties": {
+                "mode": {"const": "supplied_qualified_asset"},
+                "identity": {"$ref": "#/$defs/versionedIdentity"},
+                "representation_kind": {"enum": ["simready_usd", "qualified_rigid_usd", "qualified_articulated_usd", "other_qualified_physics_asset"]},
+                "asset": {"$ref": "#/$defs/reference"},
+                "physics_validation": {"$ref": "#/$defs/reference"},
+                "rights_admission": {"$ref": "#/$defs/reference"},
+                "provider_disclosure_allowed": {"const": true}
+              }
+            },
+            {
+              "type": "object",
+              "required": ["mode", "identity", "representation_kind", "source_object", "rights_admission", "provider_disclosure_allowed"],
+              "additionalProperties": false,
+              "properties": {
+                "mode": {"const": "construct_from_scene_object"},
+                "identity": {"$ref": "#/$defs/versionedIdentity"},
+                "representation_kind": {"enum": ["simready_usd", "qualified_rigid_usd", "qualified_articulated_usd", "other_qualified_physics_asset"]},
+                "source_object": {"$ref": "#/$defs/reference"},
+                "rights_admission": {"$ref": "#/$defs/reference"},
+                "provider_disclosure_allowed": {"const": true}
+              }
+            },
+            {
+              "type": "object",
+              "required": ["mode", "identity", "physics_authority"],
+              "additionalProperties": false,
+              "properties": {
+                "mode": {"const": "configured_scene_object"},
+                "identity": {"$ref": "#/$defs/versionedIdentity"},
+                "physics_authority": {"const": "configured_scene_revision"}
+              }
+            }
+          ]
+        },
         "definition": {"$ref": "#/$defs/reference"},
         "success_criteria": {"$ref": "#/$defs/reference"},
         "execution": {"$ref": "#/$defs/reference"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"binding_mode": {"const": "define_configuration_template"}}, "required": ["binding_mode"]},
+          "then": {"required": ["definition", "success_criteria", "execution"]}
+        },
+        {
+          "if": {"properties": {"binding_mode": {"const": "reuse_configured_template"}}, "required": ["binding_mode"]},
+          "then": {"required": ["configured_scene_revision_digest"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "rigid_relocation"}}, "required": ["kind"]},
+          "then": {"properties": {"strategy": {"enum": ["planar_push", "pick_and_place"]}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "articulated_manipulation"}}, "required": ["kind"]},
+          "then": {"properties": {"strategy": {"const": "articulated_open_close"}}}
+        }
+      ]
     },
     "sensors": {
       "type": "object",
@@ -226,12 +329,11 @@
     },
     "execution_adapter": {
       "type": "object",
-      "required": ["kind", "version", "construction_packet_bundle", "runtime_source_bundle"],
+      "required": ["kind", "version", "runtime_source_bundle"],
       "additionalProperties": false,
       "properties": {
         "kind": {"$ref": "#/$defs/identifier"},
         "version": {"$ref": "#/$defs/identifier"},
-        "construction_packet_bundle": {"$ref": "#/$defs/reference"},
         "runtime_source_bundle": {"$ref": "#/$defs/reference"}
       }
     },
@@ -264,6 +366,64 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"run_mode": {"const": "scene_configuration"}},
+        "required": ["run_mode"]
+      },
+      "then": {
+        "not": {"anyOf": [{"required": ["robot"]}, {"required": ["controller"]}]},
+        "properties": {
+          "scene": {
+            "properties": {"mode": {"const": "configure_source_scene"}},
+            "required": ["mode"]
+          },
+          "construction": {
+            "properties": {"mode": {"const": "production_recipe"}},
+            "required": ["mode"]
+          },
+          "task": {
+            "properties": {
+              "binding_mode": {"const": "define_configuration_template"},
+              "subject": {
+                "properties": {"mode": {"const": "construct_from_scene_object"}},
+                "required": ["mode"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"run_mode": {"const": "episode_evaluation"}},
+        "required": ["run_mode"]
+      },
+      "then": {
+        "required": ["robot", "controller"],
+        "properties": {
+          "scene": {
+            "properties": {"mode": {"const": "reuse_configured_revision"}},
+            "required": ["mode"]
+          },
+          "construction": {
+            "properties": {"mode": {"const": "reuse_configured_scene"}},
+            "required": ["mode"]
+          },
+          "task": {
+            "properties": {
+              "binding_mode": {"const": "reuse_configured_template"},
+              "subject": {
+                "properties": {"mode": {"const": "configured_scene_object"}},
+                "required": ["mode"]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},

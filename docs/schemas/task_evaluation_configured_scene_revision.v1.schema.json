@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_configured_scene_revision.v1.schema.json",
+  "title": "Task Evaluation configured scene revision v1",
+  "description": "Immutable terminal output of a production scene-configuration Task Evaluation Run. Later episode-evaluation runs bind this revision instead of repeating scene construction.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "configuration_run_id",
+    "team_namespace",
+    "scene_identity",
+    "source_commit",
+    "source",
+    "appearance",
+    "geometry",
+    "replacement",
+    "registration",
+    "configured_scene_bundle",
+    "task_template",
+    "robot_team_interface",
+    "publication",
+    "evaluation_admission",
+    "revision_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_configured_scene_revision.v1"},
+    "status": {"const": "configured"},
+    "configuration_run_id": {"$ref": "#/$defs/identifier"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "scene_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source": {
+      "type": "object",
+      "required": ["manifest", "rights_admission", "raw_source_sent_to_external_provider"],
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {"$ref": "#/$defs/reference"},
+        "rights_admission": {"$ref": "#/$defs/reference"},
+        "raw_source_sent_to_external_provider": {"const": false}
+      }
+    },
+    "appearance": {
+      "type": "object",
+      "required": ["observed_source", "object_removal_result", "configured_representation", "appearance_truth_source"],
+      "additionalProperties": false,
+      "properties": {
+        "observed_source": {"$ref": "#/$defs/reference"},
+        "object_removal_result": {"$ref": "#/$defs/reference"},
+        "configured_representation": {"$ref": "#/$defs/reference"},
+        "appearance_truth_source": {"const": "interiorgs_observed_plus_labeled_generated_edit"}
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "required": ["candidate_collision_source", "object_excision_result", "configured_collision", "validation", "observed_source_truth_claimed"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_collision_source": {"$ref": "#/$defs/reference"},
+        "object_excision_result": {"$ref": "#/$defs/reference"},
+        "configured_collision": {"$ref": "#/$defs/reference"},
+        "validation": {"$ref": "#/$defs/reference"},
+        "observed_source_truth_claimed": {"const": false}
+      }
+    },
+    "replacement": {
+      "type": "object",
+      "required": ["identity", "source_object", "asset", "static_qualification", "native_import_qualification", "physics_authority"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "source_object": {"$ref": "#/$defs/reference"},
+        "asset": {"$ref": "#/$defs/reference"},
+        "static_qualification": {"$ref": "#/$defs/reference"},
+        "native_import_qualification": {"$ref": "#/$defs/reference"},
+        "physics_authority": {"const": "qualified_replacement_asset"}
+      }
+    },
+    "registration": {
+      "type": "object",
+      "required": ["metric", "support_plane", "robot_mount_interface", "camera_calibration", "workspace_clearance"],
+      "additionalProperties": false,
+      "properties": {
+        "metric": {"$ref": "#/$defs/reference"},
+        "support_plane": {"$ref": "#/$defs/reference"},
+        "robot_mount_interface": {"$ref": "#/$defs/reference"},
+        "camera_calibration": {"$ref": "#/$defs/reference"},
+        "workspace_clearance": {"$ref": "#/$defs/reference"}
+      }
+    },
+    "configured_scene_bundle": {"$ref": "#/$defs/reference"},
+    "task_template": {
+      "type": "object",
+      "required": ["identity", "definition", "success_criteria", "execution"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "definition": {"$ref": "#/$defs/reference"},
+        "success_criteria": {"$ref": "#/$defs/reference"},
+        "execution": {"$ref": "#/$defs/reference"}
+      }
+    },
+    "robot_team_interface": {
+      "type": "object",
+      "description": "Stable consumer boundary for every episode-evaluation run that reuses this configured scene.",
+      "required": [
+        "scene_construction_repeated_per_evaluation",
+        "configuration_run_executed_episode",
+        "configuration_run_purpose",
+        "episode_run_purpose",
+        "episode_packet_compiled_by_production",
+        "team_supplied_components",
+        "configured_scene_components",
+        "production_route"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scene_construction_repeated_per_evaluation": {"const": false},
+        "configuration_run_executed_episode": {"const": false},
+        "configuration_run_purpose": {
+          "const": "build_and_publish_reusable_robot_neutral_scene"
+        },
+        "episode_run_purpose": {
+          "const": "evaluate_one_robot_or_policy_against_configured_scene"
+        },
+        "episode_packet_compiled_by_production": {"const": true},
+        "team_supplied_components": {
+          "const": [
+            "robot_configuration",
+            "kinematics_and_joint_bounds",
+            "robot_to_scene_registration",
+            "controller_or_policy",
+            "camera_and_sensor_configuration",
+            "task_binding",
+            "episode_runtime"
+          ]
+        },
+        "configured_scene_components": {
+          "const": [
+            "appearance",
+            "collision_geometry",
+            "replacement_assets",
+            "metric_registration",
+            "support_plane",
+            "robot_mount_interface",
+            "workspace_clearance",
+            "scene_camera_calibration",
+            "rights_and_provenance",
+            "task_templates",
+            "configured_scene_bundle"
+          ]
+        },
+        "production_route": {
+          "const": "authenticated_webapp_to_task_evaluation_dispatcher"
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "required": ["bundle_manifest", "receipt", "full_byte_service_account_readback_passed"],
+      "additionalProperties": false,
+      "properties": {
+        "bundle_manifest": {"$ref": "#/$defs/reference"},
+        "receipt": {"$ref": "#/$defs/reference"},
+        "full_byte_service_account_readback_passed": {"const": true}
+      }
+    },
+    "evaluation_admission": {
+      "type": "object",
+      "required": ["zero_action_required", "scripted_positive_required", "learned_policy_admitted"],
+      "additionalProperties": false,
+      "properties": {
+        "zero_action_required": {"const": true},
+        "scripted_positive_required": {"const": true},
+        "learned_policy_admitted": {"const": false}
+      }
+    },
+    "revision_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}

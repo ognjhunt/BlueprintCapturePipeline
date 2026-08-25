@@ -27,6 +27,10 @@ def test_no_spend_preparation_worker_has_hardened_service_and_path_unit() -> Non
     assert "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env" in service
     assert "task-evaluation-launch-preparations/pending" in path
     assert "blueprint-task-evaluation-launch-preparation.service" in path
+    assert "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=" in service
+    assert "task-evaluation-scene-constructions" in service
+    assert "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=" in service
+    assert "task-evaluation-episode-compilations" in service
 
 
 def test_canonical_environment_documents_bounded_input_prefixes() -> None:
@@ -37,6 +41,16 @@ def test_canonical_environment_documents_bounded_input_prefixes() -> None:
     ) in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=" in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=" in environment
+
+
+def test_installer_creates_both_automatic_progression_queues() -> None:
+    installer = text("scripts/install_live_pipeline_control_plane.sh")
+    for queue in (
+        "task-evaluation-scene-constructions",
+        "task-evaluation-episode-compilations",
+    ):
+        for state in ("pending", "processing", "completed", "blocked", "results"):
+            assert f'"${{STATE_DIR}}/{queue}/{state}"' in installer
 
 
 def test_canonical_installer_installs_and_enables_preparation_pair() -> None:

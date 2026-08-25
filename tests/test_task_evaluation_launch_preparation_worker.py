@@ -23,14 +23,23 @@ from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
     process_launch_preparation_queue,
     validate_allowed_uri_prefixes,
 )
-from tests.test_task_evaluation_launch_preparation_contract import request
+from blueprint_pipeline.task_evaluation_scene_construction_recipe import (
+    CAPABILITY_ORDER,
+    SCHEMA_VERSION as CONSTRUCTION_RECIPE_SCHEMA_VERSION,
+)
+from tests.test_task_evaluation_launch_preparation_contract import (
+    request,
+    test_configuration_request,
+)
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
 
 
-def request_with_fetchable_bytes() -> tuple[dict[str, object], dict[str, bytes]]:
-    value = request()
+def request_with_fetchable_bytes(
+    value: dict[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, bytes]]:
+    value = value or request()
     payloads: dict[str, bytes] = {}
 
     def replace(node) -> None:
@@ -48,6 +57,194 @@ def request_with_fetchable_bytes() -> tuple[dict[str, object], dict[str, bytes]]
                 replace(child)
 
     replace(value)
+    if value.get("run_mode") == "episode_evaluation":
+        def configured_ref(index: int) -> dict[str, object]:
+            return {
+                "uri": (
+                    "s3://blueprint-production-inputs/configured-scene/"
+                    f"object-{index}.json"
+                ),
+                "digest": f"sha256:{index:064x}",
+                "size_bytes": 1000 + index,
+            }
+
+        configured_scene_bundle_bytes = b"configured-scene-bundle-bytes"
+        configured_scene_bundle = {
+            "uri": (
+                "s3://blueprint-production-inputs/configured-scene-bundle.zip"
+            ),
+            "digest": "sha256:"
+            + hashlib.sha256(configured_scene_bundle_bytes).hexdigest(),
+            "size_bytes": len(configured_scene_bundle_bytes),
+        }
+        payloads[configured_scene_bundle["uri"]] = configured_scene_bundle_bytes
+        configured_revision: dict[str, object] = {
+            "schema_version": "task_evaluation_configured_scene_revision.v1",
+            "status": "configured",
+            "configuration_run_id": "scene-configuration-v1",
+            "team_namespace": value["team_namespace"],
+            "scene_identity": value["scene"]["identity"],
+            "source_commit": value["expected_production_commit"],
+            "source": {
+                "manifest": configured_ref(1),
+                "rights_admission": configured_ref(2),
+                "raw_source_sent_to_external_provider": False,
+            },
+            "appearance": {
+                "observed_source": configured_ref(3),
+                "object_removal_result": configured_ref(4),
+                "configured_representation": configured_ref(5),
+                "appearance_truth_source": "interiorgs_observed_plus_labeled_generated_edit",
+            },
+            "geometry": {
+                "candidate_collision_source": configured_ref(6),
+                "object_excision_result": configured_ref(7),
+                "configured_collision": configured_ref(8),
+                "validation": configured_ref(9),
+                "observed_source_truth_claimed": False,
+            },
+            "replacement": {
+                "identity": value["task"]["subject"]["identity"],
+                "source_object": configured_ref(10),
+                "asset": configured_ref(11),
+                "static_qualification": configured_ref(12),
+                "native_import_qualification": configured_ref(13),
+                "physics_authority": "qualified_replacement_asset",
+            },
+            "registration": {
+                "metric": configured_ref(14),
+                "support_plane": configured_ref(15),
+                "robot_mount_interface": configured_ref(16),
+                "camera_calibration": configured_ref(17),
+                "workspace_clearance": configured_ref(18),
+            },
+            "configured_scene_bundle": configured_scene_bundle,
+            "task_template": {
+                "identity": value["task"]["identity"],
+                "definition": configured_ref(19),
+                "success_criteria": configured_ref(20),
+                "execution": configured_ref(21),
+            },
+            "robot_team_interface": {
+                "scene_construction_repeated_per_evaluation": False,
+                "configuration_run_executed_episode": False,
+                "configuration_run_purpose": (
+                    "build_and_publish_reusable_robot_neutral_scene"
+                ),
+                "episode_run_purpose": (
+                    "evaluate_one_robot_or_policy_against_configured_scene"
+                ),
+                "episode_packet_compiled_by_production": True,
+                "team_supplied_components": [
+                    "robot_configuration",
+                    "kinematics_and_joint_bounds",
+                    "robot_to_scene_registration",
+                    "controller_or_policy",
+                    "camera_and_sensor_configuration",
+                    "task_binding",
+                    "episode_runtime",
+                ],
+                "configured_scene_components": [
+                    "appearance",
+                    "collision_geometry",
+                    "replacement_assets",
+                    "metric_registration",
+                    "support_plane",
+                    "robot_mount_interface",
+                    "workspace_clearance",
+                    "scene_camera_calibration",
+                    "rights_and_provenance",
+                    "task_templates",
+                    "configured_scene_bundle",
+                ],
+                "production_route": (
+                    "authenticated_webapp_to_task_evaluation_dispatcher"
+                ),
+            },
+            "publication": {
+                "bundle_manifest": configured_ref(22),
+                "receipt": configured_ref(23),
+                "full_byte_service_account_readback_passed": True,
+            },
+            "evaluation_admission": {
+                "zero_action_required": True,
+                "scripted_positive_required": True,
+                "learned_policy_admitted": False,
+            },
+            "revision_digest": "",
+        }
+        configured_revision["revision_digest"] = canonical_digest(
+            configured_revision, digest_field="revision_digest"
+        )
+        value["task"]["configured_scene_revision_digest"] = configured_revision[
+            "revision_digest"
+        ]
+        revision_bytes = json.dumps(configured_revision, sort_keys=True).encode()
+        revision_reference = value["scene"]["configured_revision"]
+        revision_reference["digest"] = (
+            "sha256:" + hashlib.sha256(revision_bytes).hexdigest()
+        )
+        revision_reference["size_bytes"] = len(revision_bytes)
+        payloads[revision_reference["uri"]] = revision_bytes
+    return value, payloads
+
+
+def production_request_with_fetchable_bytes() -> tuple[dict[str, object], dict[str, bytes]]:
+    value = test_configuration_request()
+    value["construction"]["output_identity"] = {
+        "id": "constructed-packet",
+        "version": "v1",
+    }
+    value, payloads = request_with_fetchable_bytes(value)
+    stages = []
+    for index, capability in enumerate(CAPABILITY_ORDER):
+        configuration_uri = (
+            f"s3://blueprint-production-inputs/stage-{index + 1}.json"
+        )
+        configuration_bytes = json.dumps(
+            {"stage": index + 1, "capability": capability}, sort_keys=True
+        ).encode()
+        payloads[configuration_uri] = configuration_bytes
+        stages.append(
+            {
+                "stage_id": f"stage-{index + 1}",
+                "capability": capability,
+                "adapter": {"id": f"adapter-{index + 1}", "version": "v1"},
+                "execution_class": "gpu_canary" if index in {0, 2, 4} else "no_spend",
+                "configuration": {
+                    "uri": configuration_uri,
+                    "digest": "sha256:"
+                    + hashlib.sha256(configuration_bytes).hexdigest(),
+                    "size_bytes": len(configuration_bytes),
+                },
+                "depends_on": [] if index == 0 else [f"stage-{index}"],
+            }
+        )
+    recipe: dict[str, object] = {
+        "schema_version": CONSTRUCTION_RECIPE_SCHEMA_VERSION,
+        "recipe_id": "source-object-replacement-v1",
+        "team_namespace": value["team_namespace"],
+        "scene_identity": value["scene"]["identity"],
+        "task_identity": value["task"]["identity"],
+        "subject_identity": value["task"]["subject"]["identity"],
+        "source_manifest_digest": value["scene"]["source_manifest"]["digest"],
+        "rights_admission_digest": value["scene"]["rights"]["admission"]["digest"],
+        "stage_sequence": stages,
+        "output_identity": value["construction"]["output_identity"],
+        "provider_disclosure": {
+            "raw_source_bytes_to_external_provider": False,
+            "derived_runtime_processing_allowed": True,
+            "provider_training_allowed": False,
+            "public_redistribution_allowed": False,
+        },
+        "recipe_digest": "",
+    }
+    recipe["recipe_digest"] = canonical_digest(recipe, digest_field="recipe_digest")
+    recipe_bytes = json.dumps(recipe, sort_keys=True).encode()
+    recipe_ref = value["construction"]["recipe"]
+    recipe_ref["digest"] = "sha256:" + hashlib.sha256(recipe_bytes).hexdigest()
+    recipe_ref["size_bytes"] = len(recipe_bytes)
+    payloads[recipe_ref["uri"]] = recipe_bytes
     return value, payloads
 
 
@@ -84,7 +281,9 @@ def test_materializes_every_reference_and_full_byte_reads_back(tmp_path) -> None
         fetcher=fetcher(payloads),
     )
     assert result["status"] == "inputs_materialized_awaiting_construction_adapter"
-    assert result["reference_count"] == len(payloads)
+    # The configured-scene bundle is discovered only after the revision itself
+    # is read back and is materialized by the queue worker in the next step.
+    assert result["reference_count"] == len(payloads) - 1
     assert result["full_byte_service_account_readback_passed"] is True
     assert result["provider_mutation_performed"] is False
     assert result["catalog_mutation_performed"] is False
@@ -111,6 +310,7 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
         adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
     )
     assert run["status"] == "processed"
     assert run["processed_count"] == 1
@@ -121,12 +321,13 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         "schema_version": "task_evaluation_launch_preparation_status.v1",
         "status": "materialized",
         "preparation_id": value["preparation_id"],
+        "run_mode": "episode_evaluation",
         "run_id": value["run_id"],
         "team_namespace": value["team_namespace"],
         "expected_production_commit": value["expected_production_commit"],
         "request_digest": intake["request_digest"],
         "provider_mutation_performed_by_status_read": False,
-        "worker_status": "native_arena_inputs_verified_awaiting_profile_authority",
+        "worker_status": "queued_for_production_episode_compilation",
         "source_commit": value["expected_production_commit"],
         "result_digest": run["results"][0]["result_digest"],
         "reference_count": len(payloads),
@@ -135,6 +336,17 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         "provider_mutation_performed_by_worker": False,
         "catalog_mutation_performed_by_worker": False,
         "paid_execution_requested": False,
+        "automatic_progression_required": True,
+        "configured_scene_revision_digest": run["results"][0][
+            "configured_scene_revision_digest"
+        ],
+        "configured_scene_bundle_digest": run["results"][0][
+            "configured_scene_bundle_digest"
+        ],
+        "episode_compilation_id": value["preparation_id"],
+        "episode_compilation_queue_envelope_digest": run["results"][0][
+            "episode_compilation_queue_envelope_digest"
+        ],
     }
     result_files = list((queue / "results").glob("*.json"))
     assert len(result_files) == 1
@@ -142,6 +354,141 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
     assert sealed["result_digest"] == canonical_digest(
         sealed, digest_field="result_digest"
     )
+    compilation_files = list(
+        (tmp_path / "episode-compilation" / "pending").glob("*.json")
+    )
+    assert len(compilation_files) == 1
+    compilation = json.loads(compilation_files[0].read_text())
+    assert compilation["materialized_references"] == run["results"][0][
+        "references"
+    ]
+    assert compilation["production_compiler_owns_episode_packet"] is True
+    assert compilation["customer_supplied_prebuilt_episode_packet"] is False
+
+
+def test_episode_evaluation_blocks_configured_scene_bundle_readback_mismatch(
+    tmp_path,
+) -> None:
+    value, payloads = request_with_fetchable_bytes()
+    revision_ref = value["scene"]["configured_revision"]
+    revision = json.loads(payloads[revision_ref["uri"]])
+    revision["configured_scene_bundle"]["digest"] = "sha256:" + "f" * 64
+    revision["revision_digest"] = canonical_digest(
+        revision, digest_field="revision_digest"
+    )
+    value["task"]["configured_scene_revision_digest"] = revision[
+        "revision_digest"
+    ]
+    revision_bytes = json.dumps(revision, sort_keys=True).encode()
+    payloads[revision_ref["uri"]] = revision_bytes
+    revision_ref["digest"] = "sha256:" + hashlib.sha256(revision_bytes).hexdigest()
+    revision_ref["size_bytes"] = len(revision_bytes)
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    def forbidden_adapter(**_kwargs):
+        raise AssertionError("scene revision mismatch must block before adapter")
+
+    run = process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads),
+        adapter_materializer=forbidden_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "launch_preparation_reference_readback_mismatch"
+    ]
+
+
+def test_worker_accepts_recipe_without_prebuilt_packet_or_adapter_call(tmp_path) -> None:
+    value, payloads = production_request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    def forbidden_adapter(**_kwargs):
+        raise AssertionError("production construction starts after preparation")
+
+    run = process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads),
+        adapter_materializer=forbidden_adapter,
+        construction_queue_root=tmp_path / "construction-queue",
+    )
+
+    result = run["results"][0]
+    assert result["status"] == "queued_for_production_scene_configuration"
+    assert result["run_mode"] == "scene_configuration"
+    assert result["automatic_progression_required"] is True
+    queued = list((tmp_path / "construction-queue" / "pending").glob("*.json"))
+    assert len(queued) == 1
+    envelope = json.loads(queued[0].read_text())
+    assert envelope["run_id"] == value["run_id"]
+    assert envelope["recipe_digest"] == result["construction_recipe_digest"]
+    assert envelope["automatic_progression_required"] is True
+    assert result["construction_packet_materialized"] is False
+    assert result["construction_recipe_digest"].startswith("sha256:")
+    assert result["construction_stage_configuration_count"] == 6
+    assert result["construction_stage_configurations_readback_passed"] is True
+    assert all(
+        Path(row["materialized_path"]).read_bytes() == payloads[row["uri"]]
+        for row in result["references"]
+    )
+    assert result["provider_mutation_performed"] is False
+    assert result["paid_execution_requested"] is False
+
+
+def test_worker_blocks_recipe_stage_configuration_outside_allowed_prefix(
+    tmp_path,
+) -> None:
+    value, payloads = production_request_with_fetchable_bytes()
+    recipe_uri = value["construction"]["recipe"]["uri"]
+    recipe = json.loads(payloads[recipe_uri])
+    recipe["stage_sequence"][2]["configuration"]["uri"] = (
+        "s3://unapproved-team/stage-3.json"
+    )
+    recipe["recipe_digest"] = canonical_digest(
+        recipe, digest_field="recipe_digest"
+    )
+    recipe_bytes = json.dumps(recipe, sort_keys=True).encode()
+    payloads[recipe_uri] = recipe_bytes
+    value["construction"]["recipe"]["digest"] = (
+        "sha256:" + hashlib.sha256(recipe_bytes).hexdigest()
+    )
+    value["construction"]["recipe"]["size_bytes"] = len(recipe_bytes)
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    run = process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads),
+        adapter_materializer=fake_adapter,
+        construction_queue_root=tmp_path / "construction-queue",
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "launch_preparation_reference_prefix_not_allowed"
+    ]
 
 
 def test_worker_blocks_unapproved_storage_prefix_before_fetch(tmp_path) -> None:

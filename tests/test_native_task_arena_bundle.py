@@ -195,18 +195,36 @@ def _packet(root: Path, *, scene_id: str) -> Path:
     for role in ("scene_collision", "scene_appearance", "task_object"):
         path = assets / f"{role}.usd"
         path.write_text(f"exact:{scene_id}:{role}\n", encoding="utf-8")
-        source_bindings.append(
-            {
-                "semantic_role": role,
-                "source": {"root": "evidence", "relative_path": path.name},
-                "staged_relative_path": f"assets/{path.name}",
-                "staged_size_bytes": path.stat().st_size,
-                "staged_sha256": _sha(path),
-            }
-        )
+        binding = {
+            "semantic_role": role,
+            "source": {"root": "evidence", "relative_path": path.name},
+            "staged_relative_path": f"assets/{path.name}",
+            "staged_size_bytes": path.stat().st_size,
+            "staged_sha256": _sha(path),
+        }
+        if role == "task_object":
+            binding["asset_id"] = "admitted-can"
+        source_bindings.append(binding)
+    task_object = assets / "task_object.usd"
     documents = {
         "native_task_arena_packet_request.v1.json": {"scene_id": scene_id},
-        "native_task_runtime_contract.v1.json": {"contract_digest": "sha256:" + "c" * 64},
+        "native_task_runtime_contract.v1.json": {
+            "contract_digest": "sha256:" + "c" * 64,
+            "task_kind": "rigid_pick_place",
+            "task_subject_asset_id": "admitted-can",
+            "task_spec": {
+                "task_kind": "rigid_pick_place",
+                "manipulation_strategy": "planar_push",
+                "subject_asset_id": "admitted-can",
+            },
+            "objects": [
+                {
+                    "asset_id": "admitted-can",
+                    "task_subject": True,
+                    "sha256": _sha(task_object),
+                }
+            ],
+        },
         "native_task_arena_scene_plan.v1.json": {"plan_digest": "sha256:" + "p" * 64},
     }
     artifacts = []

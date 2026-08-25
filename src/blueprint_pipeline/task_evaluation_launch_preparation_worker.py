@@ -27,8 +27,24 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
 )
+from .task_evaluation_configured_scene_revision import (
+    TaskEvaluationConfiguredSceneRevisionError,
+    validate_configured_scene_revision,
+)
+from .task_evaluation_episode_compilation_queue import (
+    TaskEvaluationEpisodeCompilationQueueError,
+    stage_episode_compilation,
+)
 from .task_evaluation_native_arena_preparation_adapter import (
     materialize_native_arena_adapter,
+)
+from .task_evaluation_scene_construction_recipe import (
+    TaskEvaluationSceneConstructionRecipeError,
+    validate_scene_construction_recipe,
+)
+from .task_evaluation_scene_construction_queue import (
+    TaskEvaluationSceneConstructionQueueError,
+    stage_scene_construction,
 )
 from .task_evaluation_launch_preparation_queue import (
     ENVELOPE_SCHEMA_VERSION,
@@ -46,6 +62,12 @@ ALLOWED_URI_PREFIXES_ENV = (
 )
 SERVICE_ACCOUNT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_SERVICE_ACCOUNT"
+)
+CONSTRUCTION_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
+)
+EPISODE_COMPILATION_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
 )
 ReferenceFetcher = Callable[[str, Path, int], None]
 AdapterMaterializer = Callable[..., dict[str, Any]]
@@ -324,13 +346,56 @@ def materialize_preparation_references(
         )
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     root = root.resolve(strict=True)
+    rows, unique_object_count = _materialize_reference_records(
+        references=collect_preparation_references(validated),
+        input_root=root,
+        allowed_uri_prefixes=validated_prefixes,
+        fetcher=fetcher,
+    )
+    result: dict[str, Any] = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "status": "inputs_materialized_awaiting_construction_adapter",
+        "preparation_id": validated["preparation_id"],
+        "run_id": validated["run_id"],
+        "team_namespace": validated["team_namespace"],
+        "source_commit": source_commit,
+        "reference_count": len(rows),
+        "unique_object_count": unique_object_count,
+        "references": rows,
+        "full_byte_service_account_readback_passed": all(
+            row["full_byte_service_account_readback_passed"] for row in rows
+        ),
+        "service_account": service_account,
+        "service_account_uid": account.pw_uid,
+        "provider_mutation_performed": False,
+        "catalog_mutation_performed": False,
+        "paid_execution_requested": False,
+        "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    return result
+
+
+def _materialize_reference_records(
+    *,
+    references: Sequence[Mapping[str, Any]],
+    input_root: str | Path,
+    allowed_uri_prefixes: Sequence[str],
+    fetcher: ReferenceFetcher,
+) -> tuple[list[dict[str, Any]], int]:
+    """Fetch and hash typed references without assuming their parent contract."""
+
+    root = Path(input_root).resolve(strict=True)
     rows: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, int], Path] = {}
-    for reference in collect_preparation_references(validated):
+    for reference in references:
         uri = reference["uri"]
         digest = reference["digest"]
         size = reference["size_bytes"]
-        if not _prefix_allowed(uri, validated_prefixes):
+        if not _prefix_allowed(uri, allowed_uri_prefixes):
             raise TaskEvaluationLaunchPreparationWorkerError(
                 "launch_preparation_reference_prefix_not_allowed"
             )
@@ -394,31 +459,40 @@ def materialize_preparation_references(
                 "full_byte_service_account_readback_passed": True,
             }
         )
-    result: dict[str, Any] = {
-        "schema_version": RESULT_SCHEMA_VERSION,
-        "status": "inputs_materialized_awaiting_construction_adapter",
-        "preparation_id": validated["preparation_id"],
-        "run_id": validated["run_id"],
-        "team_namespace": validated["team_namespace"],
-        "source_commit": source_commit,
-        "reference_count": len(rows),
-        "unique_object_count": len(by_identity),
-        "references": rows,
-        "full_byte_service_account_readback_passed": all(
-            row["full_byte_service_account_readback_passed"] for row in rows
-        ),
-        "service_account": service_account,
-        "service_account_uid": account.pw_uid,
-        "provider_mutation_performed": False,
-        "catalog_mutation_performed": False,
-        "paid_execution_requested": False,
-        "observed_at_iso": datetime.now(timezone.utc).isoformat(),
-        "result_digest": "",
-    }
-    result["result_digest"] = canonical_digest(
-        result, digest_field="result_digest"
+    return rows, len(by_identity)
+
+
+def materialize_recipe_configuration_references(
+    *,
+    recipe: Mapping[str, Any],
+    input_root: str | Path,
+    allowed_uri_prefixes: Sequence[str],
+    fetcher: ReferenceFetcher = default_reference_fetcher,
+) -> list[dict[str, Any]]:
+    """Read back every immutable stage configuration embedded in a recipe."""
+
+    validated_recipe = validate_scene_construction_recipe(recipe)
+    validated_prefixes = validate_allowed_uri_prefixes(allowed_uri_prefixes)
+    root = Path(input_root).expanduser()
+    if root.is_symlink():
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_input_root_unsafe"
+        )
+    root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    references = [
+        {
+            "contract_path": f"construction.recipe.stage_sequence.{index}.configuration",
+            **stage["configuration"],
+        }
+        for index, stage in enumerate(validated_recipe["stage_sequence"])
+    ]
+    rows, _ = _materialize_reference_records(
+        references=references,
+        input_root=root,
+        allowed_uri_prefixes=validated_prefixes,
+        fetcher=fetcher,
     )
-    return result
+    return rows
 
 
 def _load_envelope(path: Path) -> dict[str, Any]:
@@ -442,6 +516,74 @@ def _load_envelope(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _validated_production_recipe(
+    *, request: Mapping[str, Any], materialized_path: str | Path
+) -> dict[str, Any]:
+    path = Path(materialized_path).resolve()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        recipe = validate_scene_construction_recipe(value)
+    except (OSError, json.JSONDecodeError, TaskEvaluationSceneConstructionRecipeError) as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_construction_recipe_invalid"
+        ) from exc
+    expected = {
+        "team_namespace": request["team_namespace"],
+        "scene_identity": request["scene"]["identity"],
+        "task_identity": request["task"]["identity"],
+        "subject_identity": request["task"]["subject"]["identity"],
+        "source_manifest_digest": request["scene"]["source_manifest"]["digest"],
+        "rights_admission_digest": request["scene"]["rights"]["admission"]["digest"],
+        "output_identity": request["construction"]["output_identity"],
+    }
+    if any(recipe.get(key) != expected_value for key, expected_value in expected.items()):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_construction_recipe_binding_mismatch"
+        )
+    return recipe
+
+
+def _validated_configured_scene_revision(
+    *, request: Mapping[str, Any], materialized_path: str | Path
+) -> dict[str, Any]:
+    path = Path(materialized_path).resolve()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        revision = validate_configured_scene_revision(value)
+    except (
+        OSError,
+        json.JSONDecodeError,
+        TaskEvaluationConfiguredSceneRevisionError,
+    ) as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_configured_scene_revision_invalid"
+        ) from exc
+    expected = {
+        "team_namespace": request["team_namespace"],
+        "scene_identity": request["scene"]["identity"],
+        "source_commit": request["expected_production_commit"],
+        "revision_digest": request["task"][
+            "configured_scene_revision_digest"
+        ],
+    }
+    if any(
+        revision.get(key) != expected_value
+        for key, expected_value in expected.items()
+    ):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_configured_scene_revision_binding_mismatch"
+        )
+    if (
+        revision["task_template"]["identity"] != request["task"]["identity"]
+        or revision["replacement"]["identity"]
+        != request["task"]["subject"]["identity"]
+    ):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_configured_scene_revision_binding_mismatch"
+        )
+    return revision
+
+
 def process_launch_preparation_queue(
     *,
     queue_root: str | Path,
@@ -452,6 +594,8 @@ def process_launch_preparation_queue(
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
     adapter_materializer: AdapterMaterializer = materialize_native_arena_adapter,
+    construction_queue_root: str | Path | None = None,
+    episode_compilation_queue_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Claim and materialize bounded queue items without any paid mutation."""
 
@@ -497,43 +641,168 @@ def process_launch_preparation_queue(
             references_by_path = {
                 row["contract_path"]: row for row in result["references"]
             }
-            construction = references_by_path.get(
-                "execution_adapter.construction_packet_bundle"
-            )
+            construction_mode = envelope["request"]["construction"]["mode"]
             runtime_source = references_by_path.get(
                 "execution_adapter.runtime_source_bundle"
             )
-            if construction is None or runtime_source is None:
+            if runtime_source is None:
                 raise TaskEvaluationLaunchPreparationWorkerError(
                     "launch_preparation_execution_adapter_inputs_missing"
                 )
-            adapter_result = adapter_materializer(
-                request=envelope["request"],
-                construction_bundle_path=construction["materialized_path"],
-                runtime_source_bundle_path=runtime_source["materialized_path"],
-                output_root=(
+            if construction_mode == "reuse_configured_scene":
+                configured_revision_record = references_by_path.get(
+                    "scene.configured_revision"
+                )
+                if configured_revision_record is None:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_execution_adapter_inputs_missing"
+                    )
+                configured_revision = _validated_configured_scene_revision(
+                    request=envelope["request"],
+                    materialized_path=configured_revision_record[
+                        "materialized_path"
+                    ],
+                )
+                scene_bundle_root = (
                     Path(input_root)
                     / str(envelope["request"]["preparation_id"])
-                    / "native-arena-adapter"
-                ),
-            )
-            result.update(
-                {
-                    "status": (
-                        "native_arena_inputs_verified_awaiting_profile_authority"
+                    / "configured-scene-bundle"
+                )
+                scene_bundle_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+                scene_bundle_rows, _ = _materialize_reference_records(
+                    references=[
+                        {
+                            "contract_path": (
+                                "scene.configured_revision.configured_scene_bundle"
+                            ),
+                            **configured_revision["configured_scene_bundle"],
+                        }
+                    ],
+                    input_root=scene_bundle_root,
+                    allowed_uri_prefixes=validate_allowed_uri_prefixes(
+                        allowed_uri_prefixes
                     ),
-                    "adapter_result_digest": adapter_result["result_digest"],
-                    "adapter_kind": adapter_result["adapter_kind"],
-                    "adapter_version": adapter_result["adapter_version"],
-                    "packet_receipt_digest": adapter_result[
-                        "packet_receipt_digest"
-                    ],
-                    "runtime_source_receipt_digest": adapter_result[
-                        "runtime_source_receipt_digest"
-                    ],
-                    "result_digest": "",
-                }
-            )
+                    fetcher=fetcher,
+                )
+                scene_bundle_record = scene_bundle_rows[0]
+                result["references"].append(scene_bundle_record)
+                result["reference_count"] = len(result["references"])
+                result["unique_object_count"] = len(
+                    {
+                        (row["digest"], row["size_bytes"])
+                        for row in result["references"]
+                    }
+                )
+                result["result_digest"] = canonical_digest(
+                    result, digest_field="result_digest"
+                )
+                if episode_compilation_queue_root is None:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_episode_compilation_queue_missing"
+                    )
+                compilation = stage_episode_compilation(
+                    request=envelope["request"],
+                    preparation_result=result,
+                    configured_revision=configured_revision,
+                    configured_scene_bundle_reference=scene_bundle_record,
+                    queue_root=episode_compilation_queue_root,
+                )
+                result.update(
+                    {
+                        "status": "queued_for_production_episode_compilation",
+                        "run_mode": "episode_evaluation",
+                        "configured_scene_revision_digest": configured_revision[
+                            "revision_digest"
+                        ],
+                        "configured_scene_bundle_digest": scene_bundle_record[
+                            "digest"
+                        ],
+                        "episode_compilation_id": compilation["compilation_id"],
+                        "episode_compilation_queue_envelope_digest": compilation[
+                            "envelope_digest"
+                        ],
+                        "episode_compilation_queue_receipt_digest": compilation[
+                            "receipt_digest"
+                        ],
+                        "customer_supplied_prebuilt_episode_packet": False,
+                        "construction_packet_materialized": False,
+                        "automatic_progression_required": True,
+                        "result_digest": "",
+                    }
+                )
+            else:
+                recipe_record = references_by_path.get("construction.recipe")
+                if recipe_record is None:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_construction_recipe_missing"
+                    )
+                recipe = _validated_production_recipe(
+                    request=envelope["request"],
+                    materialized_path=recipe_record["materialized_path"],
+                )
+                recipe_configuration_references = (
+                    materialize_recipe_configuration_references(
+                        recipe=recipe,
+                        input_root=(
+                            Path(input_root)
+                            / str(envelope["request"]["preparation_id"])
+                            / "construction-stage-configurations"
+                        ),
+                        allowed_uri_prefixes=allowed_uri_prefixes,
+                        fetcher=fetcher,
+                    )
+                )
+                result["references"].extend(recipe_configuration_references)
+                result["reference_count"] = len(result["references"])
+                result["unique_object_count"] = len(
+                    {
+                        (row["digest"], row["size_bytes"])
+                        for row in result["references"]
+                    }
+                )
+                if construction_queue_root is None:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_scene_construction_queue_missing"
+                    )
+                construction_intake = stage_scene_construction(
+                    request=envelope["request"],
+                    preparation_result=result,
+                    recipe=recipe,
+                    recipe_configuration_references=(
+                        recipe_configuration_references
+                    ),
+                    queue_root=construction_queue_root,
+                )
+                result.update(
+                    {
+                        "status": (
+                            "queued_for_production_scene_configuration"
+                        ),
+                        "run_mode": "scene_configuration",
+                        "construction_recipe_digest": recipe["recipe_digest"],
+                        "construction_output_identity": recipe["output_identity"],
+                        "construction_stage_configuration_count": len(
+                            recipe_configuration_references
+                        ),
+                        "construction_stage_configurations_readback_passed": all(
+                            row["full_byte_service_account_readback_passed"]
+                            for row in recipe_configuration_references
+                        ),
+                        "construction_packet_materialized": False,
+                        "construction_orchestration_id": construction_intake[
+                            "orchestration_id"
+                        ],
+                        "construction_queue_envelope_digest": construction_intake[
+                            "envelope_digest"
+                        ],
+                        "construction_queue_receipt_digest": construction_intake[
+                            "receipt_digest"
+                        ],
+                        "automatic_progression_required": True,
+                        "runtime_source_bundle_readback_passed": True,
+                        "result_digest": "",
+                    }
+                )
             result["result_digest"] = canonical_digest(
                 result, digest_field="result_digest"
             )
@@ -552,6 +821,8 @@ def process_launch_preparation_queue(
                         (
                             TaskEvaluationLaunchPreparationWorkerError,
                             TaskEvaluationLaunchPreparationQueueError,
+                            TaskEvaluationSceneConstructionQueueError,
+                            TaskEvaluationEpisodeCompilationQueueError,
                         ),
                     )
                     else f"launch_preparation_worker_failed:{type(exc).__name__}"
@@ -623,6 +894,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--queue-root", default=os.getenv(QUEUE_ROOT_ENV, ""))
     parser.add_argument("--input-root", default=os.getenv(INPUT_ROOT_ENV, ""))
     parser.add_argument(
+        "--construction-queue-root",
+        default=os.getenv(CONSTRUCTION_QUEUE_ROOT_ENV, ""),
+    )
+    parser.add_argument(
+        "--episode-compilation-queue-root",
+        default=os.getenv(EPISODE_COMPILATION_QUEUE_ROOT_ENV, ""),
+    )
+    parser.add_argument(
         "--allowed-uri-prefixes-json",
         default=os.getenv(ALLOWED_URI_PREFIXES_ENV, ""),
     )
@@ -638,6 +917,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (
         not args.queue_root
         or not args.input_root
+        or not args.construction_queue_root
+        or not args.episode_compilation_queue_root
         or not isinstance(prefixes, list)
         or not all(isinstance(item, str) and item for item in prefixes)
     ):
@@ -665,8 +946,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             service_account=args.service_account,
             source_commit=running_worker_source_commit(),
             max_messages=args.max_messages,
+            construction_queue_root=args.construction_queue_root,
+            episode_compilation_queue_root=args.episode_compilation_queue_root,
         )
-    except (TaskEvaluationLaunchPreparationWorkerError, OSError) as exc:
+    except (
+        TaskEvaluationLaunchPreparationWorkerError,
+        TaskEvaluationSceneConstructionQueueError,
+        TaskEvaluationEpisodeCompilationQueueError,
+        OSError,
+    ) as exc:
         print(
             json.dumps(
                 {

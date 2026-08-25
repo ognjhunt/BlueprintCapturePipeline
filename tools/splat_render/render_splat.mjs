@@ -3,7 +3,7 @@
 // frames the eval's 6 camera IDs to the splat's real bounding box, and writes per-camera PNGs.
 //
 // Usage:
-//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal|egl]
+//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal|egl] [--browser-executable <absolute-path>]
 //
 // --cameras json (optional): [{ "id": "...", "spec": { "pos":[x,y,z], "target":[x,y,z], "fov":N, "up":[x,y,z] } }, ...]
 // If omitted, six framed views are derived from the splat bounds (overhead/third_person/head_pov/torso/wrist/task_focus).
@@ -37,6 +37,8 @@ const warmupMs = parseInt(arg("warmup-ms", "2000"), 10);
 const settleFrames = parseInt(arg("settle-frames", "6"), 10);
 const settleMs = parseInt(arg("settle-ms", "100"), 10);
 const graphicsBackend = String(arg("graphics-backend", "swiftshader")).toLowerCase();
+const browserExecutableArg = arg("browser-executable", null);
+const browserExecutable = browserExecutableArg ? path.resolve(browserExecutableArg) : null;
 
 if (!["swiftshader", "metal", "egl"].includes(graphicsBackend)) {
   console.error(`unsupported --graphics-backend: ${graphicsBackend}`);
@@ -206,13 +208,15 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   const graphicsArgs = graphicsArguments(graphicsBackend);
-  const browser = await chromium.launch({
+  const launchOptions = {
     headless: true,
     args: [
       ...graphicsArgs,
       "--disable-dev-shm-usage",
     ],
-  });
+  };
+  if (browserExecutable) launchOptions.executablePath = browserExecutable;
+  const browser = await chromium.launch(launchOptions);
   const page = await browser.newPage({ viewport: { width, height } });
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e.message || e)));
@@ -229,6 +233,7 @@ async function main() {
     blockers,
     page_errors: pageErrors,
     composition: null,
+    browser_version: browser.version(),
   };
   try {
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });

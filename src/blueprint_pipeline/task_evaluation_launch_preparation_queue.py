@@ -290,6 +290,7 @@ def launch_preparation_status(
         "expected_production_commit": envelope["request"][
             "expected_production_commit"
         ],
+        "run_mode": envelope["request"]["run_mode"],
         "request_digest": envelope["request_digest"],
         "provider_mutation_performed_by_status_read": False,
     }
@@ -343,6 +344,17 @@ def launch_preparation_status(
                 ),
             }
         )
+        for field in (
+            "construction_orchestration_id",
+            "construction_queue_envelope_digest",
+            "automatic_progression_required",
+            "configured_scene_revision_digest",
+            "configured_scene_bundle_digest",
+            "episode_compilation_id",
+            "episode_compilation_queue_envelope_digest",
+        ):
+            if result.get(field) is not None:
+                status[field] = result[field]
     return status
 
 
