@@ -17,6 +17,11 @@ from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime imp
     TaskEvaluationSceneConfigurationProviderRuntimeError,
     execute_scene_configuration_stage_chain,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
+    ADMITTED_PRODUCER_IDENTITIES,
+    PRODUCTION_RESULT_SCHEMA_VERSION,
+    SceneConfigurationStageProducerRegistry,
+)
 from blueprint_pipeline.task_evaluation_scene_construction_recipe import (
     CAPABILITY_ORDER,
 )
@@ -91,6 +96,40 @@ def _registry(observed: list[str], *, nested_mutation: bool = False):
     return SceneConfigurationAdapterRegistry(handlers)
 
 
+def _producers():
+    handlers = {}
+    for identity in ADMITTED_PRODUCER_IDENTITIES:
+        def produce(*, stage, output_root, identity=identity, **_kwargs):
+            assert stage["capability"] == identity.capability
+            artifact = output_root / "producer.json"
+            artifact.write_text("{}\n", encoding="utf-8")
+            result = {
+                "schema_version": PRODUCTION_RESULT_SCHEMA_VERSION,
+                "status": "completed",
+                "stage_id": stage["stage_id"],
+                "capability": stage["capability"],
+                "provider_mutations_performed": 0,
+                "paid_execution_requested": False,
+                "executed_inside_parent_configuration_run": True,
+                "artifacts": [
+                    {
+                        "role": "producer_result",
+                        "path": str(artifact),
+                        "digest": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                        "size_bytes": artifact.stat().st_size,
+                    }
+                ],
+                "production_result_digest": "",
+            }
+            result["production_result_digest"] = canonical_digest(
+                result, digest_field="production_result_digest"
+            )
+            return result
+
+        handlers[identity] = produce
+    return SceneConfigurationStageProducerRegistry(handlers)
+
+
 def test_runs_all_six_stages_inside_one_parent_allocation(tmp_path: Path) -> None:
     envelope, configurations = _inputs(tmp_path)
     outputs = tmp_path / "outputs"
@@ -102,6 +141,7 @@ def test_runs_all_six_stages_inside_one_parent_allocation(tmp_path: Path) -> Non
         configurations=configurations,
         output_root=outputs,
         registry=_registry(observed),
+        producer_registry=_producers(),
     )
 
     assert observed == [f"stage-{index}" for index in range(1, 7)]
@@ -127,4 +167,5 @@ def test_rejects_any_stage_that_claims_a_nested_provider_mutation(
             configurations=configurations,
             output_root=outputs,
             registry=_registry([], nested_mutation=True),
+            producer_registry=_producers(),
         )

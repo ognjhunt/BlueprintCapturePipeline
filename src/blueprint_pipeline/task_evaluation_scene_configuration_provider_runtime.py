@@ -23,6 +23,9 @@ from .task_evaluation_scene_configuration_builtin_adapters import (
 from .task_evaluation_scene_configuration_orchestrator import (
     STAGE_RESULT_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_stage_producers import (
+    SceneConfigurationStageProducerRegistry,
+)
 
 
 RESULT_SCHEMA_VERSION = (
@@ -40,10 +43,7 @@ def execute_scene_configuration_stage_chain(
     configurations: Mapping[str, tuple[Mapping[str, Any], Path]],
     output_root: str | Path,
     registry: SceneConfigurationAdapterRegistry | None = None,
-    provider_runtime_artifacts_by_stage: Mapping[
-        str, tuple[Mapping[str, Any], ...]
-    ]
-    | None = None,
+    producer_registry: SceneConfigurationStageProducerRegistry | None = None,
 ) -> dict[str, Any]:
     """Execute all six stages once without any nested paid mutation."""
 
@@ -70,11 +70,6 @@ def execute_scene_configuration_stage_chain(
             "scene_configuration_provider_output_root_invalid"
         )
     results: list[dict[str, Any]] = []
-    runtime_artifacts = provider_runtime_artifacts_by_stage or {}
-    if set(runtime_artifacts) - {str(stage["stage_id"]) for stage in stages}:
-        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
-            "scene_configuration_provider_runtime_artifact_set_invalid"
-        )
     for index, stage in enumerate(stages):
         if not isinstance(stage, Mapping):
             raise TaskEvaluationSceneConfigurationProviderRuntimeError(
@@ -89,6 +84,30 @@ def execute_scene_configuration_stage_chain(
         configuration, configuration_path = configurations[stage_id]
         stage_output = root / stage_id
         stage_output.mkdir(mode=0o750, exist_ok=False)
+        execution_class = str(stage.get("execution_class") or "")
+        if execution_class == "gpu_canary":
+            if producer_registry is None:
+                raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                    f"scene_configuration_stage_producer_missing:{stage_id}"
+                )
+            producer_output = stage_output / "producer"
+            producer_output.mkdir(mode=0o750)
+            produced_artifacts = producer_registry.execute(
+                stage=stage,
+                envelope=envelope,
+                configuration=configuration,
+                configuration_path=configuration_path,
+                dependency_results=tuple(results),
+                output_root=producer_output,
+            )
+        elif execution_class == "no_spend":
+            produced_artifacts = ()
+        else:
+            raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                f"scene_configuration_provider_execution_class_invalid:{stage_id}"
+            )
+        adapter_output = stage_output / "adapter"
+        adapter_output.mkdir(mode=0o750)
         try:
             value = runtime_registry.execute(
                 stage=stage,
@@ -96,10 +115,8 @@ def execute_scene_configuration_stage_chain(
                 configuration=configuration,
                 configuration_path=configuration_path,
                 dependency_results=tuple(results),
-                output_root=stage_output,
-                provider_runtime_artifacts=tuple(
-                    runtime_artifacts.get(stage_id, ())
-                ),
+                output_root=adapter_output,
+                provider_runtime_artifacts=produced_artifacts,
             )
         except TaskEvaluationSceneConfigurationAdapterError:
             raise
