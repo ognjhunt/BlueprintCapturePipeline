@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -46,6 +47,10 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
 from blueprint_pipeline.openpi_droid_policy_runtime import (
     OpenPIDroidPolicySpec,
     OpenPIWebsocketDroidPolicyClient,
+)
+
+_LIVE_PI05_RESPONSE_FIXTURE = (
+    Path(__file__).parent / "fixtures/pi05_f615_gripper_overshoot_response.json"
 )
 
 _MEASURED = GripperConvention(
@@ -410,7 +415,9 @@ def _forced_groot_policy(response) -> GrootN17DroidPolicyClient:
     )
 
 
-def _forced_openpi_policy(response) -> OpenPIWebsocketDroidPolicyClient:
+def _forced_openpi_policy(
+    response, *, action_chunk_rows: int = 10
+) -> OpenPIWebsocketDroidPolicyClient:
     spec = OpenPIDroidPolicySpec(
         policy_id="pi05_droid_jointpos_polaris",
         config_name="pi05_droid_jointpos_polaris",
@@ -423,7 +430,7 @@ def _forced_openpi_policy(response) -> OpenPIWebsocketDroidPolicyClient:
         checkpoint_object_count=1,
         checkpoint_size_bytes=1,
         action_space="joint_position",
-        action_chunk_rows=10,
+        action_chunk_rows=action_chunk_rows,
     )
 
     class _Vendor:
@@ -586,6 +593,105 @@ def test_openpi_refused_vendor_action_is_retained_before_episode_application(
         assert retained["server_timing"] == {"infer_ms": 31.0}
     else:
         assert retained[0][0] == {"nonfinite_float": "nan"}
+
+
+def test_pi05_gripper_overshoot_is_normalized_before_shared_bounds_and_applied() -> None:
+    """A finite publisher-semantic gripper overshoot is not an arm safety bypass."""
+
+    fixture = json.loads(_LIVE_PI05_RESPONSE_FIXTURE.read_text(encoding="utf-8"))
+    response = fixture["raw_vendor_action_response"]
+    source = np.asarray(response["actions"], dtype=float)
+    policy = _forced_openpi_policy(
+        response,
+        action_chunk_rows=15,
+    )
+
+    class _SealedFrankaLimitsEnvironment(_Environment):
+        def joint_limits(self):
+            return [
+                [-2.8973, 2.8973],
+                [-1.7628, 1.7628],
+                [-2.8973, 2.8973],
+                [-3.0718, -0.0698],
+                [-2.8973, 2.8973],
+                [-0.0175, 3.7525],
+                [-2.8973, 2.8973],
+            ]
+
+    environment = _SealedFrankaLimitsEnvironment()
+    progress: dict = {}
+
+    _run(
+        environment=environment,
+        policy=policy,
+        candidate_id="pi05_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+        progress=progress,
+    )
+
+    assert progress["candidate_action_bounds_validated"] is True
+    assert progress["candidate_action_validated"] is True
+    assert progress["candidate_action_applied"] is True
+    assert np.asarray(environment.steps[:8])[:, :7] == pytest.approx(source[:8, :7])
+    assert np.asarray(environment.steps[:8])[:, 7] == pytest.approx([1.0] * 8)
+    query = progress["candidate_policy_action_queries"][0]
+    assert progress["policy_inference_evidence"][
+        "raw_vendor_action_response_digest"
+    ] == fixture["raw_vendor_action_response_digest"]
+    assert query["raw_vendor_action_response"]["actions"] == source.tolist()
+    assert query["raw_bounds_validated"] is False
+    assert query["candidate_adapter_output_bounds_validated"] is True
+    assert query["candidate_normalized_action_chunk"][0] == (
+        source[0, :7].tolist() + [1.0]
+    )
+    normalization = query["candidate_specific_action_normalization"]
+    assert normalization["pre_normalization_gripper_bounds"][
+        "out_of_bounds_count"
+    ] == 15
+    assert normalization["arm_dimensions_preserved_exactly"] is True
+    assert normalization["source_arm_values_digest"] == normalization[
+        "normalized_arm_values_digest"
+    ]
+
+
+def test_pi05_gripper_normalization_does_not_hide_unsafe_arm_joint_values() -> None:
+    fixture = json.loads(_LIVE_PI05_RESPONSE_FIXTURE.read_text(encoding="utf-8"))
+    source = np.asarray(
+        fixture["raw_vendor_action_response"]["actions"], dtype=float
+    )
+    source[0, 0] = 100.0
+    policy = _forced_openpi_policy(
+        {"actions": source},
+        action_chunk_rows=15,
+    )
+    environment = _Environment()
+    progress: dict = {}
+
+    with pytest.raises(DroidActionExecutionError) as excinfo:
+        _run(
+            environment=environment,
+            policy=policy,
+            candidate_id="pi05_droid",
+            max_policy_queries=1,
+            settle_window_samples=1,
+            progress=progress,
+        )
+
+    assert any(
+        error.startswith(BLOCKER_JOINT_POSITION_BOUNDS)
+        for error in excinfo.value.errors
+    )
+    assert environment.steps == []
+    assert progress["candidate_action_bounds_validated"] is False
+    assert progress["candidate_action_applied"] is False
+    query = progress["candidate_policy_action_queries"][0]
+    assert query["raw_vendor_action_response"]["actions"][0][0] == 100.0
+    assert query["candidate_normalized_action_chunk"][0][0] == 100.0
+    assert query["candidate_normalized_action_chunk"][0][7] == 1.0
+    assert query["candidate_specific_action_normalization"][
+        "arm_dimensions_preserved_exactly"
+    ] is True
 
 
 def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -> None:

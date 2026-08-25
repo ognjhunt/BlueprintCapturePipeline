@@ -156,6 +156,9 @@ BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
 BLOCKER_SOURCE_RESOLUTION_UNMEASURED = (
     "policy_episode_source_resolution_unmeasured_or_mixed"
 )
+BLOCKER_CANDIDATE_NORMALIZATION_EVIDENCE_INVALID = (
+    "policy_episode_candidate_normalization_evidence_invalid"
+)
 
 
 class PolicyEpisodeError(ValueError):
@@ -490,7 +493,10 @@ def _raw_policy_action_evidence(chunk: Any, *, query_index: int) -> dict[str, An
 
 
 def _prevalidation_vendor_action_evidence(
-    inference_evidence: Any, *, query_index: int
+    inference_evidence: Any,
+    *,
+    query_index: int,
+    candidate_action_chunk: Any = None,
 ) -> dict[str, Any] | None:
     """Project a digest-verified vendor response into the episode query log."""
 
@@ -507,7 +513,7 @@ def _prevalidation_vendor_action_evidence(
         != canonical_digest({"raw_vendor_action_response": retained})
     ):
         return None
-    return {
+    record = {
         "query_index": int(query_index),
         "wire_value_type": str(
             inference_evidence.get("wire_response_type") or "unknown"
@@ -525,6 +531,35 @@ def _prevalidation_vendor_action_evidence(
         "raw_bounds_validated": False,
         "chunk_contract_validated": False,
     }
+    normalization = inference_evidence.get(
+        "candidate_specific_action_normalization"
+    )
+    if isinstance(normalization, Mapping) and candidate_action_chunk is not None:
+        retained_normalized = _json_safe_policy_action(candidate_action_chunk)
+        normalized_digest = canonical_digest(
+            {"candidate_normalized_action_chunk": retained_normalized}
+        )
+        declared_digest = normalization.get("normalized_action_chunk_digest")
+        if normalization.get("normalization_applied") is True:
+            if declared_digest != normalized_digest:
+                raise PolicyEpisodeError(
+                    [BLOCKER_CANDIDATE_NORMALIZATION_EVIDENCE_INVALID]
+                )
+            record.update(
+                {
+                    "candidate_specific_action_normalization": dict(
+                        normalization
+                    ),
+                    "candidate_normalized_action_chunk": retained_normalized,
+                    "candidate_normalized_action_chunk_digest": normalized_digest,
+                    "candidate_adapter_output_bounds_validated": False,
+                }
+            )
+        else:
+            record["candidate_specific_action_normalization"] = dict(
+                normalization
+            )
+    return record
 
 
 def _motion_and_command_evidence(
@@ -1180,7 +1215,9 @@ def run_policy_episode(
         episode_progress["candidate_action_returned"] = True
         episode_progress["policy_inference_evidence"] = policy_inference_evidence
         raw_action_evidence = _prevalidation_vendor_action_evidence(
-            policy_inference_evidence, query_index=query_index
+            policy_inference_evidence,
+            query_index=query_index,
+            candidate_action_chunk=chunk,
         ) or _raw_policy_action_evidence(
             chunk, query_index=query_index
         )
@@ -1223,8 +1260,29 @@ def run_policy_episode(
             raw_action_evidence["raw_bound_validation_errors"] = list(exc.errors)
             _emit_progress("policy_action_bounds_refused")
             raise
-        raw_action_evidence["raw_bounds_validated"] = True
-        raw_action_evidence["raw_bound_contract"] = raw_bound_contract
+        normalization = raw_action_evidence.get(
+            "candidate_specific_action_normalization"
+        )
+        if (
+            isinstance(normalization, Mapping)
+            and normalization.get("normalization_applied") is True
+        ):
+            pre_bounds = normalization.get(
+                "pre_normalization_gripper_bounds"
+            )
+            raw_action_evidence["raw_bounds_validated"] = bool(
+                isinstance(pre_bounds, Mapping)
+                and pre_bounds.get("within_bounds") is True
+            )
+            raw_action_evidence[
+                "candidate_adapter_output_bounds_validated"
+            ] = True
+            raw_action_evidence[
+                "candidate_adapter_output_bound_contract"
+            ] = raw_bound_contract
+        else:
+            raw_action_evidence["raw_bounds_validated"] = True
+            raw_action_evidence["raw_bound_contract"] = raw_bound_contract
         episode_progress["candidate_action_bounds_validated"] = True
         _emit_progress("policy_action_bounds_validated")
         plan = plan_chunk_execution(

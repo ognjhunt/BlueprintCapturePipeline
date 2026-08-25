@@ -37,6 +37,7 @@ except ImportError:  # flat provider runtime
 SCHEMA_VERSION = "openpi_droid_policy_runtime.v1"
 EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
 SERVER_METADATA_SCHEMA_VERSION = "openpi_droid_policy_server_metadata.v1"
+ACTION_NORMALIZATION_SCHEMA_VERSION = "openpi_droid_action_normalization.v1"
 SUPPORTED_ACTION_SPACES = frozenset({"joint_position"})
 SUPPORTED_ACTION_CHUNK_ROWS = frozenset({10, 15})
 OPENPI_INFERENCE_RESPONSE_KEYS = frozenset(
@@ -53,6 +54,9 @@ LOCAL_VERIFICATION_FIELDS = frozenset(
 ARENA_CANDIDATE_POLICY_IDS = {
     "pi05_droid": "pi05_droid_jointpos_polaris",
 }
+PI05_DROID_POLICY_ID = ARENA_CANDIDATE_POLICY_IDS["pi05_droid"]
+PI05_DROID_GRIPPER_DIMENSION = 7
+PI05_DROID_GRIPPER_THRESHOLD = 0.5
 
 
 def canonical_sha256(value: Any) -> str:
@@ -109,6 +113,131 @@ def _action_payload_returned(response: Any) -> bool:
     # OpenPI's contract requires an envelope, but an ndarray returned in its
     # place is still a genuine action payload that must be retained and refused.
     return callable(getattr(response, "tolist", None))
+
+
+def normalize_pi05_droid_action_chunk(
+    actions: Any, *, policy_id: str
+) -> tuple[Any, dict[str, Any] | None]:
+    """Apply only the publisher's pi0.5 DROID gripper binarization.
+
+    The pinned OpenPI DROID example converts the eighth value to ``1`` when it
+    is strictly above ``0.5`` and to ``0`` otherwise before sending the action
+    to ``RobotEnv``. Model outputs are quantile-unnormalized without clipping,
+    so a finite gripper value can be slightly outside ``[0, 1]`` while retaining
+    an unambiguous binary meaning. This candidate adapter reproduces that
+    discrete transform and does not modify any of the seven arm dimensions.
+
+    Malformed, non-numeric, wrong-width, or non-finite chunks are returned
+    untouched so the shared episode validator can refuse them with its existing
+    typed errors. The exact vendor response is retained separately before this
+    function is called.
+    """
+
+    if str(policy_id) != PI05_DROID_POLICY_ID:
+        return actions, None
+
+    import numpy as np
+
+    retained = _json_safe_vendor_response(actions)
+    evidence: dict[str, Any] = {
+        "schema_version": ACTION_NORMALIZATION_SCHEMA_VERSION,
+        "candidate_id": "pi05_droid",
+        "policy_id": PI05_DROID_POLICY_ID,
+        "openpi_revision": OPENPI_SOURCE_REVISION,
+        "publisher_reference_path": "examples/droid/main.py",
+        "publisher_transform": (
+            "gripper_dimension_7_binarized_to_1_if_strictly_above_0_5_else_0"
+        ),
+        "source_action_chunk_digest": (
+            "sha256:" + canonical_sha256({"source_action_chunk": retained})
+        ),
+        "arm_dimensions": list(range(PI05_DROID_GRIPPER_DIMENSION)),
+        "arm_values_modified": False,
+        "gripper_dimension": PI05_DROID_GRIPPER_DIMENSION,
+        "gripper_threshold": PI05_DROID_GRIPPER_THRESHOLD,
+        "normalization_applied": False,
+    }
+    try:
+        values = np.asarray(actions, dtype=float)
+    except (TypeError, ValueError) as exc:
+        evidence["status"] = "not_applied_non_numeric"
+        evidence["blocker"] = f"{type(exc).__name__}:{exc}"
+        return actions, evidence
+
+    evidence["observed_shape"] = list(values.shape)
+    if (
+        values.ndim != 2
+        or values.shape[0] == 0
+        or values.shape[1] != PI05_DROID_GRIPPER_DIMENSION + 1
+    ):
+        evidence["status"] = "not_applied_shape_invalid"
+        return actions, evidence
+    if not np.isfinite(values).all():
+        evidence["status"] = "not_applied_nonfinite"
+        return actions, evidence
+
+    gripper = values[:, PI05_DROID_GRIPPER_DIMENSION]
+    outside = np.flatnonzero((gripper < 0.0) | (gripper > 1.0))
+    pre_normalization_bounds: dict[str, Any] = {
+        "expected_inclusive_bounds": [0.0, 1.0],
+        "observed_min": float(np.min(gripper)),
+        "observed_max": float(np.max(gripper)),
+        "out_of_bounds_count": int(outside.size),
+        "within_bounds": bool(outside.size == 0),
+    }
+    if outside.size:
+        first = int(outside[0])
+        pre_normalization_bounds["first_out_of_bounds"] = {
+            "row": first,
+            "value": float(gripper[first]),
+        }
+
+    normalized = values.copy()
+    normalized[:, PI05_DROID_GRIPPER_DIMENSION] = (
+        gripper > PI05_DROID_GRIPPER_THRESHOLD
+    ).astype(float)
+    arm_preserved = np.array_equal(
+        normalized[:, :PI05_DROID_GRIPPER_DIMENSION],
+        values[:, :PI05_DROID_GRIPPER_DIMENSION],
+    )
+    if not arm_preserved:  # defensive invariant; never execute if it drifts
+        raise ValueError("pi05_droid_normalization_modified_arm_dimensions")
+    normalized_retained = _json_safe_vendor_response(normalized)
+    source_arm_retained = _json_safe_vendor_response(
+        values[:, :PI05_DROID_GRIPPER_DIMENSION]
+    )
+    normalized_arm_retained = _json_safe_vendor_response(
+        normalized[:, :PI05_DROID_GRIPPER_DIMENSION]
+    )
+    evidence.update(
+        {
+            "status": "applied",
+            "normalization_applied": True,
+            "pre_normalization_gripper_bounds": pre_normalization_bounds,
+            "gripper_values_modified_count": int(
+                np.count_nonzero(normalized[:, 7] != gripper)
+            ),
+            "normalized_gripper_values": sorted(
+                {float(value) for value in normalized[:, 7]}
+            ),
+            "arm_dimensions_preserved_exactly": True,
+            "source_arm_values_digest": (
+                "sha256:"
+                + canonical_sha256({"arm_values": source_arm_retained})
+            ),
+            "normalized_arm_values_digest": (
+                "sha256:"
+                + canonical_sha256({"arm_values": normalized_arm_retained})
+            ),
+            "normalized_action_chunk_digest": (
+                "sha256:"
+                + canonical_sha256(
+                    {"candidate_normalized_action_chunk": normalized_retained}
+                )
+            ),
+        }
+    )
+    return normalized, evidence
 
 
 @dataclass(frozen=True)
@@ -470,12 +599,20 @@ class OpenPIWebsocketDroidPolicyClient:
         # when the envelope is subsequently refused by our strict boundary.
         self.candidate_policy_queried = True
         actions = normalize_openpi_inference_response(raw_response)
+        actions, action_normalization = normalize_pi05_droid_action_chunk(
+            actions,
+            policy_id=self.policy_id,
+        )
         self._last_inference_evidence.update(
             {
                 "actions_extracted": True,
                 "action_chunk_shape": list(getattr(actions, "shape", ())),
             }
         )
+        if action_normalization is not None:
+            self._last_inference_evidence[
+                "candidate_specific_action_normalization"
+            ] = action_normalization
         return actions
 
     def last_inference_evidence(self) -> dict[str, Any]:

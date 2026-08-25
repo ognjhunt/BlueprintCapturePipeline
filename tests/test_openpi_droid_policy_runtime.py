@@ -12,12 +12,17 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline.openpi_droid_policy_runtime import (
+    OpenPIDroidPolicySpec,
     OpenPIWebsocketDroidPolicyClient,
     load_policy_spec,
     normalize_openpi_inference_response,
     serve_identity_bound_policy,
     validate_server_metadata,
     verify_local_checkpoint,
+)
+
+_LIVE_PI05_RESPONSE_FIXTURE = (
+    Path(__file__).parent / "fixtures/pi05_f615_gripper_overshoot_response.json"
 )
 
 
@@ -147,6 +152,75 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
         ).hexdigest()
     )
     assert client.evidence_summary()["identity_verified"] is True
+
+
+def test_pi05_client_binarizes_only_gripper_and_retains_live_overshoot() -> None:
+    """The publisher's DROID adapter thresholds gripper before robot execution."""
+
+    spec = OpenPIDroidPolicySpec(
+        policy_id="pi05_droid_jointpos_polaris",
+        config_name="pi05_droid_jointpos_polaris",
+        checkpoint_uri=(
+            "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris"
+        ),
+        checkpoint_object_manifest_sha256="1" * 64,
+        checkpoint_generation_manifest_sha256="2" * 64,
+        checkpoint_inventory_sha256="3" * 64,
+        checkpoint_object_count=1,
+        checkpoint_size_bytes=1,
+        action_space="joint_position",
+        action_chunk_rows=15,
+    )
+    fixture = json.loads(_LIVE_PI05_RESPONSE_FIXTURE.read_text(encoding="utf-8"))
+    response = fixture["raw_vendor_action_response"]
+    source = np.asarray(response["actions"], dtype=float)
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            return response
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+    normalized = client.infer({"prompt": "open the washer"})
+
+    assert np.array_equal(normalized[:, :7], source[:, :7])
+    assert normalized[:, 7].tolist() == [1.0] * 15
+    evidence = client.last_inference_evidence()
+    assert evidence["raw_vendor_action_response_digest"] == fixture[
+        "raw_vendor_action_response_digest"
+    ]
+    assert evidence["raw_vendor_action_response"]["actions"] == source.tolist()
+    normalization = evidence["candidate_specific_action_normalization"]
+    assert normalization["status"] == "applied"
+    assert normalization["arm_values_modified"] is False
+    assert normalization["arm_dimensions_preserved_exactly"] is True
+    assert normalization["source_arm_values_digest"] == normalization[
+        "normalized_arm_values_digest"
+    ]
+    assert normalization["pre_normalization_gripper_bounds"] == {
+        "expected_inclusive_bounds": [0.0, 1.0],
+        "observed_min": 1.007028531962514,
+        "observed_max": 1.0253319786572457,
+        "out_of_bounds_count": 15,
+        "within_bounds": False,
+        "first_out_of_bounds": {
+            "row": 0,
+            "value": 1.0253319786572457,
+        },
+    }
+    assert normalization["normalized_gripper_values"] == [1.0]
+    assert normalization["gripper_values_modified_count"] == 15
 
 
 def test_websocket_client_records_completed_query_before_response_refusal(
