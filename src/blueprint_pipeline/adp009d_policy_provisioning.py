@@ -84,6 +84,17 @@ def policy_venv_root(candidate_id: str) -> str:
     return f"{POLICY_VENV_PARENT}/{candidate_id}"
 CHECKPOINT_ROOT = "/opt/adp009d-checkpoints"
 UV_ROOT = "/opt/adp009d-uv"
+# A policy bundle is commit-bound, but the former installer URL selected the
+# newest uv release at provider runtime.  The retained GR00T attempt installed
+# uv 0.12.5; freeze that observed-working binary and its official release hash
+# so an exact bundle cannot execute a different package resolver later.
+UV_VERSION = "0.12.5"
+UV_PLATFORM = "x86_64-unknown-linux-gnu"
+UV_ARCHIVE_SHA256 = "68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
+UV_ARCHIVE_URL = (
+    f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/"
+    f"uv-{UV_PLATFORM}.tar.gz"
+)
 POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
 # Measured on the worker: Isaac runs /isaac-sim/kit/python/bin/python3 at
 # 3.12.12 under its own prefix, and /usr/bin/python3 at 3.12.3 exists
@@ -381,9 +392,15 @@ apt-get install -y -qq \
   "$OUT_DIR/adp009d_provisioning_preflight_after.json" || true
 
 export UV_INSTALL_DIR={uv_root}
-curl -LsSf https://astral.sh/uv/install.sh | sh
+UV_ARCHIVE="$(mktemp /tmp/blueprint-adp009d-uv.XXXXXX.tar.gz)"
+trap 'rm -f "$UV_ARCHIVE"' EXIT
+curl -LsSf {UV_ARCHIVE_URL} -o "$UV_ARCHIVE"
+printf '%s  %s\n' {UV_ARCHIVE_SHA256} "$UV_ARCHIVE" | sha256sum -c -
+mkdir -p "$UV_INSTALL_DIR"
+tar -xzf "$UV_ARCHIVE" -C "$UV_INSTALL_DIR" --strip-components=1
 UV="$UV_INSTALL_DIR/uv"
 test -x "$UV"
+test "$("$UV" --version)" = "uv {UV_VERSION}"
 
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:started"
 "$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
@@ -449,6 +466,9 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "topology": "shared_worker_separate_interpreter",
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
+        "uv_version": UV_VERSION,
+        "uv_archive_url": UV_ARCHIVE_URL,
+        "uv_archive_sha256": UV_ARCHIVE_SHA256,
         "checkpoint_root": f"{CHECKPOINT_ROOT}/{candidate_id}",
         "checkpoint_source": CANDIDATE_SOURCES[candidate_id],
         "checkpoint_repository": plan["checkpoint_repository"],
@@ -674,6 +694,13 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     if str(receipt.get("endpoint_host")) not in {"127.0.0.1", "localhost", "::1"}:
         errors.append(BLOCKER_NOT_LOOPBACK)
 
+    if (
+        receipt.get("uv_version") != UV_VERSION
+        or receipt.get("uv_archive_url") != UV_ARCHIVE_URL
+        or receipt.get("uv_archive_sha256") != UV_ARCHIVE_SHA256
+    ):
+        errors.append("policy_provisioning_uv_identity_mismatch")
+
     expected_wire_lock = (
         {
             "schema_version": GROOT_WIRE_WHEEL_SCHEMA_VERSION,
@@ -718,6 +745,10 @@ __all__ = [
     "POLICY_PORT",
     "POLICY_SOURCE_ROOT",
     "UV_ROOT",
+    "UV_VERSION",
+    "UV_PLATFORM",
+    "UV_ARCHIVE_URL",
+    "UV_ARCHIVE_SHA256",
     "POLICY_VENV_PARENT",
     "policy_venv_root",
     "SYSTEM_INTERPRETER",
