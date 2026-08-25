@@ -26,6 +26,12 @@ MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION = (
 MULTICAMERA_VISUAL_EVIDENCE_SCHEMA_VERSION = (
     "adp_multicamera_episode_visual_evidence.v1"
 )
+FAILED_POLICY_FRAME_MANIFEST_SCHEMA_VERSION = (
+    "adp_failed_policy_observation_frame_manifest.v1"
+)
+FAILED_POLICY_VISUAL_INDEX_SCHEMA_VERSION = (
+    "adp_failed_policy_visual_evidence_index.v1"
+)
 MANIPULATION_EVALUATION_CAMERA_IDS = ("external", "wrist", "overview")
 MANIPULATION_REVIEW_ONLY_CAMERA_IDS = ("overview",)
 
@@ -56,6 +62,247 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         raise FileExistsError(f"visual_evidence_overwrite_forbidden:{path.name}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(value), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _verified_retained_frame(
+    frame: Mapping[str, Any], *, output_dir: Path
+) -> dict[str, Any]:
+    """Rehash one already-retained PNG before sealing failure evidence."""
+
+    from PIL import Image
+    import numpy as np
+
+    checked = _json_mapping(frame, error="failed_policy_frame_not_json_mapping")
+    relative = str(checked.get("relative_path") or "")
+    path = (output_dir / relative).resolve()
+    root = output_dir.resolve()
+    if root != path and root not in path.parents:
+        raise ValueError("failed_policy_frame_path_outside_output")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("failed_policy_frame_missing")
+    if checked.get("png_sha256") != _file_sha256(path):
+        raise ValueError("failed_policy_frame_png_digest_mismatch")
+    with Image.open(path) as image:
+        rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    raw_digest = "sha256:" + hashlib.sha256(
+        np.ascontiguousarray(rgb).tobytes()
+    ).hexdigest()
+    if checked.get("raw_rgb_sha256") != raw_digest:
+        raise ValueError("failed_policy_frame_raw_digest_mismatch")
+    return checked
+
+
+def finalize_failed_policy_visual_evidence(
+    *,
+    output_dir: Path,
+    episode_id: str,
+    identity: Mapping[str, Any],
+    exact_policy_input_frames: Sequence[Mapping[str, Any]],
+    multicamera_policy_input_observations: Sequence[Mapping[str, Any]] = (),
+    review_observations: Sequence[Mapping[str, Any]] = (),
+    failure_reason: str,
+    frames_per_second: float = 4.0,
+) -> dict[str, Any]:
+    """Seal retained observations when an episode fails after its first input.
+
+    No terminal observation is invented. The manifest states that execution
+    ended after the listed inputs, rehashes every lossless PNG, and derives
+    review videos from only those observed bytes. Encoder failure cannot erase
+    the authoritative frame manifest; it becomes a typed video gap.
+    """
+
+    if not exact_policy_input_frames:
+        raise ValueError("failed_policy_exact_input_frames_missing")
+    exact = [
+        _verified_retained_frame(frame, output_dir=output_dir)
+        for frame in exact_policy_input_frames
+    ]
+    for frame in exact:
+        if (
+            frame.get("candidate_exact_policy_input") is not True
+            or frame.get("frame_manifest_digest")
+            != canonical_digest(frame, digest_field="frame_manifest_digest")
+        ):
+            raise ValueError("failed_policy_exact_input_frame_invalid")
+
+    policy_observations = [dict(row) for row in multicamera_policy_input_observations]
+    reviews = [dict(row) for row in review_observations]
+    observed = sorted(
+        [*policy_observations, *reviews],
+        key=lambda row: int(row.get("observation_index", -1)),
+    )
+    camera_ids: list[str] = []
+    for expected_index, observation in enumerate(observed):
+        if (
+            observation.get("observation_index") != expected_index
+            or observation.get("observation_digest")
+            != canonical_digest(observation, digest_field="observation_digest")
+        ):
+            raise ValueError("failed_policy_observation_record_invalid")
+        views = observation.get("views")
+        if not isinstance(views, Mapping) or not views:
+            raise ValueError("failed_policy_observation_views_missing")
+        observed_ids = sorted(str(camera_id) for camera_id in views)
+        if observation.get("camera_ids") != observed_ids:
+            raise ValueError("failed_policy_observation_camera_ids_mismatch")
+        if not camera_ids:
+            camera_ids = observed_ids
+        elif camera_ids != observed_ids:
+            raise ValueError("failed_policy_observation_camera_set_changed")
+        for camera_id, frame in views.items():
+            checked = _verified_retained_frame(frame, output_dir=output_dir)
+            if (
+                checked.get("camera_id") != camera_id
+                or checked.get("frame_digest")
+                != canonical_digest(checked, digest_field="frame_digest")
+            ):
+                raise ValueError("failed_policy_camera_frame_invalid")
+
+    manifest: dict[str, Any] = {
+        "schema_version": FAILED_POLICY_FRAME_MANIFEST_SCHEMA_VERSION,
+        "episode_id": episode_id,
+        "identity": _json_mapping(
+            identity, error="failed_policy_identity_not_json_mapping"
+        ),
+        "failure_reason": str(failure_reason),
+        "candidate_exact_policy_input_frames": exact,
+        "multicamera_policy_input_observations": policy_observations,
+        "review_observations": reviews,
+        "camera_ids": camera_ids,
+        "terminal_observation_present": False,
+        "terminal_observation_invented": False,
+        "lossless_policy_inputs_are_authoritative": True,
+        "derived_videos_are_human_review_convenience": True,
+        "frame_manifest_digest": "",
+    }
+    manifest["frame_manifest_digest"] = canonical_digest(
+        manifest, digest_field="frame_manifest_digest"
+    )
+    manifest_path = (
+        output_dir / "media" / episode_id / "failed_frame_manifest.json"
+    )
+    _write_json(manifest_path, manifest)
+
+    artifacts: list[dict[str, Any]] = [
+        {
+            "role": "failed_episode_observation_frame_manifest",
+            "relative_path": manifest_path.relative_to(output_dir).as_posix(),
+            "sha256": _file_sha256(manifest_path),
+            "size_bytes": manifest_path.stat().st_size,
+        }
+    ]
+    for frame in exact:
+        artifacts.append(
+            {
+                "role": "policy_input_frame",
+                "relative_path": frame["relative_path"],
+                "sha256": frame["png_sha256"],
+                "raw_rgb_sha256": frame["raw_rgb_sha256"],
+                "size_bytes": frame["size_bytes"],
+                "frame_index": frame["frame_index"],
+            }
+        )
+    for observation in observed:
+        for camera_id, frame in observation["views"].items():
+            artifacts.append(
+                {
+                    "role": "policy_input_camera_frame"
+                    if observation["kind"] == "policy-input"
+                    else "review_camera_frame",
+                    "camera_id": camera_id,
+                    "observation_index": observation["observation_index"],
+                    "relative_path": frame["relative_path"],
+                    "sha256": frame["png_sha256"],
+                    "raw_rgb_sha256": frame["raw_rgb_sha256"],
+                    "size_bytes": frame["size_bytes"],
+                }
+            )
+
+    videos: dict[str, dict[str, Any]] = {}
+    video_gaps: list[dict[str, str]] = []
+    video_sources: dict[str, list[Path]] = {}
+    if observed:
+        for camera_id in camera_ids:
+            video_sources[camera_id] = [
+                output_dir / observation["views"][camera_id]["relative_path"]
+                for observation in observed
+            ]
+    else:
+        video_sources["exact_policy_input"] = [
+            output_dir / frame["relative_path"] for frame in exact
+        ]
+    for camera_id, paths in video_sources.items():
+        video_path = (
+            output_dir / "media" / episode_id / f"failed-{camera_id}.mp4"
+        )
+        try:
+            video = _encode_episode_video(
+                paths,
+                video_path=video_path,
+                frames_per_second=frames_per_second,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            video_gaps.append(
+                {
+                    "type": "derived_review_video_unavailable",
+                    "camera_id": camera_id,
+                    "reason": f"{type(exc).__name__}:{exc}",
+                }
+            )
+            continue
+        video["relative_path"] = video_path.relative_to(output_dir).as_posix()
+        video["camera_id"] = camera_id
+        video["derived_from_frame_manifest_digest"] = manifest[
+            "frame_manifest_digest"
+        ]
+        videos[camera_id] = video
+        artifacts.append(
+            {
+                "role": "failed_episode_review_video",
+                "camera_id": camera_id,
+                "relative_path": video["relative_path"],
+                "sha256": video["sha256"],
+                "size_bytes": video["size_bytes"],
+                "media_type": "video/mp4",
+            }
+        )
+
+    visual = {
+        "schema_version": "adp_failed_policy_visual_evidence.v1",
+        "status": (
+            "complete_failure_evidence"
+            if not video_gaps
+            else "lossless_frames_complete_review_video_unavailable"
+        ),
+        "failure_reason": str(failure_reason),
+        "human_review_available": not video_gaps,
+        "frame_manifest_digest": manifest["frame_manifest_digest"],
+        "candidate_exact_policy_input_frame_count": len(exact),
+        "multicamera_policy_input_observation_count": len(policy_observations),
+        "terminal_observation_present": False,
+        "terminal_observation_invented": False,
+        "videos": videos,
+        "video_gaps": video_gaps,
+        "vlm_grading_used": False,
+        "policy_self_grading_used": False,
+    }
+    index: dict[str, Any] = {
+        "schema_version": FAILED_POLICY_VISUAL_INDEX_SCHEMA_VERSION,
+        "episode_id": episode_id,
+        "visual_evidence": visual,
+        "media_artifacts": artifacts,
+        "visual_index_digest": "",
+    }
+    index["visual_index_digest"] = canonical_digest(
+        index, digest_field="visual_index_digest"
+    )
+    index_path = (
+        output_dir / "media" / episode_id / "failed_visual_evidence_index.json"
+    )
+    _write_json(index_path, index)
+    index["relative_path"] = index_path.relative_to(output_dir).as_posix()
+    index["sha256"] = _file_sha256(index_path)
+    return index
 
 
 def persist_observation_frame(
@@ -844,12 +1091,15 @@ def finalize_manipulation_evaluation_visual_evidence(
 
 __all__ = [
     "FRAME_MANIFEST_SCHEMA_VERSION",
+    "FAILED_POLICY_FRAME_MANIFEST_SCHEMA_VERSION",
+    "FAILED_POLICY_VISUAL_INDEX_SCHEMA_VERSION",
     "MANIPULATION_EVALUATION_CAMERA_IDS",
     "MANIPULATION_REVIEW_ONLY_CAMERA_IDS",
     "MULTICAMERA_FRAME_MANIFEST_SCHEMA_VERSION",
     "MULTICAMERA_VISUAL_EVIDENCE_SCHEMA_VERSION",
     "VISUAL_EVIDENCE_SCHEMA_VERSION",
     "finalize_manipulation_evaluation_visual_evidence",
+    "finalize_failed_policy_visual_evidence",
     "finalize_multicamera_visual_evidence",
     "finalize_visual_evidence",
     "persist_camera_observation_frame",
