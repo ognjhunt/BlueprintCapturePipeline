@@ -20,6 +20,9 @@ from .task_evaluation_scene_configuration_adapters import (
 from .task_evaluation_scene_configuration_builtin_adapters import (
     builtin_scene_configuration_adapter_handlers,
 )
+from .task_evaluation_scene_configuration_builtin_producers import (
+    builtin_scene_configuration_stage_producer_registry,
+)
 from .task_evaluation_scene_configuration_orchestrator import (
     STAGE_RESULT_SCHEMA_VERSION,
 )
@@ -64,6 +67,11 @@ def execute_scene_configuration_stage_chain(
     runtime_registry = registry or SceneConfigurationAdapterRegistry(
         builtin_scene_configuration_adapter_handlers()
     )
+    runtime_producers = producer_registry or (
+        builtin_scene_configuration_stage_producer_registry(
+            expected_source_commit=str(envelope.get("expected_production_commit") or "")
+        )
+    )
     root = Path(output_root).resolve()
     if root.is_symlink() or not root.is_dir():
         raise TaskEvaluationSceneConfigurationProviderRuntimeError(
@@ -86,13 +94,9 @@ def execute_scene_configuration_stage_chain(
         stage_output.mkdir(mode=0o750, exist_ok=False)
         execution_class = str(stage.get("execution_class") or "")
         if execution_class == "gpu_canary":
-            if producer_registry is None:
-                raise TaskEvaluationSceneConfigurationProviderRuntimeError(
-                    f"scene_configuration_stage_producer_missing:{stage_id}"
-                )
             producer_output = stage_output / "producer"
             producer_output.mkdir(mode=0o750)
-            produced_artifacts = producer_registry.execute(
+            produced_artifacts = runtime_producers.execute(
                 stage=stage,
                 envelope=envelope,
                 configuration=configuration,
