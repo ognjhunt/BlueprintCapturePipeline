@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .adp_task_evaluation_abstention import valid_vast_provider_zero_api_call
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_construction_bundle import (
     load_verified_native_task_arena_construction_bundle,
@@ -160,7 +161,7 @@ def _validated_api_provider_zero(path: Path) -> dict[str, Any]:
         or value.get("global_live_resource_count") != 0
         or value.get("provider_zero") is not True
         or value.get("inventory") != []
-        or value.get("api_command") != ["vastai", "show", "instances", "--raw"]
+        or not valid_vast_provider_zero_api_call(value.get("api_command"))
         or value.get("raw_secret_values_recorded") is not False
         or not isinstance(value.get("stderr_present"), bool)
         or value.get("provider_zero_digest")

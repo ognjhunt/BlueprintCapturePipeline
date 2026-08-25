@@ -6,9 +6,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import blueprint_pipeline.adp_task_evaluation_abstention as abstention
 
 from blueprint_pipeline.adp_task_evaluation_abstention import (
     TaskEvaluationAbstentionError,
+    VAST_PROVIDER_ZERO_API_CALL,
     collect_vast_provider_zero_receipt,
     materialize_gaussian_contribution_authority_abstention,
     materialize_gaussian_heldout_ownership_abstention,
@@ -438,6 +440,69 @@ def test_native_gate_abstention_is_derived_from_null_teardown_and_api_zero(
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+
+
+def test_provider_zero_uses_hardened_vast_api_without_cli() -> None:
+    provider_zero = collect_vast_provider_zero_receipt(
+        inventory_collector=lambda: {
+            "provider": "vast",
+            "status": "observed",
+            "api_confirmed": True,
+            "resources": [],
+            "blockers": None,
+            "live_resource_count": 0,
+            "raw_provider_response_recorded": False,
+        }
+    )
+
+    assert provider_zero["api_command"] == VAST_PROVIDER_ZERO_API_CALL
+    assert provider_zero["provider_zero"] is True
+    assert provider_zero["global_live_resource_count"] == 0
+
+
+def test_provider_zero_refuses_ambiguous_or_failed_api_collectors() -> None:
+    with pytest.raises(TaskEvaluationAbstentionError, match="collector_ambiguous"):
+        collect_vast_provider_zero_receipt(
+            command_runner=lambda argv: subprocess.CompletedProcess(
+                argv, returncode=0, stdout="[]", stderr=""
+            ),
+            inventory_collector=lambda: {},
+        )
+    with pytest.raises(TaskEvaluationAbstentionError, match="api_query_failed"):
+        collect_vast_provider_zero_receipt(
+            inventory_collector=lambda: {
+                "provider": "vast",
+                "status": "blocked",
+                "api_confirmed": False,
+                "resources": [],
+                "blockers": ["vast_api_key_missing"],
+                "live_resource_count": None,
+                "raw_provider_response_recorded": False,
+            }
+        )
+
+
+def test_provider_zero_module_cli_writes_exclusive_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = collect_vast_provider_zero_receipt(
+        inventory_collector=lambda: {
+            "provider": "vast",
+            "status": "observed",
+            "api_confirmed": True,
+            "resources": [],
+            "blockers": None,
+            "live_resource_count": 0,
+            "raw_provider_response_recorded": False,
+        }
+    )
+    monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", lambda: receipt)
+    output = tmp_path / "provider-zero.json"
+
+    assert abstention.main(["--collect-vast-provider-zero", str(output)]) == 0
+    assert json.loads(output.read_text()) == receipt
+    with pytest.raises(FileExistsError):
+        abstention.main(["--collect-vast-provider-zero", str(output)])
 
 
 def test_native_gate_abstention_refuses_policy_or_control_result(tmp_path: Path) -> None:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
+import argparse
 import hashlib
+import json
+import os
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,11 @@ CONSTRUCTION_SCHEMA_VERSION = "articulated_public_scene_construction_run.v2"
 FREEZE_SCHEMA_VERSION = "second_scene_scene_task_freeze.v1"
 NATIVE_GATE_ABSTENTION_SCHEMA_VERSION = "adp_native_gate_abstention.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
+VAST_PROVIDER_ZERO_API_CALL = [
+    "blueprint_pipeline.gpu_render_providers.VastRenderProvider.billable_inventory",
+    "name_prefix=",
+]
+VAST_PROVIDER_ZERO_LEGACY_COMMAND = ["vastai", "show", "instances", "--raw"]
 GAUSSIAN_ATTEMPT_SCHEMA_VERSION = "adp_gaussian_excision_attempt_receipt.v1"
 GAUSSIAN_RECOVERY_SCHEMA_VERSION = "adp_gaussian_excision_recovery_readiness.v1"
 DUAL_TASK_FREEZE_SCHEMA_VERSION = "dual_task_task_freeze.v1"
@@ -69,38 +75,55 @@ def _bound_json_file(
 def collect_vast_provider_zero_receipt(
     *,
     command_runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+    inventory_collector: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Collect read-only, API-derived global Vast inventory evidence."""
 
-    command = ["vastai", "show", "instances", "--raw"]
-    runner = command_runner or (
-        lambda argv: subprocess.run(  # noqa: S603 - fixed argv, no shell
-            argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    )
-    completed = runner(command)
-    try:
-        inventory = json.loads(completed.stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise TaskEvaluationAbstentionError(
-            "provider_zero_api_response_invalid"
-        ) from exc
-    if completed.returncode != 0 or not isinstance(inventory, list):
-        raise TaskEvaluationAbstentionError("provider_zero_api_query_failed")
+    if command_runner is not None and inventory_collector is not None:
+        raise TaskEvaluationAbstentionError("provider_zero_collector_ambiguous")
+    stderr_present = False
+    if command_runner is not None:
+        api_call = list(VAST_PROVIDER_ZERO_LEGACY_COMMAND)
+        completed = command_runner(api_call)
+        try:
+            inventory = json.loads(completed.stdout)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationAbstentionError(
+                "provider_zero_api_response_invalid"
+            ) from exc
+        if completed.returncode != 0 or not isinstance(inventory, list):
+            raise TaskEvaluationAbstentionError("provider_zero_api_query_failed")
+        stderr_present = bool(completed.stderr.strip())
+    else:
+        if inventory_collector is None:
+            from .gpu_render_providers import VastRenderProvider
+
+            def inventory_collector() -> Mapping[str, Any]:
+                return VastRenderProvider().billable_inventory(name_prefix="")
+        observed = inventory_collector()
+        inventory = observed.get("resources")
+        if (
+            observed.get("provider") != "vast"
+            or observed.get("status") != "observed"
+            or observed.get("api_confirmed") is not True
+            or observed.get("blockers") not in (None, [])
+            or not isinstance(inventory, list)
+            or any(not isinstance(row, Mapping) for row in inventory)
+            or observed.get("live_resource_count") != len(inventory)
+            or observed.get("raw_provider_response_recorded") is not False
+        ):
+            raise TaskEvaluationAbstentionError("provider_zero_api_query_failed")
+        api_call = list(VAST_PROVIDER_ZERO_API_CALL)
     receipt: dict[str, Any] = {
         "schema_version": PROVIDER_ZERO_SCHEMA_VERSION,
         "provider": "vast",
         "observed_at_utc": datetime.now(UTC).isoformat(),
-        "api_command": command,
+        "api_command": api_call,
         "api_confirmed": True,
         "global_live_resource_count": len(inventory),
         "provider_zero": inventory == [],
         "inventory": inventory,
-        "stderr_present": bool(completed.stderr.strip()),
+        "stderr_present": stderr_present,
         "raw_secret_values_recorded": False,
         "provider_zero_digest": "",
     }
@@ -110,6 +133,47 @@ def collect_vast_provider_zero_receipt(
     if not receipt["provider_zero"]:
         raise TaskEvaluationAbstentionError("provider_zero_not_observed")
     return receipt
+
+
+def valid_vast_provider_zero_api_call(value: object) -> bool:
+    """Accept the hardened in-process API seam and retained legacy receipts."""
+
+    return value in (VAST_PROVIDER_ZERO_API_CALL, VAST_PROVIDER_ZERO_LEGACY_COMMAND)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Write an exclusive, secret-free global Vast provider-zero receipt."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--collect-vast-provider-zero", required=True)
+    args = parser.parse_args(argv)
+    output = Path(args.collect_vast_provider_zero).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    receipt = collect_vast_provider_zero_receipt()
+    payload = (json.dumps(receipt, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o440)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        output.unlink(missing_ok=True)
+        raise
+    print(
+        json.dumps(
+            {
+                "api_confirmed": receipt["api_confirmed"],
+                "global_live_resource_count": receipt["global_live_resource_count"],
+                "observed_at_utc": receipt["observed_at_utc"],
+                "provider_zero": receipt["provider_zero"],
+                "provider_zero_digest": receipt["provider_zero_digest"],
+                "raw_secret_values_recorded": receipt["raw_secret_values_recorded"],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def materialize_native_gate_task_evaluation_abstention(
@@ -200,8 +264,7 @@ def materialize_native_gate_task_evaluation_abstention(
     if (
         provider_zero.get("schema_version") != PROVIDER_ZERO_SCHEMA_VERSION
         or provider_zero.get("provider") != "vast"
-        or provider_zero.get("api_command")
-        != ["vastai", "show", "instances", "--raw"]
+        or not valid_vast_provider_zero_api_call(provider_zero.get("api_command"))
         or provider_zero.get("api_confirmed") is not True
         or provider_zero.get("global_live_resource_count") != 0
         or provider_zero.get("provider_zero") is not True
@@ -739,9 +802,17 @@ def materialize_task_evaluation_abstention(
 __all__ = [
     "SCHEMA_VERSION",
     "TaskEvaluationAbstentionError",
+    "VAST_PROVIDER_ZERO_API_CALL",
+    "VAST_PROVIDER_ZERO_LEGACY_COMMAND",
     "collect_vast_provider_zero_receipt",
     "materialize_gaussian_contribution_authority_abstention",
     "materialize_gaussian_heldout_ownership_abstention",
     "materialize_task_evaluation_abstention",
     "materialize_native_gate_task_evaluation_abstention",
+    "main",
+    "valid_vast_provider_zero_api_call",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
