@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
 
 import pytest
 
+from blueprint_pipeline import project_spend_reconciliation as project_spend
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.project_spend_reconciliation import (
     materialize_project_spend_reconciliation,
@@ -121,3 +124,74 @@ def test_lane_local_receipt_cannot_authorize_a_new_project_lane(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="project_spend_reconciliation_invalid"):
         validate_project_spend_reconciliation(path)
+
+
+def test_existing_output_is_never_replaced(tmp_path: Path) -> None:
+    authority_path, authority = _authority(tmp_path / "authority.json")
+    output = tmp_path / "project-spend.json"
+    materialize_project_spend_reconciliation(
+        baseline_authority_path=authority_path,
+        posted_reconciliation_paths=[],
+        unposted_authority_paths=[authority_path],
+        expected_coverage_ids=[str(authority["authorization_digest"])],
+        completeness_reference="first retained queue inventory",
+        authorized_by="user",
+        authorized_on="2026-08-25T15:15:00+00:00",
+        output_path=output,
+    )
+    original = output.read_bytes()
+
+    with pytest.raises(ValueError, match="project_spend_output_exists"):
+        materialize_project_spend_reconciliation(
+            baseline_authority_path=authority_path,
+            posted_reconciliation_paths=[],
+            unposted_authority_paths=[authority_path],
+            expected_coverage_ids=[str(authority["authorization_digest"])],
+            completeness_reference="second retained queue inventory",
+            authorized_by="user",
+            authorized_on="2026-08-25T15:16:00+00:00",
+            output_path=output,
+        )
+
+    assert output.read_bytes() == original
+
+
+def test_concurrent_materializers_cannot_overwrite_the_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path, authority = _authority(tmp_path / "authority.json")
+    output = tmp_path / "project-spend.json"
+    barrier = threading.Barrier(2)
+    original_write = project_spend._write_json_exclusive
+
+    def synchronized_write(path: Path, value: dict[str, object]) -> None:
+        barrier.wait(timeout=5)
+        original_write(path, value)
+
+    monkeypatch.setattr(project_spend, "_write_json_exclusive", synchronized_write)
+
+    def materialize(reference: str) -> str:
+        try:
+            materialize_project_spend_reconciliation(
+                baseline_authority_path=authority_path,
+                posted_reconciliation_paths=[],
+                unposted_authority_paths=[authority_path],
+                expected_coverage_ids=[str(authority["authorization_digest"])],
+                completeness_reference=reference,
+                authorized_by="user",
+                authorized_on="2026-08-25T15:15:00+00:00",
+                output_path=output,
+            )
+        except ValueError as exc:
+            return str(exc)
+        return "materialized"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(materialize, ("coverage-one", "coverage-two")))
+
+    assert sorted(outcomes) == ["materialized", "project_spend_output_exists"]
+    receipt, _ = validate_project_spend_reconciliation(output)
+    assert receipt["completeness_authority"]["authority_reference"] in {
+        "coverage-one",
+        "coverage-two",
+    }

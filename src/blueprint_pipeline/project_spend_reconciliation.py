@@ -16,11 +16,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_attempt_authority import validate_same_goal_spend_reconciliation
 
@@ -44,6 +44,53 @@ def _record(path: Path, **extra: Any) -> dict[str, Any]:
         "sha256": _sha256(path),
         **extra,
     }
+
+
+def _write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+    """Seal one new path without any check-then-replace overwrite window."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = (
+        os.O_CREAT
+        | os.O_EXCL
+        | os.O_WRONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags, 0o000)
+    except FileExistsError as exc:
+        raise ValueError("project_spend_output_exists") from exc
+    reserved = os.fstat(descriptor)
+    try:
+        payload = json.dumps(dict(value), indent=2).encode("utf-8")
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o440)
+            os.fsync(stream.fileno())
+        directory_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            observed = path.stat(follow_symlinks=False)
+            if observed.st_dev == reserved.st_dev and observed.st_ino == reserved.st_ino:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _read(path: str | Path, *, code: str) -> tuple[Path, dict[str, Any]]:
@@ -191,6 +238,7 @@ def materialize_project_spend_reconciliation(
         "covered_post_baseline_attempt_ids": sorted(observed_coverage),
         "total_cost_usd": conservative_total,
         "completeness_authority": {
+            "authority_kind": "caller_supplied_human_authorized_coverage",
             "authority_reference": completeness_reference.strip(),
             "authorized_by": authorized_by.strip(),
             "authorized_on": authorized_on.strip(),
@@ -204,7 +252,10 @@ def materialize_project_spend_reconciliation(
         "claim_boundary": (
             "The baseline is inherited from one sealed project authority; "
             "posted increments are official-billing reconciliations and "
-            "admitted unposted attempts are counted at their full caps."
+            "admitted unposted attempts are counted at their full caps. The "
+            "post-baseline coverage set is supplied under explicit human "
+            "authority; this materializer does not discover global billing "
+            "or launch-queue completeness."
         ),
         "receipt_digest": "",
     }
@@ -212,10 +263,7 @@ def materialize_project_spend_reconciliation(
         receipt, digest_field="receipt_digest"
     )
     destination = Path(output_path).expanduser().resolve()
-    if destination.exists() or destination.is_symlink():
-        raise ValueError("project_spend_output_exists")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    write_json(destination, receipt)
+    _write_json_exclusive(destination, receipt)
     validate_project_spend_reconciliation(destination)
     return receipt
 
@@ -297,6 +345,8 @@ def validate_project_spend_reconciliation(
     )
     if (
         not isinstance(completeness, Mapping)
+        or completeness.get("authority_kind")
+        != "caller_supplied_human_authorized_coverage"
         or not str(completeness.get("authority_reference") or "").strip()
         or not str(completeness.get("authorized_by") or "").strip()
         or not str(completeness.get("authorized_on") or "").strip()
