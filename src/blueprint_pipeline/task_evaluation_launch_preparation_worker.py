@@ -690,6 +690,60 @@ def process_launch_preparation_queue(
                         ),
                         **configured_revision["source"]["rights_admission"],
                     },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.metric"
+                        ),
+                        **configured_revision["registration"]["metric"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.support_plane"
+                        ),
+                        **configured_revision["registration"]["support_plane"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.robot_mount_interface"
+                        ),
+                        **configured_revision["registration"][
+                            "robot_mount_interface"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.camera_calibration"
+                        ),
+                        **configured_revision["registration"][
+                            "camera_calibration"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.workspace_clearance"
+                        ),
+                        **configured_revision["registration"][
+                            "workspace_clearance"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.task_template.definition"
+                        ),
+                        **configured_revision["task_template"]["definition"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.task_template.success_criteria"
+                        ),
+                        **configured_revision["task_template"]["success_criteria"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.task_template.execution"
+                        ),
+                        **configured_revision["task_template"]["execution"],
+                    },
                 ]
                 transitive_references.extend(
                     {

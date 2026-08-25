@@ -68,6 +68,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-launch-preparation.path",
+    "blueprint-task-evaluation-episode-compilation.service",
+    "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
 )
@@ -77,6 +79,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
 #: ``--arm-path-units`` is explicitly supplied.
 DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-preparation.path",
+    "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
 )
 #: The only unit kinds a release may install.  The oneshot ``.service`` and its

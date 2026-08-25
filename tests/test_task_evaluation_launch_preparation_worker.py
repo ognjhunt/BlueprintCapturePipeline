@@ -199,6 +199,24 @@ def request_with_fetchable_bytes(
                     configured_revision["source"]["rights_evidence"]
                 )
             ],
+            *[
+                (f"registration-{name}", reference)
+                for name, reference in configured_revision[
+                    "registration"
+                ].items()
+            ],
+            (
+                "task-template-definition",
+                configured_revision["task_template"]["definition"],
+            ),
+            (
+                "task-template-success-criteria",
+                configured_revision["task_template"]["success_criteria"],
+            ),
+            (
+                "task-template-execution",
+                configured_revision["task_template"]["execution"],
+            ),
         ):
             payload = f"configured-revision-{label}".encode()
             reference["digest"] = (

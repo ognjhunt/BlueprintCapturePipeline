@@ -296,6 +296,21 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/preparations/pending/*.json\n",
         encoding="utf-8",
     )
+    compilation_service = (
+        unit_dir / "blueprint-task-evaluation-episode-compilation.service"
+    )
+    compilation_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-compile-episode\n",
+        encoding="utf-8",
+    )
+    compilation_path = (
+        unit_dir / "blueprint-task-evaluation-episode-compilation.path"
+    )
+    compilation_path.write_text(
+        "[Path]\nPathChanged=/episode-compilations/pending\n"
+        "PathExistsGlob=/episode-compilations/pending/*.json\n",
+        encoding="utf-8",
+    )
     activation_service = (
         unit_dir / "blueprint-task-evaluation-launch-activation.service"
     )
@@ -329,6 +344,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         path_unit,
         preparation_service,
         preparation_path,
+        compilation_service,
+        compilation_path,
         activation_service,
         activation_path,
     ):
@@ -361,11 +378,14 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-episode-compilation.service",
+        "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
     )
 

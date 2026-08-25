@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pwd
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -103,6 +104,100 @@ def test_configured_revision_rights_substitution_blocks_before_activation(
         )
 
 
+def test_activation_consumes_production_compiler_adapter_without_codex_handoff(
+    tmp_path: Path,
+) -> None:
+    preparation, _result, _payloads, queue, input_root = (
+        _stage_verified_preparation(tmp_path)
+    )
+    result_path = next((queue / "results").glob("*.json"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    compilation_id = preparation["preparation_id"]
+    envelope_digest = "sha256:" + "e" * 64
+    result.update(
+        status="queued_for_production_episode_compilation",
+        episode_compilation_id=compilation_id,
+        episode_compilation_queue_envelope_digest=envelope_digest,
+    )
+    result.pop("adapter_result_digest")
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    result_path.chmod(0o640)
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    compiled_output = tmp_path / "compiled-episodes"
+    owned = compiled_output / compilation_id
+    source_adapter = (
+        input_root / preparation["preparation_id"] / "native-arena-adapter"
+    )
+    compiled_adapter = owned / "native-arena-adapter"
+    shutil.copytree(source_adapter, compiled_adapter)
+    adapter_path = (
+        compiled_adapter
+        / "task_evaluation_native_arena_adapter_result.v1.json"
+    )
+    adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
+    adapter["packet_root"] = str(compiled_adapter / "construction-packet")
+    adapter["runtime_source_receipt"] = str(
+        compiled_adapter
+        / "runtime-source"
+        / "native_task_runtime_source_packet.v1.json"
+    )
+    adapter["result_digest"] = canonical_digest(
+        adapter, digest_field="result_digest"
+    )
+    adapter_path.chmod(0o640)
+    adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
+    compilation_queue = tmp_path / "episode-compilation-queue"
+    (compilation_queue / "results").mkdir(parents=True)
+    compilation = {
+        "schema_version": "task_evaluation_episode_compilation_result.v1",
+        "status": "compiled_for_production_launch",
+        "compilation_id": compilation_id,
+        "source_commit": preparation["expected_production_commit"],
+        "configured_scene_revision_digest": preparation["task"][
+            "configured_scene_revision_digest"
+        ],
+        "adapter_result_path": str(adapter_path),
+        "adapter_result_digest": adapter["result_digest"],
+        "result_digest": "",
+    }
+    compilation["result_digest"] = canonical_digest(
+        compilation, digest_field="result_digest"
+    )
+    write_launch_preparation_record_exclusive(
+        compilation_queue
+        / "results"
+        / f"{compilation_id}-{envelope_digest.removeprefix('sha256:')}.json",
+        compilation,
+    )
+    activation = {
+        "preparation": {
+            "preparation_id": preparation["preparation_id"],
+            "request_digest": launch_preparation_request_digest(preparation),
+            "result_digest": result["result_digest"],
+        },
+        "team_namespace": preparation["team_namespace"],
+        "expected_production_commit": preparation[
+            "expected_production_commit"
+        ],
+    }
+
+    loaded_request, _loaded_result, loaded_adapter, _references = (
+        worker._load_verified_preparation(
+            activation_request=activation,
+            preparation_queue_root=queue,
+            preparation_input_root=input_root,
+            episode_compilation_queue_root=compilation_queue,
+            episode_compilation_output_root=compiled_output,
+        )
+    )
+
+    assert loaded_request["preparation_id"] == compilation_id
+    assert loaded_adapter["result_digest"] == adapter["result_digest"]
+
+
 def _bytes_digest(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
@@ -171,6 +266,21 @@ def _stage_verified_preparation(tmp_path: Path):
     for index, evidence in enumerate(configured["source"]["rights_evidence"]):
         payload = f"rights-evidence:{index}:{evidence['role']}".encode()
         reference = evidence["artifact"]
+        payloads[str(reference["uri"])] = payload
+        reference.update(_reference(str(reference["uri"]), payload))
+    for label, reference in (
+        *[
+            (f"registration-{name}", row)
+            for name, row in configured["registration"].items()
+        ],
+        ("task-definition", configured["task_template"]["definition"]),
+        (
+            "task-success-criteria",
+            configured["task_template"]["success_criteria"],
+        ),
+        ("task-execution", configured["task_template"]["execution"]),
+    ):
+        payload = f"configured-scene:{label}".encode()
         payloads[str(reference["uri"])] = payload
         reference.update(_reference(str(reference["uri"]), payload))
     bundle_payload = b"configured-scene-bundle"
@@ -257,6 +367,25 @@ def _stage_verified_preparation(tmp_path: Path):
                 configured["source"]["rights_evidence"]
             )
         ],
+        *[
+            (
+                f"scene.configured_revision.registration.{name}",
+                reference,
+            )
+            for name, reference in configured["registration"].items()
+        ],
+        (
+            "scene.configured_revision.task_template.definition",
+            configured["task_template"]["definition"],
+        ),
+        (
+            "scene.configured_revision.task_template.success_criteria",
+            configured["task_template"]["success_criteria"],
+        ),
+        (
+            "scene.configured_revision.task_template.execution",
+            configured["task_template"]["execution"],
+        ),
     ]
     for contract_path, reference in transitive_references:
         target = preparation_root / str(reference["digest"]).removeprefix(

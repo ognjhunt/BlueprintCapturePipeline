@@ -68,6 +68,12 @@ PREPARATION_QUEUE_ROOT_ENV = (
 PREPARATION_INPUT_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
 )
+EPISODE_COMPILATION_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
+)
+EPISODE_COMPILATION_OUTPUT_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT"
+)
 ACTIVATION_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_ROOT"
 ALLOWED_URI_PREFIXES_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON"
@@ -258,6 +264,8 @@ def _load_verified_preparation(
     activation_request: Mapping[str, Any],
     preparation_queue_root: Path,
     preparation_input_root: Path,
+    episode_compilation_queue_root: Path | None = None,
+    episode_compilation_output_root: Path | None = None,
 ) -> tuple[
     dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Path]
 ]:
@@ -277,11 +285,14 @@ def _load_verified_preparation(
         digest_field="result_digest",
     )
     request = validate_launch_preparation_request(envelope["request"])
+    accepted_statuses = {
+        "native_arena_inputs_verified_awaiting_profile_authority",
+        "queued_for_production_episode_compilation",
+    }
     if (
         envelope.get("request_digest") != binding["request_digest"]
         or result.get("result_digest") != binding["result_digest"]
-        or result.get("status")
-        != "native_arena_inputs_verified_awaiting_profile_authority"
+        or result.get("status") not in accepted_statuses
         or result.get("full_byte_service_account_readback_passed") is not True
         or request["preparation_id"] != preparation_id
         or request["team_namespace"] != activation_request["team_namespace"]
@@ -343,6 +354,30 @@ def _load_verified_preparation(
             "scene.configured_revision.source.rights_admission": revision[
                 "source"
             ]["rights_admission"],
+            "scene.configured_revision.registration.metric": revision[
+                "registration"
+            ]["metric"],
+            "scene.configured_revision.registration.support_plane": revision[
+                "registration"
+            ]["support_plane"],
+            "scene.configured_revision.registration.robot_mount_interface": revision[
+                "registration"
+            ]["robot_mount_interface"],
+            "scene.configured_revision.registration.camera_calibration": revision[
+                "registration"
+            ]["camera_calibration"],
+            "scene.configured_revision.registration.workspace_clearance": revision[
+                "registration"
+            ]["workspace_clearance"],
+            "scene.configured_revision.task_template.definition": revision[
+                "task_template"
+            ]["definition"],
+            "scene.configured_revision.task_template.success_criteria": revision[
+                "task_template"
+            ]["success_criteria"],
+            "scene.configured_revision.task_template.execution": revision[
+                "task_template"
+            ]["execution"],
         }
         transitive.update(
             {
@@ -369,11 +404,50 @@ def _load_verified_preparation(
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_preparation_reference_invalid"
             )
-    adapter_path = (
-        preparation_root
-        / "native-arena-adapter"
-        / "task_evaluation_native_arena_adapter_result.v1.json"
-    )
+    adapter_root = preparation_root / "native-arena-adapter"
+    expected_adapter_digest = result.get("adapter_result_digest")
+    if result.get("status") == "queued_for_production_episode_compilation":
+        if (
+            episode_compilation_queue_root is None
+            or episode_compilation_output_root is None
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_episode_compilation_roots_missing"
+            )
+        compilation_id = str(result.get("episode_compilation_id") or "")
+        envelope_digest = str(
+            result.get("episode_compilation_queue_envelope_digest") or ""
+        )
+        compilation_filename = (
+            f"{compilation_id}-{envelope_digest.removeprefix('sha256:')}.json"
+        )
+        compilation = _load_sealed(
+            episode_compilation_queue_root / "results" / compilation_filename,
+            schema_version="task_evaluation_episode_compilation_result.v1",
+            digest_field="result_digest",
+        )
+        adapter_path = Path(
+            str(compilation.get("adapter_result_path") or "")
+        ).resolve()
+        compiled_root = episode_compilation_output_root.resolve(strict=True)
+        if (
+            compilation.get("status") != "compiled_for_production_launch"
+            or compilation.get("source_commit")
+            != activation_request["expected_production_commit"]
+            or compilation.get("configured_scene_revision_digest")
+            != revision["revision_digest"]
+            or not _under(adapter_path, compiled_root)
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_episode_compilation_invalid"
+            )
+        adapter_root = adapter_path.parent
+        expected_adapter_digest = compilation.get("adapter_result_digest")
+    else:
+        adapter_path = (
+            adapter_root
+            / "task_evaluation_native_arena_adapter_result.v1.json"
+        )
     adapter = _load_sealed(
         adapter_path,
         schema_version=ADAPTER_RESULT_SCHEMA_VERSION,
@@ -384,13 +458,13 @@ def _load_verified_preparation(
         str(adapter.get("runtime_source_receipt") or "")
     ).resolve()
     if (
-        adapter.get("result_digest") != result.get("adapter_result_digest")
+        adapter.get("result_digest") != expected_adapter_digest
         or adapter.get("status") != "native_arena_adapter_materialized"
         or adapter.get("preparation_id") != preparation_id
         or adapter.get("source_commit")
         != activation_request["expected_production_commit"]
-        or not _under(packet_root, preparation_root)
-        or not _under(runtime_receipt, preparation_root)
+        or not _under(packet_root, adapter_root)
+        or not _under(runtime_receipt, adapter_root)
         or not packet_root.is_dir()
         or not runtime_receipt.is_file()
     ):
@@ -711,6 +785,8 @@ def process_launch_activation_queue(
     queue_root: str | Path,
     preparation_queue_root: str | Path,
     preparation_input_root: str | Path,
+    episode_compilation_queue_root: str | Path | None = None,
+    episode_compilation_output_root: str | Path | None = None,
     activation_root: str | Path,
     allowed_uri_prefixes: Sequence[str],
     service_account: str,
@@ -790,6 +866,16 @@ def process_launch_activation_queue(
                     activation_request=request,
                     preparation_queue_root=prep_queue,
                     preparation_input_root=prep_inputs,
+                    episode_compilation_queue_root=(
+                        Path(episode_compilation_queue_root).resolve(strict=True)
+                        if episode_compilation_queue_root is not None
+                        else None
+                    ),
+                    episode_compilation_output_root=(
+                        Path(episode_compilation_output_root).resolve(strict=True)
+                        if episode_compilation_output_root is not None
+                        else None
+                    ),
                 )
             )
             owned_root = activation_base / request["activation_id"]
@@ -928,6 +1014,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--preparation-input-root", default=os.getenv(PREPARATION_INPUT_ROOT_ENV, "")
     )
+    parser.add_argument(
+        "--episode-compilation-queue-root",
+        default=os.getenv(EPISODE_COMPILATION_QUEUE_ROOT_ENV, ""),
+    )
+    parser.add_argument(
+        "--episode-compilation-output-root",
+        default=os.getenv(EPISODE_COMPILATION_OUTPUT_ROOT_ENV, ""),
+    )
     parser.add_argument("--activation-root", default=os.getenv(ACTIVATION_ROOT_ENV, ""))
     parser.add_argument(
         "--allowed-uri-prefixes-json", default=os.getenv(ALLOWED_URI_PREFIXES_ENV, "")
@@ -955,6 +1049,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.queue_root,
         args.preparation_queue_root,
         args.preparation_input_root,
+        args.episode_compilation_queue_root,
+        args.episode_compilation_output_root,
         args.activation_root,
         args.repository_root,
         args.destination_prefix,
@@ -981,6 +1077,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             queue_root=args.queue_root,
             preparation_queue_root=args.preparation_queue_root,
             preparation_input_root=args.preparation_input_root,
+            episode_compilation_queue_root=args.episode_compilation_queue_root,
+            episode_compilation_output_root=args.episode_compilation_output_root,
             activation_root=args.activation_root,
             allowed_uri_prefixes=prefixes,
             service_account=args.service_account,
