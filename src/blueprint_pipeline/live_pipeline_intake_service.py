@@ -101,6 +101,14 @@ from .task_evaluation_launch_dispatcher import (
     validate_launch_request_against_public_catalog,
 )
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
+from .task_evaluation_launch_preparation_contract import (
+    TaskEvaluationLaunchPreparationContractError,
+)
+from .task_evaluation_launch_preparation_queue import (
+    TaskEvaluationLaunchPreparationQueueError,
+    launch_preparation_status,
+    stage_launch_preparation_request,
+)
 from .task_evaluation_terminal_resource_release_contract import (
     TerminalResourceReleaseError,
     stage_terminal_resource_release_request,
@@ -140,6 +148,9 @@ TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV = (
     "BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER"
 )
 TASK_EVALUATION_LAUNCH_EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
+TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
+)
 TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE"
 TASK_EVALUATION_LAUNCH_PATH_UNIT = (
     "blueprint-task-evaluation-launch-dispatcher.path"
@@ -1989,6 +2000,18 @@ def create_app() -> FastAPI:
                 "asynchronous_dispatch_only": True,
                 "canonical_allocator_required": True,
             },
+            "task_evaluation_launch_preparation_queue": {
+                "supported": True,
+                "configured": bool(
+                    _string(
+                        os.getenv(
+                            TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV
+                        )
+                    )
+                ),
+                "asynchronous_no_spend_preparation_only": True,
+                "accepts_host_paths_or_commands": False,
+            },
             "proof_boundary": {
                 "authorized_hermetic_local_reconstruction_supported": True,
                 "paid_or_live_provider_execution_inside_http_request_supported": False,
@@ -2033,6 +2056,148 @@ def create_app() -> FastAPI:
                 "allocator_arguments_exposed": False,
                 "secret_values_exposed": False,
             },
+        )
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-launch-preparations",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_task_evaluation_launch_preparation(
+        request: Request,
+    ) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        queue_root = _string(
+            os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV)
+        )
+        if not queue_root:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_intake_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": [
+                        "task_evaluation_launch_preparation_queue_not_configured"
+                    ],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        try:
+            receipt = await run_in_threadpool(
+                stage_launch_preparation_request,
+                value=payload,
+                queue_root=queue_root,
+                submitted_by=_string(
+                    getattr(request.state, "intake_client_id", "")
+                ),
+            )
+        except TaskEvaluationLaunchPreparationContractError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_intake_receipt.v1"
+                    ),
+                    "status": "rejected",
+                    "accepted": False,
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        except TaskEvaluationLaunchPreparationQueueError as exc:
+            blocker = str(exc)
+            return JSONResponse(
+                status_code=(
+                    409
+                    if blocker == "launch_preparation_id_immutable_conflict"
+                    else 503
+                ),
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_intake_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": [blocker],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        return JSONResponse(status_code=202, content=receipt)
+
+    @app.get(
+        "/api/live-pipeline/task-evaluation-launch-preparations/{preparation_id}",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def get_task_evaluation_launch_preparation_status(
+        preparation_id: str,
+    ) -> JSONResponse:
+        try:
+            normalized_id = strict_identifier(
+                preparation_id, field="preparation_id", max_length=192
+            )
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_status.v1"
+                    ),
+                    "status": "rejected",
+                    "blockers": ["launch_preparation_id_invalid"],
+                    "provider_mutation_performed_by_status_read": False,
+                },
+            )
+        queue_root = _string(
+            os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV)
+        )
+        if not queue_root:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_status.v1"
+                    ),
+                    "status": "blocked",
+                    "blockers": [
+                        "task_evaluation_launch_preparation_queue_not_configured"
+                    ],
+                    "provider_mutation_performed_by_status_read": False,
+                },
+            )
+        try:
+            result = await run_in_threadpool(
+                launch_preparation_status,
+                preparation_id=normalized_id,
+                queue_root=queue_root,
+            )
+        except TaskEvaluationLaunchPreparationQueueError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_status.v1"
+                    ),
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed_by_status_read": False,
+                },
+            )
+        return JSONResponse(
+            status_code=404 if result["status"] == "not_found" else 200,
+            content=result,
         )
 
     @app.post(
