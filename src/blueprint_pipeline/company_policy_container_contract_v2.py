@@ -28,7 +28,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 
 
 SCHEMA_VERSION = "company_policy_container_contract.v2"
@@ -606,7 +606,7 @@ def validate_company_policy_container_contract_v2(
         },
         "security_profile": dict(SECURITY_PROFILE),
     }
-    digest = canonical_digest(normalized, digest_field="contract_digest")
+    digest = cross_runtime_canonical_digest(normalized, digest_field="contract_digest")
     if "contract_digest" in payload and payload.get("contract_digest") != digest:
         raise CompanyPolicyContainerContractV2Error([f"{BLOCKER_INVALID}:contract_digest_mismatch"])
     normalized["contract_digest"] = digest

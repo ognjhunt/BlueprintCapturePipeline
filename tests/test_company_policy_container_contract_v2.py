@@ -22,7 +22,7 @@ from blueprint_pipeline.company_policy_container_contract_v2 import (
     CompanyPolicyContainerContractV2Error,
     validate_company_policy_container_contract_v2,
 )
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 
 
 SCHEMA_PATH = (
@@ -181,8 +181,11 @@ def test_golden_contract_is_a_digest_stable_fixed_point() -> None:
     normalized = validate_company_policy_container_contract_v2(_contract())
 
     assert normalized["security_profile"] == SECURITY_PROFILE
-    assert normalized["contract_digest"] == canonical_digest(
+    assert normalized["contract_digest"] == cross_runtime_canonical_digest(
         normalized, digest_field="contract_digest"
+    )
+    assert normalized["contract_digest"] == (
+        "sha256:1337317266b54bade7e6b78511f8da522db8aa284d71425e8cd744035cde10d3"
     )
     assert validate_company_policy_container_contract_v2(normalized) == normalized
 

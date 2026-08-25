@@ -10,6 +10,9 @@ contains the company's policy code and weights. Blueprint supplies observations
 through a versioned local proxy and owns action validation, simulator execution,
 evidence, scoring, watchdogs, and teardown.
 
+The contract digest uses RFC 8785 canonical JSON so the WebApp and Pipeline seal
+the same bytes across JavaScript and Python runtimes.
+
 ## Deliberate separation
 
 The immutable contract contains no registry credential, environment secret,
