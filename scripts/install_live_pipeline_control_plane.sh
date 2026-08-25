@@ -13,6 +13,7 @@ HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-${ENV_DIR}/credentials}"
 LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
+TASK_EVALUATION_INPUT_ROOT="${TASK_EVALUATION_INPUT_ROOT:-/var/lib/blueprint/task-evaluation-inputs}"
 CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
@@ -43,6 +44,7 @@ Environment overrides:
   PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
   CREDENTIALS_DIR=/etc/blueprint/credentials
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+  TASK_EVALUATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs
   CAPTURE_RECONSTRUCTION_POLICY_DIR=/etc/blueprint/capture-reconstruction-policies
   CADDY_SITE_FILE=/etc/caddy/Caddyfile
   SERVICE_USER=blueprint
@@ -114,7 +116,7 @@ run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${PROVIDER_SECRETS_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${CREDENTIALS_DIR}"
-run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${LAUNCH_PROFILE_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${CAPTURE_RECONSTRUCTION_POLICY_DIR}"
@@ -139,6 +141,25 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-control-plane-releases" \
   "${STATE_DIR}/task-evaluation-launch-reconciliation" \
   "${STATE_DIR}/task-evaluation-launch-supervision/recommendations"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${STATE_DIR}/task-evaluation-launch-preparations" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/pending" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/processing" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/materialized" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/blocked" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/identities" \
+  "${STATE_DIR}/task-evaluation-launch-preparations/results" \
+  "${STATE_DIR}/task-evaluation-launch-activations" \
+  "${STATE_DIR}/task-evaluation-launch-activations/pending" \
+  "${STATE_DIR}/task-evaluation-launch-activations/processing" \
+  "${STATE_DIR}/task-evaluation-launch-activations/prepared" \
+  "${STATE_DIR}/task-evaluation-launch-activations/blocked" \
+  "${STATE_DIR}/task-evaluation-launch-activations/identities" \
+  "${STATE_DIR}/task-evaluation-launch-activations/results" \
+  "${STATE_DIR}/standing-authorizations" \
+  "${TASK_EVALUATION_INPUT_ROOT}" \
+  "${TASK_EVALUATION_INPUT_ROOT}/prepared-references" \
+  "${TASK_EVALUATION_INPUT_ROOT}/launch-activations"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/capture-reconstruction-queue/pending" \
   "${STATE_DIR}/capture-reconstruction-queue/processing" \
@@ -195,6 +216,12 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.path"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"
@@ -390,6 +417,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
+  systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
@@ -401,6 +429,7 @@ else
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
+  echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"

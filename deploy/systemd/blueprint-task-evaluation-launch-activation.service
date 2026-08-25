@@ -1,0 +1,51 @@
+[Unit]
+Description=Activate verified Blueprint Task Evaluation launch inputs
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/task-evaluation-inputs/prepared-references
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations /var/lib/blueprint/task-evaluation-inputs/launch-activations /etc/blueprint/task-evaluation-launch-profiles /var/lib/blueprint/pipeline-control-plane /var/lib/blueprint/pipeline-control-plane/standing-authorizations
+TasksMax=512
+LimitNOFILE=8192
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=1h
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/prepared-references
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_ROOT=/var/lib/blueprint/task-evaluation-inputs/launch-activations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_SERVICE_ACCOUNT=blueprint
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_SERVICE_GROUP=blueprint
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_launch_activation_worker --max-messages 1'

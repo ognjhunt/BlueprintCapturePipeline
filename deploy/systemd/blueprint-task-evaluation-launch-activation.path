@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch the authority-gated Blueprint Task Evaluation activation queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending/*.json
+Unit=blueprint-task-evaluation-launch-activation.service
+
+[Install]
+WantedBy=multi-user.target

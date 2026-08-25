@@ -296,6 +296,18 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/preparations/pending/*.json\n",
         encoding="utf-8",
     )
+    activation_service = (
+        unit_dir / "blueprint-task-evaluation-launch-activation.service"
+    )
+    activation_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-activate\n", encoding="utf-8"
+    )
+    activation_path = unit_dir / "blueprint-task-evaluation-launch-activation.path"
+    activation_path.write_text(
+        "[Path]\nPathChanged=/activations/pending\n"
+        "PathExistsGlob=/activations/pending/*.json\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -312,7 +324,14 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
 
     expected = []
-    for source in (service, path_unit, preparation_service, preparation_path):
+    for source in (
+        service,
+        path_unit,
+        preparation_service,
+        preparation_path,
+        activation_service,
+        activation_path,
+    ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
         assert destination.stat().st_mode & 0o777 == 0o644
@@ -342,9 +361,12 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-launch-activation.service",
+        "blueprint-task-evaluation-launch-activation.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-launch-activation.path",
     )
 
 
