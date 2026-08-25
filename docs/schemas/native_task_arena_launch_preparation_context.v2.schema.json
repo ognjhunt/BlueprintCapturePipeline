@@ -35,7 +35,8 @@
             "source_manifest",
             "source_manifest_digest",
             "rights_admission",
-            "rights_admission_digest"
+            "rights_admission_digest",
+            "rights_evidence"
           ],
           "additionalProperties": false,
           "properties": {
@@ -45,7 +46,44 @@
             "source_manifest": {"type": "string", "minLength": 1},
             "source_manifest_digest": {"$ref": "#/$defs/digest"},
             "rights_admission": {"type": "string", "minLength": 1},
-            "rights_admission_digest": {"$ref": "#/$defs/digest"}
+            "rights_admission_digest": {"$ref": "#/$defs/digest"},
+            "rights_evidence": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "required": ["role", "path", "sha256"],
+                "additionalProperties": false,
+                "properties": {
+                  "role": {
+                    "enum": [
+                      "publisher_terms",
+                      "publisher_readme",
+                      "upstream_license",
+                      "human_authority_record"
+                    ]
+                  },
+                  "path": {"type": "string", "minLength": 1},
+                  "sha256": {"$ref": "#/$defs/digest"}
+                }
+              },
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "properties": {"role": {"const": "publisher_terms"}},
+                    "required": ["role"]
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "properties": {"role": {"const": "human_authority_record"}},
+                    "required": ["role"]
+                  }
+                }
+              ]
+            }
           }
         },
         "task": {

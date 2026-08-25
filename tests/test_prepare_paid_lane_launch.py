@@ -293,12 +293,25 @@ def test_native_context_reopens_independent_versioned_references(
     packet = tmp_path / "packet"
     packet.mkdir()
     robot = {"robot_id": "customer_arm_v3", "adapter": "fixed_arm_adapter_v1"}
+    staged_asset_digest = "sha256:" + "5" * 64
+    staged_asset_size = 123
     (packet / "native_task_arena_packet_receipt.v1.json").write_text(
         json.dumps(
             {
                 "scene_id": "public-scene-17",
                 "task_id": "move-can-v2",
                 "receipt_digest": "sha256:" + "1" * 64,
+                "source_bindings": [
+                    {
+                        "semantic_role": "scene_appearance",
+                        "source": {
+                            "sha256": staged_asset_digest,
+                            "size_bytes": staged_asset_size,
+                        },
+                        "staged_sha256": staged_asset_digest,
+                        "staged_size_bytes": staged_asset_size,
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -322,7 +335,14 @@ def test_native_context_reopens_independent_versioned_references(
         "schema_version": "task_evaluation_scene_source_manifest.v1",
         "status": "retained",
         "scene_id": "public-scene-17",
-        "artifacts": [],
+        "artifacts": [
+            {
+                "role": "derived_runtime_appearance",
+                "sha256": staged_asset_digest,
+                "size_bytes": staged_asset_size,
+                "provider_upload_allowed": True,
+            }
+        ],
         "source_manifest_digest": "",
     }
     source_manifest_value["source_manifest_digest"] = (
@@ -347,6 +367,10 @@ def test_native_context_reopens_independent_versioned_references(
         )
     )
     rights_admission.write_text(json.dumps(rights_admission_value), encoding="utf-8")
+    publisher_terms = tmp_path / "publisher-terms.pdf"
+    publisher_terms.write_bytes(b"retained publisher terms")
+    human_authority = tmp_path / "human-authority.json"
+    human_authority.write_text('{"approved":true}', encoding="utf-8")
     context_file = tmp_path / "context.json"
     context_file.write_text(
         json.dumps(
@@ -366,6 +390,18 @@ def test_native_context_reopens_independent_versioned_references(
                         "rights_admission": str(rights_admission),
                         "rights_admission_digest": rights_admission_value[
                             "rights_admission_digest"
+                        ],
+                        "rights_evidence": [
+                            {
+                                "role": "publisher_terms",
+                                "path": str(publisher_terms),
+                                "sha256": prep._sha256_file(publisher_terms),
+                            },
+                            {
+                                "role": "human_authority_record",
+                                "path": str(human_authority),
+                                "sha256": prep._sha256_file(human_authority),
+                            },
                         ],
                     },
                     "task": {
@@ -428,6 +464,9 @@ def test_native_context_reopens_independent_versioned_references(
     assert context["reference_bindings"]["rights_admission_path"] == str(
         rights_admission.resolve()
     )
+    assert [
+        row["role"] for row in context["reference_bindings"]["rights_evidence"]
+    ] == ["publisher_terms", "human_authority_record"]
 
     rights_admission_value["provider_training_allowed"] = True
     rights_admission_value["rights_admission_digest"] = (
@@ -508,6 +547,79 @@ def test_scene_claim_reference_refuses_tampering_and_symlinks(tmp_path: Path) ->
             digest_field="rights_admission_digest",
             scene_id="scene-1",
         )
+
+
+def test_rights_evidence_reopens_exact_terms_and_human_authority(
+    tmp_path: Path,
+) -> None:
+    terms = tmp_path / "terms.pdf"
+    terms.write_bytes(b"publisher terms v1")
+    authority = tmp_path / "authority.json"
+    authority.write_text('{"approved":true}', encoding="utf-8")
+    evidence = [
+        {
+            "role": "publisher_terms",
+            "path": str(terms),
+            "sha256": prep._sha256_file(terms),
+        },
+        {
+            "role": "human_authority_record",
+            "path": str(authority),
+            "sha256": prep._sha256_file(authority),
+        },
+    ]
+
+    retained = prep._load_rights_evidence(evidence)
+
+    assert [row["role"] for row in retained] == [
+        "publisher_terms",
+        "human_authority_record",
+    ]
+    terms.write_bytes(b"publisher terms changed after admission")
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_rights_evidence_invalid",
+    ):
+        prep._load_rights_evidence(evidence)
+
+
+def test_provider_packet_rejects_source_not_admitted_for_upload() -> None:
+    digest = "sha256:" + "a" * 64
+    packet_receipt = {
+        "source_bindings": [
+            {
+                "semantic_role": "scene_appearance",
+                "source": {"sha256": digest, "size_bytes": 17},
+                "staged_sha256": digest,
+                "staged_size_bytes": 17,
+            }
+        ]
+    }
+    source_manifest = {
+        "artifacts": [
+            {
+                "role": "raw_source_splat",
+                "sha256": digest,
+                "size_bytes": 17,
+                "provider_upload_allowed": False,
+            }
+        ]
+    }
+
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_provider_source_rights_invalid",
+    ):
+        prep._validate_provider_packet_source_rights(
+            packet_receipt=packet_receipt,
+            source_manifest=source_manifest,
+        )
+
+    source_manifest["artifacts"][0]["provider_upload_allowed"] = True
+    prep._validate_provider_packet_source_rights(
+        packet_receipt=packet_receipt,
+        source_manifest=source_manifest,
+    )
 
 
 def test_native_context_refuses_operational_reference_override(tmp_path: Path) -> None:

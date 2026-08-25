@@ -833,6 +833,106 @@ def _load_scene_claim_reference(
     return source, dict(value)
 
 
+def _load_rights_evidence(value: Any) -> list[dict[str, Any]]:
+    """Reopen the exact terms and human authority used for rights admission."""
+
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_rights_evidence_invalid"
+        )
+    retained: list[dict[str, Any]] = []
+    roles: set[str] = set()
+    paths: set[Path] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_rights_evidence_invalid"
+            )
+        role = str(raw.get("role") or "")
+        expected = str(raw.get("sha256") or "")
+        unresolved = Path(str(raw.get("path") or "")).expanduser()
+        if unresolved.is_symlink():
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_rights_evidence_invalid"
+            )
+        path = unresolved.resolve()
+        if (
+            role not in {
+                "publisher_terms",
+                "publisher_readme",
+                "upstream_license",
+                "human_authority_record",
+            }
+            or path in paths
+            or not path.is_file()
+            or _sha256_file(path) != expected
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_rights_evidence_invalid"
+            )
+        paths.add(path)
+        roles.add(role)
+        retained.append(
+            {
+                "role": role,
+                "path": str(path),
+                "size_bytes": path.stat().st_size,
+                "sha256": expected,
+            }
+        )
+    if not {"publisher_terms", "human_authority_record"}.issubset(roles):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_rights_evidence_incomplete"
+        )
+    return retained
+
+
+def _validate_provider_packet_source_rights(
+    *, packet_receipt: Mapping[str, Any], source_manifest: Mapping[str, Any]
+) -> None:
+    """Require every provider-staged source binding to be upload-admitted."""
+
+    bindings = packet_receipt.get("source_bindings")
+    artifacts = source_manifest.get("artifacts")
+    if (
+        isinstance(bindings, (str, bytes))
+        or not isinstance(bindings, Sequence)
+        or not bindings
+        or isinstance(artifacts, (str, bytes))
+        or not isinstance(artifacts, Sequence)
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_provider_source_rights_invalid"
+        )
+    admitted: set[tuple[str, int]] = set()
+    for raw in artifacts:
+        if not isinstance(raw, Mapping):
+            continue
+        digest = str(raw.get("sha256") or "")
+        size = raw.get("size_bytes")
+        if raw.get("provider_upload_allowed") is True and isinstance(size, int):
+            admitted.add((digest, size))
+    for raw in bindings:
+        if not isinstance(raw, Mapping):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_provider_source_rights_invalid"
+            )
+        source = raw.get("source")
+        if not isinstance(source, Mapping):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_provider_source_rights_invalid"
+            )
+        source_pair = (str(source.get("sha256") or ""), source.get("size_bytes"))
+        staged_pair = (
+            str(raw.get("staged_sha256") or ""),
+            raw.get("staged_size_bytes"),
+        )
+        if source_pair != staged_pair or staged_pair not in admitted:
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_provider_source_rights_invalid"
+            )
+
+
 def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, Any]:
     """Load and reopen independent scene/task/robot/runtime references."""
 
@@ -902,7 +1002,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
     packet_receipt_path = packet_dir / "native_task_arena_packet_receipt.v1.json"
     runtime_contract_path = packet_dir / "native_task_runtime_contract.v1.json"
     runtime_source_path = unresolved_runtime_source.resolve()
-    source_manifest_path, _source_manifest = _load_scene_claim_reference(
+    source_manifest_path, source_manifest = _load_scene_claim_reference(
         path=scene.get("source_manifest"),
         expected_digest=scene.get("source_manifest_digest"),
         expected_schema="task_evaluation_scene_source_manifest.v1",
@@ -918,6 +1018,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         digest_field="rights_admission_digest",
         scene_id=str(scene.get("scene_id") or ""),
     )
+    rights_evidence = _load_rights_evidence(scene.get("rights_evidence"))
     try:
         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
         runtime_contract = json.loads(runtime_contract_path.read_text(encoding="utf-8"))
@@ -927,6 +1028,10 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             "native_task_arena_reference_unreadable"
         ) from exc
     container_image = str(runtime.get("container_image") or "")
+    _validate_provider_packet_source_rights(
+        packet_receipt=packet_receipt,
+        source_manifest=source_manifest,
+    )
     if (
         reference_symlink_present
         or packet_receipt.get("scene_id") != scene.get("scene_id")
@@ -980,6 +1085,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
                 "context_sha256": _sha256_file(source),
                 "source_manifest_path": str(source_manifest_path),
                 "rights_admission_path": str(rights_admission_path),
+                "rights_evidence": rights_evidence,
             },
             "python": str(operations.get("python") or sys.executable),
             "service_account": str(
