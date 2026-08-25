@@ -53,6 +53,7 @@ from blueprint_pipeline.native_task_arena_policy_diagnostic_bundle import (
     validate_policy_diagnostic_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_paid_authority import (
+    PRE_SPEND_CLOSEOUT_KIND,
     native_task_arena_attempt_budget_blockers,
     validate_native_task_arena_paid_attempt_authority,
 )
@@ -690,8 +691,6 @@ def _immutable_inputs(link: ArenaLink):
                 "attempt_authority",
                 "teardown",
                 "terminal_result",
-                "watchdog",
-                "object_store_cleanup",
                 "api_provider_zero",
             ):
                 record = zero.get(field)
@@ -705,11 +704,28 @@ def _immutable_inputs(link: ArenaLink):
                 bound["terminal_result"],
                 error="native_task_arena_preallocation_terminal_result_invalid",
             )
-            for field in (
-                "original_allocator_result",
-                "watchdog_handoff",
-                "object_store_cleanup",
-            ):
+            if terminal_result.get("closeout_kind") == PRE_SPEND_CLOSEOUT_KIND:
+                zero_fields = ("pre_spend_preflight", "authority_consumption_record")
+                terminal_fields = (
+                    "original_allocator_result",
+                    "pre_spend_preflight",
+                    "authority_consumption_record",
+                )
+            else:
+                zero_fields = ("watchdog", "object_store_cleanup")
+                terminal_fields = (
+                    "original_allocator_result",
+                    "watchdog_handoff",
+                    "object_store_cleanup",
+                )
+            for field in zero_fields:
+                record = zero.get(field)
+                if not isinstance(record, Mapping):
+                    raise TaskEvaluationLaunchError(
+                        "native_task_arena_preallocation_provider_zero_invalid"
+                    )
+                append_bound_record(f"{name}_{field}", record)
+            for field in terminal_fields:
                 record = terminal_result.get(field)
                 if not isinstance(record, Mapping):
                     raise TaskEvaluationLaunchError(
