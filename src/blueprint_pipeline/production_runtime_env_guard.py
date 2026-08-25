@@ -110,6 +110,8 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.capture_reconstruction_postshot_allocator",
     "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup",
     "blueprint_pipeline.task_evaluation_launch_dispatcher",
+    "blueprint_pipeline.task_evaluation_launch_preparation_worker",
+    "blueprint_pipeline.task_evaluation_launch_activation_worker",
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_launch_supervisor",
     "blueprint_pipeline.task_evaluation_terminal_resource_release",
