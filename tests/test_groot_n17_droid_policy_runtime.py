@@ -12,7 +12,12 @@ from blueprint_pipeline.adp009d_groot_worker_identity import (
     expected_checkpoint_content_binding,
 )
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
+    CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+    CHECKPOINT_STATISTICS_SHA256,
+    CHECKPOINT_STATISTICS_SOURCE,
     CHECKPOINT_REVISION,
+    DROID_EEF_POSITION_OBSERVED_MAX_M,
+    DROID_EEF_POSITION_OBSERVED_MIN_M,
     EMBODIMENT_TAG,
     FROZEN_VIDEO_DELTA_INDICES,
     GROOT_SOURCE_REVISION,
@@ -88,7 +93,10 @@ def _observation() -> dict:
         "observation/wrist_image_left": np.full((180, 320, 3), 7, dtype=np.uint8),
         "observation/joint_position": np.arange(7, dtype=float),
         "observation/gripper_position": np.asarray([0.25]),
-        "observation/eef_9d": np.arange(9, dtype=float),
+        "observation/eef_9d": droid_eef_9d(
+            position_m=[0.5, 0.0, 0.3],
+            rotation_row_major=np.eye(3).reshape(-1),
+        ),
         "prompt": "Pick up the spray can and place it inside the marked tray.",
     }
 
@@ -113,6 +121,17 @@ def test_spec_is_pinned_to_official_droid_checkpoint_and_source() -> None:
     # This exact root file is loaded by AutoProcessor and declares [0].  The
     # checkpoint's legacy experiment config says [-15, 0] but is not served.
     assert FROZEN_VIDEO_DELTA_INDICES == (0,)
+    statistics = next(
+        row
+        for row in expected_checkpoint_content_binding()["file_manifest"]
+        if row["path"] == "statistics.json"
+    )
+    assert statistics == {
+        "path": "statistics.json",
+        "size_bytes": 144_097,
+        "digest_algorithm": "git_blob_sha1",
+        "digest": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+    }
 
 
 def test_client_translates_existing_observation_and_returns_joint_chunk() -> None:
@@ -156,6 +175,14 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     assert evidence["state_delta_indices"] == [0]
     assert evidence["action_delta_indices"] == list(range(40))
     assert evidence["language_delta_indices"] == [0]
+    assert evidence["eef_position_observed_support"] == {
+        "minimum_m": list(DROID_EEF_POSITION_OBSERVED_MIN_M),
+        "maximum_m": list(DROID_EEF_POSITION_OBSERVED_MAX_M),
+        "source": CHECKPOINT_STATISTICS_SOURCE,
+        "source_sha256": CHECKPOINT_STATISTICS_SHA256,
+        "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+        "enforced_before_policy_query": True,
+    }
 
     client.reset()
     assert fake.reset_calls == 1
@@ -170,6 +197,56 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     )
     client.close()
     assert fake.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "position_m",
+    (
+        [3.8094613552093506, 9.223036766052246, 0.5535212159156799],
+        [DROID_EEF_POSITION_OBSERVED_MIN_M[0] - 0.001, 0.0, 0.3],
+        [0.5, DROID_EEF_POSITION_OBSERVED_MAX_M[1] + 0.001, 0.3],
+    ),
+)
+def test_client_refuses_eef_positions_outside_exact_checkpoint_support_before_query(
+    position_m: list[float],
+) -> None:
+    fake = _FakePolicyClient()
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        client_factory=lambda **kwargs: fake,
+    )
+    observation = _observation()
+    observation["observation/eef_9d"] = droid_eef_9d(
+        position_m=position_m,
+        rotation_row_major=np.eye(3).reshape(-1),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="groot_droid_eef_position_outside_checkpoint_observed_support",
+    ):
+        client.infer(observation)
+
+    assert fake.requests == []
+
+
+def test_client_refuses_nonfinite_state_before_query() -> None:
+    fake = _FakePolicyClient()
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        client_factory=lambda **kwargs: fake,
+    )
+    observation = _observation()
+    observation["observation/joint_position"][0] = np.nan
+
+    with pytest.raises(ValueError, match="groot_droid_observation_state_nonfinite"):
+        client.infer(observation)
+
+    assert fake.requests == []
 
 
 @pytest.mark.parametrize(

@@ -512,6 +512,57 @@ def _articulated_packet(root: Path) -> tuple[Path, dict]:
 
 
 def _qualified_construction(root: Path, scene: dict) -> Path:
+    def passing_camera(role: str) -> dict:
+        minimum_pixels = 120 if role == "wrist" else 200
+        minimum_fraction = 0.002 if role == "wrist" else 0.003
+        camera = {
+            "snapshot_id": "reset",
+            "role": role,
+            "scene_name": f"{role}_camera",
+            "rgb_png": {"sha256": "sha256:" + "a" * 64},
+            "observability": {
+                "schema_version": "native_task_camera_observability.v2",
+                "passed": True,
+                "semantic_passed": True,
+                "render_passed": True,
+                "centroid_within_margin": True,
+                "site_appearance_claimed": True,
+                "claim": "camera_observes_task_object_in_rendered_site",
+                "blockers": [],
+                "pixel_count": 1000,
+                "pixel_fraction": 0.02,
+                "bbox_xyxy": [100, 30, 180, 120],
+                "thresholds": {
+                    "minimum_pixels": minimum_pixels,
+                    "minimum_pixel_fraction": minimum_fraction,
+                },
+                "render_evidence": {
+                    "passed": True,
+                    "frame_rendered": True,
+                    "target_rendered": True,
+                    "site_rendered": True,
+                    "blockers": [],
+                },
+            },
+        }
+        if role == "wrist":
+            camera["observability"].update(
+                {
+                    "passed": False,
+                    "semantic_passed": False,
+                    "centroid_within_margin": False,
+                    "claim": "camera_observes_task_object_without_site_appearance",
+                    "blockers": [
+                        "native_task_camera_semantic_framing_below_threshold"
+                    ],
+                    "pixel_count": 0,
+                    "pixel_fraction": 0.0,
+                    "bbox_xyxy": None,
+                }
+            )
+            camera["observability"]["render_evidence"]["target_rendered"] = None
+        return camera
+
     clearance = {
         "scene_plan_digest": scene["plan_digest"],
         "phases": [{"phase_id": "approach"}],
@@ -530,6 +581,15 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         "camera_gates": {
             role: {"passed": True} for role in ("external", "wrist", "overview")
         },
+        "camera_snapshots": [
+            {
+                "snapshot_id": "reset",
+                "cameras": [
+                    passing_camera(role)
+                    for role in ("external", "wrist", "overview")
+                ],
+            }
+        ],
         "reset_replay": {"passed": True},
         "construction_phase_plan": clearance,
         "result_digest": "",
@@ -1051,6 +1111,48 @@ def test_provider_free_spec_builder_derives_each_frozen_candidate(
     else:
         assert result["policy_identity_receipt"] == (
             policy_bundle_module.GROOT_RUNTIME_IDENTITY_DECLARATION
+        )
+
+
+def test_qualified_policy_spec_refuses_target_absent_reset_external_camera(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    value = json.loads(construction.read_text(encoding="utf-8"))
+    external = next(
+        camera
+        for camera in value["camera_snapshots"][0]["cameras"]
+        if camera["role"] == "external"
+    )
+    external["observability"].update(
+        {
+            "passed": False,
+            "semantic_passed": False,
+            "pixel_count": 0,
+            "pixel_fraction": 0.0,
+            "bbox_xyxy": None,
+            "centroid_within_margin": False,
+            "claim": "camera_observes_task_object_without_site_appearance",
+            "blockers": ["native_task_camera_semantic_framing_below_threshold"],
+        }
+    )
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    construction.write_text(json.dumps(value), encoding="utf-8")
+    controls = _qualified_controls(tmp_path, scene, construction)
+
+    with pytest.raises(
+        ValueError,
+        match="native_task_policy_start_camera_role_not_observable:external",
+    ):
+        build_native_task_policy_execution_spec(
+            candidate_id="pi05_droid",
+            scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
+            construction_result_path=construction,
+            control_result_path=controls,
+            output_path=tmp_path / "must-not-exist.json",
         )
 
 
