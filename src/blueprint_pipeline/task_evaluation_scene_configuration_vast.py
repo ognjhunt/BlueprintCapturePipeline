@@ -105,6 +105,74 @@ class TaskEvaluationSceneConfigurationVastError(RuntimeError):
     """The canonical provider path could not run or close one configuration."""
 
 
+def _stage_owner_only_runtime_secrets(
+    *, job_dir: Path, secret_paths: Mapping[str, str]
+) -> tuple[dict[str, str], Path | None]:
+    """Copy each validated runtime secret into an owner-only private file.
+
+    Two validators sit on this exact call path and disagree. This lane
+    requires each source file to be group readable and no wider
+    (``mode & ~0o640`` clear, ``mode & 0o440`` set), because the host keeps
+    provider secrets ``root:blueprint 0640`` -- root owns them and the
+    service reads them through its group. The Vast adapter then requires
+    ``st_mode & 0o077 == 0`` on every path it is handed, because those bytes
+    are about to travel toward a rented host, so it refuses anything a group
+    can read. A root-owned file cannot satisfy both: owner-only is readable
+    by the service only if the service owns it.
+
+    So hand the adapter a copy this service owns, at ``0600``, under the run
+    root. Both rules keep their full strength and the staged copy is strictly
+    narrower than the source it came from.
+    """
+
+    if not secret_paths:
+        return {}, None
+    root = job_dir / "runtime-secrets"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
+    staged: dict[str, str] = {}
+    for name, unresolved in sorted(secret_paths.items()):
+        source = Path(unresolved)
+        payload = source.read_bytes()
+        if not payload:
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_openai_runtime_secret_configuration_invalid"
+            )
+        destination = root / name
+        destination.unlink(missing_ok=True)
+        descriptor = os.open(
+            destination,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if destination.read_bytes() != payload:
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_openai_runtime_secret_configuration_invalid"
+            )
+        staged[name] = str(destination)
+    return staged, root
+
+
+def _discard_staged_runtime_secrets(root: Path | None) -> None:
+    """Remove the private copies; never leave secret bytes behind a run."""
+
+    if root is None:
+        return
+    for child in sorted(root.glob("*")):
+        try:
+            child.unlink()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
 def _provider_runtime_inputs(
     authority: Mapping[str, Any],
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -452,6 +520,18 @@ def run_scene_configuration_vast(
     provider_run = job / PROVIDER_RUN_DIRNAME
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     adapter: dict[str, Any] = {}
+    staged_secret_root: Path | None = None
+    try:
+        runtime_secret_paths, staged_secret_root = (
+            _stage_owner_only_runtime_secrets(
+                job_dir=job, secret_paths=runtime_secret_paths
+            )
+        )
+    except (OSError, TaskEvaluationSceneConfigurationVastError) as exc:
+        _discard_staged_runtime_secrets(staged_secret_root)
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_openai_runtime_secret_configuration_invalid"
+        ) from exc
     try:
         with _authority_environment():
             adapter = run_vast_provider_adapter(
@@ -519,6 +599,7 @@ def run_scene_configuration_vast(
         }
         seal_unallocated_provider_teardown(provider_run, reason="vast_adapter_failed")
     finally:
+        _discard_staged_runtime_secrets(staged_secret_root)
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
 
     teardown_path = provider_run / "vast_teardown_manifest.json"
