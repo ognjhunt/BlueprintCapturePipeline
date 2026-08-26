@@ -1079,24 +1079,29 @@ def deploy_control_plane_commit(
             active_link=active,
             activate=False,
         )
-        prerequisite = validate_splat_render_prerequisites(
-            root=splat_render_prerequisite_root,
-            repository_root=staged_release["release_path"],
-        )
-        prerequisite_entrypoints = prerequisite["entrypoints"]
-        scene_configuration_runtime = provision_scene_configuration_release(
-            repository_root=staged_release["release_path"],
-            source_commit=source_commit,
-            runtime_root=scene_configuration_runtime_root,
-            node_executable=prerequisite_entrypoints["node"],
-            browser_root=prerequisite_entrypoints["browser_root"],
-            browser_executable=prerequisite_entrypoints["browser"],
-            node_modules_root=prerequisite_entrypoints["node_modules"],
-            artifixer_root=artifixer_source_root,
-            content_agents_root=content_agents_source_root,
-            readback=service_account_readback(DEFAULT_SERVICE_ACCOUNT),
-            readback_actor=f"service-account:{DEFAULT_SERVICE_ACCOUNT}",
-        )
+        try:
+            prerequisite = validate_splat_render_prerequisites(
+                root=splat_render_prerequisite_root,
+                repository_root=staged_release["release_path"],
+            )
+            prerequisite_entrypoints = prerequisite["entrypoints"]
+            scene_configuration_runtime = provision_scene_configuration_release(
+                repository_root=staged_release["release_path"],
+                source_commit=source_commit,
+                runtime_root=scene_configuration_runtime_root,
+                node_executable=prerequisite_entrypoints["node"],
+                browser_root=prerequisite_entrypoints["browser_root"],
+                browser_executable=prerequisite_entrypoints["browser"],
+                node_modules_root=prerequisite_entrypoints["node_modules"],
+                artifixer_root=artifixer_source_root,
+                content_agents_root=content_agents_source_root,
+                readback=service_account_readback(DEFAULT_SERVICE_ACCOUNT),
+                readback_actor=f"service-account:{DEFAULT_SERVICE_ACCOUNT}",
+            )
+        except ValueError as exc:
+            raise ControlPlaneDeployError(
+                f"deploy_scene_configuration_runtime_invalid:{exc}"
+            ) from exc
         scene_configuration_environment = _install_scene_configuration_environment(
             Path(scene_configuration_environment_file).expanduser(),
             environment=scene_configuration_runtime["environment"],

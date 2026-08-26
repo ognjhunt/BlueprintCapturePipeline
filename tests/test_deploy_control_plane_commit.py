@@ -1071,7 +1071,11 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     )
 
     with pytest.raises(
-        ValueError, match="splat_render_prerequisite_manifest_invalid"
+        deploy.ControlPlaneDeployError,
+        match=(
+            "deploy_scene_configuration_runtime_invalid:"
+            "splat_render_prerequisite_manifest_invalid"
+        ),
     ):
         deploy.deploy_control_plane_commit(
             source_repo=source,
