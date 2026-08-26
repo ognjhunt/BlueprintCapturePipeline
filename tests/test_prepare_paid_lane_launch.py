@@ -11,6 +11,7 @@ import os
 import pwd
 import grp
 import stat
+import subprocess
 from pathlib import Path
 from typing import Sequence
 
@@ -80,6 +81,8 @@ def test_steps_run_in_order_and_exported_values_reach_later_steps(
     assert calls[1][1] == "r2://bucket/key.json"
     assert receipt["status"] == "prepared"
     assert [s["step_id"] for s in receipt["completed_steps"]] == ["first", "second"]
+    assert [row["step_id"] for row in receipt["step_logs"]] == ["first", "second"]
+    assert all(row["credential_redaction_applied"] for row in receipt["step_logs"])
     assert receipt["completed_steps"][0]["exports"] == {
         "carried": "r2://bucket/key.json"
     }
@@ -104,6 +107,85 @@ def test_a_failing_step_stops_the_sequence(
     assert receipt["status"] == "blocked"
     assert receipt["blockers"] == ["first:exit_3"]
     assert receipt["completed_steps"] == []
+
+
+def test_a_failing_step_retains_redacted_digest_bound_stdout_and_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A graph refusal must be diagnosable without rerunning its command."""
+
+    monkeypatch.setitem(prep.LANES, "fake", _lane(tmp_path))
+    secret = "sk-example-secret-material"
+    long_detail = "diagnostic-" + "x" * 600
+
+    def runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            list(argv),
+            3,
+            stdout=f"publication started {secret}\n{long_detail}\n",
+            stderr=(
+                "upload refused "
+                "https://objects.example/item?X-Amz-Signature=signed-value\n"
+            ),
+        )
+
+    receipt = prep.prepare_paid_lane_launch(
+        "fake",
+        {"value": "v", "api_key": secret},
+        runner=runner,
+    )
+
+    assert receipt["blockers"] == ["first:exit_3"]
+    assert len(receipt["step_logs"]) == 1
+    log_record = receipt["step_logs"][0]
+    assert log_record["step_id"] == "first"
+    stdout_path = Path(log_record["stdout_path"])
+    stderr_path = Path(log_record["stderr_path"])
+    assert stdout_path.parent == tmp_path
+    assert stderr_path.parent == tmp_path
+    assert stdout_path.name == "first.json.first.stdout.log"
+    assert stderr_path.name == "first.json.first.stderr.log"
+    stdout_text = stdout_path.read_text(encoding="utf-8")
+    stderr_text = stderr_path.read_text(encoding="utf-8")
+    assert secret not in stdout_text
+    assert long_detail in stdout_text
+    assert "signed-value" not in stderr_text
+    assert "<redacted>" in stdout_text
+    assert "<redacted>" in stderr_text
+    assert log_record["stdout_sha256"] == prep._sha256_file(stdout_path)
+    assert log_record["stderr_sha256"] == prep._sha256_file(stderr_path)
+    assert stat.S_IMODE(stdout_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(stderr_path.stat().st_mode) == 0o600
+
+
+def test_step_log_symlink_blocks_the_graph_after_command_without_following_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(prep.LANES, "fake", _lane(tmp_path))
+    outside = tmp_path / "outside.log"
+    outside.write_text("owner bytes", encoding="utf-8")
+    log_path = tmp_path / "first.json.first.stdout.log"
+    log_path.symlink_to(outside)
+
+    def runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "first.json").write_text(
+            json.dumps({"published_uri": "r2://bucket/key.json"}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(list(argv), 0, stdout="safe\n", stderr="")
+
+    receipt = prep.prepare_paid_lane_launch(
+        "fake", {"value": "v"}, runner=runner
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == [
+        "first:paid_lane_step_log_path_invalid"
+    ]
+    assert receipt["completed_steps"] == []
+    assert receipt["step_logs"] == []
+    assert receipt["provider_allocation_performed"] is False
+    assert outside.read_text(encoding="utf-8") == "owner bytes"
 
 
 def test_validate_only_renders_the_complete_plan_without_running_steps(
