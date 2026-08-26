@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_scene_configuration_disclosure import (
+    RENDER_INPUT_STATUSES,
+    render_inputs_disclosure_is_coherent,
+    renders_on_provider,
+)
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -111,7 +116,7 @@ def _bound_file(row: Mapping[str, Any], *, code: str) -> Path:
 
 
 def _portable_render_inputs(
-    *, runtime: Path, render: Mapping[str, Any]
+    *, runtime: Path, render: Mapping[str, Any], appearance: Path | None = None
 ) -> dict[str, Any]:
     portable = json.loads(json.dumps(dict(render)))
     source_result_digest = str(portable.get("result_digest") or "")
@@ -120,11 +125,26 @@ def _portable_render_inputs(
     _copy_file(calibration, calibration_target)
     portable["camera_calibration"].pop("materialized_path", None)
     portable["camera_calibration"]["path"] = calibration_target.relative_to(runtime).as_posix()
-    manifest = _bound_file(render["render_manifest"], code="scene_configuration_render_input_invalid")
-    manifest_target = runtime / "input/render/render_manifest.json"
-    _copy_file(manifest, manifest_target)
-    portable["render_manifest"].pop("materialized_path", None)
-    portable["render_manifest"]["path"] = manifest_target.relative_to(runtime).as_posix()
+    # A packet whose render is still owed by the provider has no manifest yet.
+    if isinstance(render.get("render_manifest"), Mapping):
+        manifest = _bound_file(
+            render["render_manifest"], code="scene_configuration_render_input_invalid"
+        )
+        manifest_target = runtime / "input/render/render_manifest.json"
+        _copy_file(manifest, manifest_target)
+        portable["render_manifest"].pop("materialized_path", None)
+        portable["render_manifest"]["path"] = manifest_target.relative_to(
+            runtime
+        ).as_posix()
+    if appearance is not None:
+        appearance_target = (
+            runtime / "input/render" / f"source_appearance{appearance.suffix}"
+        )
+        _copy_file(appearance, appearance_target)
+        portable["source_appearance"] = {
+            **dict(render.get("source_appearance") or {}),
+            "path": appearance_target.relative_to(runtime).as_posix(),
+        }
     for index, row in enumerate(render.get("derived_frames") or []):
         frame = _bound_file(row, code="scene_configuration_render_input_invalid")
         target = runtime / "input/render/frames" / f"{index:04d}.png"
@@ -219,8 +239,8 @@ def build_scene_configuration_provider_bundle(
         or envelope.get("envelope_digest")
         != canonical_digest(envelope, digest_field="envelope_digest")
         or not isinstance(render_inputs, Mapping)
-        or render_inputs.get("status") != "derived_method_inputs_materialized"
-        or render_inputs.get("raw_interiorgs_bytes_in_provider_packet") is not False
+        or render_inputs.get("status") not in RENDER_INPUT_STATUSES
+        or not render_inputs_disclosure_is_coherent(render_inputs)
         or render_inputs.get("result_digest")
         != canonical_digest(render_inputs, digest_field="result_digest")
     ):
@@ -241,12 +261,19 @@ def build_scene_configuration_provider_bundle(
     stage = output / "stage"
     runtime = stage / "provider_runtime"
     runtime.mkdir(parents=True)
+    # The render-inputs result carries the digest-bound decision that says
+    # whether source appearance bytes may cross to the provider. The bundle
+    # honours that decision rather than making a second, divergent one.
+    provider_render = renders_on_provider(
+        render_inputs.get("disclosure_decision") or {}
+    )
     portable = json.loads(json.dumps(envelope))
     portable["control_plane_envelope_digest"] = envelope["envelope_digest"]
     portable_refs = []
     for index, row in enumerate(envelope.get("materialized_references") or []):
         contract_path = str(row.get("contract_path") or "")
         if contract_path == "scene.appearance.representation":
+            # Staged once under input/render when the decision admits it.
             continue
         source = _bound_file(row, code="scene_configuration_bundle_reference_invalid")
         target = runtime / "input/references" / f"{index:04d}{source.suffix}"
@@ -275,17 +302,39 @@ def build_scene_configuration_provider_bundle(
             }
         )
     portable["stage_configuration_references"] = portable_configs
+    appearance_source: Path | None = None
+    if provider_render:
+        appearance_row = next(
+            (
+                row
+                for row in envelope.get("materialized_references") or []
+                if row.get("contract_path") == "scene.appearance.representation"
+            ),
+            None,
+        )
+        if appearance_row is None:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_source_appearance_missing"
+            )
+        appearance_source = _bound_file(
+            appearance_row, code="scene_configuration_bundle_reference_invalid"
+        )
     portable["render_inputs_result"] = _portable_render_inputs(
-        runtime=runtime, render=render_inputs
+        runtime=runtime, render=render_inputs, appearance=appearance_source
     )
     raw_paths = [
         row for row in envelope.get("materialized_references") or []
         if row.get("contract_path") == "scene.appearance.representation"
     ]
     portable["provider_disclosure_receipt"] = {
-        "raw_interiorgs_reference_count_omitted": len(raw_paths),
-        "raw_interiorgs_bytes_in_provider_bundle": False,
-        "derived_rendered_views_in_provider_bundle": True,
+        "raw_interiorgs_reference_count_omitted": 0 if provider_render else len(raw_paths),
+        "raw_interiorgs_bytes_in_provider_bundle": provider_render,
+        "derived_rendered_views_in_provider_bundle": not provider_render,
+        "render_execution_site": render_inputs.get("render_execution_site")
+        or "control_plane",
+        "disclosure_decision_digest": (
+            (render_inputs.get("disclosure_decision") or {}).get("decision_digest")
+        ),
     }
     portable["envelope_digest"] = canonical_digest(
         portable, digest_field="envelope_digest"

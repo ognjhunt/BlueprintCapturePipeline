@@ -38,6 +38,10 @@ from .task_evaluation_episode_compilation_queue import (
 from .task_evaluation_native_arena_preparation_adapter import (
     materialize_native_arena_adapter,
 )
+from .task_evaluation_scene_configuration_disclosure import (
+    RENDER_INPUT_STATUSES,
+    render_inputs_disclosure_is_coherent,
+)
 from .task_evaluation_scene_construction_recipe import (
     TaskEvaluationSceneConstructionRecipeError,
     validate_scene_construction_recipe,
@@ -916,10 +920,9 @@ def process_launch_preparation_queue(
                     render_inputs.get("schema_version")
                     != "task_evaluation_scene_configuration_render_inputs.v1"
                     or render_inputs.get("status")
-                    != "derived_method_inputs_materialized"
+                    not in RENDER_INPUT_STATUSES
                     or render_inputs.get("run_id") != envelope["request"]["run_id"]
-                    or render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
-                    is not False
+                    or not render_inputs_disclosure_is_coherent(render_inputs)
                     or render_inputs.get("provider_mutation_performed") is not False
                     or render_inputs.get("paid_execution_requested") is not False
                     or render_inputs.get("result_digest")
@@ -966,7 +969,9 @@ def process_launch_preparation_queue(
                         "configuration_render_input_count": render_inputs[
                             "derived_frame_count"
                         ],
-                        "raw_interiorgs_bytes_in_provider_packet": False,
+                        "raw_interiorgs_bytes_in_provider_packet": (
+                            render_inputs["raw_interiorgs_bytes_in_provider_packet"]
+                        ),
                         "construction_orchestration_id": construction_intake[
                             "orchestration_id"
                         ],
