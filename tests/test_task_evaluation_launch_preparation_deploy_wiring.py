@@ -46,6 +46,10 @@ def test_canonical_environment_documents_bounded_input_prefixes() -> None:
     assert "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT=" in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=" in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=" in environment
+    assert "OPENAI_PROJECT_ID=" in environment
+    assert "OPENAI_API_KEY_ID=" in environment
+    assert "OPENAI_ADMIN_API_KEY_FILE=" in environment
+    assert "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE=" in environment
 
 
 def test_preparation_loads_exact_release_scene_runtime_after_shared_environment() -> None:

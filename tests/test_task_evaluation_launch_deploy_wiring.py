@@ -113,6 +113,14 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     # paid preflight came to be unproducible on the deployed host.
     assert "OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key" in dispatcher
     assert (
+        "OPENAI_ADMIN_API_KEY_FILE="
+        "/etc/blueprint/provider-secrets/openai_admin_api_key"
+    ) in dispatcher
+    assert (
+        "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE="
+        "/etc/blueprint/provider-secrets/openai_cost_scope_attestation.json"
+    ) in dispatcher
+    assert (
         "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets"
     ) in dispatcher
     assert "EnvironmentFile values override Environment=" in dispatcher
