@@ -103,6 +103,18 @@ FINGER_TOOL_FRAME_SOURCE = (
 # Ordered to match the already-measured approach controller.  ``base_link`` is
 # the Robotiq tool body that carries the wrist camera in the live Arena asset.
 END_EFFECTOR_BODY_CANDIDATES = ("panda_hand", "base_link", "panda_link7")
+# DROID does not define Cartesian state at the attached Robotiq body.  Its
+# released Polymetis configuration runs FK to panda_link8, and NVIDIA's GR00T
+# client converts that exact ``cartesian_position`` into ``eef_9d``.  Keep the
+# policy-proprioception body independent of the controlled/scoring body above.
+DROID_EEF_BODY_NAME = "panda_link8"
+DROID_EEF_BODY_SOURCE = (
+    "droid-dataset/droid@ba46d4af805bce44e6a40cff10ed094ee5090ab8:"
+    "config/panda/franka_panda.yaml:ee_link_name"
+)
+DROID_EEF_STATE_SOURCE = (
+    "live_panda_link8_pose_world_transformed_by_live_robot_root_pose"
+)
 ARM_JOINT_COUNT = 7
 # Frozen by the Robotiq 2F-85 task embodiment and pinned independently by the
 # deterministic scorer.  A parity test keeps the flat-bundle duplicate honest.
@@ -712,6 +724,9 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(["isaac_episode_end_effector_body_missing"])
         self._end_effector_name = end_effector_name
         self._end_effector_index = body_names.index(end_effector_name)
+        if DROID_EEF_BODY_NAME not in body_names:
+            raise IsaacEpisodeAdapterError(["isaac_episode_droid_eef_body_missing"])
+        self._droid_eef_body_index = body_names.index(DROID_EEF_BODY_NAME)
 
     # -- EpisodeEnvironment -------------------------------------------------
 
@@ -1482,7 +1497,7 @@ class IsaacEpisodeAdapter:
 
     def _eef_9d(self) -> Any:
         end_effector_pose = self._to_torch(self._robot.data.body_pose_w)[
-            0, self._end_effector_index
+            0, self._droid_eef_body_index
         ]
         root_pose = self._to_torch(self._robot.data.root_pose_w)[0]
         end_effector_world = self._pose_world_xyzw(end_effector_pose)
@@ -1527,10 +1542,10 @@ def describe_adapter() -> dict[str, Any]:
         "finger_tool_frame_source": FINGER_TOOL_FRAME_SOURCE,
         "end_effector_body_candidates": list(END_EFFECTOR_BODY_CANDIDATES),
         "gripper_width_source": GRIPPER_WIDTH_SOURCE,
+        "droid_eef_body_name": DROID_EEF_BODY_NAME,
+        "droid_eef_body_source": DROID_EEF_BODY_SOURCE,
         "droid_eef_state_frame": "robot_root",
-        "droid_eef_state_source": (
-            "live_end_effector_body_pose_world_transformed_by_live_robot_root_pose"
-        ),
+        "droid_eef_state_source": DROID_EEF_STATE_SOURCE,
         "scripted_control_target_frame": "probe_calibrated_finger_midpoint",
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
@@ -1587,11 +1602,13 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_end_effector_binding_drifted")
     if bindings.get("gripper_width_source") != GRIPPER_WIDTH_SOURCE:
         errors.append("isaac_episode_adapter_gripper_width_source_drifted")
+    if bindings.get("droid_eef_body_name") != DROID_EEF_BODY_NAME:
+        errors.append("isaac_episode_adapter_droid_eef_body_drifted")
+    if bindings.get("droid_eef_body_source") != DROID_EEF_BODY_SOURCE:
+        errors.append("isaac_episode_adapter_droid_eef_body_source_drifted")
     if bindings.get("droid_eef_state_frame") != "robot_root":
         errors.append("isaac_episode_adapter_droid_eef_state_frame_drifted")
-    if bindings.get("droid_eef_state_source") != (
-        "live_end_effector_body_pose_world_transformed_by_live_robot_root_pose"
-    ):
+    if bindings.get("droid_eef_state_source") != DROID_EEF_STATE_SOURCE:
         errors.append("isaac_episode_adapter_droid_eef_state_source_drifted")
     if bindings.get("scripted_control_target_frame") != (
         "probe_calibrated_finger_midpoint"
@@ -1651,6 +1668,9 @@ __all__ = [
     "ADAPTER_SCHEMA_VERSION",
     "CAMERA_VIEW_BINDING",
     "DEFAULT_CAMERA_SCENE_NAMES",
+    "DROID_EEF_BODY_NAME",
+    "DROID_EEF_BODY_SOURCE",
+    "DROID_EEF_STATE_SOURCE",
     "END_EFFECTOR_BODY_CANDIDATES",
     "FINGER_BODIES",
     "GRIPPER_PHYSICAL_FULL_OPENING_M",

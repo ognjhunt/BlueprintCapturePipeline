@@ -14,6 +14,8 @@ from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelo
 from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     CAMERA_VIEW_BINDING,
     DEFAULT_CAMERA_SCENE_NAMES,
+    DROID_EEF_BODY_NAME,
+    DROID_EEF_BODY_SOURCE,
     FINGER_BODIES,
     FINGER_TOOL_FRAME_LOCAL_OFFSET_M,
     FINGER_TOOL_FRAME_SOURCE,
@@ -324,7 +326,7 @@ class _Data:
 class _Robot:
     def __init__(self):
         bodies = [
-            "panda_link0", "panda_link7", "base_link",
+            "panda_link0", "panda_link7", "panda_link8", "base_link",
             "left_inner_finger", "right_inner_finger",
         ]
         # Fingers 0.06 m apart in x, so separation is exactly 0.06.
@@ -332,6 +334,15 @@ class _Robot:
         # (0, 0, 0, 1).
         poses = np.zeros((1, len(bodies), 7), dtype=float)
         poses[0, bodies.index("base_link"), :7] = [
+            1.0,
+            2.0,
+            3.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+        poses[0, bodies.index("panda_link8"), :7] = [
             1.0,
             2.0,
             3.0,
@@ -581,7 +592,19 @@ def test_groot_eef_state_is_expressed_in_robot_root_not_scene_world() -> None:
         half_sqrt,
     ]
     bodies = list(adapter._robot.data.body_names)
+    # The controller/scorer remains bound to the attached Robotiq base_link.
+    # Make it visibly different so the regression proves GR00T reads the
+    # official DROID panda_link8 state instead.
     adapter._robot.data.body_pose_w[0, bodies.index("base_link")] = [
+        4.5,
+        9.8,
+        0.8,
+        0.0,
+        0.0,
+        half_sqrt,
+        half_sqrt,
+    ]
+    adapter._robot.data.body_pose_w[0, bodies.index("panda_link8")] = [
         3.8094613552093506,
         9.223036766052246,
         0.5535212159156799,
@@ -597,7 +620,31 @@ def test_groot_eef_state_is_expressed_in_robot_root_not_scene_world() -> None:
         [0.31637274344825944, -0.02097505926246661, 0.4627392159156799]
     )
     assert max(abs(float(value)) for value in eef[:3]) < 1.0
-    assert describe_adapter()["droid_eef_state_frame"] == "robot_root"
+    bindings = describe_adapter()
+    assert bindings["droid_eef_state_frame"] == "robot_root"
+    assert bindings["droid_eef_body_name"] == "panda_link8"
+    assert bindings["droid_eef_body_source"] == DROID_EEF_BODY_SOURCE
+
+
+def test_groot_eef_state_refuses_a_robot_without_the_droid_fk_body() -> None:
+    robot = _Robot()
+    robot.data.body_names.remove(DROID_EEF_BODY_NAME)
+
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_droid_eef_body_missing",
+    ):
+        IsaacEpisodeAdapter(
+            env=_Env(),
+            robot=robot,
+            rigid_task_object=_Can(),
+            action_dim=8,
+            reset_seed=20260806,
+            to_torch=_to_torch,
+            gripper_closed_width_m=0.0,
+            gripper_open_width_m=0.06,
+            contact_envelope=canonical_contact_envelope(),
+        )
 
 
 def test_isaac_xyzw_quaternion_is_converted_before_nvidia_frame_correction() -> None:
@@ -925,6 +972,8 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
     assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
+    assert bindings["droid_eef_body_name"] == DROID_EEF_BODY_NAME
+    assert bindings["droid_eef_body_source"] == DROID_EEF_BODY_SOURCE
     assert bindings["droid_eef_state_frame"] == "robot_root"
     assert bindings["scripted_control_physx_jacobian_frame"] == "world"
     assert bindings["scripted_control_controller_error_frame"] == "robot_root"
@@ -957,6 +1006,18 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["gripper_width_source"] = "raw_link_origin_distance"
     assert "isaac_episode_adapter_gripper_width_source_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["droid_eef_body_name"] = "base_link"
+    assert "isaac_episode_adapter_droid_eef_body_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["droid_eef_body_source"] = "unbound_runtime_guess"
+    assert "isaac_episode_adapter_droid_eef_body_source_drifted" in (
         validate_adapter_bindings(drifted)
     )
 
