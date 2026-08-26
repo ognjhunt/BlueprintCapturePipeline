@@ -46,6 +46,9 @@ from .task_evaluation_scene_construction_queue import (
     TaskEvaluationSceneConstructionQueueError,
     stage_scene_construction,
 )
+from .task_evaluation_scene_configuration_render_inputs import (
+    materialize_scene_configuration_render_inputs,
+)
 from .task_evaluation_launch_preparation_queue import (
     ENVELOPE_SCHEMA_VERSION,
     TaskEvaluationLaunchPreparationQueueError,
@@ -71,6 +74,7 @@ EPISODE_COMPILATION_QUEUE_ROOT_ENV = (
 )
 ReferenceFetcher = Callable[[str, Path, int], None]
 AdapterMaterializer = Callable[..., dict[str, Any]]
+SceneRenderInputMaterializer = Callable[..., dict[str, Any]]
 ALLOWED_REFERENCE_SCHEMES = frozenset({"gs", "https", "s3"})
 
 
@@ -594,6 +598,9 @@ def process_launch_preparation_queue(
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
     adapter_materializer: AdapterMaterializer = materialize_native_arena_adapter,
+    scene_render_input_materializer: SceneRenderInputMaterializer = (
+        materialize_scene_configuration_render_inputs
+    ),
     construction_queue_root: str | Path | None = None,
     episode_compilation_queue_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -689,6 +696,60 @@ def process_launch_preparation_queue(
                             "scene.configured_revision.source.rights_admission"
                         ),
                         **configured_revision["source"]["rights_admission"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.metric"
+                        ),
+                        **configured_revision["registration"]["metric"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.support_plane"
+                        ),
+                        **configured_revision["registration"]["support_plane"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.robot_mount_interface"
+                        ),
+                        **configured_revision["registration"][
+                            "robot_mount_interface"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.camera_calibration"
+                        ),
+                        **configured_revision["registration"][
+                            "camera_calibration"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.registration.workspace_clearance"
+                        ),
+                        **configured_revision["registration"][
+                            "workspace_clearance"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.task_template.definition"
+                        ),
+                        **configured_revision["task_template"]["definition"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.task_template.success_criteria"
+                        ),
+                        **configured_revision["task_template"]["success_criteria"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.task_template.execution"
+                        ),
+                        **configured_revision["task_template"]["execution"],
                     },
                 ]
                 transitive_references.extend(
@@ -792,6 +853,48 @@ def process_launch_preparation_queue(
                         for row in result["references"]
                     }
                 )
+                stage_one_path = Path(
+                    str(recipe_configuration_references[0]["materialized_path"])
+                ).resolve()
+                try:
+                    stage_one_configuration = json.loads(
+                        stage_one_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_scene_render_configuration_invalid"
+                    ) from exc
+                render_inputs = scene_render_input_materializer(
+                    envelope={
+                        **envelope,
+                        "recipe": recipe,
+                        "materialized_references": result["references"],
+                    },
+                    stage_one_configuration=stage_one_configuration,
+                    output_root=(
+                        Path(input_root)
+                        / str(envelope["request"]["preparation_id"])
+                        / "configuration-render-inputs"
+                    ),
+                )
+                if (
+                    render_inputs.get("schema_version")
+                    != "task_evaluation_scene_configuration_render_inputs.v1"
+                    or render_inputs.get("status")
+                    != "derived_method_inputs_materialized"
+                    or render_inputs.get("run_id") != envelope["request"]["run_id"]
+                    or render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
+                    is not False
+                    or render_inputs.get("provider_mutation_performed") is not False
+                    or render_inputs.get("paid_execution_requested") is not False
+                    or render_inputs.get("result_digest")
+                    != canonical_digest(
+                        render_inputs, digest_field="result_digest"
+                    )
+                ):
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_scene_render_result_invalid"
+                    )
                 if construction_queue_root is None:
                     raise TaskEvaluationLaunchPreparationWorkerError(
                         "launch_preparation_scene_construction_queue_missing"
@@ -803,6 +906,7 @@ def process_launch_preparation_queue(
                     recipe_configuration_references=(
                         recipe_configuration_references
                     ),
+                    render_inputs_result=render_inputs,
                     queue_root=construction_queue_root,
                 )
                 result.update(
@@ -821,6 +925,13 @@ def process_launch_preparation_queue(
                             for row in recipe_configuration_references
                         ),
                         "construction_packet_materialized": False,
+                        "configuration_render_inputs_result_digest": (
+                            render_inputs["result_digest"]
+                        ),
+                        "configuration_render_input_count": render_inputs[
+                            "derived_frame_count"
+                        ],
+                        "raw_interiorgs_bytes_in_provider_packet": False,
                         "construction_orchestration_id": construction_intake[
                             "orchestration_id"
                         ],

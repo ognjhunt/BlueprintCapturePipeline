@@ -9,6 +9,7 @@ episode packet used by the existing Task Evaluation launch path.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -29,11 +30,17 @@ from .task_evaluation_launch_preparation_queue import (
 from .task_evaluation_scene_construction_queue import (
     ensure_scene_construction_queue_root,
 )
+from .task_evaluation_native_arena_episode_compiler import (
+    compile_native_arena_episode,
+)
 
 
 COMPILER_OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
 RESULT_SCHEMA_VERSION = "task_evaluation_episode_compilation_result.v1"
 EpisodeCompiler = Callable[..., Mapping[str, Any]]
+QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
+INPUT_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
+OUTPUT_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT"
 
 
 class TaskEvaluationEpisodeCompilationWorkerError(RuntimeError):
@@ -158,6 +165,14 @@ def _validated_compiler_output(
     output = dict(value)
     artifact = output.get("compiled_episode_packet")
     path = Path(str((artifact or {}).get("path") or "")).resolve()
+    adapter_artifact = output.get("adapter_result")
+    adapter_path = Path(
+        str((adapter_artifact or {}).get("path") or "")
+    ).resolve()
+    try:
+        adapter_result = json.loads(adapter_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        adapter_result = {}
     if (
         output.get("schema_version") != COMPILER_OUTPUT_SCHEMA_VERSION
         or output.get("status") != "completed"
@@ -178,6 +193,20 @@ def _validated_compiler_output(
         or not path.is_file()
         or _sha256_and_size(path)
         != (artifact.get("digest"), artifact.get("size_bytes"))
+        or not isinstance(adapter_artifact, Mapping)
+        or not _under(adapter_path, output_root)
+        or adapter_path.is_symlink()
+        or not adapter_path.is_file()
+        or adapter_result.get("status")
+        != "native_arena_adapter_materialized"
+        or adapter_result.get("result_digest")
+        != adapter_artifact.get("digest")
+        or adapter_result.get("result_digest")
+        != canonical_digest(adapter_result, digest_field="result_digest")
+        or adapter_result.get("packet_receipt_digest")
+        != adapter_artifact.get("packet_receipt_digest")
+        or adapter_result.get("runtime_source_receipt_digest")
+        != adapter_artifact.get("runtime_source_receipt_digest")
     ):
         raise TaskEvaluationEpisodeCompilationWorkerError(
             "episode_compiler_output_invalid"
@@ -191,7 +220,7 @@ def process_episode_compilation_queue(
     input_root: str | Path,
     output_root: str | Path,
     source_commit: str,
-    episode_compiler: EpisodeCompiler,
+    episode_compiler: EpisodeCompiler = compile_native_arena_episode,
     max_messages: int = 1,
 ) -> dict[str, Any]:
     """Compile queued Website evaluations without allocating a provider."""
@@ -263,6 +292,11 @@ def process_episode_compilation_queue(
                 ],
                 "compiled_episode_packet_digest": packet["digest"],
                 "compiled_episode_packet_size_bytes": packet["size_bytes"],
+                "compiled_episode_packet_path": packet["path"],
+                "adapter_result_path": compiler_output["adapter_result"]["path"],
+                "adapter_result_digest": compiler_output["adapter_result"][
+                    "digest"
+                ],
                 "compiler_output_digest": compiler_output[
                     "compiler_output_digest"
                 ],
@@ -317,9 +351,41 @@ def process_episode_compilation_queue(
     }
 
 
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Compile queued Task Evaluation episodes in production"
+    )
+    parser.add_argument("--queue-root", default=os.getenv(QUEUE_ROOT_ENV, ""))
+    parser.add_argument("--input-root", default=os.getenv(INPUT_ROOT_ENV, ""))
+    parser.add_argument("--output-root", default=os.getenv(OUTPUT_ROOT_ENV, ""))
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--max-messages", type=int, default=1)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if not args.queue_root or not args.input_root or not args.output_root:
+        raise SystemExit("episode compilation roots are required")
+    result = process_episode_compilation_queue(
+        queue_root=args.queue_root,
+        input_root=args.input_root,
+        output_root=args.output_root,
+        source_commit=args.source_commit,
+        max_messages=args.max_messages,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 __all__ = [
     "COMPILER_OUTPUT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",
     "TaskEvaluationEpisodeCompilationWorkerError",
+    "main",
     "process_episode_compilation_queue",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

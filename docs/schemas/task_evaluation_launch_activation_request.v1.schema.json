@@ -24,6 +24,7 @@
     "team_namespace": {"$ref": "#/$defs/identifier"},
     "lane": {
       "enum": [
+        "task_evaluation_scene_configuration",
         "native_task_arena_construction",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive"
@@ -110,7 +111,7 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"lane": {"const": "native_task_arena_construction"}}},
+      "if": {"properties": {"lane": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_construction"]}}},
       "then": {"properties": {"lineage": {"properties": {"kind": {"const": "initial_project"}}}}},
       "else": {"properties": {"lineage": {"properties": {"kind": {"const": "predecessor"}}}}}
     },

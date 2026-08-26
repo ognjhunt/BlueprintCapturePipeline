@@ -89,6 +89,20 @@ def test_production_compiler_joins_configured_scene_and_team_inputs(
         assert "robot.configuration" in materialized_references
         packet = output_root / "native-task-arena-bundle.zip"
         packet.write_bytes(b"production-compiled-episode-packet")
+        adapter_path = output_root / "adapter-result.json"
+        adapter = {
+            "schema_version": "task_evaluation_native_arena_adapter_result.v1",
+            "status": "native_arena_adapter_materialized",
+            "packet_receipt_digest": "sha256:" + "a" * 64,
+            "runtime_source_receipt_digest": "sha256:" + "b" * 64,
+            "result_digest": "",
+        }
+        adapter["result_digest"] = canonical_digest(
+            adapter, digest_field="result_digest"
+        )
+        adapter_path.write_text(
+            __import__("json").dumps(adapter) + "\n", encoding="utf-8"
+        )
         result = {
             "schema_version": COMPILER_OUTPUT_SCHEMA_VERSION,
             "status": "completed",
@@ -101,6 +115,14 @@ def test_production_compiler_joins_configured_scene_and_team_inputs(
                 "path": str(packet),
                 "digest": "sha256:" + hashlib.sha256(packet.read_bytes()).hexdigest(),
                 "size_bytes": packet.stat().st_size,
+            },
+            "adapter_result": {
+                "path": str(adapter_path),
+                "digest": adapter["result_digest"],
+                "packet_receipt_digest": adapter["packet_receipt_digest"],
+                "runtime_source_receipt_digest": adapter[
+                    "runtime_source_receipt_digest"
+                ],
             },
             "compiled_by_production": True,
             "customer_supplied_prebuilt_episode_packet": False,

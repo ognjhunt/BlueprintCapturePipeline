@@ -1598,10 +1598,14 @@ def _derive_joint_agent_plan(
         reason = "preexisting_articulation_preserved_by_enrichment_pass"
         single_rigid_body = False
     else:
-        if input_variant == "agent_cad_v1":
+        if input_variant in {"agent_cad_v1", "scene_configuration_v1"}:
             if root_count != 0 or rigid_body_count != 0:
                 raise ValueError("adp_content_agents_joint_agent_mesh_input_invalid")
-            reason = "agent_cad_mesh_working_copy_has_no_articulation_task"
+            reason = (
+                "agent_cad_mesh_working_copy_has_no_articulation_task"
+                if input_variant == "agent_cad_v1"
+                else "scene_configuration_rigid_candidate_has_no_articulation_task"
+            )
             single_rigid_body = False
         elif input_variant == "paired_target_registered_v1":
             if root_count != 0 or rigid_body_count not in {0, 1}:
@@ -1857,21 +1861,34 @@ def _materialize_remote_configs(
         target = destination / name
         if variant in {"control_v1", "articulated_v1"}:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        elif variant in {"agent_cad_v1", "paired_target_registered_v1"}:
+        elif variant in {
+            "agent_cad_v1",
+            "paired_target_registered_v1",
+            "scene_configuration_v1",
+        }:
             if not mesh_paths or not material_path.startswith("/"):
                 raise ValueError("adp_content_agents_candidate_config_scope_invalid")
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
             project = payload["project"]
             agent_cad = variant == "agent_cad_v1"
+            scene_configuration = variant == "scene_configuration_v1"
             source_description = (
                 "agent-authored CAD Mesh working copy"
                 if agent_cad
-                else "native-qualified registered replacement working copy"
+                else (
+                    "SAGE-derived scene-configuration candidate working copy"
+                    if scene_configuration
+                    else "native-qualified registered replacement working copy"
+                )
             )
             project_name = (
                 "adp_agent_cad_mesh_enrichment"
                 if agent_cad
-                else "adp_paired_target_registered_enrichment"
+                else (
+                    "task_evaluation_scene_configuration_enrichment"
+                    if scene_configuration
+                    else "adp_paired_target_registered_enrichment"
+                )
             )
             project["name"] = project_name
             project["session_id"] = project_name
@@ -1886,8 +1903,12 @@ def _materialize_remote_configs(
                 material_subject = (
                     "Classify visible materials on an agent-authored CAD candidate"
                     if agent_cad
-                    else "Classify visible materials on the native-qualified "
-                    "registered candidate"
+                    else (
+                        "Classify visible materials on a SAGE-derived candidate"
+                        if scene_configuration
+                        else "Classify visible materials on the native-qualified "
+                        "registered candidate"
+                    )
                 )
                 payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
                     "vlm_system"
@@ -1902,8 +1923,13 @@ def _materialize_remote_configs(
                 visible_subject = (
                     "Classify this visible CAD candidate surface. Treat it as "
                     if agent_cad
-                    else "Classify this visible registered candidate surface. "
-                    "Treat it as "
+                    else (
+                        "Classify this visible SAGE-derived candidate surface. "
+                        "Treat it as "
+                        if scene_configuration
+                        else "Classify this visible registered candidate surface. "
+                        "Treat it as "
+                    )
                 )
                 payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
                     "vlm_user"
@@ -1974,6 +2000,7 @@ def _materialize_remote_configs(
         if variant in {
             "agent_cad_v1",
             "paired_target_registered_v1",
+            "scene_configuration_v1",
         } or "reference_images" in input_config:
             input_config["reference_images"] = reference_relpaths
         payload["input"] = input_config

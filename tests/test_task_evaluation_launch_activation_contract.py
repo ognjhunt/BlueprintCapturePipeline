@@ -23,7 +23,10 @@ def ref(index: int) -> dict[str, object]:
 
 def request(*, lane: str = "native_task_arena_construction") -> dict[str, object]:
     lineage: dict[str, object]
-    if lane == "native_task_arena_construction":
+    if lane in {
+        "task_evaluation_scene_configuration",
+        "native_task_arena_construction",
+    }:
         lineage = {
             "kind": "initial_project",
             "project_spend_reconciliation": ref(2),
@@ -74,6 +77,7 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
     "lane",
     [
         "native_task_arena_construction",
+        "task_evaluation_scene_configuration",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive",
     ],

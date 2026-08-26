@@ -59,6 +59,14 @@ from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
     validate_shared_mutation_window,
 )
+from .task_evaluation_scene_configuration_builtin_producers import (
+    TOOLCHAIN_ROOT_ENV as SCENE_CONFIGURATION_TOOLCHAIN_ROOT_ENV,
+    validate_scene_configuration_toolchain,
+)
+from .task_evaluation_scene_construction_queue import (
+    ENVELOPE_SCHEMA_VERSION as SCENE_CONSTRUCTION_ENVELOPE_SCHEMA_VERSION,
+    QUEUE_STATES as SCENE_CONSTRUCTION_QUEUE_STATES,
+)
 
 
 QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
@@ -67,6 +75,15 @@ PREPARATION_QUEUE_ROOT_ENV = (
 )
 PREPARATION_INPUT_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
+)
+EPISODE_COMPILATION_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
+)
+EPISODE_COMPILATION_OUTPUT_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT"
+)
+SCENE_CONSTRUCTION_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
 )
 ACTIVATION_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_ROOT"
 ALLOWED_URI_PREFIXES_ENV = (
@@ -258,6 +275,9 @@ def _load_verified_preparation(
     activation_request: Mapping[str, Any],
     preparation_queue_root: Path,
     preparation_input_root: Path,
+    episode_compilation_queue_root: Path | None = None,
+    episode_compilation_output_root: Path | None = None,
+    scene_construction_queue_root: Path | None = None,
 ) -> tuple[
     dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Path]
 ]:
@@ -277,11 +297,15 @@ def _load_verified_preparation(
         digest_field="result_digest",
     )
     request = validate_launch_preparation_request(envelope["request"])
+    accepted_statuses = {
+        "native_arena_inputs_verified_awaiting_profile_authority",
+        "queued_for_production_episode_compilation",
+        "queued_for_production_scene_configuration",
+    }
     if (
         envelope.get("request_digest") != binding["request_digest"]
         or result.get("result_digest") != binding["result_digest"]
-        or result.get("status")
-        != "native_arena_inputs_verified_awaiting_profile_authority"
+        or result.get("status") not in accepted_statuses
         or result.get("full_byte_service_account_readback_passed") is not True
         or request["preparation_id"] != preparation_id
         or request["team_namespace"] != activation_request["team_namespace"]
@@ -320,6 +344,58 @@ def _load_verified_preparation(
             )
         materialized_rows[contract_path] = row
         materialized_references[contract_path] = path
+    construction_envelope: dict[str, Any] | None = None
+    construction_envelope_path: Path | None = None
+    if result.get("status") == "queued_for_production_scene_configuration":
+        if scene_construction_queue_root is None:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_scene_construction_queue_missing"
+            )
+        orchestration_id = str(result.get("construction_orchestration_id") or "")
+        recipe_digest = str(result.get("construction_recipe_digest") or "")
+        filename = f"{orchestration_id}-{recipe_digest.removeprefix('sha256:')}.json"
+        candidates = [
+            scene_construction_queue_root / state / filename
+            for state in SCENE_CONSTRUCTION_QUEUE_STATES
+            if (scene_construction_queue_root / state / filename).exists()
+        ]
+        if len(candidates) != 1:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_scene_construction_envelope_ambiguous"
+            )
+        construction_envelope_path = candidates[0].resolve()
+        construction_envelope = _load_sealed(
+            construction_envelope_path,
+            schema_version=SCENE_CONSTRUCTION_ENVELOPE_SCHEMA_VERSION,
+            digest_field="envelope_digest",
+        )
+        if (
+            construction_envelope.get("orchestration_id") != orchestration_id
+            or construction_envelope.get("preparation_id") != preparation_id
+            or construction_envelope.get("run_id") != request["run_id"]
+            or construction_envelope.get("team_namespace")
+            != request["team_namespace"]
+            or construction_envelope.get("expected_production_commit")
+            != activation_request["expected_production_commit"]
+            or construction_envelope.get("recipe_digest") != recipe_digest
+            or construction_envelope.get("envelope_digest")
+            != result.get("construction_queue_envelope_digest")
+            or construction_envelope.get("request") != request
+            or construction_envelope.get("paid_execution_requested") is not False
+            or construction_envelope.get("provider_mutation_performed") is not False
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_scene_construction_binding_mismatch"
+            )
+        for row in construction_envelope.get("stage_configuration_references") or []:
+            if not isinstance(row, Mapping):
+                raise TaskEvaluationLaunchActivationWorkerError(
+                    "launch_activation_scene_configuration_reference_invalid"
+                )
+            expected_references[str(row.get("contract_path") or "")] = (
+                str(row.get("digest") or ""),
+                int(row.get("size_bytes") or 0),
+            )
     if request["run_mode"] == "episode_evaluation":
         revision_path = materialized_references.get("scene.configured_revision")
         try:
@@ -343,6 +419,30 @@ def _load_verified_preparation(
             "scene.configured_revision.source.rights_admission": revision[
                 "source"
             ]["rights_admission"],
+            "scene.configured_revision.registration.metric": revision[
+                "registration"
+            ]["metric"],
+            "scene.configured_revision.registration.support_plane": revision[
+                "registration"
+            ]["support_plane"],
+            "scene.configured_revision.registration.robot_mount_interface": revision[
+                "registration"
+            ]["robot_mount_interface"],
+            "scene.configured_revision.registration.camera_calibration": revision[
+                "registration"
+            ]["camera_calibration"],
+            "scene.configured_revision.registration.workspace_clearance": revision[
+                "registration"
+            ]["workspace_clearance"],
+            "scene.configured_revision.task_template.definition": revision[
+                "task_template"
+            ]["definition"],
+            "scene.configured_revision.task_template.success_criteria": revision[
+                "task_template"
+            ]["success_criteria"],
+            "scene.configured_revision.task_template.execution": revision[
+                "task_template"
+            ]["execution"],
         }
         transitive.update(
             {
@@ -369,11 +469,67 @@ def _load_verified_preparation(
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_preparation_reference_invalid"
             )
-    adapter_path = (
-        preparation_root
-        / "native-arena-adapter"
-        / "task_evaluation_native_arena_adapter_result.v1.json"
-    )
+    if construction_envelope is not None and construction_envelope_path is not None:
+        return (
+            request,
+            result,
+            {
+                "kind": "task_evaluation_scene_configuration",
+                "construction_envelope_path": str(construction_envelope_path),
+                "construction_envelope_digest": construction_envelope[
+                    "envelope_digest"
+                ],
+                "recipe_digest": construction_envelope["recipe_digest"],
+                "source_commit": construction_envelope[
+                    "expected_production_commit"
+                ],
+            },
+            materialized_references,
+        )
+    adapter_root = preparation_root / "native-arena-adapter"
+    expected_adapter_digest = result.get("adapter_result_digest")
+    if result.get("status") == "queued_for_production_episode_compilation":
+        if (
+            episode_compilation_queue_root is None
+            or episode_compilation_output_root is None
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_episode_compilation_roots_missing"
+            )
+        compilation_id = str(result.get("episode_compilation_id") or "")
+        envelope_digest = str(
+            result.get("episode_compilation_queue_envelope_digest") or ""
+        )
+        compilation_filename = (
+            f"{compilation_id}-{envelope_digest.removeprefix('sha256:')}.json"
+        )
+        compilation = _load_sealed(
+            episode_compilation_queue_root / "results" / compilation_filename,
+            schema_version="task_evaluation_episode_compilation_result.v1",
+            digest_field="result_digest",
+        )
+        adapter_path = Path(
+            str(compilation.get("adapter_result_path") or "")
+        ).resolve()
+        compiled_root = episode_compilation_output_root.resolve(strict=True)
+        if (
+            compilation.get("status") != "compiled_for_production_launch"
+            or compilation.get("source_commit")
+            != activation_request["expected_production_commit"]
+            or compilation.get("configured_scene_revision_digest")
+            != revision["revision_digest"]
+            or not _under(adapter_path, compiled_root)
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_episode_compilation_invalid"
+            )
+        adapter_root = adapter_path.parent
+        expected_adapter_digest = compilation.get("adapter_result_digest")
+    else:
+        adapter_path = (
+            adapter_root
+            / "task_evaluation_native_arena_adapter_result.v1.json"
+        )
     adapter = _load_sealed(
         adapter_path,
         schema_version=ADAPTER_RESULT_SCHEMA_VERSION,
@@ -384,13 +540,13 @@ def _load_verified_preparation(
         str(adapter.get("runtime_source_receipt") or "")
     ).resolve()
     if (
-        adapter.get("result_digest") != result.get("adapter_result_digest")
+        adapter.get("result_digest") != expected_adapter_digest
         or adapter.get("status") != "native_arena_adapter_materialized"
         or adapter.get("preparation_id") != preparation_id
         or adapter.get("source_commit")
         != activation_request["expected_production_commit"]
-        or not _under(packet_root, preparation_root)
-        or not _under(runtime_receipt, preparation_root)
+        or not _under(packet_root, adapter_root)
+        or not _under(runtime_receipt, adapter_root)
         or not packet_root.is_dir()
         or not runtime_receipt.is_file()
     ):
@@ -588,6 +744,150 @@ def _build_native_context(
     }
 
 
+def _build_scene_configuration_context(
+    *,
+    activation_request: Mapping[str, Any],
+    preparation_request: Mapping[str, Any],
+    construction_input: Mapping[str, Any],
+    activation_materialized: Mapping[str, Path],
+    activation_root: Path,
+    repository_root: Path,
+    toolchain_root: Path,
+    destination_prefix: str,
+    profile_dir: Path,
+    webapp_catalog: Path,
+    standing_authorization_dir: Path,
+    service_account: str,
+    service_group: str,
+) -> dict[str, Any]:
+    """Build server-owned inputs for one Website-started configuration profile."""
+
+    if (
+        activation_request.get("lane")
+        != "task_evaluation_scene_configuration"
+        or preparation_request.get("run_mode") != "scene_configuration"
+        or activation_request.get("lineage", {}).get("kind")
+        != "initial_project"
+        or construction_input.get("kind")
+        != "task_evaluation_scene_configuration"
+    ):
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_scene_configuration_context_invalid"
+        )
+    construction_envelope = Path(
+        str(construction_input.get("construction_envelope_path") or "")
+    ).resolve()
+    source_commit = str(activation_request["expected_production_commit"])
+    if (
+        construction_envelope.is_symlink()
+        or not construction_envelope.is_file()
+        or construction_input.get("source_commit") != source_commit
+    ):
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_scene_configuration_context_invalid"
+        )
+    try:
+        toolchain_manifest = validate_scene_configuration_toolchain(
+            root=toolchain_root.resolve(strict=True),
+            expected_source_commit=source_commit,
+        )
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_scene_configuration_toolchain_invalid"
+        ) from exc
+    operations = {
+        "set_root": str(activation_root / "launch-set"),
+        "repository_root": str(repository_root),
+        "source_commit": source_commit,
+        "construction_envelope": str(construction_envelope),
+        "toolchain_root": str(toolchain_root.resolve()),
+        "destination_prefix": destination_prefix.rstrip("/")
+        + "/"
+        + preparation_request["publication"]["input_namespace"]
+        + "/"
+        + activation_request["activation_id"],
+        "profile_dir": str(profile_dir),
+        "webapp_catalog_out": str(webapp_catalog),
+        "standing_authorization_dir": str(standing_authorization_dir),
+        "standing_authorization_expires_at": activation_request[
+            "authorization"
+        ]["standing_authorization_expires_at"],
+        "pod_name": activation_request["activation_id"],
+        "revision": activation_request["authorization"]["profile_revision"],
+        "authorization_reference": activation_request["authorization"][
+            "reference"
+        ],
+        "authorized_by": activation_request["authorization"]["authorized_by"],
+        "authorized_on": activation_request["authorization"]["authorized_on"],
+        "maximum_hourly_rate_usd": preparation_request["spend"][
+            "maximum_hourly_rate_usd"
+        ],
+        "hard_total_spend_cap_usd": preparation_request["spend"][
+            "hard_cap_usd"
+        ],
+        "provider_compute_spend_cap_usd": preparation_request["spend"][
+            "provider_compute_spend_cap_usd"
+        ],
+        "openai_max_cost_usd": preparation_request["spend"][
+            "external_service_caps"
+        ]["openai"]["maximum_cost_usd"],
+        "openai_max_requests": preparation_request["spend"][
+            "external_service_caps"
+        ]["openai"]["maximum_requests"],
+        "openai_artifixer_semantic_teacher_max_cost_usd": preparation_request[
+            "spend"
+        ]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+            "artifixer_semantic_teacher"
+        ],
+        "openai_artifixer_visual_review_max_cost_usd": preparation_request[
+            "spend"
+        ]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+            "artifixer_visual_review"
+        ],
+        "openai_content_agents_max_cost_usd": preparation_request["spend"][
+            "external_service_caps"
+        ]["openai"]["stage_max_cost_usd"]["content_agents"],
+        "hard_ttl_seconds": preparation_request["spend"]["hard_ttl_seconds"],
+        "container_image": preparation_request["runtime"]["oci_image"],
+        "scene_id": preparation_request["scene"]["identity"]["id"],
+        "task_id": preparation_request["task"]["identity"]["id"],
+        "project_spend_reconciliation": str(
+            activation_materialized["lineage.project_spend_reconciliation"]
+        ),
+        "initial_provider_zero": str(
+            activation_materialized["lineage.initial_provider_zero"]
+        ),
+        "python": sys.executable,
+        "service_account": service_account,
+        "service_group": service_group,
+    }
+    return {
+        "schema_version": (
+            "task_evaluation_scene_configuration_launch_preparation_context.v1"
+        ),
+        "lane": "task_evaluation_scene_configuration",
+        "team_namespace": activation_request["team_namespace"],
+        "reference_bindings": {
+            "source_commit": source_commit,
+            "preparation_id": preparation_request["preparation_id"],
+            "run_id": preparation_request["run_id"],
+            "scene_identity": dict(preparation_request["scene"]["identity"]),
+            "task_identity": dict(preparation_request["task"]["identity"]),
+            "construction_envelope_sha256": _sha256_file(
+                construction_envelope
+            ),
+            "construction_envelope_digest": construction_input[
+                "construction_envelope_digest"
+            ],
+            "recipe_digest": construction_input["recipe_digest"],
+            "toolchain_digest": toolchain_manifest["toolchain_digest"],
+            "raw_interiorgs_bytes_authorized_for_provider": False,
+            "evaluation_episode_authorized": False,
+        },
+        "operations": operations,
+    }
+
+
 def default_activation_preparer(
     *, lane: str, context_path: Path, receipt_path: Path, repository_root: Path
 ) -> dict[str, Any]:
@@ -711,6 +1011,8 @@ def process_launch_activation_queue(
     queue_root: str | Path,
     preparation_queue_root: str | Path,
     preparation_input_root: str | Path,
+    episode_compilation_queue_root: str | Path | None = None,
+    episode_compilation_output_root: str | Path | None = None,
     activation_root: str | Path,
     allowed_uri_prefixes: Sequence[str],
     service_account: str,
@@ -721,6 +1023,8 @@ def process_launch_activation_queue(
     profile_dir: str | Path,
     webapp_catalog: str | Path,
     standing_authorization_dir: str | Path,
+    scene_construction_queue_root: str | Path | None = None,
+    scene_configuration_toolchain_root: str | Path | None = None,
     source_commit: str | None = None,
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
@@ -790,6 +1094,21 @@ def process_launch_activation_queue(
                     activation_request=request,
                     preparation_queue_root=prep_queue,
                     preparation_input_root=prep_inputs,
+                    episode_compilation_queue_root=(
+                        Path(episode_compilation_queue_root).resolve(strict=True)
+                        if episode_compilation_queue_root is not None
+                        else None
+                    ),
+                    episode_compilation_output_root=(
+                        Path(episode_compilation_output_root).resolve(strict=True)
+                        if episode_compilation_output_root is not None
+                        else None
+                    ),
+                    scene_construction_queue_root=(
+                        Path(scene_construction_queue_root).resolve(strict=True)
+                        if scene_construction_queue_root is not None
+                        else None
+                    ),
                 )
             )
             owned_root = activation_base / request["activation_id"]
@@ -814,22 +1133,57 @@ def process_launch_activation_queue(
                 provider_allowlist=preparation_request["spend"]["provider_allowlist"],
                 hard_cap_usd=preparation_request["spend"]["hard_cap_usd"],
             )
-            context = _build_native_context(
-                activation_request=request,
-                preparation_request=preparation_request,
-                adapter=adapter,
-                preparation_materialized=preparation_materialized,
-                activation_materialized=materialized,
-                activation_root=owned_root,
-                repository_root=repository,
-                destination_prefix=destination_prefix,
-                profile_dir=Path(profile_dir).resolve(),
-                webapp_catalog=Path(webapp_catalog).resolve(),
-                standing_authorization_dir=Path(standing_authorization_dir).resolve(),
-                service_account=service_account,
-                service_group=service_group,
-            )
-            context_path = owned_root / "native_task_arena_launch_preparation_context.v2.json"
+            if request["lane"] == "task_evaluation_scene_configuration":
+                if scene_configuration_toolchain_root is None:
+                    raise TaskEvaluationLaunchActivationWorkerError(
+                        "launch_activation_scene_configuration_toolchain_missing"
+                    )
+                context = _build_scene_configuration_context(
+                    activation_request=request,
+                    preparation_request=preparation_request,
+                    construction_input=adapter,
+                    activation_materialized=materialized,
+                    activation_root=owned_root,
+                    repository_root=repository,
+                    toolchain_root=Path(
+                        scene_configuration_toolchain_root
+                    ),
+                    destination_prefix=destination_prefix,
+                    profile_dir=Path(profile_dir).resolve(),
+                    webapp_catalog=Path(webapp_catalog).resolve(),
+                    standing_authorization_dir=Path(
+                        standing_authorization_dir
+                    ).resolve(),
+                    service_account=service_account,
+                    service_group=service_group,
+                )
+                context_path = (
+                    owned_root
+                    / "task_evaluation_scene_configuration_"
+                    "launch_preparation_context.v1.json"
+                )
+            else:
+                context = _build_native_context(
+                    activation_request=request,
+                    preparation_request=preparation_request,
+                    adapter=adapter,
+                    preparation_materialized=preparation_materialized,
+                    activation_materialized=materialized,
+                    activation_root=owned_root,
+                    repository_root=repository,
+                    destination_prefix=destination_prefix,
+                    profile_dir=Path(profile_dir).resolve(),
+                    webapp_catalog=Path(webapp_catalog).resolve(),
+                    standing_authorization_dir=Path(
+                        standing_authorization_dir
+                    ).resolve(),
+                    service_account=service_account,
+                    service_group=service_group,
+                )
+                context_path = (
+                    owned_root
+                    / "native_task_arena_launch_preparation_context.v2.json"
+                )
             write_launch_preparation_record_exclusive(context_path, context)
             receipt_path = owned_root / "paid_lane_launch_preparation.v1.json"
             preparation_receipt = preparer(
@@ -928,6 +1282,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--preparation-input-root", default=os.getenv(PREPARATION_INPUT_ROOT_ENV, "")
     )
+    parser.add_argument(
+        "--episode-compilation-queue-root",
+        default=os.getenv(EPISODE_COMPILATION_QUEUE_ROOT_ENV, ""),
+    )
+    parser.add_argument(
+        "--episode-compilation-output-root",
+        default=os.getenv(EPISODE_COMPILATION_OUTPUT_ROOT_ENV, ""),
+    )
+    parser.add_argument(
+        "--scene-construction-queue-root",
+        default=os.getenv(SCENE_CONSTRUCTION_QUEUE_ROOT_ENV, ""),
+    )
+    parser.add_argument(
+        "--scene-configuration-toolchain-root",
+        default=os.getenv(SCENE_CONFIGURATION_TOOLCHAIN_ROOT_ENV, ""),
+    )
     parser.add_argument("--activation-root", default=os.getenv(ACTIVATION_ROOT_ENV, ""))
     parser.add_argument(
         "--allowed-uri-prefixes-json", default=os.getenv(ALLOWED_URI_PREFIXES_ENV, "")
@@ -955,6 +1325,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.queue_root,
         args.preparation_queue_root,
         args.preparation_input_root,
+        args.episode_compilation_queue_root,
+        args.episode_compilation_output_root,
+        args.scene_construction_queue_root,
+        args.scene_configuration_toolchain_root,
         args.activation_root,
         args.repository_root,
         args.destination_prefix,
@@ -981,6 +1355,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             queue_root=args.queue_root,
             preparation_queue_root=args.preparation_queue_root,
             preparation_input_root=args.preparation_input_root,
+            episode_compilation_queue_root=args.episode_compilation_queue_root,
+            episode_compilation_output_root=args.episode_compilation_output_root,
+            scene_construction_queue_root=args.scene_construction_queue_root,
+            scene_configuration_toolchain_root=(
+                args.scene_configuration_toolchain_root
+            ),
             activation_root=args.activation_root,
             allowed_uri_prefixes=prefixes,
             service_account=args.service_account,

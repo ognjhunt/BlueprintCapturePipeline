@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import zipfile
+from pathlib import Path
+
+from PIL import Image
+from pxr import Gf, Usd, UsdGeom
+
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
+    execute_content_agents_component,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _record(path: Path, *, role: str | None = None) -> dict:
+    value = {
+        "path": str(path),
+        "digest": _sha256(path),
+        "size_bytes": path.stat().st_size,
+    }
+    if role:
+        value["role"] = role
+    return value
+
+
+def _candidate(path: Path) -> None:
+    stage = Usd.Stage.CreateNew(str(path))
+    root = UsdGeom.Xform.Define(stage, "/Root").GetPrim()
+    stage.SetDefaultPrim(root)
+    UsdGeom.Xform.Define(stage, "/Root/SourceObjectCandidate")
+    mesh = UsdGeom.Mesh.Define(stage, "/Root/SourceObjectCandidate/body")
+    mesh.CreatePointsAttr(
+        [
+            Gf.Vec3f(0.0, 0.0, 0.0),
+            Gf.Vec3f(0.1, 0.0, 0.0),
+            Gf.Vec3f(0.0, 0.1, 0.1),
+        ]
+    )
+    mesh.CreateFaceVertexCountsAttr([3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    stage.GetRootLayer().Save()
+
+
+def _package(path: Path) -> None:
+    path.mkdir()
+    source_archive = path / "content_agents_source.zip"
+    with zipfile.ZipFile(source_archive, "w") as archive:
+        archive.writestr(
+            "apps/material_agent/data/materials/material_libs_default/materials.yaml",
+            "materials: {}\n",
+        )
+    source_receipt = {
+        "schema_version": "task_evaluation_content_agents_component_source.v1",
+        "repository": (
+            "https://github.com/NVIDIA-Omniverse/usd-content-agents"
+        ),
+        "commit": "36dbf3f274f8e256637230a05a085853f65cc175",
+        "tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
+        "version": "0.5.2",
+        "license": "Apache-2.0",
+        "archive_sha256": _sha256(source_archive),
+        "receipt_digest": "",
+    }
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    (path / "content_agents_source_receipt.json").write_text(
+        json.dumps(source_receipt), encoding="utf-8"
+    )
+    for name in (
+        "run_adp_content_agents_provider_runtime.sh",
+        "adp_content_agents_provider_runner.py",
+        "provider_archive.py",
+        "content_agents_model_compatibility.py",
+    ):
+        target = path / name
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        if name.endswith(".sh"):
+            target.chmod(0o755)
+    (path / "content_agents_model_compatibility_plan.json").write_text("{}\n", encoding="utf-8")
+    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    for source_name, destination_name in (
+        ("adp009a_content_agents_material.vast.yaml", "material_agent.yaml"),
+        ("adp009a_content_agents_texture.vast.yaml", "texture_agent.yaml"),
+        ("adp009a_content_agents_physics.vast.yaml", "physics_agent.yaml"),
+    ):
+        (path / destination_name).write_bytes((assets / source_name).read_bytes())
+
+
+def test_reuses_released_content_agents_runner_and_seals_candidate(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.usda"
+    _candidate(candidate)
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (16, 16), (240, 240, 240)).save(reference)
+    package = tmp_path / "package"
+    _package(package)
+    output = tmp_path / "output"
+    output.mkdir()
+    stage_input = {
+        "run_id": "configure-scene-839873-v1",
+        "stage": {
+            "stage_id": "03-author-replacement",
+            "adapter": {"id": "content_agents_rigid_replacement", "version": "v1"},
+        },
+        "configuration": {
+            "schema_version": "rigid_replacement_authoring_configuration.v1",
+            "replacement_identity": {"id": "mug", "version": "v1"},
+        },
+        "construction_envelope": {"render_inputs_result": {"derived_frames": [_record(reference)]}},
+    }
+    stage_input_path = output / "input.json"
+    stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    dependencies = [{"output_artifacts": [_record(candidate, role="source_object_candidate_mesh")]}]
+    dependencies_path = output / "dependencies.json"
+    dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
+    component_result = output / "component-result.json"
+    observed: list[list[str]] = []
+    cost_events: list[str] = []
+
+    class CostGate:
+        def reserve(self):
+            cost_events.append("reserved")
+
+        def complete(self, **_kwargs):
+            cost_events.append("completed")
+
+    def cost_gate_factory(**_kwargs):
+        return CostGate()
+
+    def run(command, *, env, **_kwargs):
+        observed.append(command)
+        runtime_output = Path(env["BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR"])
+        physics = runtime_output / "physics_workdir/physics_candidate.usda"
+        physics.parent.mkdir(parents=True)
+        physics.write_bytes((Path(command[0]).parent / "input/source_asset.usda").read_bytes())
+        (runtime_output / "adp_content_agents_vast_result.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "adp_content_agents_vast_result.v1",
+                    "status": "completed",
+                    "material_agent_executed": True,
+                    "texture_agent_executed": True,
+                    "physics_agent_executed": True,
+                    "validation_agent_executed": True,
+                    "retry_cap": 0,
+                    "blockers": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = execute_content_agents_component(
+        environment={
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_input_path),
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(dependencies_path),
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output),
+            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(component_result),
+            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package),
+        },
+        runner=run,
+        cost_gate_factory=cost_gate_factory,
+    )
+
+    assert observed == [
+        [str(output / "released_content_agents_runtime/run_adp_content_agents_provider_runtime.sh")]
+    ]
+    assert result["status"] == "completed"
+    assert cost_events == ["reserved", "completed"]
+    assert result["provider_mutations_performed"] == 0
+    assert result["nested_paid_execution_requested"] is False
+    assert {row["role"] for row in result["artifacts"]} == {
+        "replacement_asset",
+        "replacement_authoring_receipt",
+        "replacement_graph_spec",
+    }
+    assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")
+    receipt = json.loads((output / "replacement_authoring_receipt.v1.json").read_text())
+    assert receipt["source_candidate_digest"] == _sha256(candidate)
+    assert receipt["physics_authority_granted"] is False
+    manifest = json.loads(
+        (
+            output / "released_content_agents_runtime/adp_content_agents_provider_manifest.json"
+        ).read_text()
+    )
+    assert manifest["input_variant"] == "scene_configuration_v1"
+    assert manifest["retry_cap"] == 0

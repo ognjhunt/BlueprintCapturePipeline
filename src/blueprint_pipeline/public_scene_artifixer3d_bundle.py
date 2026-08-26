@@ -19,6 +19,7 @@ import stat
 import subprocess
 from typing import Any, Mapping, Sequence
 import zipfile
+import re
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .image_editor_backend_registry import (
@@ -41,9 +42,7 @@ RUNTIME_RESULT_SCHEMA_VERSION = "public_scene_artifixer3d_runtime_result.v1"
 ENTRYPOINT = "provider_runtime/run_public_scene_artifixer3d.sh"
 RUNNER = "provider_runtime/public_scene_artifixer3d_runner.py"
 RUNTIME_PACKAGE_INIT = "provider_runtime/blueprint_pipeline/__init__.py"
-RUNTIME_EDITOR_REGISTRY = (
-    "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
-)
+RUNTIME_EDITOR_REGISTRY = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
 RUNTIME_EDITOR_REGISTRY_MANIFEST = (
     "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
 )
@@ -163,6 +162,9 @@ VIBE_IMAGE_EDIT_LARGE_FILES = (
 MAX_MEMBER_BYTES = 2 * 1024**3
 MAX_TOTAL_BYTES = 4 * 1024**3
 MAX_MEMBER_COUNT = 20_000
+COMPONENT_SOURCE_SCHEMA_VERSION = "task_evaluation_artifixer3d_component_source.v1"
+_GIT_OBJECT = re.compile(r"[0-9a-f]{40}\Z")
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class ArtiFixer3DBundleError(ValueError):
@@ -477,6 +479,69 @@ def _copy_source_release(source: Path, destination: Path) -> list[dict[str, Any]
     return records
 
 
+def _copy_preverified_source_release(
+    source: Path, destination: Path, receipt_path: Path
+) -> list[dict[str, Any]]:
+    """Copy an exact release archive already verified by the component builder."""
+
+    receipt = _read(receipt_path, code="artifixer3d_source_receipt_invalid")
+    files = receipt.get("files")
+    if (
+        receipt.get("schema_version") != COMPONENT_SOURCE_SCHEMA_VERSION
+        or receipt.get("repository") != ARTIFIXER_REPOSITORY
+        or receipt.get("commit") != ARTIFIXER_COMMIT
+        or receipt.get("tree") != ARTIFIXER_TREE
+        or receipt.get("license") != "Apache-2.0"
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+        or not isinstance(files, list)
+        or not files
+    ):
+        raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_invalid"])
+    expected_names: set[str] = set()
+    records: list[dict[str, Any]] = []
+    for row in files:
+        if not isinstance(row, Mapping):
+            raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_invalid"])
+        relative = _portable(str(row.get("relative_path") or ""))
+        name = relative.as_posix()
+        if name in expected_names or name == "thirdparty/3DGRUT-ArtiFixer":
+            raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_invalid"])
+        expected_names.add(name)
+        item = source.joinpath(*relative.parts)
+        if (
+            item.is_symlink()
+            or not item.is_file()
+            or item.stat().st_size != row.get("size_bytes")
+            or _sha256(item) != row.get("sha256")
+        ):
+            raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_member_invalid"])
+        target = destination.joinpath(*relative.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(item, target)
+        records.append(_record(target, root=destination))
+    observed_names = {
+        item.relative_to(source).as_posix()
+        for item in source.rglob("*")
+        if item.is_file() and not item.is_symlink()
+    }
+    if observed_names != expected_names:
+        raise ArtiFixer3DBundleError(["artifixer3d_source_receipt_inventory_mismatch"])
+    return records
+
+
+def _preverified_repository_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    identity = dict(value)
+    if (
+        _GIT_OBJECT.fullmatch(str(identity.get("commit") or "")) is None
+        or _GIT_OBJECT.fullmatch(str(identity.get("tree") or "")) is None
+        or identity.get("tracked_files_clean") is not True
+        or identity.get("full_byte_component_package_verified") is not True
+        or _SHA256.fullmatch(str(identity.get("component_package_digest") or "")) is None
+    ):
+        raise ArtiFixer3DBundleError(["artifixer3d_repository_identity_invalid"])
+    return identity
+
+
 def _copy_candidate_tree(source: Path, destination: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for item in sorted(source.rglob("*")):
@@ -736,6 +801,8 @@ def build_artifixer3d_bundle(
     pipeline_mode: str | None = None,
     reused_checkpoint_provider_output_zip_path: str | Path | None = None,
     reused_checkpoint_source_provider_zero_path: str | Path | None = None,
+    artifixer_source_receipt_path: str | Path | None = None,
+    blueprint_source_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build and locally rehearse one immutable no-upload provider bundle."""
 
@@ -776,9 +843,7 @@ def build_artifixer3d_bundle(
         or not (repo / "scripts" / "run_public_scene_artifixer3d.sh").is_file()
         or not (repo / "scripts" / "public_scene_artifixer3d_runner.py").is_file()
         or not (repo / "src" / "blueprint_pipeline" / "__init__.py").is_file()
-        or not (
-            repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py"
-        ).is_file()
+        or not (repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py").is_file()
         or not (repo / RUNTIME_EDITOR_REGISTRY_MANIFEST).is_file()
         or not isinstance(artifixer3d_steps, int)
         or isinstance(artifixer3d_steps, bool)
@@ -843,7 +908,11 @@ def build_artifixer3d_bundle(
         if render_only
         else None
     )
-    repository_identity = _repository_identity(repo)
+    repository_identity = (
+        _preverified_repository_identity(blueprint_source_identity)
+        if blueprint_source_identity is not None
+        else _repository_identity(repo)
+    )
     output = Path(output_root).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
         raise ArtiFixer3DBundleError(["artifixer3d_bundle_output_not_empty"])
@@ -854,7 +923,18 @@ def build_artifixer3d_bundle(
     source_root = runtime / "ArtiFixer_official"
     runtime.mkdir(parents=True)
     candidate_files = _copy_candidate_tree(receipt_path.parent, input_root)
-    source_files = _copy_source_release(source, source_root)
+    source_files = (
+        _copy_preverified_source_release(
+            source,
+            source_root,
+            _file(
+                artifixer_source_receipt_path,
+                code="artifixer3d_source_receipt_missing",
+            ),
+        )
+        if artifixer_source_receipt_path is not None
+        else _copy_source_release(source, source_root)
+    )
     shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, runtime / Path(ENTRYPOINT).name)
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
     runtime_package = runtime / "blueprint_pipeline"
@@ -1228,6 +1308,7 @@ __all__ = [
     "ARTIFIXER_SUBMODULE_TREE",
     "ARTIFIXER_TREE",
     "ArtiFixer3DBundleError",
+    "COMPONENT_SOURCE_SCHEMA_VERSION",
     "DEFAULT_IMAGE",
     "DUAL_TARGET_INPUT_RECEIPT",
     "DUAL_TARGET_PIPELINE_MODE",
@@ -1249,6 +1330,7 @@ __all__ = [
     "materialize_artifixer3d_use_attestation",
     "resolve_default_removal_pipeline",
 ]
+
 
 def main(argv: list[str] | None = None) -> int:
     """Build the immutable paired ArtiFixer3D provider bundle.
@@ -1273,7 +1355,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Build the immutable paired ArtiFixer3D provider bundle.")
+    parser = argparse.ArgumentParser(
+        description="Build the immutable paired ArtiFixer3D provider bundle."
+    )
     parser.add_argument("--candidate-inputs-receipt", required=True)
     parser.add_argument("--use-attestation", required=True)
     parser.add_argument("--artifixer-source", required=True)
@@ -1296,6 +1380,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reused-checkpoint-provider-output-zip")
     parser.add_argument("--reused-checkpoint-source-provider-zero")
     parser.add_argument(
+        "--artifixer-source-receipt",
+        help="Digest-bound component-source receipt for a preverified source tree.",
+    )
+    parser.add_argument(
+        "--blueprint-source-identity",
+        help="JSON identity for a preverified Blueprint component package.",
+    )
+    parser.add_argument(
         "--allow-active-instance",
         action="append",
         type=int,
@@ -1303,16 +1395,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Repeatable. Instances that may already be running.",
     )
     args = parser.parse_args(argv)
-    optional = {
-        "artifixer3d_steps": args.artifixer3d_steps,
-        "random_seed": args.random_seed,
-        "pipeline_mode": args.pipeline_mode,
-        "direct_editor_backend": args.direct_editor_backend,
-        "semantic_editor_only": args.semantic_editor_only,
-        "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
-        "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
-    }
     try:
+        optional = {
+            "artifixer3d_steps": args.artifixer3d_steps,
+            "random_seed": args.random_seed,
+            "pipeline_mode": args.pipeline_mode,
+            "direct_editor_backend": args.direct_editor_backend,
+            "semantic_editor_only": args.semantic_editor_only,
+            "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
+            "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
+            "artifixer_source_receipt_path": args.artifixer_source_receipt,
+            "blueprint_source_identity": (
+                _read(
+                    _file(
+                        args.blueprint_source_identity,
+                        code="artifixer3d_blueprint_source_identity_missing",
+                    ),
+                    code="artifixer3d_blueprint_source_identity_invalid",
+                )
+                if args.blueprint_source_identity is not None
+                else None
+            ),
+        }
         receipt = build_artifixer3d_bundle(
             candidate_inputs_receipt_path=args.candidate_inputs_receipt,
             use_attestation_path=args.use_attestation,

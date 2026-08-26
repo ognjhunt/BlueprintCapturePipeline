@@ -75,6 +75,12 @@ from .provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
+from .task_evaluation_scene_configuration_builtin_producers import (
+    TOOLCHAIN_SCHEMA_VERSION as SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION,
+)
+from .task_evaluation_scene_configuration_bundle import (
+    BUNDLE_SCHEMA_VERSION as SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION,
+)
 from .native_task_arena_execution_contract import (
     EXECUTION_MODE_CONTRACTS as NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS,
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
@@ -164,6 +170,9 @@ VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
 VAST_INLINE_PROVIDER_BUNDLE_MAX_BASE64_CHARS = 130_000
+VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX = "BLUEPRINT_VAST_RUNTIME_SECRET_B64_"
+VAST_RUNTIME_SECRET_FILE_LIMIT = 8
+VAST_RUNTIME_SECRET_MAX_BYTES = 65_536
 VAST_IMAGE_LOGIN_MODE_ENV = "BLUEPRINT_VAST_IMAGE_LOGIN_MODE"
 DEFAULT_VAST_API_KEY_FILE = "~/.blueprint-secrets/vast_api_key"
 DEFAULT_VAST_LAUNCH_LOCK_FILENAME = "vast_paid_launch.lock"
@@ -343,7 +352,170 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_articulated_native",
         "native_task_arena",
         "paired_target_native_import",
+        "task_evaluation_scene_configuration",
     }
+
+
+def _scene_configuration_bundle_contract(
+    archive: zipfile.ZipFile,
+) -> tuple[dict[str, Any], set[str], list[str]]:
+    """Verify every declared portable input before provider mutation."""
+
+    root = "provider_runtime/"
+    manifest_member = root + f"{SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION}.json"
+    envelope_member = root + "input/portable_construction_envelope.v1.json"
+    toolchain_member = root + "toolchain/" + SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION + ".json"
+    required = {
+        manifest_member,
+        envelope_member,
+        toolchain_member,
+        root + "run_task_evaluation_scene_configuration_provider.sh",
+        root + "task_evaluation_scene_configuration_provider_runner.py",
+        root + "blueprint_pipeline/__init__.py",
+        root + "blueprint_pipeline/task_evaluation_scene_configuration_provider_runtime.py",
+    }
+    blockers: list[str] = []
+    try:
+        manifest = json.loads(archive.read(manifest_member).decode("utf-8"))
+        envelope = json.loads(archive.read(envelope_member).decode("utf-8"))
+        toolchain = json.loads(archive.read(toolchain_member).decode("utf-8"))
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return {}, required, ["scene_configuration_provider_manifests_invalid"]
+    if not all(isinstance(value, Mapping) for value in (manifest, envelope, toolchain)):
+        return {}, required, ["scene_configuration_provider_manifests_invalid"]
+    manifest = dict(manifest)
+    envelope = dict(envelope)
+    toolchain = dict(toolchain)
+    source_commit = _string(manifest.get("source_commit"))
+    if (
+        manifest.get("schema_version") != SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION
+        or manifest.get("status") != "ready"
+        or manifest.get("provider_bundle_kind")
+        != "task_evaluation_scene_configuration"
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+        or manifest.get("manifest_digest")
+        != canonical_digest(manifest, digest_field="manifest_digest")
+        or manifest.get("raw_interiorgs_bytes_in_provider_bundle") is not False
+        or manifest.get("single_parent_allocation") is not True
+        or manifest.get("nested_provider_mutations_performed") != 0
+        or manifest.get("evaluation_episode_executed") is not False
+    ):
+        blockers.append("scene_configuration_provider_manifest_invalid")
+    references = envelope.get("materialized_references")
+    configurations = envelope.get("stage_configuration_references")
+    render = envelope.get("render_inputs_result")
+    disclosure = envelope.get("provider_disclosure_receipt")
+    stages = (envelope.get("recipe") or {}).get("stage_sequence")
+    if (
+        envelope.get("expected_production_commit") != source_commit
+        or envelope.get("envelope_digest")
+        != canonical_digest(envelope, digest_field="envelope_digest")
+        or manifest.get("portable_construction_envelope_digest")
+        != envelope.get("envelope_digest")
+        or not isinstance(references, list)
+        or any(
+            not isinstance(row, Mapping)
+            or row.get("contract_path") == "scene.appearance.representation"
+            or row.get("materialized_path") is not None
+            for row in references or []
+        )
+        or not isinstance(configurations, list)
+        or len(configurations) != 6
+        or not isinstance(stages, list)
+        or len(stages) != 6
+        or not isinstance(render, Mapping)
+        or render.get("raw_interiorgs_bytes_in_provider_packet") is not False
+        or not isinstance(disclosure, Mapping)
+        or disclosure.get("raw_interiorgs_bytes_in_provider_bundle") is not False
+        or disclosure.get("derived_rendered_views_in_provider_bundle") is not True
+    ):
+        blockers.append("scene_configuration_portable_envelope_invalid")
+
+    bound_rows: list[tuple[str, Mapping[str, Any]]] = []
+    if isinstance(references, list):
+        bound_rows.extend(
+            (str(row.get("provider_relative_path") or ""), row)
+            for row in references
+            if isinstance(row, Mapping)
+        )
+    if isinstance(configurations, list):
+        bound_rows.extend(
+            (str(row.get("relative_path") or ""), row)
+            for row in configurations
+            if isinstance(row, Mapping)
+        )
+    if isinstance(render, Mapping):
+        for key in ("camera_calibration", "render_manifest"):
+            row = render.get(key)
+            if isinstance(row, Mapping):
+                bound_rows.append((str(row.get("path") or ""), row))
+        bound_rows.extend(
+            (str(row.get("path") or ""), row)
+            for row in render.get("derived_frames") or []
+            if isinstance(row, Mapping)
+        )
+    seen: set[str] = set()
+    for relative, row in bound_rows:
+        if (
+            not relative
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+            or relative in seen
+        ):
+            blockers.append("scene_configuration_provider_input_path_invalid")
+            continue
+        seen.add(relative)
+        member = root + relative
+        required.add(member)
+        try:
+            body = archive.read(member)
+        except KeyError:
+            blockers.append("scene_configuration_provider_input_missing")
+            continue
+        if (
+            row.get("size_bytes") != len(body)
+            or row.get("digest")
+            != "sha256:" + hashlib.sha256(body).hexdigest()
+        ):
+            blockers.append("scene_configuration_provider_input_digest_invalid")
+
+    files = toolchain.get("files")
+    if (
+        toolchain.get("schema_version")
+        != SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION
+        or toolchain.get("status") != "published_full_byte_readback_passed"
+        or toolchain.get("source_commit") != source_commit
+        or toolchain.get("full_byte_service_account_readback_passed") is not True
+        or toolchain.get("toolchain_digest")
+        != canonical_digest(toolchain, digest_field="toolchain_digest")
+        or manifest.get("toolchain_digest") != toolchain.get("toolchain_digest")
+        or not isinstance(files, list)
+        or not files
+    ):
+        blockers.append("scene_configuration_provider_toolchain_invalid")
+    else:
+        for row in files:
+            if not isinstance(row, Mapping):
+                blockers.append("scene_configuration_provider_toolchain_invalid")
+                continue
+            relative = str(row.get("relative_path") or "")
+            if not relative or relative.startswith("/") or ".." in Path(relative).parts:
+                blockers.append("scene_configuration_provider_toolchain_invalid")
+                continue
+            member = root + "toolchain/" + relative
+            required.add(member)
+            try:
+                body = archive.read(member)
+            except KeyError:
+                blockers.append("scene_configuration_provider_toolchain_invalid")
+                continue
+            if (
+                row.get("size_bytes") != len(body)
+                or row.get("sha256")
+                != "sha256:" + hashlib.sha256(body).hexdigest()
+            ):
+                blockers.append("scene_configuration_provider_toolchain_invalid")
+    return manifest, required, sorted(set(blockers))
 
 
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
@@ -629,6 +801,35 @@ def _read_secret_file(env_var: str, default_path: str) -> tuple[str, dict[str, A
         return "", status
     status["secret_nonempty"] = bool(key)
     return key, status
+
+
+def _runtime_secret_file_values(
+    paths: Mapping[str, str | Path] | None,
+) -> dict[str, str]:
+    """Read a bounded set of private files for ephemeral provider bootstrap."""
+
+    if not paths:
+        return {}
+    if len(paths) > VAST_RUNTIME_SECRET_FILE_LIMIT:
+        raise ValueError("too_many_vast_runtime_secret_files")
+    values: dict[str, str] = {}
+    for name, unresolved in sorted(paths.items()):
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None:
+            raise ValueError("invalid_vast_runtime_secret_file_name")
+        path = Path(unresolved).expanduser().resolve()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_mode & 0o077
+            or path.stat().st_size <= 0
+            or path.stat().st_size > VAST_RUNTIME_SECRET_MAX_BYTES
+        ):
+            raise ValueError(f"invalid_vast_runtime_secret_file:{name}")
+        value = path.read_text(encoding="utf-8").strip()
+        if not value or "\x00" in value:
+            raise ValueError(f"invalid_vast_runtime_secret_file:{name}")
+        values[str(name)] = value
+    return values
 
 
 def _read_hf_token_file() -> tuple[str, dict[str, Any]]:
@@ -2541,6 +2742,15 @@ def _blueprint_bundle_preflight(
         "provider_runtime/input/shared_retained_scene.ply",
         "provider_runtime/renderer/render_splat.mjs",
     }
+    scene_configuration_required_entries = {
+        "provider_runtime/run_task_evaluation_scene_configuration_provider.sh",
+        "provider_runtime/task_evaluation_scene_configuration_provider_runner.py",
+        "provider_runtime/task_evaluation_scene_configuration_provider_bundle.v1.json",
+        "provider_runtime/input/portable_construction_envelope.v1.json",
+        "provider_runtime/toolchain/task_evaluation_scene_configuration_toolchain.v1.json",
+        "provider_runtime/blueprint_pipeline/__init__.py",
+        "provider_runtime/blueprint_pipeline/task_evaluation_scene_configuration_provider_runtime.py",
+    }
     if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -2636,6 +2846,17 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "run_adp_gaussian_excision_provider_runtime.sh"
         runner_member = "adp_gaussian_excision_provider_runner.py"
         readiness_name = "adp_gaussian_excision_bundle_receipt.json"
+    elif provider_bundle_kind == "task_evaluation_scene_configuration":
+        required_entries = scene_configuration_required_entries
+        entrypoint_member = (
+            "provider_runtime/run_task_evaluation_scene_configuration_provider.sh"
+        )
+        runner_member = (
+            "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
+        )
+        readiness_name = (
+            "task_evaluation_scene_configuration_provider_bundle.v1.json"
+        )
     elif provider_bundle_kind == "unitree_unifolm":
         required_entries = unitree_unifolm_required_entries
         entrypoint_member = "provider_runtime/run_unitree_unifolm_provider_runtime.sh"
@@ -2695,7 +2916,9 @@ def _blueprint_bundle_preflight(
             "adp_artifixer3d",
             "adp_inpaint360_interiorgs",
             "adp_retained_scene_render",
+            "task_evaluation_scene_configuration",
             "adp_gaussian_excision",
+            "task_evaluation_scene_configuration",
         }
         and not readiness_path.is_file()
     ):
@@ -2831,6 +3054,22 @@ def _blueprint_bundle_preflight(
                         ):
                             blockers.append(
                                 "native_task_arena_provider_manifest_invalid"
+                            )
+                    if provider_bundle_kind == "task_evaluation_scene_configuration":
+                        readiness_member = (
+                            "provider_runtime/"
+                            "task_evaluation_scene_configuration_provider_bundle.v1.json"
+                        )
+                        readiness_source = "immutable_bundle_member"
+                        scene_manifest, scene_required, scene_blockers = (
+                            _scene_configuration_bundle_contract(archive)
+                        )
+                        required_entries.update(scene_required)
+                        blockers.extend(scene_blockers)
+                        if scene_manifest:
+                            readiness = dict(scene_manifest)
+                            readiness["local_bundle_ready_for_remote_staging"] = (
+                                not scene_blockers
                             )
                     if provider_bundle_kind == "adp009d_ovrtx":
                         manifest_member = "provider_runtime/adp009d_ovrtx_provider_manifest.json"
@@ -3253,7 +3492,10 @@ def _blueprint_bundle_preflight(
                         blockers.append(
                             "provider_runtime_bundle_stale_prefixed_paths_without_resolver"
                         )
-        if provider_bundle_kind == "native_task_arena":
+        if provider_bundle_kind in {
+            "native_task_arena",
+            "task_evaluation_scene_configuration",
+        }:
             # The native readiness manifest is a required, JSON-validated member
             # of the immutable bundle above.  Reopening its adjacent build
             # sidecar would create a second mutable authority and can fail when
@@ -3710,6 +3952,8 @@ def _probe_env(
     retain_cosmos_server: bool = False,
     forward_hf_token: bool = True,
     provider_bundle_kind: str = "isaac",
+    runtime_secret_file_values: Mapping[str, str] | None = None,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -3721,6 +3965,7 @@ def _probe_env(
         "adp009d_articulated_native",
         "native_task_arena",
         "paired_target_native_import",
+        "task_evaluation_scene_configuration",
     }:
         env.update(
             {
@@ -3764,6 +4009,35 @@ def _probe_env(
         env["HF_TOKEN"] = hf_token
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    for name, value in sorted((provider_runtime_environment or {}).items()):
+        public_identity_name = name in {"OPENAI_PROJECT_ID", "OPENAI_API_KEY_ID"}
+        if (
+            (
+                not public_identity_name
+                and re.fullmatch(r"BLUEPRINT_[A-Z0-9_]{1,120}", str(name or ""))
+                is None
+            )
+            or (
+                not public_identity_name
+                and any(marker in str(name).upper() for marker in SENSITIVE_KEY_MARKERS)
+            )
+            or not isinstance(value, str)
+            or not value
+            or len(value) > 1_000
+            or "\x00" in value
+        ):
+            raise ValueError("invalid_vast_provider_runtime_environment")
+        env[name] = value
+    for name, value in sorted((runtime_secret_file_values or {}).items()):
+        if (
+            re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None
+            or not isinstance(value, str)
+            or not value
+        ):
+            raise ValueError("invalid_vast_runtime_secret_file")
+        env[VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + name] = base64.b64encode(
+            value.encode("utf-8")
+        ).decode("ascii")
     for env_name in (
         "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
         "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
@@ -4021,6 +4295,50 @@ def _probe_shell_script(
         "if command -v python3 >/dev/null 2>&1; then PY_NET=$(command -v python3); "
         "elif command -v python >/dev/null 2>&1; then PY_NET=$(command -v python); fi; "
         "echo BLUEPRINT_VAST_ONSTART_STARTED; date -u; "
+        "SECRET_EXPORTS=$WORK_DIR/blueprint_runtime_secret_exports.sh; "
+        'rm -f "$SECRET_EXPORTS"; '
+        "if env | grep -q '^BLUEPRINT_VAST_RUNTIME_SECRET_B64_'; then "
+        'SECRET_ROOT="$WORK_DIR/.blueprint-runtime-secrets"; '
+        'mkdir -p "$SECRET_ROOT" && chmod 700 "$SECRET_ROOT"; '
+        'BLUEPRINT_RUNTIME_SECRET_ROOT="$SECRET_ROOT" '
+        'BLUEPRINT_RUNTIME_SECRET_EXPORTS="$SECRET_EXPORTS" '
+        '"${PY_NET:-python3}" - <<\'PY\'\n'
+        "import base64\n"
+        "import os\n"
+        "import pathlib\n"
+        "import re\n"
+        "prefix = 'BLUEPRINT_VAST_RUNTIME_SECRET_B64_'\n"
+        "root = pathlib.Path(os.environ['BLUEPRINT_RUNTIME_SECRET_ROOT'])\n"
+        "exports = pathlib.Path(os.environ['BLUEPRINT_RUNTIME_SECRET_EXPORTS'])\n"
+        "rows = []\n"
+        "for bootstrap_name, encoded in sorted(os.environ.items()):\n"
+        "    if not bootstrap_name.startswith(prefix):\n"
+        "        continue\n"
+        "    name = bootstrap_name[len(prefix):]\n"
+        "    if re.fullmatch(r'[A-Z][A-Z0-9_]{1,120}_FILE', name) is None:\n"
+        "        raise SystemExit(41)\n"
+        "    value = base64.b64decode(encoded.encode('ascii'), validate=True)\n"
+        "    if not value or len(value) > 65536 or b'\\x00' in value:\n"
+        "        raise SystemExit(42)\n"
+        "    path = root / name.lower()\n"
+        "    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n"
+        "    with os.fdopen(descriptor, 'wb') as stream:\n"
+        "        stream.write(value)\n"
+        "        stream.flush()\n"
+        "        os.fsync(stream.fileno())\n"
+        "    rows.append((name, path, bootstrap_name))\n"
+        "with exports.open('x', encoding='utf-8') as stream:\n"
+        "    for name, path, bootstrap_name in rows:\n"
+        "        stream.write(f'export {name}={path}\\n')\n"
+        "        stream.write(f'unset {bootstrap_name}\\n')\n"
+        "os.chmod(exports, 0o600)\n"
+        "print('BLUEPRINT_VAST_RUNTIME_SECRET_FILES_READY:%d' % len(rows))\n"
+        "PY\n"
+        "secret_rc=$?; "
+        'if [ $secret_rc -ne 0 ] || [ ! -f "$SECRET_EXPORTS" ]; then '
+        "echo BLUEPRINT_VAST_RUNTIME_SECRET_FILES_BLOCKED:$secret_rc; exit $secret_rc; fi; "
+        '. "$SECRET_EXPORTS"; rm -f "$SECRET_EXPORTS"; '
+        "fi; "
         "blueprint_http_get() { "
         'blueprint_get_url="$1"; '
         'if command -v curl >/dev/null 2>&1; then curl -fsSL "$blueprint_get_url"; return $?; fi; '
@@ -4244,6 +4562,51 @@ def _probe_shell_script(
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "task_evaluation_scene_configuration":
+            script += (
+                common_start
+                + "RUNTIME_PY=/isaac-sim/python.sh; "
+                'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime"; '
+                'export BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT', '/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'task_evaluation_scene_configuration_provider_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, sort_keys=True))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
             )
         elif provider_bundle_kind == "adp_simpler":
             script += (
@@ -6231,6 +6594,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_artifixer3d",
             "paired_target_native_import",
             "adp_inpaint360_interiorgs",
+            "task_evaluation_scene_configuration",
         }
         else 60
     )
@@ -6879,6 +7243,8 @@ def run_vast_provider_adapter(
     stale_offer_create_retry_limit: int | None = None,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -6933,6 +7299,7 @@ def run_vast_provider_adapter(
         raise ValueError("invalid_vast_stale_offer_create_retry_limit")
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
+    runtime_secret_values = _runtime_secret_file_values(runtime_secret_file_paths)
     resolved_machine_avoidlist_path = (
         Path(machine_avoidlist_path).expanduser().resolve()
         if machine_avoidlist_path
@@ -8011,6 +8378,11 @@ def run_vast_provider_adapter(
             runtime_dependency_url,
         ),
         _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
+        *runtime_secret_values.values(),
+        *(
+            base64.b64encode(value.encode("utf-8")).decode("ascii")
+            for value in runtime_secret_values.values()
+        ),
     ]
     teardown_actions: list[dict[str, Any]] = []
     continuing_spend = False
@@ -8259,6 +8631,8 @@ def run_vast_provider_adapter(
                     retain_cosmos_server=retain_instance_on_runtime_failure,
                     forward_hf_token=forward_hf_token,
                     provider_bundle_kind=provider_bundle_kind,
+                    runtime_secret_file_values=runtime_secret_values,
+                    provider_runtime_environment=provider_runtime_environment,
                 ),
                 image_login=image_login,
                 template_hash_id=template_hash,

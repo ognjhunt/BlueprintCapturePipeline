@@ -41,11 +41,37 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     runtime.mkdir()
     appearance = runtime / "configured-appearance.usdc"
     appearance.write_bytes(b"generated-appearance")
+    review = {
+        "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
+        "status": "accepted",
+        "publisher_instance_id": "104",
+        "decision": "accepted",
+        "semantic_object_absence_review_passed": True,
+        "multiview_consistency_review_passed": True,
+        "review_frame_count": 8,
+        "all_review_frames_digest_bound": True,
+        "ai_visual_review_completed": True,
+        "human_review_completed": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "reviewer": {
+            "identity": "artifixer-independent-vision-reviewer-v1",
+            "runtime": "openai_agents_sdk",
+            "model": "gpt-5.6-terra",
+        },
+        "receipt_digest": "",
+    }
+    review["receipt_digest"] = canonical_digest(
+        review, digest_field="receipt_digest"
+    )
+    review_path = runtime / "appearance-review.json"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
     receipt = {
         "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
         "status": "qualified_generated_appearance_edit",
         "publisher_instance_id": "104",
         "raw_interiorgs_bytes_sent_to_external_provider": False,
+        "visual_review_receipt_digest": review["receipt_digest"],
+        "visual_review_receipt_sha256": sha256(review_path),
         "semantic_object_free_visual_review_passed": True,
         "multiview_consistency_review_passed": True,
         "generated_pixels_labeled": True,
@@ -60,6 +86,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "schema_version": "observed_appearance_object_removal_configuration.v1",
         "source_object": {"publisher_instance_id": "104"},
         "production_render_required": True,
+        "required_views": {"minimum": 8},
         "provider_disclosure": {"raw_interiorgs_bytes": False},
         "output_requirements": {"generated_pixels_labeled": True},
     }
@@ -82,14 +109,70 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         provider_runtime_artifacts=(
             artifact("configured_appearance_without_source_object", appearance),
             artifact("appearance_removal_receipt", receipt_path),
+            artifact("appearance_visual_review_receipt", review_path),
         ),
     )
 
     assert {row["role"] for row in result["output_artifacts"]} == {
         "configured_appearance_without_source_object",
         "appearance_removal_receipt",
+        "appearance_visual_review_receipt",
     }
     assert result["provider_mutations_performed"] == 0
+
+
+def test_artifixer_handler_rejects_unbound_review_boolean_only_receipt(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    appearance = runtime / "configured-appearance.usdc"
+    appearance.write_bytes(b"generated-appearance")
+    receipt = {
+        "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+        "status": "qualified_generated_appearance_edit",
+        "publisher_instance_id": "104",
+        "raw_interiorgs_bytes_sent_to_external_provider": False,
+        "semantic_object_free_visual_review_passed": True,
+        "multiview_consistency_review_passed": True,
+        "generated_pixels_labeled": True,
+        "result_digest": "",
+    }
+    receipt["result_digest"] = canonical_digest(
+        receipt, digest_field="result_digest"
+    )
+    receipt_path = runtime / "appearance-receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    output = tmp_path / "appearance-output"
+    output.mkdir()
+
+    with pytest.raises(
+        RuntimeError,
+        match="scene_configuration_provider_runtime_artifact_missing:appearance_visual_review_receipt",
+    ):
+        execute_artifixer3d_observed_object_removal(
+            envelope={},
+            stage={
+                "stage_id": "stage-1",
+                "capability": "observed_appearance_object_removal",
+                "execution_class": "gpu_canary",
+            },
+            configuration={
+                "schema_version": "observed_appearance_object_removal_configuration.v1",
+                "source_object": {"publisher_instance_id": "104"},
+                "production_render_required": True,
+                "required_views": {"minimum": 8},
+                "provider_disclosure": {"raw_interiorgs_bytes": False},
+                "output_requirements": {"generated_pixels_labeled": True},
+            },
+            configuration_path=receipt_path,
+            dependency_results=(),
+            output_root=output,
+            provider_runtime_artifacts=(
+                artifact("configured_appearance_without_source_object", appearance),
+                artifact("appearance_removal_receipt", receipt_path),
+            ),
+        )
 
 
 def test_content_agents_handler_retains_candidate_for_independent_checks(
@@ -99,11 +182,17 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
     runtime.mkdir()
     asset = runtime / "mug.usda"
     asset.write_text("#usda 1.0\n", encoding="utf-8")
+    source_candidate = runtime / "source-candidate.usda"
+    source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
     identity = {"id": "replacement-mug", "version": "v1"}
     receipt = {
         "schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
         "status": "authored_candidate_pending_qualification",
         "replacement_identity": identity,
+        "source_candidate_digest": sha256(source_candidate),
+        "source_candidate_claim": (
+            "sage_candidate_geometry_not_observed_truth_or_physics_authority"
+        ),
         "output_usd": {
             "sha256": sha256(asset),
             "size_bytes": asset.stat().st_size,
@@ -138,7 +227,14 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
         },
         configuration=configuration,
         configuration_path=configuration_path,
-        dependency_results=({}, {}),
+        dependency_results=(
+            {},
+            {
+                "output_artifacts": [
+                    artifact("source_object_candidate_mesh", source_candidate)
+                ]
+            },
+        ),
         output_root=output,
         provider_runtime_artifacts=(
             artifact("replacement_asset", asset),
@@ -215,6 +311,20 @@ def test_sage_exact_prim_excision_removes_only_requested_prim(tmp_path: Path) ->
     )
     assert not removed.GetPrimAtPath("/Root/Target").IsValid()
     assert removed.GetPrimAtPath("/Root/Support").IsValid()
+    source_candidate = next(
+        Path(row["path"])
+        for row in result["output_artifacts"]
+        if row["role"] == "source_object_candidate_mesh"
+    )
+    candidate = Usd.Stage.Open(str(source_candidate))
+    assert candidate.GetPrimAtPath("/Root/SourceObjectCandidate").IsValid()
+    candidate_row = next(
+        row
+        for row in result["output_artifacts"]
+        if row["role"] == "source_object_candidate_mesh"
+    )
+    assert candidate_row["observed_source_truth"] is False
+    assert candidate_row["movable_physics_authority"] is False
 
 
 def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
@@ -262,7 +372,19 @@ def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
     configuration = {
         "schema_version": "replacement_static_qualification_configuration.v1",
         "replacement_identity": {"id": "replacement-mug", "version": "v1"},
-        "required_checks": {"usd_parses": True, "no_articulation": True},
+        "required_checks": {
+            "usd_parses": True,
+            "meters_per_unit": 1.0,
+            "up_axis": "Z",
+            "single_movable_rigid_root": True,
+            "collision_geometry_present": True,
+            "collision_geometry_nonempty_and_finite": True,
+            "mass_and_inertia_positive_finite": True,
+            "materials_within_preregistered_bounds": True,
+            "no_external_unpinned_dependencies": True,
+            "no_articulation": True,
+            "no_scripts_or_credentials": True,
+        },
         "center_of_mass_must_lie_inside_collision_bounds": True,
     }
     configuration_path = tmp_path / "static.json"
@@ -343,8 +465,15 @@ def test_native_import_handler_promotes_only_exact_static_asset(
         "replacement_identity": identity,
         "required_checks": {
             "stage_import": True,
+            "rigid_body_enabled": True,
+            "collider_enabled": True,
+            "gravity_settle_seconds": 3.0,
+            "maximum_settle_translation_m": 0.01,
+            "maximum_settle_rotation_rad": 0.08,
             "support_contact_required": True,
+            "explosion_or_tunneling_forbidden": True,
             "deterministic_reset_required": True,
+            "state_digest_repeat_count": 3,
         },
     }
     configuration_path = tmp_path / "native-configuration.json"

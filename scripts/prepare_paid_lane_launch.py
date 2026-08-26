@@ -45,6 +45,9 @@ import jsonschema
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
 VALIDATION_SCHEMA_VERSION = "paid_lane_launch_validation.v1"
 NATIVE_CONTEXT_SCHEMA_VERSION = "native_task_arena_launch_preparation_context.v2"
+SCENE_CONFIGURATION_CONTEXT_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_launch_preparation_context.v1"
+)
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
 
@@ -529,6 +532,234 @@ def _native_task_arena_steps(
         ),
     )
 
+
+def _scene_configuration_steps() -> tuple[LaneStep, ...]:
+    """Return the no-allocation graph for one Website scene configuration."""
+
+    bundle_receipt = (
+        "{set_root}/bundle/"
+        "task_evaluation_scene_configuration_provider_bundle.v1.receipt.json"
+    )
+    authority = (
+        "{set_root}/task_evaluation_scene_configuration_paid_authority.v1.json"
+    )
+    profile = "{set_root}/live_profile-{revision}.v1.json"
+    return (
+        LaneStep(
+            step_id="provider_bundle",
+            argv=(
+                "{python}",
+                "-m",
+                "blueprint_pipeline.task_evaluation_scene_configuration_bundle",
+                "--construction-envelope",
+                "{construction_envelope}",
+                "--toolchain-root",
+                "{toolchain_root}",
+                "--repository-root",
+                "{repository_root}",
+                "--output-root",
+                "{set_root}/bundle",
+                "--expected-source-commit",
+                "{source_commit}",
+            ),
+            produces=bundle_receipt,
+        ),
+        LaneStep(
+            step_id="immutable_manifest",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "publish_task_evaluation_immutable_manifest.py",
+                "--manifest",
+                bundle_receipt,
+                "--profile-builder",
+                "build_task_evaluation_scene_configuration_live_profile.py",
+                "--destination-prefix",
+                "{destination_prefix}",
+                "--output",
+                "{set_root}/manifest_publication_receipt.v1.json",
+            ),
+            produces="{set_root}/manifest_publication_receipt.v1.json",
+            exports=(("published_manifest_uri", "published_uri"),),
+        ),
+        LaneStep(
+            step_id="paid_authority",
+            argv=(
+                "{python}",
+                "-m",
+                "blueprint_pipeline.task_evaluation_scene_configuration_paid_authority",
+                "--bundle-receipt",
+                bundle_receipt,
+                "--project-spend-reconciliation",
+                "{project_spend_reconciliation}",
+                "--initial-provider-zero",
+                "{initial_provider_zero}",
+                "--authorization-reference",
+                "{authorization_reference}",
+                "--authorized-by",
+                "{authorized_by}",
+                "--authorized-on",
+                "{authorized_on}",
+                "--source-commit",
+                "{source_commit}",
+                "--container-image",
+                "{container_image}",
+                "--resource-name",
+                "{pod_name}",
+                "--max-hourly-rate-usd",
+                "{maximum_hourly_rate_usd}",
+                "--hard-cap-usd",
+                "{hard_total_spend_cap_usd}",
+                "--provider-compute-spend-cap-usd",
+                "{provider_compute_spend_cap_usd}",
+                "--openai-max-cost-usd",
+                "{openai_max_cost_usd}",
+                "--openai-max-requests",
+                "{openai_max_requests}",
+                "--openai-artifixer-semantic-teacher-max-cost-usd",
+                "{openai_artifixer_semantic_teacher_max_cost_usd}",
+                "--openai-artifixer-visual-review-max-cost-usd",
+                "{openai_artifixer_visual_review_max_cost_usd}",
+                "--openai-content-agents-max-cost-usd",
+                "{openai_content_agents_max_cost_usd}",
+                "--hard-ttl-seconds",
+                "{hard_ttl_seconds}",
+                "--output",
+                authority,
+            ),
+            produces=authority,
+        ),
+        LaneStep(
+            step_id="allocator_dry_run",
+            argv=(
+                "{python}",
+                "-m",
+                "blueprint_pipeline.paid_resource_allocator",
+                "gpu-canary",
+                "--admission-out",
+                "{set_root}/dry-run-job/admission.json",
+                "--bound-request-out",
+                "{set_root}/dry-run-job/bound-request.json",
+                "--adapter-output",
+                "{set_root}/allocator_dry_run.v1.json",
+                "--pod-name",
+                "{pod_name}",
+                "--expected-source-commit",
+                "{source_commit}",
+                "--provider",
+                "vast",
+                "--probe-kind",
+                "task-evaluation-scene-configuration",
+                "--scene-configuration-bundle-receipt",
+                bundle_receipt,
+                "--scene-configuration-attempt-authority",
+                authority,
+                "--scene-configuration-job-dir",
+                "{set_root}/dry-run-job/scene-configuration-job",
+            ),
+            produces="{set_root}/allocator_dry_run.v1.json",
+        ),
+        LaneStep(
+            step_id="live_profile",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "build_task_evaluation_scene_configuration_live_profile.py",
+                "--bundle-receipt",
+                bundle_receipt,
+                "--attempt-authority",
+                authority,
+                "--source-commit",
+                "{source_commit}",
+                "--raw-manifest-uri",
+                "{set_root}/manifest_publication_receipt.v1.json",
+                "--revision",
+                "{revision}",
+                "--max-hourly-rate-usd",
+                "{maximum_hourly_rate_usd}",
+                "--hard-ttl-seconds",
+                "{hard_ttl_seconds}",
+                "--max-spend-usd",
+                "{hard_total_spend_cap_usd}",
+                "--team-namespace",
+                "{team_namespace}",
+                "--scene-id",
+                "{scene_id}",
+                "--task-id",
+                "{task_id}",
+                "--output",
+                profile,
+            ),
+            produces=profile,
+            exports=(("profile_id", "profile_id"),),
+        ),
+        LaneStep(
+            step_id="terminal_rehearsal",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/rehearse_lane_terminal_contract.py",
+                "--profile",
+                profile,
+                "--lane-module",
+                "task_evaluation_scene_configuration_vast.py",
+                "--lane",
+                "task_evaluation_scene_configuration",
+                "--receipt-out",
+                "{set_root}/terminal_rehearsal-{revision}.v1.json",
+            ),
+            produces="{set_root}/terminal_rehearsal-{revision}.v1.json",
+        ),
+        LaneStep(
+            step_id="profile_publication",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "publish_task_evaluation_launch_profiles.py",
+                "--profile",
+                profile,
+                "--profile-dir",
+                "{profile_dir}",
+                "--webapp-catalog-out",
+                "{webapp_catalog_out}",
+                "--service-account",
+                "{service_account}",
+                "--service-group",
+                "{service_group}",
+                "--receipt-out",
+                "{set_root}/profile_publication_receipt.v1.json",
+            ),
+            produces="{set_root}/profile_publication_receipt.v1.json",
+        ),
+        LaneStep(
+            step_id="standing_authorization",
+            argv=(
+                "{python}",
+                "{repository_root}/scripts/"
+                "materialize_task_evaluation_standing_launch_authorization.py",
+                "--profile",
+                "{profile_dir}/{profile_id}.json",
+                "--output-dir",
+                "{standing_authorization_dir}",
+                "--authorized-by",
+                "{authorized_by}",
+                "--authorization-reference",
+                "{authorization_reference}",
+                "--issued-at",
+                "{authorized_on}",
+                "--expires-at",
+                "{standing_authorization_expires_at}",
+                "--max-launches",
+                "1",
+                "--max-total-spend-usd",
+                "{hard_total_spend_cap_usd}",
+                "--service-account",
+                "{service_account}",
+            ),
+            produces="{standing_authorization_dir}/{profile_id}.json",
+        ),
+    )
+
+
 LANES: dict[str, tuple[LaneStep, ...]] = {
     "semantic_teacher_image_edit": SEMANTIC_TEACHER_IMAGE_EDIT_STEPS,
     "native_task_arena_construction": _native_task_arena_steps("construction"),
@@ -539,6 +770,7 @@ LANES: dict[str, tuple[LaneStep, ...]] = {
     "native_task_arena_scripted_positive": _native_task_arena_steps(
         "controls", control_selection="deterministic_scripted_positive"
     ),
+    "task_evaluation_scene_configuration": _scene_configuration_steps(),
 }
 
 
@@ -843,6 +1075,20 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "camera_count": _arg_text(args.camera_count),
         "maximum_hourly_rate_usd": _arg_text(args.maximum_hourly_rate_usd),
         "hard_total_spend_cap_usd": _arg_text(args.hard_total_spend_cap_usd),
+        "provider_compute_spend_cap_usd": _arg_text(
+            args.provider_compute_spend_cap_usd
+        ),
+        "openai_max_cost_usd": _arg_text(args.openai_max_cost_usd),
+        "openai_max_requests": _arg_text(args.openai_max_requests),
+        "openai_artifixer_semantic_teacher_max_cost_usd": _arg_text(
+            args.openai_artifixer_semantic_teacher_max_cost_usd
+        ),
+        "openai_artifixer_visual_review_max_cost_usd": _arg_text(
+            args.openai_artifixer_visual_review_max_cost_usd
+        ),
+        "openai_content_agents_max_cost_usd": _arg_text(
+            args.openai_content_agents_max_cost_usd
+        ),
         "hard_ttl_seconds": _arg_text(args.hard_ttl_seconds),
         "aggregate_goal_spend_before_usd": _arg_text(
             args.aggregate_goal_spend_before_usd
@@ -1450,6 +1696,83 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
     return context
 
 
+def _load_scene_configuration_context(
+    path: str | Path, *, expected_lane: str
+) -> dict[str, Any]:
+    """Load one production-generated scene configuration preparation context."""
+
+    unresolved = Path(path).expanduser()
+    if unresolved.is_symlink():
+        raise PaidLaneLaunchPreparationError(
+            "scene_configuration_context_invalid"
+        )
+    source = unresolved.resolve()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PaidLaneLaunchPreparationError(
+            "scene_configuration_context_unreadable"
+        ) from exc
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version")
+        != SCENE_CONFIGURATION_CONTEXT_SCHEMA_VERSION
+        or value.get("lane") != expected_lane
+        or expected_lane != "task_evaluation_scene_configuration"
+        or not str(value.get("team_namespace") or "").strip()
+        or not isinstance(value.get("operations"), Mapping)
+        or not isinstance(value.get("reference_bindings"), Mapping)
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "scene_configuration_context_invalid"
+        )
+    operations = dict(value["operations"])
+    for key in operations:
+        lowered = str(key).lower()
+        if any(
+            token in lowered
+            for token in ("password", "api_key", "secret", "token")
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "scene_configuration_context_secret_value_forbidden"
+            )
+    if "reference_bindings" in operations or "team_namespace" in operations:
+        raise PaidLaneLaunchPreparationError(
+            "scene_configuration_context_reference_override_forbidden"
+        )
+    construction = Path(
+        str(operations.get("construction_envelope") or "")
+    ).expanduser()
+    toolchain = Path(str(operations.get("toolchain_root") or "")).expanduser()
+    source_commit = str(operations.get("source_commit") or "")
+    bindings = value["reference_bindings"]
+    if (
+        construction.is_symlink()
+        or toolchain.is_symlink()
+        or not construction.resolve().is_file()
+        or not toolchain.resolve().is_dir()
+        or construction.resolve().stat().st_mode & 0o222
+        or toolchain.resolve().stat().st_mode & 0o222
+        or bindings.get("construction_envelope_sha256")
+        != _sha256_file(construction.resolve())
+        or bindings.get("source_commit") != source_commit
+        or len(source_commit) != 40
+        or any(ch not in "0123456789abcdef" for ch in source_commit)
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "scene_configuration_context_binding_invalid"
+        )
+    operations.update(
+        {
+            "construction_envelope": str(construction.resolve()),
+            "toolchain_root": str(toolchain.resolve()),
+            "team_namespace": str(value["team_namespace"]),
+            "reference_bindings": dict(bindings),
+        }
+    )
+    return operations
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", required=True, choices=sorted(LANES))
@@ -1484,6 +1807,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--camera-count", type=int)
     parser.add_argument("--maximum-hourly-rate-usd", type=float)
     parser.add_argument("--hard-total-spend-cap-usd", type=float)
+    parser.add_argument("--provider-compute-spend-cap-usd", type=float)
+    parser.add_argument("--openai-max-cost-usd", type=float)
+    parser.add_argument("--openai-max-requests", type=int)
+    parser.add_argument(
+        "--openai-artifixer-semantic-teacher-max-cost-usd", type=float
+    )
+    parser.add_argument(
+        "--openai-artifixer-visual-review-max-cost-usd", type=float
+    )
+    parser.add_argument("--openai-content-agents-max-cost-usd", type=float)
     parser.add_argument("--hard-ttl-seconds", type=int)
     parser.add_argument("--aggregate-goal-spend-before-usd", type=float)
     parser.add_argument("--aggregate-goal-spend-cap-usd", type=float)
@@ -1516,7 +1849,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.receipt_out
             )
         if args.context_file:
-            context = _load_native_context(args.context_file, expected_lane=args.lane)
+            if args.lane == "task_evaluation_scene_configuration":
+                context = _load_scene_configuration_context(
+                    args.context_file, expected_lane=args.lane
+                )
+            else:
+                context = _load_native_context(
+                    args.context_file, expected_lane=args.lane
+                )
         else:
             context = _context_from_args(args)
         receipt = (

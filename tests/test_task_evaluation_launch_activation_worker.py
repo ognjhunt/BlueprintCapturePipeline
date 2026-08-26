@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pwd
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -30,13 +31,25 @@ from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
     stage_launch_preparation_request,
     write_launch_preparation_record_exclusive,
 )
+from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
+    process_launch_preparation_queue,
+)
 from tests.test_task_evaluation_launch_activation_contract import (
     request as activation_request,
 )
 from tests.test_task_evaluation_launch_preparation_contract import (
     request as preparation_request,
+    test_configuration_request,
+)
+from tests.test_task_evaluation_launch_preparation_worker import (
+    fake_scene_render_inputs,
+    fetcher as preparation_fetcher,
+    production_request_with_fetchable_bytes,
 )
 from tests.test_task_evaluation_configured_scene_revision import revision
+from tests.test_task_evaluation_scene_configuration_bundle import (
+    _toolchain as scene_configuration_toolchain,
+)
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
@@ -101,6 +114,216 @@ def test_configured_revision_rights_substitution_blocks_before_activation(
             preparation_queue_root=queue,
             preparation_input_root=input_root,
         )
+
+
+def test_activation_consumes_production_compiler_adapter_without_codex_handoff(
+    tmp_path: Path,
+) -> None:
+    preparation, _result, _payloads, queue, input_root = (
+        _stage_verified_preparation(tmp_path)
+    )
+    result_path = next((queue / "results").glob("*.json"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    compilation_id = preparation["preparation_id"]
+    envelope_digest = "sha256:" + "e" * 64
+    result.update(
+        status="queued_for_production_episode_compilation",
+        episode_compilation_id=compilation_id,
+        episode_compilation_queue_envelope_digest=envelope_digest,
+    )
+    result.pop("adapter_result_digest")
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    result_path.chmod(0o640)
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    compiled_output = tmp_path / "compiled-episodes"
+    owned = compiled_output / compilation_id
+    source_adapter = (
+        input_root / preparation["preparation_id"] / "native-arena-adapter"
+    )
+    compiled_adapter = owned / "native-arena-adapter"
+    shutil.copytree(source_adapter, compiled_adapter)
+    adapter_path = (
+        compiled_adapter
+        / "task_evaluation_native_arena_adapter_result.v1.json"
+    )
+    adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
+    adapter["packet_root"] = str(compiled_adapter / "construction-packet")
+    adapter["runtime_source_receipt"] = str(
+        compiled_adapter
+        / "runtime-source"
+        / "native_task_runtime_source_packet.v1.json"
+    )
+    adapter["result_digest"] = canonical_digest(
+        adapter, digest_field="result_digest"
+    )
+    adapter_path.chmod(0o640)
+    adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
+    compilation_queue = tmp_path / "episode-compilation-queue"
+    (compilation_queue / "results").mkdir(parents=True)
+    compilation = {
+        "schema_version": "task_evaluation_episode_compilation_result.v1",
+        "status": "compiled_for_production_launch",
+        "compilation_id": compilation_id,
+        "source_commit": preparation["expected_production_commit"],
+        "configured_scene_revision_digest": preparation["task"][
+            "configured_scene_revision_digest"
+        ],
+        "adapter_result_path": str(adapter_path),
+        "adapter_result_digest": adapter["result_digest"],
+        "result_digest": "",
+    }
+    compilation["result_digest"] = canonical_digest(
+        compilation, digest_field="result_digest"
+    )
+    write_launch_preparation_record_exclusive(
+        compilation_queue
+        / "results"
+        / f"{compilation_id}-{envelope_digest.removeprefix('sha256:')}.json",
+        compilation,
+    )
+    activation = {
+        "preparation": {
+            "preparation_id": preparation["preparation_id"],
+            "request_digest": launch_preparation_request_digest(preparation),
+            "result_digest": result["result_digest"],
+        },
+        "team_namespace": preparation["team_namespace"],
+        "expected_production_commit": preparation[
+            "expected_production_commit"
+        ],
+    }
+
+    loaded_request, _loaded_result, loaded_adapter, _references = (
+        worker._load_verified_preparation(
+            activation_request=activation,
+            preparation_queue_root=queue,
+            preparation_input_root=input_root,
+            episode_compilation_queue_root=compilation_queue,
+            episode_compilation_output_root=compiled_output,
+        )
+    )
+
+    assert loaded_request["preparation_id"] == compilation_id
+    assert loaded_adapter["result_digest"] == adapter["result_digest"]
+
+
+def test_activation_consumes_scene_construction_envelope_without_codex_handoff(
+    tmp_path: Path,
+) -> None:
+    preparation, payloads = production_request_with_fetchable_bytes()
+    preparation_queue = tmp_path / "preparation-queue"
+    input_root = tmp_path / "inputs"
+    construction_queue = tmp_path / "construction-queue"
+    stage_launch_preparation_request(
+        value=preparation,
+        queue_root=preparation_queue,
+        submitted_by="blueprint-webapp",
+    )
+    prepared = process_launch_preparation_queue(
+        queue_root=preparation_queue,
+        input_root=input_root,
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=preparation["expected_production_commit"],
+        fetcher=preparation_fetcher(payloads),
+        scene_render_input_materializer=fake_scene_render_inputs,
+        construction_queue_root=construction_queue,
+    )
+    result = prepared["results"][0]
+    assert result["status"] == "queued_for_production_scene_configuration"
+    activation = {
+        "preparation": {
+            "preparation_id": preparation["preparation_id"],
+            "request_digest": launch_preparation_request_digest(preparation),
+            "result_digest": result["result_digest"],
+        },
+        "team_namespace": preparation["team_namespace"],
+        "expected_production_commit": preparation[
+            "expected_production_commit"
+        ],
+    }
+
+    loaded_request, loaded_result, construction, references = (
+        worker._load_verified_preparation(
+            activation_request=activation,
+            preparation_queue_root=preparation_queue,
+            preparation_input_root=input_root,
+            scene_construction_queue_root=construction_queue,
+        )
+    )
+
+    assert loaded_request["run_mode"] == "scene_configuration"
+    assert loaded_result["result_digest"] == result["result_digest"]
+    assert construction["kind"] == "task_evaluation_scene_configuration"
+    assert construction["construction_envelope_digest"] == result[
+        "construction_queue_envelope_digest"
+    ]
+    assert "construction.recipe.stage_sequence.0.configuration" in references
+
+
+def test_activation_builds_robot_neutral_scene_configuration_context(
+    tmp_path: Path,
+) -> None:
+    preparation = test_configuration_request()
+    activation = activation_request(
+        lane="task_evaluation_scene_configuration"
+    )
+    activation["team_namespace"] = preparation["team_namespace"]
+    activation["expected_production_commit"] = preparation[
+        "expected_production_commit"
+    ]
+    envelope = tmp_path / "construction-envelope.json"
+    envelope.write_text('{"schema_version":"fixture.v1"}\n', encoding="utf-8")
+    envelope.chmod(0o440)
+    toolchain = scene_configuration_toolchain(
+        tmp_path / "toolchain",
+        preparation["expected_production_commit"],
+    )
+    project = tmp_path / "project-spend.json"
+    project.write_text("{}\n", encoding="utf-8")
+    provider_zero = tmp_path / "provider-zero.json"
+    provider_zero.write_text("{}\n", encoding="utf-8")
+
+    context = worker._build_scene_configuration_context(
+        activation_request=activation,
+        preparation_request=preparation,
+        construction_input={
+            "kind": "task_evaluation_scene_configuration",
+            "construction_envelope_path": str(envelope),
+            "construction_envelope_digest": "sha256:" + "e" * 64,
+            "recipe_digest": "sha256:" + "f" * 64,
+            "source_commit": preparation["expected_production_commit"],
+        },
+        activation_materialized={
+            "lineage.project_spend_reconciliation": project,
+            "lineage.initial_provider_zero": provider_zero,
+        },
+        activation_root=tmp_path / "activation",
+        repository_root=tmp_path,
+        toolchain_root=toolchain,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        profile_dir=tmp_path / "profiles",
+        webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "authorizations",
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+    )
+
+    assert context["lane"] == "task_evaluation_scene_configuration"
+    assert context["team_namespace"] == preparation["team_namespace"]
+    assert context["operations"]["construction_envelope"] == str(
+        envelope.resolve()
+    )
+    assert context["operations"]["container_image"] == preparation[
+        "runtime"
+    ]["oci_image"]
+    assert "robot" not in context
+    assert context["reference_bindings"][
+        "raw_interiorgs_bytes_authorized_for_provider"
+    ] is False
 
 
 def _bytes_digest(payload: bytes) -> str:
@@ -171,6 +394,21 @@ def _stage_verified_preparation(tmp_path: Path):
     for index, evidence in enumerate(configured["source"]["rights_evidence"]):
         payload = f"rights-evidence:{index}:{evidence['role']}".encode()
         reference = evidence["artifact"]
+        payloads[str(reference["uri"])] = payload
+        reference.update(_reference(str(reference["uri"]), payload))
+    for label, reference in (
+        *[
+            (f"registration-{name}", row)
+            for name, row in configured["registration"].items()
+        ],
+        ("task-definition", configured["task_template"]["definition"]),
+        (
+            "task-success-criteria",
+            configured["task_template"]["success_criteria"],
+        ),
+        ("task-execution", configured["task_template"]["execution"]),
+    ):
+        payload = f"configured-scene:{label}".encode()
         payloads[str(reference["uri"])] = payload
         reference.update(_reference(str(reference["uri"]), payload))
     bundle_payload = b"configured-scene-bundle"
@@ -257,6 +495,25 @@ def _stage_verified_preparation(tmp_path: Path):
                 configured["source"]["rights_evidence"]
             )
         ],
+        *[
+            (
+                f"scene.configured_revision.registration.{name}",
+                reference,
+            )
+            for name, reference in configured["registration"].items()
+        ],
+        (
+            "scene.configured_revision.task_template.definition",
+            configured["task_template"]["definition"],
+        ),
+        (
+            "scene.configured_revision.task_template.success_criteria",
+            configured["task_template"]["success_criteria"],
+        ),
+        (
+            "scene.configured_revision.task_template.execution",
+            configured["task_template"]["execution"],
+        ),
     ]
     for contract_path, reference in transitive_references:
         target = preparation_root / str(reference["digest"]).removeprefix(

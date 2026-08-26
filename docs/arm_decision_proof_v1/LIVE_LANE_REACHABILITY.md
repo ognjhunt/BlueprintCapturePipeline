@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **34 dispatched, 18 website-reachable, 16 named
+Current executable inventory: **35 dispatched, 19 website-reachable, 16 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -57,6 +57,7 @@ attempt completed. Production proof additionally requires:
 | `reconstruction-worker-smoke` | `build_reconstruction_worker_smoke_live_profile.py` |
 | `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
 | `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
+| `task-evaluation-scene-configuration` | `build_task_evaluation_scene_configuration_live_profile.py` |
 
 The construction, controls, and qualified policy rows are ordered stages of
 one chain, not independent campaigns. The policy-diagnostic row is a separately

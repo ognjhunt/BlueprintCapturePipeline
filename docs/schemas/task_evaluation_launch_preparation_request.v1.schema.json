@@ -352,8 +352,35 @@
       "additionalProperties": false,
       "properties": {
         "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
-        "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 50},
+        "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 5},
         "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 9000},
+        "provider_compute_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "external_service_caps": {
+          "type": "object",
+          "required": ["openai"],
+          "additionalProperties": false,
+          "properties": {
+            "openai": {
+              "type": "object",
+              "required": ["maximum_cost_usd", "maximum_requests", "stage_max_cost_usd"],
+              "additionalProperties": false,
+              "properties": {
+                "maximum_cost_usd": {"type": "number", "minimum": 0, "maximum": 5},
+                "maximum_requests": {"type": "integer", "minimum": 0, "maximum": 100},
+                "stage_max_cost_usd": {
+                  "type": "object",
+                  "required": ["artifixer_semantic_teacher", "artifixer_visual_review", "content_agents"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifixer_semantic_teacher": {"type": "number", "minimum": 0, "maximum": 5},
+                    "artifixer_visual_review": {"type": "number", "minimum": 0, "maximum": 5},
+                    "content_agents": {"type": "number", "minimum": 0, "maximum": 5}
+                  }
+                }
+              }
+            }
+          }
+        },
         "retry_cap": {"const": 0},
         "selected_provider": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]},
         "provider_allowlist": {
@@ -375,6 +402,9 @@
       "then": {
         "not": {"anyOf": [{"required": ["robot"]}, {"required": ["controller"]}]},
         "properties": {
+          "spend": {
+            "required": ["provider_compute_spend_cap_usd", "external_service_caps"]
+          },
           "scene": {
             "properties": {"mode": {"const": "configure_source_scene"}},
             "required": ["mode"]
@@ -402,6 +432,16 @@
       },
       "then": {
         "required": ["robot", "controller"],
+        "not": {
+          "properties": {
+            "spend": {
+              "anyOf": [
+                {"required": ["provider_compute_spend_cap_usd"]},
+                {"required": ["external_service_caps"]}
+              ]
+            }
+          }
+        },
         "properties": {
           "scene": {
             "properties": {"mode": {"const": "reuse_configured_revision"}},

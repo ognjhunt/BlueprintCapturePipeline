@@ -19,6 +19,9 @@ def test_activation_worker_is_hardened_and_watches_only_its_queue() -> None:
     assert "NoNewPrivileges=true" in service
     assert "ProtectSystem=strict" in service
     assert "task_evaluation_launch_activation_worker --max-messages 1" in service
+    assert "task-evaluation-scene-constructions" in service
+    assert "task-evaluation-inputs/system-runtimes" in service
+    assert "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=" in service
     assert "task-evaluation-launch-activations/pending" in path
     assert "blueprint-task-evaluation-launch-activation.service" in path
     assert "task-evaluation-launches/pending" not in path
@@ -34,6 +37,7 @@ def test_installer_provisions_activation_roots_and_exact_unit_pair() -> None:
         assert f'${{SYSTEMD_DIR}}/{unit}' in installer
     assert '"${STATE_DIR}/task-evaluation-launch-activations/pending"' in installer
     assert '"${TASK_EVALUATION_INPUT_ROOT}/launch-activations"' in installer
+    assert '"${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"' in installer
     assert "systemctl enable --now blueprint-task-evaluation-launch-activation.path" in installer
 
 
@@ -46,6 +50,10 @@ def test_activation_prefixes_are_operator_owned_and_deploy_arms_no_paid_request(
     )
     assert (
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX="
+        in environment
+    )
+    assert (
+        "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT="
         in environment
     )
     assert '"blueprint-task-evaluation-launch-activation.path"' in deployer

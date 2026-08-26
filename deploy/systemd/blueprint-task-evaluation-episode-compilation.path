@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch the Blueprint Task Evaluation episode compilation queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending/*.json
+Unit=blueprint-task-evaluation-episode-compilation.service
+
+[Install]
+WantedBy=multi-user.target

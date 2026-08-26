@@ -274,6 +274,12 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "camera_count",
         "maximum_hourly_rate_usd",
         "hard_total_spend_cap_usd",
+        "provider_compute_spend_cap_usd",
+        "openai_max_cost_usd",
+        "openai_max_requests",
+        "openai_artifixer_semantic_teacher_max_cost_usd",
+        "openai_artifixer_visual_review_max_cost_usd",
+        "openai_content_agents_max_cost_usd",
         "hard_ttl_seconds",
         "provider",
         "aggregate_goal_spend_before_usd",
@@ -283,6 +289,9 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "packet_dir",
         "runtime_source_packet",
         "container_image",
+        "construction_envelope",
+        "toolchain_root",
+        "team_namespace",
         "scene_id",
         "task_id",
         "project_spend_reconciliation",
@@ -317,6 +326,84 @@ def test_shipped_semantic_teacher_lane_keeps_its_required_order() -> None:
         "profile_publication",
         "terminal_rehearsal",
     ]
+
+
+def test_scene_configuration_prepares_rehearses_then_publishes_once() -> None:
+    lane = "task_evaluation_scene_configuration"
+    steps = prep.LANES[lane]
+    order = [step.step_id for step in steps]
+    assert order == [
+        "provider_bundle",
+        "immutable_manifest",
+        "paid_authority",
+        "allocator_dry_run",
+        "live_profile",
+        "terminal_rehearsal",
+        "profile_publication",
+        "standing_authorization",
+    ]
+    by_id = {step.step_id: step for step in steps}
+    assert "--execute" not in by_id["allocator_dry_run"].argv
+    assert (
+        by_id["allocator_dry_run"].argv[
+            by_id["allocator_dry_run"].argv.index("--probe-kind") + 1
+        ]
+        == "task-evaluation-scene-configuration"
+    )
+    assert (
+        by_id["terminal_rehearsal"].argv[
+            by_id["terminal_rehearsal"].argv.index("--lane-module") + 1
+        ]
+        == "task_evaluation_scene_configuration_vast.py"
+    )
+    assert (
+        by_id["standing_authorization"].argv[
+            by_id["standing_authorization"].argv.index("--max-launches") + 1
+        ]
+        == "1"
+    )
+
+
+def test_scene_configuration_context_reopens_server_owned_inputs(
+    tmp_path: Path,
+) -> None:
+    envelope = tmp_path / "construction-envelope.json"
+    envelope.write_text('{"schema_version":"fixture.v1"}\n', encoding="utf-8")
+    envelope.chmod(0o440)
+    toolchain = tmp_path / "toolchain"
+    toolchain.mkdir(mode=0o550)
+    context_path = tmp_path / "context.json"
+    source_commit = "a" * 40
+    context_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    prep.SCENE_CONFIGURATION_CONTEXT_SCHEMA_VERSION
+                ),
+                "lane": "task_evaluation_scene_configuration",
+                "team_namespace": "team-a",
+                "reference_bindings": {
+                    "construction_envelope_sha256": prep._sha256_file(envelope),
+                    "source_commit": source_commit,
+                },
+                "operations": {
+                    "construction_envelope": str(envelope),
+                    "toolchain_root": str(toolchain),
+                    "source_commit": source_commit,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = prep._load_scene_configuration_context(
+        context_path, expected_lane="task_evaluation_scene_configuration"
+    )
+
+    assert loaded["construction_envelope"] == str(envelope.resolve())
+    assert loaded["toolchain_root"] == str(toolchain.resolve())
+    assert loaded["team_namespace"] == "team-a"
+    assert loaded["reference_bindings"]["source_commit"] == source_commit
 
 
 @pytest.mark.parametrize(

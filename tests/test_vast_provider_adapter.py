@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import fcntl
 import inspect
 import json
@@ -5359,6 +5360,41 @@ def test_vast_adapter_small_provider_helper_edges(
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": "env",
     }
+    runtime_secret = tmp_path / "openai-key"
+    runtime_secret.write_text("sk-ephemeral-test-value\n", encoding="utf-8")
+    runtime_secret.chmod(0o600)
+    secret_values = vpa._runtime_secret_file_values(
+        {"OPENAI_API_KEY_FILE": runtime_secret}
+    )
+    secret_env = vpa._probe_env(
+        job_dir=tmp_path / "secret-env",
+        enable_isaac_smoke=False,
+        runtime_secret_file_values=secret_values,
+        provider_runtime_environment={
+            "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": "sha256:" + "a" * 64,
+            "OPENAI_PROJECT_ID": "proj_test",
+            "OPENAI_API_KEY_ID": "key_test",
+        },
+    )
+    bootstrap_name = (
+        vpa.VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + "OPENAI_API_KEY_FILE"
+    )
+    assert base64.b64decode(secret_env[bootstrap_name]).decode() == (
+        "sk-ephemeral-test-value"
+    )
+    assert secret_env["BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST"] == (
+        "sha256:" + "a" * 64
+    )
+    assert secret_env["OPENAI_PROJECT_ID"] == "proj_test"
+    shell = vpa._probe_shell_script(
+        "https://example.com/heartbeat",
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+    assert "BLUEPRINT_VAST_RUNTIME_SECRET_FILES_READY" in shell
+    assert "sk-ephemeral-test-value" not in shell
+    runtime_secret.chmod(0o644)
+    with pytest.raises(ValueError, match="invalid_vast_runtime_secret_file"):
+        vpa._runtime_secret_file_values({"OPENAI_API_KEY_FILE": runtime_secret})
     monkeypatch.setenv(vpa.VAST_FORWARD_SECRET_ENV_VARS_ENV, "SAFE_NAME,MY_API_KEY")
     monkeypatch.setenv("SAFE_NAME", "not-forwarded")
     monkeypatch.setenv("MY_API_KEY", "forwarded-secret")

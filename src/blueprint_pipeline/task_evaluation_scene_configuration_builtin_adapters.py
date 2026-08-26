@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -129,6 +130,78 @@ def _copy_artifact(source: Path, destination: Path) -> dict[str, Any]:
     }
 
 
+def _positive_finite(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) > 0.0
+    )
+
+
+def _native_import_checks_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "stage_import",
+        "rigid_body_enabled",
+        "collider_enabled",
+        "gravity_settle_seconds",
+        "maximum_settle_translation_m",
+        "maximum_settle_rotation_rad",
+        "support_contact_required",
+        "explosion_or_tunneling_forbidden",
+        "deterministic_reset_required",
+        "state_digest_repeat_count",
+    }:
+        return False
+    return (
+        value["stage_import"] is True
+        and value["rigid_body_enabled"] is True
+        and value["collider_enabled"] is True
+        and _positive_finite(value["gravity_settle_seconds"])
+        and _positive_finite(value["maximum_settle_translation_m"])
+        and _positive_finite(value["maximum_settle_rotation_rad"])
+        and value["support_contact_required"] is True
+        and value["explosion_or_tunneling_forbidden"] is True
+        and value["deterministic_reset_required"] is True
+        and value["state_digest_repeat_count"] == 3
+    )
+
+
+def _static_qualification_checks_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "usd_parses",
+        "meters_per_unit",
+        "up_axis",
+        "single_movable_rigid_root",
+        "collision_geometry_present",
+        "collision_geometry_nonempty_and_finite",
+        "mass_and_inertia_positive_finite",
+        "materials_within_preregistered_bounds",
+        "no_external_unpinned_dependencies",
+        "no_articulation",
+        "no_scripts_or_credentials",
+    }:
+        return False
+    return (
+        value["usd_parses"] is True
+        and value["meters_per_unit"] == 1.0
+        and value["up_axis"] == "Z"
+        and all(
+            value[name] is True
+            for name in (
+                "single_movable_rigid_root",
+                "collision_geometry_present",
+                "collision_geometry_nonempty_and_finite",
+                "mass_and_inertia_positive_finite",
+                "materials_within_preregistered_bounds",
+                "no_external_unpinned_dependencies",
+                "no_articulation",
+                "no_scripts_or_credentials",
+            )
+        )
+    )
+
+
 def _stage_result(
     *,
     stage: Mapping[str, Any],
@@ -157,6 +230,65 @@ def _stage_result(
     return result
 
 
+def _extract_source_candidate_subtree(
+    *, source_stage_path: Path, prim_path: str, output_path: Path
+) -> dict[str, Any]:
+    """Retain the exact SAGE target as candidate geometry before excision."""
+
+    try:
+        from pxr import Sdf, Usd, UsdGeom
+    except ImportError as exc:  # pragma: no cover - production image owns USD
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "sage_source_candidate_usd_runtime_missing"
+        ) from exc
+    stage = Usd.Stage.Open(str(source_stage_path))
+    prim = stage.GetPrimAtPath(prim_path) if stage is not None else None
+    if stage is None or prim is None or not prim.IsValid():
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "sage_source_candidate_prim_missing"
+        )
+    flattened = stage.Flatten()
+    layer = Sdf.Layer.CreateNew(str(output_path))
+    if layer is None:
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "sage_source_candidate_extraction_failed"
+        )
+    Sdf.CreatePrimInLayer(layer, Sdf.Path("/Root"))
+    if not Sdf.CopySpec(
+        flattened,
+        Sdf.Path(prim_path),
+        layer,
+        Sdf.Path("/Root/SourceObjectCandidate"),
+    ):
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "sage_source_candidate_extraction_failed"
+        )
+    layer.defaultPrim = "Root"
+    layer.Save()
+    candidate = Usd.Stage.Open(str(output_path))
+    if candidate is None or not candidate.GetPrimAtPath(
+        "/Root/SourceObjectCandidate"
+    ).IsValid():
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "sage_source_candidate_extraction_failed"
+        )
+    UsdGeom.SetStageMetersPerUnit(
+        candidate, UsdGeom.GetStageMetersPerUnit(stage)
+    )
+    UsdGeom.SetStageUpAxis(candidate, UsdGeom.GetStageUpAxis(stage))
+    candidate.GetRootLayer().Save()
+    digest, size = _sha256_and_size(output_path)
+    return {
+        "path": str(output_path),
+        "digest": digest,
+        "size_bytes": size,
+        "source_prim_path": prim_path,
+        "candidate_geometry_only": True,
+        "observed_source_truth": False,
+        "movable_physics_authority": False,
+    }
+
+
 def execute_artifixer3d_observed_object_removal(
     *,
     envelope: Mapping[str, Any],
@@ -180,8 +312,12 @@ def execute_artifixer3d_observed_object_removal(
     _receipt_record, receipt_path = _provider_runtime_artifact(
         provider_runtime_artifacts, role="appearance_removal_receipt"
     )
+    review_record, review_path = _provider_runtime_artifact(
+        provider_runtime_artifacts, role="appearance_visual_review_receipt"
+    )
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        review = json.loads(review_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise TaskEvaluationSceneConfigurationAdapterError(
             "artifixer3d_object_removal_receipt_invalid"
@@ -207,11 +343,36 @@ def execute_artifixer3d_observed_object_removal(
         != source_object.get("publisher_instance_id")
         or receipt.get("raw_interiorgs_bytes_sent_to_external_provider")
         is not False
+        or receipt.get("visual_review_receipt_digest")
+        != review.get("receipt_digest")
+        or receipt.get("visual_review_receipt_sha256")
+        != review_record.get("digest")
         or receipt.get("semantic_object_free_visual_review_passed") is not True
         or receipt.get("multiview_consistency_review_passed") is not True
         or receipt.get("generated_pixels_labeled") is not True
         or receipt.get("result_digest")
         != canonical_digest(receipt, digest_field="result_digest")
+        or review.get("schema_version")
+        != "task_evaluation_artifixer_ai_visual_review.v1"
+        or review.get("status") != "accepted"
+        or review.get("publisher_instance_id")
+        != source_object.get("publisher_instance_id")
+        or review.get("decision") != "accepted"
+        or review.get("semantic_object_absence_review_passed") is not True
+        or review.get("multiview_consistency_review_passed") is not True
+        or review.get("review_frame_count", 0)
+        < configuration.get("required_views", {}).get("minimum", 1)
+        or review.get("all_review_frames_digest_bound") is not True
+        or review.get("ai_visual_review_completed") is not True
+        or review.get("human_review_completed") is not False
+        or review.get("generated_output_is_capture_or_physical_evidence")
+        is not False
+        or not isinstance(review.get("reviewer"), Mapping)
+        or not str(review["reviewer"].get("identity") or "")
+        or not str(review["reviewer"].get("runtime") or "")
+        or not str(review["reviewer"].get("model") or "")
+        or review.get("receipt_digest")
+        != canonical_digest(review, digest_field="receipt_digest")
     ):
         raise TaskEvaluationSceneConfigurationAdapterError(
             "artifixer3d_object_removal_result_invalid"
@@ -222,6 +383,9 @@ def execute_artifixer3d_observed_object_removal(
     copied_receipt = _copy_artifact(
         receipt_path, output_root / "appearance_removal_receipt.v1.json"
     )
+    copied_review = _copy_artifact(
+        review_path, output_root / "appearance_visual_review_receipt.v1.json"
+    )
     return _stage_result(
         stage=stage,
         configuration_path=configuration_path,
@@ -231,6 +395,7 @@ def execute_artifixer3d_observed_object_removal(
                 **copied_appearance,
             },
             {"role": "appearance_removal_receipt", **copied_receipt},
+            {"role": "appearance_visual_review_receipt", **copied_review},
         ],
     )
 
@@ -251,6 +416,9 @@ def execute_content_agents_rigid_replacement(
         raise TaskEvaluationSceneConfigurationAdapterError(
             "content_agents_replacement_dependency_invalid"
         )
+    source_candidate_record, _source_candidate = _dependency_artifact(
+        dependency_results, role="source_object_candidate_mesh"
+    )
     asset_record, asset = _provider_runtime_artifact(
         provider_runtime_artifacts, role="replacement_asset"
     )
@@ -280,6 +448,10 @@ def execute_content_agents_rigid_replacement(
         != "task_evaluation_rigid_replacement_authoring_result.v1"
         or receipt.get("status") != "authored_candidate_pending_qualification"
         or receipt.get("replacement_identity") != identity
+        or receipt.get("source_candidate_digest")
+        != source_candidate_record.get("digest")
+        or receipt.get("source_candidate_claim")
+        != "sage_candidate_geometry_not_observed_truth_or_physics_authority"
         or receipt.get("output_usd", {}).get("sha256")
         != asset_record.get("digest")
         or receipt.get("output_usd", {}).get("size_bytes")
@@ -350,6 +522,11 @@ def execute_sage_exact_prim_excision(
             "sage_exact_prim_excision_configuration_invalid"
         )
     target = str(configuration.get("exact_target_prim") or "")
+    candidate = _extract_source_candidate_subtree(
+        source_stage_path=source,
+        prim_path=target,
+        output_path=output_root / "source_object_candidate_mesh.usda",
+    )
     removed = output_root / "collision_without_source_object.usda"
     receipt = remove_source_collider_subtree(
         source_usd_path=source,
@@ -396,6 +573,7 @@ def execute_sage_exact_prim_excision(
                 "digest": _sha256_and_size(receipt_path)[0],
                 "size_bytes": _sha256_and_size(receipt_path)[1],
             },
+            {"role": "source_object_candidate_mesh", **candidate},
         ],
         "stage_result_digest": "",
     }
@@ -441,9 +619,7 @@ def execute_simready_static_rigid_qualification(
         != "replacement_static_qualification_configuration.v1"
         or not isinstance(identity, Mapping)
         or identity != envelope["recipe"]["subject_identity"]
-        or not isinstance(checks, Mapping)
-        or not checks
-        or any(value is not True for value in checks.values())
+        or not _static_qualification_checks_valid(checks)
         or configuration.get("center_of_mass_must_lie_inside_collision_bounds")
         is not True
         or graph_spec.get("asset_id") != identity.get("id")
@@ -552,9 +728,7 @@ def execute_simready_native_import_qualification(
         configuration.get("schema_version")
         != "replacement_native_import_qualification_configuration.v1"
         or identity != envelope["recipe"]["subject_identity"]
-        or not isinstance(checks, Mapping)
-        or not checks
-        or any(value is not True for value in checks.values())
+        or not _native_import_checks_valid(checks)
         or runtime.get("schema_version")
         != "task_evaluation_replacement_native_import_result.v1"
         or runtime.get("status") != "qualified"

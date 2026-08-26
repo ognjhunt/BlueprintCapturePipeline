@@ -358,6 +358,7 @@ class LaneLiveProfileSpec:
     #: allocator, so an explicit launch-id scope cannot bypass this lane's
     #: exactly-once paid boundary.
     one_use_standing_authority_required: bool = False
+    additional_terminal_path_fields: Sequence[str] = field(default_factory=tuple)
 
 
 def bind_live_profile_manifest_publication(
@@ -621,7 +622,10 @@ def build_lane_live_profile(
         },
         "immutable_inputs": immutable_inputs,
         "runtime_environment": dict(runtime_environment or {}),
-        **shared_control_surface(required_providers=spec.required_providers),
+        **shared_control_surface(
+            required_providers=spec.required_providers,
+            additional_required_path_fields=spec.additional_terminal_path_fields,
+        ),
     }
     lane_profile_fields = spec.profile_fields(context)
     if not isinstance(lane_profile_fields, Mapping) or set(profile).intersection(
