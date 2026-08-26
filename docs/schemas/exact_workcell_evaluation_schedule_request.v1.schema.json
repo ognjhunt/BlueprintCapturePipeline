@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_evaluation_schedule_request.v1.schema.json",
+  "title": "Candidate binding for an immutable exact-workcell matrix",
+  "type": "object",
+  "required": ["schema_version", "matrix_digest", "candidate_set", "controls", "decision_design", "schedule_request_digest"],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_evaluation_schedule_request.v1"},
+    "matrix_digest": {"$ref": "#/$defs/digest"},
+    "candidate_set": {
+      "type": "object",
+      "required": ["candidate_ids", "candidate_identity_digests", "frozen_before_schedule_generation"],
+      "properties": {
+        "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "candidate_identity_digests": {"type": "object", "minProperties": 2, "maxProperties": 2, "additionalProperties": {"$ref": "#/$defs/digest"}},
+        "frozen_before_schedule_generation": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "controls": {
+      "type": "object",
+      "required": ["control_ids", "run_on_every_cell", "same_resolved_cell_required"],
+      "properties": {
+        "control_ids": {"const": ["zero_action_negative", "deterministic_scripted_positive"]},
+        "run_on_every_cell": {"const": true},
+        "same_resolved_cell_required": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "decision_design": {
+      "type": "object",
+      "required": ["preregistered_experiment_digest", "power_analysis_digest", "minimum_decision_relevant_difference_digest", "planned_cells_per_candidate", "trial_count_justified_by_preregistered_power_analysis", "preregistered_before_policy_outcomes"],
+      "properties": {
+        "preregistered_experiment_digest": {"$ref": "#/$defs/digest"},
+        "power_analysis_digest": {"$ref": "#/$defs/digest"},
+        "minimum_decision_relevant_difference_digest": {"$ref": "#/$defs/digest"},
+        "planned_cells_per_candidate": {"type": "integer", "minimum": 10, "maximum": 1000},
+        "trial_count_justified_by_preregistered_power_analysis": {"const": true},
+        "preregistered_before_policy_outcomes": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "schedule_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

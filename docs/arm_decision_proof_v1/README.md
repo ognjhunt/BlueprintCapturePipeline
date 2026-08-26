@@ -51,6 +51,9 @@ The controls-only PhysX/Newton precursor and its claim ceiling are defined in
 [`ADP_009D_PHYSICS_BACKEND_COMPARISON.md`](ADP_009D_PHYSICS_BACKEND_COMPARISON.md).
 Canonical learned-policy start and terminal semantics are defined in
 [`POLICY_EPISODE_LIFECYCLE.md`](POLICY_EPISODE_LIFECYCLE.md).
+The policy-neutral 100-cell exact-workcell baseline, separate cousin boundary,
+agent proposal role, and EvaluationRun/Isaac integration are defined in
+[`EXACT_WORKCELL_VARIATION_MATRIX.md`](EXACT_WORKCELL_VARIATION_MATRIX.md).
 
 Until the pre-capture Franka rehearsal is complete:
 

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_variation_publication.v1.schema.json",
+  "title": "Create-only exact-workcell bundle publication receipt",
+  "type": "object",
+  "required": ["schema_version", "status", "matrix_id", "request_digest", "schedule_request_digest", "matrix_digest", "isaac_lab_event_plan_digest", "schedule_digest", "artifacts", "publication_digest"],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_variation_publication.v1"},
+    "status": {"const": "published_create_only_full_byte_readback_verified"},
+    "matrix_id": {"type": "string", "minLength": 1},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "schedule_request_digest": {"$ref": "#/$defs/digest"},
+    "matrix_digest": {"$ref": "#/$defs/digest"},
+    "isaac_lab_event_plan_digest": {"$ref": "#/$defs/digest"},
+    "schedule_digest": {"$ref": "#/$defs/digest"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["relative_path", "size_bytes", "sha256", "create_only", "full_byte_readback_verified"],
+        "properties": {
+          "relative_path": {"type": "string", "minLength": 1},
+          "size_bytes": {"type": "integer", "minimum": 1},
+          "sha256": {"$ref": "#/$defs/digest"},
+          "create_only": {"const": true},
+          "full_byte_readback_verified": {"const": true}
+        },
+        "additionalProperties": false
+      }
+    },
+    "publication_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/exact_workcell_isaac_lab_event_plan.v1.schema.json",
+  "title": "Manager-targeted Isaac Lab event and readback plan",
+  "type": "object",
+  "required": ["schema_version", "matrix_id", "matrix_digest", "cell_count", "runtime", "cells", "claim_boundary", "event_plan_digest"],
+  "properties": {
+    "schema_version": {"const": "exact_workcell_isaac_lab_event_plan.v1"},
+    "matrix_id": {"type": "string", "minLength": 1},
+    "matrix_digest": {"$ref": "#/$defs/digest"},
+    "cell_count": {"type": "integer", "minimum": 10},
+    "runtime": {"const": "isaac_lab_manager_based"},
+    "cells": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["cell_id", "cell_digest", "reset_digest", "seed", "event_mode", "terms", "policy_query_allowed_before_all_readbacks_pass", "cell_plan_digest"],
+        "properties": {
+          "cell_id": {"type": "string"},
+          "cell_digest": {"$ref": "#/$defs/digest"},
+          "reset_digest": {"$ref": "#/$defs/digest"},
+          "seed": {"type": "integer", "minimum": 0},
+          "event_mode": {"const": "reset"},
+          "terms": {"type": "array", "minItems": 1},
+          "policy_query_allowed_before_all_readbacks_pass": {"const": false},
+          "cell_plan_digest": {"$ref": "#/$defs/digest"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "claim_boundary": {"type": "object"},
+    "event_plan_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}
