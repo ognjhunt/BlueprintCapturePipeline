@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/scene_object_discovery.v1.schema.json",
+  "title": "Scene object discovery v1",
+  "description": "Digest-bound whole-splat survey, replaceable analyzer candidates, deterministic metric admission, and source-object selection outcome.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "source_binding",
+    "camera_plan_digest",
+    "render_manifest_digest",
+    "analyzer_receipts",
+    "candidates",
+    "eligible_candidate_ids",
+    "selected_candidate_id",
+    "source_object",
+    "next_action",
+    "coverage",
+    "claim_boundary",
+    "discovery_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "scene_object_discovery.v1"},
+    "status": {
+      "enum": [
+        "ready_auto_selected",
+        "selection_required",
+        "metric_refinement_required",
+        "abstained_no_candidates"
+      ]
+    },
+    "source_binding": {
+      "type": "object",
+      "required": ["source_splat_digest", "retained_gaussian_count", "registration_digest"],
+      "properties": {
+        "source_splat_digest": {"$ref": "#/$defs/digest"},
+        "retained_gaussian_count": {"type": "integer", "minimum": 1},
+        "registration_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "camera_plan_digest": {"$ref": "#/$defs/digest"},
+    "render_manifest_digest": {"$ref": "#/$defs/digest"},
+    "analyzer_receipts": {"type": "array", "items": {"type": "object"}},
+    "candidates": {"type": "array", "items": {"type": "object"}},
+    "eligible_candidate_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "selected_candidate_id": {"type": ["string", "null"]},
+    "source_object": {"type": ["object", "null"]},
+    "next_action": {"type": "string", "minLength": 1},
+    "coverage": {
+      "type": "object",
+      "required": ["known_scene_bounds_covered", "unseen_regions", "virtual_camera_recovers_missing_source_observations"],
+      "additionalProperties": false,
+      "properties": {
+        "known_scene_bounds_covered": {"type": "boolean"},
+        "unseen_regions": {"type": "array", "items": {}},
+        "virtual_camera_recovers_missing_source_observations": {"const": false}
+      }
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "raw_capture_truth_preserved",
+        "model_candidate_may_self_authorize",
+        "splat_analyzer_boxes_are_metric_geometry",
+        "rgb_render_proves_depth_or_gaussian_contributions",
+        "selected_source_object_is_physical_truth",
+        "selected_source_object_authorizes_robot_execution",
+        "discovery_completes_adp_022"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "raw_capture_truth_preserved": {"const": true},
+        "model_candidate_may_self_authorize": {"const": false},
+        "splat_analyzer_boxes_are_metric_geometry": {"const": false},
+        "rgb_render_proves_depth_or_gaussian_contributions": {"const": false},
+        "selected_source_object_is_physical_truth": {"const": false},
+        "selected_source_object_authorizes_robot_execution": {"const": false},
+        "discovery_completes_adp_022": {"const": false}
+      }
+    },
+    "discovery_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
