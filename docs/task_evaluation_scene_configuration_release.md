@@ -60,3 +60,37 @@ inside the parent production scene-configuration run after submission. Later
 episode-evaluation runs reuse the configured-scene revision and do not repeat
 scene construction.
 
+## Website service submission
+
+Robot-team automation uses the same Website preparation resource as the admin
+UI. The production runner signs the exact request-file bytes with the canonical
+WebApp HMAC secret file; it does not call Pipeline intake directly:
+
+```bash
+python scripts/submit_task_evaluation_preparation_via_webapp.py \
+  --request /immutable/input/task_evaluation_launch_preparation_request.v1.json \
+  --secret-file /run/blueprint-webapp-submit.secret \
+  --receipt-out /immutable/output/webapp_preparation_submission_receipt.v1.json
+```
+
+The client requires an exclusive receipt destination, binds the idempotency key
+to `preparation_id`, signs and sends the original bytes, validates both Website
+and Pipeline intake identities, and fsyncs a read-only receipt. It cannot read
+other admin resources, activate the preparation, publish a profile, allocate a
+provider, or request paid execution.
+
+After a `202` submission, the production runner waits through the Website's
+signed status resource and seals the terminal result:
+
+```bash
+python scripts/read_task_evaluation_preparation_status_via_webapp.py \
+  --request /immutable/input/task_evaluation_launch_preparation_request.v1.json \
+  --secret-file /run/blueprint-webapp-submit.secret \
+  --receipt-out /immutable/output/webapp_preparation_status_receipt.v1.json
+```
+
+`materialized` is accepted only when the exact preparation identity, request
+digest, production commit, result digest, and full-byte service-account
+readback all match. A terminal construction failure is retained as `blocked`.
+Activation and later episode execution remain separate, explicitly authorized
+Task Evaluation operations.
