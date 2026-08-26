@@ -452,3 +452,127 @@ def test_production_input_parents_get_exact_traversal_without_recursive_handoff(
     assert stat.S_IMODE(unrelated.stat().st_mode) == 0o700
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
     assert token.read_text(encoding="utf-8") == "secret"
+
+
+def test_lineage_parents_another_operator_owns_are_verified_not_rechowned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent that already grants service traversal is never re-owned.
+
+    Shared-project lineage inputs (a prior run's provider zero, a baseline
+    authority) are published by whichever operator ran that lane, so their
+    parent directories are owned by that operator and cannot be chowned by
+    this service account.  When such a directory already carries the service
+    group and the group execute bit, the access requirement is met and the
+    privileged mutation is pure liability.
+    """
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    set_root = control_root / "task-evaluation-inputs" / "other-operator-staging"
+    lineage_dir = set_root / "prior_run"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-foreign-lineage-parent")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    immutable.chmod(0o440)
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    # The requirement is already satisfied: right group, group traversal on.
+    for directory in (set_root, lineage_dir):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o710)
+
+    foreign = {set_root.resolve(), lineage_dir.resolve()}
+    real_chown = os.chown
+
+    def refuse_foreign_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() in foreign:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_foreign_chown)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+        webapp_catalog_out=control_root / "state" / "catalog.json",
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(set_root.stat().st_mode) == 0o710
+    assert stat.S_IMODE(lineage_dir.stat().st_mode) == 0o710
+
+
+def test_unreachable_lineage_parent_this_service_cannot_fix_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verification must not become a way to publish an unreadable input."""
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    set_root = control_root / "task-evaluation-inputs" / "sealed-staging"
+    lineage_dir = set_root / "prior_run"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-sealed-lineage-parent")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    immutable.chmod(0o440)
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    # Group traversal is absent, so the requirement is genuinely unmet.
+    for directory in (set_root, lineage_dir):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o700)
+
+    foreign = {set_root.resolve(), lineage_dir.resolve()}
+    real_chown = os.chown
+
+    def refuse_foreign_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() in foreign:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_foreign_chown)
+
+    with pytest.raises(publisher.TaskEvaluationLaunchError) as excinfo:
+        publisher.publish_profiles(
+            profile_paths=[fixture["path"]],
+            profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+            webapp_catalog_out=control_root / "state" / "catalog.json",
+            service_account=account,
+            service_group=group,
+        )
+
+    assert "immutable_input_parent_permission_install_failed" in str(excinfo.value)
