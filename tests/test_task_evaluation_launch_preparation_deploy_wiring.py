@@ -31,6 +31,10 @@ def test_no_spend_preparation_worker_has_hardened_service_and_path_unit() -> Non
     assert "task-evaluation-scene-constructions" in service
     assert "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=" in service
     assert "task-evaluation-episode-compilations" in service
+    assert (
+        "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
+        '["s3://blueprint-production-inputs/"]\''
+    ) in service
 
 
 def test_canonical_environment_documents_bounded_input_prefixes() -> None:

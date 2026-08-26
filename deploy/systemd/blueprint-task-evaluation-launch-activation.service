@@ -40,6 +40,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/prepared-references
+Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON=["s3://blueprint-production-inputs/"]'
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
