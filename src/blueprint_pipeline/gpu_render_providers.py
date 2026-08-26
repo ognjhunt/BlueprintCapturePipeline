@@ -1966,6 +1966,7 @@ class VastRenderProvider(GpuRenderProvider):
         from .vast_provider_adapter import (
             _api_json,
             _offers_from_response,
+            _projected_provider_transfer_cost_usd,
             _search_payload,
             _select_offer,
         )
@@ -1990,6 +1991,27 @@ class VastRenderProvider(GpuRenderProvider):
         required_provider_disk_gb = (
             _positive_int(req.get("required_provider_disk_gb")) or disk_gb
         )
+        expected_download_raw = req.get("expected_provider_download_bytes", 0)
+        expected_upload_raw = req.get("expected_provider_upload_bytes", 0)
+        transfer_byte_blockers: list[str] = []
+        if type(expected_download_raw) is not int or expected_download_raw < 0:
+            transfer_byte_blockers.append(
+                "vast_capacity_expected_provider_download_bytes_invalid"
+            )
+        if type(expected_upload_raw) is not int or expected_upload_raw < 0:
+            transfer_byte_blockers.append(
+                "vast_capacity_expected_provider_upload_bytes_invalid"
+            )
+        if transfer_byte_blockers:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": transfer_byte_blockers,
+                "reservation_proven": False,
+                "raw_provider_response_recorded": False,
+            }
+        expected_download_bytes = int(expected_download_raw)
+        expected_upload_bytes = int(expected_upload_raw)
         allowed_machine_ids = _string_list(req.get("allowed_machine_ids"))
         excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
         required_search_payload = _search_payload(
@@ -2114,27 +2136,31 @@ class VastRenderProvider(GpuRenderProvider):
             blockers.append("vast_capacity_retry_cap_must_be_zero")
         if hard_ttl_seconds is not None:
             for row in viable:
-                row["projected_full_ttl_cost_usd"] = (
+                runtime_cost = (
                     float(row["hourly_rate_usd"]) * hard_ttl_seconds / 3600.0
                 )
-            if selected:
-                selected = dict(selected)
-                selected["projected_full_ttl_cost_usd"] = (
-                    float(selected["hourly_rate_usd"])
-                    * hard_ttl_seconds
-                    / 3600.0
+                transfer_cost = _projected_provider_transfer_cost_usd(
+                    row,
+                    expected_provider_download_bytes=expected_download_bytes,
+                    expected_provider_upload_bytes=expected_upload_bytes,
+                )
+                row["projected_runtime_cost_usd"] = runtime_cost
+                row["projected_provider_transfer_cost_usd"] = transfer_cost
+                row["projected_full_ttl_cost_usd"] = (
+                    runtime_cost + transfer_cost
+                    if transfer_cost is not None
+                    else None
                 )
         if hard_cap_usd is not None and hard_ttl_seconds is not None:
             viable = [
                 row
                 for row in viable
-                if float(row.get("projected_full_ttl_cost_usd") or math.inf)
+                if row.get("projected_full_ttl_cost_usd") is not None
+                and float(row["projected_full_ttl_cost_usd"])
                 <= hard_cap_usd
             ]
-            if selected and float(
-                selected.get("projected_full_ttl_cost_usd") or math.inf
-            ) > hard_cap_usd:
-                selected = None
+            selected = viable[0] if viable else None
+            if not selected:
                 blockers.append("vast_capacity_full_ttl_exceeds_hard_cap")
         global_inventory = None
         if req.get("require_global_inventory_zero") is True:
@@ -2170,6 +2196,8 @@ class VastRenderProvider(GpuRenderProvider):
                 "hard_ttl_seconds": hard_ttl_seconds,
                 "hard_cap_usd": hard_cap_usd,
                 "retry_cap": retry_cap,
+                "expected_provider_download_bytes": expected_download_bytes,
+                "expected_provider_upload_bytes": expected_upload_bytes,
                 "allowed_geolocation_country_codes": sorted(
                     allowed_geolocation_country_codes
                 ),
