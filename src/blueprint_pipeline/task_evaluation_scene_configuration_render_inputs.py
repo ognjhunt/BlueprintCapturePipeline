@@ -116,6 +116,20 @@ def _look_at_opencv(eye: Sequence[float], target: Sequence[float]) -> list[list[
     return matrix.tolist()
 
 
+def _envelope_run_id(envelope: Mapping[str, Any]) -> str:
+    """Resolve the run id from either envelope shape, preferring the request."""
+
+    request = envelope.get("request")
+    if isinstance(request, Mapping) and str(request.get("run_id") or "").strip():
+        return str(request["run_id"])
+    run_id = str(envelope.get("run_id") or "").strip()
+    if not run_id:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_run_id_missing"
+        )
+    return run_id
+
+
 def _stage_disclosure_intent(disclosure: Mapping[str, Any]) -> Any:
     """The stage's explicit intent about uploading source appearance bytes."""
 
@@ -516,7 +530,11 @@ def materialize_scene_configuration_render_inputs(
             if provider_render
             else "derived_method_inputs_materialized"
         ),
-        "run_id": envelope["run_id"],
+        # The queue envelope carries the run id inside the request, not at
+        # the top level. Reading it from the wrong place could not fail
+        # until a render actually succeeded, and the worker re-checks it
+        # against request.run_id immediately afterwards.
+        "run_id": _envelope_run_id(envelope),
         "publisher_instance_id": source_object["publisher_instance_id"],
         "source_splat_digest": appearance_row["digest"],
         "source_splat_bytes_retained_on_control_plane": not provider_render,
