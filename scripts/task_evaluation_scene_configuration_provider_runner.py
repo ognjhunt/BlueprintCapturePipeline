@@ -69,7 +69,15 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
         row["materialized_path"] = str(path)
     render = envelope.get("render_inputs_result") or {}
     for key in ("camera_calibration", "render_manifest"):
-        row = render.get(key) or {}
+        row = render.get(key)
+        if (
+            key == "render_manifest"
+            and row is None
+            and render.get("status")
+            == "derived_method_inputs_pending_provider_render"
+        ):
+            continue
+        row = row or {}
         path = _runtime_file(
             runtime,
             row.get("path"),

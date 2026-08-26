@@ -295,6 +295,49 @@ def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path
         raise AssertionError("tampered provider input was accepted")
 
 
+def test_provider_runner_accepts_the_owed_provider_render_manifest(
+    tmp_path: Path,
+) -> None:
+    """A provider-render packet has no manifest until stage one renders it."""
+
+    receipt = _build(tmp_path, "provider-render-bundle")
+    extracted = tmp_path / "provider-render-extracted"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    runner_path = (
+        extracted
+        / "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "scene_configuration_provider_render_runner", runner_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runtime = extracted / "provider_runtime"
+    portable_path = runtime / "input/portable_construction_envelope.v1.json"
+    portable = json.loads(portable_path.read_text(encoding="utf-8"))
+    render = portable["render_inputs_result"]
+    render["status"] = "derived_method_inputs_pending_provider_render"
+    render["render_manifest"] = None
+    render["derived_frames"] = []
+    render["derived_frame_count"] = 0
+    render["result_digest"] = canonical_digest(
+        render, digest_field="result_digest"
+    )
+    portable["envelope_digest"] = canonical_digest(
+        portable, digest_field="envelope_digest"
+    )
+
+    hydrated = module._hydrate_envelope(runtime.resolve(), portable)
+
+    assert hydrated["render_inputs_result"]["render_manifest"] is None
+    assert hydrated["render_inputs_result"]["derived_frames"] == []
+    assert Path(
+        hydrated["render_inputs_result"]["camera_calibration"]["path"]
+    ).is_file()
+
+
 def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     tmp_path: Path,
 ) -> None:
