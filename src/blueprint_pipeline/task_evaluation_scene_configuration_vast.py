@@ -14,6 +14,7 @@ from typing import Any
 
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
@@ -444,6 +445,11 @@ def run_scene_configuration_vast(
                 paid_resource_admission_grant=paid_resource_admission_grant,
                 runtime_secret_file_paths=runtime_secret_paths,
                 provider_runtime_environment=runtime_environment,
+                allowed_geolocation_country_codes=(
+                    OPENAI_API_SUPPORTED_COUNTRY_CODES
+                    if runtime_secret_paths
+                    else ()
+                ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {

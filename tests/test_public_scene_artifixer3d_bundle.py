@@ -100,7 +100,9 @@ def _attestation(candidate: Path, path: Path) -> Path:
 
 
 def test_bundle_cli_forwards_each_optional_parameter_once(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
 
@@ -111,6 +113,10 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
         return {"status": "sealed_rehearsal_passed_no_upload_no_execution"}
 
     monkeypatch.setattr(subject, "build_artifixer3d_bundle", fake_build)
+    source_receipt = tmp_path / "artifixer-source.json"
+    source_receipt.write_text("{}", encoding="utf-8")
+    blueprint_identity = tmp_path / "blueprint-source.json"
+    blueprint_identity.write_text('{"commit":"identity"}', encoding="utf-8")
 
     assert (
         subject.main(
@@ -135,6 +141,10 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
                 "none",
                 "--allow-active-instance",
                 "17",
+                "--artifixer-source-receipt",
+                str(source_receipt),
+                "--blueprint-source-identity",
+                str(blueprint_identity),
             ]
         )
         == 0
@@ -144,6 +154,8 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
     assert captured["pipeline_mode"] == "dual_target_artifixer3d_only"
     assert captured["direct_editor_backend"] == "none"
     assert captured["allowed_active_instance_ids"] == (17,)
+    assert captured["artifixer_source_receipt_path"] == str(source_receipt)
+    assert captured["blueprint_source_identity"] == {"commit": "identity"}
     assert json.loads(capsys.readouterr().out)["status"] == (
         "sealed_rehearsal_passed_no_upload_no_execution"
     )

@@ -67,6 +67,7 @@ PAID_LANE_MODULES = (
     "sam31_paid_resource_allocator_lane.py",
     "semantic_teacher_image_edit_vast.py",
     "simpler_public_vast.py",
+    "task_evaluation_scene_configuration_vast.py",
 )
 
 #: Lanes whose result is sealed by the allocator wrapper that writes it to the

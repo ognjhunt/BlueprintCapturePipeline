@@ -4689,6 +4689,7 @@ def test_every_vast_worker_that_forwards_openai_is_country_constrained() -> None
     openai_vast_workers = {
         path.name: path.read_text(encoding="utf-8")
         for path in sources.glob("*vast*.py")
+        if path.name != "vast_provider_adapter.py"
         if "OPENAI_API_KEY" in path.read_text(encoding="utf-8")
         and "run_vast_provider_adapter(" in path.read_text(encoding="utf-8")
     }
@@ -4696,6 +4697,7 @@ def test_every_vast_worker_that_forwards_openai_is_country_constrained() -> None
     assert set(openai_vast_workers) == {
         "adp_content_agents_vast.py",
         "adp_joint_agent_vast.py",
+        "task_evaluation_scene_configuration_vast.py",
     }
     for source in openai_vast_workers.values():
         assert "allowed_geolocation_country_codes" in source

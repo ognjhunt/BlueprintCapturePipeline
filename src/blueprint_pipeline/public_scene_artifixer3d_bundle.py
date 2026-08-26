@@ -1380,6 +1380,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reused-checkpoint-provider-output-zip")
     parser.add_argument("--reused-checkpoint-source-provider-zero")
     parser.add_argument(
+        "--artifixer-source-receipt",
+        help="Digest-bound component-source receipt for a preverified source tree.",
+    )
+    parser.add_argument(
+        "--blueprint-source-identity",
+        help="JSON identity for a preverified Blueprint component package.",
+    )
+    parser.add_argument(
         "--allow-active-instance",
         action="append",
         type=int,
@@ -1395,6 +1403,18 @@ def main(argv: list[str] | None = None) -> int:
         "semantic_editor_only": args.semantic_editor_only,
         "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
         "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
+        "artifixer_source_receipt_path": args.artifixer_source_receipt,
+        "blueprint_source_identity": (
+            _read(
+                _file(
+                    args.blueprint_source_identity,
+                    code="artifixer3d_blueprint_source_identity_missing",
+                ),
+                code="artifixer3d_blueprint_source_identity_invalid",
+            )
+            if args.blueprint_source_identity is not None
+            else None
+        ),
     }
     try:
         receipt = build_artifixer3d_bundle(

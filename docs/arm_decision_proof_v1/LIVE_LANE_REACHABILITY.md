@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **34 dispatched, 18 website-reachable, 16 named
+Current executable inventory: **35 dispatched, 19 website-reachable, 16 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
