@@ -613,6 +613,26 @@ def materialize_scene_configuration_render_inputs(
 
 
 
+def _packet_source_count(render_inputs: Mapping[str, Any]) -> int | None:
+    """The exact gaussian count the control plane already measured.
+
+    ``method_input`` is a qualified authorization class, so the sealed
+    renderer refuses without an exact retained count. Without this the
+    provider render fell back to parsing ``element vertex N`` out of the PLY
+    header, which is absent whenever the source appearance is compressed or
+    not a standard PLY. Returning ``None`` keeps that original fallback for
+    any packet that genuinely has no measured count.
+    """
+
+    cutout = render_inputs.get("derived_gaussian_cutout")
+    if not isinstance(cutout, Mapping):
+        return None
+    count = cutout.get("source_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        return None
+    return count
+
+
 def complete_provider_render_inputs(
     *,
     render_inputs: Mapping[str, Any],
@@ -701,6 +721,13 @@ def complete_provider_render_inputs(
             source_splat_digest=render_inputs["source_splat_digest"],
             purpose="artifixer_source_object_removal_method_inputs",
             authorization_class="method_input",
+            # "method_input" is a qualified authorization class, so the sealed
+            # renderer refuses without an exact retained count. The control
+            # plane passes it; this call did not, and fell back to parsing a
+            # vertex count out of the PLY header -- which is absent whenever
+            # the source appearance is compressed or not a standard PLY. The
+            # packet already carries the exact number.
+            retained_gaussian_count=_packet_source_count(render_inputs),
             repo_root=Path(__file__).resolve().parents[2],
             node=str(runtime["node"]),
             renderer_runtime_root=str(runtime["renderer_root"]),

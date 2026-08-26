@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_scene_configuration_disclosure import (
+    renders_on_provider,
+    stage_requests_upload,
+)
 from .source_collider_subtree_removal import remove_source_collider_subtree
 from .simready_graph_asset_static_qualification import (
     qualify_simready_graph_asset_static,
@@ -328,10 +332,13 @@ def execute_artifixer3d_observed_object_removal(
         != "observed_appearance_object_removal_configuration.v1"
         or not isinstance(source_object, Mapping)
         or configuration.get("production_render_required") is not True
-        or configuration.get("provider_disclosure", {}).get(
-            "raw_interiorgs_bytes"
+        or stage_requests_upload(configuration)
+        is not renders_on_provider(
+            (envelope.get("render_inputs_result") or {}).get(
+                "disclosure_decision"
+            )
+            or {}
         )
-        is not False
         or configuration.get("output_requirements", {}).get(
             "generated_pixels_labeled"
         )

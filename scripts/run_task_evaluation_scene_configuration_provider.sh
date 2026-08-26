@@ -15,9 +15,56 @@ export PYTHONPATH="$RUNTIME_ROOT"
 export BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT="$RUNTIME_ROOT/toolchain"
 export BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT="$RESULT_PATH"
 
-if [ -d "$RUNTIME_ROOT/toolchain" ]; then
+if [ -d "$RUNTIME_ROOT/toolchain" ] && [ -n "$PYTHON_BIN" ]; then
+  # The bundle is unpacked with `python -m zipfile -e`, and CPython's zipfile
+  # never restores mode bits -- every file lands 0644 regardless of what the
+  # control plane sealed. The toolchain self-check compares each file's execute
+  # bit against the `executable` flag recorded in its own manifest, so an
+  # unrestored tree fails closed on its first entry, and any component the
+  # stages exec would raise PermissionError. Restore the recorded modes from
+  # the manifest -- the same document the check reads -- before sealing the
+  # tree read-only.
+  "$PYTHON_BIN" - "$RUNTIME_ROOT/toolchain" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+manifest = root / "task_evaluation_scene_configuration_toolchain.v1.json"
+rows = json.loads(manifest.read_text(encoding="utf-8")).get("files") or []
+for row in rows:
+    relative = str(row.get("relative_path") or "")
+    if not relative or relative.startswith("/") or ".." in Path(relative).parts:
+        continue
+    target = root / relative
+    if target.is_symlink() or not target.is_file():
+        continue
+    os.chmod(target, 0o555 if row.get("executable") is True else 0o444)
+for directory in [root, *(p for p in root.rglob("*") if p.is_dir())]:
+    if not directory.is_symlink():
+        os.chmod(directory, 0o555)
+PY
   chmod -R a-w "$RUNTIME_ROOT/toolchain"
 fi
+
+# Every stage runs its child with capture_output=True, so the container emits
+# nothing at all between entrypoint start and exit. The Vast no-progress
+# watchdog then sees a byte-identical log tail on every poll and tears the
+# instance down mid-run. Emit a payload that genuinely varies -- a tick
+# counter, not a clock, because the watchdog strips timestamps before
+# comparing.
+progress_ticker() {
+  tick=0
+  while true; do
+    tick=$((tick + 1))
+    printf 'BLUEPRINT_SCENE_CONFIGURATION_PROGRESS: tick=%s\n' "$tick"
+    sleep 60
+  done
+}
+progress_ticker &
+ticker_pid=$!
+trap 'kill "$ticker_pid" 2>/dev/null || true' EXIT
 
 if [ -n "$PYTHON_BIN" ]; then
   "$PYTHON_BIN" "$RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py"
@@ -25,6 +72,8 @@ if [ -n "$PYTHON_BIN" ]; then
 else
   runner_rc=127
 fi
+
+kill "$ticker_pid" 2>/dev/null || true
 
 if [ ! -f "$RESULT_PATH" ] && [ -n "$PYTHON_BIN" ]; then
   "$PYTHON_BIN" - "$RESULT_PATH" "$runner_rc" <<'PY'
