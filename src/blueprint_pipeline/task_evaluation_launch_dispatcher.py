@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
@@ -44,6 +45,7 @@ from .task_evaluation_immutable_input_resolver import (
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
+LAUNCH_RECEIPT_DIGEST_CANONICALIZATION = "rfc8785"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION = STAGING_SCHEMA_VERSION
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
@@ -1756,12 +1758,17 @@ def dispatch_launch_request(
         "raw_secret_values_recorded": False,
         "agent_operator_used": False,
         "claim_ceiling": request.get("claim_ceiling"),
+        "receipt_digest_canonicalization": (
+            LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        ),
     }
     if visual_evidence is not None:
         receipt["visual_evidence"] = visual_evidence
     if "source_commit" in profile:
         receipt["source_commit"] = profile["source_commit"]
-    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt["receipt_digest"] = cross_runtime_canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
     _write_immutable(run_root / "launch_receipt.json", receipt)
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 
