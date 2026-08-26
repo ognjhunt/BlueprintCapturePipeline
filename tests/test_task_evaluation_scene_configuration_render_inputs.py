@@ -57,8 +57,11 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
         }
 
     envelope = {
-        "run_id": "configure-scene-839873-v1",
+        # The real queue envelope has no top-level run_id -- it lives in the
+        # request. Mirroring that here is what makes this fixture able to catch
+        # a materializer reading it from the wrong place.
         "request": {
+            "run_id": "configure-scene-839873-v1",
             "scene": {"registration": {"metric_registration": {"digest": "sha256:" + "a" * 64}}}
         },
         "materialized_references": [
@@ -309,8 +312,11 @@ def test_rights_admitted_scene_defers_the_render_to_the_provider(tmp_path: Path)
         }
 
     envelope = {
-        "run_id": "configure-scene-839873-v1",
+        # The real queue envelope has no top-level run_id -- it lives in the
+        # request. Mirroring that here is what makes this fixture able to catch
+        # a materializer reading it from the wrong place.
         "request": {
+            "run_id": "configure-scene-839873-v1",
             "scene": {"registration": {"metric_registration": {"digest": "sha256:" + "a" * 64}}}
         },
         "materialized_references": [
