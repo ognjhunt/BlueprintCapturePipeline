@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -23,6 +24,12 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "task_evaluation_splat_render_runtime.v1"
+PROVIDER_RENDERER_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_provider_renderer.v1"
+)
+SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_provider_bundle.v1"
+)
 DEFAULT_ENVIRONMENT_VARIABLE = "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT"
 DEFAULT_ALLOWED_ROOTS = (Path("/var/lib/blueprint/task-evaluation-inputs/system-runtimes"),)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -36,6 +43,13 @@ _RENDERER_FILES = (
 )
 _REQUIRED_PACKAGES = (
     "@sparkjsdev/spark",
+    "playwright",
+    "playwright-core",
+    "three",
+)
+PROVIDER_RENDERER_REQUIRED_PACKAGES = (
+    "@sparkjsdev/spark",
+    "fflate",
     "playwright",
     "playwright-core",
     "three",
@@ -261,6 +275,193 @@ def validate_splat_render_runtime(
     }
 
 
+def validate_provider_bundle_splat_renderer(
+    *,
+    renderer_root: str | Path,
+    expected_source_commit: str,
+    expected_renderer_digest: str,
+    node_executable: str | Path | None = None,
+) -> dict[str, Any]:
+    """Reopen and mode-seal the renderer extracted on a rented provider.
+
+    Python's ZIP extractor intentionally does not restore Unix executable bits.
+    Bytes and the complete declared inventory are therefore checked before this
+    function installs the manifest-declared 0444/0555 modes on the self-owned
+    extraction tree, then checks the final modes before returning execution
+    paths.  No control-plane ownership, allowed-root, environment, or Git rule
+    is changed by this provider-only validator.
+    """
+
+    unresolved = Path(renderer_root).expanduser()
+    if unresolved.is_symlink():
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_root_invalid"
+        )
+    root = unresolved.resolve()
+    manifest_path = root / f"{PROVIDER_RENDERER_SCHEMA_VERSION}.json"
+    if not root.is_dir() or manifest_path.is_symlink() or not manifest_path.is_file():
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_manifest_invalid"
+        )
+    manifest = _read_json(manifest_path)
+    if (
+        manifest.get("schema_version") != PROVIDER_RENDERER_SCHEMA_VERSION
+        or manifest.get("status") != "ready_for_provider_render"
+        or manifest.get("platform") != "linux-x86_64"
+        or manifest.get("source_commit") != expected_source_commit
+        or _COMMIT.fullmatch(expected_source_commit) is None
+        or manifest.get("renderer_digest") != expected_renderer_digest
+        or manifest.get("renderer_digest")
+        != canonical_digest(manifest, digest_field="renderer_digest")
+    ):
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_manifest_invalid"
+        )
+    rows = manifest.get("files")
+    if not isinstance(rows, list) or not rows:
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_inventory_invalid"
+        )
+    expected: dict[str, tuple[str, int, bool]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise TaskEvaluationSplatRenderRuntimeError(
+                "provider_splat_renderer_inventory_invalid"
+            )
+        relative = str(row.get("relative_path") or "")
+        digest = str(row.get("sha256") or "")
+        size = row.get("size_bytes")
+        executable = row.get("executable")
+        if (
+            not relative
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+            or relative in expected
+            or _DIGEST.fullmatch(digest) is None
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+            or not isinstance(executable, bool)
+        ):
+            raise TaskEvaluationSplatRenderRuntimeError(
+                "provider_splat_renderer_inventory_invalid"
+            )
+        expected[relative] = (digest, size, executable)
+    observed: set[str] = set()
+    for path in root.rglob("*"):
+        if path == manifest_path:
+            continue
+        if path.is_symlink():
+            raise TaskEvaluationSplatRenderRuntimeError(
+                "provider_splat_renderer_symlink_forbidden"
+            )
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root).as_posix()
+        record = expected.get(relative)
+        if (
+            not path.is_file()
+            or record is None
+            or path.stat().st_size != record[1]
+            or _sha256(path) != record[0]
+        ):
+            raise TaskEvaluationSplatRenderRuntimeError(
+                f"provider_splat_renderer_file_invalid:{relative}"
+            )
+        observed.add(relative)
+    if observed != set(expected):
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_inventory_incomplete"
+        )
+    for relative, (_digest, _size, executable) in expected.items():
+        (root / relative).chmod(0o555 if executable else 0o444)
+    manifest_path.chmod(0o444)
+    for directory in sorted(
+        (path for path in root.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        directory.chmod(0o555)
+    root.chmod(0o555)
+    for relative, (_digest, _size, executable) in expected.items():
+        mode = (root / relative).stat().st_mode
+        if bool(mode & 0o111) != executable or bool(mode & 0o222):
+            raise TaskEvaluationSplatRenderRuntimeError(
+                f"provider_splat_renderer_mode_invalid:{relative}"
+            )
+    entrypoints = manifest.get("entrypoints")
+    browser_relative = str(
+        entrypoints.get("browser") if isinstance(entrypoints, Mapping) else ""
+    )
+    if browser_relative not in expected or expected[browser_relative][2] is not True:
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_entrypoints_invalid"
+        )
+    for relative in _RENDERER_FILES:
+        if relative not in expected:
+            raise TaskEvaluationSplatRenderRuntimeError(
+                f"provider_splat_renderer_source_missing:{relative}"
+            )
+    for package in PROVIDER_RENDERER_REQUIRED_PACKAGES:
+        package_root = root / "tools/splat_render/node_modules" / package
+        if package_root.is_symlink() or not package_root.is_dir():
+            raise TaskEvaluationSplatRenderRuntimeError(
+                f"provider_splat_renderer_package_missing:{package}"
+            )
+    unresolved_node = str(node_executable or shutil.which("node") or "").strip()
+    node = Path(unresolved_node).expanduser().resolve() if unresolved_node else Path()
+    if not unresolved_node or not node.is_file() or not os.access(node, os.X_OK):
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_node_unavailable"
+        )
+    return {
+        "node": str(node),
+        "browser_executable": str(root / browser_relative),
+        "renderer_root": str(root),
+        "repository_root": str(root),
+        "identity": {
+            "mode": "digest_bound_provider_bundle_renderer",
+            "schema_version": PROVIDER_RENDERER_SCHEMA_VERSION,
+            "renderer_digest": manifest["renderer_digest"],
+            "source_runtime_digest": manifest["source_runtime_digest"],
+            "source_commit": manifest["source_commit"],
+            "platform": manifest["platform"],
+            "file_count": len(expected),
+            "provider_full_byte_inventory_reopened": True,
+        },
+    }
+
+
+def runtime_from_provider_bundle(
+    *, provider_runtime_root: str | Path, node_executable: str | Path | None = None
+) -> dict[str, Any]:
+    """Resolve the renderer only from the enclosing digest-bound bundle."""
+
+    root = Path(provider_runtime_root).expanduser().resolve()
+    bundle_manifest_path = root / f"{SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION}.json"
+    bundle_manifest = _read_json(bundle_manifest_path)
+    renderer_digest = str(bundle_manifest.get("provider_renderer_digest") or "")
+    source_commit = str(bundle_manifest.get("source_commit") or "")
+    if (
+        bundle_manifest_path.is_symlink()
+        or bundle_manifest.get("schema_version")
+        != SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION
+        or bundle_manifest.get("provider_renderer_required") is not True
+        or bundle_manifest.get("manifest_digest")
+        != canonical_digest(bundle_manifest, digest_field="manifest_digest")
+        or _DIGEST.fullmatch(renderer_digest) is None
+    ):
+        raise TaskEvaluationSplatRenderRuntimeError(
+            "provider_splat_renderer_bundle_binding_invalid"
+        )
+    return validate_provider_bundle_splat_renderer(
+        renderer_root=root / "renderer",
+        expected_source_commit=source_commit,
+        expected_renderer_digest=renderer_digest,
+        node_executable=node_executable,
+    )
+
+
 def runtime_from_environment(
     *,
     repo_root: str | Path,
@@ -282,8 +483,13 @@ def runtime_from_environment(
 
 __all__ = [
     "DEFAULT_ENVIRONMENT_VARIABLE",
+    "PROVIDER_RENDERER_REQUIRED_PACKAGES",
+    "PROVIDER_RENDERER_SCHEMA_VERSION",
     "SCHEMA_VERSION",
+    "SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION",
     "TaskEvaluationSplatRenderRuntimeError",
     "runtime_from_environment",
+    "runtime_from_provider_bundle",
+    "validate_provider_bundle_splat_renderer",
     "validate_splat_render_runtime",
 ]

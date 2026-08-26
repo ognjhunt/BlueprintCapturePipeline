@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -14,9 +15,17 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_live_profile import file_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
+    TaskEvaluationSceneConfigurationBundleError,
     build_scene_configuration_provider_bundle,
     load_scene_configuration_provider_bundle_receipt,
 )
+from blueprint_pipeline.task_evaluation_splat_render_runtime import (
+    PROVIDER_RENDERER_REQUIRED_PACKAGES,
+    PROVIDER_RENDERER_SCHEMA_VERSION,
+    TaskEvaluationSplatRenderRuntimeError,
+    runtime_from_provider_bundle,
+)
+from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
 from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as authority_module
 from blueprint_pipeline import task_evaluation_live_profile as live_profile_module
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
@@ -76,6 +85,21 @@ def _repo(root: Path) -> Path:
         "task_evaluation_scene_configuration_provider_runner.py",
     ):
         (scripts / name).write_bytes((source_root / "scripts" / name).read_bytes())
+    for relative in (
+        "tools/splat_render/render_splat.mjs",
+        "tools/splat_render/src/render_entry.mjs",
+        "tools/splat_render/harness.html",
+        "tools/splat_render/package.json",
+        "tools/splat_render/package-lock.json",
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{"name":"fixture"}\n'
+            if path.name in {"package.json", "package-lock.json"}
+            else relative + "\n",
+            encoding="utf-8",
+        )
     return root
 
 
@@ -185,6 +209,46 @@ def _envelope(root: Path, commit: str) -> Path:
     return path
 
 
+def _provider_render_envelope(root: Path, commit: str) -> Path:
+    path = _envelope(root, commit)
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    render = envelope["render_inputs_result"]
+    appearance = next(
+        row
+        for row in envelope["materialized_references"]
+        if row["contract_path"] == "scene.appearance.representation"
+    )
+    render.update(
+        {
+            "status": "derived_method_inputs_pending_provider_render",
+            "source_splat_bytes_retained_on_control_plane": False,
+            "raw_interiorgs_bytes_in_provider_packet": True,
+            "provider_disclosure_scope": (
+                "source_appearance_bytes_and_derived_views"
+            ),
+            "disclosure_decision": _decision(provider=True),
+            "render_execution_site": "provider_gpu",
+            "source_appearance": dict(appearance),
+            "render_manifest": None,
+            "derived_frames": [],
+            "derived_frame_count": 0,
+            "provider_render_required": True,
+        }
+    )
+    render["source_object_masks"]["count"] = 0
+    render["derived_gaussian_cutout"][
+        "raw_source_bytes_in_provider_packet"
+    ] = True
+    render["result_digest"] = canonical_digest(
+        render, digest_field="result_digest"
+    )
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    return path
+
+
 def _build(tmp_path: Path, name: str) -> dict:
     commit = "a" * 40
     source = tmp_path / "source"
@@ -207,6 +271,199 @@ def _build(tmp_path: Path, name: str) -> dict:
     )
 
 
+def _provider_runtime(
+    root: Path, *, repo: Path, commit: str
+) -> tuple[Path, dict[str, object]]:
+    runtime = root / "splat-render-runtime"
+    source_renderer = runtime / "renderer"
+    for relative in (
+        "tools/splat_render/render_splat.mjs",
+        "tools/splat_render/src/render_entry.mjs",
+        "tools/splat_render/harness.html",
+        "tools/splat_render/package.json",
+        "tools/splat_render/package-lock.json",
+    ):
+        target = source_renderer / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((repo / relative).read_bytes())
+    for package in PROVIDER_RENDERER_REQUIRED_PACKAGES:
+        marker = source_renderer / "tools/splat_render/node_modules" / package / "index.js"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(package, encoding="utf-8")
+    (source_renderer / "tools/splat_render/node_modules/three/empty.js").write_bytes(b"")
+    browser = runtime / "browser/chrome"
+    browser.parent.mkdir(parents=True)
+    browser.write_bytes(b"linux-chromium")
+    browser.chmod(0o755)
+    identity = {
+        "node": "/usr/bin/node",
+        "browser_executable": str(browser),
+        "renderer_root": str(source_renderer),
+        "identity": {
+            "runtime_digest": "sha256:" + "9" * 64,
+            "source_commit": commit,
+        },
+    }
+    return runtime, identity
+
+
+def _build_provider_render_bundle(
+    tmp_path: Path, name: str, monkeypatch: pytest.MonkeyPatch
+) -> dict:
+    commit = "a" * 40
+    source = tmp_path / f"{name}-source"
+    source.mkdir()
+    envelope = _provider_render_envelope(source, commit)
+    toolchain = _toolchain(tmp_path / f"{name}-toolchain", commit)
+    repo = _repo(tmp_path / f"{name}-repo")
+    runtime, identity = _provider_runtime(tmp_path / name, repo=repo, commit=commit)
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
+    return build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        output_root=tmp_path / f"{name}-bundle",
+        expected_source_commit=commit,
+    )
+
+
+def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    source = tmp_path / "provider-render-source"
+    source.mkdir()
+    envelope = _provider_render_envelope(source, commit)
+    toolchain = _toolchain(tmp_path / "provider-render-toolchain", commit)
+    repo = _repo(tmp_path / "provider-render-repo")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationBundleError,
+        match="scene_configuration_bundle_provider_render_runtime_missing",
+    ):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope,
+            toolchain_root=toolchain,
+            repository_root=repo,
+            output_root=tmp_path / "provider-render-missing-runtime",
+            expected_source_commit=commit,
+        )
+
+    runtime, identity = _provider_runtime(tmp_path, repo=repo, commit=commit)
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
+
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        output_root=tmp_path / "provider-render-with-runtime",
+        expected_source_commit=commit,
+    )
+
+    assert receipt["provider_renderer_required"] is True
+    assert receipt["provider_renderer_source_runtime_digest"] == (
+        identity["identity"]["runtime_digest"]
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        renderer_manifest = json.loads(
+            archive.read(
+                f"provider_runtime/renderer/{PROVIDER_RENDERER_SCHEMA_VERSION}.json"
+            )
+        )
+    for relative in (
+        "tools/splat_render/render_splat.mjs",
+        "tools/splat_render/src/render_entry.mjs",
+        "tools/splat_render/harness.html",
+        "tools/splat_render/package.json",
+        "tools/splat_render/package-lock.json",
+    ):
+        assert f"provider_runtime/renderer/{relative}" in names
+    for package in PROVIDER_RENDERER_REQUIRED_PACKAGES:
+        assert (
+            f"provider_runtime/renderer/tools/splat_render/node_modules/{package}/index.js"
+            in names
+        )
+    assert "provider_runtime/renderer/browser/chrome" in names
+    browser_row = next(
+        row for row in renderer_manifest["files"]
+        if row["relative_path"] == "browser/chrome"
+    )
+    assert browser_row["executable"] is True
+    assert renderer_manifest["renderer_digest"] == receipt["provider_renderer_digest"]
+
+    extracted = tmp_path / "provider-render-extracted"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    reopened = runtime_from_provider_bundle(
+        provider_runtime_root=extracted / "provider_runtime",
+        node_executable=sys.executable,
+    )
+    assert reopened["identity"]["renderer_digest"] == receipt["provider_renderer_digest"]
+    assert Path(reopened["browser_executable"]).stat().st_mode & 0o111
+    assert Path(reopened["repository_root"]) == Path(reopened["renderer_root"])
+    browser = Path(reopened["browser_executable"])
+    browser.chmod(0o644)
+    browser.write_bytes(b"tampered-browser")
+    with pytest.raises(
+        TaskEvaluationSplatRenderRuntimeError,
+        match="provider_splat_renderer_file_invalid:browser/chrome",
+    ):
+        runtime_from_provider_bundle(
+            provider_runtime_root=extracted / "provider_runtime",
+            node_executable=sys.executable,
+        )
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "provider-render-preflight",
+        generated_at="2026-08-26T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/provider-render.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
+
+    missing_renderer = tmp_path / "missing-renderer-entry.zip"
+    required_renderer = "provider_runtime/renderer/tools/splat_render/render_splat.mjs"
+    with (
+        zipfile.ZipFile(receipt["bundle_path"]) as source,
+        zipfile.ZipFile(missing_renderer, "w") as destination,
+    ):
+        for info in source.infolist():
+            if info.filename != required_renderer:
+                destination.writestr(info, source.read(info.filename))
+    rebound = {
+        **receipt,
+        "bundle_path": str(missing_renderer),
+        "bundle_sha256": _sha256(missing_renderer),
+        "bundle_size_bytes": missing_renderer.stat().st_size,
+        "receipt_digest": "",
+    }
+    rebound["receipt_digest"] = canonical_digest(
+        rebound, digest_field="receipt_digest"
+    )
+    rebound_path = tmp_path / "missing-renderer-receipt.json"
+    rebound_path.write_text(json.dumps(rebound), encoding="utf-8")
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationBundleError,
+        match="bundle_provider_renderer_invalid",
+    ):
+        load_scene_configuration_provider_bundle_receipt(rebound_path)
+
+
 def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) -> None:
     first = _build(tmp_path, "first")
     second = _build(tmp_path, "second")
@@ -221,6 +478,8 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
         b"RAW_INTERIORGS_BYTES_MUST_NEVER_LEAVE_CONTROL_PLANE" not in payload
         for payload in payloads.values()
     )
+    assert not any(name.startswith("provider_runtime/renderer/") for name in names)
+    assert "provider_renderer_required" not in first
     portable = json.loads(
         payloads["provider_runtime/input/portable_construction_envelope.v1.json"]
     )
@@ -339,9 +598,9 @@ def test_provider_runner_accepts_the_owed_provider_render_manifest(
 
 
 def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    receipt = _build(tmp_path, "bundle")
+    receipt = _build_provider_render_bundle(tmp_path, "bundle", monkeypatch)
     job = tmp_path / "job"
     job.mkdir()
     preflight = vpa._blueprint_bundle_preflight(
@@ -355,8 +614,8 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
         provider_output_put_url="https://objects.example.test/output.zip",
     )
 
-    assert preflight["status"] == "passed"
     assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
     assert preflight["provider_bundle_readiness_source"] == "immutable_bundle_member"
     script = vpa._probe_shell_script(
         "https://heartbeat.example.test",

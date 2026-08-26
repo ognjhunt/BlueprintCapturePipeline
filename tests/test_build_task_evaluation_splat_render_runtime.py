@@ -67,6 +67,7 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
     modules = prerequisites / "node_modules"
     for package in (
         "@sparkjsdev/spark",
+        "fflate",
         "playwright",
         "playwright-core",
         "three",
