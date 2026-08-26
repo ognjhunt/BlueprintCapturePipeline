@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock, get_ident
 
 import pytest
 
@@ -12,7 +13,9 @@ from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
     TaskEvaluationLaunchPreparationQueueError,
     launch_preparation_status,
     stage_launch_preparation_request,
+    write_launch_preparation_record_exclusive,
 )
+import blueprint_pipeline.task_evaluation_launch_preparation_queue as queue_module
 from tests.test_task_evaluation_launch_preparation_contract import request
 
 
@@ -102,3 +105,48 @@ def test_concurrent_writers_cannot_create_two_identities(tmp_path) -> None:
     assert outcomes.count("launch_preparation_id_immutable_conflict") == 1
     assert len(list((queue / "identities").glob("*.json"))) == 1
     assert len(list((queue / "pending").glob("*.json"))) == 1
+    assert list(queue.rglob("*.tmp")) == []
+
+
+def test_exclusive_writer_publishes_only_complete_bytes(tmp_path, monkeypatch) -> None:
+    destination = tmp_path / "sealed.json"
+    first_write_started = Event()
+    allow_first_writer_to_finish = Event()
+    writer_lock = Lock()
+    first_writer_id: int | None = None
+    original_write = queue_module.os.write
+
+    def delayed_first_write(descriptor: int, payload: memoryview) -> int:
+        nonlocal first_writer_id
+        with writer_lock:
+            if first_writer_id is None:
+                first_writer_id = get_ident()
+        if get_ident() == first_writer_id and not first_write_started.is_set():
+            first_write_started.set()
+            assert allow_first_writer_to_finish.wait(timeout=5)
+        return original_write(descriptor, payload)
+
+    monkeypatch.setattr(queue_module.os, "write", delayed_first_write)
+    second = {"writer": "second", "payload": "complete"}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(
+            write_launch_preparation_record_exclusive,
+            destination,
+            {"writer": "first", "payload": "delayed"},
+        )
+        try:
+            assert first_write_started.wait(timeout=5)
+            assert not destination.exists()
+            second_future = pool.submit(
+                write_launch_preparation_record_exclusive,
+                destination,
+                second,
+            )
+            assert second_future.result(timeout=5) is None
+        finally:
+            allow_first_writer_to_finish.set()
+        with pytest.raises(FileExistsError):
+            first_future.result(timeout=5)
+
+    assert json.loads(destination.read_text()) == second
+    assert list(tmp_path.glob("*.tmp")) == []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import stat
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -73,10 +74,13 @@ def write_launch_preparation_record_exclusive(
     path: Path, value: Mapping[str, Any]
 ) -> None:
     payload = _canonical_bytes(value)
+    temporary_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{secrets.token_hex(12)}.tmp"
+    )
     descriptor = -1
     try:
         descriptor = os.open(
-            path,
+            temporary_path,
             os.O_WRONLY
             | os.O_CREAT
             | os.O_EXCL
@@ -92,6 +96,10 @@ def write_launch_preparation_record_exclusive(
             view = view[written:]
         os.fsync(descriptor)
         os.fchmod(descriptor, 0o440)
+        os.close(descriptor)
+        descriptor = -1
+        os.link(temporary_path, path, follow_symlinks=False)
+        temporary_path.unlink()
         directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory)
@@ -100,14 +108,13 @@ def write_launch_preparation_record_exclusive(
     except FileExistsError:
         raise
     except OSError as exc:
-        if path.exists() and not path.is_symlink():
-            path.unlink(missing_ok=True)
         raise TaskEvaluationLaunchPreparationQueueError(
             "launch_preparation_queue_write_failed"
         ) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
 
 
 def stage_launch_preparation_request(
