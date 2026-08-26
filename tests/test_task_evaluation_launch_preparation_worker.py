@@ -636,7 +636,7 @@ def test_s3_fetch_uses_canonical_private_secret_files(
     for environment_name, value in values.items():
         path = tmp_path / environment_name.lower()
         path.write_text(value + "\n", encoding="utf-8")
-        path.chmod(0o600)
+        path.chmod(0o640)
         monkeypatch.setenv(environment_name, str(path))
 
     observed: dict[str, object] = {}
@@ -680,6 +680,52 @@ def test_s3_fetch_uses_canonical_private_secret_files(
             "Key": "object.bin",
         },
     }
+
+
+@pytest.mark.parametrize("mode", [0o660, 0o644, 0o604])
+def test_s3_fetch_rejects_secret_files_with_excess_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    access_key = tmp_path / "access-key"
+    access_key.write_text("access\n", encoding="utf-8")
+    access_key.chmod(mode)
+    monkeypatch.setenv(
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE", str(access_key)
+    )
+
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationWorkerError,
+        match="launch_preparation_object_store_secret_file_unsafe",
+    ):
+        default_reference_fetcher(
+            "s3://blueprint-production-inputs/object.bin",
+            tmp_path / "download",
+            7,
+        )
+
+
+def test_s3_fetch_rejects_symlinked_or_oversized_secret_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"x" * 4097)
+    secret.chmod(0o600)
+    symlink = tmp_path / "secret-link"
+    symlink.symlink_to(secret)
+
+    for candidate in (symlink, secret):
+        monkeypatch.setenv(
+            "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE", str(candidate)
+        )
+        with pytest.raises(
+            TaskEvaluationLaunchPreparationWorkerError,
+            match="launch_preparation_object_store_secret_file_unsafe",
+        ):
+            default_reference_fetcher(
+                "s3://blueprint-production-inputs/object.bin",
+                tmp_path / "download",
+                7,
+            )
 
 
 def test_existing_different_result_is_preserved_and_conflict_is_sealed(
