@@ -576,3 +576,125 @@ def test_unreachable_lineage_parent_this_service_cannot_fix_still_blocks(
         )
 
     assert "immutable_input_parent_permission_install_failed" in str(excinfo.value)
+
+
+def test_lineage_input_another_operator_owns_is_verified_not_rechowned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An input already sealed to the service group is never re-owned.
+
+    The file half of the shared-project lineage problem: a prior run's
+    provider zero is owned by the operator who ran that lane, so this
+    service cannot chown it -- but that lane already sealed it to exactly
+    the mode and group publication requires.  The service-account digest
+    readback below still proves the file is readable and unmodified, so
+    the chown adds nothing a failure here would have caught.
+    """
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    lineage_dir = control_root / "task-evaluation-inputs" / "other-operator" / "prior"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-foreign-lineage-input")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    for directory in (lineage_dir, lineage_dir.parent):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o710)
+    # Already sealed to exactly what publication requires.
+    os.chown(immutable, -1, gid)
+    immutable.chmod(0o440)
+
+    frozen = immutable.resolve()
+    real_chown = os.chown
+
+    def refuse_frozen_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() == frozen:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_frozen_chown)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+        webapp_catalog_out=control_root / "state" / "catalog.json",
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(immutable.stat().st_mode) == 0o440
+
+
+def test_unsealed_input_this_service_cannot_seal_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping a redundant seal must not skip a genuinely needed one."""
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    lineage_dir = control_root / "task-evaluation-inputs" / "unsealed" / "prior"
+    lineage_dir.mkdir(parents=True)
+
+    fixture = _profile(tmp_path, "profile-unsealed-lineage-input")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    for directory in (lineage_dir, lineage_dir.parent):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o710)
+    # Group cannot read it, so the seal is genuinely required.
+    immutable.chmod(0o400)
+
+    frozen = immutable.resolve()
+    real_chown = os.chown
+
+    def refuse_frozen_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() == frozen:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_frozen_chown)
+
+    with pytest.raises(publisher.TaskEvaluationLaunchError) as excinfo:
+        publisher.publish_profiles(
+            profile_paths=[fixture["path"]],
+            profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+            webapp_catalog_out=control_root / "state" / "catalog.json",
+            service_account=account,
+            service_group=group,
+        )
+
+    assert "immutable_input_permission_install_failed" in str(excinfo.value)
