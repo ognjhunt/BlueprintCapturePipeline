@@ -1295,16 +1295,9 @@ class IsaacEpisodeAdapter:
             self._calibrated_gripper_width(raw_separation)
         )
         sample: dict[str, Any] = {
-            # Isaac Lab native root_pose_w is position + WXYZ.  New task-neutral
-            # contracts use explicit XYZW; retain the raw legacy alias only for
-            # the sealed original-scene compatibility scorer.
-            "task_object_pose_world": [
-                *[float(v) for v in pose[:3]],
-                float(pose[4]),
-                float(pose[5]),
-                float(pose[6]),
-                float(pose[3]),
-            ],
+            # Exact pinned IsaacLab root/body poses are already XYZ + XYZW.
+            # Keep both task-neutral and legacy aliases byte-for-byte aligned.
+            "task_object_pose_world": [float(v) for v in pose[:7]],
             "can_pose_world": [float(v) for v in pose[:7]],
             "gripper_width_m": width,
             "gripper_body_separation_m": raw_separation,
@@ -1315,10 +1308,7 @@ class IsaacEpisodeAdapter:
                 float(value) for value in controlled_body_pose
             ],
             "controlled_body_orientation_world_xyzw": [
-                float(controlled_body_pose[4]),
-                float(controlled_body_pose[5]),
-                float(controlled_body_pose[6]),
-                float(controlled_body_pose[3]),
+                float(value) for value in controlled_body_pose[3:7]
             ],
         }
         sample["gripper_body_midpoint_world_m"] = [
@@ -1399,10 +1389,7 @@ class IsaacEpisodeAdapter:
         ]
         result = dict(sample)
         result["controlled_body_orientation_world_xyzw"] = [
-            float(controlled_body_pose[4]),
-            float(controlled_body_pose[5]),
-            float(controlled_body_pose[6]),
-            float(controlled_body_pose[3]),
+            float(value) for value in controlled_body_pose[3:7]
         ]
         if self._grasp_frame_pose_callback is None:
             raise IsaacEpisodeAdapterError(
@@ -1440,24 +1427,15 @@ class IsaacEpisodeAdapter:
 
     @staticmethod
     def _pose_world_xyzw(pose: Any) -> list[float]:
-        """Isaac Lab poses are position + **wxyz**; our contracts take xyzw.
+        """Read exact pinned IsaacLab's native XYZ + XYZW pose contract.
 
-        Every `*_pose_world_xyzw` parameter in this file means what it says, and
-        `body_pose_w` / `root_pose_w` do not. Passing one straight into the
-        other silently rotates the value -- the same class of defect as the
-        Arena spawn quaternions (PRs #774, #775, #777).
+        Both runtime source revisions admitted by this lane explicitly document
+        ``root_pose_w`` and ``body_pose_w`` orientations as ``(x, y, z, w)``.
+        Keeping this boundary named makes every downstream XYZW consumer
+        auditable without applying a fictitious WXYZ reorder.
         """
 
-        values = [float(value) for value in pose[:7]]
-        return [
-            values[0],
-            values[1],
-            values[2],
-            values[4],
-            values[5],
-            values[6],
-            values[3],
-        ]
+        return [float(value) for value in pose[:7]]
 
     def _finger_poses(self) -> tuple[list[float], list[float]]:
         poses = self._to_torch(self._robot.data.body_pose_w)[0]
@@ -1583,7 +1561,7 @@ def describe_adapter() -> dict[str, Any]:
         "gripper_width_calibration_clamp_retained": True,
         "camera_alpha_dropped_at_boundary": True,
         "arm_joint_count": ARM_JOINT_COUNT,
-        "isaaclab_pose_quaternion_order": "wxyz_native_to_xyzw_contract",
+        "isaaclab_pose_quaternion_order": "xyzw",
     }
 
 
@@ -1664,9 +1642,7 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_gripper_clamp_not_retained")
     if bindings.get("camera_alpha_dropped_at_boundary") is not True:
         errors.append("isaac_episode_adapter_alpha_not_dropped")
-    if bindings.get("isaaclab_pose_quaternion_order") != (
-        "wxyz_native_to_xyzw_contract"
-    ):
+    if bindings.get("isaaclab_pose_quaternion_order") != "xyzw":
         errors.append("isaac_episode_adapter_quaternion_order_drifted")
     return sorted(set(errors))
 

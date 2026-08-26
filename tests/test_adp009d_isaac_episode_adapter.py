@@ -328,17 +328,23 @@ class _Robot:
             "left_inner_finger", "right_inner_finger",
         ]
         # Fingers 0.06 m apart in x, so separation is exactly 0.06.
-        # Isaac Lab body_pose_w is position + **wxyz**, so an identity
-        # orientation is (1, 0, 0, 0). These fixtures previously used
-        # (0, 0, 0, 1), which is xyzw identity but a 180 degree yaw in wxyz --
-        # self-consistent only because the adapter read them as xyzw too.
+        # Exact pinned IsaacLab body_pose_w is position + XYZW, so identity is
+        # (0, 0, 0, 1).
         poses = np.zeros((1, len(bodies), 7), dtype=float)
-        poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        poses[0, bodies.index("base_link"), :7] = [
+            1.0,
+            2.0,
+            3.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
         poses[0, bodies.index("left_inner_finger"), :7] = [
-            0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
         ]
         poses[0, bodies.index("right_inner_finger"), :7] = [
-            0.06, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+            0.06, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
         ]
         self.data = _Data(
             body_names=bodies,
@@ -347,7 +353,7 @@ class _Robot:
             joint_limits=np.tile(np.array([[-2.9, 2.9]]), (1, 13, 1)),
         )
         self.data.root_pose_w = np.array(
-            [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]], dtype=float
+            [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=float
         )
 
 
@@ -563,15 +569,15 @@ def test_groot_eef_state_is_expressed_in_robot_root_not_scene_world() -> None:
 
     adapter = _adapter()
     half_sqrt = 2**-0.5
-    # Isaac poses are XYZ + WXYZ.  Place the root at the production scene pose:
+    # Isaac poses are XYZ + XYZW.  Place the root at the production scene pose:
     # translated near (3.8, 8.9) and yawed +90 degrees in world.
     adapter._robot.data.root_pose_w[0] = [
         3.788486295946884,
         8.906664022603987,
         0.090782,
+        0.0,
+        0.0,
         half_sqrt,
-        0.0,
-        0.0,
         half_sqrt,
     ]
     bodies = list(adapter._robot.data.body_names)
@@ -579,9 +585,9 @@ def test_groot_eef_state_is_expressed_in_robot_root_not_scene_world() -> None:
         3.8094613552093506,
         9.223036766052246,
         0.5535212159156799,
+        0.0,
+        0.0,
         half_sqrt,
-        0.0,
-        0.0,
         half_sqrt,
     ]
 
@@ -634,11 +640,11 @@ def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
         "raw_body_midpoint_retained": True,
     }
     assert sample["controlled_body_name"] == "base_link"
-    # the raw Isaac pose: position + wxyz, so identity is (1, 0, 0, 0)
+    # the raw Isaac pose: position + xyzw, so identity is (0, 0, 0, 1)
     assert sample["controlled_body_pose_world"] == pytest.approx(
-        [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
     )
-    # and the converted contract ordering alongside it
+    # and the explicit contract ordering alongside it
     assert sample["controlled_body_orientation_world_xyzw"] == pytest.approx(
         [0.0, 0.0, 0.0, 1.0]
     )
@@ -918,9 +924,7 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["finger_tool_frame_source"] == FINGER_TOOL_FRAME_SOURCE
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
-    assert bindings["isaaclab_pose_quaternion_order"] == (
-        "wxyz_native_to_xyzw_contract"
-    )
+    assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
     assert bindings["droid_eef_state_frame"] == "robot_root"
     assert bindings["scripted_control_physx_jacobian_frame"] == "world"
     assert bindings["scripted_control_controller_error_frame"] == "robot_root"
@@ -1371,32 +1375,23 @@ def test_the_rigid_task_object_is_not_assumed_to_be_a_can() -> None:
     assert signature.parameters["rigid_task_object"].default is None
 
 
-def test_isaac_poses_are_converted_before_every_xyzw_consumer() -> None:
-    """`body_pose_w` / `root_pose_w` are wxyz; every *_xyzw parameter is not.
-
-    Three sites passed Isaac poses straight into xyzw consumers:
-      - `_eef_9d` -> rotation_row_major_from_quaternion_xyzw (the end-effector
-        orientation the GR00T policy conditions on, every step)
-      - `_finger_poses` -> semantic_finger_tool_midpoint_world_m (rotates the
-        pinned 46 mm tool offset, so the grasp frame the scorer reads was wrong)
-      - the task-object pose -> signed_point_to_vertical_cylinder_clearance_m
-    All three now go through `_pose_world_xyzw`, which is the same reordering
-    the file already applied for `controlled_body_orientation_world_xyzw`.
-    """
+def test_isaac_xyzw_poses_are_preserved_for_every_xyzw_consumer() -> None:
+    """Pinned IsaacLab already exposes body/root poses in XYZW order."""
 
     from blueprint_pipeline.adp009d_isaac_episode_adapter import (
         IsaacEpisodeAdapter,
     )
 
-    # position passes through, and the w component moves from index 3 to last
+    # Position and quaternion pass through without a fictitious WXYZ reorder.
     converted = IsaacEpisodeAdapter._pose_world_xyzw(
-        [1.0, 2.0, 3.0, 0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
     )
 
-    assert converted[:3] == [1.0, 2.0, 3.0]
-    assert converted[3:] == pytest.approx(
-        [0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
+    assert converted == pytest.approx(
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
     )
 
-    identity = IsaacEpisodeAdapter._pose_world_xyzw([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
-    assert identity[3:] == [0.0, 0.0, 0.0, 1.0], "wxyz identity must become xyzw identity"
+    identity = IsaacEpisodeAdapter._pose_world_xyzw(
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert identity[3:] == [0.0, 0.0, 0.0, 1.0]
