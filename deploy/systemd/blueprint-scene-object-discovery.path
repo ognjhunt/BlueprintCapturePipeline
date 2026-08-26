@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch the durable Blueprint scene-object discovery queue
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries/pending/*.json
+Unit=blueprint-scene-object-discovery.service
+
+[Install]
+WantedBy=multi-user.target
+

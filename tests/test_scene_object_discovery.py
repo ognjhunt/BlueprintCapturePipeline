@@ -105,6 +105,21 @@ def test_malformed_camera_plan_values_fail_with_typed_errors() -> None:
     assert "scene_discovery_retained_count_invalid" in exc.value.codes
 
 
+def test_unseen_regions_must_be_public_status_safe_strings() -> None:
+    geometry = _geometry()
+    geometry["unseen_regions"] = [{"unsafe": "shape"}]
+
+    with pytest.raises(SceneObjectDiscoveryError) as exc:
+        build_full_scene_camera_plan(
+            scene_geometry=geometry,
+            source_splat_digest=DIGEST_A,
+            retained_gaussian_count=1,
+            registration_digest=DIGEST_B,
+        )
+
+    assert "scene_discovery_unseen_regions_invalid" in exc.value.codes
+
+
 def test_render_adapter_passes_exact_production_method_input_contract(tmp_path: Path) -> None:
     splat = tmp_path / "scene.ply"
     splat.write_bytes(b"exact splat")
@@ -198,6 +213,35 @@ def test_visual_candidates_remain_unselected_without_metric_refinement() -> None
     assert output["claim_boundary"]["splat_analyzer_boxes_are_metric_geometry"] is False
 
 
+def test_candidate_identity_and_public_label_are_bounded() -> None:
+    plan = _plan()
+    with pytest.raises(SceneObjectDiscoveryError) as exc:
+        compile_scene_object_discovery(
+            source_binding=_source(),
+            camera_plan=plan,
+            render_binding=_render(plan),
+            analyzer_runs=[
+                {
+                    "backend": "splat_analyzer",
+                    "run_digest": DIGEST_D,
+                    "source_splat_digest": DIGEST_A,
+                    "render_manifest_digest": DIGEST_C,
+                    "candidates": [
+                        {
+                            "candidate_id": "unsafe candidate/id",
+                            "label": "x" * 513,
+                            "confidence": 0.9,
+                            "supporting_view_ids": ["survey_000"],
+                        }
+                    ],
+                }
+            ],
+            task_context={"task_statement": "pick the target"},
+        )
+
+    assert "scene_discovery_candidate_identity_invalid_or_duplicate" in exc.value.codes
+
+
 def test_unique_production_semantic_obb_auto_selects_source_object() -> None:
     plan = _plan()
     output = compile_scene_object_discovery(
@@ -242,9 +286,9 @@ def test_unique_production_semantic_obb_auto_selects_source_object() -> None:
         / "schemas"
         / "scene_object_discovery.v1.schema.json"
     )
-    jsonschema.Draft202012Validator(
-        json.loads(schema_path.read_text(encoding="utf-8"))
-    ).validate(output)
+    jsonschema.Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8"))).validate(
+        output
+    )
 
 
 def test_multiple_metric_candidates_require_selection_and_digest_mismatch_fails() -> None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -39,6 +40,7 @@ METRIC_GEOMETRY_AUTHORITIES = {
     "publisher_metric_label",
     "production_semantic_gaussian_obb",
 }
+_CANDIDATE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$")
 
 
 class SceneObjectDiscoveryError(ValueError):
@@ -173,8 +175,10 @@ def build_full_scene_camera_plan(
     errors: list[str] = []
     bounds_min = _finite_xyz(scene_geometry.get("aabb_min"))
     bounds_max = _finite_xyz(scene_geometry.get("aabb_max"))
-    if bounds_min is None or bounds_max is None or any(
-        bounds_max[index] <= bounds_min[index] for index in range(3)
+    if (
+        bounds_min is None
+        or bounds_max is None
+        or any(bounds_max[index] <= bounds_min[index] for index in range(3))
     ):
         errors.append("scene_discovery_bounds_invalid")
     if not _is_digest(source_splat_digest):
@@ -199,6 +203,16 @@ def build_full_scene_camera_plan(
         errors.append("scene_discovery_non_z_up_normalization_required")
     if width < 64 or height < 64 or n_azimuths < 4 or not elevations_deg:
         errors.append("scene_discovery_camera_plan_dimensions_invalid")
+    unseen_regions = scene_geometry.get("unseen_regions", [])
+    if (
+        not isinstance(unseen_regions, list)
+        or len(unseen_regions) > 500
+        or any(
+            not isinstance(region, str) or not region or len(region) > 1000
+            for region in unseen_regions
+        )
+    ):
+        errors.append("scene_discovery_unseen_regions_invalid")
     if errors:
         raise SceneObjectDiscoveryError(errors)
     assert bounds_min is not None and bounds_max is not None
@@ -245,7 +259,7 @@ def build_full_scene_camera_plan(
             "strategy": "deterministic_stacked_full_scene_ring",
             "known_scene_bounds_covered": True,
             "missing_source_observations_recoverable_by_virtual_camera": False,
-            "unseen_regions": list(scene_geometry.get("unseen_regions") or []),
+            "unseen_regions": list(unseen_regions),
         },
         "cameras": cameras,
     }
@@ -351,8 +365,10 @@ def _candidate_metric_authority(candidate: Mapping[str, Any]) -> str | None:
         return None
     bounds_min = _finite_xyz(geometry.get("bounds_min"))
     bounds_max = _finite_xyz(geometry.get("bounds_max"))
-    if bounds_min is None or bounds_max is None or any(
-        bounds_max[index] <= bounds_min[index] for index in range(3)
+    if (
+        bounds_min is None
+        or bounds_max is None
+        or any(bounds_max[index] <= bounds_min[index] for index in range(3))
     ):
         return None
     if authority == "production_semantic_gaussian_obb" and (
@@ -407,10 +423,7 @@ def compile_scene_object_discovery(
     minimum_task_relevance_value = _finite_float(minimum_task_relevance)
     if minimum_confidence_value is None or not 0.0 <= minimum_confidence_value <= 1.0:
         errors.append("scene_discovery_minimum_confidence_invalid")
-    if (
-        minimum_task_relevance_value is None
-        or not 0.0 <= minimum_task_relevance_value <= 1.0
-    ):
+    if minimum_task_relevance_value is None or not 0.0 <= minimum_task_relevance_value <= 1.0:
         errors.append("scene_discovery_minimum_task_relevance_invalid")
 
     candidates: list[dict[str, Any]] = []
@@ -427,7 +440,10 @@ def compile_scene_object_discovery(
             errors.append(f"scene_discovery_analyzer_{index}_digest_invalid")
         if run.get("source_splat_digest") != source_digest:
             errors.append(f"scene_discovery_analyzer_{index}_source_mismatch")
-        if backend in RGB_ONLY_ANALYZERS and run.get("render_manifest_digest") != render_manifest_digest:
+        if (
+            backend in RGB_ONLY_ANALYZERS
+            and run.get("render_manifest_digest") != render_manifest_digest
+        ):
             errors.append(f"scene_discovery_analyzer_{index}_render_mismatch")
         rows = run.get("candidates")
         if not isinstance(rows, list):
@@ -446,10 +462,10 @@ def compile_scene_object_discovery(
             candidate_id = str(candidate.get("candidate_id") or "").strip()
             label = str(candidate.get("label") or "").strip()
             confidence = candidate.get("confidence")
-            if not candidate_id or candidate_id in candidate_ids:
+            if not _CANDIDATE_ID.fullmatch(candidate_id) or candidate_id in candidate_ids:
                 errors.append("scene_discovery_candidate_identity_invalid_or_duplicate")
                 continue
-            if not label:
+            if not label or len(label) > 512:
                 errors.append(f"scene_discovery_candidate_{candidate_id}_label_missing")
             if (
                 isinstance(confidence, bool)
@@ -494,7 +510,11 @@ def compile_scene_object_discovery(
         raise SceneObjectDiscoveryError(errors)
 
     eligible = sorted(
-        (candidate for candidate in candidates if candidate["eligible_for_automatic_source_object"]),
+        (
+            candidate
+            for candidate in candidates
+            if candidate["eligible_for_automatic_source_object"]
+        ),
         key=lambda row: (
             -float(row["task_match_score"]),
             -float(row["confidence"]),
@@ -531,7 +551,9 @@ def compile_scene_object_discovery(
         source_object = None
         next_action = "expand_prompts_or_acquire_missing_scene_observations"
 
-    coverage = camera_plan.get("coverage") if isinstance(camera_plan.get("coverage"), Mapping) else {}
+    coverage = (
+        camera_plan.get("coverage") if isinstance(camera_plan.get("coverage"), Mapping) else {}
+    )
     output = {
         "schema_version": DISCOVERY_SCHEMA,
         "status": status,

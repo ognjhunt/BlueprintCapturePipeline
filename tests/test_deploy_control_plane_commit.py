@@ -323,6 +323,17 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/activations/pending/*.json\n",
         encoding="utf-8",
     )
+    discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
+    discovery_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
+        encoding="utf-8",
+    )
+    discovery_path = unit_dir / "blueprint-scene-object-discovery.path"
+    discovery_path.write_text(
+        "[Path]\nPathChanged=/scene-object-discoveries/pending\n"
+        "PathExistsGlob=/scene-object-discoveries/pending/*.json\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -348,6 +359,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         compilation_path,
         activation_service,
         activation_path,
+        discovery_service,
+        discovery_path,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -382,11 +395,14 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
+        "blueprint-scene-object-discovery.service",
+        "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
+        "blueprint-scene-object-discovery.path",
     )
 
 
@@ -875,6 +891,11 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
             {"unit": "blueprint-task-evaluation-launch-dispatcher.service"},
             {"unit": "blueprint-task-evaluation-launch-dispatcher.path"},
         ],
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_install_scene_object_discovery_runtime_directories",
+        lambda: [{"path": "/runtime/scene-object-discoveries"}],
     )
     monkeypatch.setattr(
         deploy,

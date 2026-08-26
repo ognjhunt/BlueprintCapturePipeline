@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/scene_object_discovery_request.v1.schema.json",
+  "title": "Scene object discovery request v1",
+  "type": "object",
+  "required": ["schema_version", "discovery_id", "expected_production_commit", "team_namespace", "scene", "task", "analysis", "rights", "execution", "publication"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "scene_object_discovery_request.v1"},
+    "discovery_id": {"$ref": "#/$defs/identifier"},
+    "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "scene": {
+      "type": "object",
+      "required": ["identity", "source_splat", "scene_analysis", "metric_registration", "renderer_qualification", "retained_gaussian_count"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {"$ref": "#/$defs/versionedIdentity"},
+        "source_splat": {"$ref": "#/$defs/reference"},
+        "scene_analysis": {"$ref": "#/$defs/reference"},
+        "metric_registration": {"$ref": "#/$defs/reference"},
+        "renderer_qualification": {"$ref": "#/$defs/reference"},
+        "retained_gaussian_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["kind", "strategy", "task_statement"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["rigid_relocation", "articulated_manipulation"]},
+        "strategy": {"enum": ["planar_push", "pick_and_place", "articulated_open_close"]},
+        "task_statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "target_hint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "workflow_context": {"type": "string", "maxLength": 2000}
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["analyzers", "prompts", "minimum_confidence", "minimum_task_relevance", "require_metric_source_object", "full_scene_survey_required"],
+      "additionalProperties": false,
+      "properties": {
+        "analyzers": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"enum": ["publisher_semantics", "rendered_scene_agent", "sam31", "splat_analyzer"]}},
+        "prompts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+        "minimum_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_task_relevance": {"type": "number", "minimum": 0, "maximum": 1},
+        "require_metric_source_object": {"const": true},
+        "full_scene_survey_required": {"const": true}
+      }
+    },
+    "rights": {
+      "type": "object",
+      "required": ["admission", "human_authority_record", "source_bytes_redistributable", "provider_disclosure_scope"],
+      "additionalProperties": false,
+      "properties": {
+        "admission": {"$ref": "#/$defs/reference"},
+        "human_authority_record": {"$ref": "#/$defs/reference"},
+        "source_bytes_redistributable": {"type": "boolean"},
+        "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["qualified_local_runtime", "provider_gpu_after_activation"]},
+        "selected_provider": {"const": "vast"}
+      }
+    },
+    "publication": {
+      "type": "object",
+      "required": ["input_namespace", "service_account_readback_required"],
+      "additionalProperties": false,
+      "properties": {
+        "input_namespace": {"$ref": "#/$defs/identifier"},
+        "service_account_readback_required": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://\\S+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {"id": {"$ref": "#/$defs/identifier"}, "version": {"$ref": "#/$defs/identifier"}}
+    }
+  }
+}

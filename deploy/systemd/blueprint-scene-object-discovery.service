@@ -1,0 +1,48 @@
+[Unit]
+Description=Discover task objects across an immutable Blueprint splat
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries /var/lib/blueprint/task-evaluation-inputs/scene-object-discoveries /var/lib/blueprint/task-evaluation-inputs/scene-object-discovery-outputs
+TasksMax=512
+LimitNOFILE=16384
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=4h
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries
+Environment=BLUEPRINT_SCENE_OBJECT_DISCOVERY_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/scene-object-discoveries
+Environment=BLUEPRINT_SCENE_OBJECT_DISCOVERY_OUTPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/scene-object-discovery-outputs
+Environment=BLUEPRINT_SCENE_OBJECT_DISCOVERY_SERVICE_ACCOUNT=blueprint
+Environment='BLUEPRINT_SCENE_OBJECT_DISCOVERY_ALLOWED_URI_PREFIXES_JSON=["s3://blueprint/task-evaluation/production-inputs/"]'
+Environment=BLUEPRINT_SCENE_OBJECT_DISCOVERY_PUBLICATION_PREFIX=s3://blueprint/task-evaluation/production-inputs/scene-object-discovery/
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.scene_object_discovery_worker --max-messages 2'

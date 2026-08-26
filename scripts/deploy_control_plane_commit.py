@@ -80,6 +80,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-scene-object-discovery.service",
+    "blueprint-scene-object-discovery.path",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -89,6 +91,7 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-preparation.path",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-scene-object-discovery.path",
 )
 #: The only unit kinds a release may install.  The oneshot ``.service`` and its
 #: queue-watching ``.path`` are a pair: installing one without the other left
@@ -96,6 +99,22 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 #: Timers, sockets, and anything else stay operator-managed and are refused.
 DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path")
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
+DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT = (
+    "/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries"
+)
+DEFAULT_SCENE_OBJECT_DISCOVERY_RUNTIME_DIRECTORIES = (
+    DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT,
+    *(f"{DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT}/{name}" for name in (
+        "pending",
+        "processing",
+        "blocked",
+        "results",
+        "identities",
+        "selections",
+    )),
+    "/var/lib/blueprint/task-evaluation-inputs/scene-object-discoveries",
+    "/var/lib/blueprint/task-evaluation-inputs/scene-object-discovery-outputs",
+)
 DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "/etc/systemd/system/blueprint-pipeline-intake.service.d/"
     "90-blueprint-deploy-identity.conf"
@@ -382,6 +401,68 @@ def _service_account_ids(account: str) -> tuple[int, int] | None:
     except (ImportError, KeyError):
         return None
     return entry.pw_uid, entry.pw_gid
+
+
+def _install_scene_object_discovery_runtime_directories(
+    *,
+    directories: Sequence[str] = DEFAULT_SCENE_OBJECT_DISCOVERY_RUNTIME_DIRECTORIES,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+) -> list[dict[str, Any]]:
+    """Install the no-spend discovery queue and materialization roots.
+
+    Exact-release deployment must be sufficient on an already-provisioned host;
+    requiring an operator to remember to rerun the broad bootstrap installer
+    leaves the newly installed path unit watching an absent directory.
+    """
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        raise ControlPlaneDeployError(
+            f"deploy_scene_object_discovery_account_missing:{account}"
+        )
+    owner_uid, owner_gid = account_ids
+    receipts: list[dict[str, Any]] = []
+    for raw_path in directories:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise ControlPlaneDeployError(
+                "deploy_scene_object_discovery_directory_not_absolute"
+            )
+        if path.is_symlink():
+            raise ControlPlaneDeployError(
+                f"deploy_scene_object_discovery_directory_symlink:{path}"
+            )
+        try:
+            path.mkdir(parents=True, exist_ok=True, mode=0o750)
+            if path.is_symlink() or not path.is_dir():
+                raise ControlPlaneDeployError(
+                    f"deploy_scene_object_discovery_directory_invalid:{path}"
+                )
+            os.chown(path, owner_uid, owner_gid)
+            path.chmod(0o750)
+            stat_result = path.stat()
+        except OSError as exc:
+            raise ControlPlaneDeployError(
+                f"deploy_scene_object_discovery_directory_install_failed:{path}"
+            ) from exc
+        if (
+            stat_result.st_uid != owner_uid
+            or stat_result.st_gid != owner_gid
+            or stat.S_IMODE(stat_result.st_mode) != 0o750
+        ):
+            raise ControlPlaneDeployError(
+                f"deploy_scene_object_discovery_directory_readback_mismatch:{path}"
+            )
+        receipts.append(
+            {
+                "path": str(path),
+                "account": account,
+                "owner_uid": owner_uid,
+                "owner_gid": owner_gid,
+                "mode": "0750",
+            }
+        )
+    return receipts
 
 
 @contextlib.contextmanager
@@ -783,6 +864,8 @@ def _install_intake_runtime_identity_drop_in(
         f"BLUEPRINT_PIPELINE_REPO={source_repo}\n"
         f"BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
         f"PYTHONPATH={source_repo / 'src'}\n"
+        "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT="
+        f"{DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT}\n"
     )
     drop_in_content = (
         "# Managed by scripts/deploy_control_plane_commit.py.\n"
@@ -1147,6 +1230,9 @@ def deploy_control_plane_commit(
             release_path=release["release_path"],
             systemd_dir=systemd_dir,
         )
+        scene_object_discovery_runtime_directories = (
+            _install_scene_object_discovery_runtime_directories()
+        )
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -1196,6 +1282,9 @@ def deploy_control_plane_commit(
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
         "installed_systemd_units": installed_systemd_units,
+        "scene_object_discovery_runtime_directories": (
+            scene_object_discovery_runtime_directories
+        ),
         "path_unit_states": path_unit_state_receipts,
         "quiesced_path_units": quiesced_path_units,
         # Compatibility projection for readers that predate the state-preserving
