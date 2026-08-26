@@ -133,7 +133,10 @@ def _install_parent_traversal(path: Path, *, boundary: Path, gid: int, name: str
         try:
             if directory.is_symlink() or not directory.is_dir():
                 raise OSError(f"unsafe input parent: {directory}")
-            mode = stat.S_IMODE(directory.stat().st_mode)
+            info = directory.stat()
+            mode = stat.S_IMODE(info.st_mode)
+            if info.st_gid == gid and mode & stat.S_IXGRP:
+                continue
             os.chown(directory, -1, gid)
             directory.chmod(mode | stat.S_IXGRP)
         except OSError as exc:
