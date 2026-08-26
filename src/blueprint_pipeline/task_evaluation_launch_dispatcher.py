@@ -974,6 +974,31 @@ def _stage_profile_immutable_inputs(
             raise TaskEvaluationLaunchError(
                 f"immutable_input_staging_source_digest_mismatch:{name}"
             )
+        already_staged = staged_sources.get(source)
+        if already_staged is not None:
+            # A profile may bind one file under two logical names (the scene
+            # configuration lane declares its bundle receipt as both the
+            # source bundle manifest and the evaluation run spec).  The
+            # digest checks above already proved this row matches the bytes
+            # on disk, so the source keeps its single staged copy instead of
+            # colliding with it.
+            readback = already_staged.read_bytes()
+            staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
+            if readback != payload or staged_digest != expected_digest:
+                raise TaskEvaluationLaunchError(
+                    f"immutable_input_staging_duplicate_source:{name}"
+                )
+            rows.append(
+                {
+                    "name": name,
+                    "source_path": str(source),
+                    "expected_digest": expected_digest,
+                    "staged_path": str(already_staged),
+                    "staged_size_bytes": len(readback),
+                    "staged_digest": staged_digest,
+                }
+            )
+            continue
         destination = (
             stage_root
             / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX):]}.input"
