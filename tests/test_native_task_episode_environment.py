@@ -14,12 +14,14 @@ class _Servo:
     def __init__(self):
         self.reset_count = 0
         self.calls = []
+        self.body_pose = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+        self.grasp_frame_pose = [1.0, 2.0, 3.1, 0.0, 0.0, 0.0, 1.0]
 
     def current_body_pose_world(self):
-        return [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+        return list(self.body_pose)
 
     def current_grasp_frame_pose_world(self):
-        return [1.0, 2.0, 3.1, 0.0, 0.0, 0.0, 1.0]
+        return list(self.grasp_frame_pose)
 
     def current_gripper_pad_readback(self):
         return {
@@ -100,10 +102,19 @@ class _WritableArticulation:
 
 
 def _built(task_kind: str):
+    camera = lambda position: SimpleNamespace(  # noqa: E731
+        data=SimpleNamespace(
+            pos_w=[list(position)],
+            quat_w_opengl=[[0.0, 0.0, 0.0, 1.0]],
+        )
+    )
     scene = {
         "robot": object(),
         "bound_task_asset": object(),
         "robot_joint_wrench": object(),
+        "arena_external_sensor": camera([4.0, 5.0, 6.0]),
+        "robot_wrist_sensor": camera([1.2, 2.0, 3.2]),
+        "review_sensor": camera([7.0, 8.0, 9.0]),
     }
     env = SimpleNamespace(
         unwrapped=SimpleNamespace(
@@ -166,6 +177,45 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert receipt["task_state_source"] == expected_source
     assert receipt["camera_scene_names"] == built.camera_scene_names
     assert adapter.kwargs["camera_scene_names"] == receipt["camera_scene_names"]
+    camera_pose = adapter.kwargs["camera_pose_callback"]
+    assert camera_pose("arena_external_sensor") is None
+    reset_camera_position, reset_camera_quaternion = camera_pose(
+        "robot_wrist_sensor"
+    )
+    assert reset_camera_position == pytest.approx([1.2, 2.0, 3.2])
+    assert reset_camera_quaternion == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    servo.body_pose = [2.0, 2.5, 3.0, 0.0, 0.0, 0.0, 1.0]
+    servo.grasp_frame_pose = [2.0, 2.5, 3.1, 0.0, 0.0, 0.0, 1.0]
+    moved_position, moved_quaternion = camera_pose("robot_wrist_sensor")
+    assert moved_position == pytest.approx([2.2, 2.5, 3.2])
+    assert moved_quaternion == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    half_sqrt = 2**-0.5
+    servo.body_pose = [
+        2.0,
+        2.5,
+        3.0,
+        0.0,
+        0.0,
+        half_sqrt,
+        half_sqrt,
+    ]
+    rotated_position, rotated_quaternion = camera_pose("robot_wrist_sensor")
+    assert rotated_position == pytest.approx([2.0, 2.7, 3.2])
+    assert rotated_quaternion == pytest.approx(
+        [0.0, 0.0, half_sqrt, half_sqrt]
+    )
+    assert receipt["camera_world_pose_bindings"]["wrist"] == {
+        "scene_name": "robot_wrist_sensor",
+        "source": (
+            "live_controlled_body_plus_reset_measured_rigid_mount_offset"
+        ),
+        "recomputed_each_observation": True,
+        "sensor_buffer_static_pose_workaround": True,
+        "mount_offset_position_controlled_body_m": pytest.approx([0.2, 0.0, 0.2]),
+        "mount_offset_quaternion_controlled_body_xyzw": pytest.approx(
+            [0.0, 0.0, 0.0, 1.0]
+        ),
+    }
     assert (adapter.kwargs["rigid_task_object"] is None) == (
         task_kind == "articulated_open_close"
     )

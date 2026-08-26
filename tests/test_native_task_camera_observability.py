@@ -7,6 +7,8 @@ recorded, honestly and uselessly, `rgb_or_model_label_used: False`.
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -25,6 +27,7 @@ from blueprint_pipeline.native_task_camera_observability import (
     NativeTaskCameraObservabilityError,
     measure_native_task_camera_observability,
     measure_native_task_frame_render_evidence,
+    validate_native_task_policy_start_camera_observability,
 )
 
 
@@ -40,6 +43,187 @@ def _semantic(shape: tuple[int, int]) -> np.ndarray:
     semantic = np.zeros(shape, dtype=np.int32)
     semantic[30:70, 70:130] = 7
     return semantic
+
+
+def _passing_policy_start_camera(role: str, *, snapshot_id: str = "reset") -> dict:
+    return {
+        "snapshot_id": snapshot_id,
+        "role": role,
+        "scene_name": f"{role}_camera",
+        "rgb_png": {"sha256": "sha256:" + "a" * 64},
+        "observability": {
+            "schema_version": "native_task_camera_observability.v2",
+            "passed": True,
+            "semantic_passed": True,
+            "render_passed": True,
+            "centroid_within_margin": True,
+            "site_appearance_claimed": True,
+            "claim": "camera_observes_task_object_in_rendered_site",
+            "blockers": [],
+            "pixel_count": 1000,
+            "pixel_fraction": 0.02,
+            "bbox_xyxy": [100, 30, 180, 120],
+            "thresholds": {
+                "minimum_pixels": 120,
+                "minimum_pixel_fraction": 0.002,
+            },
+            "render_evidence": {
+                "passed": True,
+                "frame_rendered": True,
+                "target_rendered": True,
+                "site_rendered": True,
+                "blockers": [],
+            },
+        },
+    }
+
+
+def _policy_start_construction() -> dict:
+    return {
+        "camera_snapshots": [
+            {
+                "snapshot_id": "reset",
+                "cameras": [
+                    _passing_policy_start_camera("external"),
+                    _passing_policy_start_camera("wrist"),
+                    _passing_policy_start_camera("overview"),
+                ],
+            }
+        ]
+    }
+
+
+def test_policy_start_gate_binds_exact_reset_policy_inputs() -> None:
+    result = validate_native_task_policy_start_camera_observability(
+        _policy_start_construction()
+    )
+
+    assert result["snapshot_id"] == "reset"
+    assert result["required_policy_input_roles"] == ["external", "wrist"]
+    assert result["target_visible_roles"] == ["external"]
+    assert [row["role"] for row in result["cameras"]] == ["external", "wrist"]
+    assert result["cameras"][0]["target_visibility_required"] is True
+    assert result["cameras"][1]["target_visibility_required"] is False
+    assert result["passed"] is True
+
+
+def test_policy_start_gate_allows_target_absent_rendered_wrist_at_reset() -> None:
+    """pi0.5 approached successfully from this exact wrist-camera condition."""
+
+    construction = _policy_start_construction()
+    reset_wrist = construction["camera_snapshots"][0]["cameras"][1]
+    reset_wrist["observability"].update(
+        {
+            "passed": False,
+            "semantic_passed": False,
+            "pixel_count": 0,
+            "pixel_fraction": 0.0,
+            "bbox_xyxy": None,
+            "centroid_within_margin": False,
+            "claim": "camera_observes_task_object_without_site_appearance",
+            "blockers": ["native_task_camera_semantic_framing_below_threshold"],
+        }
+    )
+    later = copy.deepcopy(construction["camera_snapshots"][0])
+    later["snapshot_id"] = "contact_sweep_clearance_00"
+    for camera in later["cameras"]:
+        camera["snapshot_id"] = later["snapshot_id"]
+    later["cameras"][1] = _passing_policy_start_camera(
+        "wrist", snapshot_id=later["snapshot_id"]
+    )
+    construction["camera_snapshots"].append(later)
+    construction["camera_gates"] = {
+        "wrist": {
+            "passed": True,
+            "best_snapshot_id": "contact_sweep_clearance_00",
+        }
+    }
+
+    result = validate_native_task_policy_start_camera_observability(construction)
+
+    wrist = next(row for row in result["cameras"] if row["role"] == "wrist")
+    assert wrist["target_visibility_required"] is False
+    assert wrist["target_visible"] is False
+
+
+def test_policy_start_gate_refuses_target_absent_external_view() -> None:
+    construction = _policy_start_construction()
+    external = construction["camera_snapshots"][0]["cameras"][0]
+    external["observability"].update(
+        {
+            "passed": False,
+            "semantic_passed": False,
+            "pixel_count": 0,
+            "pixel_fraction": 0.0,
+            "bbox_xyxy": None,
+            "centroid_within_margin": False,
+            "claim": "camera_observes_task_object_without_site_appearance",
+            "blockers": ["native_task_camera_semantic_framing_below_threshold"],
+        }
+    )
+
+    with pytest.raises(
+        NativeTaskCameraObservabilityError,
+        match="native_task_policy_start_camera_role_not_observable:external",
+    ):
+        validate_native_task_policy_start_camera_observability(construction)
+
+
+def test_policy_start_gate_refuses_unrendered_wrist_view() -> None:
+    construction = _policy_start_construction()
+    wrist = construction["camera_snapshots"][0]["cameras"][1]
+    wrist["observability"]["render_passed"] = False
+    wrist["observability"]["render_evidence"].update(
+        {
+            "passed": False,
+            "frame_rendered": False,
+            "blockers": ["native_task_camera_frame_void"],
+        }
+    )
+
+    with pytest.raises(
+        NativeTaskCameraObservabilityError,
+        match="native_task_policy_start_camera_role_not_rendered:wrist",
+    ):
+        validate_native_task_policy_start_camera_observability(construction)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "blocker"),
+    (
+        (
+            lambda value: value.update({"camera_snapshots": []}),
+            "native_task_policy_start_camera_snapshot_missing:reset",
+        ),
+        (
+            lambda value: value["camera_snapshots"][0].update(
+                {
+                    "cameras": [
+                        value["camera_snapshots"][0]["cameras"][0]
+                    ]
+                }
+            ),
+            "native_task_policy_start_camera_role_missing:wrist",
+        ),
+    ),
+)
+def test_policy_start_gate_refuses_missing_exact_evidence(mutation, blocker) -> None:
+    construction = _policy_start_construction()
+    mutation(construction)
+
+    with pytest.raises(NativeTaskCameraObservabilityError, match=blocker):
+        validate_native_task_policy_start_camera_observability(construction)
+
+
+def test_policy_start_gate_refuses_duplicate_target_role_contract() -> None:
+    with pytest.raises(
+        NativeTaskCameraObservabilityError,
+        match="native_task_policy_start_camera_snapshots_invalid",
+    ):
+        validate_native_task_policy_start_camera_observability(
+            _policy_start_construction(),
+            target_visible_roles=("external", "external"),
+        )
 
 
 # --- the r13..r23 condition ------------------------------------------------

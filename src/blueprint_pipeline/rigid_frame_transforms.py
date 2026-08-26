@@ -111,13 +111,57 @@ def vector_world_to_base(
     )
 
 
+def rigid_offset_in_body_frame(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    child_position_world: Sequence[float],
+    child_quaternion_world_xyzw: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Express a child's world pose as a constant offset in its body frame."""
+
+    body = _vector(body_position_world, length=3, label="body_position")
+    child = _vector(child_position_world, length=3, label="child_position")
+    body_inverse = quaternion_conjugate_xyzw(body_quaternion_world_xyzw)
+    delta = [child[index] - body[index] for index in range(3)]
+    return (
+        rotate_vector_xyzw(body_inverse, delta),
+        quaternion_multiply_xyzw(
+            body_inverse, child_quaternion_world_xyzw
+        ),
+    )
+
+
+def apply_rigid_offset(
+    *,
+    body_position_world: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+    offset_position_body: Sequence[float],
+    offset_quaternion_body_xyzw: Sequence[float],
+) -> tuple[list[float], list[float]]:
+    """Rebuild a child's world pose from a live body and rigid offset."""
+
+    body = _vector(body_position_world, length=3, label="body_position")
+    rotated = rotate_vector_xyzw(
+        body_quaternion_world_xyzw, offset_position_body
+    )
+    return (
+        [body[index] + rotated[index] for index in range(3)],
+        quaternion_multiply_xyzw(
+            body_quaternion_world_xyzw, offset_quaternion_body_xyzw
+        ),
+    )
+
+
 __all__ = [
     "RigidFrameTransformError",
+    "apply_rigid_offset",
     "normalize_quaternion_xyzw",
     "position_base_to_world",
     "position_world_to_base",
     "quaternion_conjugate_xyzw",
     "quaternion_multiply_xyzw",
+    "rigid_offset_in_body_frame",
     "rotate_vector_xyzw",
     "vector_world_to_base",
 ]
