@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import scripts.deploy_control_plane_commit as deploy
+from blueprint_pipeline import live_pipeline_intake_service as intake
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,3 +140,34 @@ def test_exact_sha_deployer_installs_and_arms_both_no_spend_intake_paths() -> No
     assert "blueprint-task-evaluation-launch-dispatcher.path" not in (
         deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
     )
+
+
+def test_canonical_environment_declares_every_intake_queue_root() -> None:
+    """Every queue root the intake reads must exist in the canonical env.
+
+    The intake answers a Website-started preparation or activation with
+    ``..._queue_not_configured`` when its queue-root variable is unset, and it
+    reads those names only from the environment.  Two of the four were absent
+    from the canonical file, so every host provisioned from it rejected
+    Website-started scene configuration at the first request.  Discover the
+    names from the service module rather than listing them here: a hand-kept
+    list is exactly what let these two slip.
+    """
+
+    source = text("src/blueprint_pipeline/live_pipeline_intake_service.py")
+    read_constants = set(
+        re.findall(r"os\.getenv\(([A-Z][A-Z0-9_]*QUEUE_ROOT_ENV)\)", source)
+    )
+    assert read_constants, "no intake queue-root environment reads discovered"
+    environment = text("deploy/systemd/pipeline-control-plane.env.example")
+    declared = {
+        line.split("=", 1)[0].strip()
+        for line in environment.splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    }
+    missing = set()
+    for constant in sorted(read_constants):
+        name = getattr(intake, constant)
+        if name not in declared:
+            missing.add(name)
+    assert not missing, f"intake queue roots absent from canonical env: {sorted(missing)}"
