@@ -4,6 +4,7 @@ import inspect
 import json
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -482,7 +483,9 @@ def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path
     assert float(background.max()) < 60.0
 
 
-def test_browser_environment_supplies_a_writable_home(tmp_path: Path) -> None:
+def test_browser_environment_supplies_a_writable_home(
+    monkeypatch, tmp_path: Path
+) -> None:
     """The headless browser must never inherit an unwritable service HOME.
 
     Control-plane services run as an account whose home is ``/nonexistent``
@@ -495,6 +498,10 @@ def test_browser_environment_supplies_a_writable_home(tmp_path: Path) -> None:
 
     from blueprint_pipeline.sealed_camera_render import _browser_process_environment
 
+    caller_home = tmp_path / "caller-home"
+    monkeypatch.setenv("HOME", str(caller_home))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
     home = tmp_path / "browser-home"
     environment = _browser_process_environment(home)
 
@@ -513,6 +520,24 @@ def test_browser_environment_supplies_a_writable_home(tmp_path: Path) -> None:
     # which may be /nonexistent -- is not what the browser receives.
     assert environment.get("PATH") == _os.environ.get("PATH")
     assert environment["HOME"] != _os.environ.get("HOME")
+    expected_cache = (
+        caller_home / "Library" / "Caches" / "ms-playwright"
+        if sys.platform == "darwin"
+        else caller_home / ".cache" / "ms-playwright"
+    )
+    assert environment["PLAYWRIGHT_BROWSERS_PATH"] == str(expected_cache)
+
+
+def test_browser_environment_preserves_explicit_playwright_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from blueprint_pipeline.sealed_camera_render import _browser_process_environment
+
+    cache = tmp_path / "pinned-playwright-cache"
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache))
+    environment = _browser_process_environment(tmp_path / "browser-home")
+
+    assert environment["PLAYWRIGHT_BROWSERS_PATH"] == str(cache)
 
 
 def test_renderer_launches_the_browser_with_that_home(monkeypatch, tmp_path: Path) -> None:
