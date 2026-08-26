@@ -172,6 +172,36 @@ def test_bundle_cli_does_not_advertise_an_unsupported_generated_at_parameter(
     assert "--generated-at" not in capsys.readouterr().out
 
 
+def test_bundle_cli_fails_closed_on_invalid_blueprint_source_identity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    invalid = tmp_path / "invalid-blueprint-source.json"
+    invalid.write_text("[]", encoding="utf-8")
+
+    assert subject.main(
+        [
+            "--candidate-inputs-receipt",
+            "candidate.json",
+            "--use-attestation",
+            "attestation.json",
+            "--artifixer-source",
+            "artifixer",
+            "--output-root",
+            "output",
+            "--repository-root",
+            "repository",
+            "--blueprint-source-identity",
+            str(invalid),
+        ]
+    ) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "blocked"
+    assert result["provider_mutation_performed"] is False
+    assert result["blockers"] == ["artifixer3d_blueprint_source_identity_invalid"]
+
+
 def _runner_module():
     path = Path(__file__).resolve().parents[1] / "scripts/public_scene_artifixer3d_runner.py"
     spec = importlib.util.spec_from_file_location("test_public_scene_artifixer3d_runner", path)

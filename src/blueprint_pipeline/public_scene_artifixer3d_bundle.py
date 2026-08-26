@@ -1395,28 +1395,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Repeatable. Instances that may already be running.",
     )
     args = parser.parse_args(argv)
-    optional = {
-        "artifixer3d_steps": args.artifixer3d_steps,
-        "random_seed": args.random_seed,
-        "pipeline_mode": args.pipeline_mode,
-        "direct_editor_backend": args.direct_editor_backend,
-        "semantic_editor_only": args.semantic_editor_only,
-        "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
-        "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
-        "artifixer_source_receipt_path": args.artifixer_source_receipt,
-        "blueprint_source_identity": (
-            _read(
-                _file(
-                    args.blueprint_source_identity,
-                    code="artifixer3d_blueprint_source_identity_missing",
-                ),
-                code="artifixer3d_blueprint_source_identity_invalid",
-            )
-            if args.blueprint_source_identity is not None
-            else None
-        ),
-    }
     try:
+        optional = {
+            "artifixer3d_steps": args.artifixer3d_steps,
+            "random_seed": args.random_seed,
+            "pipeline_mode": args.pipeline_mode,
+            "direct_editor_backend": args.direct_editor_backend,
+            "semantic_editor_only": args.semantic_editor_only,
+            "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
+            "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
+            "artifixer_source_receipt_path": args.artifixer_source_receipt,
+            "blueprint_source_identity": (
+                _read(
+                    _file(
+                        args.blueprint_source_identity,
+                        code="artifixer3d_blueprint_source_identity_missing",
+                    ),
+                    code="artifixer3d_blueprint_source_identity_invalid",
+                )
+                if args.blueprint_source_identity is not None
+                else None
+            ),
+        }
         receipt = build_artifixer3d_bundle(
             candidate_inputs_receipt_path=args.candidate_inputs_receipt,
             use_attestation_path=args.use_attestation,
