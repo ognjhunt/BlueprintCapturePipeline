@@ -10,7 +10,8 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from .core.security_controls import strict_identifier
-from .decision_evidence_contracts import DecisionEnvelope, EvidencePlan
+from .decision_evidence_contracts import DecisionEnvelope, EvidencePlan, canonical_digest
+from .task_evaluation_result_delivery import DELIVERY_SCHEMA_VERSION
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
@@ -37,6 +38,7 @@ def build_task_evaluation_run_webapp_publication(
     state: str,
     evidence_plan: Mapping[str, Any],
     decision_envelope: Mapping[str, Any],
+    result_delivery: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     session = strict_identifier(
         capture_session_id, field="capture_session_id", max_length=192
@@ -57,8 +59,12 @@ def build_task_evaluation_run_webapp_publication(
     for field in ("request_digest", "plan_digest", "testbed_digest"):
         if plan[field] != envelope[field]:
             raise ValueError(f"task_evaluation_run_{field}_binding_mismatch")
-    return {
-        "schema_version": "task_evaluation_run_publication.v1",
+    publication = {
+        "schema_version": (
+            "task_evaluation_run_publication.v2"
+            if result_delivery is not None
+            else "task_evaluation_run_publication.v1"
+        ),
         "capture_session_id": session,
         "intake_id": intake,
         "run_id": run,
@@ -74,6 +80,23 @@ def build_task_evaluation_run_webapp_publication(
             "comparative_policy_ranking_verdict": "thesis_not_supported",
         },
     }
+    if result_delivery is not None:
+        delivery = dict(result_delivery)
+        if delivery.get("schema_version") != DELIVERY_SCHEMA_VERSION:
+            raise ValueError("task_evaluation_result_delivery_schema_invalid")
+        if (
+            delivery.get("run_id") != run
+            or delivery.get("state") != state
+            or delivery.get("decision_envelope_digest")
+            != envelope["decision_envelope_digest"]
+        ):
+            raise ValueError("task_evaluation_result_delivery_binding_mismatch")
+        if delivery.get("delivery_digest") != canonical_digest(
+            delivery, digest_field="delivery_digest"
+        ):
+            raise ValueError("task_evaluation_result_delivery_digest_mismatch")
+        publication["result_delivery"] = delivery
+    return publication
 
 
 def sync_task_evaluation_run_to_webapp(
@@ -84,6 +107,7 @@ def sync_task_evaluation_run_to_webapp(
     state: str,
     evidence_plan: Mapping[str, Any],
     decision_envelope: Mapping[str, Any],
+    result_delivery: Mapping[str, Any] | None = None,
     endpoint_url: str | None = None,
     token: str | None = None,
     max_attempts: int = 3,
@@ -97,6 +121,7 @@ def sync_task_evaluation_run_to_webapp(
         state=state,
         evidence_plan=evidence_plan,
         decision_envelope=decision_envelope,
+        result_delivery=result_delivery,
     )
     resolved_url = _text(endpoint_url) or _text(
         os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
@@ -116,6 +141,10 @@ def sync_task_evaluation_run_to_webapp(
         ],
         "proof_boundary": payload["proof_boundary"],
     }
+    if payload.get("result_delivery"):
+        common["result_delivery_digest"] = payload["result_delivery"][
+            "delivery_digest"
+        ]
     if not resolved_url or not resolved_token:
         return {
             **common,
@@ -169,6 +198,11 @@ def sync_task_evaluation_run_to_webapp(
                             "decision_envelope_digest",
                             "proof_boundary",
                         )
+                    )
+                    and (
+                        "result_delivery_digest" not in common
+                        or receipt.get("result_delivery_digest")
+                        == common["result_delivery_digest"]
                     )
                 )
                 if matches:
