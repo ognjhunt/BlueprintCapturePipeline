@@ -40,6 +40,29 @@ FROZEN_VIDEO_DELTA_INDICES = (0,)
 FROZEN_STATE_DELTA_INDICES = (0,)
 FROZEN_ACTION_DELTA_INDICES = tuple(range(DROID_ACTION_CHUNK_ROWS))
 FROZEN_LANGUAGE_DELTA_INDICES = (0,)
+# The checkpoint's exact root statistics file is content-bound by the worker
+# identity receipt.  Its DROID state statistics are base-frame Cartesian
+# coordinates, not scene/world coordinates.  Enforce the observed translation
+# support before a query so a future frame regression cannot spend an episode
+# asking the frozen checkpoint to act from an impossible state.
+CHECKPOINT_STATISTICS_SOURCE = (
+    "nvidia/GR00T-N1.7-DROID@05e7cc97e40dbd33b0890c35cc0214fcb0547ab5:"
+    "statistics.json:oxe_droid_relative_eef_relative_joint.state.eef_9d"
+)
+CHECKPOINT_STATISTICS_SHA256 = (
+    "127832f7df25cda15da4ba6be81737f96b65673d0f892f9fc1bce1bc062fa858"
+)
+CHECKPOINT_STATISTICS_GIT_BLOB_SHA1 = "03e76c7666bafe2e31fcc2320ee5ffcdddc6d675"
+DROID_EEF_POSITION_OBSERVED_MIN_M = (
+    -0.1557805985212326,
+    -0.8236568570137024,
+    -0.24001094698905945,
+)
+DROID_EEF_POSITION_OBSERVED_MAX_M = (
+    0.8575563430786133,
+    0.8196876049041748,
+    1.0066224336624146,
+)
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
@@ -323,6 +346,24 @@ class GrootN17DroidPolicyClient:
         prompt = str(observation.get("prompt") or "").strip()
         if joints.shape != (7,) or gripper.shape != (1,) or eef.shape != (9,) or not prompt:
             raise ValueError("groot_droid_observation_state_invalid")
+        if not (
+            np.isfinite(joints).all()
+            and np.isfinite(gripper).all()
+            and np.isfinite(eef).all()
+        ):
+            raise ValueError("groot_droid_observation_state_nonfinite")
+        eef_position_min = np.asarray(
+            DROID_EEF_POSITION_OBSERVED_MIN_M, dtype=np.float32
+        )
+        eef_position_max = np.asarray(
+            DROID_EEF_POSITION_OBSERVED_MAX_M, dtype=np.float32
+        )
+        if np.any(eef[:3] < eef_position_min) or np.any(
+            eef[:3] > eef_position_max
+        ):
+            raise ValueError(
+                "groot_droid_eef_position_outside_checkpoint_observed_support"
+            )
         exterior_video = exterior[None, None, ...]
         wrist_video = wrist[None, None, ...]
         request = {
@@ -434,6 +475,14 @@ class GrootN17DroidPolicyClient:
             "action_delta_indices": list(self._action_delta_indices),
             "language_delta_indices": list(self._language_delta_indices),
             "video_history_source": "current_policy_query_observation_only",
+            "eef_position_observed_support": {
+                "minimum_m": list(DROID_EEF_POSITION_OBSERVED_MIN_M),
+                "maximum_m": list(DROID_EEF_POSITION_OBSERVED_MAX_M),
+                "source": CHECKPOINT_STATISTICS_SOURCE,
+                "source_sha256": CHECKPOINT_STATISTICS_SHA256,
+                "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+                "enforced_before_policy_query": True,
+            },
             "action_chunk_rows": self.action_chunk_rows,
             "last_inference_evidence": (
                 self.last_inference_evidence()
@@ -451,5 +500,10 @@ __all__ = [
     "GrootN17DroidPolicySpec",
     "MODEL_ID",
     "droid_eef_9d",
+    "CHECKPOINT_STATISTICS_SHA256",
+    "CHECKPOINT_STATISTICS_GIT_BLOB_SHA1",
+    "CHECKPOINT_STATISTICS_SOURCE",
+    "DROID_EEF_POSITION_OBSERVED_MAX_M",
+    "DROID_EEF_POSITION_OBSERVED_MIN_M",
     "validate_worker_identity_receipt",
 ]
