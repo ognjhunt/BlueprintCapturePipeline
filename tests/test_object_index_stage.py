@@ -1362,6 +1362,16 @@ def test_normalize_detection_payload_tolerates_malformed_backend_reports(tmp_pat
     assert tasks == [{"id": "t"}]
 
 
+def test_object_index_fuses_normalized_3d_candidates_with_image_detections() -> None:
+    normalized = [{"id": "splat_candidate", "label": "Door"}]
+    detected = [{"id": "detected_candidate", "label": "Box"}]
+
+    combined = oi._combine_object_candidates(normalized, detected)
+
+    assert combined == [*normalized, *detected]
+    assert {item["label"] for item in combined} == {"Door", "Box"}
+
+
 def test_run_object_index_stage_normalizes_mixed_malformed_backend_reports(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

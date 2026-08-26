@@ -10,6 +10,7 @@ robot-readiness proof.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -120,6 +121,18 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _file_binding(path: Path) -> Dict[str, Any]:
+    """Return an immutable byte binding for an input or generated artifact."""
+
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return {"sha256": f"sha256:{digest.hexdigest()}", "size_bytes": size_bytes}
+
+
 def _slug(text: Any, *, fallback: str = "object") -> str:
     out = []
     for char in _string(text).lower():
@@ -188,6 +201,7 @@ def _append_asset(
             "kind": kind or path.suffix.lower().lstrip("."),
             "quality": quality,
             "suffix": path.suffix.lower(),
+            **_file_binding(path),
         }
     )
 
@@ -581,6 +595,7 @@ def normalize_interactions(
     interactions_path: Path,
     job_dir: Path,
 ) -> Dict[str, Any]:
+    interactions_binding = _file_binding(interactions_path)
     raw_objects = interactions_payload.get("objects")
     if not isinstance(raw_objects, list):
         raw_objects = []
@@ -643,7 +658,11 @@ def normalize_interactions(
                     "asset_path": asset_record.get("path"),
                     "asset_source": asset_record.get("source"),
                     "asset_kind": asset_record.get("kind"),
+                    "asset_sha256": asset_record.get("sha256"),
+                    "asset_size_bytes": asset_record.get("size_bytes"),
                     "interactions_path": str(interactions_path),
+                    "interactions_sha256": interactions_binding["sha256"],
+                    "interactions_size_bytes": interactions_binding["size_bytes"],
                     "job_dir": str(job_dir),
                     "observation_coverage": {
                         "frame_vote_count": len(frames),
@@ -659,6 +678,10 @@ def normalize_interactions(
     return {
         "objects": objects,
         "scene_relationship_candidates": relationships,
+        "interactions_binding": {
+            "path": str(interactions_path),
+            **interactions_binding,
+        },
     }
 
 
@@ -926,6 +949,7 @@ def run_splat_analyzer_backend(payload: Mapping[str, Any], *, output_path: Path)
         "prompt": prompt,
         "prompt_count": len(prompts),
         "execution": execution,
+        "interactions_binding": normalized["interactions_binding"],
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
