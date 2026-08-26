@@ -25,11 +25,11 @@ from .exact_workcell_variation_matrix import (
     seal_agent_proposal,
     validate_variation_request,
 )
-from .task_evaluation_supervisor.agents_sdk import (
-    DEFAULT_SUPERVISOR_AGENT_MODEL,
-    AgentsSDKAgentSpec,
-    AgentsSDKInvoker,
-)
+from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, AgentsSDKInvoker
+
+
+DEFAULT_VARIATION_AGENT_MODEL = "gpt-5.6-luna"
+DEFAULT_VARIATION_AGENT_REASONING_EFFORT = "max"
 
 
 class VariationDimensionPriorityOutput(BaseModel):
@@ -66,7 +66,8 @@ class AgentsSDKVariationProposalAgent:
 
     invoker: AgentsSDKInvoker
     run_id: str
-    model: str = DEFAULT_SUPERVISOR_AGENT_MODEL
+    model: str = DEFAULT_VARIATION_AGENT_MODEL
+    reasoning_effort: str = DEFAULT_VARIATION_AGENT_REASONING_EFFORT
     max_turns: int = 1
     max_output_tokens: int = 4_000
     _observed_model_identity: str | None = field(init=False, default=None)
@@ -76,6 +77,10 @@ class AgentsSDKVariationProposalAgent:
             raise ExactWorkcellVariationError(["variation_agent_run_id_missing"])
         if not self.model.strip():
             raise ExactWorkcellVariationError(["variation_agent_model_missing"])
+        if self.reasoning_effort != "max":
+            raise ExactWorkcellVariationError(
+                ["variation_agent_max_reasoning_required"]
+            )
         if self.max_turns != 1:
             raise ExactWorkcellVariationError(["variation_agent_single_turn_required"])
         if not 256 <= self.max_output_tokens <= 16_000:
@@ -85,7 +90,9 @@ class AgentsSDKVariationProposalAgent:
 
     @property
     def model_identity(self) -> str:
-        return self._observed_model_identity or f"openai-agents-sdk:{self.model}"
+        return self._observed_model_identity or (
+            f"openai-agents-sdk:{self.model}:reasoning={self.reasoning_effort}"
+        )
 
     def propose(self, *, brief: Mapping[str, Any]) -> Mapping[str, Any]:
         spec = AgentsSDKAgentSpec(
@@ -101,6 +108,7 @@ class AgentsSDKVariationProposalAgent:
             model=self.model,
             max_turns=1,
             max_output_tokens=self.max_output_tokens,
+            reasoning_effort=self.reasoning_effort,
             output_type=ExactWorkcellVariationAgentOutput,
         )
         invocation = self.invoker.invoke(spec, canonical_json({"brief": brief}))
@@ -110,7 +118,8 @@ class AgentsSDKVariationProposalAgent:
             )
         output = ExactWorkcellVariationAgentOutput.model_validate(invocation.output)
         self._observed_model_identity = (
-            f"{invocation.provider}-agents-sdk:{invocation.model}@{invocation.sdk_version}"
+            f"{invocation.provider}-agents-sdk:{invocation.model}:"
+            f"reasoning={self.reasoning_effort}@{invocation.sdk_version}"
         )
         return output.model_dump(mode="json")
 

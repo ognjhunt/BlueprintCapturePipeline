@@ -293,6 +293,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             model="gpt-5.6-terra",
             max_turns=2,
             max_output_tokens=1_000,
+            reasoning_effort="max",
             tool_bindings=(
                 RegisteredToolBinding(
                     tool_id="inspect_fixture",
@@ -322,6 +323,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     assert captured["kwargs"]["run_config"].trace_include_sensitive_data is False
     assert captured["kwargs"]["run_config"].tracing_disabled is True
     assert captured["agent"].model_settings.store is False
+    assert captured["agent"].model_settings.reasoning.effort == "max"
     assert result.provider == "openai"
     assert result.sdk_version == importlib.metadata.version("openai-agents")
     assert result.usage["total_tokens"] == 12

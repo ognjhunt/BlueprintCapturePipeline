@@ -86,6 +86,8 @@ still produces the baseline autonomously and records that fallback explicitly.
 
 `AgentsSDKVariationProposalAgent` connects this bounded role to Blueprint's
 canonical OpenAI Agents SDK harness with strict structured output and no tools.
+Its production default is `gpt-5.6-luna` at `reasoning.effort=max`; both values
+are retained in the proposal identity and inference reservation.
 The shared harness retains its explicit live-inference enablement, conservative
 cost reservation, model identity, usage, and audit requirements. Tests inject a
 network-free invoker; production injects the already gated SDK invoker. Neither

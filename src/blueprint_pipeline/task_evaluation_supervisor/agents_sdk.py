@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from importlib import metadata
 import math
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -84,6 +84,7 @@ class AgentsSDKAgentSpec:
     max_turns: int
     max_output_tokens: int
     max_input_tokens: int | None = None
+    reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
 
@@ -199,16 +200,17 @@ class OpenAIAgentsSDKInvoker:
             if isinstance(spec.capability, CapabilityKind)
             else str(spec.capability)
         )
-        reservation_id = canonical_digest(
-            {
-                "run_id": spec.run_id,
-                "capability": capability_id,
-                "model": spec.model,
-                "input_digest": input_digest,
-                "max_turns": spec.max_turns,
-                "max_output_tokens": spec.max_output_tokens,
-            }
-        )
+        reservation_identity = {
+            "run_id": spec.run_id,
+            "capability": capability_id,
+            "model": spec.model,
+            "input_digest": input_digest,
+            "max_turns": spec.max_turns,
+            "max_output_tokens": spec.max_output_tokens,
+        }
+        if spec.reasoning_effort is not None:
+            reservation_identity["reasoning_effort"] = spec.reasoning_effort
+        reservation_id = canonical_digest(reservation_identity)
         reservation: dict[str, Any] = {
             "schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION,
             "reservation_id": reservation_id,
@@ -224,6 +226,8 @@ class OpenAIAgentsSDKInvoker:
             "billing_status": "worst_case_reserved_before_provider_call",
             "proof_effect": "none",
         }
+        if spec.reasoning_effort is not None:
+            reservation["reasoning_effort"] = spec.reasoning_effort
         reservation["inference_reservation_digest"] = canonical_digest(
             reservation,
             digest_field="inference_reservation_digest",
@@ -275,6 +279,11 @@ class OpenAIAgentsSDKInvoker:
             model=spec.model,
             model_settings=ModelSettings(
                 max_tokens=spec.max_output_tokens,
+                reasoning=(
+                    {"effort": spec.reasoning_effort}
+                    if spec.reasoning_effort is not None
+                    else None
+                ),
                 store=False,
                 include_usage=True,
                 verbosity="low",
