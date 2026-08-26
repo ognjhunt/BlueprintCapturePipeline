@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -1045,6 +1046,7 @@ def build_native_task_arena_live_profile(
     max_spend_usd: float = 2.0,
     hard_ttl_seconds: int = 7_200,
     preferred_geolocation_regex: str = "",
+    camera_resolution: str = "",
     provider: str = "vast",
 ) -> dict[str, Any]:
     """Derive a live profile from the packet receipt the link will run."""
@@ -1107,6 +1109,26 @@ def build_native_task_arena_live_profile(
             }
         )
     }
+    runtime_environment: dict[str, str] = {}
+    if preferred_geolocation_regex:
+        runtime_environment["BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX"] = (
+            preferred_geolocation_regex
+        )
+    if camera_resolution:
+        resolution = camera_resolution.strip().lower()
+        match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", resolution)
+        if resolution != "policy" and match is None:
+            raise TaskEvaluationLaunchError(
+                "native_task_arena_camera_resolution_invalid"
+            )
+        if match is not None and (
+            int(match.group(1)) < 320 or int(match.group(2)) < 180
+        ):
+            raise TaskEvaluationLaunchError(
+                "native_task_arena_camera_resolution_below_policy_input"
+            )
+        runtime_environment["BLUEPRINT_ADP009D_CAMERA_RESOLUTION"] = resolution
+
     return build_lane_live_profile(
         _spec(
             entry,
@@ -1125,15 +1147,7 @@ def build_native_task_arena_live_profile(
         revision=revision,
         max_spend_usd=max_spend_usd,
         extra_paths=extra,
-        runtime_environment=(
-            {
-                "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": (
-                    preferred_geolocation_regex
-                )
-            }
-            if preferred_geolocation_regex
-            else None
-        ),
+        runtime_environment=runtime_environment or None,
     )
 
 
@@ -1184,6 +1198,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "profile. It is a preference, not an allowlist."
             ),
         )
+        target.add_argument(
+            "--camera-resolution",
+            default="",
+            help=(
+                "Digest-bind the exact live source-camera render size as "
+                "WIDTHxHEIGHT, or use 'policy' for the 320x180 minimum."
+            ),
+        )
         target.add_argument("--output", required=True)
         if "construction_result" in entry.predecessors:
             target.add_argument("--construction-result", required=True)
@@ -1222,6 +1244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_spend_usd=args.max_spend_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
             preferred_geolocation_regex=args.preferred_geolocation_regex,
+            camera_resolution=args.camera_resolution,
         )
     except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
         print(
