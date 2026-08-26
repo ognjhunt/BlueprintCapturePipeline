@@ -305,6 +305,15 @@ def _admission_binding_mismatches(
             construction.get("construction_gate_qualified"),
         ),
     ]
+    try:
+        from blueprint_pipeline.native_task_camera_observability import (
+            NativeTaskCameraObservabilityError,
+            validate_native_task_policy_start_camera_observability,
+        )
+
+        validate_native_task_policy_start_camera_observability(construction)
+    except NativeTaskCameraObservabilityError as exc:
+        mismatched.extend(exc.errors)
     if diagnostic:
         qualifications.extend(
             [

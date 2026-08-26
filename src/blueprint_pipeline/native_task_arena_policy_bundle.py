@@ -19,6 +19,10 @@ from .native_task_arena_bundle import (
 )
 from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
+from .native_task_camera_observability import (
+    NativeTaskCameraObservabilityError,
+    validate_native_task_policy_start_camera_observability,
+)
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .task_evaluation_immutable_input_resolver import (
@@ -347,6 +351,10 @@ def build_native_task_policy_execution_spec(
         != canonical_digest(construction, digest_field="result_digest")
     ):
         errors.append("native_task_policy_construction_not_qualified")
+    try:
+        validate_native_task_policy_start_camera_observability(construction)
+    except NativeTaskCameraObservabilityError as exc:
+        errors.extend(exc.errors)
     if (
         controls.get("schema_version") != "native_task_arena_control_result.v1"
         or controls.get("status") != "completed"
@@ -535,6 +543,10 @@ def build_native_task_arena_policy_bundle(
         != spec.get("construction_result_digest")
     ):
         errors.append("native_task_policy_construction_not_qualified")
+    try:
+        validate_native_task_policy_start_camera_observability(construction)
+    except NativeTaskCameraObservabilityError as exc:
+        errors.extend(exc.errors)
     if (
         controls.get("schema_version") != "native_task_arena_control_result.v1"
         or controls.get("status") != "completed"

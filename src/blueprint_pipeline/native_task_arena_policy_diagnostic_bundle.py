@@ -25,6 +25,10 @@ from .native_task_arena_bundle import (
 )
 from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
+from .native_task_camera_observability import (
+    NativeTaskCameraObservabilityError,
+    validate_native_task_policy_start_camera_observability,
+)
 from .native_task_arena_policy_bundle import (
     ADP009D_POLICY_READINESS_PATH,
     ADP009D_SCENARIO_SUITE_PATH,
@@ -155,6 +159,10 @@ def build_policy_diagnostic_execution_spec(
         != canonical_digest(construction, digest_field="result_digest")
     ):
         errors.append("native_task_policy_construction_not_qualified")
+    try:
+        validate_native_task_policy_start_camera_observability(construction)
+    except NativeTaskCameraObservabilityError as exc:
+        errors.extend(exc.errors)
     if (
         controls.get("schema_version") != "native_task_arena_control_result.v1"
         or controls.get("status") not in {"blocked", "completed"}
@@ -279,6 +287,10 @@ def build_native_task_arena_policy_diagnostic_bundle(
         or not _zero_action_negative_passed(pair)
     ):
         errors.append("native_task_policy_diagnostic_binding_invalid")
+    try:
+        validate_native_task_policy_start_camera_observability(construction)
+    except NativeTaskCameraObservabilityError as exc:
+        errors.extend(exc.errors)
     if errors:
         raise ValueError(";".join(errors))
 
