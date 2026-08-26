@@ -191,6 +191,66 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert '"$${ARGS[@]}"\'' in supervisor
 
 
+def test_launch_read_only_catalog_is_optional_until_first_publication() -> None:
+    """An absent catalog must not prevent either reader unit from starting.
+
+    The activation publisher creates the catalog atomically, so a fresh host
+    legitimately has no catalog before its first successful publication.
+    systemd's ``-`` prefix ignores only that absent-path setup error; once the
+    path exists it remains mounted read-only in both reader units.
+    """
+
+    catalog = (
+        "-/var/lib/blueprint/pipeline-control-plane/"
+        "task-evaluation-launch-profile-catalog.json"
+    )
+    for unit in (
+        "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service",
+        "deploy/systemd/blueprint-task-evaluation-launch-supervisor.service",
+    ):
+        read_only_line = next(
+            line for line in _text(unit).splitlines() if line.startswith("ReadOnlyPaths=")
+        )
+        assert catalog in read_only_line.split()
+
+
+def test_canonical_environment_binds_scene_configuration_runtime_secret_paths() -> None:
+    """A rebuilt host must retain every non-secret runtime path binding."""
+
+    environment = _text("deploy/systemd/pipeline-control-plane.env.example")
+    expected = {
+        "OPENAI_API_KEY_FILE": "/etc/blueprint/provider-secrets/openai_api_key",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE": (
+            "/etc/blueprint/provider-secrets/openai_api_key_artifixer_semantic_teacher"
+        ),
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": (
+            "/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review"
+        ),
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": (
+            "/etc/blueprint/provider-secrets/openai_api_key_content_agents"
+        ),
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE": (
+            "/etc/blueprint/provider-secrets/"
+            "openai_cost_scope_attestation_artifixer_semantic_teacher.json"
+        ),
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE": (
+            "/etc/blueprint/provider-secrets/"
+            "openai_cost_scope_attestation_artifixer_visual_review.json"
+        ),
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
+            "/etc/blueprint/provider-secrets/"
+            "openai_cost_scope_attestation_content_agents.json"
+        ),
+    }
+    declared = {
+        name: value
+        for line in environment.splitlines()
+        if line and not line.lstrip().startswith("#") and "=" in line
+        for name, value in [line.split("=", 1)]
+    }
+    assert {name: declared.get(name) for name in expected} == expected
+
+
 def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> None:
     guard = _text("deploy/systemd/blueprint-gpu-spend-guard.service")
     billing = _text("deploy/systemd/blueprint-provider-billing-reconciler.service")
