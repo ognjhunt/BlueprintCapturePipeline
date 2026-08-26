@@ -149,6 +149,12 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launch-preparations/blocked" \
   "${STATE_DIR}/task-evaluation-launch-preparations/identities" \
   "${STATE_DIR}/task-evaluation-launch-preparations/results" \
+  "${STATE_DIR}/scene-object-discoveries/pending" \
+  "${STATE_DIR}/scene-object-discoveries/processing" \
+  "${STATE_DIR}/scene-object-discoveries/blocked" \
+  "${STATE_DIR}/scene-object-discoveries/results" \
+  "${STATE_DIR}/scene-object-discoveries/identities" \
+  "${STATE_DIR}/scene-object-discoveries/selections" \
   "${STATE_DIR}/task-evaluation-scene-constructions/pending" \
   "${STATE_DIR}/task-evaluation-scene-constructions/processing" \
   "${STATE_DIR}/task-evaluation-scene-constructions/completed" \
@@ -172,6 +178,9 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/compiled-episodes" \
   "${TASK_EVALUATION_INPUT_ROOT}/launch-activations" \
   "${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discoveries" \
+  "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discovery-outputs"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/capture-reconstruction-queue/pending" \
   "${STATE_DIR}/capture-reconstruction-queue/processing" \
@@ -228,6 +237,12 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.service" \
+  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.path" \
+  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.path"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.service"
@@ -435,6 +450,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
+  systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
@@ -448,6 +464,7 @@ else
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
+  echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"

@@ -65,6 +65,13 @@ from .live_pipeline_input_intake import (
 from .core.security_controls import json_shape_within_limits, strict_identifier
 from .decision_evidence_contracts import canonical_digest
 from .scene_placement.robot_profile import default_robot_id_for_embodiment
+from .scene_object_discovery_contract import SceneObjectDiscoveryContractError
+from .scene_object_discovery_queue import (
+    SceneObjectDiscoveryQueueError,
+    scene_object_discovery_status,
+    select_scene_object_candidate,
+    stage_scene_object_discovery_request,
+)
 from .task_candidate_control_plane import (
     TaskCandidateControlPlaneError,
     process_task_candidate_decision_submission,
@@ -146,6 +153,7 @@ INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
 INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
 INTAKE_TRIGGER_SYSTEMD_UNIT_ENV = "BLUEPRINT_LIVE_PIPELINE_TRIGGER_SYSTEMD_UNIT"
 TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
+SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV = "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT"
 TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
@@ -2024,6 +2032,15 @@ def create_app() -> FastAPI:
                 "asynchronous_no_spend_preparation_only": True,
                 "accepts_host_paths_or_commands": False,
             },
+            "scene_object_discovery_queue": {
+                "supported": True,
+                "configured": bool(
+                    _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
+                ),
+                "asynchronous_preparation_only": True,
+                "provider_execution_requires_separate_activation": True,
+                "accepts_host_paths_or_commands": False,
+            },
             "task_evaluation_launch_activation_queue": {
                 "supported": True,
                 "configured": bool(
@@ -2271,6 +2288,218 @@ def create_app() -> FastAPI:
             status_code=404 if result["status"] == "not_found" else 200,
             content=result,
         )
+
+    @app.post(
+        "/api/live-pipeline/scene-object-discoveries",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_scene_object_discovery(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        deployment = deployment_identity_payload()
+        if deployment.get("commit_proven") is not True:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "scene_object_discovery_intake_receipt.v1",
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": ["scene_object_discovery_production_commit_not_proven"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        expected_commit = str(payload.get("expected_production_commit") or "")
+        if expected_commit and expected_commit != deployment.get("source_commit"):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "schema_version": "scene_object_discovery_intake_receipt.v1",
+                    "status": "rejected",
+                    "accepted": False,
+                    "blockers": ["scene_object_discovery_production_commit_mismatch"],
+                    "expected_production_commit": expected_commit,
+                    "observed_production_commit": deployment.get("source_commit"),
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        queue_root = _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
+        if not queue_root:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "scene_object_discovery_intake_receipt.v1",
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": ["scene_object_discovery_queue_not_configured"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        try:
+            receipt = await run_in_threadpool(
+                stage_scene_object_discovery_request,
+                value=payload,
+                queue_root=queue_root,
+                submitted_by=_string(getattr(request.state, "intake_client_id", "")),
+            )
+        except SceneObjectDiscoveryContractError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "schema_version": "scene_object_discovery_intake_receipt.v1",
+                    "status": "rejected",
+                    "accepted": False,
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        except SceneObjectDiscoveryQueueError as exc:
+            blocker = str(exc)
+            return JSONResponse(
+                status_code=(
+                    409
+                    if blocker == "scene_object_discovery_id_immutable_conflict"
+                    else 503
+                ),
+                content={
+                    "schema_version": "scene_object_discovery_intake_receipt.v1",
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": [blocker],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        return JSONResponse(status_code=202, content=receipt)
+
+    @app.get(
+        "/api/live-pipeline/scene-object-discoveries/{discovery_id}",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def get_scene_object_discovery_status(discovery_id: str) -> JSONResponse:
+        try:
+            normalized_id = strict_identifier(
+                discovery_id, field="discovery_id", max_length=192
+            )
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "schema_version": "scene_object_discovery_status.v1",
+                    "status": "blocked",
+                    "discovery_id": "invalid",
+                    "blockers": ["scene_object_discovery_id_invalid"],
+                    "provider_mutation_performed_by_status_read": False,
+                },
+            )
+        queue_root = _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
+        if not queue_root:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "scene_object_discovery_status.v1",
+                    "status": "blocked",
+                    "discovery_id": normalized_id,
+                    "blockers": ["scene_object_discovery_queue_not_configured"],
+                    "provider_mutation_performed_by_status_read": False,
+                },
+            )
+        try:
+            result = await run_in_threadpool(
+                scene_object_discovery_status,
+                discovery_id=normalized_id,
+                queue_root=queue_root,
+            )
+        except SceneObjectDiscoveryQueueError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "scene_object_discovery_status.v1",
+                    "status": "blocked",
+                    "discovery_id": normalized_id,
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed_by_status_read": False,
+                },
+            )
+        return JSONResponse(
+            status_code=404 if result["status"] == "not_found" else 200,
+            content=result,
+        )
+
+    @app.post(
+        "/api/live-pipeline/scene-object-discoveries/{discovery_id}/selection",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_scene_object_discovery_selection(
+        discovery_id: str, request: Request
+    ) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping) or payload.get("discovery_id") != discovery_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "schema_version": "scene_object_discovery_selection_receipt.v1",
+                    "status": "rejected",
+                    "blockers": ["scene_object_discovery_selection_input_invalid"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        deployment = deployment_identity_payload()
+        if (
+            deployment.get("commit_proven") is not True
+            or payload.get("expected_production_commit") != deployment.get("source_commit")
+        ):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "schema_version": "scene_object_discovery_selection_receipt.v1",
+                    "status": "rejected",
+                    "blockers": ["scene_object_discovery_selection_production_commit_mismatch"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        queue_root = _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
+        if not queue_root:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "scene_object_discovery_selection_receipt.v1",
+                    "status": "blocked",
+                    "blockers": ["scene_object_discovery_queue_not_configured"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        try:
+            receipt = await run_in_threadpool(
+                select_scene_object_candidate,
+                value=payload,
+                queue_root=queue_root,
+            )
+        except (SceneObjectDiscoveryQueueError, ValueError) as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "schema_version": "scene_object_discovery_selection_receipt.v1",
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        return JSONResponse(status_code=202, content=receipt)
 
     @app.post(
         "/api/live-pipeline/task-evaluation-launch-activations",
