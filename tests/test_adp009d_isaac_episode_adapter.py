@@ -346,6 +346,9 @@ class _Robot:
             body_pose_w=poses,
             joint_limits=np.tile(np.array([[-2.9, 2.9]]), (1, 13, 1)),
         )
+        self.data.root_pose_w = np.array(
+            [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]], dtype=float
+        )
 
 
 class _Can:
@@ -553,6 +556,42 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
         "wrist",
         "overview",
     }
+
+
+def test_groot_eef_state_is_expressed_in_robot_root_not_scene_world() -> None:
+    """DROID proprioception is base-relative even when the scene is translated."""
+
+    adapter = _adapter()
+    half_sqrt = 2**-0.5
+    # Isaac poses are XYZ + WXYZ.  Place the root at the production scene pose:
+    # translated near (3.8, 8.9) and yawed +90 degrees in world.
+    adapter._robot.data.root_pose_w[0] = [
+        3.788486295946884,
+        8.906664022603987,
+        0.090782,
+        half_sqrt,
+        0.0,
+        0.0,
+        half_sqrt,
+    ]
+    bodies = list(adapter._robot.data.body_names)
+    adapter._robot.data.body_pose_w[0, bodies.index("base_link")] = [
+        3.8094613552093506,
+        9.223036766052246,
+        0.5535212159156799,
+        half_sqrt,
+        0.0,
+        0.0,
+        half_sqrt,
+    ]
+
+    eef = adapter.read_policy_inputs()["eef_9d"]
+
+    assert eef[:3] == pytest.approx(
+        [0.31637274344825944, -0.02097505926246661, 0.4627392159156799]
+    )
+    assert max(abs(float(value)) for value in eef[:3]) < 1.0
+    assert describe_adapter()["droid_eef_state_frame"] == "robot_root"
 
 
 def test_isaac_xyzw_quaternion_is_converted_before_nvidia_frame_correction() -> None:
@@ -879,7 +918,10 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["finger_tool_frame_source"] == FINGER_TOOL_FRAME_SOURCE
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
-    assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
+    assert bindings["isaaclab_pose_quaternion_order"] == (
+        "wxyz_native_to_xyzw_contract"
+    )
+    assert bindings["droid_eef_state_frame"] == "robot_root"
     assert bindings["scripted_control_physx_jacobian_frame"] == "world"
     assert bindings["scripted_control_controller_error_frame"] == "robot_root"
     assert bindings["scripted_control_jacobian_frame_transform"] == (
@@ -911,6 +953,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["gripper_width_source"] = "raw_link_origin_distance"
     assert "isaac_episode_adapter_gripper_width_source_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["droid_eef_state_frame"] = "world"
+    assert "isaac_episode_adapter_droid_eef_state_frame_drifted" in (
         validate_adapter_bindings(drifted)
     )
 

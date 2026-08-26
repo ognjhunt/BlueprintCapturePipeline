@@ -59,8 +59,12 @@ except ModuleNotFoundError:  # repository package
         build_backend_contact_configuration,
         validate_backend_contact_configuration,
     )
+try:  # flat provider-bundle layout
+    from native_pose_transforms import pose_world_to_base
+except ModuleNotFoundError:  # repository package
+    from .native_pose_transforms import pose_world_to_base
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v13"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v14"
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
@@ -1499,19 +1503,38 @@ class IsaacEpisodeAdapter:
         return min(1.0, max(0.0, 1.0 - open_fraction))
 
     def _eef_9d(self) -> Any:
-        pose = self._to_torch(self._robot.data.body_pose_w)[
+        end_effector_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index
         ]
-        values = self._pose_world_xyzw(pose)
-        if len(values) != 7 or not all(math.isfinite(value) for value in values):
+        root_pose = self._to_torch(self._robot.data.root_pose_w)[0]
+        end_effector_world = self._pose_world_xyzw(end_effector_pose)
+        root_world = self._pose_world_xyzw(root_pose)
+        if any(
+            len(values) != 7
+            or not all(math.isfinite(value) for value in values)
+            for values in (end_effector_world, root_world)
+        ):
             raise IsaacEpisodeAdapterError(["isaac_episode_end_effector_pose_invalid"])
+        try:
+            position_root, quaternion_root = pose_world_to_base(
+                position_world=end_effector_world[:3],
+                quaternion_world_xyzw=end_effector_world[3:7],
+                base_position_world=root_world[:3],
+                base_quaternion_world_xyzw=root_world[3:7],
+            )
+        except (TypeError, ValueError) as exc:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_end_effector_root_pose_invalid"]
+            ) from exc
         try:  # flat provider bundle
             from groot_n17_droid_policy_runtime import droid_eef_9d
         except ModuleNotFoundError:  # repository package
             from .groot_n17_droid_policy_runtime import droid_eef_9d
         return droid_eef_9d(
-            position_m=values[:3],
-            rotation_row_major=rotation_row_major_from_quaternion_xyzw(values[3:7]),
+            position_m=position_root,
+            rotation_row_major=rotation_row_major_from_quaternion_xyzw(
+                quaternion_root
+            ),
         )
 
 
@@ -1526,6 +1549,10 @@ def describe_adapter() -> dict[str, Any]:
         "finger_tool_frame_source": FINGER_TOOL_FRAME_SOURCE,
         "end_effector_body_candidates": list(END_EFFECTOR_BODY_CANDIDATES),
         "gripper_width_source": GRIPPER_WIDTH_SOURCE,
+        "droid_eef_state_frame": "robot_root",
+        "droid_eef_state_source": (
+            "live_end_effector_body_pose_world_transformed_by_live_robot_root_pose"
+        ),
         "scripted_control_target_frame": "probe_calibrated_finger_midpoint",
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
@@ -1556,7 +1583,7 @@ def describe_adapter() -> dict[str, Any]:
         "gripper_width_calibration_clamp_retained": True,
         "camera_alpha_dropped_at_boundary": True,
         "arm_joint_count": ARM_JOINT_COUNT,
-        "isaaclab_pose_quaternion_order": "xyzw",
+        "isaaclab_pose_quaternion_order": "wxyz_native_to_xyzw_contract",
     }
 
 
@@ -1582,6 +1609,12 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_end_effector_binding_drifted")
     if bindings.get("gripper_width_source") != GRIPPER_WIDTH_SOURCE:
         errors.append("isaac_episode_adapter_gripper_width_source_drifted")
+    if bindings.get("droid_eef_state_frame") != "robot_root":
+        errors.append("isaac_episode_adapter_droid_eef_state_frame_drifted")
+    if bindings.get("droid_eef_state_source") != (
+        "live_end_effector_body_pose_world_transformed_by_live_robot_root_pose"
+    ):
+        errors.append("isaac_episode_adapter_droid_eef_state_source_drifted")
     if bindings.get("scripted_control_target_frame") != (
         "probe_calibrated_finger_midpoint"
     ):
@@ -1631,7 +1664,9 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_gripper_clamp_not_retained")
     if bindings.get("camera_alpha_dropped_at_boundary") is not True:
         errors.append("isaac_episode_adapter_alpha_not_dropped")
-    if bindings.get("isaaclab_pose_quaternion_order") != "xyzw":
+    if bindings.get("isaaclab_pose_quaternion_order") != (
+        "wxyz_native_to_xyzw_contract"
+    ):
         errors.append("isaac_episode_adapter_quaternion_order_drifted")
     return sorted(set(errors))
 
