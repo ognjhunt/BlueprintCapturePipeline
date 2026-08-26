@@ -1206,7 +1206,7 @@
             {
               "artifact_id": "DATA-02-AC-01-EV-02",
               "path": "src/blueprint_pipeline/object_index_stage.py",
-              "sha256": "sha256:939a55d20dc8863dd973cf77bd65560b5d78e6ee8b16a000d59db2cdc71c5c2f",
+          "sha256": "sha256:c95bab3a336e0f2fc9d84ac5ffdbe0dc8c689acc8fb34d1f219397c48a944131",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1222,7 +1222,7 @@
             {
               "artifact_id": "DATA-02-AC-01-EV-03",
               "path": "tests/test_object_index_stage.py",
-              "sha256": "sha256:900d36a30e3eb4a76200e99aa19b30b798a990e56a081d9066046370a220e35d",
+          "sha256": "sha256:d4ac165695d7a9c8a204dcd126a2d2de1b27e463cb1b3db275261e380124fbf1",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11385,7 +11385,7 @@
             {
               "artifact_id": "RUN-13-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:79ac51412a2ac7c910f99bb323c7fecb00239a1a76f35fd42d2ed25fa8b2b668",
+          "sha256": "sha256:03322c4aab1076d3c352c0d8d229c7522022b5520ad301b5c0987a558597f667",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11515,7 +11515,7 @@
             {
               "artifact_id": "RUN-14-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:79ac51412a2ac7c910f99bb323c7fecb00239a1a76f35fd42d2ed25fa8b2b668",
+          "sha256": "sha256:03322c4aab1076d3c352c0d8d229c7522022b5520ad301b5c0987a558597f667",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11645,7 +11645,7 @@
             {
               "artifact_id": "RUN-15-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:79ac51412a2ac7c910f99bb323c7fecb00239a1a76f35fd42d2ed25fa8b2b668",
+          "sha256": "sha256:03322c4aab1076d3c352c0d8d229c7522022b5520ad301b5c0987a558597f667",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
