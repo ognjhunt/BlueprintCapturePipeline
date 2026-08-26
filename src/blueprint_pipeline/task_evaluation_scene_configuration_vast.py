@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import tempfile
 import zipfile
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -250,6 +251,64 @@ def _provider_runtime_inputs(
         ),
     }
     return secret_paths, runtime_environment
+
+
+@contextmanager
+def _private_runtime_secret_files(
+    secret_paths: Mapping[str, str], *, parent: Path
+):
+    """Mirror service-group-readable secrets into adapter-private files."""
+
+    if not secret_paths:
+        yield {}
+        return
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".scene-configuration-runtime-secrets-", dir=parent
+        ) as temporary:
+            root = Path(temporary)
+            if stat.S_IMODE(root.stat().st_mode) != 0o700:
+                raise OSError("private runtime secret directory mode invalid")
+            private_paths: dict[str, str] = {}
+            for index, (name, unresolved) in enumerate(sorted(secret_paths.items())):
+                source = Path(unresolved).absolute()
+                descriptor = os.open(
+                    source,
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                with os.fdopen(descriptor, "rb") as stream:
+                    value = stream.read(65_537)
+                if not value or len(value) > 65_536 or b"\x00" in value:
+                    raise OSError("private runtime secret bytes invalid")
+                destination = root / f"{index:02d}.secret"
+                output_descriptor = os.open(
+                    destination,
+                    os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_WRONLY
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                )
+                with os.fdopen(output_descriptor, "wb") as output:
+                    output.write(value)
+                    output.flush()
+                    os.fsync(output.fileno())
+                metadata = destination.stat()
+                if (
+                    destination.is_symlink()
+                    or not stat.S_ISREG(metadata.st_mode)
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                    or metadata.st_size != len(value)
+                ):
+                    raise OSError("private runtime secret readback invalid")
+                private_paths[name] = str(destination)
+            yield private_paths
+    except OSError as exc:
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_openai_runtime_secret_materialization_failed"
+        ) from exc
 
 
 def _sha256(path: Path) -> str:
@@ -533,7 +592,9 @@ def run_scene_configuration_vast(
             "scene_configuration_openai_runtime_secret_configuration_invalid"
         ) from exc
     try:
-        with _authority_environment():
+        with _private_runtime_secret_files(
+            runtime_secret_paths, parent=job
+        ) as private_runtime_secret_paths, _authority_environment():
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
                 mode="live-startup-probe",
@@ -582,11 +643,11 @@ def run_scene_configuration_vast(
                 started_instance_id_path=watchdog.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
-                runtime_secret_file_paths=runtime_secret_paths,
+                runtime_secret_file_paths=private_runtime_secret_paths,
                 provider_runtime_environment=runtime_environment,
                 allowed_geolocation_country_codes=(
                     OPENAI_API_SUPPORTED_COUNTRY_CODES
-                    if runtime_secret_paths
+                    if private_runtime_secret_paths
                     else ()
                 ),
             )
