@@ -821,3 +821,81 @@ def test_the_lane_hands_the_adapter_the_staged_paths_and_always_discards_them(
     assert source.count("_discard_staged_runtime_secrets") >= 2, (
         "the private copies must be discarded on the failure path too"
     )
+
+
+def _decision(*, provider: bool) -> dict:
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+        CONTROL_PLANE,
+        PROVIDER_GPU,
+        SCHEMA_VERSION,
+    )
+
+    decision = {
+        "schema_version": SCHEMA_VERSION,
+        "render_execution_site": PROVIDER_GPU if provider else CONTROL_PLANE,
+        "source_appearance_bytes_to_provider": provider,
+        "decision_digest": "",
+    }
+    decision["decision_digest"] = canonical_digest(
+        decision, digest_field="decision_digest"
+    )
+    return decision
+
+
+def test_a_provider_rendered_bundle_may_declare_the_bytes_it_carries() -> None:
+    """The rule is conditional on a digest-bound decision, not a literal.
+
+    When a scene's rights admit the upload, the packet really does carry the
+    raw source bytes and the derived views are produced on the provider. A
+    manifest that hardcoded ``False`` there asserted no bytes crossed on a run
+    where they did -- a provenance falsehood, not a guarantee.
+    """
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
+        _receipt_disclosure_is_coherent,
+    )
+
+    assert _receipt_disclosure_is_coherent(
+        {"raw_interiorgs_bytes_in_provider_bundle": False}
+    )
+    assert _receipt_disclosure_is_coherent(
+        {
+            "raw_interiorgs_bytes_in_provider_bundle": True,
+            "disclosure_decision": _decision(provider=True),
+        }
+    )
+
+
+def test_claiming_the_bytes_crossed_without_an_authorizing_decision_fails() -> None:
+    """The safety property is moved, not weakened."""
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
+        _receipt_disclosure_is_coherent,
+    )
+
+    # No decision at all.
+    assert not _receipt_disclosure_is_coherent(
+        {"raw_interiorgs_bytes_in_provider_bundle": True}
+    )
+    # A decision that names the control plane cannot authorize a crossing.
+    assert not _receipt_disclosure_is_coherent(
+        {
+            "raw_interiorgs_bytes_in_provider_bundle": True,
+            "disclosure_decision": _decision(provider=False),
+        }
+    )
+    # A tampered decision no longer matches its own digest.
+    tampered = _decision(provider=True)
+    tampered["source_appearance_bytes_to_provider"] = True
+    tampered["render_execution_site"] = "provider_gpu"
+    tampered["decision_digest"] = "sha256:" + "0" * 64
+    assert not _receipt_disclosure_is_coherent(
+        {
+            "raw_interiorgs_bytes_in_provider_bundle": True,
+            "disclosure_decision": tampered,
+        }
+    )
+    # Silence is never permission.
+    assert not _receipt_disclosure_is_coherent(
+        {"raw_interiorgs_bytes_in_provider_bundle": None}
+    )

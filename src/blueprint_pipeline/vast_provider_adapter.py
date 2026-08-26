@@ -36,6 +36,10 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_configuration_disclosure import (
+    render_inputs_disclosure_is_coherent,
+    renders_on_provider,
+)
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
@@ -399,7 +403,11 @@ def _scene_configuration_bundle_contract(
         or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
         or manifest.get("manifest_digest")
         != canonical_digest(manifest, digest_field="manifest_digest")
-        or manifest.get("raw_interiorgs_bytes_in_provider_bundle") is not False
+        or manifest.get("raw_interiorgs_bytes_in_provider_bundle")
+        is not renders_on_provider(
+            (envelope.get("render_inputs_result") or {}).get("disclosure_decision")
+            or {}
+        )
         or manifest.get("single_parent_allocation") is not True
         or manifest.get("nested_provider_mutations_performed") != 0
         or manifest.get("evaluation_episode_executed") is not False
@@ -428,10 +436,12 @@ def _scene_configuration_bundle_contract(
         or not isinstance(stages, list)
         or len(stages) != 6
         or not isinstance(render, Mapping)
-        or render.get("raw_interiorgs_bytes_in_provider_packet") is not False
+        or not render_inputs_disclosure_is_coherent(render)
         or not isinstance(disclosure, Mapping)
-        or disclosure.get("raw_interiorgs_bytes_in_provider_bundle") is not False
-        or disclosure.get("derived_rendered_views_in_provider_bundle") is not True
+        or disclosure.get("raw_interiorgs_bytes_in_provider_bundle")
+        is not renders_on_provider(render.get("disclosure_decision") or {})
+        or disclosure.get("derived_rendered_views_in_provider_bundle")
+        is renders_on_provider(render.get("disclosure_decision") or {})
     ):
         blockers.append("scene_configuration_portable_envelope_invalid")
 

@@ -366,7 +366,12 @@ def build_scene_configuration_provider_bundle(
         "portable_construction_envelope_digest": portable["envelope_digest"],
         "toolchain_schema_version": TOOLCHAIN_SCHEMA_VERSION,
         "toolchain_digest": toolchain_manifest["toolchain_digest"],
-        "raw_interiorgs_bytes_in_provider_bundle": False,
+        # The disclosure receipt beside this manifest already reports the
+        # truth. A manifest that hardcodes False asserts no source bytes
+        # crossed on a run where they did, which is a provenance falsehood,
+        # not a safety guarantee -- the guarantee is the digest-bound
+        # decision that authorized the crossing.
+        "raw_interiorgs_bytes_in_provider_bundle": provider_render,
         "derived_rendered_view_count": len(portable["render_inputs_result"]["derived_frames"]),
         "single_parent_allocation": True,
         "nested_provider_mutations_performed": 0,
@@ -394,6 +399,25 @@ def build_scene_configuration_provider_bundle(
     return receipt
 
 
+def _receipt_disclosure_is_coherent(receipt: Mapping[str, Any]) -> bool:
+    """True when the receipt's raw-bytes claim matches its authorizing decision.
+
+    The old literal ``raw_interiorgs_bytes_in_provider_bundle is False`` is
+    preserved for every scene whose rights do not admit the upload. A receipt
+    that claims the bytes crossed must additionally carry the digest-bound
+    decision that permitted it, so this narrows what a bundle may claim
+    rather than widening it.
+    """
+
+    crossed = receipt.get("raw_interiorgs_bytes_in_provider_bundle")
+    decision = (receipt.get("provider_disclosure_receipt") or {}).get(
+        "disclosure_decision"
+    ) or receipt.get("disclosure_decision")
+    if crossed is False:
+        return True
+    return crossed is True and renders_on_provider(decision or {})
+
+
 def load_scene_configuration_provider_bundle_receipt(
     path: str | Path, *, expected_source_commit: str | None = None
 ) -> dict[str, Any]:
@@ -410,7 +434,7 @@ def load_scene_configuration_provider_bundle_receipt(
         or receipt.get("status") != "ready"
         or receipt.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
         or receipt.get("probe_kind") != PROBE_KIND
-        or receipt.get("raw_interiorgs_bytes_in_provider_bundle") is not False
+        or not _receipt_disclosure_is_coherent(receipt)
         or receipt.get("single_parent_allocation") is not True
         or receipt.get("nested_provider_mutations_performed") != 0
         or receipt.get("evaluation_episode_executed") is not False
