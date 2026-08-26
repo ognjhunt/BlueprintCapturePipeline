@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_configuration_disclosure import (
+    RENDER_INPUT_STATUSES,
+    render_inputs_disclosure_is_coherent,
+)
 
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_scene_construction_envelope.v1"
@@ -116,10 +120,9 @@ def stage_scene_construction(
         or render_inputs_result.get("schema_version")
         != "task_evaluation_scene_configuration_render_inputs.v1"
         or render_inputs_result.get("status")
-        != "derived_method_inputs_materialized"
+        not in RENDER_INPUT_STATUSES
         or render_inputs_result.get("run_id") != run_id
-        or render_inputs_result.get("raw_interiorgs_bytes_in_provider_packet")
-        is not False
+        or not render_inputs_disclosure_is_coherent(render_inputs_result)
         or render_inputs_result.get("provider_mutation_performed") is not False
         or render_inputs_result.get("paid_execution_requested") is not False
         or render_inputs_result.get("result_digest")

@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_scene_configuration_disclosure import (
+    RENDER_INPUT_STATUSES,
+    render_inputs_disclosure_is_coherent,
+    renders_on_provider,
+)
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -219,8 +224,8 @@ def build_scene_configuration_provider_bundle(
         or envelope.get("envelope_digest")
         != canonical_digest(envelope, digest_field="envelope_digest")
         or not isinstance(render_inputs, Mapping)
-        or render_inputs.get("status") != "derived_method_inputs_materialized"
-        or render_inputs.get("raw_interiorgs_bytes_in_provider_packet") is not False
+        or render_inputs.get("status") not in RENDER_INPUT_STATUSES
+        or not render_inputs_disclosure_is_coherent(render_inputs)
         or render_inputs.get("result_digest")
         != canonical_digest(render_inputs, digest_field="result_digest")
     ):
@@ -241,12 +246,18 @@ def build_scene_configuration_provider_bundle(
     stage = output / "stage"
     runtime = stage / "provider_runtime"
     runtime.mkdir(parents=True)
+    # The render-inputs result carries the digest-bound decision that says
+    # whether source appearance bytes may cross to the provider. The bundle
+    # honours that decision rather than making a second, divergent one.
+    provider_render = renders_on_provider(
+        render_inputs.get("disclosure_decision") or {}
+    )
     portable = json.loads(json.dumps(envelope))
     portable["control_plane_envelope_digest"] = envelope["envelope_digest"]
     portable_refs = []
     for index, row in enumerate(envelope.get("materialized_references") or []):
         contract_path = str(row.get("contract_path") or "")
-        if contract_path == "scene.appearance.representation":
+        if contract_path == "scene.appearance.representation" and not provider_render:
             continue
         source = _bound_file(row, code="scene_configuration_bundle_reference_invalid")
         target = runtime / "input/references" / f"{index:04d}{source.suffix}"
@@ -283,9 +294,14 @@ def build_scene_configuration_provider_bundle(
         if row.get("contract_path") == "scene.appearance.representation"
     ]
     portable["provider_disclosure_receipt"] = {
-        "raw_interiorgs_reference_count_omitted": len(raw_paths),
-        "raw_interiorgs_bytes_in_provider_bundle": False,
-        "derived_rendered_views_in_provider_bundle": True,
+        "raw_interiorgs_reference_count_omitted": 0 if provider_render else len(raw_paths),
+        "raw_interiorgs_bytes_in_provider_bundle": provider_render,
+        "derived_rendered_views_in_provider_bundle": not provider_render,
+        "render_execution_site": render_inputs.get("render_execution_site")
+        or "control_plane",
+        "disclosure_decision_digest": (
+            (render_inputs.get("disclosure_decision") or {}).get("decision_digest")
+        ),
     }
     portable["envelope_digest"] = canonical_digest(
         portable, digest_field="envelope_digest"
