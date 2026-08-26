@@ -200,20 +200,55 @@ def _private_file_value(environment_name: str) -> str | None:
     if not raw_path:
         return None
     path = Path(raw_path).expanduser()
-    if path.is_symlink():
+    try:
+        if path.is_symlink():
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_object_store_secret_file_unsafe"
+            )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except TaskEvaluationLaunchPreparationWorkerError:
+        raise
+    except OSError as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_object_store_secret_file_unavailable"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        mode = stat.S_IMODE(metadata.st_mode)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or mode & ~0o640
+            or not mode & 0o440
+        ):
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_object_store_secret_file_unsafe"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            payload = handle.read(4097)
+    except TaskEvaluationLaunchPreparationWorkerError:
+        raise
+    except OSError as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_object_store_secret_file_unavailable"
+        ) from exc
+    finally:
+        os.close(descriptor)
+    if len(payload) > 4096:
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_object_store_secret_file_unsafe"
         )
     try:
-        resolved = path.resolve(strict=True)
-        metadata = resolved.stat()
-        mode = stat.S_IMODE(metadata.st_mode)
-        value = resolved.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError) as exc:
+        value = payload.decode("utf-8").strip()
+    except UnicodeError as exc:
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_object_store_secret_file_unavailable"
         ) from exc
-    if not stat.S_ISREG(metadata.st_mode) or mode & 0o077 or not value:
+    if not value:
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_object_store_secret_file_unsafe"
         )

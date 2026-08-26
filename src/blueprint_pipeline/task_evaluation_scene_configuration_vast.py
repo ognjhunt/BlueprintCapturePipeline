@@ -89,17 +89,34 @@ def _provider_runtime_inputs(
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_openai_runtime_secret_configuration_missing"
         )
-    for unresolved in secret_paths.values():
-        path = Path(unresolved).expanduser().resolve()
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or path.stat().st_mode & 0o077
-            or not 0 < path.stat().st_size <= 65_536
-        ):
+    for name, unresolved in secret_paths.items():
+        path = Path(unresolved).expanduser().absolute()
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as exc:
             raise TaskEvaluationSceneConfigurationVastError(
                 "scene_configuration_openai_runtime_secret_configuration_invalid"
-            )
+            ) from exc
+        try:
+            metadata = os.fstat(descriptor)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or mode & ~0o640
+                or not mode & 0o440
+                or not 0 < metadata.st_size <= 65_536
+            ):
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_openai_runtime_secret_configuration_invalid"
+                )
+        finally:
+            os.close(descriptor)
+        secret_paths[name] = str(path)
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,

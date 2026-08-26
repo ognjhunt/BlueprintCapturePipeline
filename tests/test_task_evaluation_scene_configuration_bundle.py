@@ -418,7 +418,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     ):
         path = tmp_path / name.lower()
         path.write_text(value, encoding="utf-8")
-        path.chmod(0o600)
+        path.chmod(0o640)
         monkeypatch.setenv(name, str(path))
     monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
     monkeypatch.setenv("OPENAI_API_KEY_ID", "key_test")
@@ -507,6 +507,55 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         authority_module.validate_scene_configuration_paid_authority(
             tampered, bundle_receipt=receipt
         )
+
+
+def test_scene_configuration_openai_runtime_files_fail_closed_on_unsafe_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = {
+        "authority_digest": "sha256:" + "a" * 64,
+        "external_service_spend_caps": {
+            "openai": {
+                "maximum_cost_usd": 1.0,
+                "maximum_requests": 3,
+                "stage_max_cost_usd": {
+                    "artifixer_semantic_teacher": 0.2,
+                    "artifixer_visual_review": 0.5,
+                    "content_agents": 0.3,
+                },
+            }
+        },
+    }
+    paths = []
+    for name in (
+        "OPENAI_API_KEY_FILE",
+        "OPENAI_ADMIN_API_KEY_FILE",
+        "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE",
+    ):
+        path = tmp_path / name.lower()
+        path.write_text("private-value", encoding="utf-8")
+        path.chmod(0o640)
+        monkeypatch.setenv(name, str(path))
+        paths.append(path)
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
+    monkeypatch.setenv("OPENAI_API_KEY_ID", "key_test")
+
+    paths[0].chmod(0o644)
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match="scene_configuration_openai_runtime_secret_configuration_invalid",
+    ):
+        scene_vast._provider_runtime_inputs(authority)
+
+    paths[0].chmod(0o640)
+    symlink = tmp_path / "openai-key-link"
+    symlink.symlink_to(paths[0])
+    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(symlink))
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match="scene_configuration_openai_runtime_secret_configuration_invalid",
+    ):
+        scene_vast._provider_runtime_inputs(authority)
 
 
 def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
