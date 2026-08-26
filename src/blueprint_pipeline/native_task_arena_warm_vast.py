@@ -12,6 +12,7 @@ import subprocess
 import time
 from typing import Any
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .adp_isaac_lab_arena_vast import (
@@ -75,7 +76,13 @@ def _read_api_key() -> str:
 
 def _read_url(path: Path) -> str:
     value = path.read_text(encoding="utf-8").strip()
-    if not value.startswith("https://"):
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ValueError("native_task_arena_warm_signed_url_invalid")
     return value
 
@@ -436,7 +443,9 @@ def _download_when_ready(
             request = urllib.request.Request(
                 url, headers={"User-Agent": "BlueprintArenaWarm/1.0"}
             )
-            with urllib.request.urlopen(request, timeout=30) as response:
+            # The URL is admitted by _read_url before this helper is called:
+            # HTTPS only, with a non-empty host and no embedded credentials.
+            with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
                 payload = response.read()
             if payload:
                 destination.write_bytes(payload)

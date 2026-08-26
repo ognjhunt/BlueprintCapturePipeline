@@ -1915,7 +1915,7 @@ def _materialize_remote_configs(
                 ] = material_subject + (
                     " using the provided reference image and renders. "
                     "Do not infer hidden, collision, physics, or physical truth. "
-                    "Select only from the provided material library. "
+                    "Choose only a material in the provided library. "
                     "Available materials: {materials_list} "
                     "Respond as <reasoning>brief reasoning</reasoning>"
                     "<answer>{{\"material\": \"material name\"}}</answer>."
