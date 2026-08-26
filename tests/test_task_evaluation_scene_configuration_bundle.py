@@ -618,6 +618,9 @@ def test_scene_configuration_openai_runtime_files_fail_closed_on_unsafe_metadata
 def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     tmp_path: Path,
 ) -> None:
+    assert vpa._provider_expected_video_count(
+        "task_evaluation_scene_configuration"
+    ) == 0
     chain = {
         "schema_version": "task_evaluation_scene_configuration_provider_stage_chain.v1",
         "status": "completed",
@@ -649,6 +652,12 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
             "task_evaluation_scene_configuration_provider_result.v1.json",
             json.dumps(result),
         )
+
+    adapter_inspection = vpa._inspect_provider_runtime_output_zip(
+        archive, expected_video_count=0
+    )
+    assert adapter_inspection["runtime_result_present"] is True
+    assert adapter_inspection["runtime_result_status"] == "completed"
 
     observed, blockers = scene_vast._extract_provider_output(
         archive, tmp_path / "extracted-output"
