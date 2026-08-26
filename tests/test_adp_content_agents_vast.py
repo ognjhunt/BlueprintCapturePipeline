@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -4686,11 +4687,15 @@ def test_content_agents_live_worker_forwards_openai_country_allowlist() -> None:
 
 def test_every_vast_worker_that_forwards_openai_is_country_constrained() -> None:
     sources = ROOT / "src/blueprint_pipeline"
+    # The forwarding marker is any OpenAI key environment name, including the
+    # per-stage names like OPENAI_CONTENT_AGENTS_API_KEY_FILE -- a worker that
+    # renames its key envs must not silently fall out of this contract.
+    forwards_openai = re.compile(r"OPENAI_[A-Z0-9_]*API_KEY")
     openai_vast_workers = {
         path.name: path.read_text(encoding="utf-8")
         for path in sources.glob("*vast*.py")
         if path.name != "vast_provider_adapter.py"
-        if "OPENAI_API_KEY" in path.read_text(encoding="utf-8")
+        if forwards_openai.search(path.read_text(encoding="utf-8"))
         and "run_vast_provider_adapter(" in path.read_text(encoding="utf-8")
     }
 
