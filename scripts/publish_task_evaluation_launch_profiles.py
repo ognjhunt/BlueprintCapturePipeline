@@ -151,6 +151,9 @@ def _install_service_directory(path: Path, *, gid: int) -> None:
     try:
         if path.is_symlink() or not path.is_dir():
             raise OSError(f"unsafe service directory: {path}")
+        installed = path.stat()
+        if installed.st_gid == gid and stat.S_IMODE(installed.st_mode) == 0o750:
+            return
         os.chown(path, -1, gid)
         path.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
     except OSError as exc:
@@ -164,13 +167,16 @@ def _seal_published_profile(
 ) -> None:
     """Make the final profile service-readable and prove its exact bytes reopen."""
 
-    try:
-        os.chown(path, -1, gid)
-        path.chmod(stat.S_IRUSR | stat.S_IRGRP)
-    except OSError as exc:
-        raise TaskEvaluationLaunchError(
-            f"launch_profile_permission_install_failed:{path.name}"
-        ) from exc
+    sealed_mode = stat.S_IRUSR | stat.S_IRGRP
+    installed = path.stat()
+    if installed.st_gid != gid or stat.S_IMODE(installed.st_mode) != sealed_mode:
+        try:
+            os.chown(path, -1, gid)
+            path.chmod(sealed_mode)
+        except OSError as exc:
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_permission_install_failed:{path.name}"
+            ) from exc
     observed = _digest_as_account(path, account=account, uid=uid)
     metadata = path.stat()
     if (

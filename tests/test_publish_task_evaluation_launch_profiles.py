@@ -698,3 +698,58 @@ def test_unsealed_input_this_service_cannot_seal_still_blocks(
         )
 
     assert "immutable_input_permission_install_failed" in str(excinfo.value)
+
+
+def test_already_sealed_service_dir_and_profile_are_not_re_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Republish must survive a profile directory and profile it does not own.
+
+    A root-run publish leaves both the profile directory (0750) and the
+    published profile (0440) already at exactly the state publication
+    installs, but owned by root. A later service-account republish cannot
+    chown either one, and before this guard it failed with
+    ``launch_profile_directory_permission_install_failed`` or
+    ``launch_profile_permission_install_failed`` on state that was already
+    correct.
+    """
+
+    fixture = _profile(tmp_path, "profile-already-sealed")
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    profile_dir = tmp_path / "etc" / "task-evaluation-launch-profiles"
+    catalog = tmp_path / "state" / "catalog.json"
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+
+    published = profile_dir / "profile-already-sealed.json"
+    assert stat.S_IMODE(profile_dir.stat().st_mode) == 0o750
+    assert stat.S_IMODE(published.stat().st_mode) == 0o440
+
+    frozen = {profile_dir.resolve(), published.resolve()}
+    real_chown = os.chown
+
+    def refuse_frozen_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() in frozen:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(publisher.os, "chown", refuse_frozen_chown)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(profile_dir.stat().st_mode) == 0o750
+    assert stat.S_IMODE(published.stat().st_mode) == 0o440

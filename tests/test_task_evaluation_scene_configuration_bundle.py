@@ -748,3 +748,67 @@ def test_scene_configuration_result_reports_why_the_adapter_refused(
     assert merge_index < result_index, (
         "adapter blockers must be merged before the result is assembled"
     )
+
+
+def test_runtime_secrets_are_staged_owner_only_for_the_adapter(
+    tmp_path: Path,
+) -> None:
+    """The lane's own rule and the adapter's rule must both be satisfiable.
+
+    ``_provider_runtime_inputs`` requires each source secret to be group
+    readable and no wider (host convention: ``root:blueprint 0640``), while
+    the Vast adapter refuses any path with ``st_mode & 0o077`` set. A
+    root-owned file cannot satisfy both, so the lane must hand the adapter an
+    owner-only copy it made itself.
+    """
+
+    import stat as stat_module
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as lane
+
+    source = tmp_path / "openai_cost_scope_attestation.json"
+    source.write_text('{"scope":"artifixer"}\n', encoding="utf-8")
+    source.chmod(0o640)
+    assert source.stat().st_mode & 0o077  # the source is group readable
+
+    job = tmp_path / "job"
+    job.mkdir()
+    staged, root = lane._stage_owner_only_runtime_secrets(
+        job_dir=job,
+        secret_paths={"BLUEPRINT_OPENAI_TEST_ATTESTATION_FILE": str(source)},
+    )
+
+    staged_path = Path(staged["BLUEPRINT_OPENAI_TEST_ATTESTATION_FILE"])
+    assert staged_path.read_bytes() == source.read_bytes()
+    # Exactly the adapter's rule.
+    assert staged_path.stat().st_mode & 0o077 == 0
+    assert stat_module.S_IMODE(staged_path.stat().st_mode) == 0o600
+
+    lane._discard_staged_runtime_secrets(root)
+    assert not staged_path.exists()
+    assert not root.exists()
+    assert source.read_text(encoding="utf-8") == '{"scope":"artifixer"}\n'
+
+
+def test_the_lane_hands_the_adapter_the_staged_paths_and_always_discards_them(
+    tmp_path: Path,
+) -> None:
+    """Staging is worthless if the raw paths are still passed, or if the
+    private copies outlive the run."""
+
+    import inspect
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as lane
+
+    source = inspect.getsource(lane.run_scene_configuration_vast)
+    stage_index = source.find("_stage_owner_only_runtime_secrets")
+    adapter_index = source.find("runtime_secret_file_paths=runtime_secret_paths")
+    assert stage_index != -1, "the lane never stages owner-only copies"
+    assert adapter_index != -1
+    assert stage_index < adapter_index, (
+        "secrets must be staged before they reach the adapter"
+    )
+    assert "_discard_staged_runtime_secrets(staged_secret_root)" in source
+    assert source.count("_discard_staged_runtime_secrets") >= 2, (
+        "the private copies must be discarded on the failure path too"
+    )
