@@ -140,6 +140,27 @@ def _portable_render_inputs(
         portable_mask = portable["derived_frames"][index]["source_object_mask"]
         portable_mask.pop("materialized_path", None)
         portable_mask["path"] = mask_target.relative_to(runtime).as_posix()
+    cutout = render.get("derived_gaussian_cutout")
+    if not isinstance(cutout, Mapping):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_render_gaussian_cutout_invalid"
+        )
+    for key, filename in (
+        ("source_object_candidate", "source_object_candidate_gaussians.ply"),
+        (
+            "retained_scene_without_source_object",
+            "retained_scene_gaussians_without_source_object.ply",
+        ),
+    ):
+        source = _bound_file(
+            cutout.get(key) or {},
+            code="scene_configuration_render_gaussian_cutout_invalid",
+        )
+        target = runtime / "input/render/gaussians" / filename
+        _copy_file(source, target)
+        portable_row = portable["derived_gaussian_cutout"][key]
+        portable_row.pop("materialized_path", None)
+        portable_row["path"] = target.relative_to(runtime).as_posix()
     portable["control_plane_result_digest"] = source_result_digest
     portable["result_digest"] = canonical_digest(
         portable, digest_field="result_digest"

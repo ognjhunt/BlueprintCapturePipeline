@@ -93,6 +93,31 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
             size_bytes=mask.get("size_bytes"),
         )
         mask["path"] = str(mask_path)
+    cutout = render.get("derived_gaussian_cutout") or {}
+    for key in (
+        "source_object_candidate",
+        "retained_scene_without_source_object",
+    ):
+        row = cutout.get(key) or {}
+        path = _runtime_file(
+            runtime,
+            row.get("path"),
+            digest=row.get("digest"),
+            size_bytes=row.get("size_bytes"),
+        )
+        row["path"] = str(path)
+    for row in envelope.get("stage_configuration_references") or []:
+        path = _runtime_file(
+            runtime,
+            row.get("relative_path"),
+            digest=row.get("digest"),
+            size_bytes=row.get("size_bytes"),
+        )
+        row["materialized_path"] = str(path)
+    envelope["portable_envelope_digest"] = portable["envelope_digest"]
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
     return envelope
 
 
@@ -121,12 +146,7 @@ def main() -> int:
     configurations = {}
     for row in envelope["stage_configuration_references"]:
         stage_id = str(row["stage_id"])
-        path = _runtime_file(
-            runtime,
-            row.get("relative_path"),
-            digest=row.get("digest"),
-            size_bytes=row.get("size_bytes"),
-        )
+        path = Path(row["materialized_path"]).resolve()
         configurations[stage_id] = (_read(path), path)
     output.mkdir(parents=True, exist_ok=True)
     stages_root = output / "stages"

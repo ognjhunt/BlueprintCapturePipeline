@@ -12,9 +12,6 @@ from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_live_profile import file_digest
-from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
-    TOOLCHAIN_SCHEMA_VERSION,
-)
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
     build_scene_configuration_provider_bundle,
@@ -23,15 +20,18 @@ from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
 from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as authority_module
 from blueprint_pipeline import task_evaluation_live_profile as live_profile_module
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
-from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
-    ADMITTED_PRODUCER_IDENTITIES,
-)
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
 )
 from blueprint_pipeline import vast_provider_adapter as vpa
 from scripts.build_task_evaluation_scene_configuration_live_profile import (
     build_scene_configuration_live_profile,
+)
+from scripts.build_task_evaluation_scene_configuration_toolchain import (
+    build_published_scene_configuration_toolchain,
+)
+from tests.test_build_task_evaluation_scene_configuration_toolchain import (
+    _component_packages,
 )
 
 
@@ -50,48 +50,13 @@ def _bound(path: Path, **extra: object) -> dict[str, object]:
 
 
 def _toolchain(root: Path, commit: str) -> Path:
-    stages: dict[str, dict[str, object]] = {}
-    files = []
-    for identity in ADMITTED_PRODUCER_IDENTITIES:
-        executable = root / "stages" / identity.adapter_id
-        executable.parent.mkdir(parents=True, exist_ok=True)
-        executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
-        executable.chmod(0o555)
-        stages[identity.adapter_id] = {
-            "entrypoint": executable.relative_to(root).as_posix(),
-            "network_policy": (
-                "disabled"
-                if identity.adapter_id == "simready_native_import_qualification"
-                else "provider_and_openai_api"
-            ),
-            "secrets_via_files_only": True,
-            "raw_secret_values_in_argv_or_logs": False,
-        }
-        files.append(
-            {
-                "relative_path": executable.relative_to(root).as_posix(),
-                "sha256": _sha256(executable),
-                "size_bytes": executable.stat().st_size,
-                "executable": True,
-            }
-        )
-    manifest = {
-        "schema_version": TOOLCHAIN_SCHEMA_VERSION,
-        "status": "published_full_byte_readback_passed",
-        "source_commit": commit,
-        "full_byte_service_account_readback_passed": True,
-        "stages": stages,
-        "files": files,
-        "toolchain_digest": "",
-    }
-    manifest["toolchain_digest"] = canonical_digest(
-        manifest, digest_field="toolchain_digest"
+    build_published_scene_configuration_toolchain(
+        source_commit=commit,
+        output_root=root,
+        readback=lambda path: path.read_bytes(),
+        readback_actor="service-account:test",
+        component_packages=_component_packages(root.parent),
     )
-    manifest_path = root / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        path.chmod(0o555 if path.is_dir() or path != manifest_path else 0o444)
-    root.chmod(0o555)
     return root
 
 
@@ -129,6 +94,10 @@ def _envelope(root: Path, commit: str) -> Path:
     Image.new("RGB", (16, 16), color=(90, 80, 70)).save(frame)
     mask = inputs / "mask.png"
     Image.new("L", (16, 16), color=255).save(mask)
+    removed = inputs / "source-object-candidate.ply"
+    removed.write_bytes(b"derived-source-object-candidate")
+    retained = inputs / "retained-scene.ply"
+    retained.write_bytes(b"derived-retained-scene")
     render = {
         "schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
         "status": "derived_method_inputs_materialized",
@@ -155,9 +124,24 @@ def _envelope(root: Path, commit: str) -> Path:
         "derived_frame_count": 1,
         "source_object_masks": {
             "count": 1,
-            "source": "publisher_instance_104_projected_from_registered_bounds",
+            "source": "registered_source_object_bounds_projection",
+            "source_object_identity": {"publisher_instance_id": "104"},
             "observed_segmentation_truth": False,
             "all_masks_digest_bound": True,
+        },
+        "derived_gaussian_cutout": {
+            "selection_rule": (
+                "gaussian_center_inside_registered_source_object_aabb"
+            ),
+            "aabb_padding_m": 0.0,
+            "source_count": 4,
+            "removed_count": 1,
+            "retained_count": 3,
+            "source_object_candidate": _bound(removed),
+            "retained_scene_without_source_object": _bound(retained),
+            "retained_rows_byte_exact": True,
+            "selection_is_candidate_not_observed_object_ownership_truth": True,
+            "raw_source_bytes_in_provider_packet": False,
         },
         "result_digest": "",
     }
@@ -248,6 +232,9 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
     assert portable["render_inputs_result"]["derived_frames"][0]["path"].startswith(
         "input/render/"
     )
+    assert portable["render_inputs_result"]["derived_gaussian_cutout"][
+        "retained_scene_without_source_object"
+    ]["path"].startswith("input/render/gaussians/")
     assert str(tmp_path).encode() not in payloads[
         "provider_runtime/input/portable_construction_envelope.v1.json"
     ]
@@ -271,6 +258,10 @@ def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path
         )
     )
     hydrated = module._hydrate_envelope(runtime.resolve(), portable)
+    assert hydrated["portable_envelope_digest"] == portable["envelope_digest"]
+    assert hydrated["envelope_digest"] == canonical_digest(
+        hydrated, digest_field="envelope_digest"
+    )
     assert all(
         Path(row["materialized_path"]).is_file()
         for row in hydrated["materialized_references"]
@@ -282,6 +273,15 @@ def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path
     assert all(
         Path(row["source_object_mask"]["path"]).is_file()
         for row in hydrated["render_inputs_result"]["derived_frames"]
+    )
+    assert Path(
+        hydrated["render_inputs_result"]["derived_gaussian_cutout"][
+            "retained_scene_without_source_object"
+        ]["path"]
+    ).is_file()
+    assert all(
+        Path(row["materialized_path"]).is_file()
+        for row in hydrated["stage_configuration_references"]
     )
 
     frame = runtime / portable["render_inputs_result"]["derived_frames"][0]["path"]

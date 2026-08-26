@@ -22,6 +22,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_orchestrator import 
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_worker import (
     fetcher,
+    fake_scene_render_inputs,
     production_request_with_fetchable_bytes,
 )
 
@@ -47,6 +48,7 @@ def staged_configuration(tmp_path: Path) -> tuple[dict, Path, Path]:
         source_commit=value["expected_production_commit"],
         fetcher=fetcher(payloads),
         construction_queue_root=construction_queue,
+        scene_render_input_materializer=fake_scene_render_inputs,
     )
     assert prepared["results"][0]["status"] == (
         "queued_for_production_scene_configuration"

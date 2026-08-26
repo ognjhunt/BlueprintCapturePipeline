@@ -20,6 +20,12 @@ import numpy as np
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .gaussian_splat_decode import (
+    convert_to_standard_ply,
+    read_standard_3dgs_ply,
+    verify_standard_3dgs_ply_subset_exact,
+    write_standard_3dgs_ply_subset_exact,
+)
 from .sealed_camera_render import render_splat_at_exact_cameras
 from .task_evaluation_splat_render_runtime import runtime_from_environment
 
@@ -27,6 +33,7 @@ from .task_evaluation_splat_render_runtime import runtime_from_environment
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_render_inputs.v1"
 Renderer = Callable[..., Mapping[str, Any]]
 RuntimeResolver = Callable[..., Mapping[str, Any]]
+SplatDecoder = Callable[..., Mapping[str, Any]]
 
 
 class TaskEvaluationSceneConfigurationRenderInputsError(ValueError):
@@ -259,10 +266,12 @@ def materialize_scene_configuration_render_inputs(
     output_root: str | Path,
     renderer: Renderer = render_splat_at_exact_cameras,
     runtime_resolver: RuntimeResolver = runtime_from_environment,
+    splat_decoder: SplatDecoder = convert_to_standard_ply,
 ) -> dict[str, Any]:
     """Render exact derived method inputs without exposing the raw source."""
 
     source_object = stage_one_configuration.get("source_object")
+    gaussian_cutout = stage_one_configuration.get("gaussian_cutout")
     required_views = stage_one_configuration.get("required_views")
     disclosure = stage_one_configuration.get("provider_disclosure")
     if (
@@ -270,11 +279,19 @@ def materialize_scene_configuration_render_inputs(
         != "observed_appearance_object_removal_configuration.v1"
         or stage_one_configuration.get("production_render_required") is not True
         or not isinstance(source_object, Mapping)
+        or not isinstance(gaussian_cutout, Mapping)
+        or gaussian_cutout.get("selection_rule")
+        != "gaussian_center_inside_registered_source_object_aabb"
+        or not isinstance(gaussian_cutout.get("aabb_padding_m"), (int, float))
+        or isinstance(gaussian_cutout.get("aabb_padding_m"), bool)
+        or not 0.0 <= float(gaussian_cutout["aabb_padding_m"]) <= 0.10
+        or gaussian_cutout.get("retained_rows_must_remain_byte_exact") is not True
         or not isinstance(required_views, Mapping)
         or required_views.get("minimum", 0) > 8
         or required_views.get("lossless_inputs") is not True
         or required_views.get("mask_source")
-        != "publisher_instance_104_projected_from_registered_bounds"
+        != "registered_source_object_bounds_projection"
+        or not str(source_object.get("publisher_instance_id") or "").strip()
         or not isinstance(disclosure, Mapping)
         or disclosure.get("raw_interiorgs_bytes") is not False
         or disclosure.get("derived_rendered_views") is not True
@@ -323,12 +340,57 @@ def materialize_scene_configuration_render_inputs(
         minimum_xyz=source_object["aabb_min_xyz_m"],
         maximum_xyz=source_object["aabb_max_xyz_m"],
     )
+    repository_root = Path(__file__).resolve().parents[2]
+    runtime = dict(runtime_resolver(repo_root=repository_root))
     root = Path(output_root).resolve()
     if root.is_symlink() or (root.exists() and any(root.iterdir())):
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_output_not_empty"
         )
     root.mkdir(parents=True, exist_ok=True)
+    decoded_path = root / "source_standard_decoded_for_local_cutout.ply"
+    decoded = dict(
+        splat_decoder(
+            appearance_path,
+            decoded_path,
+            repo_root=runtime["renderer_root"],
+            node=str(runtime["node"]),
+        )
+    )
+    if decoded.get("status") != "completed" or not decoded_path.is_file():
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_splat_decode_failed"
+        )
+    splat = read_standard_3dgs_ply(decoded_path)
+    padding = float(gaussian_cutout["aabb_padding_m"])
+    cutout_low = np.asarray(source_object["aabb_min_xyz_m"], dtype=np.float64) - padding
+    cutout_high = np.asarray(source_object["aabb_max_xyz_m"], dtype=np.float64) + padding
+    selected_mask = np.all(
+        (splat.xyz.astype(np.float64) >= cutout_low)
+        & (splat.xyz.astype(np.float64) <= cutout_high),
+        axis=1,
+    )
+    removed_indices = np.flatnonzero(selected_mask).astype(np.int64)
+    retained_indices = np.flatnonzero(~selected_mask).astype(np.int64)
+    if not removed_indices.size or not retained_indices.size:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_gaussian_cutout_invalid"
+        )
+    removed_path = root / "source_object_candidate_gaussians.ply"
+    retained_path = root / "retained_scene_gaussians_without_source_object.ply"
+    write_standard_3dgs_ply_subset_exact(
+        decoded_path, removed_path, removed_indices
+    )
+    write_standard_3dgs_ply_subset_exact(
+        decoded_path, retained_path, retained_indices
+    )
+    preservation = verify_standard_3dgs_ply_subset_exact(
+        decoded_path, retained_path, retained_indices
+    )
+    if preservation.get("retained_rows_byte_exact") is not True:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_gaussian_cutout_preservation_failed"
+        )
     calibration_path = root / "artifixer_method_input_cameras.v1.json"
     calibration_path.write_text(
         canonical_json(
@@ -350,8 +412,6 @@ def materialize_scene_configuration_render_inputs(
         + "\n",
         encoding="utf-8",
     )
-    repository_root = Path(__file__).resolve().parents[2]
-    runtime = dict(runtime_resolver(repo_root=repository_root))
     rendered = dict(
         renderer(
             splat_path=appearance_path,
@@ -453,8 +513,31 @@ def materialize_scene_configuration_render_inputs(
         "source_object_masks": {
             "count": len(derived_frames),
             "source": required_views["mask_source"],
+            "source_object_identity": {
+                "publisher_instance_id": source_object["publisher_instance_id"],
+            },
             "observed_segmentation_truth": False,
             "all_masks_digest_bound": True,
+        },
+        "derived_gaussian_cutout": {
+            "selection_rule": gaussian_cutout["selection_rule"],
+            "aabb_padding_m": padding,
+            "source_count": splat.count,
+            "removed_count": int(removed_indices.size),
+            "retained_count": int(retained_indices.size),
+            "source_object_candidate": {
+                "path": str(removed_path),
+                "digest": _sha256(removed_path),
+                "size_bytes": removed_path.stat().st_size,
+            },
+            "retained_scene_without_source_object": {
+                "path": str(retained_path),
+                "digest": _sha256(retained_path),
+                "size_bytes": retained_path.stat().st_size,
+            },
+            "retained_rows_byte_exact": True,
+            "selection_is_candidate_not_observed_object_ownership_truth": True,
+            "raw_source_bytes_in_provider_packet": False,
         },
         "browser_preview_used_as_method_input": False,
         "sage_render_used_as_appearance": False,

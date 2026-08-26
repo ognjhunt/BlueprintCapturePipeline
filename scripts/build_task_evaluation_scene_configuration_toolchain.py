@@ -17,14 +17,21 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.immutable_directory_publication import (
+    publish_staged_immutable_directory,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
+    SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
+    validate_scene_configuration_component_package,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
@@ -66,14 +73,26 @@ def build_published_scene_configuration_toolchain(
     output_root: str | Path,
     readback: Readback,
     readback_actor: str,
+    component_packages: Mapping[str, str | Path],
 ) -> dict[str, Any]:
     """Install one exclusive read-only toolchain and prove full-byte readback."""
 
     if _COMMIT.fullmatch(source_commit) is None or not readback_actor.strip():
         raise ValueError("scene_configuration_toolchain_publication_input_invalid")
-    destination = Path(output_root).expanduser().resolve()
-    if destination.exists() or destination.is_symlink():
-        raise ValueError("scene_configuration_toolchain_publication_output_exists")
+    admitted_ids = {identity.adapter_id for identity in ADMITTED_PRODUCER_IDENTITIES}
+    if set(component_packages) != admitted_ids:
+        raise ValueError("scene_configuration_toolchain_component_set_invalid")
+    validated_packages = {
+        adapter_id: (
+            Path(root).expanduser().resolve(),
+            validate_scene_configuration_component_package(
+                root=root,
+                expected_adapter_id=adapter_id,
+            ),
+        )
+        for adapter_id, root in component_packages.items()
+    }
+    destination = Path(output_root).expanduser().absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
         tempfile.mkdtemp(
@@ -99,17 +118,45 @@ def build_published_scene_configuration_toolchain(
                     "executable": True,
                 }
             )
+            package_source, package_manifest = validated_packages[
+                identity.adapter_id
+            ]
+            package_relative = Path("components") / identity.adapter_id / "package"
+            package_destination = staging / package_relative
+            shutil.copytree(package_source, package_destination, symlinks=False)
+            for component_file in sorted(
+                path for path in package_destination.rglob("*") if path.is_file()
+            ):
+                relative_component_file = component_file.relative_to(staging)
+                files.append(
+                    {
+                        "relative_path": relative_component_file.as_posix(),
+                        "sha256": _sha256(component_file),
+                        "size_bytes": component_file.stat().st_size,
+                        "executable": bool(component_file.stat().st_mode & 0o111),
+                    }
+                )
+            component_relative = package_relative / package_manifest["driver_entrypoint"]
             stages[identity.adapter_id] = {
                 "entrypoint": relative.as_posix(),
-                "network_policy": (
-                    "disabled"
-                    if identity.adapter_id == "simready_native_import_qualification"
-                    else "provider_and_openai_api"
-                ),
+                "component_entrypoint": component_relative.as_posix(),
+                "component_package_manifest": (
+                    package_relative
+                    / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json"
+                ).as_posix(),
+                "component_package_digest": package_manifest["package_digest"],
+                "network_policy": package_manifest["network_policy"],
                 "secrets_via_files_only": True,
                 "raw_secret_values_in_argv_or_logs": False,
             }
         (staging / "stages").chmod(0o555)
+        for path in sorted(
+            (item for item in (staging / "components").rglob("*") if item.is_dir()),
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            path.chmod(0o555)
+        (staging / "components").chmod(0o555)
         for row in files:
             path = staging / row["relative_path"]
             observed = readback(path)
@@ -134,9 +181,13 @@ def build_published_scene_configuration_toolchain(
         manifest_path = staging / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
         manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
         manifest_path.chmod(0o444)
-        os.rename(staging, destination)
+        publish_staged_immutable_directory(
+            staging=staging,
+            destination=destination,
+            manifest_name=manifest_path.name,
+            output_exists_code="scene_configuration_toolchain_publication_output_exists",
+        )
         installed = True
-        destination.chmod(0o555)
         installed_manifest = destination / manifest_path.name
         manifest_bytes = readback(installed_manifest)
         if manifest_bytes != installed_manifest.read_bytes():
@@ -199,12 +250,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--readback-user", required=True)
+    parser.add_argument(
+        "--component-package",
+        action="append",
+        default=[],
+        metavar="ADAPTER_ID=PATH",
+        help="Exact immutable component package; repeat once per admitted GPU adapter.",
+    )
     args = parser.parse_args(argv)
+    component_packages: dict[str, str] = {}
+    for raw in args.component_package:
+        adapter_id, separator, path = raw.partition("=")
+        if not separator or not adapter_id or not path or adapter_id in component_packages:
+            parser.error("--component-package must be unique ADAPTER_ID=PATH")
+        component_packages[adapter_id] = path
     receipt = build_published_scene_configuration_toolchain(
         source_commit=args.source_commit,
         output_root=args.output_root,
         readback=_service_account_readback(args.readback_user),
         readback_actor=f"service-account:{args.readback_user}",
+        component_packages=component_packages,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0

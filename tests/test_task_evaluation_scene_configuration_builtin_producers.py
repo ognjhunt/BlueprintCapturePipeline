@@ -9,12 +9,17 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
-    TOOLCHAIN_SCHEMA_VERSION,
     builtin_scene_configuration_stage_producer_registry,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
     PRODUCTION_RESULT_SCHEMA_VERSION,
+)
+from scripts.build_task_evaluation_scene_configuration_toolchain import (
+    build_published_scene_configuration_toolchain,
+)
+from tests.test_build_task_evaluation_scene_configuration_toolchain import (
+    _component_packages,
 )
 
 
@@ -24,49 +29,13 @@ def _sha256(path: Path) -> str:
 
 def _toolchain(tmp_path: Path, commit: str) -> Path:
     root = tmp_path / "toolchain"
-    stages = {}
-    for identity in ADMITTED_PRODUCER_IDENTITIES:
-        executable = root / "stages" / identity.adapter_id
-        executable.parent.mkdir(parents=True, exist_ok=True)
-        executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
-        executable.chmod(0o555)
-        stages[identity.adapter_id] = {
-            "entrypoint": executable.relative_to(root).as_posix(),
-            "network_policy": (
-                "disabled"
-                if identity.adapter_id == "simready_native_import_qualification"
-                else "provider_and_openai_api"
-            ),
-            "secrets_via_files_only": True,
-            "raw_secret_values_in_argv_or_logs": False,
-        }
-    files = [
-        {
-            "relative_path": path.relative_to(root).as_posix(),
-            "sha256": _sha256(path),
-            "size_bytes": path.stat().st_size,
-            "executable": True,
-        }
-        for path in sorted((root / "stages").iterdir())
-    ]
-    manifest = {
-        "schema_version": TOOLCHAIN_SCHEMA_VERSION,
-        "status": "published_full_byte_readback_passed",
-        "source_commit": commit,
-        "full_byte_service_account_readback_passed": True,
-        "stages": stages,
-        "files": files,
-        "toolchain_digest": "",
-    }
-    manifest["toolchain_digest"] = canonical_digest(
-        manifest, digest_field="toolchain_digest"
+    build_published_scene_configuration_toolchain(
+        source_commit=commit,
+        output_root=root,
+        readback=lambda path: path.read_bytes(),
+        readback_actor="service-account:test",
+        component_packages=_component_packages(tmp_path),
     )
-    (root / f"{TOOLCHAIN_SCHEMA_VERSION}.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
-    for path in sorted(root.rglob("*"), reverse=True):
-        path.chmod(0o555 if path.is_dir() or path.name != f"{TOOLCHAIN_SCHEMA_VERSION}.json" else 0o444)
-    root.chmod(0o555)
     return root
 
 

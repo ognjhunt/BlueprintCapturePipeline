@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_scene_configuration_component_package import (
+    TaskEvaluationSceneConfigurationComponentPackageError,
+    validate_scene_configuration_component_package,
+)
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
     PRODUCTION_RESULT_SCHEMA_VERSION,
@@ -212,6 +216,42 @@ def _validate_toolchain(
                 f"scene_configuration_toolchain_stage_invalid:{adapter_id}"
             )
         entrypoints[str(adapter_id)] = executable
+        component = _relative_file(
+            root,
+            row.get("component_entrypoint"),
+            code=f"scene_configuration_toolchain_stage_invalid:{adapter_id}",
+        )
+        component_relative = component.relative_to(root).as_posix()
+        package_manifest = _relative_file(
+            root,
+            row.get("component_package_manifest"),
+            code=f"scene_configuration_toolchain_stage_invalid:{adapter_id}",
+        )
+        package_manifest_relative = package_manifest.relative_to(root).as_posix()
+        try:
+            package = validate_scene_configuration_component_package(
+                root=package_manifest.parent,
+                expected_adapter_id=str(adapter_id),
+            )
+        except TaskEvaluationSceneConfigurationComponentPackageError as exc:
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                f"scene_configuration_toolchain_stage_invalid:{adapter_id}"
+            ) from exc
+        if (
+            component_relative not in inventory
+            or inventory[component_relative][2] is not True
+            or package_manifest_relative not in inventory
+            or not _DIGEST.fullmatch(
+                str(row.get("component_package_digest") or "")
+            )
+            or row.get("component_package_digest") != package["package_digest"]
+            or component
+            != (package_manifest.parent / package["driver_entrypoint"]).resolve()
+            or row.get("network_policy") != package["network_policy"]
+        ):
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                f"scene_configuration_toolchain_stage_invalid:{adapter_id}"
+            )
     return manifest, entrypoints
 
 
