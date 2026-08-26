@@ -1388,6 +1388,33 @@ def test_vast_geolocation_preference_is_digest_bound_to_the_profile(lane) -> Non
     )
 
 
+def test_camera_resolution_is_digest_bound_to_the_profile(lane) -> None:
+    profile = _build(
+        lane,
+        "controls",
+        camera_resolution="640X360",
+        preferred_geolocation_regex="virginia|texas",
+    )
+
+    assert profile["runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360",
+        "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX": "virginia|texas",
+    }
+    assert profile["profile_digest"] == canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+
+@pytest.mark.parametrize(
+    "resolution", ["640", "640*360", "0x360", "319x180", "320x179"]
+)
+def test_invalid_camera_resolution_is_refused_before_allocation(
+    lane, resolution: str
+) -> None:
+    with pytest.raises(TaskEvaluationLaunchError, match="camera_resolution"):
+        _build(lane, "controls", camera_resolution=resolution)
+
+
 @pytest.mark.parametrize(
     "link,omitted",
     [
