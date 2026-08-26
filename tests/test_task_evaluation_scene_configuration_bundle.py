@@ -692,3 +692,31 @@ def test_scene_configuration_arms_the_watchdog_with_that_exact_prefix() -> None:
     source = inspect.getsource(lane.run_scene_configuration_vast)
     assert "pod_name_prefix=WATCHDOG_POD_NAME_PREFIX" in source
     assert 'authority["resource_name"]) + "-"' not in source
+
+
+def test_scene_configuration_prefix_is_registered_and_labels_its_instances() -> None:
+    """Arming and labelling must agree, and both layers must accept the prefix.
+
+    ``arm_independent_vast_watchdog`` enforces the ``blueprint-`` namespace,
+    but the watchdog *process* additionally requires the prefix be one of the
+    registered canary families -- otherwise it refuses with
+    ``watchdog_pod_name_prefix_not_canary_scoped``. The registry's own
+    comments record the danger of satisfying it by borrowing another lane's
+    family: the name-scoped sweep then matches an empty set while still
+    reporting provider zero. So the lane's prefix must be registered under its
+    own name, and the Vast adapter must label instances with the very prefix
+    the watchdog armed on.
+    """
+
+    import inspect
+
+    from blueprint_pipeline.groot_oscar_runpod_watchdog import (
+        CANARY_NAME_PREFIXES,
+    )
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as lane
+
+    assert lane.WATCHDOG_POD_NAME_PREFIX in CANARY_NAME_PREFIXES
+    assert lane.WATCHDOG_POD_NAME_PREFIX.startswith(CANARY_NAME_PREFIXES)
+
+    source = inspect.getsource(lane.run_scene_configuration_vast)
+    assert "instance_label_prefix=watchdog.pod_name_prefix" in source

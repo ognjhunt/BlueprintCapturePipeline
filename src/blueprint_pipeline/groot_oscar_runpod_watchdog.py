@@ -76,6 +76,11 @@ CANARY_NAME_PREFIXES = (
     # than mislabeling the production execution as a generic canary.
     "blueprint-semantic-teacher-",
     "blueprint-adp-arena-",
+    # Website-driven Task Evaluation scene configuration is a bounded, hard-TTL
+    # Vast job. Its Vast adapter labels instances with exactly the prefix armed
+    # here (instance_label_prefix=watchdog.pod_name_prefix), so the name-scoped
+    # sweep matches the instances this lane actually creates.
+    "blueprint-task-evaluation-scene-config-",
     # Exact SimReady Isaac probes are independently watched under the same
     # collision-free prefix passed to their Vast adapter.
     "blueprint-adp009b-simready-",
