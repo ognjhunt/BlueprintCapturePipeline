@@ -1315,6 +1315,7 @@ def test_canonical_allocator_routes_native_task_policy_bundle(
     execution_path = tmp_path / "policy-execution.json"
     execution_path.write_text(json.dumps(execution_spec))
     observed: dict = {}
+    monkeypatch.setenv("BLUEPRINT_ADP009D_CAMERA_RESOLUTION", "640x360")
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",
@@ -1373,6 +1374,9 @@ def test_canonical_allocator_routes_native_task_policy_bundle(
     assert observed["prepared_bundle"]["execution_mode"] == "policy"
     assert observed["prepared_bundle"]["policy_candidate_id"] == "pi05_droid"
     assert observed["allowed_active_instance_ids"] == [47373597]
+    assert observed["provider_runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+    }
     admission = json.loads((tmp_path / "policy-admission.json").read_text())
     assert admission["candidate_policy_queried"] is True
 
@@ -2721,12 +2725,54 @@ def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
         paid_resource_admission_grant=None,
         execute=False,
         allowed_active_instance_ids=(47373597,),
+        provider_runtime_environment={
+            "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+        },
     )
 
     assert observed["candidate_policy_query_expected"] is True
     assert observed["allowed_active_instance_ids"] == (47373597,)
     assert observed["object_store_key_prefix"].endswith("/policy/pi05_droid")
     assert observed["vast_launch_lock_file"] is None
+    assert observed["provider_runtime_environment"] == {
+        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
+    }
+
+
+def test_policy_vast_adapter_refuses_unallowlisted_provider_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(module, "run_arena_native_control_vast", fake_run)
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "policy",
+        "policy_candidate_id": "pi05_droid",
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_policy_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    with pytest.raises(
+        ValueError, match="native_task_arena_policy_runtime_environment_invalid"
+    ):
+        run_native_task_arena_policy_vast(
+            job_dir=tmp_path / "policy",
+            prepared_bundle=prepared,
+            paid_resource_admission_grant=None,
+            execute=False,
+            provider_runtime_environment={"HOME": "/tmp/provider-home"},
+        )
+
+    assert called is False
 
 
 def test_controls_and_policy_share_the_canonical_provider_semaphore(

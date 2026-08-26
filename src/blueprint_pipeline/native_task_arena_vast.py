@@ -46,6 +46,42 @@ POLICY_PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 8_000_000_000
 POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES = 4_500_000_000
 POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES = 1_000_000_000
 POLICY_RESULT_UPLOAD_BYTES = 1_000_000_000
+POLICY_CAMERA_RESOLUTION_ENV = "BLUEPRINT_ADP009D_CAMERA_RESOLUTION"
+POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES = frozenset(
+    {POLICY_CAMERA_RESOLUTION_ENV}
+)
+
+
+def _validated_policy_provider_runtime_environment(
+    values: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Return the narrow, non-secret environment allowed inside the provider.
+
+    The dispatcher validates profile environment keys, but the canonical
+    allocator and this transport are also callable directly. Bind the
+    scientific render size explicitly at every boundary rather than forwarding
+    inherited host state or silently letting the pod fall back to 320x180.
+    """
+
+    import re
+
+    normalized = dict(values or {})
+    if set(normalized) - POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES:
+        raise ValueError("native_task_arena_policy_runtime_environment_invalid")
+    resolution = normalized.get(POLICY_CAMERA_RESOLUTION_ENV)
+    if resolution is None:
+        return {}
+    if not isinstance(resolution, str):
+        raise ValueError("native_task_arena_policy_camera_resolution_invalid")
+    resolution = resolution.strip().lower()
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", resolution)
+    if resolution != "policy" and match is None:
+        raise ValueError("native_task_arena_policy_camera_resolution_invalid")
+    if match is not None and (
+        int(match.group(1)) < 320 or int(match.group(2)) < 180
+    ):
+        raise ValueError("native_task_arena_policy_camera_resolution_below_policy_input")
+    return {POLICY_CAMERA_RESOLUTION_ENV: resolution}
 
 
 def _policy_provider_transfer_byte_budget(
@@ -327,6 +363,7 @@ def run_native_task_arena_policy_vast(
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     authorize_gated_backbone: bool = False,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run one admitted candidate through the same zero-retry Vast transport."""
 
@@ -346,6 +383,7 @@ def run_native_task_arena_policy_vast(
         expected_output_filename=POLICY_RESULT_FILENAME,
         label_prefix="blueprint-native-task-policy-",
         blocker_prefix="native_task_arena_policy",
+        provider_runtime_environment=provider_runtime_environment,
     )
 
 
@@ -362,6 +400,7 @@ def run_native_task_arena_policy_diagnostic_vast(
     allowed_active_instance_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     authorize_gated_backbone: bool = False,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run a canonical policy diagnostic that is ineligible for scoring."""
 
@@ -381,6 +420,7 @@ def run_native_task_arena_policy_diagnostic_vast(
         expected_output_filename=POLICY_DIAGNOSTIC_RESULT_FILENAME,
         label_prefix="blueprint-native-task-policy-diagnostic-",
         blocker_prefix="native_task_arena_policy_diagnostic",
+        provider_runtime_environment=provider_runtime_environment,
     )
 
 
@@ -401,6 +441,7 @@ def _run_native_task_arena_policy_vast(
     expected_output_filename: str,
     label_prefix: str,
     blocker_prefix: str,
+    provider_runtime_environment: Mapping[str, str] | None,
 ) -> dict[str, Any]:
 
     candidate = str(prepared_bundle.get("policy_candidate_id") or "")
@@ -450,6 +491,9 @@ def _run_native_task_arena_policy_vast(
         raise ValueError("native_task_arena_groot_gated_backbone_authority_missing")
     if candidate != "groot_n17_droid" and authorize_gated_backbone:
         raise ValueError("native_task_arena_gated_backbone_authority_without_groot")
+    validated_provider_environment = _validated_policy_provider_runtime_environment(
+        provider_runtime_environment
+    )
     expected_download_bytes, expected_upload_bytes = _policy_provider_transfer_byte_budget(
         candidate
     )
@@ -501,6 +545,7 @@ def _run_native_task_arena_policy_vast(
         stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=expected_download_bytes,
         expected_provider_upload_bytes=expected_upload_bytes,
+        provider_runtime_environment=validated_provider_environment,
     )
 
 
@@ -509,6 +554,8 @@ __all__ = [
     "MINIMUM_DRIVER_VERSION",
     "NO_POLICY_MIN_GPU_RAM_MB",
     "NO_POLICY_PREFERRED_GPU_KEYWORDS",
+    "POLICY_CAMERA_RESOLUTION_ENV",
+    "POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES",
     "POLICY_MIN_COMPUTE_CAP",
     "PROBE_KIND",
     "RESULT_SCHEMA_VERSION",
