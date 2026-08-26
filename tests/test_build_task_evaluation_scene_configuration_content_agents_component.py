@@ -76,6 +76,15 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     monkeypatch.setattr(subject, "SOURCE_COMMIT", upstream_commit)
     monkeypatch.setattr(subject, "SOURCE_TREE", upstream_tree)
     monkeypatch.setattr(subject, "SOURCE_VERSION", "test-version")
+    git_commands: list[list[str]] = []
+    original_run = subprocess.run
+
+    def recorded_run(argv, *args, **kwargs):
+        if argv and argv[0] == "git":
+            git_commands.append(list(argv))
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subject.subprocess, "run", recorded_run)
 
     output = tmp_path / "component"
     value = subject.build_content_agents_scene_configuration_component(
@@ -93,3 +102,11 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     assert (output / "content_agents_source_receipt.json").is_file()
     assert (output / "run").stat().st_mode & 0o111
     assert not any("839873" in path.read_text(errors="ignore") for path in output.rglob("*.*"))
+    archive_command = next(command for command in git_commands if "archive" in command)
+    assert archive_command[:5] == [
+        "git",
+        "-c",
+        f"safe.directory={upstream.resolve()}",
+        "-C",
+        str(upstream.resolve()),
+    ]
