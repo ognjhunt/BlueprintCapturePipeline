@@ -687,6 +687,8 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{scene_id}",
                 "--task-id",
                 "{task_id}",
+                "--pod-name",
+                "{pod_name}",
                 "--output",
                 profile,
             ),

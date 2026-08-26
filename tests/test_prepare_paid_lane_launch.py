@@ -362,6 +362,21 @@ def test_scene_configuration_prepares_rehearses_then_publishes_once() -> None:
         ]
         == "1"
     )
+    # The allocator refuses a pod name that differs from the paid attempt
+    # authority's resource_name, so both must derive from the same {pod_name}
+    # placeholder: the authority binds it, and the live profile embeds it.
+    assert (
+        by_id["paid_authority"].argv[
+            by_id["paid_authority"].argv.index("--resource-name") + 1
+        ]
+        == "{pod_name}"
+    )
+    assert (
+        by_id["live_profile"].argv[
+            by_id["live_profile"].argv.index("--pod-name") + 1
+        ]
+        == "{pod_name}"
+    )
 
 
 def test_scene_configuration_context_reopens_server_owned_inputs(
