@@ -69,9 +69,9 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
             tmp_path / "system-runtimes/scene-configuration" / commit
         ),
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX": (
-            "s3://blueprint-production-inputs/coordinator-release-windows/"
+            "s3://blueprint/task-evaluation/production-inputs/coordinator-release-windows/"
         ),
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX": (
-            "s3://blueprint-production-inputs/task-evaluation-activations"
+            "s3://blueprint/task-evaluation/production-inputs/task-evaluation-activations"
         ),
     }
