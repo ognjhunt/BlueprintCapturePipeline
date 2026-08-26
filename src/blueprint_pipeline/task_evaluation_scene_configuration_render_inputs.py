@@ -601,6 +601,7 @@ def complete_provider_render_inputs(
     appearance_path: str | Path,
     source_object: Mapping[str, Any],
     output_root: str | Path,
+    input_root: str | Path | None = None,
     renderer: Renderer = render_splat_at_exact_cameras,
     runtime_resolver: RuntimeResolver = runtime_from_environment,
     graphics_backend: str = "egl",
@@ -626,7 +627,17 @@ def complete_provider_render_inputs(
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_completion_not_authorized"
         )
-    splat = Path(appearance_path).resolve()
+    # Inside a provider bundle these paths are bundle-relative; resolve them
+    # against the unpacked root rather than whatever the working directory is.
+    base = Path(input_root).resolve() if input_root is not None else None
+
+    def _resolve(value: str | Path) -> Path:
+        candidate = Path(value)
+        if not candidate.is_absolute() and base is not None:
+            candidate = base / candidate
+        return candidate.resolve()
+
+    splat = _resolve(appearance_path)
     if splat.is_symlink() or not splat.is_file():
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_completion_source_missing"
@@ -638,7 +649,7 @@ def complete_provider_render_inputs(
         )
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    calibration_path = Path(
+    calibration_path = _resolve(
         str((render_inputs.get("camera_calibration") or {}).get("path") or "")
     )
     try:
@@ -732,6 +743,10 @@ def complete_provider_render_inputs(
         "count": len(derived_frames),
     }
     completed["renderer_runtime"] = dict(runtime["identity"])
+    completed["camera_calibration"] = {
+        **dict(render_inputs.get("camera_calibration") or {}),
+        "path": str(calibration_path),
+    }
     completed["render_completed_on_provider"] = True
     completed["control_plane_result_digest"] = render_inputs.get("result_digest")
     completed["result_digest"] = ""

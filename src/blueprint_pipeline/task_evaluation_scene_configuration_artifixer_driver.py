@@ -52,6 +52,12 @@ from .task_evaluation_artifixer_ai_visual_review import (
 from .task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_disclosure import (
+    PENDING_PROVIDER_RENDER_STATUS,
+)
+from .task_evaluation_scene_configuration_render_inputs import (
+    complete_provider_render_inputs,
+)
 from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate,
     scene_configuration_openai_stage_scope,
@@ -467,6 +473,27 @@ def execute_artifixer_component(
         configuration=configuration,
         destination=work / "execution_authority.v1.json",
     )
+    # A rights-admitted scene arrives with its render still owed. Finish it
+    # here, on the GPU this stage already occupies, before anything reads
+    # the frames.
+    render_inputs = envelope.get("render_inputs_result")
+    if (
+        isinstance(render_inputs, Mapping)
+        and render_inputs.get("status") == PENDING_PROVIDER_RENDER_STATUS
+    ):
+        appearance = package_root / str(
+            (render_inputs.get("source_appearance") or {}).get("path") or ""
+        )
+        envelope = {
+            **envelope,
+            "render_inputs_result": complete_provider_render_inputs(
+                render_inputs=render_inputs,
+                appearance_path=appearance,
+                source_object=configuration["source_object"],
+                output_root=work / "provider_render",
+                input_root=package_root,
+            ),
+        }
     _preflight, task_id = _materialize_preflight(
         envelope=envelope,
         configuration=configuration,
