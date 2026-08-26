@@ -530,6 +530,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_articulated_native",
         "native_task_arena",
         "paired_target_native_import",
+        "task_evaluation_scene_configuration",
     }:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
