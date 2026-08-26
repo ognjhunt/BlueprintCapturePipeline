@@ -166,6 +166,9 @@ VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV = (
 )
 VAST_CONTAINER_MISSING_RETRY_ATTEMPTS_ENV = "BLUEPRINT_VAST_CONTAINER_MISSING_RETRY_ATTEMPTS"
 VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV = (
+    "BLUEPRINT_VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS"
+)
 VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
@@ -2165,6 +2168,18 @@ def _vast_stale_offer_create_retry_attempts() -> int:
         return 2
 
 
+def _vast_empty_offer_search_retry_attempts() -> int:
+    """Bound read-only re-searches before authority consumption or provider mutation."""
+
+    text = _string(os.getenv(VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV))
+    if not text:
+        return 6
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return 6
+
+
 def _is_stale_offer_create_http_error(
     exc: urllib.error.HTTPError,
     error_text: str = "",
@@ -2200,6 +2215,7 @@ def _offer_selection_manifest(
     prefer_isaac_rt: bool = True,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
+    offer_search_retry_attempts: Sequence[Mapping[str, Any]] = (),
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
     allowed_geolocation_country_codes: Iterable[str] = (),
@@ -2356,6 +2372,9 @@ def _offer_selection_manifest(
         "avoidlist_status": avoidlist_status,
         "considered_offers": [_offer_artifact_summary(item) for item in summaries[:25]],
         "create_retry_attempts": [dict(item) for item in create_retry_attempts],
+        "offer_search_retry_attempts": [
+            dict(item) for item in offer_search_retry_attempts
+        ],
         "blockers": list(blockers),
         "raw_secret_values_recorded": False,
     }
@@ -8451,17 +8470,22 @@ def run_vast_provider_adapter(
             previous_signal_handlers.pop(signum, None)
     try:
         create_retry_attempts: list[dict[str, Any]] = []
+        offer_search_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = (
             stale_offer_create_retry_limit
             if stale_offer_create_retry_limit is not None
             else _vast_stale_offer_create_retry_attempts()
         )
+        max_empty_offer_search_retries = _vast_empty_offer_search_retry_attempts()
+        empty_offer_search_retry_count = 0
+        stale_offer_create_retry_count = 0
+        create_attempt_index = 0
         create_status = 0
         create_response: dict[str, Any] = {}
         create_payload: dict[str, Any] = {}
         image_login_summary: dict[str, Any] = {}
-        for create_attempt_index in range(max_stale_offer_retries + 1):
+        while True:
             search_request = _search_payload(
                 limit=100,
                 max_hourly_rate=max_hourly_rate,
@@ -8532,6 +8556,23 @@ def run_vast_provider_adapter(
                     if require_known_supported_isaac_driver
                     else "no_vast_offer_at_or_below_max_hourly_rate"
                 )
+            retry_empty_offer_search = bool(
+                not selected_offer
+                and empty_offer_search_retry_count < max_empty_offer_search_retries
+            )
+            if retry_empty_offer_search:
+                offer_search_retry_attempts.append(
+                    {
+                        "attempt": empty_offer_search_retry_count,
+                        "status": "no_qualifying_offer_read_only_retry",
+                        "http_status_code": status_code,
+                        "offer_count": len(offers),
+                        "blockers": list(offer_blockers),
+                        "authority_consumed": False,
+                        "provider_mutation_performed": False,
+                        "raw_secret_values_recorded": False,
+                    }
+                )
             offer_manifest = _offer_selection_manifest(
                 generated_at=generated_at,
                 status_code=status_code,
@@ -8555,6 +8596,7 @@ def run_vast_provider_adapter(
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
                 gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
+                offer_search_retry_attempts=offer_search_retry_attempts,
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
                 allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
@@ -8573,6 +8615,10 @@ def run_vast_provider_adapter(
                 create_attempt_index=create_attempt_index,
             )
             if not selected_offer:
+                if retry_empty_offer_search:
+                    empty_offer_search_retry_count += 1
+                    time.sleep(5)
+                    continue
                 raise RuntimeError("no_vast_offer_selected")
 
             projected_transfer_cost = _projected_provider_transfer_cost_usd(
@@ -8671,14 +8717,14 @@ def run_vast_provider_adapter(
                 exc.fp = io.BytesIO(error_text.encode("utf-8"))
                 if (
                     not _is_stale_offer_create_http_error(exc, error_text)
-                    or create_attempt_index >= max_stale_offer_retries
+                    or stale_offer_create_retry_count >= max_stale_offer_retries
                 ):
                     raise
                 selected_machine_id = _number(selected_offer.get("machine_id"))
                 if selected_machine_id is not None:
                     excluded_machine_ids.add(int(selected_machine_id))
                 retry_attempt = {
-                    "attempt": create_attempt_index,
+                    "attempt": stale_offer_create_retry_count,
                     "status": "stale_offer_retry",
                     "http_status_code": exc.code,
                     "offer_id": selected_offer.get("ask_contract_id"),
@@ -8689,6 +8735,7 @@ def run_vast_provider_adapter(
                     "raw_secret_values_recorded": False,
                 }
                 create_retry_attempts.append(retry_attempt)
+                stale_offer_create_retry_count += 1
                 _append_phase(
                     resolved_job_dir,
                     "vast_instance_create_requested",
@@ -8722,6 +8769,7 @@ def run_vast_provider_adapter(
                     prefer_isaac_rt=resolved_prefer_isaac_rt,
                     gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
+                    offer_search_retry_attempts=offer_search_retry_attempts,
                     disk_gb=resolved_disk_gb,
                     required_provider_disk_gb=required_provider_disk_gb,
                     allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
@@ -8735,6 +8783,7 @@ def run_vast_provider_adapter(
                     offer_manifest,
                 )
                 time.sleep(1)
+                create_attempt_index += 1
                 continue
         instance_id = _instance_id_from_create_response(create_response)
         if not instance_id:
