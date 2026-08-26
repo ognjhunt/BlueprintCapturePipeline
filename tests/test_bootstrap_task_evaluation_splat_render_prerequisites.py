@@ -52,6 +52,7 @@ def test_bootstrap_publishes_pinned_linux_prerequisites(
                 marker = cwd / "node_modules" / package / "index.js"
                 marker.parent.mkdir(parents=True, exist_ok=True)
                 marker.write_text(package, encoding="utf-8")
+            (cwd / "node_modules/three/empty.js").write_bytes(b"")
             cli = cwd / "node_modules/playwright/cli.js"
             cli.parent.mkdir(parents=True, exist_ok=True)
             cli.write_text("// cli\n", encoding="utf-8")
@@ -90,6 +91,16 @@ def test_bootstrap_publishes_pinned_linux_prerequisites(
     assert (output / manifest["entrypoints"]["node"]).is_file()
     assert (output / manifest["entrypoints"]["browser"]).is_file()
     assert (output / "node_modules/playwright/index.js").is_file()
+    empty_row = next(
+        row
+        for row in manifest["files"]
+        if row["relative_path"] == "node_modules/three/empty.js"
+    )
+    assert empty_row["size_bytes"] == 0
+    assert empty_row["sha256"] == (
+        "sha256:e3b0c44298fc1c149afbf4c8996fb924"
+        "27ae41e4649b934ca495991b7852b855"
+    )
     assert output.stat().st_mode & 0o222 == 0
     assert not any(path.is_symlink() for path in output.rglob("*"))
     reopened = subject.validate_splat_render_prerequisites(

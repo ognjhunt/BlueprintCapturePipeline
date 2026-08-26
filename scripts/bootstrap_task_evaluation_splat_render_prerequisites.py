@@ -127,7 +127,7 @@ def validate_splat_render_prerequisites(
             or not record[0].startswith("sha256:")
             or not isinstance(record[1], int)
             or isinstance(record[1], bool)
-            or record[1] <= 0
+            or record[1] < 0
             or not isinstance(record[2], bool)
         ):
             raise ValueError("splat_render_prerequisite_inventory_invalid")
