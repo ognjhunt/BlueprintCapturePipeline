@@ -508,6 +508,31 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     assert "execution_result_path" in profile["terminal_contract"][
         "required_path_fields"
     ]
+    pod_index = allocator_argv.index("--pod-name")
+    assert allocator_argv[pod_index + 1] == profile["profile_id"]
+
+    # The allocator refuses --pod-name != authority.resource_name, and the
+    # authority binds the activation id, so the builder must let the launch
+    # graph pass that exact name through.
+    bound = build_scene_configuration_live_profile(
+        bundle_receipt_path=receipt_path,
+        attempt_authority_path=authority_path,
+        source_commit="a" * 40,
+        raw_manifest_uri=str(publication_path),
+        revision="r1",
+        max_hourly_rate_usd=0.50,
+        hard_ttl_seconds=1_800,
+        max_spend_usd=2.25,
+        team_namespace="team-a",
+        scene_id="interiorgs-839873",
+        task_id="planar-mug-push",
+        pod_name=authority["resource_name"],
+    )
+    bound_argv = bound["allocator"]["argv"]
+    assert (
+        bound_argv[bound_argv.index("--pod-name") + 1]
+        == authority["resource_name"]
+    )
 
     tampered = dict(authority)
     tampered["maximum_hourly_rate_usd"] = 0.81

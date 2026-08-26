@@ -147,6 +147,7 @@ def build_scene_configuration_live_profile(
     team_namespace: str,
     scene_id: str,
     task_id: str,
+    pod_name: str | None = None,
 ) -> dict[str, Any]:
     return build_lane_live_profile(
         SPEC,
@@ -157,6 +158,7 @@ def build_scene_configuration_live_profile(
         hard_ttl_seconds=hard_ttl_seconds,
         max_spend_usd=max_spend_usd,
         revision=revision,
+        pod_name=pod_name,
         extra_paths={"attempt_authority": attempt_authority_path},
         extra_values={
             "team_namespace": team_namespace,
@@ -204,6 +206,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--team-namespace", required=True)
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--task-id", required=True)
+    parser.add_argument(
+        "--pod-name",
+        default=None,
+        help=(
+            "Exact provider resource name the paid attempt authority binds. "
+            "The allocator refuses a pod name that differs from the "
+            "authority's resource_name, so the launch graph passes the "
+            "activation id here. Defaults to the profile id."
+        ),
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -219,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             team_namespace=args.team_namespace,
             scene_id=args.scene_id,
             task_id=args.task_id,
+            pod_name=args.pod_name,
         )
     except (OSError, ValueError, TaskEvaluationLaunchError) as exc:
         print(
