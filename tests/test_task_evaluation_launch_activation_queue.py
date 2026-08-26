@@ -78,3 +78,4 @@ def test_concurrent_different_writers_leave_one_activation_identity(tmp_path) ->
     assert sum(item.startswith("sha256:") for item in outcomes) == 1
     assert outcomes.count("launch_activation_id_immutable_conflict") == 1
     assert len(list((queue / "pending").glob("*.json"))) == 1
+    assert list(queue.rglob("*.tmp")) == []
