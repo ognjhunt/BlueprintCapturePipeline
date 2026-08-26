@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -84,6 +85,83 @@ def test_authority_cli_supplies_complete_single_attempt_contract(monkeypatch, tm
         "allowed_active_instance_ids": (41, 42),
         "retain_warm_session": False,
     }
+
+
+def test_vast_capacity_cli_derives_complete_groot_transfer_request(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load("preflight_native_task_arena_policy_vast_capacity")
+    observed = {}
+
+    class FakeProvider:
+        def capacity_preflight(self, request):
+            observed.update(request)
+            return {
+                "status": "available",
+                "blockers": [],
+                "selected_offer": {"ask_contract_id": 46515162},
+            }
+
+    monkeypatch.setattr(module, "VastRenderProvider", FakeProvider)
+    output = tmp_path / "capacity.json"
+    result = module.main(
+        [
+            "--candidate",
+            "groot_n17_droid",
+            "--max-hourly-rate-usd",
+            "0.80",
+            "--hard-cap-usd",
+            "0.75",
+            "--hard-ttl-seconds",
+            "2100",
+            "--exclude-machine",
+            "144209",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert observed == {
+        "container_disk_gb": 200,
+        "required_provider_disk_gb": 200,
+        "max_hourly_rate_usd": 0.8,
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 2100,
+        "retry_cap": 0,
+        "min_gpu_ram_mb": 46_000,
+        "min_compute_cap": 800,
+        "max_compute_cap": 900,
+        "minimum_driver_version": "580.65.06",
+        "require_known_supported_isaac_driver": True,
+        "require_direct_port": True,
+        "require_global_inventory_zero": True,
+        "prefer_isaac_rt": True,
+        "preferred_gpu_keywords": ["L40S", "RTX 6000 Ada", "RTX A6000"],
+        "allowed_machine_ids": [],
+        "excluded_machine_ids": [144209],
+        "expected_provider_download_bytes": 25_303_924_439,
+        "expected_provider_upload_bytes": 1_000_000_000,
+    }
+    receipt = json.loads(output.read_text())
+    assert receipt["status"] == "available"
+    assert receipt["request"] == observed
+    assert receipt["provider_mutation_performed"] is False
+    assert receipt["raw_secret_values_recorded"] is False
+    assert module.main(
+        [
+            "--candidate",
+            "groot_n17_droid",
+            "--max-hourly-rate-usd",
+            "0.80",
+            "--hard-cap-usd",
+            "0.75",
+            "--hard-ttl-seconds",
+            "2100",
+            "--output",
+            str(output),
+        ]
+    ) == 2
 
 
 def test_authority_cli_supplies_new_lane_genesis_contract(monkeypatch, tmp_path) -> None:
