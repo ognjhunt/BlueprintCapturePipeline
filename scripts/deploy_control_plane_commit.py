@@ -294,7 +294,17 @@ def _install_release_provenance(
         "git_sha": source_commit,
         "run_id": receipt.get("run_id"),
         "run_url": receipt.get("run_url"),
-        "canonical_full_lane_verified": True,
+        # Report what the installed receipt actually claims. Hardcoding
+        # True told every reader of a deploy receipt that an iteration
+        # release had passed the canonical Full Test Lane, while the
+        # provenance file it summarised correctly said it had not.
+        "canonical_full_lane_verified": bool(
+            (receipt.get("claim_boundary") or {}).get(
+                "canonical_full_lane_verified"
+            )
+        ),
+        "promotion_eligible": bool(receipt.get("promotion_eligible")),
+        "provenance_status": receipt.get("status"),
         "mode": "0440",
     }
     if superseded_receipt is not None:
