@@ -34,8 +34,10 @@ rights.
 Firestore stores the small immutable projection and access index. Evidence bytes
 remain under the Pipeline run root and are served only by exact artifact ID from
 the sealed registry. Each request is re-hashed by Pipeline, then streamed through
-an authenticated WebApp proxy. Email, Google Drive, and ad hoc shared links are
-not systems of record.
+an authenticated WebApp proxy. Browser playback and downloads use short-lived,
+artifact-bound tickets so phones can stream large videos and ZIPs without putting
+Firebase bearer tokens in URLs or buffering the complete artifact in WebApp
+memory. Email, Google Drive, and ad hoc shared links are not systems of record.
 
 The current ADP rehearsal is `development_only`. Its videos are derived review
 evidence, simulator results are not physical success, and successful execution
