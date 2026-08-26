@@ -296,3 +296,80 @@ def test_splat_transform_cleanup_rejects_inverted_bounds(tmp_path: Path) -> None
     )
     assert result["status"] == "blocked"
     assert "splat_cleanup_robust_bounds_invalid" in result["blockers"]
+
+
+def _fake_cli(tmp_path: Path) -> Path:
+    cli_dir = (
+        tmp_path / "tools/splat_render/node_modules/@playcanvas/splat-transform/bin"
+    )
+    cli_dir.mkdir(parents=True)
+    (cli_dir / "cli.mjs").write_text("// fake")
+    return cli_dir / "cli.mjs"
+
+
+def test_content_addressed_splat_reaches_the_decoder_with_its_real_suffix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An extensionless, digest-named splat must still decode.
+
+    ``splat-transform`` picks its reader from the file extension, and every
+    reference the preparation worker materializes is stored under its sha256
+    with no extension. Production rejected a valid compressed PlayCanvas PLY
+    with "Unsupported input file type" for that reason alone, which fail-closed
+    the whole Website-started configuration. The decoder must present the exact
+    bytes under the extension their magic declares, without renaming or
+    mutating the immutable source.
+    """
+
+    _fake_cli(tmp_path)
+    digest_named = tmp_path / ("a" * 64)
+    digest_named.write_bytes(
+        b"ply\nformat binary_little_endian 1.0\ncomment compressed\n"
+    )
+    destination = tmp_path / "out.ply"
+    observed: dict[str, str] = {}
+
+    def fake_run(argv, **_kwargs):
+        observed["input"] = argv[-2]
+        Path(argv[-1]).write_bytes(b"ply\n")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gsd.subprocess, "run", fake_run)
+    result = convert_to_standard_ply(
+        digest_named, destination, repo_root=tmp_path, node="node"
+    )
+
+    assert result["status"] == "completed"
+    assert result["decoder_input_suffix"] == ".ply"
+    assert observed["input"].endswith(".ply")
+    # The immutable content-addressed source is untouched and still extensionless.
+    assert digest_named.is_file() and digest_named.suffix == ""
+    # The staged name is a temporary view, never the caller's path.
+    assert observed["input"] != str(digest_named)
+
+
+def test_decoder_refuses_bytes_whose_format_it_cannot_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fail closed rather than hand the CLI an invented extension."""
+
+    _fake_cli(tmp_path)
+    mystery = tmp_path / ("b" * 64)
+    mystery.write_bytes(b"\x00\x01\x02\x03not-a-splat")
+
+    def fail_run(argv, **_kwargs):  # pragma: no cover - must never run
+        raise AssertionError("decoder invoked for unrecognized bytes")
+
+    monkeypatch.setattr(gsd.subprocess, "run", fail_run)
+    result = convert_to_standard_ply(mystery, tmp_path / "out.ply", repo_root=tmp_path)
+    assert result["status"] == "blocked"
+    assert "splat_source_format_unrecognized" in result["blockers"]
+
+
+def test_gzip_magic_is_offered_to_the_decoder_as_spz(tmp_path: Path) -> None:
+    compressed = tmp_path / ("c" * 64)
+    compressed.write_bytes(b"\x1f\x8b\x08\x00rest")
+    assert gsd.splat_decoder_input_suffix(compressed) == ".spz"
+    named = tmp_path / "already.ply"
+    named.write_bytes(b"ply\n")
+    assert gsd.splat_decoder_input_suffix(named) == ".ply"

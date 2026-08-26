@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -553,6 +556,54 @@ def find_splat_transform_cli(repo_root: str | Path | None = None) -> Path | None
     return cli if cli.is_file() else None
 
 
+# ``splat-transform`` selects its reader from the file EXTENSION, not the
+# bytes. Content-addressed inputs -- every reference the preparation worker
+# materializes -- are stored under their digest with no extension at all, so
+# the CLI rejects splats it can read perfectly well. Present the exact bytes
+# under the extension their own magic declares instead of renaming anything
+# the caller owns.
+SPLAT_DECODER_INPUT_SUFFIXES = (".ply", ".spz", ".splat", ".ksplat", ".sog")
+_SPLAT_MAGIC_SUFFIXES: tuple[tuple[bytes, str], ...] = (
+    (b"ply\r\n", ".ply"),
+    (b"ply\n", ".ply"),
+    (b"\x1f\x8b", ".spz"),
+)
+
+
+def splat_decoder_input_suffix(src: str | Path) -> str:
+    """Return the extension the decoder CLI needs for ``src``, or ``""``."""
+
+    path = Path(src)
+    if path.suffix.lower() in SPLAT_DECODER_INPUT_SUFFIXES:
+        return path.suffix.lower()
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(8)
+    except OSError:
+        return ""
+    for magic, suffix in _SPLAT_MAGIC_SUFFIXES:
+        if head.startswith(magic):
+            return suffix
+    return ""
+
+
+def _staged_decoder_input(src: Path, suffix: str, staging_root: Path) -> Path:
+    """Expose ``src`` under ``suffix`` without copying or mutating the source."""
+
+    staged = staging_root / f"source{suffix}"
+    try:
+        staged.symlink_to(src.resolve())
+        return staged
+    except OSError:
+        pass
+    try:
+        os.link(src, staged)
+        return staged
+    except OSError:
+        shutil.copyfile(src, staged)
+        return staged
+
+
 def convert_to_standard_ply(
     src: str | Path,
     dst: str | Path,
@@ -577,17 +628,26 @@ def convert_to_standard_ply(
     if not src.is_file():
         return {"status": "blocked", "blockers": ["splat_source_missing"], "input": str(src)}
     dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.run(
-            [node, str(cli), "-w", "-q", str(src), str(dst)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError:
-        return {"status": "blocked", "blockers": ["node_runtime_unavailable"], "input": str(src)}
-    except subprocess.TimeoutExpired:
-        return {"status": "blocked", "blockers": ["splat_transform_timeout"], "input": str(src)}
+    suffix = splat_decoder_input_suffix(src)
+    if not suffix:
+        return {
+            "status": "blocked",
+            "blockers": ["splat_source_format_unrecognized"],
+            "input": str(src),
+        }
+    with tempfile.TemporaryDirectory(prefix="splat-decode-input-") as staging:
+        staged_src = _staged_decoder_input(src, suffix, Path(staging))
+        try:
+            proc = subprocess.run(
+                [node, str(cli), "-w", "-q", str(staged_src), str(dst)],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except FileNotFoundError:
+            return {"status": "blocked", "blockers": ["node_runtime_unavailable"], "input": str(src)}
+        except subprocess.TimeoutExpired:
+            return {"status": "blocked", "blockers": ["splat_transform_timeout"], "input": str(src)}
     if proc.returncode != 0 or not dst.is_file():
         return {
             "status": "blocked",
@@ -599,6 +659,7 @@ def convert_to_standard_ply(
     return {
         "status": "completed",
         "input": str(src),
+        "decoder_input_suffix": suffix,
         "output": str(dst),
         "output_bytes": dst.stat().st_size,
         "decoder": "playcanvas_splat_transform",
