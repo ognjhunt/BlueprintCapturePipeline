@@ -156,7 +156,7 @@ def validate_splat_render_runtime(
             or _DIGEST.fullmatch(digest) is None
             or not isinstance(size, int)
             or isinstance(size, bool)
-            or size <= 0
+            or size < 0
             or not isinstance(executable, bool)
         ):
             raise TaskEvaluationSplatRenderRuntimeError(
