@@ -22,6 +22,7 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     UV_ARCHIVE_SHA256,
     UV_ARCHIVE_URL,
     UV_VERSION,
+    UV_VERSION_OUTPUT,
     PolicyProvisioningError,
     build_provisioning_script,
     describe_provisioning,
@@ -377,7 +378,8 @@ def test_uv_creates_the_environment_because_the_image_lacks_ensurepip() -> None:
     assert f"curl -LsSf {UV_ARCHIVE_URL}" in script
     assert UV_ARCHIVE_SHA256 in script
     assert "sha256sum -c -" in script
-    assert f'uv {UV_VERSION}"' in script
+    assert f'= "{UV_VERSION_OUTPUT}"' in script
+    assert f'= "uv {UV_VERSION}"' not in script
     assert "https://astral.sh/uv/install.sh" not in script
     assert "/releases/latest/" not in script
     assert '"$UV" venv --python' in script
@@ -389,9 +391,15 @@ def test_uv_release_identity_is_bound_in_the_provisioning_receipt() -> None:
     receipt = describe_provisioning("pi05_droid")
 
     assert receipt["uv_version"] == UV_VERSION
+    assert receipt["uv_version_output"] == UV_VERSION_OUTPUT
     assert receipt["uv_archive_url"] == UV_ARCHIVE_URL
     assert receipt["uv_archive_sha256"] == UV_ARCHIVE_SHA256
-    for field in ("uv_version", "uv_archive_url", "uv_archive_sha256"):
+    for field in (
+        "uv_version",
+        "uv_version_output",
+        "uv_archive_url",
+        "uv_archive_sha256",
+    ):
         changed = dict(receipt)
         changed[field] = "moved"
         assert "policy_provisioning_uv_identity_mismatch" in validate_provisioning(
