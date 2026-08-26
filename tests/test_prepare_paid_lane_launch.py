@@ -1111,6 +1111,35 @@ def test_root_style_set_root_is_handed_to_service_group_without_touching_token(
     assert stat.S_IMODE(sibling.stat().st_mode) == 0o700
 
 
+def test_already_correct_set_root_requires_no_privileged_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(os.getgid()).gr_name
+    set_root = tmp_path / "already-correct"
+    set_root.mkdir()
+    set_root.chmod(0o750)
+
+    def forbidden_chown(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("already-correct set root must not be re-owned")
+
+    original_chmod = Path.chmod
+
+    def forbidden_target_chmod(path: Path, mode: int, **kwargs: object) -> None:
+        if path == set_root:
+            raise PermissionError("already-correct set root must not be rewritten")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(prep.os, "chown", forbidden_chown)
+    monkeypatch.setattr(Path, "chmod", forbidden_target_chmod)
+
+    assert prep._prepare_set_root_for_service(
+        set_root,
+        service_account=account,
+        service_group=group,
+    ) == set_root.resolve()
+
+
 def test_set_root_symlink_is_refused_before_any_lane_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

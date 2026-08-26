@@ -146,7 +146,6 @@ def _seal_ownership_and_readback(
             raise SimReadyCadAgentHostImportError(
                 "cad_host_import_ownership_directory_invalid"
             )
-        os.chmod(directory, HOST_DIRECTORY_MODE)
         metadata = directory.stat()
         if metadata.st_uid != owner_uid or metadata.st_gid != owner_gid:
             try:
@@ -155,12 +154,27 @@ def _seal_ownership_and_readback(
                 raise SimReadyCadAgentHostImportError(
                     "cad_host_import_ownership_chown_failed"
                 ) from exc
+        if stat.S_IMODE(metadata.st_mode) != HOST_DIRECTORY_MODE:
+            try:
+                os.chmod(directory, HOST_DIRECTORY_MODE)
+            except PermissionError as exc:
+                raise SimReadyCadAgentHostImportError(
+                    "cad_host_import_ownership_chmod_failed"
+                ) from exc
+        metadata = directory.stat()
+        if (
+            metadata.st_uid != owner_uid
+            or metadata.st_gid != owner_gid
+            or stat.S_IMODE(metadata.st_mode) != HOST_DIRECTORY_MODE
+        ):
+            raise SimReadyCadAgentHostImportError(
+                "cad_host_import_ownership_readback_failed"
+            )
     for path in unique_files:
         if path.is_symlink() or not path.is_file():
             raise SimReadyCadAgentHostImportError(
                 "cad_host_import_ownership_file_invalid"
             )
-        os.chmod(path, HOST_FILE_MODE)
         metadata = path.stat()
         if metadata.st_uid != owner_uid or metadata.st_gid != owner_gid:
             try:
@@ -169,6 +183,22 @@ def _seal_ownership_and_readback(
                 raise SimReadyCadAgentHostImportError(
                     "cad_host_import_ownership_chown_failed"
                 ) from exc
+        if stat.S_IMODE(metadata.st_mode) != HOST_FILE_MODE:
+            try:
+                os.chmod(path, HOST_FILE_MODE)
+            except PermissionError as exc:
+                raise SimReadyCadAgentHostImportError(
+                    "cad_host_import_ownership_chmod_failed"
+                ) from exc
+        metadata = path.stat()
+        if (
+            metadata.st_uid != owner_uid
+            or metadata.st_gid != owner_gid
+            or stat.S_IMODE(metadata.st_mode) != HOST_FILE_MODE
+        ):
+            raise SimReadyCadAgentHostImportError(
+                "cad_host_import_ownership_readback_failed"
+            )
     if os.geteuid() == owner_uid:
         try:
             for path in unique_files:
