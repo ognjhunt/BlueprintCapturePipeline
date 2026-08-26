@@ -105,6 +105,21 @@ def test_malformed_camera_plan_values_fail_with_typed_errors() -> None:
     assert "scene_discovery_retained_count_invalid" in exc.value.codes
 
 
+def test_unseen_regions_must_be_public_status_safe_strings() -> None:
+    geometry = _geometry()
+    geometry["unseen_regions"] = [{"unsafe": "shape"}]
+
+    with pytest.raises(SceneObjectDiscoveryError) as exc:
+        build_full_scene_camera_plan(
+            scene_geometry=geometry,
+            source_splat_digest=DIGEST_A,
+            retained_gaussian_count=1,
+            registration_digest=DIGEST_B,
+        )
+
+    assert "scene_discovery_unseen_regions_invalid" in exc.value.codes
+
+
 def test_render_adapter_passes_exact_production_method_input_contract(tmp_path: Path) -> None:
     splat = tmp_path / "scene.ply"
     splat.write_bytes(b"exact splat")

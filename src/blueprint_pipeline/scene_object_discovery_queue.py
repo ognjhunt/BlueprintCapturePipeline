@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -259,7 +260,16 @@ def _public_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_claim_boundary": candidate.get("candidate_claim_boundary"),
     }
     preview = candidate.get("preview")
-    if isinstance(preview, Mapping):
+    if (
+        isinstance(preview, Mapping)
+        and set(preview) == {"uri", "digest", "size_bytes"}
+        and isinstance(preview.get("uri"), str)
+        and str(preview["uri"]).startswith(("gs://", "s3://", "https://"))
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", str(preview.get("digest") or ""))
+        and isinstance(preview.get("size_bytes"), int)
+        and not isinstance(preview.get("size_bytes"), bool)
+        and int(preview["size_bytes"]) > 0
+    ):
         row["preview"] = dict(preview)
     return row
 

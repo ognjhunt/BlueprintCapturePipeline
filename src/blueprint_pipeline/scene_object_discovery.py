@@ -203,6 +203,16 @@ def build_full_scene_camera_plan(
         errors.append("scene_discovery_non_z_up_normalization_required")
     if width < 64 or height < 64 or n_azimuths < 4 or not elevations_deg:
         errors.append("scene_discovery_camera_plan_dimensions_invalid")
+    unseen_regions = scene_geometry.get("unseen_regions", [])
+    if (
+        not isinstance(unseen_regions, list)
+        or len(unseen_regions) > 500
+        or any(
+            not isinstance(region, str) or not region or len(region) > 1000
+            for region in unseen_regions
+        )
+    ):
+        errors.append("scene_discovery_unseen_regions_invalid")
     if errors:
         raise SceneObjectDiscoveryError(errors)
     assert bounds_min is not None and bounds_max is not None
@@ -249,7 +259,7 @@ def build_full_scene_camera_plan(
             "strategy": "deterministic_stacked_full_scene_ring",
             "known_scene_bounds_covered": True,
             "missing_source_observations_recoverable_by_virtual_camera": False,
-            "unseen_regions": list(scene_geometry.get("unseen_regions") or []),
+            "unseen_regions": list(unseen_regions),
         },
         "cameras": cameras,
     }

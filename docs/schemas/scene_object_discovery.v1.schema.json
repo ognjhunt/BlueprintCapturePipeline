@@ -54,7 +54,7 @@
       "additionalProperties": false,
       "properties": {
         "known_scene_bounds_covered": {"type": "boolean"},
-        "unseen_regions": {"type": "array", "items": {}},
+        "unseen_regions": {"type": "array", "maxItems": 500, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
         "virtual_camera_recovers_missing_source_observations": {"const": false}
       }
     },

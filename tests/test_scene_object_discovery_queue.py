@@ -83,12 +83,14 @@ def test_result_status_is_sanitized_and_selection_is_idempotent(tmp_path) -> Non
     receipt = stage_scene_object_discovery_request(
         value=value, queue_root=tmp_path / "queue", submitted_by="webapp"
     )
+    discovery = _discovery()
+    discovery["candidates"][0]["preview"] = {"local_path": "/private/secret.png"}
     seal_scene_object_discovery_result(
         queue_root=tmp_path / "queue",
         discovery_id=value["discovery_id"],
         request_digest=receipt["request_digest"],
         source_commit=value["expected_production_commit"],
-        discovery=_discovery(),
+        discovery=discovery,
     )
     status = scene_object_discovery_status(
         discovery_id=value["discovery_id"], queue_root=tmp_path / "queue"
@@ -96,6 +98,7 @@ def test_result_status_is_sanitized_and_selection_is_idempotent(tmp_path) -> Non
     assert status["status"] == "selection_required"
     assert status["unseen_regions"] == ["behind_partition"]
     assert "metric_geometry" not in status["candidates"][0]
+    assert "preview" not in status["candidates"][0]
     selection = {
         "schema_version": "scene_object_discovery_selection_request.v1",
         "discovery_id": value["discovery_id"],
