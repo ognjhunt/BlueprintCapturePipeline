@@ -1106,3 +1106,50 @@ def test_the_receipt_records_every_slot_it_was_exclusive_with(tmp_path: Path) ->
     assert held == vast_launch_lock_paths(base)
     assert len(held) > 1, "the semaphore should expand to more than the base path"
     assert held[0] == base
+
+
+def test_a_deploy_receipt_never_claims_a_lane_that_did_not_run(tmp_path) -> None:
+    """The receipt summary must report the claim it actually installed.
+
+    An iteration release is deployed without the canonical Full Test Lane and
+    its provenance file says so. The deploy receipt that summarises that file
+    hardcoded canonical_full_lane_verified=True, so every reader of a receipt
+    -- including anyone deciding whether a release may carry a promotion-grade
+    claim -- was told the lane had verified a release it never saw.
+    """
+
+    commit = "d" * 40
+    state_root = tmp_path / "state"
+    iteration_payload, iteration_receipt = _iteration_provenance(commit)
+
+    installed = deploy._install_release_provenance(
+        payload=iteration_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=iteration_receipt,
+    )
+
+    assert installed["canonical_full_lane_verified"] is False
+    assert installed["promotion_eligible"] is False
+    assert installed["provenance_status"] == "iteration"
+    # The summary agrees with the bytes it summarises.
+    written = json.loads(
+        (state_root / commit / deploy.DEPLOY_RELEASE_PROVENANCE_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        installed["canonical_full_lane_verified"]
+        is written["claim_boundary"]["canonical_full_lane_verified"]
+    )
+
+    verified_payload, verified_receipt = _verified_provenance(commit)
+    promoted = deploy._install_release_provenance(
+        payload=verified_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=verified_receipt,
+    )
+    assert promoted["canonical_full_lane_verified"] is True
+    assert promoted["promotion_eligible"] is True
+    assert promoted["provenance_status"] == "verified"
