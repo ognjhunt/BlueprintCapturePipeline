@@ -49,6 +49,13 @@ from .wam_provider_object_store import (
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
+#: Provider-namespace label the independent watchdog reaps by. It is not the
+#: run's admission identity: the authority's ``resource_name`` names *which
+#: attempt* is authorized, while this names *whose instances* the watchdog may
+#: destroy. The watchdog refuses any prefix outside the ``blueprint-``
+#: namespace so it can never reap another tenant's instance, and appends its
+#: own run-unique suffix, so this stays a constant like every other lane's.
+WATCHDOG_POD_NAME_PREFIX = "blueprint-task-evaluation-scene-config-"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
@@ -404,7 +411,7 @@ def run_scene_configuration_vast(
         max_live_minutes=max(1, ttl // 60),
         generated_at=utc_now_iso(),
         allowed_active_instance_ids=(),
-        pod_name_prefix=str(authority["resource_name"]) + "-",
+        pod_name_prefix=WATCHDOG_POD_NAME_PREFIX,
     )
     if watchdog is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)

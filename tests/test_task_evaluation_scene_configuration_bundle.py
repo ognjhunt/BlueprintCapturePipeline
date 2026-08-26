@@ -655,3 +655,40 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     )
     assert blockers == []
     assert observed["stage_chain"]["stage_count"] == 6
+
+
+def test_scene_configuration_watchdog_prefix_is_in_the_blueprint_namespace() -> None:
+    """The watchdog reaps by provider name prefix, so the prefix it is armed
+    with must be one the watchdog will actually accept.
+
+    The lane once passed the paid attempt authority's ``resource_name`` here.
+    That value names which *attempt* is authorized (the activation id, e.g.
+    ``adp-new-scene-...-activation-a``); it is not a provider namespace, and
+    ``arm_independent_vast_watchdog`` refuses anything outside ``blueprint-``
+    so a watchdog can never destroy another tenant's instances. Every paid
+    launch of this lane therefore died with
+    ``independent_vast_watchdog_prefix_invalid`` after the provider bundle
+    had already been staged to object store.
+    """
+
+    import re
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_vast import (
+        WATCHDOG_POD_NAME_PREFIX,
+    )
+
+    assert re.fullmatch(
+        r"blueprint-[a-z0-9-]{1,100}-", WATCHDOG_POD_NAME_PREFIX
+    ), WATCHDOG_POD_NAME_PREFIX
+
+
+def test_scene_configuration_arms_the_watchdog_with_that_exact_prefix() -> None:
+    """The constant is only worth anything if the lane actually passes it."""
+
+    import inspect
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as lane
+
+    source = inspect.getsource(lane.run_scene_configuration_vast)
+    assert "pod_name_prefix=WATCHDOG_POD_NAME_PREFIX" in source
+    assert 'authority["resource_name"]) + "-"' not in source
