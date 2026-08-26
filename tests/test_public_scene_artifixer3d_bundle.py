@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -13,6 +15,7 @@ from PIL import Image
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ArtiFixer3DBundleError,
+    COMPONENT_SOURCE_SCHEMA_VERSION,
     DEFAULT_IMAGE,
     SCHEMA_VERSION,
     VIBE_IMAGE_EDIT_REVISION,
@@ -76,9 +79,7 @@ def _repository(tmp_path: Path) -> Path:
         (root / "src" / "blueprint_pipeline" / name).write_bytes(
             (source_repo / "src" / "blueprint_pipeline" / name).read_bytes()
         )
-    registry = Path(
-        "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
-    )
+    registry = Path("docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json")
     (root / registry).parent.mkdir(parents=True)
     (root / registry).write_bytes((source_repo / registry).read_bytes())
     _git(["git", "init", "-q"], root)
@@ -349,7 +350,11 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     with zipfile.ZipFile(bundle) as archive:
         archive.extractall(extracted)
     imported = subprocess.run(
-        [sys.executable, str(extracted / "provider_runtime" / "public_scene_artifixer3d_runner.py"), "--help"],
+        [
+            sys.executable,
+            str(extracted / "provider_runtime" / "public_scene_artifixer3d_runner.py"),
+            "--help",
+        ],
         cwd=extracted,
         env={"PATH": str(Path(sys.executable).parent)},
         check=False,
@@ -357,6 +362,64 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         text=True,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_component_source_receipt_reuses_bundle_builder_without_git_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    files = []
+    for name in _git(["git", "ls-files"], source).splitlines():
+        path = source / name
+        files.append(
+            {
+                "relative_path": name,
+                "size_bytes": path.stat().st_size,
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    source_receipt = {
+        "schema_version": COMPONENT_SOURCE_SCHEMA_VERSION,
+        "repository": subject.ARTIFIXER_REPOSITORY,
+        "commit": commit,
+        "tree": tree,
+        "license": "Apache-2.0",
+        "files": files,
+        "receipt_digest": "",
+    }
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    receipt_path = tmp_path / "artifixer_source_receipt.json"
+    receipt_path.write_text(json.dumps(source_receipt), encoding="utf-8")
+    shutil.rmtree(source / ".git")
+    candidate = _candidate(tmp_path)
+
+    receipt = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=candidate,
+        use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
+        artifixer_source_directory=source,
+        artifixer_source_receipt_path=receipt_path,
+        output_root=tmp_path / "component-bundle",
+        repository_root=_repository(tmp_path),
+        blueprint_source_identity={
+            "commit": "1" * 40,
+            "tree": "2" * 40,
+            "tracked_files_clean": True,
+            "full_byte_component_package_verified": True,
+            "component_package_digest": "sha256:" + "3" * 64,
+        },
+        artifixer3d_steps=10,
+    )
+
+    with zipfile.ZipFile(receipt["bundle"]["path"]) as archive:
+        request = json.loads(archive.read("provider_runtime/artifixer3d_runtime_request.json"))
+    assert request["blueprint_source_identity"]["commit"] == "1" * 40
+    assert request["blueprint_source_identity"]["full_byte_component_package_verified"] is True
 
 
 def test_isolated_bundle_import_fails_when_runtime_registry_module_is_removed(
