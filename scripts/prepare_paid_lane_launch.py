@@ -610,6 +610,18 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{maximum_hourly_rate_usd}",
                 "--hard-cap-usd",
                 "{hard_total_spend_cap_usd}",
+                "--provider-compute-spend-cap-usd",
+                "{provider_compute_spend_cap_usd}",
+                "--openai-max-cost-usd",
+                "{openai_max_cost_usd}",
+                "--openai-max-requests",
+                "{openai_max_requests}",
+                "--openai-artifixer-semantic-teacher-max-cost-usd",
+                "{openai_artifixer_semantic_teacher_max_cost_usd}",
+                "--openai-artifixer-visual-review-max-cost-usd",
+                "{openai_artifixer_visual_review_max_cost_usd}",
+                "--openai-content-agents-max-cost-usd",
+                "{openai_content_agents_max_cost_usd}",
                 "--hard-ttl-seconds",
                 "{hard_ttl_seconds}",
                 "--output",
@@ -1063,6 +1075,20 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "camera_count": _arg_text(args.camera_count),
         "maximum_hourly_rate_usd": _arg_text(args.maximum_hourly_rate_usd),
         "hard_total_spend_cap_usd": _arg_text(args.hard_total_spend_cap_usd),
+        "provider_compute_spend_cap_usd": _arg_text(
+            args.provider_compute_spend_cap_usd
+        ),
+        "openai_max_cost_usd": _arg_text(args.openai_max_cost_usd),
+        "openai_max_requests": _arg_text(args.openai_max_requests),
+        "openai_artifixer_semantic_teacher_max_cost_usd": _arg_text(
+            args.openai_artifixer_semantic_teacher_max_cost_usd
+        ),
+        "openai_artifixer_visual_review_max_cost_usd": _arg_text(
+            args.openai_artifixer_visual_review_max_cost_usd
+        ),
+        "openai_content_agents_max_cost_usd": _arg_text(
+            args.openai_content_agents_max_cost_usd
+        ),
         "hard_ttl_seconds": _arg_text(args.hard_ttl_seconds),
         "aggregate_goal_spend_before_usd": _arg_text(
             args.aggregate_goal_spend_before_usd
@@ -1781,6 +1807,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--camera-count", type=int)
     parser.add_argument("--maximum-hourly-rate-usd", type=float)
     parser.add_argument("--hard-total-spend-cap-usd", type=float)
+    parser.add_argument("--provider-compute-spend-cap-usd", type=float)
+    parser.add_argument("--openai-max-cost-usd", type=float)
+    parser.add_argument("--openai-max-requests", type=int)
+    parser.add_argument(
+        "--openai-artifixer-semantic-teacher-max-cost-usd", type=float
+    )
+    parser.add_argument(
+        "--openai-artifixer-visual-review-max-cost-usd", type=float
+    )
+    parser.add_argument("--openai-content-agents-max-cost-usd", type=float)
     parser.add_argument("--hard-ttl-seconds", type=int)
     parser.add_argument("--aggregate-goal-spend-before-usd", type=float)
     parser.add_argument("--aggregate-goal-spend-cap-usd", type=float)

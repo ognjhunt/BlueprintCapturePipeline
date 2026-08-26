@@ -23,7 +23,8 @@ from .task_evaluation_scene_configuration_bundle import (
 
 AUTHORITY_SCHEMA_VERSION = "task_evaluation_scene_configuration_paid_authority.v1"
 AGGREGATE_GOAL_SPEND_CAP_USD = 50.0
-MAX_ATTEMPT_SPEND_USD = 1.0
+MAX_ATTEMPT_SPEND_USD = 5.0
+MAX_PROVIDER_COMPUTE_SPEND_USD = 1.0
 MAX_HOURLY_RATE_USD = 0.80
 MAX_TTL_SECONDS = 9_000
 MIN_TTL_SECONDS = 600
@@ -109,7 +110,7 @@ def _budget_valid(*, rate: Any, cap: Any, ttl: Any) -> bool:
         math.isfinite(rate_value)
         and math.isfinite(cap_value)
         and 0 < rate_value <= MAX_HOURLY_RATE_USD
-        and 0 < cap_value <= MAX_ATTEMPT_SPEND_USD
+        and 0 < cap_value <= MAX_PROVIDER_COMPUTE_SPEND_USD
         and MIN_TTL_SECONDS <= ttl <= MAX_TTL_SECONDS
         and rate_value * ttl / 3600.0 <= cap_value
     )
@@ -160,6 +161,12 @@ def materialize_scene_configuration_paid_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     output_path: str | Path,
+    provider_compute_spend_cap_usd: float | None = None,
+    openai_max_cost_usd: float = 0.0,
+    openai_max_requests: int = 0,
+    openai_artifixer_semantic_teacher_max_cost_usd: float = 0.0,
+    openai_artifixer_visual_review_max_cost_usd: float = 0.0,
+    openai_content_agents_max_cost_usd: float = 0.0,
 ) -> dict[str, Any]:
     """Seal one fresh project-spend-derived authority; retries are impossible."""
 
@@ -178,6 +185,35 @@ def materialize_scene_configuration_paid_authority(
         zero.get("observed_at_utc"), code="scene_configuration_provider_zero_time_invalid"
     )
     project_total = float(project["total_cost_usd"])
+    compute_cap = (
+        float(provider_compute_spend_cap_usd)
+        if provider_compute_spend_cap_usd is not None
+        else float(hard_cap_usd)
+    )
+    external_cap = float(openai_max_cost_usd)
+    stage_caps = {
+        "artifixer_semantic_teacher": float(
+            openai_artifixer_semantic_teacher_max_cost_usd
+        ),
+        "artifixer_visual_review": float(
+            openai_artifixer_visual_review_max_cost_usd
+        ),
+        "content_agents": float(openai_content_agents_max_cost_usd),
+    }
+    external_contract_valid = (
+        math.isfinite(external_cap)
+        and external_cap >= 0
+        and all(math.isfinite(value) and value >= 0 for value in stage_caps.values())
+        and sum(stage_caps.values()) <= external_cap + 1e-9
+        and isinstance(openai_max_requests, int)
+        and not isinstance(openai_max_requests, bool)
+        and (
+            (external_cap == 0 and openai_max_requests == 0)
+            or (external_cap > 0 and 1 <= openai_max_requests <= 100)
+        )
+        and compute_cap + external_cap <= float(hard_cap_usd) + 1e-9
+        and 0 < float(hard_cap_usd) <= MAX_ATTEMPT_SPEND_USD
+    )
     if (
         not authorization_reference.strip()
         or not authorized_by.strip()
@@ -185,8 +221,9 @@ def materialize_scene_configuration_paid_authority(
         or _OCI_DIGEST.fullmatch(container_image) is None
         or _RESOURCE_NAME.fullmatch(resource_name) is None
         or not _budget_valid(
-            rate=max_hourly_rate_usd, cap=hard_cap_usd, ttl=hard_ttl_seconds
+            rate=max_hourly_rate_usd, cap=compute_cap, ttl=hard_ttl_seconds
         )
+        or not external_contract_valid
         or zero_time > authorized_time
         or (authorized_time - zero_time).total_seconds()
         > MAX_PROVIDER_ZERO_AGE_SECONDS
@@ -220,6 +257,15 @@ def materialize_scene_configuration_paid_authority(
         "container_image": container_image,
         "resource_name": resource_name,
         "hard_attempt_spend_cap_usd": hard_cap_usd,
+        "provider_compute_spend_cap_usd": compute_cap,
+        "external_service_spend_caps": {
+            "openai": {
+                "maximum_cost_usd": external_cap,
+                "maximum_requests": openai_max_requests,
+                "stage_max_cost_usd": stage_caps,
+                "credentials_via_ephemeral_private_file_only": True,
+            }
+        },
         "maximum_hourly_rate_usd": max_hourly_rate_usd,
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
         "aggregate_goal_spend_before_attempt_usd": project_total,
@@ -252,6 +298,49 @@ def validate_scene_configuration_paid_authority(
 
     authority = dict(value)
     errors: list[str] = []
+    external = (authority.get("external_service_spend_caps") or {}).get("openai")
+    compute_cap = authority.get("provider_compute_spend_cap_usd")
+    total_cap = authority.get("hard_attempt_spend_cap_usd")
+    external_cost = external.get("maximum_cost_usd") if isinstance(external, Mapping) else None
+    external_requests = external.get("maximum_requests") if isinstance(external, Mapping) else None
+    stage_caps = external.get("stage_max_cost_usd") if isinstance(external, Mapping) else None
+    external_contract_valid = (
+        isinstance(compute_cap, (int, float))
+        and not isinstance(compute_cap, bool)
+        and math.isfinite(float(compute_cap))
+        and isinstance(total_cap, (int, float))
+        and not isinstance(total_cap, bool)
+        and isinstance(external_cost, (int, float))
+        and not isinstance(external_cost, bool)
+        and math.isfinite(float(external_cost))
+        and float(external_cost) >= 0
+        and isinstance(external_requests, int)
+        and not isinstance(external_requests, bool)
+        and (
+            (float(external_cost) == 0 and external_requests == 0)
+            or (float(external_cost) > 0 and 1 <= external_requests <= 100)
+        )
+        and isinstance(stage_caps, Mapping)
+        and set(stage_caps)
+        == {
+            "artifixer_semantic_teacher",
+            "artifixer_visual_review",
+            "content_agents",
+        }
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0
+            for value in stage_caps.values()
+        )
+        and sum(float(value) for value in stage_caps.values())
+        <= float(external_cost) + 1e-9
+        and float(compute_cap) + float(external_cost)
+        <= float(total_cap) + 1e-9
+        and 0 < float(total_cap) <= MAX_ATTEMPT_SPEND_USD
+        and external.get("credentials_via_ephemeral_private_file_only") is True
+    )
     if (
         authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or authority.get("authority_kind")
@@ -275,9 +364,10 @@ def validate_scene_configuration_paid_authority(
         or _RESOURCE_NAME.fullmatch(str(authority.get("resource_name") or "")) is None
         or not _budget_valid(
             rate=authority.get("maximum_hourly_rate_usd"),
-            cap=authority.get("hard_attempt_spend_cap_usd"),
+            cap=compute_cap,
             ttl=authority.get("maximum_single_resource_ttl_seconds"),
         )
+        or not external_contract_valid
         or authority.get("raw_interiorgs_bytes_authorized_for_provider") is not False
         or authority.get("evaluation_episode_authorized") is not False
         or authority.get("active_instance_allowlist")
@@ -330,6 +420,7 @@ def validate_scene_configuration_paid_authority(
 
 __all__ = [
     "AUTHORITY_SCHEMA_VERSION",
+    "MAX_PROVIDER_COMPUTE_SPEND_USD",
     "TaskEvaluationSceneConfigurationAuthorityError",
     "materialize_scene_configuration_paid_authority",
     "validate_scene_configuration_paid_authority",
@@ -350,6 +441,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-hourly-rate-usd", required=True, type=float)
     parser.add_argument("--hard-cap-usd", required=True, type=float)
     parser.add_argument("--hard-ttl-seconds", required=True, type=int)
+    parser.add_argument("--provider-compute-spend-cap-usd", type=float)
+    parser.add_argument("--openai-max-cost-usd", type=float, default=0.0)
+    parser.add_argument("--openai-max-requests", type=int, default=0)
+    parser.add_argument(
+        "--openai-artifixer-semantic-teacher-max-cost-usd", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--openai-artifixer-visual-review-max-cost-usd", type=float, default=0.0
+    )
+    parser.add_argument("--openai-content-agents-max-cost-usd", type=float, default=0.0)
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     authority = materialize_scene_configuration_paid_authority(
@@ -366,6 +467,16 @@ def main(argv: list[str] | None = None) -> int:
         hard_cap_usd=args.hard_cap_usd,
         hard_ttl_seconds=args.hard_ttl_seconds,
         output_path=args.output,
+        provider_compute_spend_cap_usd=args.provider_compute_spend_cap_usd,
+        openai_max_cost_usd=args.openai_max_cost_usd,
+        openai_max_requests=args.openai_max_requests,
+        openai_artifixer_semantic_teacher_max_cost_usd=(
+            args.openai_artifixer_semantic_teacher_max_cost_usd
+        ),
+        openai_artifixer_visual_review_max_cost_usd=(
+            args.openai_artifixer_visual_review_max_cost_usd
+        ),
+        openai_content_agents_max_cost_usd=args.openai_content_agents_max_cost_usd,
     )
     print(json.dumps(authority, sort_keys=True, separators=(",", ":")))
     return 0

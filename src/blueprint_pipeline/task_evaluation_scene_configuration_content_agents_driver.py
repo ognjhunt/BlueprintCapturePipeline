@@ -37,6 +37,9 @@ from .provider_archive import extract_provider_archive
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_openai_gate import (
+    scene_configuration_openai_stage_gate,
+)
 
 
 _INPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"
@@ -297,6 +300,7 @@ def execute_content_agents_component(
     *,
     environment: Mapping[str, str] | None = None,
     runner: Any = subprocess.run,
+    cost_gate_factory: Any = scene_configuration_openai_stage_gate,
 ) -> dict[str, Any]:
     """Invoke the released runtime once and seal its candidate artifacts."""
 
@@ -417,19 +421,49 @@ def execute_content_agents_component(
                 "scene_configuration_content_agents_secret_file_invalid"
             )
         child_environment["OPENAI_API_KEY"] = secret_path.read_text(encoding="utf-8").strip()
-    completed = runner(
-        [str(runtime / "run_adp_content_agents_provider_runtime.sh")],
-        cwd=runtime,
-        env=child_environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=7_000,
+    cost_gate = cost_gate_factory(
+        environment=values,
+        stage="content_agents",
+        run_id=f"{stage_input['run_id']}-content-agents",
+        request_digest=_sha256(_required_path(values, _INPUT_ENV)),
+        candidate_digest=str(source_record["digest"]),
+        output_root=runtime / "official_openai_cost",
     )
+    cost_gate.reserve()
+    try:
+        completed = runner(
+            [str(runtime / "run_adp_content_agents_provider_runtime.sh")],
+            cwd=runtime,
+            env=child_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=7_000,
+        )
+    except Exception as exc:
+        cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=None,
+            runtime_exception_type=type(exc).__name__,
+        )
+        raise
     runtime_output = runtime / "runtime_output"
-    runtime_result = _read(
-        runtime_output / "adp_content_agents_vast_result.json",
-        code="scene_configuration_content_agents_runtime_result_missing",
+    try:
+        runtime_result = _read(
+            runtime_output / "adp_content_agents_vast_result.json",
+            code="scene_configuration_content_agents_runtime_result_missing",
+        )
+    except Exception as exc:
+        cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=None,
+            runtime_exception_type=type(exc).__name__,
+        )
+        raise
+    cost_gate.complete(
+        provider_call_performed=True,
+        runtime_result_digest=str(runtime_result.get("result_digest") or "") or None,
+        runtime_exception_type=None,
     )
     if completed.returncode != 0 or runtime_result.get("status") != "completed":
         raise TaskEvaluationSceneConfigurationContentAgentsError(

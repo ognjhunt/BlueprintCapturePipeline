@@ -825,6 +825,28 @@ def _build_scene_configuration_context(
         "hard_total_spend_cap_usd": preparation_request["spend"][
             "hard_cap_usd"
         ],
+        "provider_compute_spend_cap_usd": preparation_request["spend"][
+            "provider_compute_spend_cap_usd"
+        ],
+        "openai_max_cost_usd": preparation_request["spend"][
+            "external_service_caps"
+        ]["openai"]["maximum_cost_usd"],
+        "openai_max_requests": preparation_request["spend"][
+            "external_service_caps"
+        ]["openai"]["maximum_requests"],
+        "openai_artifixer_semantic_teacher_max_cost_usd": preparation_request[
+            "spend"
+        ]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+            "artifixer_semantic_teacher"
+        ],
+        "openai_artifixer_visual_review_max_cost_usd": preparation_request[
+            "spend"
+        ]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+            "artifixer_visual_review"
+        ],
+        "openai_content_agents_max_cost_usd": preparation_request["spend"][
+            "external_service_caps"
+        ]["openai"]["stage_max_cost_usd"]["content_agents"],
         "hard_ttl_seconds": preparation_request["spend"]["hard_ttl_seconds"],
         "container_image": preparation_request["runtime"]["oci_image"],
         "scene_id": preparation_request["scene"]["identity"]["id"],

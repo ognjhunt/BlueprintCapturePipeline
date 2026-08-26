@@ -170,6 +170,9 @@ VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
 VAST_INLINE_PROVIDER_BUNDLE_MAX_BASE64_CHARS = 130_000
+VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX = "BLUEPRINT_VAST_RUNTIME_SECRET_B64_"
+VAST_RUNTIME_SECRET_FILE_LIMIT = 8
+VAST_RUNTIME_SECRET_MAX_BYTES = 65_536
 VAST_IMAGE_LOGIN_MODE_ENV = "BLUEPRINT_VAST_IMAGE_LOGIN_MODE"
 DEFAULT_VAST_API_KEY_FILE = "~/.blueprint-secrets/vast_api_key"
 DEFAULT_VAST_LAUNCH_LOCK_FILENAME = "vast_paid_launch.lock"
@@ -798,6 +801,35 @@ def _read_secret_file(env_var: str, default_path: str) -> tuple[str, dict[str, A
         return "", status
     status["secret_nonempty"] = bool(key)
     return key, status
+
+
+def _runtime_secret_file_values(
+    paths: Mapping[str, str | Path] | None,
+) -> dict[str, str]:
+    """Read a bounded set of private files for ephemeral provider bootstrap."""
+
+    if not paths:
+        return {}
+    if len(paths) > VAST_RUNTIME_SECRET_FILE_LIMIT:
+        raise ValueError("too_many_vast_runtime_secret_files")
+    values: dict[str, str] = {}
+    for name, unresolved in sorted(paths.items()):
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None:
+            raise ValueError("invalid_vast_runtime_secret_file_name")
+        path = Path(unresolved).expanduser().resolve()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_mode & 0o077
+            or path.stat().st_size <= 0
+            or path.stat().st_size > VAST_RUNTIME_SECRET_MAX_BYTES
+        ):
+            raise ValueError(f"invalid_vast_runtime_secret_file:{name}")
+        value = path.read_text(encoding="utf-8").strip()
+        if not value or "\x00" in value:
+            raise ValueError(f"invalid_vast_runtime_secret_file:{name}")
+        values[str(name)] = value
+    return values
 
 
 def _read_hf_token_file() -> tuple[str, dict[str, Any]]:
@@ -3920,6 +3952,8 @@ def _probe_env(
     retain_cosmos_server: bool = False,
     forward_hf_token: bool = True,
     provider_bundle_kind: str = "isaac",
+    runtime_secret_file_values: Mapping[str, str] | None = None,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -3975,6 +4009,35 @@ def _probe_env(
         env["HF_TOKEN"] = hf_token
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    for name, value in sorted((provider_runtime_environment or {}).items()):
+        public_identity_name = name in {"OPENAI_PROJECT_ID", "OPENAI_API_KEY_ID"}
+        if (
+            (
+                not public_identity_name
+                and re.fullmatch(r"BLUEPRINT_[A-Z0-9_]{1,120}", str(name or ""))
+                is None
+            )
+            or (
+                not public_identity_name
+                and any(marker in str(name).upper() for marker in SENSITIVE_KEY_MARKERS)
+            )
+            or not isinstance(value, str)
+            or not value
+            or len(value) > 1_000
+            or "\x00" in value
+        ):
+            raise ValueError("invalid_vast_provider_runtime_environment")
+        env[name] = value
+    for name, value in sorted((runtime_secret_file_values or {}).items()):
+        if (
+            re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None
+            or not isinstance(value, str)
+            or not value
+        ):
+            raise ValueError("invalid_vast_runtime_secret_file")
+        env[VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + name] = base64.b64encode(
+            value.encode("utf-8")
+        ).decode("ascii")
     for env_name in (
         "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY",
         "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
@@ -4232,6 +4295,50 @@ def _probe_shell_script(
         "if command -v python3 >/dev/null 2>&1; then PY_NET=$(command -v python3); "
         "elif command -v python >/dev/null 2>&1; then PY_NET=$(command -v python); fi; "
         "echo BLUEPRINT_VAST_ONSTART_STARTED; date -u; "
+        "SECRET_EXPORTS=$WORK_DIR/blueprint_runtime_secret_exports.sh; "
+        'rm -f "$SECRET_EXPORTS"; '
+        "if env | grep -q '^BLUEPRINT_VAST_RUNTIME_SECRET_B64_'; then "
+        'SECRET_ROOT="$WORK_DIR/.blueprint-runtime-secrets"; '
+        'mkdir -p "$SECRET_ROOT" && chmod 700 "$SECRET_ROOT"; '
+        'BLUEPRINT_RUNTIME_SECRET_ROOT="$SECRET_ROOT" '
+        'BLUEPRINT_RUNTIME_SECRET_EXPORTS="$SECRET_EXPORTS" '
+        '"${PY_NET:-python3}" - <<\'PY\'\n'
+        "import base64\n"
+        "import os\n"
+        "import pathlib\n"
+        "import re\n"
+        "prefix = 'BLUEPRINT_VAST_RUNTIME_SECRET_B64_'\n"
+        "root = pathlib.Path(os.environ['BLUEPRINT_RUNTIME_SECRET_ROOT'])\n"
+        "exports = pathlib.Path(os.environ['BLUEPRINT_RUNTIME_SECRET_EXPORTS'])\n"
+        "rows = []\n"
+        "for bootstrap_name, encoded in sorted(os.environ.items()):\n"
+        "    if not bootstrap_name.startswith(prefix):\n"
+        "        continue\n"
+        "    name = bootstrap_name[len(prefix):]\n"
+        "    if re.fullmatch(r'[A-Z][A-Z0-9_]{1,120}_FILE', name) is None:\n"
+        "        raise SystemExit(41)\n"
+        "    value = base64.b64decode(encoded.encode('ascii'), validate=True)\n"
+        "    if not value or len(value) > 65536 or b'\\x00' in value:\n"
+        "        raise SystemExit(42)\n"
+        "    path = root / name.lower()\n"
+        "    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n"
+        "    with os.fdopen(descriptor, 'wb') as stream:\n"
+        "        stream.write(value)\n"
+        "        stream.flush()\n"
+        "        os.fsync(stream.fileno())\n"
+        "    rows.append((name, path, bootstrap_name))\n"
+        "with exports.open('x', encoding='utf-8') as stream:\n"
+        "    for name, path, bootstrap_name in rows:\n"
+        "        stream.write(f'export {name}={path}\\n')\n"
+        "        stream.write(f'unset {bootstrap_name}\\n')\n"
+        "os.chmod(exports, 0o600)\n"
+        "print('BLUEPRINT_VAST_RUNTIME_SECRET_FILES_READY:%d' % len(rows))\n"
+        "PY\n"
+        "secret_rc=$?; "
+        'if [ $secret_rc -ne 0 ] || [ ! -f "$SECRET_EXPORTS" ]; then '
+        "echo BLUEPRINT_VAST_RUNTIME_SECRET_FILES_BLOCKED:$secret_rc; exit $secret_rc; fi; "
+        '. "$SECRET_EXPORTS"; rm -f "$SECRET_EXPORTS"; '
+        "fi; "
         "blueprint_http_get() { "
         'blueprint_get_url="$1"; '
         'if command -v curl >/dev/null 2>&1; then curl -fsSL "$blueprint_get_url"; return $?; fi; '
@@ -7136,6 +7243,8 @@ def run_vast_provider_adapter(
     stale_offer_create_retry_limit: int | None = None,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
+    provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -7190,6 +7299,7 @@ def run_vast_provider_adapter(
         raise ValueError("invalid_vast_stale_offer_create_retry_limit")
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
+    runtime_secret_values = _runtime_secret_file_values(runtime_secret_file_paths)
     resolved_machine_avoidlist_path = (
         Path(machine_avoidlist_path).expanduser().resolve()
         if machine_avoidlist_path
@@ -8268,6 +8378,11 @@ def run_vast_provider_adapter(
             runtime_dependency_url,
         ),
         _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
+        *runtime_secret_values.values(),
+        *(
+            base64.b64encode(value.encode("utf-8")).decode("ascii")
+            for value in runtime_secret_values.values()
+        ),
     ]
     teardown_actions: list[dict[str, Any]] = []
     continuing_spend = False
@@ -8516,6 +8631,8 @@ def run_vast_provider_adapter(
                     retain_cosmos_server=retain_instance_on_runtime_failure,
                     forward_hf_token=forward_hf_token,
                     provider_bundle_kind=provider_bundle_kind,
+                    runtime_secret_file_values=runtime_secret_values,
+                    provider_runtime_environment=provider_runtime_environment,
                 ),
                 image_login=image_login,
                 template_hash_id=template_hash,

@@ -111,6 +111,7 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     output = tmp_path / "output"
     output.mkdir()
     stage_input = {
+        "run_id": "configure-scene-839873-v1",
         "stage": {
             "stage_id": "03-author-replacement",
             "adapter": {"id": "content_agents_rigid_replacement", "version": "v1"},
@@ -128,6 +129,17 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
     component_result = output / "component-result.json"
     observed: list[list[str]] = []
+    cost_events: list[str] = []
+
+    class CostGate:
+        def reserve(self):
+            cost_events.append("reserved")
+
+        def complete(self, **_kwargs):
+            cost_events.append("completed")
+
+    def cost_gate_factory(**_kwargs):
+        return CostGate()
 
     def run(command, *, env, **_kwargs):
         observed.append(command)
@@ -161,12 +173,14 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
             "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package),
         },
         runner=run,
+        cost_gate_factory=cost_gate_factory,
     )
 
     assert observed == [
         [str(output / "released_content_agents_runtime/run_adp_content_agents_provider_runtime.sh")]
     ]
     assert result["status"] == "completed"
+    assert cost_events == ["reserved", "completed"]
     assert result["provider_mutations_performed"] == 0
     assert result["nested_paid_execution_requested"] is False
     assert {row["role"] for row in result["artifacts"]} == {

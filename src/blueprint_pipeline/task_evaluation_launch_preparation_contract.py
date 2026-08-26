@@ -138,6 +138,22 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_execution_adapter_provider_unavailable"
         )
+    spend = request["spend"]
+    if request["run_mode"] == "scene_configuration":
+        openai = spend["external_service_caps"]["openai"]
+        stage_caps = openai["stage_max_cost_usd"]
+        openai_cap = float(openai["maximum_cost_usd"])
+        request_count = int(openai["maximum_requests"])
+        if (
+            float(spend["provider_compute_spend_cap_usd"]) + openai_cap
+            > float(spend["hard_cap_usd"]) + 1e-9
+            or sum(float(value) for value in stage_caps.values())
+            > openai_cap + 1e-9
+            or (openai_cap == 0) != (request_count == 0)
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_scene_configuration_external_spend_invalid"
+            )
     output_mounts = [
         mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
     ]

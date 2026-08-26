@@ -388,17 +388,40 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
             "adp-new-scene-simple-relocation-839873-aaaaaaaaaaaa-20260825t120500z"
         ),
         max_hourly_rate_usd=0.50,
-        hard_cap_usd=0.75,
+        hard_cap_usd=2.25,
         hard_ttl_seconds=1_800,
         output_path=authority_path,
+        provider_compute_spend_cap_usd=0.75,
+        openai_max_cost_usd=1.5,
+        openai_max_requests=32,
+        openai_artifixer_semantic_teacher_max_cost_usd=0.4,
+        openai_artifixer_visual_review_max_cost_usd=0.75,
+        openai_content_agents_max_cost_usd=0.35,
     )
 
     assert authority["retry_cap"] == 0
     assert authority["maximum_provider_allocations"] == 1
     assert authority["aggregate_goal_spend_before_attempt_usd"] == 40.0
+    assert authority["external_service_spend_caps"]["openai"][
+        "maximum_cost_usd"
+    ] == 1.5
     assert authority_module.validate_scene_configuration_paid_authority(
         authority, bundle_receipt=receipt
     ) == authority
+    for name, value in (
+        ("OPENAI_API_KEY_FILE", "test-runtime-key"),
+        ("OPENAI_ADMIN_API_KEY_FILE", "test-admin-key"),
+        (
+            "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE",
+            '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
+        ),
+    ):
+        path = tmp_path / name.lower()
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+        monkeypatch.setenv(name, str(path))
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
+    monkeypatch.setenv("OPENAI_API_KEY_ID", "key_test")
     dry_run = scene_vast.run_scene_configuration_vast(
         job_dir=tmp_path / "dry-run",
         bundle_receipt_path=receipt_path,
@@ -454,7 +477,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         revision="r1",
         max_hourly_rate_usd=0.50,
         hard_ttl_seconds=1_800,
-        max_spend_usd=0.75,
+        max_spend_usd=2.25,
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",

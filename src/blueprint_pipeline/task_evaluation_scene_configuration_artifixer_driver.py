@@ -52,6 +52,9 @@ from .task_evaluation_artifixer_ai_visual_review import (
 from .task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_openai_gate import (
+    scene_configuration_openai_stage_gate,
+)
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
 )
@@ -476,13 +479,36 @@ def execute_artifixer_component(
         )
     token = token_path.read_text(encoding="utf-8").strip()
     semantic_output = work / "semantic_teacher_output"
-    semantic_result = execute_semantic_teacher_image_edits(
-        runtime_request_path=_semantic_runtime_request(
-            packet_root=packet_root,
-            source_commit=str(stage_input["source_commit"]),
-        ),
-        output_root=semantic_output,
-        token=token,
+    semantic_request = _semantic_runtime_request(
+        packet_root=packet_root,
+        source_commit=str(stage_input["source_commit"]),
+    )
+    semantic_cost_gate = scene_configuration_openai_stage_gate(
+        environment=values,
+        stage="artifixer_semantic_teacher",
+        run_id=f"{stage_input['run_id']}-artifixer-semantic-teacher",
+        request_digest=_sha256(semantic_request),
+        candidate_digest=str(candidate["receipt_digest"]),
+        output_root=work / "semantic_teacher_official_openai_cost",
+    )
+    semantic_cost_gate.reserve()
+    try:
+        semantic_result = execute_semantic_teacher_image_edits(
+            runtime_request_path=semantic_request,
+            output_root=semantic_output,
+            token=token,
+        )
+    except Exception as exc:
+        semantic_cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=None,
+            runtime_exception_type=type(exc).__name__,
+        )
+        raise
+    semantic_cost_gate.complete(
+        provider_call_performed=True,
+        runtime_result_digest=str(semantic_result.get("result_digest") or "") or None,
+        runtime_exception_type=None,
     )
     if semantic_result.get("status") != "completed_unreviewed_semantic_teacher_candidates":
         raise TaskEvaluationSceneConfigurationArtifixerError(
@@ -617,6 +643,12 @@ def execute_artifixer_component(
         output_path=review_rights_path,
     )
     with _temporary_openai_key(token):
+        visual_review_cap = float(
+            values.get(
+                "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD"
+            )
+            or 0
+        )
         review = run_artifixer_ai_visual_review(
             final_composite_receipt_path=review_input_path,
             rights_attestation_path=review_rights_path,
@@ -630,6 +662,7 @@ def execute_artifixer_component(
             openai_admin_api_key_file=_required_path(values, "OPENAI_ADMIN_API_KEY_FILE"),
             openai_project_id=str(values.get("OPENAI_PROJECT_ID") or ""),
             openai_api_key_id=str(values.get("OPENAI_API_KEY_ID") or ""),
+            max_cost_usd=visual_review_cap,
         )
     if review.get("decision") != "accepted" or not review.get("review_receipt"):
         raise TaskEvaluationSceneConfigurationArtifixerError(

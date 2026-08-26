@@ -55,10 +55,73 @@ _VAST_MUTATION_ENV = (
 _VAST_STALE_OFFER_RETRY_ENV = (
     "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 )
+_OPENAI_RUNTIME_FILE_ENVS = (
+    "OPENAI_API_KEY_FILE",
+    "OPENAI_ADMIN_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE",
+)
+_OPENAI_RUNTIME_VALUE_ENVS = (
+    "OPENAI_PROJECT_ID",
+    "OPENAI_API_KEY_ID",
+)
 
 
 class TaskEvaluationSceneConfigurationVastError(RuntimeError):
     """The canonical provider path could not run or close one configuration."""
+
+
+def _provider_runtime_inputs(
+    authority: Mapping[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
+    openai = authority["external_service_spend_caps"]["openai"]
+    if float(openai["maximum_cost_usd"]) <= 0:
+        return {}, {}
+    secret_paths = {
+        name: str(os.environ.get(name) or "").strip()
+        for name in _OPENAI_RUNTIME_FILE_ENVS
+    }
+    values = {
+        name: str(os.environ.get(name) or "").strip()
+        for name in _OPENAI_RUNTIME_VALUE_ENVS
+    }
+    if not all(secret_paths.values()) or not all(values.values()):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_openai_runtime_secret_configuration_missing"
+        )
+    for unresolved in secret_paths.values():
+        path = Path(unresolved).expanduser().resolve()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_mode & 0o077
+            or not 0 < path.stat().st_size <= 65_536
+        ):
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_openai_runtime_secret_configuration_invalid"
+            )
+    stage_caps = openai["stage_max_cost_usd"]
+    runtime_environment = {
+        **values,
+        "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": str(
+            authority["authority_digest"]
+        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD": str(
+            openai["maximum_cost_usd"]
+        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS": str(
+            openai["maximum_requests"]
+        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD": str(
+            stage_caps["artifixer_semantic_teacher"]
+        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD": str(
+            stage_caps["artifixer_visual_review"]
+        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD": str(
+            stage_caps["content_agents"]
+        ),
+    }
+    return secret_paths, runtime_environment
 
 
 def _sha256(path: Path) -> str:
@@ -232,6 +295,7 @@ def run_scene_configuration_vast(
     authority = validate_scene_configuration_paid_authority(
         _read(authority_path), bundle_receipt=receipt
     )
+    runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -260,7 +324,7 @@ def run_scene_configuration_vast(
         resource_class="vast_provider_adapter",
         require_allocation_binding=True,
     )
-    hard_cap = float(authority["hard_attempt_spend_cap_usd"])
+    hard_cap = float(authority["provider_compute_spend_cap_usd"])
     rate = float(authority["maximum_hourly_rate_usd"])
     ttl = int(authority["maximum_single_resource_ttl_seconds"])
     bundle_path = Path(str(receipt["bundle_path"])).resolve()
@@ -378,6 +442,8 @@ def run_scene_configuration_vast(
                 started_instance_id_path=watchdog.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
+                runtime_secret_file_paths=runtime_secret_paths,
+                provider_runtime_environment=runtime_environment,
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
