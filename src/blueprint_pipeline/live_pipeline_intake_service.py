@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
@@ -88,6 +88,10 @@ from .task_evaluation_run_control_plane import (
 from .task_evaluation_run_state import (
     TaskEvaluationRunStateError,
     TaskEvaluationRunStateStore,
+)
+from .task_evaluation_result_delivery import (
+    TaskEvaluationResultDeliveryError,
+    resolve_task_evaluation_result_artifact,
 )
 from .task_evaluation_method_catalog import (
     TaskEvaluationMethodCatalogError,
@@ -3244,6 +3248,40 @@ def create_app() -> FastAPI:
                 ),
             )
         return result
+
+    @app.get(
+        "/api/live-pipeline/task-evaluation-runs/{run_id}/artifacts/{artifact_id}",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def read_task_evaluation_result_artifact(
+        run_id: str, artifact_id: str
+    ) -> FileResponse:
+        manifest_path = _manifest_path().resolve()
+        state_root = _task_evaluation_run_root(manifest_path)
+        try:
+            path, record = resolve_task_evaluation_result_artifact(
+                run_root=Path(state_root).resolve() / "runs" / run_id,
+                run_id=run_id,
+                artifact_id=artifact_id,
+            )
+        except (TaskEvaluationResultDeliveryError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        disposition = (
+            "inline"
+            if record.get("content_type") == "video/mp4"
+            else "attachment"
+        )
+        return FileResponse(
+            path,
+            media_type=str(record.get("content_type") or "application/octet-stream"),
+            filename=path.name,
+            content_disposition_type=disposition,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Blueprint-Artifact-SHA256": str(record["sha256"]),
+            },
+        )
 
     @app.get(
         "/api/live-pipeline/task-evaluation-runs/{run_id}",

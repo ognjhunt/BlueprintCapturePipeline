@@ -21,6 +21,9 @@ from .decision_evidence_router import route_decision_evidence
 from .local_evidence_adapters import authorized_local_evidence_adapter_registry
 from .task_evaluation_run_state import TaskEvaluationRunStateStore
 from .task_evaluation_method_catalog import validate_task_evaluation_method_catalog
+from .task_evaluation_result_delivery import (
+    materialize_task_evaluation_result_delivery,
+)
 from .task_evaluation_run_webapp_sync import sync_task_evaluation_run_to_webapp
 
 
@@ -325,6 +328,12 @@ def execute_and_aggregate_task_evaluation_run(
     if current in terminal:
         context = _read(artifacts / "run_context.json")
         envelope = _read(artifacts / "decision_envelope.json")
+        result_delivery = materialize_task_evaluation_result_delivery(
+            run_root=root,
+            run_id=run_id,
+            state=current,
+            decision_envelope=envelope,
+        )
         webapp_sync = sync_task_evaluation_run_to_webapp(
             capture_session_id=str(context.get("capture_session_id") or ""),
             intake_id=str(context.get("intake_id") or ""),
@@ -332,6 +341,7 @@ def execute_and_aggregate_task_evaluation_run(
             state=current,
             evidence_plan=plan,
             decision_envelope=envelope,
+            result_delivery=result_delivery,
         )
         return {
             "schema_version": "task_evaluation_run_execution_result.v1",
@@ -339,6 +349,7 @@ def execute_and_aggregate_task_evaluation_run(
             "state": current,
             "already_exists": True,
             "decision_envelope": envelope,
+            "result_delivery": result_delivery,
             "webapp_sync": webapp_sync,
         }
     binding = _binding(request, testbed)
@@ -393,6 +404,12 @@ def execute_and_aggregate_task_evaluation_run(
         artifacts={"decision_envelope_digest": envelope["decision_envelope_digest"]},
     )
     context = _read(artifacts / "run_context.json")
+    result_delivery = materialize_task_evaluation_result_delivery(
+        run_root=root,
+        run_id=run_id,
+        state=state["to_state"],
+        decision_envelope=envelope,
+    )
     webapp_sync = sync_task_evaluation_run_to_webapp(
         capture_session_id=str(context.get("capture_session_id") or ""),
         intake_id=str(context.get("intake_id") or ""),
@@ -400,6 +417,7 @@ def execute_and_aggregate_task_evaluation_run(
         state=state["to_state"],
         evidence_plan=plan,
         decision_envelope=envelope,
+        result_delivery=result_delivery,
     )
     return {
         "schema_version": "task_evaluation_run_execution_result.v1",
@@ -409,6 +427,7 @@ def execute_and_aggregate_task_evaluation_run(
         "execution_manifest": execution.execution_manifest,
         "evidence_results": result_values,
         "decision_envelope": envelope,
+        "result_delivery": result_delivery,
         "webapp_sync": webapp_sync,
     }
 
