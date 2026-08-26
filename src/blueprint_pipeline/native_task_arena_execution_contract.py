@@ -88,6 +88,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_policy_episode.py",
+    "adp009d_policy_episode_evidence.py",
     "adp009d_droid_action_execution.py",
     "adp009d_policy_rights.py",
     "droid_policy_bridge.py",

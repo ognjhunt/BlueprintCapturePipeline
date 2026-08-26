@@ -1101,6 +1101,7 @@ def build_native_microcheck_bundle(
         "adp009d_newton_gripper_drive.py",
         "adp009d_physics_backend_comparison.py",
         "adp009d_policy_episode.py",
+        "adp009d_policy_episode_evidence.py",
         "policy_episode_lifecycle.py",
         "adp009d_control_episode.py",
         # Wired into the runtime but never shipped, so a live run reached the
