@@ -101,6 +101,7 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
     "execution_admission",
     "claim_ceiling",
 )
+PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = ("source_commit",)
 
 
 class TaskEvaluationLaunchError(ValueError):
@@ -327,6 +328,10 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
             blockers.append(f"{field}_invalid")
     if not _is_digest(request.get("launch_profile_digest")):
         blockers.append("launch_profile_digest_invalid")
+    if "source_commit" in request and not re.fullmatch(
+        r"[0-9a-f]{40}", str(request.get("source_commit") or "")
+    ):
+        blockers.append("launch_source_commit_invalid")
     _validate_reference(request.get("source_bundle"), field="source_bundle", blockers=blockers)
     source_bundle = _mapping(request.get("source_bundle"))
     if not _is_identifier(source_bundle.get("bundle_id")):
@@ -403,6 +408,10 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_profile_id_invalid")
     if profile.get("program_id") != "arm-decision-proof-v1":
         blockers.append("launch_profile_program_mismatch")
+    if "source_commit" in profile and not re.fullmatch(
+        r"[0-9a-f]{40}", str(profile.get("source_commit") or "")
+    ):
+        blockers.append("launch_profile_source_commit_invalid")
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -629,6 +638,9 @@ def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, An
     if blockers:
         raise TaskEvaluationLaunchError(",".join(blockers))
     descriptor = {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
+    for field in PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS:
+        if field in profile:
+            descriptor[field] = profile[field]
     allocator = _mapping(profile.get("allocator"))
     descriptor["required_authorization"] = {
         "max_spend_usd": allocator.get("max_spend_usd"),
@@ -642,8 +654,16 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
 
     descriptor = _mapping(value)
     blockers: list[str] = []
-    if set(descriptor) != {*PUBLIC_PROFILE_DESCRIPTOR_FIELDS, "required_authorization"}:
+    required_fields = {*PUBLIC_PROFILE_DESCRIPTOR_FIELDS, "required_authorization"}
+    allowed_fields = required_fields | set(PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS)
+    if not required_fields.issubset(descriptor) or not set(descriptor).issubset(
+        allowed_fields
+    ):
         blockers.append("launch_profile_public_descriptor_fields_invalid")
+    if "source_commit" in descriptor and not re.fullmatch(
+        r"[0-9a-f]{40}", str(descriptor.get("source_commit") or "")
+    ):
+        blockers.append("launch_profile_public_source_commit_invalid")
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")
@@ -793,6 +813,10 @@ def validate_launch_request_against_public_catalog(
     ):
         if request.get(request_field) != descriptor.get(descriptor_field):
             blockers.append(f"launch_profile_public_catalog_{request_field}_mismatch")
+    if "source_commit" in descriptor and request.get("source_commit") != descriptor.get(
+        "source_commit"
+    ):
+        blockers.append("launch_profile_public_catalog_source_commit_mismatch")
     return blockers
 
 
@@ -1388,6 +1412,10 @@ def dispatch_launch_request(
             blockers.append("launch_required_controls_profile_binding_mismatch")
         if request.get("claim_ceiling") != profile.get("claim_ceiling"):
             blockers.append("launch_claim_ceiling_profile_binding_mismatch")
+        if "source_commit" in profile and request.get("source_commit") != profile.get(
+            "source_commit"
+        ):
+            blockers.append("launch_source_commit_profile_binding_mismatch")
         policy_campaign = _mapping(
             _mapping(profile.get("native_policy_binding")).get(
                 "policy_campaign"
@@ -1731,6 +1759,8 @@ def dispatch_launch_request(
     }
     if visual_evidence is not None:
         receipt["visual_evidence"] = visual_evidence
+    if "source_commit" in profile:
+        receipt["source_commit"] = profile["source_commit"]
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write_immutable(run_root / "launch_receipt.json", receipt)
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp

@@ -2972,6 +2972,50 @@ def run_task_neutral_controls(
     return pair
 
 
+def run_task_neutral_control(
+    *,
+    environment: ControlEnvironment,
+    task_spec: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+    control_id: str,
+    gripper_open_command: float,
+    gripper_closed_command: float | None = None,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Run exactly one preregistered task-neutral control episode.
+
+    A production Task Evaluation Run may need the negative and positive
+    controls to terminalize under separate provider authorities.  This entry
+    point preserves the same episode implementation and receipt schema as the
+    paired helper while refusing any unrecognized control selector.
+    """
+
+    if control_id not in REQUIRED_CONTROLS:
+        raise ControlEpisodeError(
+            [f"task_control_selection_invalid:{control_id or 'missing'}"]
+        )
+    task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
+    plan = validate_task_control_plan(control_plan, task_spec=task)
+    output = Path(output_dir).expanduser().resolve()
+    _write_json(output / "adp_task_control_plan.v1.json", plan)
+    receipt = _run_task_control_episode(
+        environment=environment,
+        task_spec=task,
+        plan=plan,
+        control_id=control_id,
+        gripper_open_command=float(gripper_open_command),
+        gripper_closed_command=(
+            None
+            if gripper_closed_command is None
+            else float(gripper_closed_command)
+        ),
+        output=output,
+        episode_id=f"{plan['cell_id']}-{control_id}",
+    )
+    _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
+    return receipt
+
+
 def run_synthetic_post_phase5_downstream_diagnostic(
     *,
     environment: ControlEnvironment,
@@ -3301,6 +3345,7 @@ __all__ = [
     "materialize_control_plan",
     "run_control_episode",
     "run_required_controls",
+    "run_task_neutral_control",
     "run_task_neutral_controls",
     "run_synthetic_post_phase5_downstream_diagnostic",
     "validate_task_control_plan",

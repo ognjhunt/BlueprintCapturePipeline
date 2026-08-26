@@ -9,6 +9,7 @@ from blueprint_pipeline.adp009d_control_episode import (
     ControlEpisodeError,
     TASK_DOWNSTREAM_DIAGNOSTIC_SCHEMA_VERSION,
     run_synthetic_post_phase5_downstream_diagnostic,
+    run_task_neutral_control,
     run_task_neutral_controls,
 )
 from blueprint_pipeline.adp009d_physics_backend_comparison import (
@@ -646,6 +647,57 @@ def test_same_control_contract_passes_original_and_second_scene_fixtures(
         "placed" if task_kind == "rigid_pick_place" else "opened_and_settled",
     ]
     assert environment.reset_count == 2
+
+
+def test_one_selected_control_runs_one_reset_isolated_episode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("rigid_pick_place")
+    environment = _Environment("rigid_pick_place")
+
+    receipt = run_task_neutral_control(
+        environment=environment,
+        task_spec=task,
+        control_plan=_plan(task),
+        control_id="zero_action_negative",
+        gripper_open_command=0.0,
+        output_dir=tmp_path,
+    )
+
+    assert receipt["control_id"] == "zero_action_negative"
+    assert receipt["control_passed"] is True
+    assert receipt["observed_outcome"] == "never_moved"
+    assert environment.reset_count == 1
+    assert not (
+        tmp_path
+        / "adp_task_control_episode.deterministic_scripted_positive.json"
+    ).exists()
+
+    with pytest.raises(ControlEpisodeError, match="task_control_selection_invalid"):
+        run_task_neutral_control(
+            environment=environment,
+            task_spec=task,
+            control_plan=_plan(task),
+            control_id="policy",
+            gripper_open_command=0.0,
+            output_dir=tmp_path,
+        )
 
 
 def test_task_control_plan_rejects_unbound_or_over_budget_trajectory(

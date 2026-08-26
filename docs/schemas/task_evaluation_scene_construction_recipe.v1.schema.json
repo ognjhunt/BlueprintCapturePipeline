@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_scene_construction_recipe.v1.schema.json",
+  "title": "Task Evaluation scene construction recipe v1",
+  "description": "Provider-neutral production recipe that turns an admitted source-scene object into a qualified replacement and assembled Task Evaluation scene after authenticated submission.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "recipe_id",
+    "team_namespace",
+    "scene_identity",
+    "task_identity",
+    "subject_identity",
+    "source_manifest_digest",
+    "rights_admission_digest",
+    "stage_sequence",
+    "output_identity",
+    "provider_disclosure",
+    "recipe_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_scene_construction_recipe.v1"},
+    "recipe_id": {"$ref": "#/$defs/identifier"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "scene_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "task_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "subject_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "source_manifest_digest": {"$ref": "#/$defs/digest"},
+    "rights_admission_digest": {"$ref": "#/$defs/digest"},
+    "stage_sequence": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "stage_id",
+          "capability",
+          "adapter",
+          "execution_class",
+          "configuration",
+          "depends_on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "stage_id": {"$ref": "#/$defs/identifier"},
+          "capability": {
+            "enum": [
+              "observed_appearance_object_removal",
+              "collision_object_excision",
+              "rigid_replacement_authoring",
+              "replacement_static_qualification",
+              "replacement_native_import_qualification",
+              "scene_assembly"
+            ]
+          },
+          "adapter": {"$ref": "#/$defs/versionedIdentity"},
+          "execution_class": {"enum": ["no_spend", "gpu_canary"]},
+          "configuration": {"$ref": "#/$defs/reference"},
+          "depends_on": {
+            "type": "array",
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/identifier"}
+          }
+        }
+      }
+    },
+    "output_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "provider_disclosure": {
+      "type": "object",
+      "required": [
+        "raw_source_bytes_to_external_provider",
+        "derived_runtime_processing_allowed",
+        "provider_training_allowed",
+        "public_redistribution_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "raw_source_bytes_to_external_provider": {"const": false},
+        "derived_runtime_processing_allowed": {"const": true},
+        "provider_training_allowed": {"const": false},
+        "public_redistribution_allowed": {"const": false}
+      }
+    },
+    "recipe_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 192,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}

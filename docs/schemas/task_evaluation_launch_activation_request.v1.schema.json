@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_launch_activation_request.v1.schema.json",
+  "title": "Task Evaluation launch activation request v1",
+  "description": "Immutable, customer-facing request to turn one verified Task Evaluation preparation into a profile and one-use standing authority. All filesystem destinations and provider credentials remain server-owned.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "expected_production_commit",
+    "activation_id",
+    "team_namespace",
+    "lane",
+    "preparation",
+    "release_window",
+    "lineage",
+    "authorization",
+    "requested_mutations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_launch_activation_request.v1"},
+    "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "activation_id": {"$ref": "#/$defs/identifier"},
+    "team_namespace": {"$ref": "#/$defs/identifier"},
+    "lane": {
+      "enum": [
+        "native_task_arena_construction",
+        "native_task_arena_zero_action",
+        "native_task_arena_scripted_positive"
+      ]
+    },
+    "preparation": {
+      "type": "object",
+      "required": ["preparation_id", "request_digest", "result_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "preparation_id": {"$ref": "#/$defs/identifier"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "result_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "release_window": {"$ref": "#/$defs/reference"},
+    "lineage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "project_spend_reconciliation", "initial_provider_zero"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "initial_project"},
+            "project_spend_reconciliation": {"$ref": "#/$defs/reference"},
+            "initial_provider_zero": {"$ref": "#/$defs/reference"}
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "prior_authority",
+            "prior_result",
+            "prior_launch_receipt",
+            "prior_webapp_sync",
+            "prior_provider_zero",
+            "prior_spend_reconciliation",
+            "construction_result"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "predecessor"},
+            "prior_authority": {"$ref": "#/$defs/reference"},
+            "prior_result": {"$ref": "#/$defs/reference"},
+            "prior_launch_receipt": {"$ref": "#/$defs/reference"},
+            "prior_webapp_sync": {"$ref": "#/$defs/reference"},
+            "prior_provider_zero": {"$ref": "#/$defs/reference"},
+            "prior_spend_reconciliation": {"$ref": "#/$defs/reference"},
+            "construction_result": {"$ref": "#/$defs/reference"},
+            "zero_action_result": {"$ref": "#/$defs/reference"}
+          }
+        }
+      ]
+    },
+    "authorization": {
+      "type": "object",
+      "required": [
+        "reference",
+        "authorized_by",
+        "authorized_on",
+        "standing_authorization_expires_at",
+        "profile_revision"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reference": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "authorized_by": {"$ref": "#/$defs/identifier"},
+        "authorized_on": {"type": "string", "format": "date-time"},
+        "standing_authorization_expires_at": {"type": "string", "format": "date-time"},
+        "profile_revision": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "requested_mutations": {
+      "type": "object",
+      "required": ["profile_publication", "catalog_synchronization", "standing_authorization"],
+      "additionalProperties": false,
+      "properties": {
+        "profile_publication": {"const": true},
+        "catalog_synchronization": {"const": true},
+        "standing_authorization": {"const": true}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"lane": {"const": "native_task_arena_construction"}}},
+      "then": {"properties": {"lineage": {"properties": {"kind": {"const": "initial_project"}}}}},
+      "else": {"properties": {"lineage": {"properties": {"kind": {"const": "predecessor"}}}}}
+    },
+    {
+      "if": {"properties": {"lane": {"const": "native_task_arena_scripted_positive"}}},
+      "then": {"properties": {"lineage": {"required": ["zero_action_result"]}}}
+    }
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {
+      "type": "object",
+      "required": ["uri", "digest", "size_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

@@ -195,18 +195,36 @@ def _packet(root: Path, *, scene_id: str) -> Path:
     for role in ("scene_collision", "scene_appearance", "task_object"):
         path = assets / f"{role}.usd"
         path.write_text(f"exact:{scene_id}:{role}\n", encoding="utf-8")
-        source_bindings.append(
-            {
-                "semantic_role": role,
-                "source": {"root": "evidence", "relative_path": path.name},
-                "staged_relative_path": f"assets/{path.name}",
-                "staged_size_bytes": path.stat().st_size,
-                "staged_sha256": _sha(path),
-            }
-        )
+        binding = {
+            "semantic_role": role,
+            "source": {"root": "evidence", "relative_path": path.name},
+            "staged_relative_path": f"assets/{path.name}",
+            "staged_size_bytes": path.stat().st_size,
+            "staged_sha256": _sha(path),
+        }
+        if role == "task_object":
+            binding["asset_id"] = "admitted-can"
+        source_bindings.append(binding)
+    task_object = assets / "task_object.usd"
     documents = {
         "native_task_arena_packet_request.v1.json": {"scene_id": scene_id},
-        "native_task_runtime_contract.v1.json": {"contract_digest": "sha256:" + "c" * 64},
+        "native_task_runtime_contract.v1.json": {
+            "contract_digest": "sha256:" + "c" * 64,
+            "task_kind": "rigid_pick_place",
+            "task_subject_asset_id": "admitted-can",
+            "task_spec": {
+                "task_kind": "rigid_pick_place",
+                "manipulation_strategy": "planar_push",
+                "subject_asset_id": "admitted-can",
+            },
+            "objects": [
+                {
+                    "asset_id": "admitted-can",
+                    "task_subject": True,
+                    "sha256": _sha(task_object),
+                }
+            ],
+        },
         "native_task_arena_scene_plan.v1.json": {"plan_digest": "sha256:" + "p" * 64},
     }
     artifacts = []
@@ -1559,8 +1577,19 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
         names = set(archive.namelist())
         assert {
             "provider_runtime/runtime_inputs/adp_task_control_plan.v1.json",
+            "provider_runtime/runtime_inputs/adp_task_control_execution_spec.v1.json",
             "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
         }.issubset(names)
+        execution_spec = json.loads(
+            archive.read(
+                "provider_runtime/runtime_inputs/"
+                "adp_task_control_execution_spec.v1.json"
+            )
+        )
+        assert execution_spec["control_selection"] == "control_pair"
+        assert execution_spec["execution_spec_digest"] == canonical_digest(
+            execution_spec, digest_field="execution_spec_digest"
+        )
         assert {
             f"provider_runtime/blueprint_pipeline/{name}"
             for name in CONTROLS_RUNTIME_MODULE_NAMES
@@ -1636,6 +1665,58 @@ def test_controls_bundle_refuses_invalid_bounded_orientation_reference(
             implementation_commit="c" * 40,
             generated_at="fixed",
             bounded_orientation_reference_joint_positions_rad=[0.0] * 6,
+        )
+
+
+def test_scripted_positive_requires_the_matching_terminal_zero_action(
+    tmp_path: Path,
+) -> None:
+    scene = {"plan_digest": "sha256:" + "1" * 64}
+    construction = {"result_digest": "sha256:" + "2" * 64}
+    value = {
+        "schema_version": "native_task_arena_control_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "control_selection": "zero_action_negative",
+        "controls_qualified": False,
+        "scene_plan_digest": scene["plan_digest"],
+        "construction_result_digest": construction["result_digest"],
+        "control_episode": {
+            "schema_version": "adp_task_control_episode.v1",
+            "control_id": "zero_action_negative",
+            "control_passed": True,
+            "observed_outcome": "never_moved",
+            "grader_authority": "deterministic_simulator_state",
+            "candidate_policy_queried": False,
+            "visual_evidence": {"status": "complete"},
+            "media_artifacts": [{"role": "external_video"}],
+            "receipt_digest": "",
+        },
+        "result_digest": "",
+    }
+    value["control_episode"]["receipt_digest"] = canonical_digest(
+        value["control_episode"], digest_field="receipt_digest"
+    )
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    path = tmp_path / "zero-action-result.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    checked_path, checked = controls_bundle_module._validated_zero_action_result(
+        path, scene_plan=scene, construction=construction
+    )
+
+    assert checked_path == path.resolve()
+    assert checked["result_digest"] == value["result_digest"]
+    value["control_episode"]["control_passed"] = False
+    value["result_digest"] = canonical_digest(
+        value, digest_field="result_digest"
+    )
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="zero_action_result_invalid"):
+        controls_bundle_module._validated_zero_action_result(
+            path, scene_plan=scene, construction=construction
         )
 
 

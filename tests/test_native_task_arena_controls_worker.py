@@ -20,6 +20,7 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _contact_close_sweep_minimum_force_n,
     _contact_authoritative_targets,
     _construction_global_ik_joint_targets,
+    _control_execution_spec,
     _control_plan_global_ik_joint_targets,
     _dispatch_physics_admitted_jaw_variant,
     _downstream_diagnostic_request,
@@ -1436,6 +1437,7 @@ def test_controls_runtime_inputs_reverify_every_byte(tmp_path: Path) -> None:
     for name in (
         "native_task_arena_construction_result.v1.json",
         "adp_task_control_plan.v1.json",
+        "adp_task_control_execution_spec.v1.json",
     ):
         path = inputs / name
         path.write_text("{}\n", encoding="utf-8")
@@ -1452,11 +1454,58 @@ def test_controls_runtime_inputs_reverify_every_byte(tmp_path: Path) -> None:
     assert set(verified) == {
         "native_task_arena_construction_result.v1.json",
         "adp_task_control_plan.v1.json",
+        "adp_task_control_execution_spec.v1.json",
     }
 
     (inputs / "adp_task_control_plan.v1.json").write_text("tampered\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="identity_mismatch"):
         _verified_runtime_inputs(tmp_path, {"bound_runtime_inputs": rows})
+
+
+def test_control_execution_spec_binds_one_exact_episode(tmp_path: Path) -> None:
+    scene = {
+        "task_kind": "rigid_pick_place",
+        "task_spec": {"schema_version": "adp_task_spec.v2"},
+        "plan_digest": "sha256:" + "1" * 64,
+    }
+    construction = {"result_digest": "sha256:" + "2" * 64}
+    plan = {"plan_digest": "sha256:" + "3" * 64}
+    value = {
+        "schema_version": "adp_task_control_execution_spec.v1",
+        "control_selection": "zero_action_negative",
+        "task_kind": "rigid_pick_place",
+        "scene_plan_digest": scene["plan_digest"],
+        "construction_result_digest": construction["result_digest"],
+        "control_plan_digest": plan["plan_digest"],
+        "candidate_policy_queried": False,
+        "execution_spec_digest": "",
+    }
+    value["execution_spec_digest"] = _canonical_digest(
+        value, field="execution_spec_digest"
+    )
+    path = tmp_path / "adp_task_control_execution_spec.v1.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    checked = _control_execution_spec(
+        {"adp_task_control_execution_spec.v1.json": path},
+        scene_plan=scene,
+        construction=construction,
+        control_plan=plan,
+    )
+
+    assert checked["control_selection"] == "zero_action_negative"
+    value["control_selection"] = "policy"
+    value["execution_spec_digest"] = _canonical_digest(
+        value, field="execution_spec_digest"
+    )
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="execution_spec_invalid"):
+        _control_execution_spec(
+            {"adp_task_control_execution_spec.v1.json": path},
+            scene_plan=scene,
+            construction=construction,
+            control_plan=plan,
+        )
 
 
 def test_downstream_diagnostic_request_is_default_off_and_digest_bound(

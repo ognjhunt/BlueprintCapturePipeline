@@ -34,6 +34,14 @@ RESULT_FILENAME = "native_task_arena_control_result.v1.json"
 DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME = (
     "adp_task_synthetic_post_phase5_downstream_diagnostic_request.v1.json"
 )
+CONTROL_EXECUTION_SPEC_FILENAME = "adp_task_control_execution_spec.v1.json"
+ZERO_ACTION_RESULT_FILENAME = "native_task_arena_zero_action_result.v1.json"
+CONTROL_PAIR = "control_pair"
+ZERO_ACTION_NEGATIVE = "zero_action_negative"
+SCRIPTED_POSITIVE = "deterministic_scripted_positive"
+CONTROL_SELECTIONS = frozenset(
+    {CONTROL_PAIR, ZERO_ACTION_NEGATIVE, SCRIPTED_POSITIVE}
+)
 POSITION_ONLY_PREALIGN_ORIENTATION_TOLERANCE_RAD = 0.08
 # C25 proved that pose reachability alone is not enough for contact.  The
 # nominal jaw branch reached the 5 mm off-sim pose gate with panda_joint5 only
@@ -360,13 +368,122 @@ def _verified_runtime_inputs(
     required = {
         "native_task_arena_construction_result.v1.json",
         "adp_task_control_plan.v1.json",
+        CONTROL_EXECUTION_SPEC_FILENAME,
     }
     if set(verified) not in (
         required,
         {*required, DOWNSTREAM_DIAGNOSTIC_REQUEST_FILENAME},
+        {*required, ZERO_ACTION_RESULT_FILENAME},
     ):
         raise RuntimeError("native_task_controls_runtime_inputs_incomplete")
     return verified
+
+
+def _control_execution_spec(
+    inputs: Mapping[str, Path],
+    *,
+    scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+    control_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reopen the immutable selector before simulator startup."""
+
+    try:
+        value = json.loads(
+            inputs[CONTROL_EXECUTION_SPEC_FILENAME].read_text(encoding="utf-8")
+        )
+    except (KeyError, OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "native_task_controls_execution_spec_invalid"
+        ) from exc
+    selection = value.get("control_selection") if isinstance(value, Mapping) else None
+    zero_action_result = None
+    zero_action_path = inputs.get(ZERO_ACTION_RESULT_FILENAME)
+    if zero_action_path is not None:
+        try:
+            zero_action_result = json.loads(
+                zero_action_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "native_task_controls_execution_spec_invalid"
+            ) from exc
+    zero_episode = (
+        zero_action_result.get("control_episode")
+        if isinstance(zero_action_result, Mapping)
+        else None
+    )
+    zero_visual = (
+        zero_episode.get("visual_evidence")
+        if isinstance(zero_episode, Mapping)
+        else None
+    )
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != "adp_task_control_execution_spec.v1"
+        or selection not in CONTROL_SELECTIONS
+        or value.get("task_kind") != scene_plan.get("task_kind")
+        or value.get("scene_plan_digest") != scene_plan.get("plan_digest")
+        or value.get("construction_result_digest")
+        != construction.get("result_digest")
+        or value.get("control_plan_digest") != control_plan.get("plan_digest")
+        or value.get("candidate_policy_queried") is not False
+        or value.get("execution_spec_digest")
+        != _canonical_digest(value, field="execution_spec_digest")
+        or (
+            selection == SCRIPTED_POSITIVE
+            and (
+                not isinstance(zero_action_result, Mapping)
+                or zero_action_result.get("schema_version")
+                != RESULT_SCHEMA_VERSION
+                or zero_action_result.get("status") != "completed"
+                or zero_action_result.get("blockers") != []
+                or zero_action_result.get("control_selection")
+                != ZERO_ACTION_NEGATIVE
+                or zero_action_result.get("controls_qualified") is not False
+                or zero_action_result.get("scene_plan_digest")
+                != scene_plan.get("plan_digest")
+                or zero_action_result.get("construction_result_digest")
+                != construction.get("result_digest")
+                or zero_action_result.get("result_digest")
+                != value.get("prior_zero_action_result_digest")
+                or zero_action_result.get("result_digest")
+                != _canonical_digest(zero_action_result, field="result_digest")
+                or not isinstance(zero_episode, Mapping)
+                or zero_episode.get("schema_version")
+                != "adp_task_control_episode.v1"
+                or zero_episode.get("control_id") != ZERO_ACTION_NEGATIVE
+                or zero_episode.get("control_passed") is not True
+                or zero_episode.get("observed_outcome") != "never_moved"
+                or zero_episode.get("grader_authority")
+                != "deterministic_simulator_state"
+                or zero_episode.get("candidate_policy_queried") is not False
+                or not isinstance(zero_visual, Mapping)
+                or zero_visual.get("status") != "complete"
+                or not isinstance(zero_episode.get("media_artifacts"), list)
+                or not zero_episode["media_artifacts"]
+                or zero_episode.get("receipt_digest")
+                != _canonical_digest(zero_episode, field="receipt_digest")
+            )
+        )
+        or (
+            selection != SCRIPTED_POSITIVE
+            and (
+                zero_action_result is not None
+                or value.get("prior_zero_action_result_digest") is not None
+            )
+        )
+        or (
+            selection != CONTROL_PAIR
+            and not (
+                scene_plan.get("task_kind") == "rigid_pick_place"
+                and (scene_plan.get("task_spec") or {}).get("schema_version")
+                == "adp_task_spec.v2"
+            )
+        )
+    ):
+        raise RuntimeError("native_task_controls_execution_spec_invalid")
+    return dict(value)
 
 
 def _downstream_diagnostic_request(
@@ -3272,6 +3389,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_plan = json.loads(
             inputs["adp_task_control_plan.v1.json"].read_text(encoding="utf-8")
         )
+        execution_spec = _control_execution_spec(
+            inputs,
+            scene_plan=scene_plan,
+            construction=construction,
+            control_plan=control_plan,
+        )
         binding_mismatches = _input_binding_mismatches(
             manifest=manifest,
             packet_receipt=packet_receipt,
@@ -3291,6 +3414,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["construction_result_digest"] = construction["result_digest"]
         result["input_control_plan_digest"] = control_plan["plan_digest"]
         result["control_plan_digest"] = control_plan["plan_digest"]
+        result["control_selection"] = execution_spec["control_selection"]
+        result["control_execution_spec_digest"] = execution_spec[
+            "execution_spec_digest"
+        ]
         result["phase_reached"] = "inputs_verified"
         _announce("input_verification", "completed")
 
@@ -3326,6 +3453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         import torch
 
         from blueprint_pipeline.adp009d_control_episode import (
+            run_task_neutral_control,
             run_task_neutral_controls,
         )
         from blueprint_pipeline.native_franka_pose_servo import (
@@ -3557,25 +3685,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         # through the shared episode seam instead.
         if graph_rigid:
             _announce("required_controls")
-            pair = run_task_neutral_controls(
-                environment=episode_environment,
-                task_spec=scene_plan["task_spec"],
-                control_plan=effective_control_plan,
-                gripper_open_command=float(gripper["open_command"]),
-                gripper_closed_command=float(gripper["closed_command"]),
-                output_dir=output_root / "controls",
-            )
-            result["control_pair"] = pair
-            result["controls_qualified"] = pair[
-                "cell_admitted_for_policy_execution"
-            ]
-            result["blockers"].extend(pair["policy_execution_blockers"])
+            selection = str(execution_spec["control_selection"])
+            if selection == CONTROL_PAIR:
+                pair = run_task_neutral_controls(
+                    environment=episode_environment,
+                    task_spec=scene_plan["task_spec"],
+                    control_plan=effective_control_plan,
+                    gripper_open_command=float(gripper["open_command"]),
+                    gripper_closed_command=float(gripper["closed_command"]),
+                    output_dir=output_root / "controls",
+                )
+                result["control_pair"] = pair
+                result["controls_qualified"] = pair[
+                    "cell_admitted_for_policy_execution"
+                ]
+                result["blockers"].extend(
+                    pair["policy_execution_blockers"]
+                )
+            else:
+                episode = run_task_neutral_control(
+                    environment=episode_environment,
+                    task_spec=scene_plan["task_spec"],
+                    control_plan=effective_control_plan,
+                    control_id=selection,
+                    gripper_open_command=float(gripper["open_command"]),
+                    gripper_closed_command=float(gripper["closed_command"]),
+                    output_dir=output_root / "controls",
+                )
+                result["control_episode"] = episode
+                result["selected_control_id"] = selection
+                result["selected_control_passed"] = episode.get(
+                    "control_passed"
+                )
+                result["deterministic_task_succeeded"] = (
+                    episode.get("score") or {}
+                ).get("task_succeeded")
+                result["controls_qualified"] = False
+                result["blockers"].extend(episode["blockers"])
+                if episode.get("control_passed") is not True:
+                    result["blockers"].append(
+                        f"selected_control_failed:{selection}"
+                    )
             result["blockers"] = sorted(set(result["blockers"]))
             result["status"] = "completed" if not result["blockers"] else "blocked"
-            result["phase_reached"] = "required_controls_complete"
+            result["phase_reached"] = "selected_control_complete"
             _announce(
                 "required_controls",
-                "completed" if result["controls_qualified"] else "blocked",
+                "completed" if not result["blockers"] else "blocked",
             )
             return 0 if result["status"] == "completed" else 1
 

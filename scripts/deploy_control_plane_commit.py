@@ -66,6 +66,18 @@ DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
+    "blueprint-task-evaluation-launch-preparation.service",
+    "blueprint-task-evaluation-launch-preparation.path",
+    "blueprint-task-evaluation-launch-activation.service",
+    "blueprint-task-evaluation-launch-activation.path",
+)
+#: Watchers whose execution surface is provably no-spend and may be armed on a
+#: fresh host without widening provider authority.  The paid dispatcher is
+#: deliberately absent: its operator freeze must survive every deploy unless
+#: ``--arm-path-units`` is explicitly supplied.
+DEFAULT_ALWAYS_ARM_PATH_UNITS = (
+    "blueprint-task-evaluation-launch-preparation.path",
+    "blueprint-task-evaluation-launch-activation.path",
 )
 #: The only unit kinds a release may install.  The oneshot ``.service`` and its
 #: queue-watching ``.path`` are a pair: installing one without the other left
@@ -472,9 +484,10 @@ def _install_release_systemd_units(
     Promoting a detached release without refreshing its installed unit left the
     dispatcher on older concurrency and watchdog-survival semantics.  The
     allocator then ran exact new Python under stale systemd controls and failed
-    before provider allocation.  Install only the dispatcher pair here; the
-    ordinary restart seam immediately daemon-reloads it, and the next queue
-    activation therefore uses the same release that authored the profile.
+    before provider allocation.  Install only the release-owned Task Evaluation
+    queue pairs here; the ordinary restart seam immediately daemon-reloads them,
+    and the next queue activation therefore uses the same release that authored
+    the request or profile.
 
     The pair includes the queue-watching ``.path`` unit: a release that changed
     how the queue wakes the dispatcher (PR #1057 added ``PathChanged=``) was
@@ -541,12 +554,17 @@ def _systemd_unit_state(unit: str) -> dict[str, str]:
 
     states: dict[str, str] = {}
     for probe in ("is-enabled", "is-active"):
-        result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
-            ["systemctl", probe, unit],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+                ["systemctl", probe, unit],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise ControlPlaneDeployError(
+                f"deploy_systemd_state_probe_failed:{unit}:{probe}"
+            ) from exc
         state = result.stdout.strip() or (
             "disabled" if probe == "is-enabled" else "inactive"
         )
@@ -608,6 +626,7 @@ def _restore_installed_path_units(
     *,
     before: Mapping[str, Mapping[str, str]],
     arm_path_units: bool,
+    always_arm_units: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Install new watcher bytes without widening operator launch authority.
 
@@ -616,7 +635,9 @@ def _restore_installed_path_units(
     paid queue.  Preserve both the boot and active state by default.  A fresh
     host therefore stays disabled/inactive.  The only widening operation is the
     explicit ``arm_path_units`` flag, whose before/requested/after state is
-    retained in the deployment receipt.
+    retained in the deployment receipt.  A release may separately name a
+    hard-coded no-spend watcher in ``always_arm_units``; this cannot be supplied
+    by an HTTP request or launch profile and is retained as ``arm_no_spend``.
     """
 
     receipts: list[dict[str, Any]] = []
@@ -625,8 +646,13 @@ def _restore_installed_path_units(
         if not unit.endswith(".path"):
             continue
         prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
-        should_enable = arm_path_units or prior.get("enabled") == "enabled"
-        should_start = arm_path_units or prior.get("state") == "active"
+        arm_no_spend = unit in always_arm_units
+        should_enable = (
+            arm_path_units or arm_no_spend or prior.get("enabled") == "enabled"
+        )
+        should_start = (
+            arm_path_units or arm_no_spend or prior.get("state") == "active"
+        )
         commands = ["enable" if should_enable else "disable"]
         commands.append("restart" if should_start else "stop")
         for verb in commands:
@@ -657,9 +683,17 @@ def _restore_installed_path_units(
             {
                 "unit": unit,
                 "before": prior,
-                "requested_intent": "arm" if arm_path_units else "preserve",
+                "requested_intent": (
+                    "arm"
+                    if arm_path_units
+                    else "arm_no_spend"
+                    if arm_no_spend
+                    else "preserve"
+                ),
                 "after": after,
-                "operator_freeze_preserved": not arm_path_units and not should_start,
+                "operator_freeze_preserved": (
+                    not arm_path_units and not arm_no_spend and not should_start
+                ),
             }
         )
     return receipts
@@ -988,6 +1022,7 @@ def deploy_control_plane_commit(
             installed_systemd_units,
             before=path_unit_states_before,
             arm_path_units=arm_path_units,
+            always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
         )
 
     return {

@@ -588,6 +588,7 @@ def build_lane_live_profile(
         "schema_version": PROFILE_SCHEMA_VERSION,
         "profile_id": profile_id,
         "program_id": PROGRAM_ID,
+        "source_commit": source_commit,
         "claim_ceiling": spec.claim_ceiling,
         "allocator": {
             "entrypoint": CANONICAL_ALLOCATOR_ENTRYPOINT,

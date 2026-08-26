@@ -178,6 +178,8 @@ def _request(profile: dict) -> dict:
         "claim_ceiling": "development_only",
         "idempotency_key": "launch-interiorgs-sage-001",
     }
+    if "source_commit" in profile:
+        request["source_commit"] = profile["source_commit"]
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     return request
 
@@ -2182,6 +2184,80 @@ def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
         "schema_version": "task_evaluation_launch_profile_catalog.v1",
         "profiles": catalog,
     }
+
+
+def test_source_commit_is_public_bound_and_propagated_to_terminal_receipt(
+    tmp_path: Path,
+) -> None:
+    source_commit = "a" * 40
+    profile = _profile(tmp_path)
+    profile["source_commit"] = source_commit
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [public_launch_profile_descriptor(profile)])
+
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert request["source_commit"] == source_commit
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        public_catalog_path=catalog_path,
+        allocator_runner=lambda argv: 0,
+    )
+
+    assert receipt["source_commit"] == source_commit
+    assert receipt["status"] == "dry_run_completed"
+
+
+def test_source_commit_fails_closed_at_every_public_launch_boundary(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    profile["source_commit"] = "a" * 40
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    descriptor = public_launch_profile_descriptor(profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    request = _request(profile)
+
+    malformed_profile = dict(profile, source_commit="A" * 40)
+    malformed_profile["profile_digest"] = canonical_digest(
+        malformed_profile, digest_field="profile_digest"
+    )
+    assert "launch_profile_source_commit_invalid" in validate_launch_profile(
+        malformed_profile
+    )
+
+    malformed_descriptor = dict(descriptor, source_commit="main")
+    assert "launch_profile_public_source_commit_invalid" in (
+        validate_public_launch_profile_descriptor(malformed_descriptor)
+    )
+
+    mismatched_request = dict(request, source_commit="b" * 40)
+    mismatched_request["request_digest"] = canonical_digest(
+        mismatched_request, digest_field="request_digest"
+    )
+    assert validate_launch_request(mismatched_request) == []
+    assert validate_launch_request_against_public_catalog(
+        mismatched_request, catalog_path=catalog_path
+    ) == ["launch_profile_public_catalog_source_commit_mismatch"]
+
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    mismatched_path = tmp_path / "mismatched-request.json"
+    _write(mismatched_path, mismatched_request)
+    receipt = dispatch_launch_request(
+        request_path=mismatched_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+    )
+    assert "launch_source_commit_profile_binding_mismatch" in receipt["blockers"]
 
 
 def test_public_catalog_rejects_execution_fields_symlinks_and_duplicates(
