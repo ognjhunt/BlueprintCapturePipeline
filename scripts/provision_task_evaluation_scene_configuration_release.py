@@ -44,10 +44,10 @@ from scripts.build_task_evaluation_splat_render_runtime import (
 SCHEMA_VERSION = "task_evaluation_scene_configuration_release_runtime.v1"
 DEFAULT_RUNTIME_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/system-runtimes")
 DEFAULT_RELEASE_WINDOW_PREFIX = (
-    "s3://blueprint-production-inputs/coordinator-release-windows/"
+    "s3://blueprint/task-evaluation/production-inputs/coordinator-release-windows/"
 )
 DEFAULT_ACTIVATION_DESTINATION_PREFIX = (
-    "s3://blueprint-production-inputs/task-evaluation-activations"
+    "s3://blueprint/task-evaluation/production-inputs/task-evaluation-activations"
 )
 Readback = Callable[[Path], bytes]
 

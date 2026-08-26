@@ -400,8 +400,9 @@ def test_s3_content_addressed_publication_is_exclusive_and_fully_read_back(
     assert blocked["status"] == "blocked"
 
 
-def test_r2_publication_accepts_canonical_wam_file_credentials_without_recording_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("scheme", ["s3", "r2"])
+def test_s3_compatible_publication_accepts_canonical_wam_file_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scheme: str
 ) -> None:
     source = tmp_path / "request.json"
     source.write_text('{"schema_version":"request.v1"}\n', encoding="utf-8")
@@ -458,7 +459,7 @@ def test_r2_publication_accepts_canonical_wam_file_credentials_without_recording
     monkeypatch.setitem(sys.modules, "boto3", Boto3())
     receipt = setup.publish_content_addressed_manifest(
         source=source,
-        destination_prefix="r2://fixture-bucket/launch-manifests",
+        destination_prefix=f"{scheme}://fixture-bucket/launch-manifests",
         receipt_path=tmp_path / "publication.json",
         profile_builder="build_semantic_teacher_image_edit_live_profile.py",
     )
@@ -490,7 +491,7 @@ def test_r2_publication_accepts_canonical_wam_file_credentials_without_recording
 
     monkeypatch.setattr(setup, "_module_available", lambda name: name == "boto3")
     preflight = setup._upload_readiness_preflight(
-        destination_uri="r2://fixture-bucket/launch-manifests/request.json",
+        destination_uri=f"{scheme}://fixture-bucket/launch-manifests/request.json",
         artifact_write_auth={
             "required_secret_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
             "required_plaintext_env_vars": ["BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL"],
