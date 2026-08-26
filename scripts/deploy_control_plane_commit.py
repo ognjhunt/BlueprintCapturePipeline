@@ -818,6 +818,41 @@ def _restore_installed_path_units(
     return receipts
 
 
+@contextlib.contextmanager
+def _restore_path_unit_states_on_deploy_failure(
+    installed_units: Sequence[Mapping[str, Any]],
+):
+    """Quiesce watchers and restore their exact prior state on any failure.
+
+    A deploy intentionally stops queue watchers before validating and
+    publishing a release.  The success path restores them after the intake
+    proves the new commit, but a failed prerequisite or restart previously
+    exited with every formerly active watcher still stopped.  Recovery runs
+    while the paid-launch locks remain held and never applies the no-spend or
+    explicit-arm widening rules: it restores only the state observed before
+    this attempt.
+    """
+
+    before = _installed_path_unit_states(installed_units)
+    try:
+        quiesced = _quiesce_active_path_units(before)
+        yield before, quiesced
+    except BaseException as deployment_error:
+        try:
+            _restore_installed_path_units(
+                installed_units,
+                before=before,
+                arm_path_units=False,
+                always_arm_units=(),
+            )
+        except Exception as restore_error:
+            raise ControlPlaneDeployError(
+                "deploy_failed_path_unit_restore_failed:"
+                f"{type(deployment_error).__name__}:{restore_error}"
+            ) from deployment_error
+        raise
+
+
 def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
     """The intake restart is mandatory; callers may only add units."""
 
@@ -1146,18 +1181,22 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
+    path_unit_names = [
+        {"unit": unit}
+        for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
+        if unit.endswith(".path")
+    ]
     # Held for the whole deploy, not sampled before it: a launch that starts
-    # mid-deploy would read a release being swapped underneath it.
-    with _holding_paid_launch_locks(paid_launch_locks):
-        path_unit_names = [
-            {"unit": unit}
-            for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
-            if unit.endswith(".path")
-        ]
-        path_unit_states_before = _installed_path_unit_states(path_unit_names)
-        quiesced_path_units = _quiesce_active_path_units(
-            path_unit_states_before
-        )
+    # mid-deploy would read a release being swapped underneath it.  The nested
+    # guard restores exact watcher intent before the paid locks are released if
+    # any later deploy step fails.
+    with (
+        _holding_paid_launch_locks(paid_launch_locks),
+        _restore_path_unit_states_on_deploy_failure(path_unit_names) as (
+            path_unit_states_before,
+            quiesced_path_units,
+        ),
+    ):
         installed_provenance = _install_release_provenance(
             payload=provenance_payload,
             state_root=state,

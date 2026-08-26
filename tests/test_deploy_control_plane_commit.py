@@ -1062,13 +1062,30 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     staged = tmp_path / "staged-release"
     staged.mkdir()
     moved: list[str] = []
+    watcher = "blueprint-scene-object-discovery.path"
+    restored: list[dict[str, object]] = []
     monkeypatch.setattr(
         deploy,
         "_install_release_provenance",
         lambda **kwargs: {"git_sha": commit},
     )
-    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {})
-    monkeypatch.setattr(deploy, "_quiesce_active_path_units", lambda _before: [])
+    monkeypatch.setattr(
+        deploy,
+        "_installed_path_unit_states",
+        lambda _units: {watcher: {"enabled": "enabled", "state": "active"}},
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_quiesce_active_path_units",
+        lambda _before: [{"unit": watcher, "state": "inactive"}],
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_restore_installed_path_units",
+        lambda installed, **kwargs: restored.append(
+            {"installed": installed, **kwargs}
+        ),
+    )
     monkeypatch.setattr(
         deploy,
         "stage_task_evaluation_control_plane_release",
@@ -1110,6 +1127,18 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
 
     assert moved == []
     assert active.resolve() == original
+    assert restored == [
+        {
+            "installed": [
+                {"unit": unit}
+                for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+                if unit.endswith(".path")
+            ],
+            "before": {watcher: {"enabled": "enabled", "state": "active"}},
+            "arm_path_units": False,
+            "always_arm_units": (),
+        }
+    ]
 
 
 def test_the_receipt_records_every_slot_it_was_exclusive_with(tmp_path: Path) -> None:
