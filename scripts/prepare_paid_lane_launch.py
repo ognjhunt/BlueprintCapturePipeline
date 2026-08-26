@@ -822,12 +822,24 @@ def _prepare_set_root_for_service(
         root.mkdir(parents=True, exist_ok=True)
         if root.is_symlink() or not root.is_dir():
             raise PaidLaneLaunchPreparationError("paid_lane_set_root_invalid")
-        os.chown(root, -1, group_entry.gr_gid)
-        root.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+        metadata = root.stat()
+        expected_mode = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+        if metadata.st_gid != group_entry.gr_gid:
+            os.chown(root, -1, group_entry.gr_gid)
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            root.chmod(expected_mode)
     except OSError as exc:
         raise PaidLaneLaunchPreparationError(
             "paid_lane_set_root_permission_install_failed"
         ) from exc
+    metadata = root.stat()
+    if (
+        metadata.st_gid != group_entry.gr_gid
+        or stat.S_IMODE(metadata.st_mode) != expected_mode
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "paid_lane_set_root_permission_install_failed"
+        )
     return root.resolve()
 
 

@@ -14,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from PIL import Image
 
+from blueprint_pipeline import simready_cad_agent_host_import as host_import
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.cad_agent_review_media import (
     materialize_cad_agent_visual_comparison,
@@ -69,6 +70,30 @@ def materialize_cad_visual_review_host_rematerialization(**kwargs):
         "expected_source_visual_review_size_bytes", source_record["size_bytes"]
     )
     return _materialize_review(owner_uid=os.getuid(), owner_gid=os.getgid(), **kwargs)
+
+
+def test_already_correct_host_import_metadata_needs_no_privileged_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "import"
+    root.mkdir()
+    root.chmod(host_import.HOST_DIRECTORY_MODE)
+    artifact = root / "artifact.json"
+    artifact.write_text("{}\n", encoding="utf-8")
+    artifact.chmod(host_import.HOST_FILE_MODE)
+
+    def forbidden_mutation(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("already-correct host import must not be mutated")
+
+    monkeypatch.setattr(host_import.os, "chown", forbidden_mutation)
+    monkeypatch.setattr(host_import.os, "chmod", forbidden_mutation)
+
+    assert host_import._seal_ownership_and_readback(
+        files=[artifact],
+        roots=[root],
+        owner_uid=os.getuid(),
+        owner_gid=os.getgid(),
+    ) == (1, 1)
 
 
 def _validate_review_receipt(receipt: dict, source_review_path: Path):

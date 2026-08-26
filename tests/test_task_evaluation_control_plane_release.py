@@ -151,6 +151,35 @@ def test_release_repairs_restrictive_umask_git_index_for_runtime_identity_probe(
     assert stat.S_IMODE(index_path.stat().st_mode) == 0o644
 
 
+def test_release_does_not_rechmod_an_already_readable_git_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, first, _second = _source_repo(tmp_path)
+    release_root = tmp_path / "releases"
+    releases.stage_task_evaluation_control_plane_release(
+        source_repo=source,
+        source_commit=first,
+        release_root=release_root,
+        state_root=tmp_path / "state",
+        active_link=tmp_path / "active",
+    )
+    release = release_root / first
+    index_path = Path(_git(release, "rev-parse", "--git-path", "index")).resolve()
+    assert stat.S_IMODE(index_path.stat().st_mode) == 0o644
+    original_chmod = Path.chmod
+
+    def forbidden_index_chmod(path: Path, mode: int, **kwargs: object) -> None:
+        if path == index_path:
+            raise PermissionError("already-readable index must not be rewritten")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", forbidden_index_chmod)
+
+    assert releases._install_release_git_index_readability(
+        source_repo=source, release_path=release
+    )["runtime_readable"] is True
+
+
 def test_rejects_unmerged_source_commit_before_creating_a_release(tmp_path: Path) -> None:
     source, _first, _second = _source_repo(tmp_path)
     _git(source, "checkout", "-b", "unmerged")

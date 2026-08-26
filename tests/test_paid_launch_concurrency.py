@@ -14,6 +14,7 @@ the one that kept the historical filename.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -265,3 +266,35 @@ def test_the_deploy_repair_skips_slots_that_do_not_exist(tmp_path: Path) -> None
 
     assert receipt["repaired_slots"] == []
     assert not base.exists()
+
+
+def test_the_deploy_does_not_remutate_already_usable_lock_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True)
+    slots = vpa.vast_launch_lock_paths(base)
+    for slot in slots:
+        slot.touch(mode=0o600)
+        slot.chmod(0o600)
+
+    original_chmod = Path.chmod
+
+    def forbidden_slot_chmod(path: Path, mode: int, **kwargs: object) -> None:
+        if path in slots:
+            raise PermissionError("already-usable lock slot must not be rewritten")
+        original_chmod(path, mode, **kwargs)
+
+    def forbidden_chown(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("already-usable lock slot must not be re-owned")
+
+    monkeypatch.setattr(Path, "chmod", forbidden_slot_chmod)
+
+    receipt = deploy._repair_paid_launch_lock_slots(
+        [str(base)],
+        owner_uid=os.getuid(),
+        owner_gid=os.getgid(),
+        chown=forbidden_chown,
+    )
+
+    assert receipt["repaired_slots"] == []
