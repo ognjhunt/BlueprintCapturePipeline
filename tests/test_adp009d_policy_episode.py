@@ -312,7 +312,9 @@ def test_policy_episode_rejects_actions_beyond_frozen_articulated_budget() -> No
     assert environment.reset_count == 0
 
 
-def test_groot_absolute_joint_actions_take_the_direct_position_path(tmp_path) -> None:
+def test_groot_absolute_joint_actions_take_native_saturation_position_path(
+    tmp_path,
+) -> None:
     from PIL import Image
 
     class _AbsolutePolicy(_Policy):
@@ -356,7 +358,7 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path(tmp_path) ->
         SOURCE_GROOT_POSITION
     )
     assert receipt["queries"][0]["position_adapter"] == (
-        "decoded_absolute_joint_position_direct_within_limits"
+        "groot_decoded_absolute_joint_position_with_native_limit_saturation"
     )
     assert receipt["queries"][0]["chunk_shape"] == [40, 8]
     assert receipt["queries"][0]["executed_rows"] == 8
@@ -380,6 +382,52 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path(tmp_path) ->
     assert np.array_equal(
         pixels[:, 320:], policy.observations[0][DROID_WRIST_VIEW]
     )
+
+
+def test_groot_episode_applies_and_records_native_limit_saturation() -> None:
+    class _SaturatingAbsolutePolicy(_Policy):
+        action_space = ACTION_SPACE_JOINT_POSITION
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((40, 8), dtype=float)
+            chunk[5, 3] = -2.91
+            return chunk
+
+    environment = _Environment()
+    receipt = _run(
+        environment,
+        _SaturatingAbsolutePolicy(),
+        candidate_id="groot_n17_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+    )
+
+    assert environment.steps[5][3] == pytest.approx(-2.9)
+    command = receipt["commanded_actions"][5]
+    assert command["source_arm_command"][3] == pytest.approx(-2.91)
+    assert command["joint_position_target_rad"][3] == pytest.approx(-2.9)
+    assert command["clipped_droid_action"][3] == pytest.approx(-2.9)
+    assert command["joint_limit_clamped"] is True
+    assert command["position_adapter"] == (
+        "groot_decoded_absolute_joint_position_with_native_limit_saturation"
+    )
+    query = receipt["queries"][0]
+    assert query["any_joint_limit_clamped"] is True
+    assert query["joint_limit_clamped_rows"] == 1
+    prefix_contract = query["raw_bound_contract"]["executed_prefix_contract"]
+    assert prefix_contract["arm_contract"]["rows_outside_command_interval"] == 1
+    assert prefix_contract["arm_contract"]["raw_envelope_provenance"] == {
+        "checkpoint_id": "nvidia/GR00T-N1.7-DROID",
+        "checkpoint_revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+        "statistics_sha256": (
+            "127832f7df25cda15da4ba6be81737f96b65673d0f892f9fc1bce1bc062fa858"
+        ),
+        "statistics_publisher_git_blob": "03e76c7666bafe2e31fcc2320ee5ffcdddc6d675",
+        "normalization": (
+            "q01_q99_relative_action_clipped_to_normalized_minus1_plus1"
+        ),
+    }
 
 
 def test_pi05_absolute_joint_actions_retain_candidate_identity_in_receipt() -> None:
@@ -1490,7 +1538,11 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
         def infer(self, observation):
             self.observations.append(observation)
             chunk = np.zeros((40, 8), dtype=float)
-            chunk[34:, 3] = -3.0889761447906494
+            # A degrees-as-radians target is outside even GR00T's exact
+            # checkpoint-derived raw envelope.  It remains useful here as a
+            # discarded-tail fault without conflating a valid saturatable
+            # decoded target with malformed policy output.
+            chunk[34:, 3] = -180.0
             return chunk
 
     environment = _Environment()
@@ -1510,7 +1562,7 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
     assert query["executed_rows"] == 8
     assert query["discarded_rows"] == 32
     assert len(query["returned_chunk"]) == 40
-    assert query["returned_chunk"][34][3] == -3.0889761447906494
+    assert query["returned_chunk"][34][3] == -180.0
     bounds = query["raw_bound_contract"]
     assert bounds["validation_scope"] == "executed_open_loop_prefix"
     assert bounds["executed_prefix_bounds_validated"] is True
@@ -1520,7 +1572,7 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
     assert bounds["nonexecuted_tail_scientific_output_retained"] is True
     assert any(
         "candidate_action_joint_position_bounds_invalid:count=6:"
-        "first_row=34:first_dimension=3:value=np.float64(-3.0889761447906494)"
+        "first_row=34:first_dimension=3:value=np.float64(-180.0)"
         in error
         for error in bounds["discarded_tail_bound_validation_errors"]
     )
@@ -1528,7 +1580,7 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
     assert raw["executed_prefix_bounds_validated"] is True
     assert raw["discarded_tail_bounds_validated"] is False
     assert raw["raw_bounds_validated"] is False
-    assert raw["raw_action_chunk"][34][3] == -3.0889761447906494
+    assert raw["raw_action_chunk"][34][3] == -180.0
     assert progress["candidate_action_bounds_validated"] is True
     assert progress["candidate_discarded_tail_bounds_validated"] is False
 
