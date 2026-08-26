@@ -26,6 +26,9 @@ Reads and rewrites retained bytes only; performs no provider mutation.
 from __future__ import annotations
 
 import json
+import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -166,8 +169,37 @@ def reconcile_public_catalog(
     before = _catalog_ids(current)
     after = _catalog_ids(expected)
     catalog.parent.mkdir(parents=True, exist_ok=True)
+    # Publication installs the catalog read-only (0440) so no consumer can
+    # edit it in place. Its own owner cannot reopen that for writing either,
+    # so repairing drift has to replace the inode rather than truncate it --
+    # otherwise every repair raises catalog_unwritable, and because this runs
+    # from the intake unit's ExecStartPre, intake stops starting at all.
     try:
-        catalog.write_bytes(expected)
+        previous = catalog.stat() if catalog.exists() else None
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{catalog.name}.", suffix=".tmp", dir=catalog.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(expected)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if previous is not None:
+                os.chmod(temporary, stat.S_IMODE(previous.st_mode))
+                try:
+                    os.chown(temporary, -1, previous.st_gid)
+                except PermissionError:
+                    # The replacement already carries the service account's
+                    # own group; only a foreign-gid catalog needs the chown,
+                    # and that case is caught by the readback below.
+                    pass
+            os.replace(temporary, catalog)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        if catalog.read_bytes() != expected:
+            raise OSError(f"catalog readback mismatch: {catalog}")
     except OSError as exc:
         raise LaunchCatalogError(f"catalog_unwritable:{catalog}") from exc
 

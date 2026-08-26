@@ -295,3 +295,35 @@ def test_a_malformed_profile_still_fails_the_whole_catalog(tmp_path):
 
     with _pytest.raises(LaunchCatalogError):
         build_catalog_payload(profile_dir)
+
+
+def test_repair_works_on_the_read_only_catalog_publication_installs(
+    tmp_path: Path,
+) -> None:
+    """Publication installs the catalog 0440 and the reconciler must still fix drift.
+
+    ``publish_task_evaluation_launch_profiles`` seals the catalog read-only so
+    no consumer can edit it in place. Its owner cannot reopen 0440 for writing
+    either, so an in-place rewrite raises ``catalog_unwritable`` -- and since
+    this reconciler runs from the intake unit's ExecStartPre, that stops intake
+    from starting at all. Repair must replace the inode and preserve the mode.
+    """
+
+    import os
+    import stat
+
+    _profile(tmp_path, "profile-a")
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("[]\n", encoding="utf-8")
+    os.chmod(catalog, 0o440)
+
+    result = reconcile_public_catalog(
+        profile_dir=profile_dir, catalog_path=catalog
+    )
+
+    assert result["status"] == "repaired"
+    assert "profile-a" in result["profile_ids_added"]
+    assert stat.S_IMODE(catalog.stat().st_mode) == 0o440
+    assert json.loads(catalog.read_text(encoding="utf-8"))
+    assert not list(catalog.parent.glob(".catalog.json.*.tmp"))
