@@ -2527,6 +2527,154 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     assert teardown["continuing_spend_from_this_run"] is False
 
 
+def test_vast_adapter_researches_empty_capacity_before_authority_or_create(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    search_count = 0
+    created_paths: list[str] = []
+    authority_calls: list[str] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal search_count
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            search_count += 1
+            if search_count == 1:
+                return 200, {"offers": []}
+            return 200, {
+                "offers": [
+                    {
+                        "id": 303,
+                        "ask_contract_id": 303,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 49152,
+                        "dph_total": 0.25,
+                        "driver_version": "580.159.03",
+                        "machine_id": 9303,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    }
+                ]
+            }
+        if method == "PUT" and path == "/asks/303/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 3030}
+        if method == "GET" and path == "/instances/3030/":
+            return 200, _created_instance_detail(dph_total=0.25)
+        if method == "PUT" and path == "/instances/request_logs/3030":
+            return 200, {"success": True, "result_url": "https://logs.example/search-retry"}
+        if method == "DELETE" and path == "/instances/3030/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/search-retry"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    def consume_authority():  # type: ignore[no-untyped-def]
+        authority_calls.append("consumed")
+        return {"status": "consumed", "blockers": []}
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+        pre_provider_mutation_hook=consume_authority,
+        stale_offer_create_retry_limit=0,
+    )
+
+    assert result["status"] == "completed"
+    assert search_count == 2
+    assert created_paths == ["/asks/303/"]
+    assert authority_calls == ["consumed"]
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert offer["selected_offer"]["ask_contract_id"] == 303
+    assert offer["create_retry_attempts"] == []
+    assert offer["offer_search_retry_attempts"] == [
+        {
+            "attempt": 0,
+            "authority_consumed": False,
+            "blockers": ["no_vast_offer_at_or_below_max_hourly_rate"],
+            "http_status_code": 200,
+            "offer_count": 0,
+            "provider_mutation_performed": False,
+            "raw_secret_values_recorded": False,
+            "status": "no_qualifying_offer_read_only_retry",
+        }
+    ]
+
+
+def test_vast_adapter_exhausts_empty_capacity_without_authority_or_create(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "2")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    search_count = 0
+    authority_calls: list[str] = []
+
+    def no_offer_api(**kwargs):  # type: ignore[no-untyped-def]
+        nonlocal search_count
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST" and kwargs["path"] == "/bundles/":
+            search_count += 1
+            return 200, {"offers": []}
+        raise AssertionError("provider create reached after empty capacity")
+
+    monkeypatch.setattr(vpa, "_api_json", no_offer_api)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        session_max_live_minutes=None,
+        pre_provider_mutation_hook=lambda: authority_calls.append("consumed")
+        or {"status": "consumed"},
+        stale_offer_create_retry_limit=0,
+    )
+
+    assert result["status"] == "blocked"
+    assert search_count == 3
+    assert authority_calls == []
+    assert result["provider_create_attempted"] is False
+    assert result["vast_side_effects_may_have_occurred"] is False
+    offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
+    assert len(offer["offer_search_retry_attempts"]) == 2
+    assert all(
+        row["provider_mutation_performed"] is False
+        and row["authority_consumed"] is False
+        for row in offer["offer_search_retry_attempts"]
+    )
+
+
 def test_vast_adapter_exact_campaign_label_and_zero_stale_offer_retry(
     tmp_path: Path,
     monkeypatch,
@@ -6550,6 +6698,7 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "0")
     monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setenv("BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN", "true")
     captured: dict[int, object] = {}
