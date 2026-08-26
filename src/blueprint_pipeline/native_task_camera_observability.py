@@ -140,6 +140,36 @@ REFUSAL_RGB_SEMANTIC_MISMATCH = "native_task_camera_rgb_semantic_shape_mismatch"
 CLAIM_WITH_SITE = "camera_observes_task_object_in_rendered_site"
 CLAIM_WITHOUT_SITE = "camera_observes_task_object_without_site_appearance"
 
+POLICY_START_OBSERVABILITY_SCHEMA_VERSION = (
+    "native_task_policy_start_camera_observability.v1"
+)
+POLICY_START_SNAPSHOT_ID = "reset"
+POLICY_INPUT_CAMERA_ROLES = ("external", "wrist")
+POLICY_START_TARGET_VISIBLE_ROLES = ("external",)
+
+REFUSAL_POLICY_START_SNAPSHOTS_INVALID = (
+    "native_task_policy_start_camera_snapshots_invalid"
+)
+REFUSAL_POLICY_START_SNAPSHOT_MISSING = (
+    "native_task_policy_start_camera_snapshot_missing"
+)
+REFUSAL_POLICY_START_SNAPSHOT_DUPLICATE = (
+    "native_task_policy_start_camera_snapshot_duplicate"
+)
+REFUSAL_POLICY_START_CAMERAS_INVALID = (
+    "native_task_policy_start_cameras_invalid"
+)
+REFUSAL_POLICY_START_ROLE_MISSING = "native_task_policy_start_camera_role_missing"
+REFUSAL_POLICY_START_ROLE_DUPLICATE = (
+    "native_task_policy_start_camera_role_duplicate"
+)
+REFUSAL_POLICY_START_ROLE_NOT_OBSERVABLE = (
+    "native_task_policy_start_camera_role_not_observable"
+)
+REFUSAL_POLICY_START_ROLE_NOT_RENDERED = (
+    "native_task_policy_start_camera_role_not_rendered"
+)
+
 
 class NativeTaskCameraObservabilityError(ValueError):
     """Stable semantic/framing/render-evidence failures."""
@@ -147,6 +177,196 @@ class NativeTaskCameraObservabilityError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def validate_native_task_policy_start_camera_observability(
+    construction_result: Mapping[str, Any],
+    *,
+    snapshot_id: str = POLICY_START_SNAPSHOT_ID,
+    required_roles: Sequence[str] = POLICY_INPUT_CAMERA_ROLES,
+    target_visible_roles: Sequence[str] = POLICY_START_TARGET_VISIBLE_ROLES,
+) -> dict[str, Any]:
+    """Prove the actual policy-start views, never a later scripted best view.
+
+    Construction records several camera snapshots while its scripted controller
+    approaches and contacts the task object.  A camera becoming useful *after*
+    that controller has moved the robot cannot prove what a learned policy saw
+    at reset.  The external view must frame the task object at policy start.  A
+    wrist camera may legitimately point at the floor until the arm approaches,
+    so it must be a valid rendered site frame but need not contain the target.
+    This distinction is observed evidence: pi0.5 approached the washer from the
+    exact same target-absent wrist frame on which GR00T later failed.
+
+    The returned summary is deliberately small and serialisable; the complete
+    radiance and semantic evidence remains transitively bound by the immutable
+    construction-result digest.
+    """
+
+    requested_snapshot = str(snapshot_id or "").strip()
+    roles = tuple(str(role or "").strip() for role in required_roles)
+    semantic_roles = tuple(
+        str(role or "").strip() for role in target_visible_roles
+    )
+    errors: list[str] = []
+    if (
+        not requested_snapshot
+        or not roles
+        or any(not role for role in roles)
+        or any(not role for role in semantic_roles)
+        or not set(semantic_roles).issubset(roles)
+    ):
+        raise NativeTaskCameraObservabilityError(
+            [REFUSAL_POLICY_START_SNAPSHOTS_INVALID]
+        )
+    if len(set(roles)) != len(roles):
+        raise NativeTaskCameraObservabilityError(
+            [REFUSAL_POLICY_START_ROLE_DUPLICATE]
+        )
+
+    raw_snapshots = construction_result.get("camera_snapshots")
+    if not isinstance(raw_snapshots, list):
+        raise NativeTaskCameraObservabilityError(
+            [REFUSAL_POLICY_START_SNAPSHOTS_INVALID]
+        )
+    matches = [
+        row
+        for row in raw_snapshots
+        if isinstance(row, Mapping)
+        and str(row.get("snapshot_id") or "") == requested_snapshot
+    ]
+    if not matches:
+        raise NativeTaskCameraObservabilityError(
+            [f"{REFUSAL_POLICY_START_SNAPSHOT_MISSING}:{requested_snapshot}"]
+        )
+    if len(matches) != 1:
+        raise NativeTaskCameraObservabilityError(
+            [f"{REFUSAL_POLICY_START_SNAPSHOT_DUPLICATE}:{requested_snapshot}"]
+        )
+
+    cameras = matches[0].get("cameras")
+    if not isinstance(cameras, list):
+        raise NativeTaskCameraObservabilityError(
+            [REFUSAL_POLICY_START_CAMERAS_INVALID]
+        )
+
+    summaries: list[dict[str, Any]] = []
+    for role in roles:
+        role_rows = [
+            row
+            for row in cameras
+            if isinstance(row, Mapping) and str(row.get("role") or "") == role
+        ]
+        if not role_rows:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_MISSING}:{role}")
+            continue
+        if len(role_rows) != 1:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_DUPLICATE}:{role}")
+            continue
+        row = role_rows[0]
+        observability = row.get("observability")
+        thresholds = (
+            observability.get("thresholds")
+            if isinstance(observability, Mapping)
+            else None
+        )
+        render = (
+            observability.get("render_evidence")
+            if isinstance(observability, Mapping)
+            else None
+        )
+        try:
+            pixel_count = int(observability["pixel_count"])
+            pixel_fraction = float(observability["pixel_fraction"])
+            minimum_pixels = int(thresholds["minimum_pixels"])
+            minimum_fraction = float(thresholds["minimum_pixel_fraction"])
+        except (KeyError, TypeError, ValueError):
+            pixel_count = -1
+            pixel_fraction = -1.0
+            minimum_pixels = 0
+            minimum_fraction = 0.0
+        try:
+            bbox_values = [int(value) for value in observability["bbox_xyxy"]]
+        except (KeyError, TypeError, ValueError):
+            bbox_values = []
+        blockers = (
+            observability.get("blockers")
+            if isinstance(observability, Mapping)
+            else None
+        )
+        bbox = (
+            observability.get("bbox_xyxy")
+            if isinstance(observability, Mapping)
+            else None
+        )
+        rgb_png = row.get("rgb_png")
+        rgb_png_sha256 = (
+            str(rgb_png.get("sha256") or "")
+            if isinstance(rgb_png, Mapping)
+            else ""
+        )
+        rendered = (
+            isinstance(observability, Mapping)
+            and observability.get("schema_version") == SCHEMA_VERSION
+            and observability.get("render_passed") is True
+            and observability.get("site_appearance_claimed") is True
+            and isinstance(render, Mapping)
+            and render.get("passed") is True
+            and render.get("frame_rendered") is True
+            and render.get("site_rendered") is True
+            and render.get("blockers") == []
+            and str(row.get("scene_name") or "")
+            and str(row.get("snapshot_id") or "") == requested_snapshot
+            and rgb_png_sha256.startswith("sha256:")
+            and len(rgb_png_sha256) == 71
+            and all(
+                character in "0123456789abcdef"
+                for character in rgb_png_sha256[7:]
+            )
+        )
+        if not rendered:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_NOT_RENDERED}:{role}")
+            continue
+        target_observable = (
+            observability.get("passed") is True
+            and observability.get("semantic_passed") is True
+            and observability.get("centroid_within_margin") is True
+            and observability.get("claim") == CLAIM_WITH_SITE
+            and blockers == []
+            and isinstance(bbox, list)
+            and len(bbox) == 4
+            and len(bbox_values) == 4
+            and pixel_count >= max(1, minimum_pixels)
+            and math.isfinite(pixel_fraction)
+            and pixel_fraction >= max(0.0, minimum_fraction)
+            and render.get("target_rendered") is True
+        )
+        if role in semantic_roles and not target_observable:
+            errors.append(f"{REFUSAL_POLICY_START_ROLE_NOT_OBSERVABLE}:{role}")
+            continue
+        summaries.append(
+            {
+                "role": role,
+                "scene_name": str(row.get("scene_name") or ""),
+                "pixel_count": pixel_count,
+                "pixel_fraction": pixel_fraction,
+                "bbox_xyxy": bbox_values,
+                "rgb_png_sha256": rgb_png_sha256,
+                "target_visibility_required": role in semantic_roles,
+                "target_visible": target_observable,
+            }
+        )
+    if errors:
+        raise NativeTaskCameraObservabilityError(errors)
+    return {
+        "schema_version": POLICY_START_OBSERVABILITY_SCHEMA_VERSION,
+        "snapshot_id": requested_snapshot,
+        "required_policy_input_roles": list(roles),
+        "target_visible_roles": list(semantic_roles),
+        "cameras": summaries,
+        "passed": True,
+        "blockers": [],
+        "authority": "construction_result_exact_policy_initial_state_snapshot",
+    }
 
 
 def _semantic_identifier_candidates(identifier: Any) -> list[int]:
@@ -513,8 +733,13 @@ __all__ = [
     "MINIMUM_DISTINCT_LUMINANCE_LEVELS",
     "MINIMUM_LUMINANCE_STD",
     "NativeTaskCameraObservabilityError",
+    "POLICY_INPUT_CAMERA_ROLES",
+    "POLICY_START_OBSERVABILITY_SCHEMA_VERSION",
+    "POLICY_START_SNAPSHOT_ID",
+    "POLICY_START_TARGET_VISIBLE_ROLES",
     "RENDER_EVIDENCE_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "measure_native_task_camera_observability",
     "measure_native_task_frame_render_evidence",
+    "validate_native_task_policy_start_camera_observability",
 ]

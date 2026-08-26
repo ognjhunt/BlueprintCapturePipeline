@@ -19,9 +19,10 @@ from .native_franka_pose_servo import (
     PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_MARGIN_RAD,
     PHYSX_DLS_POSTURE_NULLSPACE_GAIN,
 )
+from .rigid_frame_transforms import apply_rigid_offset, rigid_offset_in_body_frame
 
 
-SCHEMA_VERSION = "native_task_episode_environment.v2"
+SCHEMA_VERSION = "native_task_episode_environment.v3"
 
 # A globally solved endpoint proves that the pose is reachable, but replaying
 # that endpoint as a bounded joint-space setpoint does not preserve the path of
@@ -150,18 +151,94 @@ def build_native_task_episode_environment(
             ["native_task_episode_pose_servo_invalid"]
         )
     try:
-        reset_orientation = [
-            float(value) for value in servo.current_grasp_frame_pose_world()[3:7]
+        reset_controlled_body_pose = [
+            float(value) for value in servo.current_body_pose_world()
+        ]
+        reset_grasp_frame_pose = [
+            float(value) for value in servo.current_grasp_frame_pose_world()
         ]
     except (AttributeError, TypeError, ValueError) as exc:
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_controlled_body_pose_missing"]
         ) from exc
-    if len(reset_orientation) != 4 or not all(
-        math.isfinite(value) for value in reset_orientation
+    if any(
+        len(pose) != 7 or not all(math.isfinite(value) for value in pose)
+        for pose in (reset_controlled_body_pose, reset_grasp_frame_pose)
     ):
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_controlled_body_pose_missing"]
+        )
+    reset_orientation = reset_grasp_frame_pose[3:7]
+
+    # Isaac's rendered wrist camera follows the articulation through Fabric,
+    # while its sensor-buffer world pose can remain frozen at initialization.
+    # That exact mismatch appeared in the retained GR00T episode: RGB changed
+    # substantially while every wrist calibration digest stayed byte-identical.
+    # Measure the rigid camera-to-grasp-frame mount once at reset, then rebuild
+    # the evidence pose from the live measured grasp frame on every observation.
+    try:
+        wrist_camera_scene_name = str(camera_scene_names["wrist"])
+        wrist_camera = scene[wrist_camera_scene_name]
+        reset_wrist_position = [
+            float(value) for value in to_tensor(wrist_camera.data.pos_w)[0]
+        ]
+        reset_wrist_quaternion = [
+            float(value)
+            for value in to_tensor(wrist_camera.data.quat_w_opengl)[0]
+        ]
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise NativeTaskEpisodeEnvironmentError(
+            ["native_task_episode_wrist_camera_binding_missing"]
+        ) from exc
+    quaternion_norm = math.sqrt(
+        sum(value * value for value in reset_wrist_quaternion)
+    )
+    if (
+        not wrist_camera_scene_name
+        or len(reset_wrist_position) != 3
+        or len(reset_wrist_quaternion) != 4
+        or not all(
+            math.isfinite(value)
+            for value in [*reset_wrist_position, *reset_wrist_quaternion]
+        )
+        or abs(quaternion_norm - 1.0) > 1.0e-5
+    ):
+        raise NativeTaskEpisodeEnvironmentError(
+            ["native_task_episode_wrist_camera_pose_invalid"]
+        )
+    wrist_mount_position_controlled_body, wrist_mount_quaternion_controlled_body = (
+        rigid_offset_in_body_frame(
+            body_position_world=reset_controlled_body_pose[:3],
+            body_quaternion_world_xyzw=reset_controlled_body_pose[3:7],
+            child_position_world=reset_wrist_position,
+            child_quaternion_world_xyzw=reset_wrist_quaternion,
+        )
+    )
+
+    def live_camera_pose(
+        camera_name: str,
+    ) -> tuple[list[float], list[float]] | None:
+        if str(camera_name) != wrist_camera_scene_name:
+            return None
+        try:
+            live_controlled_body_pose = [
+                float(value) for value in servo.current_body_pose_world()
+            ]
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_live_wrist_camera_pose_missing"]
+            ) from exc
+        if len(live_controlled_body_pose) != 7 or not all(
+            math.isfinite(value) for value in live_controlled_body_pose
+        ):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_live_wrist_camera_pose_missing"]
+            )
+        return apply_rigid_offset(
+            body_position_world=live_controlled_body_pose[:3],
+            body_quaternion_world_xyzw=live_controlled_body_pose[3:7],
+            offset_position_body=wrist_mount_position_controlled_body,
+            offset_quaternion_body_xyzw=wrist_mount_quaternion_controlled_body,
         )
 
     joint_target_rows: list[dict[str, Any]] = []
@@ -521,6 +598,7 @@ def build_native_task_episode_environment(
             else None
         ),
         camera_scene_names=camera_scene_names,
+        camera_pose_callback=live_camera_pose,
         joint_wrench_sensor=joint_wrench_sensor,
     )
     receipt = {
@@ -530,6 +608,33 @@ def build_native_task_episode_environment(
         "reset_seed": seed,
         "control_frequency_hz": control_frequency_hz,
         "camera_scene_names": dict(camera_scene_names),
+        "camera_world_pose_bindings": {
+            "external": {
+                "scene_name": str(camera_scene_names.get("external") or ""),
+                "source": "isaac_sensor_buffer_static_camera",
+                "recomputed_each_observation": False,
+            },
+            "wrist": {
+                "scene_name": wrist_camera_scene_name,
+                "source": (
+                    "live_controlled_body_plus_reset_measured_rigid_mount_offset"
+                ),
+                "recomputed_each_observation": True,
+                "sensor_buffer_static_pose_workaround": True,
+                "mount_offset_position_controlled_body_m": (
+                    wrist_mount_position_controlled_body
+                ),
+                "mount_offset_quaternion_controlled_body_xyzw": (
+                    wrist_mount_quaternion_controlled_body
+                ),
+            },
+            "overview": {
+                "scene_name": str(camera_scene_names.get("overview") or ""),
+                "source": "isaac_sensor_buffer_static_camera",
+                "recomputed_each_observation": False,
+                "policy_input": False,
+            },
+        },
         "task_state_source": (
             "native_articulated_task_readback"
             if task_kind == "articulated_open_close"
