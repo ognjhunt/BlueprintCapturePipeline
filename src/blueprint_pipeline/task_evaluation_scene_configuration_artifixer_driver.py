@@ -54,6 +54,7 @@ from .task_evaluation_scene_configuration_component_package import (
 )
 from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate,
+    scene_configuration_openai_stage_scope,
 )
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
@@ -399,6 +400,25 @@ def _semantic_runtime_request(*, packet_root: Path, source_commit: str) -> Path:
     return path
 
 
+def _stage_openai_token(environment: Mapping[str, str], *, stage: str) -> str:
+    """Read one stage's exclusive OpenAI key so per-stage attribution holds."""
+
+    scope = scene_configuration_openai_stage_scope(environment, stage=stage)
+    token_path = Path(scope["api_key_file"]).expanduser()
+    if token_path.is_symlink() or not token_path.is_file() or (
+        token_path.stat().st_mode & 0o077
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_secret_file_invalid"
+        )
+    token = token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_secret_file_invalid"
+        )
+    return token
+
+
 @contextmanager
 def _temporary_openai_key(token: str):
     previous = os.environ.get("OPENAI_API_KEY")
@@ -472,12 +492,7 @@ def execute_artifixer_component(
         publisher_scene_id=publisher_scene_id,
         output_root=work,
     )
-    token_path = _required_path(values, "OPENAI_API_KEY_FILE")
-    if token_path.is_symlink() or token_path.stat().st_mode & 0o077:
-        raise TaskEvaluationSceneConfigurationArtifixerError(
-            "scene_configuration_artifixer_secret_file_invalid"
-        )
-    token = token_path.read_text(encoding="utf-8").strip()
+    token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
     semantic_output = work / "semantic_teacher_output"
     semantic_request = _semantic_runtime_request(
         packet_root=packet_root,
@@ -642,7 +657,11 @@ def execute_artifixer_component(
         human_authority_reference=human["authority_reference"],
         output_path=review_rights_path,
     )
-    with _temporary_openai_key(token):
+    review_scope = scene_configuration_openai_stage_scope(
+        values, stage="artifixer_visual_review"
+    )
+    review_token = _stage_openai_token(values, stage="artifixer_visual_review")
+    with _temporary_openai_key(review_token):
         visual_review_cap = float(
             values.get(
                 "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD"
@@ -656,12 +675,12 @@ def execute_artifixer_component(
             publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
             minimum_review_frames=int(configuration["required_views"]["minimum"]),
             output_root=work / "independent_visual_review",
-            openai_cost_scope_attestation_path=_required_path(
-                values, "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE"
+            openai_cost_scope_attestation_path=Path(
+                review_scope["attestation_file"]
             ),
             openai_admin_api_key_file=_required_path(values, "OPENAI_ADMIN_API_KEY_FILE"),
             openai_project_id=str(values.get("OPENAI_PROJECT_ID") or ""),
-            openai_api_key_id=str(values.get("OPENAI_API_KEY_ID") or ""),
+            openai_api_key_id=review_scope["api_key_id"],
             max_cost_usd=visual_review_cap,
         )
     if review.get("decision") != "accepted" or not review.get("review_receipt"):

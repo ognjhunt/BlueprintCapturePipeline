@@ -25,10 +25,67 @@ _STAGE_CAP_ENV = {
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"
     ),
 }
-
-
+# One configuration run reserves official OpenAI cost for up to three distinct
+# ``paid_resource_class`` values, and every reservation demands a same-day
+# zero-cost baseline for its exact ``(project_id, api_key_id)`` scope.  A single
+# shared key/attestation therefore cannot serve two stages of one run: the
+# second gate would refuse the attestation's class, and even with matching
+# classes the first stage's spend would poison the second stage's baseline.
+# Each stage binds its own exclusive key and its own operator attestation.
+_STAGE_SCOPE_ENV = {
+    "artifixer_semantic_teacher": {
+        "api_key_file": "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
+        "api_key_id": "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+        "attestation_file": (
+            "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE"
+        ),
+    },
+    "artifixer_visual_review": {
+        "api_key_file": "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+        "api_key_id": "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+        "attestation_file": (
+            "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE"
+        ),
+    },
+    "content_agents": {
+        "api_key_file": "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+        "api_key_id": "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+        "attestation_file": (
+            "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE"
+        ),
+    },
+}
 class TaskEvaluationSceneConfigurationOpenAIGateError(ValueError):
     """The parent run did not provide a valid bounded OpenAI authority."""
+
+
+def scene_configuration_openai_stage_scope(
+    environment: Mapping[str, str],
+    *,
+    stage: str,
+) -> dict[str, str]:
+    """Resolve one stage's exclusive OpenAI key/attestation scope, fail closed.
+
+    There is deliberately no fallback to the shared single-scope environment
+    names: reintroducing a shared scope re-creates the cross-stage attestation
+    class mismatch and the nonzero same-day baseline collision this seam exists
+    to prevent.
+    """
+
+    names = _STAGE_SCOPE_ENV.get(stage)
+    if names is None:
+        raise TaskEvaluationSceneConfigurationOpenAIGateError(
+            "scene_configuration_openai_stage_unknown"
+        )
+    scope = {
+        role: str(environment.get(name) or "").strip()
+        for role, name in names.items()
+    }
+    if not all(scope.values()):
+        raise TaskEvaluationSceneConfigurationOpenAIGateError(
+            f"scene_configuration_openai_stage_scope_missing:{stage}"
+        )
+    return scope
 
 
 def scene_configuration_openai_stage_gate(
@@ -74,15 +131,14 @@ def scene_configuration_openai_stage_gate(
         raise TaskEvaluationSceneConfigurationOpenAIGateError(
             "scene_configuration_openai_authority_invalid"
         )
+    scope = scene_configuration_openai_stage_scope(environment, stage=stage)
     return build_openai_official_cost_run_gate(
-        scope_attestation_path=str(
-            environment.get("BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE") or ""
-        ),
+        scope_attestation_path=scope["attestation_file"],
         admin_api_key_file=str(
             environment.get("OPENAI_ADMIN_API_KEY_FILE") or ""
         ),
         project_id=str(environment.get("OPENAI_PROJECT_ID") or ""),
-        api_key_id=str(environment.get("OPENAI_API_KEY_ID") or ""),
+        api_key_id=scope["api_key_id"],
         lane_id=f"task_evaluation_scene_configuration_{stage}",
         run_id=run_id,
         request_digest=request_digest,
@@ -98,4 +154,5 @@ def scene_configuration_openai_stage_gate(
 __all__ = [
     "TaskEvaluationSceneConfigurationOpenAIGateError",
     "scene_configuration_openai_stage_gate",
+    "scene_configuration_openai_stage_scope",
 ]

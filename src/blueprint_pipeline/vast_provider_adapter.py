@@ -4029,7 +4029,13 @@ def _probe_env(
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     for name, value in sorted((provider_runtime_environment or {}).items()):
-        public_identity_name = name in {"OPENAI_PROJECT_ID", "OPENAI_API_KEY_ID"}
+        public_identity_name = name in {
+            "OPENAI_PROJECT_ID",
+            "OPENAI_API_KEY_ID",
+            "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+            "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+            "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+        }
         if (
             (
                 not public_identity_name
