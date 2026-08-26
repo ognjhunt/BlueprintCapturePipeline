@@ -236,13 +236,16 @@ def _seal_immutable_input_permissions(
                     f"launch_profile_immutable_input_outside_control_plane:{name}"
                 )
             _install_parent_traversal(path, boundary=boundary, gid=gid, name=name)
-        try:
-            os.chown(path, -1, gid)
-            path.chmod(stat.S_IRUSR | stat.S_IRGRP)
-        except OSError as exc:
-            raise TaskEvaluationLaunchError(
-                f"launch_profile_immutable_input_permission_install_failed:{name}"
-            ) from exc
+        sealed_mode = stat.S_IRUSR | stat.S_IRGRP
+        info = path.stat()
+        if info.st_gid != gid or stat.S_IMODE(info.st_mode) != sealed_mode:
+            try:
+                os.chown(path, -1, gid)
+                path.chmod(sealed_mode)
+            except OSError as exc:
+                raise TaskEvaluationLaunchError(
+                    f"launch_profile_immutable_input_permission_install_failed:{name}"
+                ) from exc
         observed = _digest_as_account(path, account=account, uid=uid)
         mode = stat.S_IMODE(path.stat().st_mode)
         if (
