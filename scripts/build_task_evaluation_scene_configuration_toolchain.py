@@ -157,6 +157,10 @@ def build_published_scene_configuration_toolchain(
         ):
             path.chmod(0o555)
         (staging / "components").chmod(0o555)
+        # The deployer runs as root, while readback runs as ``blueprint``.
+        # ``mkdtemp`` creates 0700; make only this non-secret staged tree
+        # traversable before claiming service-account readback.
+        staging.chmod(0o755)
         for row in files:
             path = staging / row["relative_path"]
             observed = readback(path)
@@ -181,6 +185,7 @@ def build_published_scene_configuration_toolchain(
         manifest_path = staging / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
         manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
         manifest_path.chmod(0o444)
+        staging.chmod(0o555)
         publish_staged_immutable_directory(
             staging=staging,
             destination=destination,
