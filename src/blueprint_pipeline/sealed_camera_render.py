@@ -18,9 +18,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -327,6 +329,30 @@ def transform_camera_into_provider_frame(
     return [[float(value) for value in row] for row in provider]
 
 
+def _browser_process_environment(browser_home: Path) -> dict[str, str]:
+    """Give the headless browser a writable home of its own.
+
+    The control-plane services run as a system account whose home is
+    ``/nonexistent`` under ``ProtectHome``. Chromium derives its crashpad
+    database and profile paths from ``HOME``; when that path does not exist the
+    crashpad handler refuses (``--database is required``) and the browser aborts
+    on an ``int3`` CHECK before rendering a single frame -- the harness only
+    ever saw a non-zero exit. Point HOME and the XDG roots at a directory this
+    render owns so the browser starts regardless of the service account's home.
+    """
+
+    for child in ("config", "cache", "data", "state"):
+        (browser_home / child).mkdir(parents=True, exist_ok=True)
+    return {
+        **os.environ,
+        "HOME": str(browser_home),
+        "XDG_CONFIG_HOME": str(browser_home / "config"),
+        "XDG_CACHE_HOME": str(browser_home / "cache"),
+        "XDG_DATA_HOME": str(browser_home / "data"),
+        "XDG_STATE_HOME": str(browser_home / "state"),
+    }
+
+
 def render_splat_at_exact_cameras(
     *,
     splat_path: str | Path,
@@ -574,19 +600,23 @@ def render_splat_at_exact_cameras(
     ]
     if browser_path is not None:
         command.extend(["--browser-executable", str(browser_path)])
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    stdout, stderr = _wait_for_renderer_with_progress_watchdog(
-        process=process,
-        expected_frame_paths=[frames_dir / f"{spec['id']}.png" for spec in camera_specs],
-        render_timeout_seconds=float(render_timeout),
-        initial_progress_timeout_seconds=float(initial_progress_timeout_seconds),
-        progress_timeout_seconds=float(progress_timeout_seconds),
-    )
+    with tempfile.TemporaryDirectory(prefix="blueprint-browser-home-") as browser_home:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_browser_process_environment(Path(browser_home)),
+        )
+        stdout, stderr = _wait_for_renderer_with_progress_watchdog(
+            process=process,
+            expected_frame_paths=[
+                frames_dir / f"{spec['id']}.png" for spec in camera_specs
+            ],
+            render_timeout_seconds=float(render_timeout),
+            initial_progress_timeout_seconds=float(initial_progress_timeout_seconds),
+            progress_timeout_seconds=float(progress_timeout_seconds),
+        )
     harness_output: dict[str, Any] = {}
     stdout = stdout.strip()
     if stdout:

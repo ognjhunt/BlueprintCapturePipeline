@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import struct
 import subprocess
@@ -479,3 +480,59 @@ def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path
     assert peak_channel(cx, fy * 0.15 + cy) == 2  # blue at (24, 39)
     background = frame[2:8, 2:8]
     assert float(background.max()) < 60.0
+
+
+def test_browser_environment_supplies_a_writable_home(tmp_path: Path) -> None:
+    """The headless browser must never inherit an unwritable service HOME.
+
+    Control-plane services run as an account whose home is ``/nonexistent``
+    under ProtectHome. Chromium builds its crashpad database and profile paths
+    from HOME, and aborts on an int3 CHECK when that path is absent -- which
+    production hit as an opaque ``render_harness_failed`` with zero frames.
+    """
+
+    import os as _os
+
+    from blueprint_pipeline.sealed_camera_render import _browser_process_environment
+
+    home = tmp_path / "browser-home"
+    environment = _browser_process_environment(home)
+
+    assert environment["HOME"] == str(home)
+    assert home.is_dir()
+    for variable in (
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    ):
+        target = Path(environment[variable])
+        assert target.is_dir(), variable
+        assert home in target.parents
+    # The rest of the environment is preserved, and the caller's own HOME --
+    # which may be /nonexistent -- is not what the browser receives.
+    assert environment.get("PATH") == _os.environ.get("PATH")
+    assert environment["HOME"] != _os.environ.get("HOME")
+
+
+def test_renderer_launches_the_browser_with_that_home(monkeypatch, tmp_path: Path) -> None:
+    """Pin that the harness subprocess actually receives the prepared HOME."""
+
+    import blueprint_pipeline.sealed_camera_render as scr
+
+    observed: dict[str, str] = {}
+
+    class _Popen:
+        def __init__(self, _command, **kwargs):
+            observed.update(kwargs.get("env") or {})
+            self.returncode = 1
+
+    monkeypatch.setattr(scr.subprocess, "Popen", _Popen)
+    monkeypatch.setattr(
+        scr,
+        "_wait_for_renderer_with_progress_watchdog",
+        lambda **_kwargs: ("", "stopped"),
+    )
+    source = inspect.getsource(scr.render_splat_at_exact_cameras)
+    assert "_browser_process_environment" in source
+    assert "env=" in source
