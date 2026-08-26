@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -73,6 +74,7 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
         marker = modules / package / "index.js"
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(package, encoding="utf-8")
+    (modules / "three/empty.js").write_bytes(b"")
     destination = tmp_path / "system-runtimes" / "splat-render" / commit
 
     def readback(path: Path) -> bytes:
@@ -103,5 +105,21 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
     assert receipt["status"] == "published_and_read_back"
     assert receipt["runtime_digest"] == reopened["identity"]["runtime_digest"]
     assert receipt["full_byte_service_account_readback_passed"] is True
+    manifest = json.loads(
+        (destination / "task_evaluation_splat_render_runtime.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    empty_row = next(
+        row
+        for row in manifest["files"]
+        if row["relative_path"]
+        == "renderer/tools/splat_render/node_modules/three/empty.js"
+    )
+    assert empty_row["size_bytes"] == 0
+    assert empty_row["sha256"] == (
+        "sha256:e3b0c44298fc1c149afbf4c8996fb924"
+        "27ae41e4649b934ca495991b7852b855"
+    )
     assert destination.stat().st_mode & 0o222 == 0
     assert not any(path.is_symlink() for path in destination.rglob("*"))
