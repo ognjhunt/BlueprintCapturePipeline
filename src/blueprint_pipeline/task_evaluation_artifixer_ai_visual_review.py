@@ -33,11 +33,10 @@ from .task_evaluation_supervisor.inference_reservations import (
 )
 
 
-EXECUTION_SCHEMA_VERSION = (
-    "task_evaluation_artifixer_ai_visual_review_execution.v1"
-)
+EXECUTION_SCHEMA_VERSION = "task_evaluation_artifixer_ai_visual_review_execution.v1"
 RECEIPT_SCHEMA_VERSION = "task_evaluation_artifixer_ai_visual_review.v1"
 FINAL_COMPOSITE_SCHEMA_VERSION = "public_scene_artifixer3d_final_composite.v1"
+DUAL_TARGET_REVIEW_SCHEMA_VERSION = "task_evaluation_artifixer3d_dual_target_review_input.v1"
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 RIGHTS_SCHEMA_VERSION = "task_evaluation_artifixer_ai_visual_review_rights.v1"
 AI_REVIEW_MODEL = "gpt-5.6-terra"
@@ -113,9 +112,7 @@ def _verified_frame(path: Path, record: Mapping[str, Any]) -> dict[str, Any]:
         or resolved.stat().st_size != record.get("size_bytes")
         or _sha256(resolved) != record.get("sha256")
     ):
-        raise TaskEvaluationArtifixerAIVisualReviewError(
-            "artifixer_ai_review_frame_bytes_invalid"
-        )
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_frame_bytes_invalid")
     return {
         "frame_index": record["frame_index"],
         "camera_id": record["camera_id"],
@@ -128,14 +125,9 @@ def _frame_inventory(
     *, final_path: Path, final: Mapping[str, Any]
 ) -> tuple[str, list[dict[str, Any]]]:
     tasks = final.get("tasks")
-    if (
-        final.get("schema_version") != FINAL_COMPOSITE_SCHEMA_VERSION
-        or final.get("status")
-        != "final_composite_materialized_pending_human_multiview_review"
-        or final.get("receipt_digest")
-        != canonical_digest(final, digest_field="receipt_digest")
-        or final.get("outside_support_invariance_proven") is not True
-        or final.get("outside_support_changed_pixels_total") != 0
+    schema = final.get("schema_version")
+    common_invalid = (
+        final.get("receipt_digest") != canonical_digest(final, digest_field="receipt_digest")
         or final.get("semantic_object_absence_review_passed") is not False
         or final.get("multiview_consistency_review_passed") is not False
         or final.get("appearance_repair_qualified") is not False
@@ -143,6 +135,24 @@ def _frame_inventory(
         or not isinstance(tasks, list)
         or len(tasks) != 1
         or not isinstance(tasks[0], Mapping)
+    )
+    final_composite_invalid = schema == FINAL_COMPOSITE_SCHEMA_VERSION and (
+        final.get("status") != "final_composite_materialized_pending_human_multiview_review"
+        or final.get("outside_support_invariance_proven") is not True
+        or final.get("outside_support_changed_pixels_total") != 0
+    )
+    dual_target_invalid = schema == DUAL_TARGET_REVIEW_SCHEMA_VERSION and (
+        final.get("status") != "paired_target_frames_pending_independent_visual_review"
+        or final.get("review_scope")
+        != "source_anchor_exact_mask_and_generated_full_frame_comparison"
+        or final.get("outside_support_invariance_proven") is not False
+        or final.get("outside_support_invariance_claimed") is not False
+    )
+    if (
+        schema not in {FINAL_COMPOSITE_SCHEMA_VERSION, DUAL_TARGET_REVIEW_SCHEMA_VERSION}
+        or common_invalid
+        or final_composite_invalid
+        or dual_target_invalid
     ):
         raise TaskEvaluationArtifixerAIVisualReviewError(
             "artifixer_ai_review_final_composite_invalid"
@@ -162,13 +172,21 @@ def _frame_inventory(
     inventory: list[dict[str, Any]] = []
     seen_cameras: set[str] = set()
     for index, row in enumerate(frames):
+        dual_target = schema == DUAL_TARGET_REVIEW_SCHEMA_VERSION
         if (
             not isinstance(row, Mapping)
             or row.get("frame_index") != index
             or not str(row.get("camera_id") or "")
             or row["camera_id"] in seen_cameras
             or not isinstance(row.get("final_frame"), Mapping)
-            or row.get("outside_support_changed_pixels") != 0
+            or (not dual_target and row.get("outside_support_changed_pixels") != 0)
+            or (
+                dual_target
+                and (
+                    not isinstance(row.get("source_frame"), Mapping)
+                    or not isinstance(row.get("exact_repair_mask"), Mapping)
+                )
+            )
         ):
             raise TaskEvaluationArtifixerAIVisualReviewError(
                 "artifixer_ai_review_frame_inventory_invalid"
@@ -177,6 +195,23 @@ def _frame_inventory(
             final_path, {**row["final_frame"], "frame_index": index, "camera_id": row["camera_id"]}
         )
         inventory.append(sealed)
+        if dual_target:
+            _verified_frame(
+                final_path,
+                {
+                    **row["source_frame"],
+                    "frame_index": index,
+                    "camera_id": row["camera_id"],
+                },
+            )
+            _verified_frame(
+                final_path,
+                {
+                    **row["exact_repair_mask"],
+                    "frame_index": index,
+                    "camera_id": row["camera_id"],
+                },
+            )
         seen_cameras.add(str(row["camera_id"]))
     return task_id, inventory
 
@@ -212,10 +247,43 @@ def build_artifixer_ai_visual_review_input(
                         "camera_id": sealed["camera_id"],
                         "frame_sha256": sealed["sha256"],
                         "publisher_scene_id": final.get("publisher_scene_id"),
+                        "comparison_kind": (
+                            "source_anchor_exact_mask_then_generated_candidate"
+                            if final.get("schema_version") == DUAL_TARGET_REVIEW_SCHEMA_VERSION
+                            else "final_exact_support_composite"
+                        ),
                     }
                 ),
             }
         )
+        if final.get("schema_version") == DUAL_TARGET_REVIEW_SCHEMA_VERSION:
+            for label, field in (
+                ("source_anchor", "source_frame"),
+                ("exact_repair_mask", "exact_repair_mask"),
+            ):
+                record = row[field]
+                unresolved = Path(str(record.get("path") or "")).expanduser()
+                comparison_path = (
+                    unresolved if unresolved.is_absolute() else final_path.parent / unresolved
+                ).resolve()
+                if _sha256(comparison_path) != record.get("sha256"):
+                    raise TaskEvaluationArtifixerAIVisualReviewError(
+                        "artifixer_ai_review_frame_changed_before_transport"
+                    )
+                content.extend(
+                    [
+                        {"type": "input_text", "text": label},
+                        {
+                            "type": "input_image",
+                            "image_url": (
+                                "data:image/png;base64,"
+                                + base64.b64encode(comparison_path.read_bytes()).decode("ascii")
+                            ),
+                            "detail": "high",
+                        },
+                    ]
+                )
+            content.append({"type": "input_text", "text": "generated_candidate"})
         content.append(
             {
                 "type": "input_image",
@@ -251,15 +319,11 @@ def validate_artifixer_ai_visual_review_rights(
         or rights.get("provider_training_authorized") is not False
         or rights.get("public_redistribution_authorized") is not False
         or rights.get("max_inference_spend_usd") != AI_REVIEW_MAX_COST_USD
-        or not _SHA256.fullmatch(
-            str(rights.get("source_scene_rights_admission_digest") or "")
-        )
+        or not _SHA256.fullmatch(str(rights.get("source_scene_rights_admission_digest") or ""))
         or rights.get("attestation_digest")
         != canonical_digest(rights, digest_field="attestation_digest")
     ):
-        raise TaskEvaluationArtifixerAIVisualReviewError(
-            "artifixer_ai_review_rights_invalid"
-        )
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_rights_invalid")
     return path, rights
 
 
@@ -289,9 +353,7 @@ def materialize_artifixer_ai_visual_review_rights(
         "status": "accepted_for_private_derived_visual_review",
         "program_id": "arm-decision-proof-v1",
         "configuration_run_id": configuration_run_id,
-        "source_scene_rights_admission_digest": (
-            source_scene_rights_admission_digest
-        ),
+        "source_scene_rights_admission_digest": (source_scene_rights_admission_digest),
         "provider_id": "openai",
         "runtime": "openai_agents_sdk",
         "model": AI_REVIEW_MODEL,
@@ -307,14 +369,10 @@ def materialize_artifixer_ai_visual_review_rights(
         "exact_frame_inventory_bound_by_execution_receipt": True,
         "attestation_digest": "",
     }
-    value["attestation_digest"] = canonical_digest(
-        value, digest_field="attestation_digest"
-    )
+    value["attestation_digest"] = canonical_digest(value, digest_field="attestation_digest")
     destination = Path(output_path).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
-        raise TaskEvaluationArtifixerAIVisualReviewError(
-            "artifixer_ai_review_rights_output_exists"
-        )
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_rights_output_exists")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(canonical_json(value) + "\n", encoding="utf-8")
     validate_artifixer_ai_visual_review_rights(
@@ -330,9 +388,7 @@ def _validate_decisions(
     rows = execution.get("frames")
     if not isinstance(rows, list) or len(rows) != len(inventory):
         return False
-    expected = {
-        (str(row["camera_id"]), str(row["sha256"])) for row in inventory
-    }
+    expected = {(str(row["camera_id"]), str(row["sha256"])) for row in inventory}
     observed: set[tuple[str, str]] = set()
     for row in rows:
         if (
@@ -399,28 +455,19 @@ def run_artifixer_ai_visual_review(
         configuration_run_id=configuration_run_id,
     )
     final_path = Path(final_composite_receipt_path).expanduser().resolve()
-    input_value, task_id, inventory, final = (
-        build_artifixer_ai_visual_review_input(
-            final_composite_receipt_path=final_path
-        )
+    input_value, task_id, inventory, final = build_artifixer_ai_visual_review_input(
+        final_composite_receipt_path=final_path
     )
     if len(inventory) < minimum_review_frames:
         raise TaskEvaluationArtifixerAIVisualReviewError(
             "artifixer_ai_review_frame_count_below_configuration"
         )
     destination = Path(output_root).expanduser().resolve()
-    if destination.is_symlink() or (
-        destination.exists() and any(destination.iterdir())
-    ):
-        raise TaskEvaluationArtifixerAIVisualReviewError(
-            "artifixer_ai_review_output_not_empty"
-        )
+    if destination.is_symlink() or (destination.exists() and any(destination.iterdir())):
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_output_not_empty")
     destination.mkdir(parents=True, exist_ok=True)
     input_digest = canonical_digest({"input": input_value})
-    run_id = (
-        "artifixer-ai-review-"
-        + final["receipt_digest"].removeprefix("sha256:")[:16]
-    )
+    run_id = "artifixer-ai-review-" + final["receipt_digest"].removeprefix("sha256:")[:16]
     cost_gate = build_openai_official_cost_run_gate(
         scope_attestation_path=openai_cost_scope_attestation_path,
         admin_api_key_file=openai_admin_api_key_file,
@@ -546,9 +593,7 @@ def run_artifixer_ai_visual_review(
         "physics_or_collision_authority_granted": False,
         "execution_digest": "",
     }
-    execution["execution_digest"] = canonical_digest(
-        execution, digest_field="execution_digest"
-    )
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
     execution_path = destination / f"{EXECUTION_SCHEMA_VERSION}.json"
     write_json(execution_path, execution)
     review: dict[str, Any] | None = None
@@ -598,20 +643,14 @@ def seal_artifixer_ai_visual_review(
         or not isinstance(minimum_review_frames, int)
         or minimum_review_frames < 1
     ):
-        raise TaskEvaluationArtifixerAIVisualReviewError(
-            "artifixer_ai_review_request_invalid"
-        )
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_request_invalid")
     final_path = Path(final_composite_receipt_path).expanduser().resolve()
     execution_path = Path(review_execution_receipt_path).expanduser().resolve()
     final = _read(final_path, code="artifixer_ai_review_final_composite_invalid")
-    execution = _read(
-        execution_path, code="artifixer_ai_review_execution_receipt_invalid"
-    )
+    execution = _read(execution_path, code="artifixer_ai_review_execution_receipt_invalid")
     task_id, inventory = _frame_inventory(final_path=final_path, final=final)
     reviewer = execution.get("reviewer")
-    accepted = _validate_decisions(
-        execution=execution, task_id=task_id, inventory=inventory
-    )
+    accepted = _validate_decisions(execution=execution, task_id=task_id, inventory=inventory)
     if (
         len(inventory) < minimum_review_frames
         or execution.get("schema_version") != EXECUTION_SCHEMA_VERSION
@@ -619,19 +658,15 @@ def seal_artifixer_ai_visual_review(
         or execution.get("decision") != "accepted"
         or execution.get("publisher_instance_id") != publisher_instance_id
         or execution.get("task_id") != task_id
-        or execution.get("final_composite_receipt_digest")
-        != final.get("receipt_digest")
-        or execution.get("review_frame_inventory_digest")
-        != canonical_digest({"frames": inventory})
+        or execution.get("final_composite_receipt_digest") != final.get("receipt_digest")
+        or execution.get("review_frame_inventory_digest") != canonical_digest({"frames": inventory})
         or execution.get("provider_called") is not True
         or execution.get("response_store") is not False
         or execution.get("tracing_disabled") is not True
         or execution.get("raw_secret_values_recorded") is not False
         or execution.get("semantic_object_absence_review_passed") is not True
         or execution.get("multiview_consistency_review_passed") is not True
-        or not _SHA256.fullmatch(
-            str(execution.get("rights_attestation_digest") or "")
-        )
+        or not _SHA256.fullmatch(str(execution.get("rights_attestation_digest") or ""))
         or not isinstance(reviewer, Mapping)
         or reviewer.get("kind") != "ai"
         or not str(reviewer.get("identity") or "")
@@ -671,19 +706,13 @@ def seal_artifixer_ai_visual_review(
         "human_review_completed": False,
         "generated_output_is_capture_or_physical_evidence": False,
         "physics_or_collision_authority_granted": False,
-        "claim_boundary": (
-            "independent_ai_review_of_digest_bound_generated_appearance_only"
-        ),
+        "claim_boundary": ("independent_ai_review_of_digest_bound_generated_appearance_only"),
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     destination = Path(output_path).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
-        raise TaskEvaluationArtifixerAIVisualReviewError(
-            "artifixer_ai_review_output_exists"
-        )
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_output_exists")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
     return receipt

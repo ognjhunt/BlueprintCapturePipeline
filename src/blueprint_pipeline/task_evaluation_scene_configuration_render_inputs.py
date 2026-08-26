@@ -143,12 +143,8 @@ def _target_camera_ring(
             )
             rows.append(
                 {
-                    "camera_id": (
-                        f"target-e{elevation_index}-a{azimuth_index}"
-                    ),
-                    "T_world_camera_provider_frame": _look_at_opencv(
-                        eye.tolist(), center.tolist()
-                    ),
+                    "camera_id": (f"target-e{elevation_index}-a{azimuth_index}"),
+                    "T_world_camera_provider_frame": _look_at_opencv(eye.tolist(), center.tolist()),
                     "intrinsics": {
                         "fx": focal,
                         "fy": focal,
@@ -228,13 +224,11 @@ def _project_registered_bounds_mask(
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_target_not_visible"
         )
-    projected_u = (
-        float(intrinsics["fx"]) * camera_points[:, 0] / camera_points[:, 2]
-        + float(intrinsics["cx"])
+    projected_u = float(intrinsics["fx"]) * camera_points[:, 0] / camera_points[:, 2] + float(
+        intrinsics["cx"]
     )
-    projected_v = (
-        float(intrinsics["fy"]) * camera_points[:, 1] / camera_points[:, 2]
-        + float(intrinsics["cy"])
+    projected_v = float(intrinsics["fy"]) * camera_points[:, 1] / camera_points[:, 2] + float(
+        intrinsics["cy"]
     )
     left = max(0, int(math.floor(float(projected_u.min()))))
     top = max(0, int(math.floor(float(projected_v.min()))))
@@ -274,6 +268,7 @@ def materialize_scene_configuration_render_inputs(
     gaussian_cutout = stage_one_configuration.get("gaussian_cutout")
     required_views = stage_one_configuration.get("required_views")
     disclosure = stage_one_configuration.get("provider_disclosure")
+    human_authority = stage_one_configuration.get("human_authority")
     if (
         stage_one_configuration.get("schema_version")
         != "observed_appearance_object_removal_configuration.v1"
@@ -289,12 +284,19 @@ def materialize_scene_configuration_render_inputs(
         or not isinstance(required_views, Mapping)
         or required_views.get("minimum", 0) > 8
         or required_views.get("lossless_inputs") is not True
-        or required_views.get("mask_source")
-        != "registered_source_object_bounds_projection"
+        or required_views.get("mask_source") != "registered_source_object_bounds_projection"
         or not str(source_object.get("publisher_instance_id") or "").strip()
         or not isinstance(disclosure, Mapping)
         or disclosure.get("raw_interiorgs_bytes") is not False
         or disclosure.get("derived_rendered_views") is not True
+        or not isinstance(human_authority, Mapping)
+        or not str(human_authority.get("accepted_by") or "").strip()
+        or not str(human_authority.get("accepted_on") or "").strip()
+        or not str(human_authority.get("authority_reference") or "").strip()
+        or human_authority.get("private_derived_frame_disclosure_authorized") is not True
+        or human_authority.get("provider_retention_terms_accepted") is not True
+        or human_authority.get("provider_training_terms_accepted") is not True
+        or human_authority.get("provider_training_authorized") is not False
     ):
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_stage_configuration_invalid"
@@ -302,18 +304,12 @@ def materialize_scene_configuration_render_inputs(
     appearance_row, appearance_path = _materialized(
         envelope, contract_path="scene.appearance.representation"
     )
-    _manifest_row, manifest_path = _materialized(
-        envelope, contract_path="scene.source_manifest"
-    )
+    _manifest_row, manifest_path = _materialized(envelope, contract_path="scene.source_manifest")
     _plan_row, plan_path = _materialized(
         envelope, contract_path="scene.appearance.renderer_qualification"
     )
-    manifest = _read(
-        manifest_path, code="scene_configuration_render_source_manifest_invalid"
-    )
-    plan = _read(
-        plan_path, code="scene_configuration_render_qualification_plan_invalid"
-    )
+    manifest = _read(manifest_path, code="scene_configuration_render_source_manifest_invalid")
+    plan = _read(plan_path, code="scene_configuration_render_qualification_plan_invalid")
     source_matches = [
         row
         for row in manifest.get("artifacts") or []
@@ -325,8 +321,7 @@ def materialize_scene_configuration_render_inputs(
     if (
         len(source_matches) != 1
         or source_matches[0].get("provider_upload_allowed") is not False
-        or plan.get("schema_version")
-        != "task_evaluation_renderer_qualification_plan.v1"
+        or plan.get("schema_version") != "task_evaluation_renderer_qualification_plan.v1"
         or plan.get("status") != "execute_during_scene_configuration_run"
         or plan.get("appearance_source") != "InteriorGS"
         or plan.get("browser_preview_qualifies") is not False
@@ -378,12 +373,8 @@ def materialize_scene_configuration_render_inputs(
         )
     removed_path = root / "source_object_candidate_gaussians.ply"
     retained_path = root / "retained_scene_gaussians_without_source_object.ply"
-    write_standard_3dgs_ply_subset_exact(
-        decoded_path, removed_path, removed_indices
-    )
-    write_standard_3dgs_ply_subset_exact(
-        decoded_path, retained_path, retained_indices
-    )
+    write_standard_3dgs_ply_subset_exact(decoded_path, removed_path, removed_indices)
+    write_standard_3dgs_ply_subset_exact(decoded_path, retained_path, retained_indices)
     preservation = verify_standard_3dgs_ply_subset_exact(
         decoded_path, retained_path, retained_indices
     )
@@ -398,11 +389,7 @@ def materialize_scene_configuration_render_inputs(
                 {
                     "id": row["camera_id"],
                     "spec": {
-                        "pose": {
-                            "T_world_camera_opencv": row[
-                                "T_world_camera_provider_frame"
-                            ]
-                        },
+                        "pose": {"T_world_camera_opencv": row["T_world_camera_provider_frame"]},
                         "intrinsics": row["intrinsics"],
                     },
                 }
@@ -418,9 +405,9 @@ def materialize_scene_configuration_render_inputs(
             cameras=cameras,
             output_dir=root / "rendered",
             provider_splat_import_receipt_digest=appearance_row["digest"],
-            alignment_digest=envelope["request"]["scene"]["registration"][
-                "metric_registration"
-            ]["digest"],
+            alignment_digest=envelope["request"]["scene"]["registration"]["metric_registration"][
+                "digest"
+            ],
             camera_set_label="artifixer-source-object-method-inputs",
             calibrated_camera_file=calibration_path,
             retained_gaussian_count=int(source["splat_count"]),
@@ -440,27 +427,19 @@ def materialize_scene_configuration_render_inputs(
         or rendered.get("render_count") != len(cameras)
         or rendered.get("splat_digest") != appearance_row["digest"]
         or rendered.get("sealed_camera_render_manifest_digest")
-        != canonical_digest(
-            rendered, digest_field="sealed_camera_render_manifest_digest"
-        )
+        != canonical_digest(rendered, digest_field="sealed_camera_render_manifest_digest")
     ):
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_result_invalid"
         )
     render_manifest_path = root / "rendered" / "sealed_camera_render_manifest.v1.json"
     if not render_manifest_path.is_file():
-        render_manifest_path.write_text(
-            canonical_json(rendered) + "\n", encoding="utf-8"
-        )
+        render_manifest_path.write_text(canonical_json(rendered) + "\n", encoding="utf-8")
     cameras_by_id = {row["camera_id"]: row for row in cameras}
     derived_frames = []
     for row in rendered["renders"]:
         frame = root / "rendered" / row["relative_path"]
-        if (
-            frame.is_symlink()
-            or not frame.is_file()
-            or _sha256(frame) != row["digest"]
-        ):
+        if frame.is_symlink() or not frame.is_file() or _sha256(frame) != row["digest"]:
             raise TaskEvaluationSceneConfigurationRenderInputsError(
                 "scene_configuration_render_frame_invalid"
             )
@@ -504,9 +483,7 @@ def materialize_scene_configuration_render_inputs(
             "path": str(render_manifest_path),
             "digest": _sha256(render_manifest_path),
             "size_bytes": render_manifest_path.stat().st_size,
-            "manifest_digest": rendered[
-                "sealed_camera_render_manifest_digest"
-            ],
+            "manifest_digest": rendered["sealed_camera_render_manifest_digest"],
         },
         "derived_frames": derived_frames,
         "derived_frame_count": len(derived_frames),
@@ -546,9 +523,7 @@ def materialize_scene_configuration_render_inputs(
         "renderer_runtime": dict(runtime["identity"]),
         "result_digest": "",
     }
-    result["result_digest"] = canonical_digest(
-        result, digest_field="result_digest"
-    )
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     (root / f"{RESULT_SCHEMA_VERSION}.json").write_text(
         canonical_json(result) + "\n", encoding="utf-8"
     )

@@ -58,13 +58,7 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
     envelope = {
         "run_id": "configure-scene-839873-v1",
         "request": {
-            "scene": {
-                "registration": {
-                    "metric_registration": {
-                        "digest": "sha256:" + "a" * 64
-                    }
-                }
-            }
+            "scene": {"registration": {"metric_registration": {"digest": "sha256:" + "a" * 64}}}
         },
         "materialized_references": [
             reference("scene.appearance.representation", splat),
@@ -118,9 +112,7 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
                 "aabb_max_xyz_m": [3.04, -6.69, 0.884],
             },
             "gaussian_cutout": {
-                "selection_rule": (
-                    "gaussian_center_inside_registered_source_object_aabb"
-                ),
+                "selection_rule": ("gaussian_center_inside_registered_source_object_aabb"),
                 "aabb_padding_m": 0.0,
                 "retained_rows_must_remain_byte_exact": True,
             },
@@ -132,6 +124,15 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
             "provider_disclosure": {
                 "raw_interiorgs_bytes": False,
                 "derived_rendered_views": True,
+            },
+            "human_authority": {
+                "accepted_by": "project-owner",
+                "accepted_on": "2026-08-25",
+                "authority_reference": "website-scene-configuration-consent-v1",
+                "private_derived_frame_disclosure_authorized": True,
+                "provider_retention_terms_accepted": True,
+                "provider_training_terms_accepted": True,
+                "provider_training_authorized": False,
             },
         },
         output_root=tmp_path / "output",
@@ -191,7 +192,9 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
         and row["source_object_mask"]["foreground_pixel_count"] > 0
         for row in result["derived_frames"]
     )
-    assert all(Path(row["path"]).read_bytes() != splat.read_bytes() for row in result["derived_frames"])
+    assert all(
+        Path(row["path"]).read_bytes() != splat.read_bytes() for row in result["derived_frames"]
+    )
 
 
 def test_rejects_scene_specific_mask_source(tmp_path: Path) -> None:
@@ -207,22 +210,27 @@ def test_rejects_scene_specific_mask_source(tmp_path: Path) -> None:
                     "aabb_max_xyz_m": [1.0, 1.0, 1.0],
                 },
                 "gaussian_cutout": {
-                    "selection_rule": (
-                        "gaussian_center_inside_registered_source_object_aabb"
-                    ),
+                    "selection_rule": ("gaussian_center_inside_registered_source_object_aabb"),
                     "aabb_padding_m": 0.0,
                     "retained_rows_must_remain_byte_exact": True,
                 },
                 "required_views": {
                     "minimum": 8,
                     "lossless_inputs": True,
-                    "mask_source": (
-                        "publisher_instance_104_projected_from_registered_bounds"
-                    ),
+                    "mask_source": ("publisher_instance_104_projected_from_registered_bounds"),
                 },
                 "provider_disclosure": {
                     "raw_interiorgs_bytes": False,
                     "derived_rendered_views": True,
+                },
+                "human_authority": {
+                    "accepted_by": "project-owner",
+                    "accepted_on": "2026-08-25",
+                    "authority_reference": "website-scene-configuration-consent-v1",
+                    "private_derived_frame_disclosure_authorized": True,
+                    "provider_retention_terms_accepted": True,
+                    "provider_training_terms_accepted": True,
+                    "provider_training_authorized": False,
                 },
             },
             output_root=tmp_path / "output",

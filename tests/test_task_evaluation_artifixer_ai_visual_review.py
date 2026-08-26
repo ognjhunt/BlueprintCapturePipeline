@@ -5,11 +5,14 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_artifixer_ai_visual_review import (
+    DUAL_TARGET_REVIEW_SCHEMA_VERSION,
     EXECUTION_SCHEMA_VERSION,
     TaskEvaluationArtifixerAIVisualReviewError,
+    build_artifixer_ai_visual_review_input,
     materialize_artifixer_ai_visual_review_rights,
     seal_artifixer_ai_visual_review,
     validate_artifixer_ai_visual_review_rights,
@@ -104,9 +107,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
         ],
         "execution_digest": "",
     }
-    execution["execution_digest"] = canonical_digest(
-        execution, digest_field="execution_digest"
-    )
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
     execution_path = tmp_path / "execution.json"
     execution_path.write_text(json.dumps(execution), encoding="utf-8")
     return final_path, execution_path
@@ -148,9 +149,7 @@ def test_rejects_review_missing_one_camera(tmp_path: Path) -> None:
     final, execution = _inputs(tmp_path)
     value = json.loads(execution.read_text(encoding="utf-8"))
     value["frames"].pop()
-    value["execution_digest"] = canonical_digest(
-        value, digest_field="execution_digest"
-    )
+    value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
     execution.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(
@@ -187,3 +186,65 @@ def test_rights_scope_is_human_issued_before_generated_frames_exist(
         configuration_run_id="configure-scene-839873-v1",
     )
     assert reopened["attestation_digest"] == value["attestation_digest"]
+
+
+def test_paired_target_review_binds_source_mask_and_generated_frame(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    mask = tmp_path / "mask.png"
+    generated = tmp_path / "generated.png"
+    Image.new("RGB", (8, 8), color=(90, 80, 70)).save(source)
+    Image.new("L", (8, 8), color=255).save(mask)
+    Image.new("RGB", (8, 8), color=(91, 81, 71)).save(generated)
+
+    def record(path: Path) -> dict[str, object]:
+        return {
+            "path": str(path),
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        }
+
+    value = {
+        "schema_version": DUAL_TARGET_REVIEW_SCHEMA_VERSION,
+        "status": "paired_target_frames_pending_independent_visual_review",
+        "publisher_scene_id": "839873",
+        "review_scope": ("source_anchor_exact_mask_and_generated_full_frame_comparison"),
+        "tasks": [
+            {
+                "task_id": "remove-source-object-104",
+                "physical_camera_count": 1,
+                "frames": [
+                    {
+                        "frame_index": 0,
+                        "camera_id": "camera-0",
+                        "source_frame": record(source),
+                        "exact_repair_mask": record(mask),
+                        "final_frame": record(generated),
+                    }
+                ],
+            }
+        ],
+        "outside_support_invariance_proven": False,
+        "outside_support_invariance_claimed": False,
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "appearance_repair_qualified": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    receipt = tmp_path / "paired-review.json"
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+
+    request, task_id, inventory, reopened = build_artifixer_ai_visual_review_input(
+        final_composite_receipt_path=receipt
+    )
+
+    assert task_id == "remove-source-object-104"
+    assert inventory[0]["sha256"] == _sha256(generated)
+    labels = [row.get("text") for row in request[0]["content"] if row.get("type") == "input_text"]
+    assert "source_anchor" in labels
+    assert "exact_repair_mask" in labels
+    assert "generated_candidate" in labels
+    assert reopened["outside_support_invariance_claimed"] is False
