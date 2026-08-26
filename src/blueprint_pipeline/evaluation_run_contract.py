@@ -207,6 +207,19 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         ("deterministic", "paired_seeds", "controls", "bounded_variations"),
     ),
     EvaluationRunAdapterDescriptor(
+        "task_scenario_pack",
+        "exact_workcell_variation_matrix",
+        "1",
+        (
+            "policy_neutral",
+            "exact_workcell_primary",
+            "deterministic_100_cell_default",
+            "identical_candidate_cells",
+            "paired_controls",
+            "bounded_agent_proposals",
+        ),
+    ),
+    EvaluationRunAdapterDescriptor(
         "policy_adapter", "isaac_g1_deterministic_controller", "1", ("in_process",)
     ),
     EvaluationRunAdapterDescriptor(

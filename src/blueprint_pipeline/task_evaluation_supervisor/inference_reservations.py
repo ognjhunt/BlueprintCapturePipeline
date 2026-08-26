@@ -58,16 +58,19 @@ class InferenceReservationAudit:
         ):
             raise InferenceReservationError("inference_reservation_cost_invalid")
         reservation_id = str(reservation.get("reservation_id") or "")
-        expected_id = canonical_digest(
-            {
-                "run_id": reservation.get("run_id"),
-                "capability": reservation.get("capability"),
-                "model": reservation.get("model"),
-                "input_digest": reservation.get("input_digest"),
-                "max_turns": reservation.get("max_turns"),
-                "max_output_tokens": reservation.get("max_output_tokens"),
-            }
-        )
+        reservation_identity = {
+            "run_id": reservation.get("run_id"),
+            "capability": reservation.get("capability"),
+            "model": reservation.get("model"),
+            "input_digest": reservation.get("input_digest"),
+            "max_turns": reservation.get("max_turns"),
+            "max_output_tokens": reservation.get("max_output_tokens"),
+        }
+        if "reasoning_effort" in reservation:
+            reservation_identity["reasoning_effort"] = reservation.get(
+                "reasoning_effort"
+            )
+        expected_id = canonical_digest(reservation_identity)
         if reservation_id != expected_id:
             raise InferenceReservationError("inference_reservation_identity_mismatch")
         expected_digest = canonical_digest(
