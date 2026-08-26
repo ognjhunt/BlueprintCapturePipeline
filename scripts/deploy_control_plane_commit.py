@@ -385,9 +385,16 @@ def _repair_paid_launch_lock_slots(
     for path in _expanded_slots(lock_paths):
         if not path.is_file():
             continue
-        chown(path, owner_uid, owner_gid)
-        path.chmod(0o600)
-        repaired.append(str(path))
+        metadata = path.stat()
+        changed = False
+        if metadata.st_uid != owner_uid or metadata.st_gid != owner_gid:
+            chown(path, owner_uid, owner_gid)
+            changed = True
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            path.chmod(0o600)
+            changed = True
+        if changed:
+            repaired.append(str(path))
     return {"repaired_slots": repaired, "owner_uid": owner_uid, "owner_gid": owner_gid}
 
 

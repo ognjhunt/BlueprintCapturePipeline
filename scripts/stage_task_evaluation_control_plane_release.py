@@ -255,7 +255,8 @@ def _install_release_git_index_readability(
             "task_evaluation_control_plane_release_git_index_invalid"
         )
     try:
-        index_path.chmod(0o644)
+        if stat.S_IMODE(index_path.stat().st_mode) != 0o644:
+            index_path.chmod(0o644)
     except OSError as exc:
         raise ControlPlaneReleaseError(
             "task_evaluation_control_plane_release_git_index_unreadable"
