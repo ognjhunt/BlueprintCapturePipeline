@@ -17,10 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .task_evaluation_launch_progress import build_launch_progress
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
     TaskEvaluationLaunchError,
     canonical_digest,
 )
@@ -482,10 +484,20 @@ def _reconcile_terminal_provider_zero(
 
     blockers: list[str] = []
     receipt_digest = receipt.get("receipt_digest")
-    if (
-        not _is_sha256_digest(receipt_digest)
-        or receipt_digest != canonical_digest(receipt, digest_field="receipt_digest")
-    ):
+    digest_canonicalization = receipt.get("receipt_digest_canonicalization")
+    if digest_canonicalization == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION:
+        expected_receipt_digest = cross_runtime_canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+    elif digest_canonicalization is None:
+        # Preserve validation of immutable launch receipts sealed before the
+        # WebApp boundary declared RFC 8785 number semantics.
+        expected_receipt_digest = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+    else:
+        expected_receipt_digest = None
+    if not _is_sha256_digest(receipt_digest) or receipt_digest != expected_receipt_digest:
         blockers.append("terminal_launch_receipt_digest_invalid")
     if receipt.get("launch_id") != run_root.name:
         blockers.append("terminal_launch_receipt_run_binding_invalid")

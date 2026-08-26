@@ -9,9 +9,13 @@ import pytest
 
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
 import blueprint_pipeline.task_evaluation_launch_webapp_sync as webapp_sync_module
+from blueprint_pipeline.decision_evidence_contracts import (
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
     LAUNCH_RUN_ROOT_PLACEHOLDER,
     SECRET_PROFILE_ID_ENV,
     TaskEvaluationLaunchError,
@@ -1040,7 +1044,10 @@ def test_native_policy_sigterm_before_admission_seals_typed_media_gap(
         ).read_text(encoding="utf-8")
     )
     assert persisted == receipt
-    assert receipt["receipt_digest"] == canonical_digest(
+    assert receipt["receipt_digest_canonicalization"] == (
+        LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+    )
+    assert receipt["receipt_digest"] == cross_runtime_canonical_digest(
         receipt, digest_field="receipt_digest"
     )
 
@@ -1103,7 +1110,10 @@ def test_native_policy_post_admission_result_propagates_typed_media_gap(
     )
     assert receipt["visual_evidence"] == expected_visual
     assert receipt["terminal_evidence"]["visual_evidence"] == expected_visual
-    assert receipt["receipt_digest"] == canonical_digest(
+    assert receipt["receipt_digest_canonicalization"] == (
+        LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+    )
+    assert receipt["receipt_digest"] == cross_runtime_canonical_digest(
         receipt, digest_field="receipt_digest"
     )
 
@@ -1641,8 +1651,9 @@ def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(
     assert recovery["automatic_retry_performed"] is False
 
 
+@pytest.mark.parametrize("cross_runtime_receipt", [False, True])
 def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
-    tmp_path: Path,
+    tmp_path: Path, cross_runtime_receipt: bool,
 ) -> None:
     profile = _profile(tmp_path)
     request = _request(profile)
@@ -1664,6 +1675,13 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
         profile=profile,
         teardown_path=teardown_path,
     )
+    if cross_runtime_receipt:
+        receipt["receipt_digest_canonicalization"] = (
+            LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        )
+        receipt["receipt_digest"] = cross_runtime_canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
     _write(run_root / "launch_profile.json", profile)
     _write(run_root / "launch_receipt.json", receipt)
     # Keep this focused on closure evidence rather than WebApp callback setup.
