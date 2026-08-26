@@ -167,3 +167,35 @@ def test_a_missing_lane_module_is_named(tmp_path: Path) -> None:
         )
 
     assert str(excinfo.value) == "lane_module_missing:no_such_lane_vast.py"
+
+
+def test_a_lane_that_seals_its_own_extra_field_is_not_refused(tmp_path: Path) -> None:
+    """A lane may name terminal paths beyond the two the shared seal writes.
+
+    The scene-configuration lane sets its own execution_result_path and its
+    profile requires it. The rehearsal previously reported would_block for
+    that lane, because its synthetic result carries only the conventional
+    fields -- a refusal the lane never earned, standing between a correct
+    launch and the provider.
+    """
+
+    profile = _profile(tmp_path)
+    value = json.loads(profile.read_text(encoding="utf-8"))
+    value["terminal_contract"]["required_path_fields"].append("execution_result_path")
+    profile.write_text(json.dumps(value), encoding="utf-8")
+
+    receipt = rehearsal.rehearse_lane_terminal_contract(
+        profile_path=profile,
+        lane_module="task_evaluation_scene_configuration_vast.py",
+    )
+
+    assert receipt["status"] == "would_pass"
+    assert receipt["blockers"] == []
+    # The lane really does write it; that is why standing it up is honest.
+    assert rehearsal.lane_seals_terminal_field(
+        "task_evaluation_scene_configuration_vast.py", "execution_result_path"
+    )
+    # A field no lane writes is still refused.
+    assert not rehearsal.lane_seals_terminal_field(
+        "task_evaluation_scene_configuration_vast.py", "nonexistent_manifest_path"
+    )
