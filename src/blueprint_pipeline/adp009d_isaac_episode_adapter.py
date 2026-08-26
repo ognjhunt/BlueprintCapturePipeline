@@ -115,6 +115,13 @@ DROID_EEF_BODY_SOURCE = (
 DROID_EEF_STATE_SOURCE = (
     "live_panda_link8_pose_world_transformed_by_live_robot_root_pose"
 )
+DROID_ARM_JOINT_NAMES = tuple(f"panda_joint{index}" for index in range(1, 8))
+DROID_ARM_JOINT_ORDER_SOURCE = (
+    "IsaacLab-Arena@8b82dca224f2b5af08f339f987613c59ce9cdbaa:"
+    "isaaclab_arena/embodiments/droid/observations.py:arm_joint_pos+"
+    "isaaclab_arena/embodiments/droid/droid.py:"
+    "DroidAbsoluteJointPositionActionsCfg.arm_action.preserve_order"
+)
 ARM_JOINT_COUNT = 7
 # Frozen by the Robotiq 2F-85 task embodiment and pinned independently by the
 # deterministic scorer.  A parity test keeps the flat-bundle duplicate honest.
@@ -727,6 +734,21 @@ class IsaacEpisodeAdapter:
         if DROID_EEF_BODY_NAME not in body_names:
             raise IsaacEpisodeAdapterError(["isaac_episode_droid_eef_body_missing"])
         self._droid_eef_body_index = body_names.index(DROID_EEF_BODY_NAME)
+        joint_names = list(
+            getattr(robot.data, "joint_names", None)
+            or getattr(robot, "joint_names", None)
+            or []
+        )
+        resolved_arm_joint_names = tuple(
+            name for name in joint_names if name in DROID_ARM_JOINT_NAMES
+        )
+        if resolved_arm_joint_names != DROID_ARM_JOINT_NAMES:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_droid_arm_joint_order_invalid"]
+            )
+        self._arm_joint_indices = [
+            joint_names.index(name) for name in DROID_ARM_JOINT_NAMES
+        ]
 
     # -- EpisodeEnvironment -------------------------------------------------
 
@@ -775,7 +797,9 @@ class IsaacEpisodeAdapter:
         self._control_step_index = 0
 
     def joint_limits(self) -> list[list[float]]:
-        limits = self._to_torch(self._robot.data.joint_limits)[0, :ARM_JOINT_COUNT]
+        limits = self._to_torch(self._robot.data.joint_limits)[
+            0, self._arm_joint_indices
+        ]
         return [[float(row[0]), float(row[1])] for row in limits]
 
     def read_policy_inputs(self) -> dict[str, Any]:
@@ -817,7 +841,9 @@ class IsaacEpisodeAdapter:
         return images
 
     def read_arm_joint_positions(self) -> list[float]:
-        joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
+        joints = self._to_torch(self._robot.data.joint_pos)[
+            0, self._arm_joint_indices
+        ]
         return [float(value) for value in joints]
 
     def predict_grasp_frame_pose_world(
@@ -844,7 +870,7 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(
                 [f"isaac_episode_arm_dynamics_missing:{attribute}"]
             )
-        values = self._to_torch(raw)[0, :ARM_JOINT_COUNT]
+        values = self._to_torch(raw)[0, self._arm_joint_indices]
         result = [float(value) for value in values]
         if len(result) != ARM_JOINT_COUNT or not all(
             math.isfinite(value) for value in result
@@ -1546,6 +1572,8 @@ def describe_adapter() -> dict[str, Any]:
         "droid_eef_body_source": DROID_EEF_BODY_SOURCE,
         "droid_eef_state_frame": "robot_root",
         "droid_eef_state_source": DROID_EEF_STATE_SOURCE,
+        "droid_arm_joint_names": list(DROID_ARM_JOINT_NAMES),
+        "droid_arm_joint_order_source": DROID_ARM_JOINT_ORDER_SOURCE,
         "scripted_control_target_frame": "probe_calibrated_finger_midpoint",
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
@@ -1610,6 +1638,12 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_droid_eef_state_frame_drifted")
     if bindings.get("droid_eef_state_source") != DROID_EEF_STATE_SOURCE:
         errors.append("isaac_episode_adapter_droid_eef_state_source_drifted")
+    if list(bindings.get("droid_arm_joint_names") or []) != list(
+        DROID_ARM_JOINT_NAMES
+    ):
+        errors.append("isaac_episode_adapter_droid_arm_joint_names_drifted")
+    if bindings.get("droid_arm_joint_order_source") != DROID_ARM_JOINT_ORDER_SOURCE:
+        errors.append("isaac_episode_adapter_droid_arm_joint_order_source_drifted")
     if bindings.get("scripted_control_target_frame") != (
         "probe_calibrated_finger_midpoint"
     ):
@@ -1668,6 +1702,8 @@ __all__ = [
     "ADAPTER_SCHEMA_VERSION",
     "CAMERA_VIEW_BINDING",
     "DEFAULT_CAMERA_SCENE_NAMES",
+    "DROID_ARM_JOINT_NAMES",
+    "DROID_ARM_JOINT_ORDER_SOURCE",
     "DROID_EEF_BODY_NAME",
     "DROID_EEF_BODY_SOURCE",
     "DROID_EEF_STATE_SOURCE",

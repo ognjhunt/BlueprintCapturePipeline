@@ -14,6 +14,8 @@ from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelo
 from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     CAMERA_VIEW_BINDING,
     DEFAULT_CAMERA_SCENE_NAMES,
+    DROID_ARM_JOINT_NAMES,
+    DROID_ARM_JOINT_ORDER_SOURCE,
     DROID_EEF_BODY_NAME,
     DROID_EEF_BODY_SOURCE,
     FINGER_BODIES,
@@ -363,6 +365,15 @@ class _Robot:
             body_pose_w=poses,
             joint_limits=np.tile(np.array([[-2.9, 2.9]]), (1, 13, 1)),
         )
+        self.data.joint_names = [
+            *DROID_ARM_JOINT_NAMES,
+            "finger_joint",
+            "left_inner_finger_joint",
+            "right_inner_finger_joint",
+            "left_outer_knuckle_joint",
+            "right_outer_knuckle_joint",
+            "right_inner_finger_joint_mimic",
+        ]
         self.data.root_pose_w = np.array(
             [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=float
         )
@@ -633,6 +644,30 @@ def test_groot_eef_state_refuses_a_robot_without_the_droid_fk_body() -> None:
     with pytest.raises(
         IsaacEpisodeAdapterError,
         match="isaac_episode_droid_eef_body_missing",
+    ):
+        IsaacEpisodeAdapter(
+            env=_Env(),
+            robot=robot,
+            rigid_task_object=_Can(),
+            action_dim=8,
+            reset_seed=20260806,
+            to_torch=_to_torch,
+            gripper_closed_width_m=0.0,
+            gripper_open_width_m=0.06,
+            contact_envelope=canonical_contact_envelope(),
+        )
+
+
+def test_groot_state_refuses_droid_arm_joint_order_drift() -> None:
+    robot = _Robot()
+    robot.data.joint_names[0], robot.data.joint_names[1] = (
+        robot.data.joint_names[1],
+        robot.data.joint_names[0],
+    )
+
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_droid_arm_joint_order_invalid",
     ):
         IsaacEpisodeAdapter(
             env=_Env(),
@@ -975,6 +1010,8 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["droid_eef_body_name"] == DROID_EEF_BODY_NAME
     assert bindings["droid_eef_body_source"] == DROID_EEF_BODY_SOURCE
     assert bindings["droid_eef_state_frame"] == "robot_root"
+    assert bindings["droid_arm_joint_names"] == list(DROID_ARM_JOINT_NAMES)
+    assert bindings["droid_arm_joint_order_source"] == DROID_ARM_JOINT_ORDER_SOURCE
     assert bindings["scripted_control_physx_jacobian_frame"] == "world"
     assert bindings["scripted_control_controller_error_frame"] == "robot_root"
     assert bindings["scripted_control_jacobian_frame_transform"] == (
@@ -1001,6 +1038,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted["camera_view_binding"] = {"external_camera": DROID_WRIST_VIEW}
     assert "isaac_episode_adapter_camera_binding_drifted" in validate_adapter_bindings(
         drifted
+    )
+
+    drifted = dict(bindings)
+    drifted["droid_arm_joint_names"] = list(reversed(DROID_ARM_JOINT_NAMES))
+    assert "isaac_episode_adapter_droid_arm_joint_names_drifted" in (
+        validate_adapter_bindings(drifted)
     )
 
     drifted = dict(bindings)
