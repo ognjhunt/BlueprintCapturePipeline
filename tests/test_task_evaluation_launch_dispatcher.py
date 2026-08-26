@@ -388,10 +388,7 @@ def test_dispatcher_blocks_source_tamper_before_staging(
     )
 
     assert receipt["status"] == "blocked"
-    assert any(
-        "immutable_input_staging_source_digest_mismatch" in blocker
-        for blocker in receipt["blockers"]
-    )
+    assert any("digest_mismatch" in blocker for blocker in receipt["blockers"])
     assert calls == []
 
 
@@ -2865,3 +2862,77 @@ def test_a_terminal_stale_launch_id_does_not_strand_a_standing_authority(
         )
     )
     assert binding["execute_launch_id"] == ""
+
+
+def test_one_source_bound_under_two_logical_names_stages_once(
+    tmp_path: Path,
+) -> None:
+    """The scene configuration lane binds its bundle receipt as both the
+    source bundle manifest and the evaluation run spec.  One file under two
+    logical names is a single staged copy, not a duplicate-source refusal."""
+
+    profile = _profile(tmp_path)
+    shared = Path(profile["immutable_inputs"][0]["path"])
+    profile["immutable_inputs"][1] = {
+        "name": "evaluation_run_spec",
+        "path": str(shared),
+        "digest": _path_digest(shared),
+    }
+    profile["allocator"]["argv"].extend(["--exact-input", str(shared)])
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert not any(
+        "immutable_input_staging_duplicate_source" in blocker
+        for blocker in receipt.get("blockers", [])
+    )
+    assert receipt["immutable_input_staging"]["input_count"] == 2
+    assert len(calls) == 1
+    staged = sorted(
+        (tmp_path / "state").glob("*/immutable_inputs/*.input")
+    )
+    assert len(staged) == 1
+    assert str(shared) not in " ".join(calls[0])
+    assert str(staged[0]) in calls[0]
+
+
+def test_two_different_files_still_cannot_share_one_source_claim(
+    tmp_path: Path,
+) -> None:
+    """Dedupe must not weaken the guard: a repeated source row whose digest
+    does not match the staged bytes is still refused."""
+
+    profile = _profile(tmp_path)
+    shared = Path(profile["immutable_inputs"][0]["path"])
+    other = Path(profile["immutable_inputs"][1]["path"])
+    profile["immutable_inputs"][1] = {
+        "name": "evaluation_run_spec",
+        "path": str(shared),
+        "digest": _path_digest(other),
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert any("digest_mismatch" in blocker for blocker in receipt["blockers"])
+    assert calls == []
