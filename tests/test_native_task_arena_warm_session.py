@@ -68,6 +68,33 @@ def _session(prepared: dict) -> dict:
     return session
 
 
+@pytest.mark.parametrize(
+    "value",
+    (
+        "http://objects.example/value",
+        "file:///private/tmp/value",
+        "https:///missing-host",
+        "https://user:secret@objects.example/value",
+    ),
+)
+def test_read_url_rejects_non_https_or_credential_bearing_values(
+    tmp_path: Path, value: str
+) -> None:
+    path = tmp_path / "signed-url.txt"
+    path.write_text(value + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="native_task_arena_warm_signed_url_invalid"):
+        warm_vast._read_url(path)
+
+
+def test_read_url_accepts_https_signed_url(tmp_path: Path) -> None:
+    path = tmp_path / "signed-url.txt"
+    value = "https://objects.example/value?signature=secret"
+    path.write_text(value + "\n", encoding="utf-8")
+
+    assert warm_vast._read_url(path) == value
+
+
 def test_warm_authority_binds_session_bundle_and_zero_allocations(
     tmp_path: Path,
 ) -> None:
