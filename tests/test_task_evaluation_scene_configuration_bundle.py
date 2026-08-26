@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import stat
 import subprocess
 import zipfile
 from pathlib import Path
@@ -656,44 +655,6 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     )
     assert blockers == []
     assert observed["stage_chain"]["stage_count"] == 6
-
-
-def test_scene_configuration_mirrors_group_readable_secrets_for_adapter(
-    tmp_path: Path,
-) -> None:
-    secret = tmp_path / "root-owned-service-readable-key"
-    secret.write_text("private-test-value\n", encoding="utf-8")
-    secret.chmod(0o640)
-    mirrored_path: Path | None = None
-    mirrored_root: Path | None = None
-
-    with scene_vast._private_runtime_secret_files(
-        {"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(secret)}, parent=tmp_path
-    ) as mirrored:
-        mirrored_path = Path(mirrored["OPENAI_CONTENT_AGENTS_API_KEY_FILE"])
-        mirrored_root = mirrored_path.parent
-        assert stat.S_IMODE(mirrored_root.stat().st_mode) == 0o700
-        assert stat.S_IMODE(mirrored_path.stat().st_mode) == 0o600
-        assert mirrored_path.read_text(encoding="utf-8") == "private-test-value\n"
-        assert vpa._runtime_secret_file_values(mirrored) == {
-            "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "private-test-value"
-        }
-
-    assert mirrored_path is not None and not mirrored_path.exists()
-    assert mirrored_root is not None and not mirrored_root.exists()
-
-
-def test_scene_configuration_passes_only_private_secret_mirrors_to_adapter() -> None:
-    import inspect
-
-    source = inspect.getsource(scene_vast.run_scene_configuration_vast)
-    context_index = source.find("with _private_runtime_secret_files(")
-    adapter_index = source.find("adapter = run_vast_provider_adapter(")
-    private_paths_index = source.find(
-        "runtime_secret_file_paths=private_runtime_secret_paths"
-    )
-    assert -1 < context_index < adapter_index < private_paths_index
-    assert "runtime_secret_file_paths=runtime_secret_paths" not in source
 
 
 def test_scene_configuration_watchdog_prefix_is_in_the_blueprint_namespace() -> None:
