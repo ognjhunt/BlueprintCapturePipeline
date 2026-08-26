@@ -215,6 +215,17 @@ def test_policy_start_gate_refuses_missing_exact_evidence(mutation, blocker) -> 
         validate_native_task_policy_start_camera_observability(construction)
 
 
+def test_policy_start_gate_refuses_duplicate_target_role_contract() -> None:
+    with pytest.raises(
+        NativeTaskCameraObservabilityError,
+        match="native_task_policy_start_camera_snapshots_invalid",
+    ):
+        validate_native_task_policy_start_camera_observability(
+            _policy_start_construction(),
+            target_visible_roles=("external", "external"),
+        )
+
+
 # --- the r13..r23 condition ------------------------------------------------
 
 

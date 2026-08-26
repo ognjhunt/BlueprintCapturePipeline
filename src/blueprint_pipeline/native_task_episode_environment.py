@@ -174,8 +174,8 @@ def build_native_task_episode_environment(
     # while its sensor-buffer world pose can remain frozen at initialization.
     # That exact mismatch appeared in the retained GR00T episode: RGB changed
     # substantially while every wrist calibration digest stayed byte-identical.
-    # Measure the rigid camera-to-grasp-frame mount once at reset, then rebuild
-    # the evidence pose from the live measured grasp frame on every observation.
+    # Measure the rigid camera-to-controlled-body mount once at reset, then
+    # rebuild the evidence pose from that live body on every observation.
     try:
         wrist_camera_scene_name = str(camera_scene_names["wrist"])
         wrist_camera = scene[wrist_camera_scene_name]

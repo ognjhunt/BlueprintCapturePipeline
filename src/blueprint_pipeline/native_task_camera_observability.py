@@ -214,6 +214,7 @@ def validate_native_task_policy_start_camera_observability(
         or any(not role for role in roles)
         or any(not role for role in semantic_roles)
         or not set(semantic_roles).issubset(roles)
+        or len(set(semantic_roles)) != len(semantic_roles)
     ):
         raise NativeTaskCameraObservabilityError(
             [REFUSAL_POLICY_START_SNAPSHOTS_INVALID]
