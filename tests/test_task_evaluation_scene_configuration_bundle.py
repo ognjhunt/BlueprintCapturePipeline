@@ -720,3 +720,31 @@ def test_scene_configuration_prefix_is_registered_and_labels_its_instances() -> 
 
     source = inspect.getsource(lane.run_scene_configuration_vast)
     assert "instance_label_prefix=watchdog.pod_name_prefix" in source
+
+
+def test_scene_configuration_result_reports_why_the_adapter_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An adapter failure must reach the lane result, not just the teardown note.
+
+    When ``run_vast_provider_adapter`` raises, the lane records
+    ``vast_adapter_failed:<detail>`` on its adapter dict and seals an
+    unallocated teardown. If that blocker is dropped, the result carries only
+    the downstream consequences -- provider result missing, output zip
+    invalid, envelope mismatch -- and those look identical whether the adapter
+    could not find an offer, could not reach the provider, or was never
+    invoked at all.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as lane
+
+    source = inspect.getsource(lane.run_scene_configuration_vast)
+    merge_index = source.find('adapter.get("blockers")')
+    result_index = source.find('"blockers": sorted(set(blockers))')
+    assert merge_index != -1, "adapter blockers are never merged into the result"
+    assert result_index != -1
+    assert merge_index < result_index, (
+        "adapter blockers must be merged before the result is assembled"
+    )

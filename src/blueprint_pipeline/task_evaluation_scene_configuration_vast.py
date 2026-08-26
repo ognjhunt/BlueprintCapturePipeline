@@ -546,6 +546,13 @@ def run_scene_configuration_vast(
     execution, blockers = _extract_provider_output(
         output_zip, job / "immutable_execution"
     )
+    # The adapter's own refusal is the only record of *why* nothing was
+    # allocated. Without it the result carries only the downstream
+    # consequences -- provider result missing, output zip invalid -- which
+    # describe an empty provider run identically no matter what caused it.
+    blockers.extend(
+        str(item) for item in adapter.get("blockers") or [] if str(item)
+    )
     if execution.get("status") != "completed":
         blockers.append("scene_configuration_provider_not_completed")
     if execution.get("source_commit") != receipt.get("source_commit"):
