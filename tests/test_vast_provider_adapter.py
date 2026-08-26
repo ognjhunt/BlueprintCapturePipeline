@@ -5522,6 +5522,9 @@ def test_vast_adapter_small_provider_helper_edges(
             "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": "sha256:" + "a" * 64,
             "OPENAI_PROJECT_ID": "proj_test",
             "OPENAI_API_KEY_ID": "key_test",
+            "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID": "key_semantic",
+            "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID": "key_review",
+            "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_content_agents",
         },
     )
     bootstrap_name = (
@@ -5534,6 +5537,20 @@ def test_vast_adapter_small_provider_helper_edges(
         "sha256:" + "a" * 64
     )
     assert secret_env["OPENAI_PROJECT_ID"] == "proj_test"
+    assert secret_env["OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID"] == (
+        "key_semantic"
+    )
+    with pytest.raises(
+        ValueError, match="invalid_vast_provider_runtime_environment"
+    ):
+        vpa._probe_env(
+            job_dir=tmp_path / "secret-env-refused",
+            enable_isaac_smoke=False,
+            runtime_secret_file_values=secret_values,
+            provider_runtime_environment={
+                "OPENAI_UNREGISTERED_STAGE_API_KEY_ID": "key_other"
+            },
+        )
     shell = vpa._probe_shell_script(
         "https://example.com/heartbeat",
         provider_bundle_kind="task_evaluation_scene_configuration",

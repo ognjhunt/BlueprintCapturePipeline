@@ -88,6 +88,12 @@ Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key
 # file loaded below.
 Environment=OPENAI_ADMIN_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_admin_api_key
 Environment=BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation.json
+Environment=OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_semantic_teacher
+Environment=OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review
+Environment=OPENAI_CONTENT_AGENTS_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_content_agents
+Environment=BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_artifixer_semantic_teacher.json
+Environment=BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_artifixer_visual_review.json
+Environment=BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_content_agents.json
 # The configured directory is authoritative, so a key that exists only on
 # somebody's workstation cannot stand in for one the deployment never
 # installed. Three sibling units already declare it.

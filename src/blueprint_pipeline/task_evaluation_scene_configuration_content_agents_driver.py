@@ -39,6 +39,7 @@ from .task_evaluation_scene_configuration_stage_tool import (
 )
 from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate,
+    scene_configuration_openai_stage_scope,
 )
 
 
@@ -409,18 +410,24 @@ def execute_content_agents_component(
         **values,
         "BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR": str(runtime / "runtime_output"),
     }
-    secret_file = str(values.get("OPENAI_API_KEY_FILE") or "").strip()
-    if secret_file:
-        secret_path = Path(secret_file).expanduser().resolve()
-        if (
-            secret_path.is_symlink()
-            or not secret_path.is_file()
-            or secret_path.stat().st_mode & 0o077
-        ):
-            raise TaskEvaluationSceneConfigurationContentAgentsError(
-                "scene_configuration_content_agents_secret_file_invalid"
-            )
-        child_environment["OPENAI_API_KEY"] = secret_path.read_text(encoding="utf-8").strip()
+    stage_scope = scene_configuration_openai_stage_scope(
+        values, stage="content_agents"
+    )
+    secret_path = Path(stage_scope["api_key_file"]).expanduser().resolve()
+    if (
+        secret_path.is_symlink()
+        or not secret_path.is_file()
+        or secret_path.stat().st_mode & 0o077
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_secret_file_invalid"
+        )
+    child_token = secret_path.read_text(encoding="utf-8").strip()
+    if not child_token:
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_secret_file_invalid"
+        )
+    child_environment["OPENAI_API_KEY"] = child_token
     cost_gate = cost_gate_factory(
         environment=values,
         stage="content_agents",

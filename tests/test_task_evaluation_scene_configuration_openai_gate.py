@@ -13,10 +13,23 @@ def _environment() -> dict[str, str]:
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD": "0.4",
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD": "0.75",
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD": "0.35",
-        "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE": "/private/cost-scope.json",
         "OPENAI_ADMIN_API_KEY_FILE": "/private/admin-key",
         "OPENAI_PROJECT_ID": "proj_test",
-        "OPENAI_API_KEY_ID": "key_test",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE": "/private/key-semantic",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID": "key_semantic",
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE": (
+            "/private/cost-scope-semantic.json"
+        ),
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": "/private/key-review",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID": "key_review",
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE": (
+            "/private/cost-scope-review.json"
+        ),
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "/private/key-content-agents",
+        "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_content_agents",
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
+            "/private/cost-scope-content-agents.json"
+        ),
     }
 
 
@@ -40,6 +53,77 @@ def test_builds_exact_stage_gate_from_parent_authority(monkeypatch, tmp_path) ->
     assert result["max_cost_usd"] == 0.35
     assert result["authorization_receipt_digest"] == "sha256:" + "a" * 64
     assert result["admin_api_key_file"] == "/private/admin-key"
+    assert result["api_key_id"] == "key_content_agents"
+    assert result["scope_attestation_path"] == (
+        "/private/cost-scope-content-agents.json"
+    )
+
+
+def test_each_stage_binds_its_own_exclusive_scope(monkeypatch, tmp_path) -> None:
+    """One run holds three OpenAI stages; a shared key scope cannot pass.
+
+    The official-cost gate refuses a reused scope twice over -- the operator
+    attestation binds one exact ``paid_resource_class``, and every reservation
+    demands a zero same-day baseline for its ``(project_id, api_key_id)``.
+    This pins that each stage resolves a distinct key id and attestation file,
+    which is the property the shared single-scope environment silently broke.
+    """
+
+    monkeypatch.setattr(
+        gate, "build_openai_official_cost_run_gate", lambda **kwargs: kwargs
+    )
+    environment = _environment()
+    scopes = {}
+    for stage in (
+        "artifixer_semantic_teacher",
+        "artifixer_visual_review",
+        "content_agents",
+    ):
+        built = gate.scene_configuration_openai_stage_gate(
+            environment=environment,
+            stage=stage,
+            run_id=f"configure-scene-{stage}",
+            request_digest="sha256:" + "b" * 64,
+            candidate_digest="sha256:" + "c" * 64,
+            output_root=tmp_path / stage,
+        )
+        scopes[stage] = (built["api_key_id"], built["scope_attestation_path"])
+    key_ids = [scope[0] for scope in scopes.values()]
+    attestations = [scope[1] for scope in scopes.values()]
+    assert len(set(key_ids)) == 3
+    assert len(set(attestations)) == 3
+
+
+def test_stage_scope_fails_closed_without_per_stage_names(tmp_path) -> None:
+    environment = _environment()
+    environment.pop("OPENAI_CONTENT_AGENTS_API_KEY_ID")
+    # The retired shared names must not satisfy the per-stage scope.
+    environment["OPENAI_API_KEY_ID"] = "key_shared"
+    environment["BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE"] = (
+        "/private/shared-cost-scope.json"
+    )
+    with pytest.raises(
+        gate.TaskEvaluationSceneConfigurationOpenAIGateError,
+        match="scene_configuration_openai_stage_scope_missing:content_agents",
+    ):
+        gate.scene_configuration_openai_stage_gate(
+            environment=environment,
+            stage="content_agents",
+            run_id="configure-scene-content-agents",
+            request_digest="sha256:" + "b" * 64,
+            candidate_digest="sha256:" + "c" * 64,
+            output_root=tmp_path,
+        )
+
+
+def test_stage_scope_refuses_unknown_stage() -> None:
+    with pytest.raises(
+        gate.TaskEvaluationSceneConfigurationOpenAIGateError,
+        match="scene_configuration_openai_stage_unknown",
+    ):
+        gate.scene_configuration_openai_stage_scope(
+            _environment(), stage="not_a_stage"
+        )
 
 
 def test_fails_closed_without_exact_parent_cap(tmp_path) -> None:

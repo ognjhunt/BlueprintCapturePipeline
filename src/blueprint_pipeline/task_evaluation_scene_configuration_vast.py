@@ -56,14 +56,41 @@ _VAST_MUTATION_ENV = (
 _VAST_STALE_OFFER_RETRY_ENV = (
     "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 )
+# One exclusive (key file, key id, operator attestation) triple per OpenAI
+# stage: the official-cost gate refuses a shared scope, both by attestation
+# ``paid_resource_class`` and by the same-day zero-cost baseline it demands
+# for each ``(project_id, api_key_id)`` before any stage may spend.
 _OPENAI_RUNTIME_FILE_ENVS = (
-    "OPENAI_API_KEY_FILE",
     "OPENAI_ADMIN_API_KEY_FILE",
-    "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE",
+    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
 )
 _OPENAI_RUNTIME_VALUE_ENVS = (
     "OPENAI_PROJECT_ID",
-    "OPENAI_API_KEY_ID",
+    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+    "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+)
+_OPENAI_STAGE_SCOPE_DISTINCT_GROUPS = (
+    (
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    ),
+    (
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
+    ),
+    (
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+        "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+    ),
 )
 
 
@@ -117,6 +144,14 @@ def _provider_runtime_inputs(
         finally:
             os.close(descriptor)
         secret_paths[name] = str(path)
+    for group in _OPENAI_STAGE_SCOPE_DISTINCT_GROUPS:
+        observed = [
+            secret_paths.get(name) or values.get(name) for name in group
+        ]
+        if len(set(observed)) != len(group):
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_openai_stage_scopes_not_distinct"
+            )
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,

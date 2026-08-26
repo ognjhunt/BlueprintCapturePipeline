@@ -164,6 +164,9 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         )
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
+    stage_key = tmp_path / "openai_api_key_content_agents"
+    stage_key.write_text("test-content-agents-key", encoding="utf-8")
+    stage_key.chmod(0o600)
     result = execute_content_agents_component(
         environment={
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_input_path),
@@ -171,6 +174,11 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output),
             "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(component_result),
             "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package),
+            "OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(stage_key),
+            "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_content_agents",
+            "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": str(
+                tmp_path / "cost_scope_content_agents.json"
+            ),
         },
         runner=run,
         cost_gate_factory=cost_gate_factory,

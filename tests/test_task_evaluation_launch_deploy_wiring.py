@@ -120,6 +120,22 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE="
         "/etc/blueprint/provider-secrets/openai_cost_scope_attestation.json"
     ) in dispatcher
+    # Scene-configuration OpenAI stages each need an exclusive key scope; a
+    # shared key/attestation cannot pass the per-stage official-cost gate.
+    for stage in (
+        "artifixer_semantic_teacher",
+        "artifixer_visual_review",
+        "content_agents",
+    ):
+        upper = stage.upper()
+        assert (
+            f"OPENAI_{upper}_API_KEY_FILE="
+            f"/etc/blueprint/provider-secrets/openai_api_key_{stage}"
+        ) in dispatcher
+        assert (
+            f"BLUEPRINT_OPENAI_{upper}_COST_SCOPE_ATTESTATION_FILE="
+            f"/etc/blueprint/provider-secrets/openai_cost_scope_attestation_{stage}.json"
+        ) in dispatcher
     assert (
         "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets"
     ) in dispatcher

@@ -409,10 +409,20 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         authority, bundle_receipt=receipt
     ) == authority
     for name, value in (
-        ("OPENAI_API_KEY_FILE", "test-runtime-key"),
         ("OPENAI_ADMIN_API_KEY_FILE", "test-admin-key"),
+        ("OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE", "key-semantic"),
+        ("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE", "key-review"),
+        ("OPENAI_CONTENT_AGENTS_API_KEY_FILE", "key-content-agents"),
         (
-            "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE",
+            "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+            '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
+        ),
+        (
+            "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+            '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
+        ),
+        (
+            "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
             '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
         ),
     ):
@@ -421,7 +431,11 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         path.chmod(0o640)
         monkeypatch.setenv(name, str(path))
     monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
-    monkeypatch.setenv("OPENAI_API_KEY_ID", "key_test")
+    monkeypatch.setenv(
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID", "key_semantic"
+    )
+    monkeypatch.setenv("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_review")
+    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_ID", "key_content_agents")
     dry_run = scene_vast.run_scene_configuration_vast(
         job_dir=tmp_path / "dry-run",
         bundle_receipt_path=receipt_path,
@@ -528,17 +542,25 @@ def test_scene_configuration_openai_runtime_files_fail_closed_on_unsafe_metadata
     }
     paths = []
     for name in (
-        "OPENAI_API_KEY_FILE",
         "OPENAI_ADMIN_API_KEY_FILE",
-        "BLUEPRINT_OPENAI_COST_SCOPE_ATTESTATION_FILE",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
     ):
         path = tmp_path / name.lower()
-        path.write_text("private-value", encoding="utf-8")
+        path.write_text("private-value-" + name.lower(), encoding="utf-8")
         path.chmod(0o640)
         monkeypatch.setenv(name, str(path))
         paths.append(path)
     monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
-    monkeypatch.setenv("OPENAI_API_KEY_ID", "key_test")
+    monkeypatch.setenv(
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID", "key_semantic"
+    )
+    monkeypatch.setenv("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_review")
+    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_ID", "key_content_agents")
 
     paths[0].chmod(0o644)
     with pytest.raises(
@@ -550,10 +572,20 @@ def test_scene_configuration_openai_runtime_files_fail_closed_on_unsafe_metadata
     paths[0].chmod(0o640)
     symlink = tmp_path / "openai-key-link"
     symlink.symlink_to(paths[0])
-    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(symlink))
+    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_FILE", str(symlink))
     with pytest.raises(
         scene_vast.TaskEvaluationSceneConfigurationVastError,
         match="scene_configuration_openai_runtime_secret_configuration_invalid",
+    ):
+        scene_vast._provider_runtime_inputs(authority)
+
+    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_FILE", str(paths[3]))
+    monkeypatch.setenv(
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_semantic"
+    )
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match="scene_configuration_openai_stage_scopes_not_distinct",
     ):
         scene_vast._provider_runtime_inputs(authority)
 
