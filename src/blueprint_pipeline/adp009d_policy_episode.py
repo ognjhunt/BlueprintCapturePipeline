@@ -1225,6 +1225,7 @@ def run_policy_episode(
                 action_values[:executed_prefix_rows],
                 action_space=policy_action_space,
                 joint_limits=joint_limits,
+                candidate_id=candidate_id,
             )
         except DroidActionExecutionError as exc:
             raw_action_evidence["raw_bound_validation_errors"] = list(exc.errors)
@@ -1243,6 +1244,7 @@ def run_policy_episode(
                 action_values,
                 action_space=policy_action_space,
                 joint_limits=joint_limits,
+                candidate_id=candidate_id,
             )
         except DroidActionExecutionError as exc:
             full_response_bound_errors = list(exc.errors)
@@ -1308,6 +1310,8 @@ def run_policy_episode(
                 "source_arm_command": list(action["source_arm_command"]),
                 "source_action_space": action["source_action_space"],
                 "clipped_droid_action": list(action["clipped_droid_action"]),
+                "position_adapter": action["position_adapter"],
+                "joint_limit_clamped": bool(action["joint_limit_clamped"]),
                 "observed_before_rad": before,
                 "observed_after_rad": None,
                 "isaac_action": [float(value) for value in action["isaac_action"]],

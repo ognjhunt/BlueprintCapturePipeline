@@ -106,6 +106,68 @@ DROID_GRIPPER_BOUNDS = (0.0, 1.0)
 # quarter of the interval.
 DROID_GRIPPER_RAW_ACCEPTED_BOUNDS = (-0.25, 1.25)
 
+# The exact GR00T-N1.7-DROID processor first clips normalized actions to
+# [-1, 1], unnormalizes with the checkpoint's q01/q99 statistics, then converts
+# its relative joint action to an absolute target by adding the observed state.
+# That publisher-defined conversion can legitimately cross a robot's hard
+# position interval when the observed joint is already near a stop.  The
+# official DROID client passes the decoded target to RobotEnv, and Blueprint's
+# frozen candidate contract requires the target Franka limits to be applied and
+# every clip recorded by the adapter.
+#
+# These are the per-joint extrema over rows 0..7 (the executable open-loop
+# prefix) and rows 0..39 (the retained full response) from the exact checkpoint
+# ``statistics.json`` at revision 05e7cc97e40dbd33b0890c35cc0214fcb0547ab5
+# (publisher git blob 03e76c7666bafe2e31fcc2320ee5ffcdddc6d675).  They
+# preserve a finite, checkpoint-derived raw envelope: a wrong-unit target still
+# fails closed instead of becoming evidence merely because the native command
+# can saturate it.
+GROOT_N17_EXECUTED_RELATIVE_JOINT_LOWER_RAD = (
+    -0.2842104376852512,
+    -0.40980345545336605,
+    -0.28288332268595695,
+    -0.45300650000572207,
+    -0.44081393226981164,
+    -0.39843987703323364,
+    -0.49863362465053795,
+)
+GROOT_N17_EXECUTED_RELATIVE_JOINT_UPPER_RAD = (
+    0.2789923369884495,
+    0.5074403650313619,
+    0.2830187319219114,
+    0.46241843521595005,
+    0.4362581911683084,
+    0.49101936221122755,
+    0.5042999897152186,
+)
+GROOT_N17_FULL_RELATIVE_JOINT_LOWER_RAD = (
+    -0.6787592408061027,
+    -0.9014112558960915,
+    -0.6620200968161225,
+    -1.0085058695077895,
+    -1.1221638709306716,
+    -0.918896906375885,
+    -1.2273675373196602,
+)
+GROOT_N17_FULL_RELATIVE_JOINT_UPPER_RAD = (
+    0.6822606457769874,
+    1.24374953299761,
+    0.6420625650882736,
+    1.1286851704120637,
+    1.102525160312653,
+    1.0609106874465946,
+    1.2582319760322576,
+)
+GROOT_N17_RAW_ENVELOPE_PROVENANCE = {
+    "checkpoint_id": "nvidia/GR00T-N1.7-DROID",
+    "checkpoint_revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+    "statistics_sha256": (
+        "127832f7df25cda15da4ba6be81737f96b65673d0f892f9fc1bce1bc062fa858"
+    ),
+    "statistics_publisher_git_blob": "03e76c7666bafe2e31fcc2320ee5ffcdddc6d675",
+    "normalization": "q01_q99_relative_action_clipped_to_normalized_minus1_plus1",
+}
+
 
 class DroidActionExecutionError(ValueError):
     """Fail-closed DROID action execution contract errors."""
@@ -332,6 +394,7 @@ def validate_candidate_action_bounds(
     action_space: str,
     joint_limits: Sequence[Sequence[float]] | None = None,
     channel_contracts: Sequence[Mapping[str, Any]] | None = None,
+    candidate_id: str | None = None,
 ) -> dict[str, Any]:
     """Strictly validate every supplied candidate row before adaptation.
 
@@ -373,10 +436,10 @@ def validate_candidate_action_bounds(
             f"first_row={row_index}:value={gripper_values[row_index]!r}:"
             f"bounds=[{raw_gripper_lower},{raw_gripper_upper}]"
         )
-    outside_command_interval = np.argwhere(
+    gripper_outside_command_interval = np.argwhere(
         (gripper_values < gripper_lower) | (gripper_values > gripper_upper)
     )
-    command_interval_overshoot = float(
+    gripper_command_interval_overshoot = float(
         np.max(
             np.clip(
                 np.maximum(
@@ -418,9 +481,34 @@ def validate_candidate_action_bounds(
             or np.any(limits[:, 0] > limits[:, 1])
         ):
             raise DroidActionExecutionError(["isaac_joint_limits_invalid"])
+        command_lower = limits[:, 0]
+        command_upper = limits[:, 1]
+        if candidate_id == "groot_n17_droid":
+            if values.shape[0] <= DROID_OPEN_LOOP_HORIZON:
+                relative_lower = np.asarray(
+                    GROOT_N17_EXECUTED_RELATIVE_JOINT_LOWER_RAD, dtype=float
+                )
+                relative_upper = np.asarray(
+                    GROOT_N17_EXECUTED_RELATIVE_JOINT_UPPER_RAD, dtype=float
+                )
+                envelope_scope = "checkpoint_q01_q99_executable_rows_0_through_7"
+            else:
+                relative_lower = np.asarray(
+                    GROOT_N17_FULL_RELATIVE_JOINT_LOWER_RAD, dtype=float
+                )
+                relative_upper = np.asarray(
+                    GROOT_N17_FULL_RELATIVE_JOINT_UPPER_RAD, dtype=float
+                )
+                envelope_scope = "checkpoint_q01_q99_full_rows_0_through_39"
+            raw_lower = command_lower + relative_lower
+            raw_upper = command_upper + relative_upper
+        else:
+            raw_lower = command_lower
+            raw_upper = command_upper
+            envelope_scope = "native_joint_limits"
+        arm_values = values[:, :ARM_JOINT_COUNT]
         invalid_arm = np.argwhere(
-            (values[:, :ARM_JOINT_COUNT] < limits[None, :, 0])
-            | (values[:, :ARM_JOINT_COUNT] > limits[None, :, 1])
+            (arm_values < raw_lower[None, :]) | (arm_values > raw_upper[None, :])
         )
         if invalid_arm.size:
             row_index, dimension_index = (
@@ -431,12 +519,49 @@ def validate_candidate_action_bounds(
                 f"{BLOCKER_JOINT_POSITION_BOUNDS}:count={len(invalid_arm)}:"
                 f"first_row={row_index}:first_dimension={dimension_index}:"
                 f"value={values[row_index, dimension_index]!r}:"
-                f"bounds=[{limits[dimension_index, 0]!r},"
-                f"{limits[dimension_index, 1]!r}]"
+                f"bounds=[{raw_lower[dimension_index]!r},"
+                f"{raw_upper[dimension_index]!r}]"
             )
+        arm_outside_command_interval = np.argwhere(
+            (arm_values < command_lower[None, :])
+            | (arm_values > command_upper[None, :])
+        )
+        arm_command_interval_overshoot = float(
+            np.max(
+                np.clip(
+                    np.maximum(
+                        arm_values - command_upper[None, :],
+                        command_lower[None, :] - arm_values,
+                    ),
+                    0.0,
+                    None,
+                )
+            )
+        )
         arm_contract = {
             "kind": "absolute_joint_position_rad",
+            # Preserve the established receipt field while separately naming
+            # the command interval versus GR00T's wider raw accepted envelope.
             "inclusive_bounds_by_joint": limits.tolist(),
+            "command_interval_by_joint": limits.tolist(),
+            "raw_accepted_bounds_by_joint": np.stack(
+                (raw_lower, raw_upper), axis=1
+            ).tolist(),
+            "raw_envelope_scope": envelope_scope,
+            "raw_envelope_provenance": (
+                dict(GROOT_N17_RAW_ENVELOPE_PROVENANCE)
+                if candidate_id == "groot_n17_droid"
+                else None
+            ),
+            "executed_semantics": (
+                "clip_to_native_joint_limits_and_record_each_saturation"
+                if candidate_id == "groot_n17_droid"
+                else "direct_within_native_joint_limits"
+            ),
+            "rows_outside_command_interval": int(
+                len(arm_outside_command_interval)
+            ),
+            "max_command_interval_overshoot_rad": arm_command_interval_overshoot,
         }
     else:
         raise DroidActionExecutionError(
@@ -457,12 +582,12 @@ def validate_candidate_action_bounds(
             "native_reference": (
                 "droid_policy_bridge.droid_action_to_mujoco_targets"
             ),
-            "rows_outside_command_interval": int(len(outside_command_interval)),
-            "max_command_interval_overshoot": command_interval_overshoot,
+            "rows_outside_command_interval": int(
+                len(gripper_outside_command_interval)
+            ),
+            "max_command_interval_overshoot": gripper_command_interval_overshoot,
         },
-        # Arm channels only: the gripper channel's native adapter clips, and
-        # its raw values are retained above rather than policed.
-        "raw_candidate_clipping_permitted": False,
+        "raw_candidate_clipping_permitted": candidate_id == "groot_n17_droid",
     }
 
 
@@ -502,6 +627,7 @@ def droid_row_to_isaac_action(
         values[None, :],
         action_space=action_space,
         joint_limits=limits,
+        candidate_id=candidate_id,
     )
 
     if action_space == ACTION_SPACE_JOINT_VELOCITY:
@@ -527,14 +653,21 @@ def droid_row_to_isaac_action(
         if current.shape != (ARM_JOINT_COUNT,) or not np.isfinite(current).all():
             raise DroidActionExecutionError(["isaac_current_joint_position_invalid"])
         raw_target = values[:ARM_JOINT_COUNT]
-        target = raw_target.copy()
-        clipped_source = [float(value) for value in values]
+        if candidate_id == "groot_n17_droid":
+            target = np.clip(raw_target, limits[:, 0], limits[:, 1])
+            clipped_source = [*target.tolist(), float(values[ARM_JOINT_COUNT])]
+            position_adapter = (
+                "groot_decoded_absolute_joint_position_with_native_limit_saturation"
+            )
+        else:
+            target = raw_target.copy()
+            clipped_source = [float(value) for value in values]
+            position_adapter = "decoded_absolute_joint_position_direct_within_limits"
         velocity_command = []
-        joint_limit_clamped = False
+        joint_limit_clamped = bool(np.any(np.abs(target - raw_target) > 1e-12))
         source_action_space = _source_action_space(
             action_space=action_space, candidate_id=candidate_id
         )
-        position_adapter = "decoded_absolute_joint_position_direct_within_limits"
         adapter_max_delta = None
     else:
         raise DroidActionExecutionError(
@@ -584,7 +717,11 @@ def plan_chunk_execution(
         source_action_space = _source_action_space(
             action_space=action_space, candidate_id=candidate_id
         )
-        position_adapter = "decoded_absolute_joint_position_direct_within_limits"
+        position_adapter = (
+            "groot_decoded_absolute_joint_position_with_native_limit_saturation"
+            if candidate_id == "groot_n17_droid"
+            else "decoded_absolute_joint_position_direct_within_limits"
+        )
         adapter_max_delta = None
     else:
         raise DroidActionExecutionError(
