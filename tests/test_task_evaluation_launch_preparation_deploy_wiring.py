@@ -138,3 +138,37 @@ def test_exact_sha_deployer_installs_and_arms_both_no_spend_intake_paths() -> No
     assert "blueprint-task-evaluation-launch-dispatcher.path" not in (
         deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
     )
+
+
+def test_every_control_plane_unit_can_read_its_own_git_identity() -> None:
+    """A unit running from the release worktree must declare safe.directory.
+
+    The deployer stages release worktrees root-owned so a service account
+    cannot rewrite the code it runs, and the workers run as ``blueprint``.
+    Git then refuses those worktrees for "dubious ownership", so any
+    identity read inside the worker fails -- production surfaced this as
+    ``splat_render_runtime_repository_identity_unavailable`` blocking every
+    Website-started scene configuration. The dispatcher already exported
+    safe.directory; the preparation, activation, and compilation workers did
+    not. Discover the units from the deploy tree so a new worker cannot be
+    added without the same export.
+    """
+
+    units = sorted(
+        path
+        for path in (ROOT / "deploy/systemd").glob("*.service")
+        if "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO" in path.read_text(
+            encoding="utf-8"
+        )
+    )
+    assert units, "no control-plane units discovered"
+    missing = []
+    for path in units:
+        source = path.read_text(encoding="utf-8")
+        if (
+            "GIT_CONFIG_COUNT=1" not in source
+            or "GIT_CONFIG_KEY_0=safe.directory" not in source
+            or 'GIT_CONFIG_VALUE_0="$${PWD}"' not in source
+        ):
+            missing.append(path.name)
+    assert not missing, f"control-plane units without git safe.directory: {missing}"
