@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -329,7 +330,26 @@ def transform_camera_into_provider_frame(
     return [[float(value) for value in row] for row in provider]
 
 
-def _browser_process_environment(browser_home: Path) -> dict[str, str]:
+def _default_playwright_browser_cache(
+    environment: Mapping[str, str],
+) -> Path | None:
+    """Resolve Playwright's cache before replacing ``HOME`` for Chromium."""
+
+    home = environment.get("HOME")
+    if sys.platform == "darwin":
+        return Path(home) / "Library" / "Caches" / "ms-playwright" if home else None
+    if os.name == "nt":
+        local_app_data = environment.get("LOCALAPPDATA")
+        return Path(local_app_data) / "ms-playwright" if local_app_data else None
+    cache_home = environment.get("XDG_CACHE_HOME")
+    if cache_home:
+        return Path(cache_home) / "ms-playwright"
+    return Path(home) / ".cache" / "ms-playwright" if home else None
+
+
+def _browser_process_environment(
+    browser_home: Path, *, browser_executable: Path | None = None
+) -> dict[str, str]:
     """Give the headless browser a writable home of its own.
 
     The control-plane services run as a system account whose home is
@@ -341,16 +361,28 @@ def _browser_process_environment(browser_home: Path) -> dict[str, str]:
     render owns so the browser starts regardless of the service account's home.
     """
 
+    inherited = dict(os.environ)
+    playwright_cache = _default_playwright_browser_cache(inherited)
     for child in ("config", "cache", "data", "state"):
         (browser_home / child).mkdir(parents=True, exist_ok=True)
-    return {
-        **os.environ,
+    environment = {
+        **inherited,
         "HOME": str(browser_home),
         "XDG_CONFIG_HOME": str(browser_home / "config"),
         "XDG_CACHE_HOME": str(browser_home / "cache"),
         "XDG_DATA_HOME": str(browser_home / "data"),
         "XDG_STATE_HOME": str(browser_home / "state"),
     }
+    if (
+        browser_executable is None
+        and "PLAYWRIGHT_BROWSERS_PATH" not in environment
+        and playwright_cache is not None
+    ):
+        # Playwright normally derives this location from HOME/XDG_CACHE_HOME.
+        # Chromium needs the temporary HOME, but Node must still find the
+        # browser installed for the calling runtime.
+        environment["PLAYWRIGHT_BROWSERS_PATH"] = str(playwright_cache)
+    return environment
 
 
 def render_splat_at_exact_cameras(
@@ -606,7 +638,9 @@ def render_splat_at_exact_cameras(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=_browser_process_environment(Path(browser_home)),
+            env=_browser_process_environment(
+                Path(browser_home), browser_executable=browser_path
+            ),
         )
         stdout, stderr = _wait_for_renderer_with_progress_watchdog(
             process=process,
