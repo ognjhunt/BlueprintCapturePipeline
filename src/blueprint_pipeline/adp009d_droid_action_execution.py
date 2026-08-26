@@ -333,11 +333,13 @@ def validate_candidate_action_bounds(
     joint_limits: Sequence[Sequence[float]] | None = None,
     channel_contracts: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Validate every raw candidate row before adaptation or clipping.
+    """Strictly validate every supplied candidate row before adaptation.
 
-    The open-loop executor may deliberately use only a chunk prefix, but the
-    retained candidate response is one scientific output. Every returned row
-    therefore has to satisfy the frozen candidate action-space contract.
+    This pure validator does not decide which rows are executable. The episode
+    path supplies the open-loop prefix for fail-closed execution validation and
+    separately supplies the full response for a retained, nonexecuting tail
+    audit. Any caller that supplies the full chunk still receives the original
+    strict all-row behavior.
 
     With ``channel_contracts=None`` (the frozen ADP candidates) behavior is
     exactly the historical DROID contract below.  With declared per-channel

@@ -735,6 +735,7 @@ def run_policy_episode(
             "candidate_action_shape_validated": False,
             "candidate_action_finite_validated": False,
             "candidate_action_bounds_validated": False,
+            "candidate_discarded_tail_bounds_validated": None,
             "candidate_action_validated": False,
             "candidate_native_command_validated": False,
             "candidate_joint_state_validated": False,
@@ -760,6 +761,7 @@ def run_policy_episode(
                         "candidate_action_shape_validated",
                         "candidate_action_finite_validated",
                         "candidate_action_bounds_validated",
+                        "candidate_discarded_tail_bounds_validated",
                         "candidate_action_validated",
                         "candidate_native_command_validated",
                         "candidate_joint_state_validated",
@@ -1199,26 +1201,87 @@ def run_policy_episode(
         raw_action_evidence["finite_values_validated"] = True
         episode_progress["candidate_action_finite_validated"] = True
         _emit_progress("policy_action_finite_validated")
-        try:
-            raw_bound_contract = validate_candidate_action_bounds(
-                action_values,
-                action_space=policy_action_space,
-                joint_limits=joint_limits,
-            )
-        except DroidActionExecutionError as exc:
-            raw_action_evidence["raw_bound_validation_errors"] = list(exc.errors)
-            _emit_progress("policy_action_bounds_refused")
-            raise
-        raw_action_evidence["raw_bounds_validated"] = True
-        raw_action_evidence["raw_bound_contract"] = raw_bound_contract
-        episode_progress["candidate_action_bounds_validated"] = True
-        _emit_progress("policy_action_bounds_validated")
         plan = plan_chunk_execution(
             action_values,
             horizon=int(open_loop_horizon),
             action_space=policy_action_space,
             candidate_id=candidate_id,
         )
+        executed_prefix_rows = int(plan["executed_rows"])
+        discarded_tail_rows = int(plan["discarded_rows"])
+        raw_action_evidence.update(
+            {
+                "bounds_validation_scope": "executed_open_loop_prefix",
+                "returned_rows": int(action_values.shape[0]),
+                "executed_prefix_rows": executed_prefix_rows,
+                "discarded_tail_rows": discarded_tail_rows,
+                "executed_prefix_bounds_validated": False,
+                "discarded_tail_bounds_validated": None,
+                "nonexecuted_tail_scientific_output_retained": True,
+            }
+        )
+        try:
+            executed_prefix_bound_contract = validate_candidate_action_bounds(
+                action_values[:executed_prefix_rows],
+                action_space=policy_action_space,
+                joint_limits=joint_limits,
+            )
+        except DroidActionExecutionError as exc:
+            raw_action_evidence["raw_bound_validation_errors"] = list(exc.errors)
+            raw_action_evidence["executed_prefix_bound_validation_errors"] = list(
+                exc.errors
+            )
+            _emit_progress("policy_action_bounds_refused")
+            raise
+        raw_action_evidence["executed_prefix_bounds_validated"] = True
+        episode_progress["candidate_action_bounds_validated"] = True
+
+        full_response_bound_contract = None
+        full_response_bound_errors: list[str] = []
+        try:
+            full_response_bound_contract = validate_candidate_action_bounds(
+                action_values,
+                action_space=policy_action_space,
+                joint_limits=joint_limits,
+            )
+        except DroidActionExecutionError as exc:
+            full_response_bound_errors = list(exc.errors)
+
+        full_response_bounds_validated = not full_response_bound_errors
+        discarded_tail_bounds_validated = (
+            full_response_bounds_validated if discarded_tail_rows else None
+        )
+        raw_action_evidence["raw_bounds_validated"] = full_response_bounds_validated
+        raw_action_evidence["discarded_tail_bounds_validated"] = (
+            discarded_tail_bounds_validated
+        )
+        if full_response_bound_errors:
+            # These indexes deliberately remain relative to the original full
+            # response so retained evidence points at the exact vendor row.
+            raw_action_evidence["raw_bound_validation_errors"] = (
+                full_response_bound_errors
+            )
+            raw_action_evidence["discarded_tail_bound_validation_errors"] = (
+                full_response_bound_errors
+            )
+        raw_bound_contract = {
+            "validation_scope": "executed_open_loop_prefix",
+            "returned_rows": int(action_values.shape[0]),
+            "executed_prefix_rows": executed_prefix_rows,
+            "discarded_tail_rows": discarded_tail_rows,
+            "executed_prefix_bounds_validated": True,
+            "executed_prefix_contract": executed_prefix_bound_contract,
+            "discarded_tail_bounds_validated": discarded_tail_bounds_validated,
+            "discarded_tail_bound_validation_errors": full_response_bound_errors,
+            "full_raw_response_bounds_validated": full_response_bounds_validated,
+            "full_raw_response_contract": full_response_bound_contract,
+            "nonexecuted_tail_scientific_output_retained": True,
+        }
+        raw_action_evidence["raw_bound_contract"] = raw_bound_contract
+        episode_progress["candidate_discarded_tail_bounds_validated"] = (
+            discarded_tail_bounds_validated
+        )
+        _emit_progress("policy_action_bounds_validated")
         timings_seconds["action_planning"] += time.monotonic() - phase_started
         raw_action_evidence["chunk_contract_validated"] = True
         episode_progress["candidate_action_validated"] = True
@@ -1334,6 +1397,7 @@ def run_policy_episode(
                 "returned_chunk_digest": canonical_digest(
                     {"returned_chunk": plan["returned_chunk"]}
                 ),
+                "raw_bound_contract": raw_bound_contract,
                 "source_action_space": plan["source_action_space"],
                 "position_adapter": plan["position_adapter"],
                 "position_adapter_max_joint_delta_rad": plan[

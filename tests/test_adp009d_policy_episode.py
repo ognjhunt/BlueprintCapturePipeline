@@ -1469,7 +1469,68 @@ def test_only_the_open_loop_horizon_of_each_chunk_executes() -> None:
         [0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9]
     ] * 2
     assert receipt["queries"][0]["returned_chunk_digest"].startswith("sha256:")
+    bounds = receipt["queries"][0]["raw_bound_contract"]
+    assert bounds["validation_scope"] == "executed_open_loop_prefix"
+    assert bounds["returned_rows"] == 10
+    assert bounds["executed_prefix_rows"] == 8
+    assert bounds["discarded_tail_rows"] == 2
+    assert bounds["executed_prefix_bounds_validated"] is True
+    assert bounds["discarded_tail_bounds_validated"] is True
+    assert bounds["full_raw_response_bounds_validated"] is True
+    assert bounds["nonexecuted_tail_scientific_output_retained"] is True
     assert len(environment.steps) == 8 + 2
+
+
+def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> None:
+    """A bad future row cannot reject the safe prefix that is actually executed."""
+
+    class _GrootTailViolationPolicy(_Policy):
+        action_space = ACTION_SPACE_JOINT_POSITION
+
+        def infer(self, observation):
+            self.observations.append(observation)
+            chunk = np.zeros((40, 8), dtype=float)
+            chunk[34:, 3] = -3.0889761447906494
+            return chunk
+
+    environment = _Environment()
+    progress: dict = {}
+    receipt = _run(
+        environment=environment,
+        policy=_GrootTailViolationPolicy(),
+        candidate_id="groot_n17_droid",
+        max_policy_queries=1,
+        settle_window_samples=1,
+        progress=progress,
+    )
+
+    assert len(environment.steps) == 8 + 1
+    assert all(step[3] == 0.0 for step in environment.steps[:8])
+    query = receipt["queries"][0]
+    assert query["executed_rows"] == 8
+    assert query["discarded_rows"] == 32
+    assert len(query["returned_chunk"]) == 40
+    assert query["returned_chunk"][34][3] == -3.0889761447906494
+    bounds = query["raw_bound_contract"]
+    assert bounds["validation_scope"] == "executed_open_loop_prefix"
+    assert bounds["executed_prefix_bounds_validated"] is True
+    assert bounds["discarded_tail_bounds_validated"] is False
+    assert bounds["full_raw_response_bounds_validated"] is False
+    assert bounds["full_raw_response_contract"] is None
+    assert bounds["nonexecuted_tail_scientific_output_retained"] is True
+    assert any(
+        "candidate_action_joint_position_bounds_invalid:count=6:"
+        "first_row=34:first_dimension=3:value=np.float64(-3.0889761447906494)"
+        in error
+        for error in bounds["discarded_tail_bound_validation_errors"]
+    )
+    raw = progress["candidate_policy_action_queries"][0]
+    assert raw["executed_prefix_bounds_validated"] is True
+    assert raw["discarded_tail_bounds_validated"] is False
+    assert raw["raw_bounds_validated"] is False
+    assert raw["raw_action_chunk"][34][3] == -3.0889761447906494
+    assert progress["candidate_action_bounds_validated"] is True
+    assert progress["candidate_discarded_tail_bounds_validated"] is False
 
 
 def test_the_episode_resets_before_it_observes_anything() -> None:
