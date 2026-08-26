@@ -393,6 +393,12 @@ _FAILURE_DETAIL_REDACTIONS = re.compile(
 )
 
 
+def redacted_failure_text(value: Any) -> str:
+    """Remove credential and signed-URL material without truncating diagnostics."""
+
+    return _FAILURE_DETAIL_REDACTIONS.sub("<redacted>", str(value))
+
+
 def redacted_failure_detail(exc: BaseException) -> str:
     """Describe a caught failure by its cause, not only its type.
 
@@ -407,7 +413,7 @@ def redacted_failure_detail(exc: BaseException) -> str:
     """
 
     name = type(exc).__name__
-    detail = _FAILURE_DETAIL_REDACTIONS.sub("<redacted>", str(exc)).strip()
+    detail = redacted_failure_text(str(exc)).strip()
     detail = " ".join(detail.split())
     if not detail:
         return name

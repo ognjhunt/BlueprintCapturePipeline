@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import stat
 import string
 import subprocess
@@ -41,6 +42,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import jsonschema
+
+from blueprint_pipeline.core.common import redacted_failure_text
 
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
 VALIDATION_SCHEMA_VERSION = "paid_lane_launch_validation.v1"
@@ -905,15 +908,114 @@ def _sha256_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def _default_runner(argv: Sequence[str]) -> int:
-    return subprocess.run(list(argv), check=False).returncode
+def _default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # nosec B603 - fixed repository-owned step argv
+        list(argv),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+_SENSITIVE_CONTEXT_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|credential)"
+)
+_SECRET_FILE_ENV_SUFFIXES = (
+    "_API_KEY_FILE",
+    "_TOKEN_FILE",
+    "_SECRET_FILE",
+    "_CREDENTIAL_FILE",
+)
+
+
+def _read_secret_file_value(value: Any) -> str | None:
+    try:
+        path = Path(str(value)).expanduser()
+        if path.is_symlink() or not path.is_file():
+            return None
+        secret = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    return secret or None
+
+
+def _step_log_secret_values(context: Mapping[str, Any]) -> tuple[str, ...]:
+    """Load only credential values needed to scrub retained step output."""
+
+    values: set[str] = set()
+    for key, value in context.items():
+        key_text = str(key)
+        if not _SENSITIVE_CONTEXT_KEY.search(key_text) or value in (None, ""):
+            continue
+        if key_text.lower().endswith("_file"):
+            secret = _read_secret_file_value(value)
+            if secret:
+                values.add(secret)
+        elif isinstance(value, (str, int, float)):
+            values.add(str(value))
+    for name, path_value in os.environ.items():
+        if name.endswith(_SECRET_FILE_ENV_SUFFIXES):
+            secret = _read_secret_file_value(path_value)
+            if secret:
+                values.add(secret)
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _redact_step_output(value: Any, *, secret_values: Sequence[str]) -> str:
+    """Preserve diagnostic lines while applying the shared credential scrubber."""
+
+    text = str(value or "")
+    for secret in secret_values:
+        text = text.replace(secret, "<redacted>")
+    return redacted_failure_text(text)
+
+
+def _write_step_log(path: Path, text: str) -> str:
+    """Create or verify one private immutable log and return its digest."""
+
+    encoded = text.encode("utf-8")
+    parent = path.parent
+    if parent.is_symlink() or not parent.is_dir() or path.is_symlink():
+        raise PaidLaneLaunchPreparationError("paid_lane_step_log_path_invalid")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        try:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != encoded:
+                raise PaidLaneLaunchPreparationError(
+                    "paid_lane_step_log_immutable_conflict"
+                )
+        except OSError as exc:
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_step_log_readback_failed"
+            ) from exc
+    except OSError as exc:
+        raise PaidLaneLaunchPreparationError(
+            "paid_lane_step_log_write_failed"
+        ) from exc
+    else:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    metadata = path.stat()
+    if stat.S_IMODE(metadata.st_mode) != 0o600 or path.read_bytes() != encoded:
+        raise PaidLaneLaunchPreparationError(
+            "paid_lane_step_log_readback_failed"
+        )
+    return _sha256_file(path)
 
 
 def prepare_paid_lane_launch(
     lane: str,
     context: Mapping[str, Any],
     *,
-    runner: Callable[[Sequence[str]], int] = _default_runner,
+    runner: Callable[
+        [Sequence[str]], int | subprocess.CompletedProcess[str]
+    ] = _default_runner,
 ) -> dict[str, Any]:
     """Run one lane's ordered preparation and return a fail-closed receipt."""
 
@@ -932,14 +1034,52 @@ def prepare_paid_lane_launch(
         )
     resolved: dict[str, Any] = dict(context)
     completed: list[dict[str, Any]] = []
+    step_logs: list[dict[str, Any]] = []
     blockers: list[str] = []
+    secret_values = _step_log_secret_values(context)
     for step in LANES[lane]:
         argv = [_render(fragment, resolved) for fragment in step.argv]
         for flag, context_name in step.repeated_argv:
             for value in _repeated_values(resolved.get(context_name)):
                 argv.extend((flag, value))
         produces = Path(_render(step.produces, resolved))
-        returncode = runner(argv)
+        execution = runner(argv)
+        if isinstance(execution, subprocess.CompletedProcess):
+            returncode = int(execution.returncode)
+            stdout_text = _redact_step_output(
+                execution.stdout, secret_values=secret_values
+            )
+            stderr_text = _redact_step_output(
+                execution.stderr, secret_values=secret_values
+            )
+        else:
+            returncode = int(execution)
+            stdout_text = ""
+            stderr_text = ""
+        stdout_path = produces.with_name(
+            f"{produces.name}.{step.step_id}.stdout.log"
+        )
+        stderr_path = produces.with_name(
+            f"{produces.name}.{step.step_id}.stderr.log"
+        )
+        try:
+            stdout_sha256 = _write_step_log(stdout_path, stdout_text)
+            stderr_sha256 = _write_step_log(stderr_path, stderr_text)
+        except PaidLaneLaunchPreparationError as exc:
+            blockers.append(f"{step.step_id}:{exc}")
+            if returncode != 0:
+                blockers.append(f"{step.step_id}:exit_{returncode}")
+            break
+        step_logs.append(
+            {
+                "step_id": step.step_id,
+                "stdout_path": str(stdout_path),
+                "stdout_sha256": stdout_sha256,
+                "stderr_path": str(stderr_path),
+                "stderr_sha256": stderr_sha256,
+                "credential_redaction_applied": True,
+            }
+        )
         if returncode != 0:
             blockers.append(f"{step.step_id}:exit_{returncode}")
             break
@@ -979,6 +1119,7 @@ def prepare_paid_lane_launch(
         ),
         "step_count": len(LANES[lane]),
         "completed_steps": completed,
+        "step_logs": step_logs,
         "blockers": blockers,
         "paid_inference_performed": False,
         "provider_allocation_performed": False,
