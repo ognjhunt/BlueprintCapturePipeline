@@ -1970,7 +1970,7 @@ class VastRenderProvider(GpuRenderProvider):
             _search_payload,
             _select_offer,
         )
-
+        from . import vast_capacity_budget as vcb
         req = _mapping(request)
         max_rate = _positive_float(req.get("max_hourly_rate_usd")) or 5.0
         min_ram = _positive_int(req.get("min_gpu_ram_mb")) or 0
@@ -1991,17 +1991,9 @@ class VastRenderProvider(GpuRenderProvider):
         required_provider_disk_gb = (
             _positive_int(req.get("required_provider_disk_gb")) or disk_gb
         )
-        expected_download_raw = req.get("expected_provider_download_bytes", 0)
-        expected_upload_raw = req.get("expected_provider_upload_bytes", 0)
-        transfer_byte_blockers: list[str] = []
-        if type(expected_download_raw) is not int or expected_download_raw < 0:
-            transfer_byte_blockers.append(
-                "vast_capacity_expected_provider_download_bytes_invalid"
-            )
-        if type(expected_upload_raw) is not int or expected_upload_raw < 0:
-            transfer_byte_blockers.append(
-                "vast_capacity_expected_provider_upload_bytes_invalid"
-            )
+        expected_download_bytes, expected_upload_bytes, transfer_byte_blockers = (
+            vcb.expected_transfer_bytes(req)
+        )
         if transfer_byte_blockers:
             return {
                 "status": "blocked",
@@ -2010,8 +2002,6 @@ class VastRenderProvider(GpuRenderProvider):
                 "reservation_proven": False,
                 "raw_provider_response_recorded": False,
             }
-        expected_download_bytes = int(expected_download_raw)
-        expected_upload_bytes = int(expected_upload_raw)
         allowed_machine_ids = _string_list(req.get("allowed_machine_ids"))
         excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
         required_search_payload = _search_payload(
@@ -2134,34 +2124,16 @@ class VastRenderProvider(GpuRenderProvider):
         retry_cap = req.get("retry_cap")
         if retry_cap is not None and retry_cap != 0:
             blockers.append("vast_capacity_retry_cap_must_be_zero")
-        if hard_ttl_seconds is not None:
-            for row in viable:
-                runtime_cost = (
-                    float(row["hourly_rate_usd"]) * hard_ttl_seconds / 3600.0
-                )
-                transfer_cost = _projected_provider_transfer_cost_usd(
-                    row,
-                    expected_provider_download_bytes=expected_download_bytes,
-                    expected_provider_upload_bytes=expected_upload_bytes,
-                )
-                row["projected_runtime_cost_usd"] = runtime_cost
-                row["projected_provider_transfer_cost_usd"] = transfer_cost
-                row["projected_full_ttl_cost_usd"] = (
-                    runtime_cost + transfer_cost
-                    if transfer_cost is not None
-                    else None
-                )
-        if hard_cap_usd is not None and hard_ttl_seconds is not None:
-            viable = [
-                row
-                for row in viable
-                if row.get("projected_full_ttl_cost_usd") is not None
-                and float(row["projected_full_ttl_cost_usd"])
-                <= hard_cap_usd
-            ]
-            selected = viable[0] if viable else None
-            if not selected:
-                blockers.append("vast_capacity_full_ttl_exceeds_hard_cap")
+        viable, budget_blockers = vcb.bind_transfer_aware_budget(
+            viable,
+            hard_ttl_seconds=hard_ttl_seconds,
+            hard_cap_usd=hard_cap_usd,
+            expected_provider_download_bytes=expected_download_bytes,
+            expected_provider_upload_bytes=expected_upload_bytes,
+            projected_transfer_cost=_projected_provider_transfer_cost_usd,
+        )
+        blockers.extend(budget_blockers)
+        selected = viable[0] if viable else None
         global_inventory = None
         if req.get("require_global_inventory_zero") is True:
             global_inventory = self.billable_inventory(name_prefix="")
