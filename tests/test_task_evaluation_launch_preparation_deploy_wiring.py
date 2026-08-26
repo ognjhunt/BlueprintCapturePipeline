@@ -125,7 +125,7 @@ def test_canonical_installer_installs_and_enables_episode_compilation_pair() -> 
     ) in installer
 
 
-def test_exact_sha_deployer_installs_and_arms_both_no_spend_intake_paths() -> None:
+def test_exact_sha_deployer_installs_and_arms_all_no_spend_intake_paths() -> None:
     assert "blueprint-task-evaluation-launch-preparation.service" in (
         deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     )
@@ -136,6 +136,13 @@ def test_exact_sha_deployer_installs_and_arms_both_no_spend_intake_paths() -> No
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
+        "blueprint-scene-object-discovery.path",
+    )
+    assert "blueprint-scene-object-discovery.service" in (
+        deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+    )
+    assert "blueprint-scene-object-discovery.path" in (
+        deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     )
     assert "blueprint-task-evaluation-launch-dispatcher.path" not in (
         deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS

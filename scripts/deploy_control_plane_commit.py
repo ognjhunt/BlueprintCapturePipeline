@@ -80,6 +80,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-scene-object-discovery.service",
+    "blueprint-scene-object-discovery.path",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -89,6 +91,7 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-preparation.path",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-scene-object-discovery.path",
 )
 #: The only unit kinds a release may install.  The oneshot ``.service`` and its
 #: queue-watching ``.path`` are a pair: installing one without the other left
