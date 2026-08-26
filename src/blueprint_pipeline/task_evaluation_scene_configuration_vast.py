@@ -1,0 +1,521 @@
+"""Canonical retry-zero Vast execution for one scene-configuration bundle."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+import zipfile
+from collections.abc import Mapping
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
+from .paid_resource_admission import (
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
+from .spend_authority_consumption_root import (
+    SpendAuthorityRootError,
+    prepare_consumption_root,
+)
+from .task_evaluation_artifact_manifest import (
+    PROVIDER_RUN_DIRNAME,
+    TaskEvaluationArtifactManifestError,
+    build_task_evaluation_artifact_manifest,
+    seal_unallocated_provider_teardown,
+)
+from .task_evaluation_scene_configuration_bundle import (
+    PROVIDER_BUNDLE_KIND,
+    RESULT_FILENAME,
+    load_scene_configuration_provider_bundle_receipt,
+)
+from .task_evaluation_scene_configuration_paid_authority import (
+    validate_scene_configuration_paid_authority,
+)
+from .vast_independent_watchdog_control import (
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
+from .vast_provider_adapter import run_vast_provider_adapter
+from .wam_provider_object_store import (
+    cleanup_staged_wam_provider_objects,
+    stage_wam_provider_bundle_object_store,
+)
+
+
+RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
+_VAST_MUTATION_ENV = (
+    "BLUEPRINT_ALLOW_VAST_API_CALLS",
+    "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
+)
+_VAST_STALE_OFFER_RETRY_ENV = (
+    "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+)
+
+
+class TaskEvaluationSceneConfigurationVastError(RuntimeError):
+    """The canonical provider path could not run or close one configuration."""
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _read(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_vast_json_invalid"
+        ) from exc
+    if path.is_symlink() or not isinstance(value, Mapping):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_vast_json_invalid"
+        )
+    return dict(value)
+
+
+def _consume_authority_once(
+    authority: Mapping[str, Any], *, source_commit: str
+) -> dict[str, Any]:
+    digest = str(authority.get("authority_digest") or "")
+    if not digest.startswith("sha256:") or len(digest) != 71:
+        return {"status": "blocked", "blockers": ["authority_identity_invalid"]}
+    identity = digest.removeprefix("sha256:")
+    try:
+        root = prepare_consumption_root()
+    except SpendAuthorityRootError as exc:
+        return {"status": "blocked", "blockers": [str(exc)]}
+    record = {
+        "schema_version": "task_evaluation_scene_configuration_authority_consumption.v1",
+        "authority_digest": digest,
+        "bundle_sha256": authority.get("bundle_sha256"),
+        "source_commit": source_commit,
+        "consumed_at": utc_now_iso(),
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+    }
+    payload = (
+        json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    temporary = root / f".{identity}.{os.getpid()}.tmp"
+    destination = root / f"scene-configuration-{identity}.json"
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return {"status": "blocked", "blockers": ["authority_already_consumed"]}
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["authority_consumption_write_failed"],
+        }
+    return {
+        "status": "consumed",
+        "authorization_digest": digest,
+        "consumption_record_sha256": "sha256:"
+        + hashlib.sha256(payload).hexdigest(),
+        "record_location_disclosed": False,
+    }
+
+
+def _extract_provider_output(
+    archive_path: Path, destination: Path
+) -> tuple[dict[str, Any], list[str]]:
+    blockers: list[str] = []
+    if destination.exists():
+        return {}, ["scene_configuration_provider_output_destination_exists"]
+    destination.mkdir(parents=True, mode=0o750)
+    root = destination.resolve()
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                target = (root / member.filename).resolve()
+                mode = member.external_attr >> 16
+                if (
+                    (target != root and root not in target.parents)
+                    or stat.S_ISLNK(mode)
+                ):
+                    blockers.append(
+                        "scene_configuration_provider_output_archive_unsafe"
+                    )
+            if not blockers:
+                archive.extractall(root)
+    except (OSError, ValueError, zipfile.BadZipFile):
+        blockers.append("scene_configuration_provider_output_zip_invalid")
+    result_path = root / RESULT_FILENAME
+    result = _read(result_path) if result_path.is_file() else {}
+    if not result:
+        blockers.append("scene_configuration_provider_result_missing")
+        return result, sorted(set(blockers))
+    if (
+        result.get("schema_version")
+        != "task_evaluation_scene_configuration_provider_result.v1"
+        or result.get("result_digest")
+        != canonical_digest(result, digest_field="result_digest")
+        or result.get("evaluation_episode_executed") is not False
+        or result.get("candidate_policy_queried") is not False
+        or result.get("provider_zero_required_after_return") is not True
+    ):
+        blockers.append("scene_configuration_provider_result_contract_invalid")
+    if result.get("status") == "completed":
+        chain = result.get("stage_chain")
+        if (
+            not isinstance(chain, Mapping)
+            or chain.get("status") != "completed"
+            or chain.get("stage_count") != 6
+            or len(chain.get("stage_results") or []) != 6
+            or chain.get("executed_inside_one_parent_provider_run") is not True
+            or chain.get("nested_provider_mutations_performed") != 0
+            or chain.get("nested_paid_execution_requested") is not False
+            or chain.get("evaluation_episode_executed") is not False
+            or chain.get("retry_cap") != 0
+            or chain.get("result_digest")
+            != canonical_digest(chain, digest_field="result_digest")
+        ):
+            blockers.append("scene_configuration_stage_chain_invalid")
+    elif result.get("status") != "blocked":
+        blockers.append("scene_configuration_provider_result_status_invalid")
+    return result, sorted(set(blockers))
+
+
+@contextmanager
+def _authority_environment():
+    names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
+    previous = {name: os.environ.get(name) for name in names}
+    try:
+        for name in _VAST_MUTATION_ENV:
+            os.environ[name] = "1"
+        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = "0"
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def run_scene_configuration_vast(
+    *,
+    job_dir: str | Path,
+    bundle_receipt_path: str | Path,
+    paid_attempt_authority_path: str | Path,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+) -> dict[str, Any]:
+    """Run exactly one configuration allocation and close every owned resource."""
+
+    job = Path(job_dir).expanduser().resolve()
+    ensure_dir(job)
+    receipt = load_scene_configuration_provider_bundle_receipt(bundle_receipt_path)
+    authority_path = Path(paid_attempt_authority_path).expanduser().resolve()
+    authority = validate_scene_configuration_paid_authority(
+        _read(authority_path), bundle_receipt=receipt
+    )
+    if not execute:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "dry_run_ready",
+            "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "bundle_sha256": receipt["bundle_sha256"],
+            "authority_digest": authority["authority_digest"],
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "blockers": [],
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(
+            result, digest_field="result_digest"
+        )
+        write_json(job / f"{RESULT_SCHEMA_VERSION}.json", result)
+        return result
+    if paid_resource_admission_grant is None:
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_paid_admission_missing"
+        )
+    require_paid_resource_admission_grant(
+        paid_resource_admission_grant,
+        resource_class="vast_provider_adapter",
+        require_allocation_binding=True,
+    )
+    hard_cap = float(authority["hard_attempt_spend_cap_usd"])
+    rate = float(authority["maximum_hourly_rate_usd"])
+    ttl = int(authority["maximum_single_resource_ttl_seconds"])
+    bundle_path = Path(str(receipt["bundle_path"])).resolve()
+    staging_dir = job / "object_store_staging"
+    staging = stage_wam_provider_bundle_object_store(
+        job_dir=staging_dir,
+        bundle_path=bundle_path,
+        key_prefix="blueprint/arm-decision-proof-v1/scene-configuration",
+        expiration_seconds=ttl + 1_800,
+    )
+    if staging.get("status") != "completed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "run_id": receipt["run_id"],
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "blockers": list(
+                staging.get("blockers") or ["object_store_staging_blocked"]
+            ),
+        }
+    watchdog_handoff, watchdog = arm_independent_vast_watchdog(
+        job_dir=job,
+        max_live_minutes=max(1, ttl // 60),
+        generated_at=utc_now_iso(),
+        allowed_active_instance_ids=(),
+        pod_name_prefix=str(authority["resource_name"]) + "-",
+    )
+    if watchdog is None:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "run_id": receipt["run_id"],
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_handoff,
+            "blockers": ["independent_watchdog_not_armed"],
+        }
+    consumption = _consume_authority_once(
+        authority, source_commit=str(receipt["source_commit"])
+    )
+    if consumption.get("status") != "consumed":
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        watchdog_close = close_independent_vast_watchdog(
+            job_dir=job,
+            handle=watchdog,
+            instance_ids=[],
+            provider_teardown_completed=False,
+            provider_allocation_impossible=True,
+        )
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "run_id": receipt["run_id"],
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_close,
+            "blockers": list(consumption.get("blockers") or []),
+        }
+
+    provider_run = job / PROVIDER_RUN_DIRNAME
+    output_zip = provider_run / "vast_provider_runtime_output.zip"
+    adapter: dict[str, Any] = {}
+    try:
+        with _authority_environment():
+            adapter = run_vast_provider_adapter(
+                job_dir=provider_run,
+                mode="live-startup-probe",
+                allow_vast_api_call=True,
+                allow_instance_launch=True,
+                max_hourly_rate=rate,
+                target_spend_usd=hard_cap,
+                hard_cap_usd=hard_cap,
+                max_live_minutes=max(1, ttl // 60),
+                session_max_live_minutes=max(1, ttl // 60),
+                public_image=str(authority["container_image"]),
+                isaac_image=str(authority["container_image"]),
+                ngc_image_login_mode="always",
+                provider_bundle=bundle_path,
+                provider_bundle_url=(
+                    staging_dir / "provider_bundle_url.txt"
+                ).read_text(encoding="utf-8").strip(),
+                provider_output_put_url=(
+                    staging_dir / "provider_output_put_url.txt"
+                ).read_text(encoding="utf-8").strip(),
+                provider_output_get_url=(
+                    staging_dir / "provider_output_get_url.txt"
+                ).read_text(encoding="utf-8").strip(),
+                provider_runtime_output_zip=output_zip,
+                enable_isaac_smoke=True,
+                enable_blueprint_bundle=True,
+                provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+                vast_launch_mode="ssh_direct",
+                allow_cold_isaac_image_pull=True,
+                min_cold_isaac_pull_live_minutes=18,
+                disk_gb=100,
+                min_gpu_ram_mb=24_000,
+                poll_interval_seconds=10,
+                startup_timeout_seconds=ttl,
+                heartbeat_no_progress_seconds=min(1_200, max(300, ttl // 2)),
+                session_budget_ledger_path=job
+                / "scene_configuration_vast_session_budget.json",
+                verify_staging_urls=True,
+                require_known_supported_isaac_driver=True,
+                preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
+                prefer_isaac_rt=True,
+                allowed_active_instance_ids=(),
+                vast_launch_lock_file=job.parent
+                / "scene_configuration_paid_launch.lock",
+                instance_label_prefix=watchdog.pod_name_prefix,
+                started_instance_id_path=watchdog.started_instance_id_path,
+                forward_hf_token=False,
+                paid_resource_admission_grant=paid_resource_admission_grant,
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        adapter = {
+            "status": "blocked",
+            "blockers": [
+                f"vast_adapter_failed:{redacted_failure_detail(exc)}"
+            ],
+        }
+        seal_unallocated_provider_teardown(provider_run, reason="vast_adapter_failed")
+    finally:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+
+    teardown_path = provider_run / "vast_teardown_manifest.json"
+    teardown = _read(teardown_path) if teardown_path.is_file() else {}
+    instance_ids = [
+        int(value)
+        for value in (
+            teardown.get("vast_instance_ids")
+            or adapter.get("vast_instance_ids")
+            or []
+        )
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    ]
+    watchdog_close = close_independent_vast_watchdog(
+        job_dir=job,
+        handle=watchdog,
+        instance_ids=instance_ids,
+        provider_teardown_completed=(
+            teardown.get("continuing_spend_from_this_run") is False
+        ),
+        provider_allocation_impossible=(
+            not instance_ids and adapter.get("provider_create_attempted") is not True
+        ),
+    )
+    execution, blockers = _extract_provider_output(
+        output_zip, job / "immutable_execution"
+    )
+    if execution.get("status") != "completed":
+        blockers.append("scene_configuration_provider_not_completed")
+    if execution.get("source_commit") != receipt.get("source_commit"):
+        blockers.append("scene_configuration_provider_source_commit_mismatch")
+    if execution.get("construction_envelope_digest") != receipt.get(
+        "portable_construction_envelope_digest"
+    ):
+        blockers.append("scene_configuration_provider_envelope_mismatch")
+    if teardown.get("continuing_spend_from_this_run") is not False:
+        blockers.append("provider_zero_not_proven")
+    if cleanup.get("all_objects_absent") is not True:
+        blockers.append("object_store_provider_zero_not_proven")
+    if watchdog_close.get("status") not in {
+        "provider_terminal",
+        "cancelled_no_allocation",
+    }:
+        blockers.append("independent_watchdog_not_closed")
+
+    artifact_manifest_path = job / "artifact_manifest.json"
+    try:
+        artifact_manifest = build_task_evaluation_artifact_manifest(
+            attempt_root=job,
+            artifact_roots={
+                "provider_runtime_evidence": job / "immutable_execution",
+                "allocator_adapter_result": provider_run
+                / "vast_provider_adapter_result.json",
+                "teardown_manifest": teardown_path,
+                "provider_run_diagnostics": provider_run,
+            },
+            required_roles=(
+                "provider_runtime_evidence",
+                "allocator_adapter_result",
+                "teardown_manifest",
+            ),
+            binding={
+                "allocator_lane": PROVIDER_BUNDLE_KIND,
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "provider": "vast",
+                "result_schema_version": RESULT_SCHEMA_VERSION,
+                "retry_cap": 0,
+            },
+            output_path=artifact_manifest_path,
+        )
+    except TaskEvaluationArtifactManifestError as exc:
+        artifact_manifest = {"status": "blocked", "blockers": [str(exc)]}
+        blockers.append("scene_configuration_artifact_manifest_invalid")
+    if artifact_manifest.get("status") != "completed":
+        blockers.extend(str(item) for item in artifact_manifest.get("blockers") or [])
+    result: dict[str, Any] = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not blockers else "blocked",
+        "run_id": receipt["run_id"],
+        "source_commit": receipt["source_commit"],
+        "bundle_sha256": receipt["bundle_sha256"],
+        "authority_digest": authority["authority_digest"],
+        "authorization_consumption": consumption,
+        "provider_adapter_result_path": str(
+            provider_run / "vast_provider_adapter_result.json"
+        ),
+        "execution_result_path": str(
+            job / "immutable_execution" / RESULT_FILENAME
+        ),
+        "artifact_manifest_path": (
+            str(artifact_manifest_path) if artifact_manifest_path.is_file() else None
+        ),
+        "teardown_manifest_path": (
+            str(teardown_path) if teardown_path.is_file() else None
+        ),
+        "provider_runtime_output_zip_path": (
+            str(output_zip) if output_zip.is_file() else None
+        ),
+        "provider_runtime_output_zip_sha256": (
+            _sha256(output_zip) if output_zip.is_file() else None
+        ),
+        "stage_chain_result_digest": (execution.get("stage_chain") or {}).get(
+            "result_digest"
+        ),
+        "configuration_completed": execution.get("status") == "completed",
+        "evaluation_episode_executed": False,
+        "candidate_policy_queried": False,
+        "provider_mutations_performed": len(instance_ids),
+        "retry_cap": 0,
+        "independent_watchdog": watchdog_close,
+        "object_store_cleanup": cleanup,
+        "continuing_spend_from_this_run": teardown.get(
+            "continuing_spend_from_this_run"
+        ),
+        "blockers": sorted(set(blockers)),
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    write_json(job / f"{RESULT_SCHEMA_VERSION}.json", result)
+    return result
+
+
+__all__ = [
+    "RESULT_SCHEMA_VERSION",
+    "TaskEvaluationSceneConfigurationVastError",
+    "run_scene_configuration_vast",
+]

@@ -182,11 +182,17 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
     runtime.mkdir()
     asset = runtime / "mug.usda"
     asset.write_text("#usda 1.0\n", encoding="utf-8")
+    source_candidate = runtime / "source-candidate.usda"
+    source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
     identity = {"id": "replacement-mug", "version": "v1"}
     receipt = {
         "schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
         "status": "authored_candidate_pending_qualification",
         "replacement_identity": identity,
+        "source_candidate_digest": sha256(source_candidate),
+        "source_candidate_claim": (
+            "sage_candidate_geometry_not_observed_truth_or_physics_authority"
+        ),
         "output_usd": {
             "sha256": sha256(asset),
             "size_bytes": asset.stat().st_size,
@@ -221,7 +227,14 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
         },
         configuration=configuration,
         configuration_path=configuration_path,
-        dependency_results=({}, {}),
+        dependency_results=(
+            {},
+            {
+                "output_artifacts": [
+                    artifact("source_object_candidate_mesh", source_candidate)
+                ]
+            },
+        ),
         output_root=output,
         provider_runtime_artifacts=(
             artifact("replacement_asset", asset),
@@ -298,6 +311,20 @@ def test_sage_exact_prim_excision_removes_only_requested_prim(tmp_path: Path) ->
     )
     assert not removed.GetPrimAtPath("/Root/Target").IsValid()
     assert removed.GetPrimAtPath("/Root/Support").IsValid()
+    source_candidate = next(
+        Path(row["path"])
+        for row in result["output_artifacts"]
+        if row["role"] == "source_object_candidate_mesh"
+    )
+    candidate = Usd.Stage.Open(str(source_candidate))
+    assert candidate.GetPrimAtPath("/Root/SourceObjectCandidate").IsValid()
+    candidate_row = next(
+        row
+        for row in result["output_artifacts"]
+        if row["role"] == "source_object_candidate_mesh"
+    )
+    assert candidate_row["observed_source_truth"] is False
+    assert candidate_row["movable_physics_authority"] is False
 
 
 def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
@@ -345,7 +372,19 @@ def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
     configuration = {
         "schema_version": "replacement_static_qualification_configuration.v1",
         "replacement_identity": {"id": "replacement-mug", "version": "v1"},
-        "required_checks": {"usd_parses": True, "no_articulation": True},
+        "required_checks": {
+            "usd_parses": True,
+            "meters_per_unit": 1.0,
+            "up_axis": "Z",
+            "single_movable_rigid_root": True,
+            "collision_geometry_present": True,
+            "collision_geometry_nonempty_and_finite": True,
+            "mass_and_inertia_positive_finite": True,
+            "materials_within_preregistered_bounds": True,
+            "no_external_unpinned_dependencies": True,
+            "no_articulation": True,
+            "no_scripts_or_credentials": True,
+        },
         "center_of_mass_must_lie_inside_collision_bounds": True,
     }
     configuration_path = tmp_path / "static.json"
@@ -426,8 +465,15 @@ def test_native_import_handler_promotes_only_exact_static_asset(
         "replacement_identity": identity,
         "required_checks": {
             "stage_import": True,
+            "rigid_body_enabled": True,
+            "collider_enabled": True,
+            "gravity_settle_seconds": 3.0,
+            "maximum_settle_translation_m": 0.01,
+            "maximum_settle_rotation_rad": 0.08,
             "support_contact_required": True,
+            "explosion_or_tunneling_forbidden": True,
             "deterministic_reset_required": True,
+            "state_digest_repeat_count": 3,
         },
     }
     configuration_path = tmp_path / "native-configuration.json"

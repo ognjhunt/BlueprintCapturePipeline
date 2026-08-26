@@ -3,22 +3,35 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
+from PIL import Image
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_live_profile import file_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
     build_scene_configuration_provider_bundle,
+    load_scene_configuration_provider_bundle_receipt,
 )
+from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as authority_module
+from blueprint_pipeline import task_evaluation_live_profile as live_profile_module
+from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
 from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
 )
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
+)
+from blueprint_pipeline import vast_provider_adapter as vpa
+from scripts.build_task_evaluation_scene_configuration_live_profile import (
+    build_scene_configuration_live_profile,
 )
 
 
@@ -86,6 +99,10 @@ def _repo(root: Path) -> Path:
     package = root / "src/blueprint_pipeline"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("\n", encoding="utf-8")
+    (package / "task_evaluation_scene_configuration_provider_runtime.py").write_text(
+        "def execute_scene_configuration_stage_chain(**kwargs):\n    return kwargs\n",
+        encoding="utf-8",
+    )
     scripts = root / "scripts"
     scripts.mkdir()
     source_root = Path(__file__).resolve().parents[1]
@@ -109,7 +126,9 @@ def _envelope(root: Path, commit: str) -> Path:
     render_manifest = inputs / "render.json"
     render_manifest.write_text('{"status":"rendered"}\n', encoding="utf-8")
     frame = inputs / "frame.png"
-    frame.write_bytes(b"derived-lossless-frame")
+    Image.new("RGB", (16, 16), color=(90, 80, 70)).save(frame)
+    mask = inputs / "mask.png"
+    Image.new("L", (16, 16), color=255).save(mask)
     render = {
         "schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
         "status": "derived_method_inputs_materialized",
@@ -118,8 +137,28 @@ def _envelope(root: Path, commit: str) -> Path:
         "raw_interiorgs_bytes_in_provider_packet": False,
         "camera_calibration": _bound(cameras),
         "render_manifest": _bound(render_manifest),
-        "derived_frames": [_bound(frame, camera_id="camera-0")],
+        "derived_frames": [
+            _bound(
+                frame,
+                camera_id="camera-0",
+                source_object_mask=_bound(
+                    mask,
+                    projection_kind=(
+                        "registered_world_aabb_conservative_projection"
+                    ),
+                    observed_segmentation_truth=False,
+                    pixel_bounds_xyxy=[0, 0, 16, 16],
+                    foreground_pixel_count=256,
+                ),
+            )
+        ],
         "derived_frame_count": 1,
+        "source_object_masks": {
+            "count": 1,
+            "source": "publisher_instance_104_projected_from_registered_bounds",
+            "observed_segmentation_truth": False,
+            "all_masks_digest_bound": True,
+        },
         "result_digest": "",
     }
     render["result_digest"] = canonical_digest(render, digest_field="result_digest")
@@ -240,6 +279,10 @@ def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path
         Path(row["path"]).is_file()
         for row in hydrated["render_inputs_result"]["derived_frames"]
     )
+    assert all(
+        Path(row["source_object_mask"]["path"]).is_file()
+        for row in hydrated["render_inputs_result"]["derived_frames"]
+    )
 
     frame = runtime / portable["render_inputs_result"]["derived_frames"][0]["path"]
     frame.chmod(0o644)
@@ -250,3 +293,236 @@ def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path
         assert str(exc) == "scene_configuration_provider_bound_file_invalid"
     else:
         raise AssertionError("tampered provider input was accepted")
+
+
+def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
+    tmp_path: Path,
+) -> None:
+    receipt = _build(tmp_path, "bundle")
+    job = tmp_path / "job"
+    job.mkdir()
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=job,
+        generated_at="2026-08-25T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/input.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+
+    assert preflight["status"] == "passed"
+    assert preflight["blockers"] == []
+    assert preflight["provider_bundle_readiness_source"] == "immutable_bundle_member"
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example.test",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+    assert "run_task_evaluation_scene_configuration_provider.sh" in script
+    assert "task_evaluation_scene_configuration_provider_output.zip" in script
+    assert "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" in script
+    subprocess.run(["bash", "-n", "-c", script], check=True)
+
+
+def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    assert load_scene_configuration_provider_bundle_receipt(receipt_path) == receipt
+    project_path = tmp_path / "project-spend.json"
+    project_path.write_text('{"project":"sealed"}\n', encoding="utf-8")
+    zero_path = tmp_path / "provider-zero.json"
+    zero_path.write_text('{"zero":"sealed"}\n', encoding="utf-8")
+
+    def record(path: Path) -> dict[str, object]:
+        return {
+            "path": str(path),
+            "sha256": _sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+
+    monkeypatch.setattr(
+        authority_module,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (
+            {"total_cost_usd": 40.0},
+            record(Path(path).resolve()),
+        ),
+    )
+    monkeypatch.setattr(
+        live_profile_module,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (
+            {"total_cost_usd": 40.0},
+            record(Path(path).resolve()),
+        ),
+    )
+    monkeypatch.setattr(
+        live_profile_module,
+        "project_spend_dependency_records",
+        lambda _value: [],
+    )
+    monkeypatch.setattr(
+        authority_module,
+        "_provider_zero",
+        lambda _path: {
+            "observed_at_utc": "2026-08-25T12:00:00Z",
+            "provider_zero_digest": "sha256:" + "c" * 64,
+        },
+    )
+    authority_path = tmp_path / "authority.json"
+    authority = authority_module.materialize_scene_configuration_paid_authority(
+        bundle_receipt_path=receipt_path,
+        project_spend_reconciliation_path=project_path,
+        initial_provider_zero_path=zero_path,
+        authorization_reference="user-authorized-new-scene-gpu",
+        authorized_by="project-owner",
+        authorized_on="2026-08-25T12:05:00Z",
+        source_commit="a" * 40,
+        container_image="nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+        resource_name=(
+            "adp-new-scene-simple-relocation-839873-aaaaaaaaaaaa-20260825t120500z"
+        ),
+        max_hourly_rate_usd=0.50,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=1_800,
+        output_path=authority_path,
+    )
+
+    assert authority["retry_cap"] == 0
+    assert authority["maximum_provider_allocations"] == 1
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 40.0
+    assert authority_module.validate_scene_configuration_paid_authority(
+        authority, bundle_receipt=receipt
+    ) == authority
+    dry_run = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "dry-run",
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["provider_mutations_performed"] == 0
+
+    source_digest = file_digest(receipt_path)
+    identity = source_digest.removeprefix("sha256:")
+    manifest_publication = {
+        "schema_version": "task_evaluation_immutable_manifest_publication.v1",
+        "status": "published",
+        "source": {
+            "path": str(receipt_path.resolve()),
+            "size_bytes": receipt_path.stat().st_size,
+            "sha256": source_digest,
+        },
+        "profile_builder": (
+            "build_task_evaluation_scene_configuration_live_profile.py"
+        ),
+        "publication_seam": "content_addressed_full_readback",
+        "published_uri": (
+            f"gs://fixture/sha256/{identity[:2]}/{identity}.json"
+        ),
+        "storage_scheme": "gs",
+        "remote_size_bytes": receipt_path.stat().st_size,
+        "remote_sha256": source_digest,
+        "provider_full_byte_readback_verified": True,
+        "content_addressed_key": True,
+        "exclusive_create": True,
+        "upload_receipt_digest": "sha256:" + "d" * 64,
+        "provider_compute_mutation_performed": False,
+        "paid_resource_allocated": False,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    manifest_publication["receipt_digest"] = canonical_digest(
+        manifest_publication, digest_field="receipt_digest"
+    )
+    publication_path = tmp_path / "manifest-publication.json"
+    publication_path.write_text(
+        json.dumps(manifest_publication), encoding="utf-8"
+    )
+    profile = build_scene_configuration_live_profile(
+        bundle_receipt_path=receipt_path,
+        attempt_authority_path=authority_path,
+        source_commit="a" * 40,
+        raw_manifest_uri=str(publication_path),
+        revision="r1",
+        max_hourly_rate_usd=0.50,
+        hard_ttl_seconds=1_800,
+        max_spend_usd=0.75,
+        team_namespace="team-a",
+        scene_id="interiorgs-839873",
+        task_id="planar-mug-push",
+    )
+    assert profile["task_evaluation_run"]["run_mode"] == (
+        "scene_configuration"
+    )
+    assert profile["task_evaluation_run"]["evaluation_episode_executed"] is False
+    allocator_argv = profile["allocator"]["argv"]
+    bundle_index = allocator_argv.index(
+        "--scene-configuration-bundle-receipt"
+    )
+    assert allocator_argv[bundle_index + 1] == str(receipt_path.resolve())
+    assert "execution_result_path" in profile["terminal_contract"][
+        "required_path_fields"
+    ]
+
+    tampered = dict(authority)
+    tampered["maximum_hourly_rate_usd"] = 0.81
+    tampered["authority_digest"] = canonical_digest(
+        tampered, digest_field="authority_digest"
+    )
+    with pytest.raises(
+        authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+        match="authority_contract_invalid",
+    ):
+        authority_module.validate_scene_configuration_paid_authority(
+            tampered, bundle_receipt=receipt
+        )
+
+
+def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
+    tmp_path: Path,
+) -> None:
+    chain = {
+        "schema_version": "task_evaluation_scene_configuration_provider_stage_chain.v1",
+        "status": "completed",
+        "stage_results": [{"stage_id": f"stage-{index}"} for index in range(6)],
+        "stage_count": 6,
+        "executed_inside_one_parent_provider_run": True,
+        "nested_provider_mutations_performed": 0,
+        "nested_paid_execution_requested": False,
+        "evaluation_episode_executed": False,
+        "retry_cap": 0,
+        "result_digest": "",
+    }
+    chain["result_digest"] = canonical_digest(chain, digest_field="result_digest")
+    result = {
+        "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+        "status": "completed",
+        "source_commit": "a" * 40,
+        "construction_envelope_digest": "sha256:" + "b" * 64,
+        "stage_chain": chain,
+        "evaluation_episode_executed": False,
+        "candidate_policy_queried": False,
+        "provider_zero_required_after_return": True,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    archive = tmp_path / "output.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(result),
+        )
+
+    observed, blockers = scene_vast._extract_provider_output(
+        archive, tmp_path / "extracted-output"
+    )
+    assert blockers == []
+    assert observed["stage_chain"]["stage_count"] == 6

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .sealed_camera_render import render_splat_at_exact_cameras
@@ -156,6 +157,101 @@ def _target_camera_ring(
     return rows
 
 
+def _project_registered_bounds_mask(
+    *,
+    minimum_xyz: Sequence[float],
+    maximum_xyz: Sequence[float],
+    camera: Mapping[str, Any],
+    frame_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Project the preregistered source-object AABB into one exact camera.
+
+    The mask is a conservative method input, not observed segmentation truth.
+    Its provenance remains explicit so ArtiFixer cannot silently turn an
+    inferred box projection into capture evidence.
+    """
+
+    low = np.asarray(minimum_xyz, dtype=np.float64)
+    high = np.asarray(maximum_xyz, dtype=np.float64)
+    pose = np.asarray(camera["T_world_camera_provider_frame"], dtype=np.float64)
+    intrinsics = camera["intrinsics"]
+    if (
+        low.shape != (3,)
+        or high.shape != (3,)
+        or pose.shape != (4, 4)
+        or not np.isfinite([*low, *high]).all()
+        or not np.isfinite(pose).all()
+    ):
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_mask_projection_invalid"
+        )
+    try:
+        with Image.open(frame_path) as frame:
+            width, height = frame.size
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_frame_invalid"
+        ) from exc
+    if (width, height) != (
+        int(intrinsics["width"]),
+        int(intrinsics["height"]),
+    ):
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_frame_dimensions_invalid"
+        )
+    corners = np.asarray(
+        [
+            [x, y, z, 1.0]
+            for x in (low[0], high[0])
+            for y in (low[1], high[1])
+            for z in (low[2], high[2])
+        ],
+        dtype=np.float64,
+    )
+    try:
+        camera_from_world = np.linalg.inv(pose)
+    except np.linalg.LinAlgError as exc:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_mask_projection_invalid"
+        ) from exc
+    camera_points = (camera_from_world @ corners.T).T[:, :3]
+    near = float(intrinsics["near"])
+    if not np.isfinite(camera_points).all() or np.any(camera_points[:, 2] <= near):
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_target_not_visible"
+        )
+    projected_u = (
+        float(intrinsics["fx"]) * camera_points[:, 0] / camera_points[:, 2]
+        + float(intrinsics["cx"])
+    )
+    projected_v = (
+        float(intrinsics["fy"]) * camera_points[:, 1] / camera_points[:, 2]
+        + float(intrinsics["cy"])
+    )
+    left = max(0, int(math.floor(float(projected_u.min()))))
+    top = max(0, int(math.floor(float(projected_v.min()))))
+    right = min(width, int(math.ceil(float(projected_u.max()))))
+    bottom = min(height, int(math.ceil(float(projected_v.max()))))
+    if right <= left or bottom <= top:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_target_not_visible"
+        )
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[top:bottom, left:right] = 255
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(mask, mode="L").save(output_path, format="PNG", optimize=False)
+    return {
+        "path": str(output_path),
+        "digest": _sha256(output_path),
+        "size_bytes": output_path.stat().st_size,
+        "projection_kind": "registered_world_aabb_conservative_projection",
+        "observed_segmentation_truth": False,
+        "pixel_bounds_xyxy": [left, top, right, bottom],
+        "foreground_pixel_count": int((right - left) * (bottom - top)),
+    }
+
+
 def materialize_scene_configuration_render_inputs(
     *,
     envelope: Mapping[str, Any],
@@ -177,6 +273,8 @@ def materialize_scene_configuration_render_inputs(
         or not isinstance(required_views, Mapping)
         or required_views.get("minimum", 0) > 8
         or required_views.get("lossless_inputs") is not True
+        or required_views.get("mask_source")
+        != "publisher_instance_104_projected_from_registered_bounds"
         or not isinstance(disclosure, Mapping)
         or disclosure.get("raw_interiorgs_bytes") is not False
         or disclosure.get("derived_rendered_views") is not True
@@ -294,6 +392,7 @@ def materialize_scene_configuration_render_inputs(
         render_manifest_path.write_text(
             canonical_json(rendered) + "\n", encoding="utf-8"
         )
+    cameras_by_id = {row["camera_id"]: row for row in cameras}
     derived_frames = []
     for row in rendered["renders"]:
         frame = root / "rendered" / row["relative_path"]
@@ -305,12 +404,26 @@ def materialize_scene_configuration_render_inputs(
             raise TaskEvaluationSceneConfigurationRenderInputsError(
                 "scene_configuration_render_frame_invalid"
             )
+        camera_id = str(row["camera_id"])
+        camera = cameras_by_id.get(camera_id)
+        if camera is None:
+            raise TaskEvaluationSceneConfigurationRenderInputsError(
+                "scene_configuration_render_camera_result_mismatch"
+            )
+        mask = _project_registered_bounds_mask(
+            minimum_xyz=source_object["aabb_min_xyz_m"],
+            maximum_xyz=source_object["aabb_max_xyz_m"],
+            camera=camera,
+            frame_path=frame,
+            output_path=root / "masks" / f"{camera_id}.png",
+        )
         derived_frames.append(
             {
-                "camera_id": row["camera_id"],
+                "camera_id": camera_id,
                 "path": str(frame),
                 "digest": row["digest"],
                 "size_bytes": frame.stat().st_size,
+                "source_object_mask": mask,
             }
         )
     result: dict[str, Any] = {
@@ -337,6 +450,12 @@ def materialize_scene_configuration_render_inputs(
         },
         "derived_frames": derived_frames,
         "derived_frame_count": len(derived_frames),
+        "source_object_masks": {
+            "count": len(derived_frames),
+            "source": required_views["mask_source"],
+            "observed_segmentation_truth": False,
+            "all_masks_digest_bound": True,
+        },
         "browser_preview_used_as_method_input": False,
         "sage_render_used_as_appearance": False,
         "provider_mutation_performed": False,

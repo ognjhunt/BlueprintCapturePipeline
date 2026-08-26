@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from PIL import Image
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
     materialize_scene_configuration_render_inputs,
@@ -79,7 +81,7 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
         rows = []
         for camera in kwargs["cameras"]:
             frame = frames / f"{camera['camera_id']}.png"
-            frame.write_bytes((camera["camera_id"] + "-derived").encode())
+            Image.new("RGB", (1024, 1024), color=(90, 80, 70)).save(frame)
             rows.append(
                 {
                     "camera_id": camera["camera_id"],
@@ -113,7 +115,13 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
                 "aabb_min_xyz_m": [2.91, -6.83, 0.754],
                 "aabb_max_xyz_m": [3.04, -6.69, 0.884],
             },
-            "required_views": {"minimum": 8, "lossless_inputs": True},
+            "required_views": {
+                "minimum": 8,
+                "lossless_inputs": True,
+                "mask_source": (
+                    "publisher_instance_104_projected_from_registered_bounds"
+                ),
+            },
             "provider_disclosure": {
                 "raw_interiorgs_bytes": False,
                 "derived_rendered_views": True,
@@ -139,4 +147,12 @@ def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> N
     assert result["raw_interiorgs_bytes_in_provider_packet"] is False
     assert result["provider_disclosure_scope"] == "derived_rendered_views_only"
     assert result["renderer_runtime"]["mode"] == "immutable_host_runtime"
+    assert result["source_object_masks"]["count"] == 8
+    assert result["source_object_masks"]["observed_segmentation_truth"] is False
+    assert all(
+        Path(row["source_object_mask"]["path"]).is_file()
+        and row["source_object_mask"]["digest"].startswith("sha256:")
+        and row["source_object_mask"]["foreground_pixel_count"] > 0
+        for row in result["derived_frames"]
+    )
     assert all(Path(row["path"]).read_bytes() != splat.read_bytes() for row in result["derived_frames"])

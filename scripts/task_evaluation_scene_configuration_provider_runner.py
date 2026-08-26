@@ -85,6 +85,14 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
             size_bytes=row.get("size_bytes"),
         )
         row["path"] = str(path)
+        mask = row.get("source_object_mask") or {}
+        mask_path = _runtime_file(
+            runtime,
+            mask.get("path"),
+            digest=mask.get("digest"),
+            size_bytes=mask.get("size_bytes"),
+        )
+        mask["path"] = str(mask_path)
     return envelope
 
 

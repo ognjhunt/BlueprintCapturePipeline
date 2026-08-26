@@ -170,7 +170,8 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}" \
   "${TASK_EVALUATION_INPUT_ROOT}/prepared-references" \
   "${TASK_EVALUATION_INPUT_ROOT}/compiled-episodes" \
-  "${TASK_EVALUATION_INPUT_ROOT}/launch-activations"
+  "${TASK_EVALUATION_INPUT_ROOT}/launch-activations" \
+  "${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/capture-reconstruction-queue/pending" \
   "${STATE_DIR}/capture-reconstruction-queue/processing" \

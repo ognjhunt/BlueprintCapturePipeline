@@ -99,6 +99,7 @@ LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
     "build_sam31_source_tracks_live_profile.py": "content_addressed_full_readback",
     "build_semantic_teacher_image_edit_live_profile.py": "content_addressed_full_readback",
     "build_simready_isaac_live_profile.py": "content_addressed_full_readback",
+    "build_task_evaluation_scene_configuration_live_profile.py": "content_addressed_full_readback",
 }
 
 

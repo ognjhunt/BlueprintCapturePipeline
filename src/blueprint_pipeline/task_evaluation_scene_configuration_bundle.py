@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
@@ -130,6 +131,15 @@ def _portable_render_inputs(
         _copy_file(frame, target)
         portable["derived_frames"][index].pop("materialized_path", None)
         portable["derived_frames"][index]["path"] = target.relative_to(runtime).as_posix()
+        mask = _bound_file(
+            row["source_object_mask"],
+            code="scene_configuration_render_mask_input_invalid",
+        )
+        mask_target = runtime / "input/render/masks" / f"{index:04d}.png"
+        _copy_file(mask, mask_target)
+        portable_mask = portable["derived_frames"][index]["source_object_mask"]
+        portable_mask.pop("materialized_path", None)
+        portable_mask["path"] = mask_target.relative_to(runtime).as_posix()
     portable["control_plane_result_digest"] = source_result_digest
     portable["result_digest"] = canonical_digest(
         portable, digest_field="result_digest"
@@ -314,6 +324,96 @@ def build_scene_configuration_provider_bundle(
     return receipt
 
 
+def load_scene_configuration_provider_bundle_receipt(
+    path: str | Path, *, expected_source_commit: str | None = None
+) -> dict[str, Any]:
+    """Reopen the exact portable bundle and its immutable internal manifest."""
+
+    receipt_path = Path(path).expanduser().resolve()
+    receipt = _read(
+        receipt_path, code="scene_configuration_bundle_receipt_invalid"
+    )
+    bundle = Path(str(receipt.get("bundle_path") or "")).expanduser().resolve()
+    errors: list[str] = []
+    if (
+        receipt.get("schema_version") != BUNDLE_SCHEMA_VERSION
+        or receipt.get("status") != "ready"
+        or receipt.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
+        or receipt.get("probe_kind") != PROBE_KIND
+        or receipt.get("raw_interiorgs_bytes_in_provider_bundle") is not False
+        or receipt.get("single_parent_allocation") is not True
+        or receipt.get("nested_provider_mutations_performed") != 0
+        or receipt.get("evaluation_episode_executed") is not False
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+        or (
+            expected_source_commit is not None
+            and receipt.get("source_commit") != expected_source_commit
+        )
+    ):
+        errors.append("receipt_contract_invalid")
+    internal: dict[str, Any] = {}
+    if (
+        bundle.is_symlink()
+        or not bundle.is_file()
+        or bundle.stat().st_size != receipt.get("bundle_size_bytes")
+        or _sha256(bundle) != receipt.get("bundle_sha256")
+    ):
+        errors.append("bundle_bytes_invalid")
+    else:
+        try:
+            with zipfile.ZipFile(bundle) as archive:
+                internal_value = json.loads(
+                    archive.read(
+                        f"provider_runtime/{BUNDLE_SCHEMA_VERSION}.json"
+                    ).decode("utf-8")
+                )
+            internal = (
+                dict(internal_value)
+                if isinstance(internal_value, Mapping)
+                else {}
+            )
+        except (
+            KeyError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            zipfile.BadZipFile,
+            json.JSONDecodeError,
+        ):
+            errors.append("bundle_internal_manifest_invalid")
+    compared_fields = (
+        "schema_version",
+        "status",
+        "provider_bundle_kind",
+        "probe_kind",
+        "run_id",
+        "source_commit",
+        "construction_envelope_source_digest",
+        "portable_construction_envelope_digest",
+        "toolchain_digest",
+        "raw_interiorgs_bytes_in_provider_bundle",
+        "single_parent_allocation",
+        "nested_provider_mutations_performed",
+        "evaluation_episode_executed",
+        "expected_result_filename",
+        "manifest_digest",
+    )
+    if (
+        not internal
+        or internal.get("manifest_digest")
+        != canonical_digest(internal, digest_field="manifest_digest")
+        or any(internal.get(field) != receipt.get(field) for field in compared_fields)
+    ):
+        errors.append("bundle_internal_manifest_invalid")
+    if errors:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_receipt_invalid:"
+            + ",".join(sorted(set(errors)))
+        )
+    return receipt
+
+
 __all__ = [
     "BUNDLE_SCHEMA_VERSION",
     "ENTRYPOINT",
@@ -322,4 +422,28 @@ __all__ = [
     "RESULT_FILENAME",
     "TaskEvaluationSceneConfigurationBundleError",
     "build_scene_configuration_provider_bundle",
+    "load_scene_configuration_provider_bundle_receipt",
 ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--construction-envelope", required=True)
+    parser.add_argument("--toolchain-root", required=True)
+    parser.add_argument("--repository-root", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--expected-source-commit", required=True)
+    args = parser.parse_args(argv)
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=args.construction_envelope,
+        toolchain_root=args.toolchain_root,
+        repository_root=args.repository_root,
+        output_root=args.output_root,
+        expected_source_commit=args.expected_source_commit,
+    )
+    print(canonical_json(receipt))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
