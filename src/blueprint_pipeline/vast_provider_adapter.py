@@ -78,6 +78,7 @@ from .provider_runtime_bundle_contract import (
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION as SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION,
 )
+from . import vast_runtime_environment_contract as vrec
 from .task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION as SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION,
 )
@@ -4013,9 +4014,7 @@ def _probe_env(
     if _string(provider_output_put_url):
         env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] = _string(provider_output_put_url)
     if _string(runtime_dependency_url):
-        env["BLUEPRINT_RUNTIME_DEPENDENCY_URI"] = _string(
-            runtime_dependency_url
-        )
+        env["BLUEPRINT_RUNTIME_DEPENDENCY_URI"] = _string(runtime_dependency_url)
     if _string(provider_bundle_inline_base64):
         env[VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] = _string(provider_bundle_inline_base64)
     if _string(provider_bundle_inline_sha256):
@@ -4029,13 +4028,7 @@ def _probe_env(
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     for name, value in sorted((provider_runtime_environment or {}).items()):
-        public_identity_name = name in {
-            "OPENAI_PROJECT_ID",
-            "OPENAI_API_KEY_ID",
-            "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
-            "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
-            "OPENAI_CONTENT_AGENTS_API_KEY_ID",
-        }
+        public_identity_name = vrec.is_public_openai_identity_name(name)
         if (
             (
                 not public_identity_name
