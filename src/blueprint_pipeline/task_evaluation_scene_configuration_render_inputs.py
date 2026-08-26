@@ -21,8 +21,10 @@ from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import (
-    resolve_scene_configuration_disclosure,
+    MATERIALIZED_STATUS,
+    PENDING_PROVIDER_RENDER_STATUS,
     renders_on_provider,
+    resolve_scene_configuration_disclosure,
 )
 from .gaussian_splat_decode import (
     convert_to_standard_ply,
@@ -592,8 +594,159 @@ def materialize_scene_configuration_render_inputs(
     return result
 
 
+
+def complete_provider_render_inputs(
+    *,
+    render_inputs: Mapping[str, Any],
+    appearance_path: str | Path,
+    source_object: Mapping[str, Any],
+    output_root: str | Path,
+    renderer: Renderer = render_splat_at_exact_cameras,
+    runtime_resolver: RuntimeResolver = runtime_from_environment,
+    graphics_backend: str = "egl",
+) -> dict[str, Any]:
+    """Render the owed views on the provider that already holds the scene.
+
+    The control plane produced everything that *binds* this render -- the exact
+    camera ring, the calibration file, the cutout layers -- and deferred only
+    the rasterisation.  This reproduces the frames and masks from those exact
+    inputs using the same renderer and the same projection, so the completed
+    result is the packet the rest of the chain already knows how to consume.
+
+    ``graphics_backend`` defaults to a real GPU: the renderer refuses to fall
+    back to software rasterisation, so a host without acceleration fails closed
+    here rather than silently spending an hour.
+    """
+
+    if str(render_inputs.get("status") or "") != PENDING_PROVIDER_RENDER_STATUS:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_not_pending"
+        )
+    if not renders_on_provider(render_inputs.get("disclosure_decision") or {}):
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_not_authorized"
+        )
+    splat = Path(appearance_path).resolve()
+    if splat.is_symlink() or not splat.is_file():
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_source_missing"
+        )
+    declared = str((render_inputs.get("source_appearance") or {}).get("digest") or "")
+    if declared and _sha256(splat) != declared:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_source_digest_mismatch"
+        )
+    root = Path(output_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    calibration_path = Path(
+        str((render_inputs.get("camera_calibration") or {}).get("path") or "")
+    )
+    try:
+        calibration_rows = json.loads(calibration_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_calibration_invalid"
+        ) from exc
+    cameras = [
+        {
+            "camera_id": str(row["id"]),
+            "T_world_camera_provider_frame": row["spec"]["pose"]["T_world_camera_opencv"],
+            "intrinsics": row["spec"]["intrinsics"],
+        }
+        for row in calibration_rows
+    ]
+    if not cameras:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_calibration_invalid"
+        )
+    runtime = dict(runtime_resolver(repo_root=Path(__file__).resolve().parents[2]))
+    rendered = dict(
+        renderer(
+            splat_path=splat,
+            cameras=cameras,
+            output_dir=root / "rendered",
+            provider_splat_import_receipt_digest=render_inputs["source_splat_digest"],
+            alignment_digest=render_inputs["source_splat_digest"],
+            camera_set_label="artifixer-source-object-method-inputs",
+            calibrated_camera_file=calibration_path,
+            source_splat_digest=render_inputs["source_splat_digest"],
+            purpose="artifixer_source_object_removal_method_inputs",
+            authorization_class="method_input",
+            repo_root=Path(__file__).resolve().parents[2],
+            node=str(runtime["node"]),
+            renderer_runtime_root=str(runtime["renderer_root"]),
+            browser_executable=str(runtime["browser_executable"]),
+            renderer_runtime_identity=dict(runtime["identity"]),
+            graphics_backend=graphics_backend,
+        )
+    )
+    if (
+        rendered.get("status") != "rendered_exact_cameras"
+        or rendered.get("authorization_class") != "method_input"
+        or int(rendered.get("render_count") or 0) != len(cameras)
+    ):
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_completion_failed"
+        )
+    render_manifest_path = root / "rendered" / "sealed_camera_render_manifest.v1.json"
+    if not render_manifest_path.is_file():
+        render_manifest_path.write_text(canonical_json(rendered) + "\n", encoding="utf-8")
+    cameras_by_id = {row["camera_id"]: row for row in cameras}
+    derived_frames: list[dict[str, Any]] = []
+    for row in rendered["renders"]:
+        frame = (root / "rendered" / str(row["relative_path"])).resolve()
+        camera_id = str(row["camera_id"])
+        camera = cameras_by_id.get(camera_id)
+        if camera is None or not frame.is_file() or _sha256(frame) != row["digest"]:
+            raise TaskEvaluationSceneConfigurationRenderInputsError(
+                "scene_configuration_render_camera_result_mismatch"
+            )
+        mask = _project_registered_bounds_mask(
+            minimum_xyz=source_object["aabb_min_xyz_m"],
+            maximum_xyz=source_object["aabb_max_xyz_m"],
+            camera=camera,
+            frame_path=frame,
+            output_path=root / "masks" / f"{camera_id}.png",
+        )
+        derived_frames.append(
+            {
+                "camera_id": camera_id,
+                "path": str(frame),
+                "digest": row["digest"],
+                "size_bytes": frame.stat().st_size,
+                "source_object_mask": mask,
+            }
+        )
+    completed = json.loads(json.dumps(dict(render_inputs)))
+    completed["status"] = MATERIALIZED_STATUS
+    completed["render_manifest"] = {
+        "path": str(render_manifest_path),
+        "digest": _sha256(render_manifest_path),
+        "size_bytes": render_manifest_path.stat().st_size,
+        "manifest_digest": rendered["sealed_camera_render_manifest_digest"],
+    }
+    completed["derived_frames"] = derived_frames
+    completed["derived_frame_count"] = len(derived_frames)
+    completed["source_object_masks"] = {
+        **dict(render_inputs.get("source_object_masks") or {}),
+        "count": len(derived_frames),
+    }
+    completed["renderer_runtime"] = dict(runtime["identity"])
+    completed["render_completed_on_provider"] = True
+    completed["control_plane_result_digest"] = render_inputs.get("result_digest")
+    completed["result_digest"] = ""
+    completed["result_digest"] = canonical_digest(
+        completed, digest_field="result_digest"
+    )
+    (root / f"{RESULT_SCHEMA_VERSION}.json").write_text(
+        canonical_json(completed) + "\n", encoding="utf-8"
+    )
+    return completed
+
+
 __all__ = [
     "RESULT_SCHEMA_VERSION",
     "TaskEvaluationSceneConfigurationRenderInputsError",
+    "complete_provider_render_inputs",
     "materialize_scene_configuration_render_inputs",
 ]

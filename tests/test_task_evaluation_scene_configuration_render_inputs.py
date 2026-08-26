@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -416,3 +417,192 @@ def test_rights_admitted_scene_defers_the_render_to_the_provider(tmp_path: Path)
     assert result["result_digest"] == canonical_digest(
         result, digest_field="result_digest"
     )
+
+
+def test_provider_completes_the_owed_render_into_the_same_packet(tmp_path: Path) -> None:
+    """The GPU finishes what the control plane deferred, in the same shape.
+
+    Whatever the rest of the chain consumed before must still be there
+    afterwards: frames, masks, a render manifest, and a materialized status --
+    so stage one cannot tell whether the pixels were rasterised locally or on
+    the provider that already holds the scene.
+    """
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        complete_provider_render_inputs,
+    )
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+        resolve_scene_configuration_disclosure,
+    )
+
+    splat = tmp_path / "scene.ply"
+    splat.write_bytes(b"raw-interiorgs-source")
+    calibration = tmp_path / "cameras.json"
+    # Derive the ring exactly as the control plane does, so the poses really see
+    # the object and the mask projection is exercised for real.
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        _target_camera_ring,
+    )
+
+    ring = _target_camera_ring(
+        minimum_xyz=[2.91, -6.83, 0.754], maximum_xyz=[3.04, -6.69, 0.884]
+    )
+    cameras = [
+        {
+            "id": row["camera_id"],
+            "spec": {
+                "pose": {"T_world_camera_opencv": row["T_world_camera_provider_frame"]},
+                "intrinsics": row["intrinsics"],
+            },
+        }
+        for row in ring
+    ]
+    calibration.write_text(json.dumps(cameras), encoding="utf-8")
+
+    decision = resolve_scene_configuration_disclosure(
+        stage_one_configuration={
+            "provider_disclosure": {
+                "raw_interiorgs_bytes": True,
+                "derived_rendered_views": True,
+            },
+            "human_authority": {
+                "authority_reference": "operator-2026-08-26",
+                "provider_retention_terms_accepted": True,
+                "provider_training_authorized": False,
+            },
+        },
+        rights_admission={
+            "provider_disclosure": {
+                "raw_interiorgs_downloaded_bytes_may_be_uploaded": True,
+                "provider_training_allowed": False,
+                "public_redistribution_allowed": False,
+                "provider_retention_rule": "bounded_then_teardown",
+            }
+        },
+    )
+    pending = {
+        "schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
+        "status": "derived_method_inputs_pending_provider_render",
+        "source_splat_digest": _sha256(splat),
+        "raw_interiorgs_bytes_in_provider_packet": True,
+        "disclosure_decision": decision,
+        "render_execution_site": "provider_gpu",
+        "source_appearance": {"path": str(splat), "digest": _sha256(splat)},
+        "camera_calibration": {"path": str(calibration)},
+        "source_object_masks": {"source": "registered_source_object_bounds_projection"},
+        "derived_frames": [],
+        "derived_frame_count": 0,
+        "render_manifest": None,
+        "result_digest": "sha256:" + "c" * 64,
+    }
+
+    observed_backend: dict[str, str] = {}
+
+    def render(**kwargs):
+        observed_backend["graphics_backend"] = kwargs["graphics_backend"]
+        output = Path(kwargs["output_dir"])
+        frames = output / "frames"
+        frames.mkdir(parents=True)
+        rows = []
+        for camera in kwargs["cameras"]:
+            frame = frames / f"{camera['camera_id']}.png"
+            Image.new("RGB", (1024, 1024), color=(12, 34, 56)).save(frame)
+            rows.append(
+                {
+                    "camera_id": camera["camera_id"],
+                    "relative_path": f"frames/{frame.name}",
+                    "digest": _sha256(frame),
+                    "width": 1024,
+                    "height": 1024,
+                }
+            )
+        result = {
+            "schema_version": "sealed_camera_render_manifest.v1",
+            "status": "rendered_exact_cameras",
+            "authorization_class": "method_input",
+            "splat_digest": kwargs["source_splat_digest"],
+            "renders": rows,
+            "render_count": len(rows),
+            "sealed_camera_render_manifest_digest": "",
+        }
+        result["sealed_camera_render_manifest_digest"] = canonical_digest(
+            result, digest_field="sealed_camera_render_manifest_digest"
+        )
+        return result
+
+    completed = complete_provider_render_inputs(
+        render_inputs=pending,
+        appearance_path=splat,
+        source_object={
+            "aabb_min_xyz_m": [2.91, -6.83, 0.754],
+            "aabb_max_xyz_m": [3.04, -6.69, 0.884],
+        },
+        output_root=tmp_path / "provider-out",
+        renderer=render,
+        runtime_resolver=lambda **_kwargs: {
+            "node": "/runtime/node",
+            "browser_executable": "/runtime/chrome",
+            "renderer_root": "/runtime/renderer",
+            "identity": {"mode": "provider_runtime"},
+        },
+    )
+
+    # A real GPU is demanded; the renderer refuses software fallback itself.
+    assert observed_backend["graphics_backend"] == "egl"
+    assert completed["status"] == "derived_method_inputs_materialized"
+    assert completed["derived_frame_count"] == 8
+    assert completed["render_completed_on_provider"] is True
+    assert completed["render_manifest"]["manifest_digest"].startswith("sha256:")
+    assert completed["control_plane_result_digest"] == pending["result_digest"]
+    assert completed["result_digest"] == canonical_digest(
+        completed, digest_field="result_digest"
+    )
+    assert all(
+        Path(row["source_object_mask"]["path"]).is_file()
+        for row in completed["derived_frames"]
+    )
+    # The completed packet is coherent for every downstream consumer.
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+        render_inputs_disclosure_is_coherent,
+    )
+
+    assert render_inputs_disclosure_is_coherent(pending)
+    assert render_inputs_disclosure_is_coherent(
+        {**completed, "raw_interiorgs_bytes_in_provider_packet": False}
+    )
+
+
+def test_provider_completion_refuses_an_unauthorized_or_swapped_source(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        TaskEvaluationSceneConfigurationRenderInputsError,
+        complete_provider_render_inputs,
+    )
+
+    splat = tmp_path / "scene.ply"
+    splat.write_bytes(b"real-source")
+
+    def never(**_kwargs):  # pragma: no cover - must never run
+        raise AssertionError("rendered without authorization")
+
+    with pytest.raises(TaskEvaluationSceneConfigurationRenderInputsError):
+        complete_provider_render_inputs(
+            render_inputs={"status": "derived_method_inputs_materialized"},
+            appearance_path=splat,
+            source_object={},
+            output_root=tmp_path / "a",
+            renderer=never,
+        )
+
+    with pytest.raises(TaskEvaluationSceneConfigurationRenderInputsError):
+        complete_provider_render_inputs(
+            render_inputs={
+                "status": "derived_method_inputs_pending_provider_render",
+                "disclosure_decision": {},
+            },
+            appearance_path=splat,
+            source_object={},
+            output_root=tmp_path / "b",
+            renderer=never,
+        )
