@@ -1572,8 +1572,11 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
     assert bounds["nonexecuted_tail_scientific_output_retained"] is True
     assert any(
         "candidate_action_joint_position_bounds_invalid:count=6:"
-        "first_row=34:first_dimension=3:value=np.float64(-180.0)"
-        in error
+        "first_row=34:first_dimension=3:" in error
+        and (
+            "value=-180.0" in error
+            or "value=np.float64(-180.0)" in error
+        )
         for error in bounds["discarded_tail_bound_validation_errors"]
     )
     raw = progress["candidate_policy_action_queries"][0]
@@ -1583,6 +1586,218 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
     assert raw["raw_action_chunk"][34][3] == -180.0
     assert progress["candidate_action_bounds_validated"] is True
     assert progress["candidate_discarded_tail_bounds_validated"] is False
+
+
+class _LifecycleEnvironment(_Environment):
+    """Small complete-media fixture for the production lifecycle boundary."""
+
+    def read_policy_inputs(self):
+        inputs = super().read_policy_inputs()
+        inputs[DROID_EXTERIOR_VIEW_1] = np.full(
+            (24, 32, 3), 40 + self._t, dtype=np.uint8
+        )
+        inputs[DROID_WRIST_VIEW] = np.full(
+            (24, 32, 3), 80 + self._t, dtype=np.uint8
+        )
+        return inputs
+
+    def read_evaluation_camera_inputs(self):
+        return {
+            "external": np.full((24, 32, 3), 40 + self._t, dtype=np.uint8),
+            "wrist": np.full((24, 32, 3), 80 + self._t, dtype=np.uint8),
+            "overview": np.full((24, 32, 3), 120 + self._t, dtype=np.uint8),
+        }
+
+    def read_control_observation_metadata(self):
+        calibration = {
+            "camera_model": "pinhole",
+            "intrinsic_matrix": [
+                [20.0, 0.0, 16.0],
+                [0.0, 20.0, 12.0],
+                [0.0, 0.0, 1.0],
+            ],
+            "world_from_camera": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "resolution": [32, 24],
+            "near_m": 0.01,
+            "far_m": 10.0,
+        }
+        camera_ids = ("external", "wrist", "overview")
+        return {
+            "timestamp_ns": 1_000_000 + self._t,
+            "simulation_time_s": self._t / 15.0,
+            "calibrations": {camera: calibration for camera in camera_ids},
+            "source_devices": {camera: "cpu" for camera in camera_ids},
+            "synchronizations": {
+                camera: {"host_bytes_ready": True, "method": "test"}
+                for camera in camera_ids
+            },
+        }
+
+
+class _LifecyclePolicy(_Policy):
+    candidate_policy_queried = False
+
+    def preflight_readiness(self):
+        return {
+            "identity_verified": True,
+            "candidate_policy_queried": False,
+            "candidate_inference_performed": False,
+            "policy_state_advanced": False,
+            "last_inference_evidence": None,
+            "transport": "test",
+        }
+
+    def infer(self, observation):
+        self.candidate_policy_queried = True
+        return super().infer(observation)
+
+
+def test_production_lifecycle_starts_only_after_retained_readiness_and_completes(
+    tmp_path,
+) -> None:
+    from blueprint_pipeline.policy_episode_lifecycle import (
+        TERMINAL_PLANNED_DURATION,
+        validate_policy_episode_lifecycle,
+    )
+
+    progress: dict = {}
+    receipt = _run(
+        environment=_LifecycleEnvironment(),
+        policy=_LifecyclePolicy(),
+        max_policy_queries=1,
+        settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="lifecycle-planned-complete",
+        require_complete_multicamera_media=True,
+        require_prestart_readiness=True,
+        progress=progress,
+    )
+
+    lifecycle = validate_policy_episode_lifecycle(receipt)
+    assert receipt["schema_version"] == "adp009d_policy_episode.v4"
+    assert lifecycle["terminal_class"] == TERMINAL_PLANNED_DURATION
+    assert lifecycle["actual_policy_queries"] == 1
+    assert lifecycle["actual_action_steps"] == 8
+    assert lifecycle["actual_settle_steps"] == 1
+    assert progress["episode_readiness_verified"] is True
+    assert progress["episode_started"] is True
+    assert receipt["prestart_readiness"]["candidate_policy_queried"] is False
+    assert receipt["prestart_readiness"]["visual_evidence"]["status"] == "complete"
+    receipt_path = tmp_path / "lifecycle-planned-complete.v4.json"
+    receipt_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    from blueprint_pipeline.adp_episode_evidence_index import _episode_row
+
+    indexed = _episode_row(tmp_path, receipt_path)
+    assert indexed["episode_id"] == "lifecycle-planned-complete"
+    assert len(indexed["exact_policy_input_frames"]) == 1
+
+
+def test_nonfinite_action_becomes_fully_retained_policy_safety_terminal(
+    tmp_path,
+) -> None:
+    from blueprint_pipeline.policy_episode_lifecycle import (
+        TERMINAL_POLICY_SAFETY,
+        validate_policy_episode_lifecycle,
+    )
+
+    class _NonfiniteLifecyclePolicy(_LifecyclePolicy):
+        def infer(self, observation):
+            self.candidate_policy_queried = True
+            self.observations.append(observation)
+            chunk = np.zeros((10, 8), dtype=float)
+            chunk[0, 2] = np.nan
+            return chunk
+
+    progress: dict = {}
+    with pytest.raises(DroidActionExecutionError) as failure:
+        _run(
+            environment=_LifecycleEnvironment(),
+            policy=_NonfiniteLifecyclePolicy(),
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-policy-safety",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            progress=progress,
+        )
+
+    receipt = progress["_legitimate_early_terminal_finalizer"](failure.value)
+    lifecycle = validate_policy_episode_lifecycle(receipt)
+    assert lifecycle["terminal_class"] == TERMINAL_POLICY_SAFETY
+    assert lifecycle["full_planned_duration_completed"] is False
+    assert lifecycle["actual_action_steps"] == 0
+    assert receipt["candidate_policy_action_queries"][0][
+        "raw_action_chunk"
+    ][0][2] == {"nonfinite_float": "nan"}
+    assert receipt["visual_evidence"]["status"] == "complete"
+    assert set(receipt["visual_evidence"]["videos"]) == {
+        "external",
+        "wrist",
+        "overview",
+    }
+
+
+def test_camera_readiness_failure_cannot_cross_episode_started(tmp_path) -> None:
+    class _MissingOverview(_LifecycleEnvironment):
+        def read_evaluation_camera_inputs(self):
+            images = super().read_evaluation_camera_inputs()
+            images.pop("overview")
+            return images
+
+    policy = _LifecyclePolicy()
+    progress: dict = {}
+    with pytest.raises(PolicyEpisodeError, match="multicamera_set_invalid"):
+        _run(
+            environment=_MissingOverview(),
+            policy=policy,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-camera-blocked",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            progress=progress,
+        )
+
+    assert progress["episode_readiness_verified"] is False
+    assert progress["episode_started"] is False
+    assert policy.observations == []
+
+
+def test_transport_failure_after_start_is_not_a_scientific_terminal(tmp_path) -> None:
+    class _TransportFailure(_LifecyclePolicy):
+        def infer(self, observation):
+            self.observations.append(observation)
+            raise TimeoutError("policy_transport_timeout")
+
+    progress: dict = {}
+    with pytest.raises(TimeoutError) as failure:
+        _run(
+            environment=_LifecycleEnvironment(),
+            policy=_TransportFailure(),
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-transport-invariant",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            progress=progress,
+        )
+
+    with pytest.raises(
+        PolicyEpisodeError,
+        match="post_start_infrastructure_invariant_violation",
+    ):
+        progress["_legitimate_early_terminal_finalizer"](failure.value)
+    assert progress["episode_started"] is True
 
 
 def test_the_episode_resets_before_it_observes_anything() -> None:

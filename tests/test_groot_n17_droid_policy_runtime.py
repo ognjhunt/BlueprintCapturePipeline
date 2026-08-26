@@ -199,6 +199,25 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
     assert fake.close_calls == 1
 
 
+def test_groot_preflight_reconfirms_transport_without_inference() -> None:
+    fake = _FakePolicyClient()
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        client_factory=lambda **kwargs: fake,
+    )
+
+    readiness = client.preflight_readiness()
+
+    assert readiness["identity_verified"] is True
+    assert readiness["candidate_policy_queried"] is False
+    assert readiness["candidate_inference_performed"] is False
+    assert readiness["policy_state_advanced"] is False
+    assert fake.reset_calls == 1
+    assert fake.requests == []
+
+
 @pytest.mark.parametrize(
     "position_m",
     (

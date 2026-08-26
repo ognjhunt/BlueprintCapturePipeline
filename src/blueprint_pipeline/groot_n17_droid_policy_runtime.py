@@ -334,6 +334,7 @@ class GrootN17DroidPolicyClient:
             raise
         self._client = client
         self._last_inference_evidence: dict[str, Any] | None = None
+        self.candidate_policy_queried = False
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
         import numpy as np
@@ -396,6 +397,7 @@ class GrootN17DroidPolicyClient:
             "action_payload_returned": True,
             "actions_extracted": False,
         }
+        self.candidate_policy_queried = True
         if not isinstance(response, Sequence) or len(response) != 2:
             raise ValueError("groot_policy_response_invalid")
         actions = response[0]
@@ -458,6 +460,28 @@ class GrootN17DroidPolicyClient:
         response = self._client.reset()
         if not isinstance(response, Mapping):
             raise ValueError("groot_policy_reset_response_invalid")
+
+    def preflight_readiness(self) -> dict[str, Any]:
+        """Reconfirm live transport/identity without requesting an action."""
+
+        if self.candidate_policy_queried or self._last_inference_evidence is not None:
+            raise ValueError("groot_policy_preflight_after_inference_forbidden")
+        if self._client.ping() is not True:
+            raise ValueError("groot_policy_server_unreachable")
+        self.reset()
+        return {
+            "identity_verified": True,
+            "transport": "nvidia_groot_zmq_msgpack",
+            "readiness_method": "live_ping_and_reset_without_inference",
+            "candidate_policy_queried": False,
+            "candidate_inference_performed": False,
+            "policy_state_advanced": False,
+            "last_inference_evidence": None,
+            "policy_identity": self._spec.identity(),
+            "worker_identity_receipt_digest": self._worker_receipt.get(
+                "receipt_digest"
+            ),
+        }
 
     def close(self) -> None:
         closer = getattr(self._client, "close", None)

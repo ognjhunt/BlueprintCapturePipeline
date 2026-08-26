@@ -64,6 +64,7 @@ ALLOWED_RECEIPT_SCHEMAS = {
     "adp_task_control_episode.v1",
     "adp009d_policy_episode.v2",
     "adp009d_policy_episode.v3",
+    "adp009d_policy_episode.v4",
 }
 
 
@@ -111,7 +112,9 @@ def _verify_artifact(
     if not path.is_file():
         raise EpisodeEvidenceIndexError(f"episode_artifact_file_missing:{role}")
     expected_sha256 = str(artifact.get("sha256") or "")
-    if len(expected_sha256) != 64 or _sha256(path) != expected_sha256:
+    observed_sha256 = _sha256(path)
+    expected_hex = expected_sha256.removeprefix("sha256:")
+    if len(expected_hex) != 64 or observed_sha256 != expected_hex:
         raise EpisodeEvidenceIndexError(f"episode_artifact_digest_mismatch:{role}")
     if int(artifact.get("size_bytes", -1)) != path.stat().st_size:
         raise EpisodeEvidenceIndexError(f"episode_artifact_size_mismatch:{role}")
@@ -995,10 +998,17 @@ def _verified_exact_policy_input_frames(
     receipt: Mapping[str, Any],
     multicamera_manifest: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    if receipt.get("schema_version") != "adp009d_policy_episode.v3":
+    if receipt.get("schema_version") not in {
+        "adp009d_policy_episode.v3",
+        "adp009d_policy_episode.v4",
+    }:
         return []
     raw_frames = receipt.get("candidate_exact_policy_input_frames")
-    expected_count = receipt.get("policy_queries")
+    expected_count = (
+        receipt.get("policy_observations_retained")
+        if receipt.get("schema_version") == "adp009d_policy_episode.v4"
+        else receipt.get("policy_queries")
+    )
     if (
         not isinstance(raw_frames, list)
         or not raw_frames
@@ -1109,6 +1119,22 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
         receipt, digest_field="receipt_digest"
     ):
         raise EpisodeEvidenceIndexError("episode_receipt_digest_mismatch")
+    if schema_version == "adp009d_policy_episode.v4":
+        try:
+            try:
+                from policy_episode_lifecycle import (
+                    validate_policy_episode_lifecycle,
+                )
+            except ModuleNotFoundError:
+                from .policy_episode_lifecycle import (
+                    validate_policy_episode_lifecycle,
+                )
+
+            validate_policy_episode_lifecycle(receipt)
+        except (ImportError, ValueError) as exc:
+            raise EpisodeEvidenceIndexError(
+                "episode_lifecycle_invalid"
+            ) from exc
 
     episode_id = str(receipt.get("episode_id") or "")
     if not episode_id:

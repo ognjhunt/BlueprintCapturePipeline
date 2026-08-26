@@ -483,6 +483,26 @@ class OpenPIWebsocketDroidPolicyClient:
             raise ValueError("openpi_policy_inference_evidence_missing")
         return json.loads(json.dumps(self._last_inference_evidence, allow_nan=False))
 
+    def preflight_readiness(self) -> dict[str, Any]:
+        """Re-read exact server identity without advancing policy state."""
+
+        if self.candidate_policy_queried or self._last_inference_evidence is not None:
+            raise ValueError("openpi_policy_preflight_after_inference_forbidden")
+        raw_metadata = self._client.get_server_metadata()
+        if not isinstance(raw_metadata, Mapping):
+            raise ValueError("policy_server_metadata_not_object")
+        metadata = validate_server_metadata(raw_metadata, expected=self._spec)
+        return {
+            "identity_verified": True,
+            "transport": "openpi_websocket_msgpack_numpy",
+            "readiness_method": "live_identity_handshake_without_inference",
+            "candidate_policy_queried": False,
+            "candidate_inference_performed": False,
+            "policy_state_advanced": False,
+            "last_inference_evidence": None,
+            "server_metadata": metadata,
+        }
+
     def close(self) -> None:
         closer = getattr(self._client, "close", None)
         if callable(closer):

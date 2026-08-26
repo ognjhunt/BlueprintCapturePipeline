@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -37,6 +38,9 @@ try:  # flat provider-bundle layout
         ARM_JOINT_COUNT,
         BLOCKER_CHUNK_NONFINITE,
         BLOCKER_CHUNK_SHAPE,
+        BLOCKER_GRIPPER_BOUNDS,
+        BLOCKER_JOINT_POSITION_BOUNDS,
+        BLOCKER_JOINT_VELOCITY_BOUNDS,
         DROID_ACTION_WIDTH,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
@@ -52,6 +56,9 @@ except ModuleNotFoundError:  # repository package
         ARM_JOINT_COUNT,
         BLOCKER_CHUNK_NONFINITE,
         BLOCKER_CHUNK_SHAPE,
+        BLOCKER_GRIPPER_BOUNDS,
+        BLOCKER_JOINT_POSITION_BOUNDS,
+        BLOCKER_JOINT_VELOCITY_BOUNDS,
         DROID_ACTION_WIDTH,
         DROID_CONTROL_HZ,
         DROID_OPEN_LOOP_HORIZON,
@@ -118,6 +125,24 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 try:  # flat provider-bundle layout
+    from policy_episode_lifecycle import (
+        TERMINAL_PLANNED_DURATION,
+        TERMINAL_POLICY_SAFETY,
+        TERMINAL_SCIENTIFIC,
+        build_lifecycle,
+        seal_prestart_readiness,
+        validate_policy_episode_lifecycle,
+    )
+except ModuleNotFoundError:  # repository package
+    from .policy_episode_lifecycle import (
+        TERMINAL_PLANNED_DURATION,
+        TERMINAL_POLICY_SAFETY,
+        TERMINAL_SCIENTIFIC,
+        build_lifecycle,
+        seal_prestart_readiness,
+        validate_policy_episode_lifecycle,
+    )
+try:  # flat provider-bundle layout
     from episode_visual_evidence import (
         finalize_failed_policy_visual_evidence,
         finalize_manipulation_evaluation_visual_evidence,
@@ -134,7 +159,7 @@ except ModuleNotFoundError:  # repository package
         persist_observation_frame,
     )
 
-EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v3"
+EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v4"
 
 # This is a numerical-motion threshold, not a task-success threshold.  It only
 # separates a changing simulator joint state from float noise so a can outcome
@@ -155,6 +180,16 @@ BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
 BLOCKER_SOURCE_RESOLUTION_UNMEASURED = (
     "policy_episode_source_resolution_unmeasured_or_mixed"
 )
+BLOCKER_PRESTART_READINESS = "policy_episode_prestart_readiness_failed"
+BLOCKER_POST_START_INFRASTRUCTURE = (
+    "policy_episode_post_start_infrastructure_invariant_violation"
+)
+
+# Provider workers reserve space before they cross the scientific start
+# boundary.  The raw-frame projection below is deliberately padded by this
+# fixed floor for PNG/container overhead and atomic-write headroom.
+PRESTART_MEDIA_RESERVE_FLOOR_BYTES = 64 * 1024 * 1024
+PRESTART_MEDIA_RESERVE_MULTIPLIER = 3
 
 
 class PolicyEpisodeError(ValueError):
@@ -464,6 +499,333 @@ def _raw_policy_action_evidence(chunk: Any, *, query_index: int) -> dict[str, An
     return record
 
 
+def _policy_prestart_evidence(policy: DroidPolicyClient) -> dict[str, Any]:
+    """Reconfirm the live control plane without performing inference."""
+
+    preflight = getattr(policy, "preflight_readiness", None)
+    if callable(preflight):
+        raw = preflight()
+    else:
+        summary = getattr(policy, "evidence_summary", None)
+        if not callable(summary):
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_PRESTART_READINESS}:policy_readiness_method_missing"]
+            )
+        raw = summary()
+    if not isinstance(raw, Mapping):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:policy_readiness_invalid"]
+        )
+    evidence = json.loads(json.dumps(dict(raw), allow_nan=False))
+    if (
+        evidence.get("identity_verified") is not True
+        or evidence.get("candidate_policy_queried") not in {None, False}
+        or evidence.get("candidate_inference_performed") not in {None, False}
+        or evidence.get("policy_state_advanced") not in {None, False}
+        or evidence.get("last_inference_evidence") is not None
+    ):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:policy_control_plane_unready"]
+        )
+    return evidence
+
+
+def _project_media_reserve_bytes(
+    *,
+    camera_rgb: Mapping[str, Any],
+    evaluation_images: Mapping[str, Any],
+    max_policy_queries: int,
+    open_loop_horizon: int,
+    settle_window_samples: int,
+) -> int:
+    """Conservatively reserve lossless-frame, review-video, and atomic-write space."""
+
+    import numpy as np
+
+    policy_raw = sum(int(np.asarray(frame).nbytes) for frame in camera_rgb.values())
+    evaluation_raw = sum(
+        int(np.asarray(frame).nbytes) for frame in evaluation_images.values()
+    )
+    action_steps = int(max_policy_queries) * int(open_loop_horizon)
+    review_observations = (
+        action_steps + int(settle_window_samples)
+    ) // EVALUATION_REVIEW_FRAME_STRIDE_STEPS
+    # Each query retains the exact composite plus native external/wrist PNGs.
+    # Review/terminal observations retain all three cameras.  Multiplying the
+    # raw projection covers lossless codec overhead, derived videos, manifests,
+    # and the temporary bytes used by atomic writes/encoders.
+    projected_raw = (
+        2 * policy_raw * int(max_policy_queries)
+        + evaluation_raw * (review_observations + 1)
+    )
+    return max(
+        PRESTART_MEDIA_RESERVE_FLOOR_BYTES,
+        PRESTART_MEDIA_RESERVE_MULTIPLIER * projected_raw,
+    )
+
+
+def _prestart_episode_readiness(
+    *,
+    environment: EpisodeEnvironment,
+    policy: DroidPolicyClient,
+    candidate_id: str,
+    prompt: str,
+    gripper: GripperConvention,
+    task_kind: str,
+    media_root: Path,
+    episode_id: str,
+    max_policy_queries: int,
+    open_loop_horizon: int,
+    settle_window_samples: int,
+) -> dict[str, Any]:
+    """Exercise every predictable runtime seam, then restore canonical reset.
+
+    This rehearsal is outcome-blind: it never calls policy inference and its
+    no-op robot command is discarded by a second canonical reset.  Its media
+    lives under a distinct readiness episode id and therefore cannot be
+    mistaken for scientific policy input.
+    """
+
+    environment.reset()
+    joint_limits = environment.joint_limits()
+    if (
+        len(joint_limits) != ARM_JOINT_COUNT
+        or any(len(row) != 2 for row in joint_limits)
+        or any(
+            not all(math.isfinite(float(value)) for value in row)
+            or float(row[0]) >= float(row[1])
+            for row in joint_limits
+        )
+    ):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:joint_limits_invalid"]
+        )
+    reset_joints = _read_arm_joint_positions(environment)
+    if any(
+        not float(lower) <= joint <= float(upper)
+        for joint, (lower, upper) in zip(
+            reset_joints, joint_limits, strict=True
+        )
+    ):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:reset_joint_state_out_of_bounds"]
+        )
+    required_task_field = (
+        "can_pose_world"
+        if task_kind == TASK_KIND_RIGID_PICK_PLACE
+        else "joint_positions_rad"
+    )
+    initial_task_sample = dict(_read_task_sample(environment, task_kind=task_kind))
+    if required_task_field not in initial_task_sample:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:task_state_invalid"]
+        )
+    inputs = environment.read_policy_inputs()
+    camera_rgb = {
+        view: inputs[view]
+        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+        if view in inputs
+    }
+    try:
+        observation = build_droid_observation(
+            candidate_id=candidate_id,
+            camera_rgb=camera_rgb,
+            joint_position=inputs["joint_position"],
+            gripper_position=inputs["gripper_position"],
+            prompt=prompt,
+            eef_9d=inputs.get("eef_9d"),
+        )
+    except (KeyError, DroidObservationError) as exc:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:policy_observation_invalid:{exc}"]
+        ) from exc
+
+    image_reader = getattr(environment, "read_evaluation_camera_inputs", None)
+    metadata_reader = getattr(environment, "read_control_observation_metadata", None)
+    if not callable(image_reader) or not callable(metadata_reader):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:multicamera_contract_missing"]
+        )
+    evaluation_images = dict(image_reader())
+    if set(evaluation_images) != {"external", "wrist", "overview"}:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:multicamera_set_invalid"]
+        )
+    reserve_bytes = _project_media_reserve_bytes(
+        camera_rgb=camera_rgb,
+        evaluation_images=evaluation_images,
+        max_policy_queries=max_policy_queries,
+        open_loop_horizon=open_loop_horizon,
+        settle_window_samples=settle_window_samples,
+    )
+    media_root.mkdir(parents=True, exist_ok=True)
+    free_bytes = int(shutil.disk_usage(media_root).free)
+    if free_bytes < reserve_bytes:
+        raise PolicyEpisodeError(
+            [
+                f"{BLOCKER_PRESTART_READINESS}:evidence_storage_insufficient:"
+                f"{free_bytes}<{reserve_bytes}"
+            ]
+        )
+
+    policy_evidence = _policy_prestart_evidence(policy)
+    readiness_id = f"{episode_id}--prestart-readiness"
+    exact_frame = persist_observation_frame(
+        _policy_view_composite(observation, candidate_id=candidate_id),
+        output_dir=media_root,
+        episode_id=readiness_id,
+        frame_index=0,
+        kind="policy-input",
+    )
+    policy_observation = _persist_evaluation_camera_observation(
+        environment,
+        output_dir=media_root,
+        episode_id=readiness_id,
+        observation_index=0,
+        kind="policy-input",
+        exact_policy_input_camera_rgb={
+            "external": camera_rgb[DROID_EXTERIOR_VIEW_1],
+            "wrist": camera_rgb[DROID_WRIST_VIEW],
+        },
+    )
+
+    # Exercise the same step/readback seam the episode will use, while holding
+    # the reset joint targets.  This is not a learned-policy action.
+    environment.step([*reset_joints, float(gripper.open_command)])
+    probe_joints = _read_arm_joint_positions(environment)
+    probe_task_sample = dict(_read_task_sample(environment, task_kind=task_kind))
+    if required_task_field not in probe_task_sample:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:probe_task_state_invalid"]
+        )
+    terminal_observation = _persist_evaluation_camera_observation(
+        environment,
+        output_dir=media_root,
+        episode_id=readiness_id,
+        observation_index=1,
+        kind="terminal-observation",
+    )
+    visual, artifacts = finalize_manipulation_evaluation_visual_evidence(
+        output_dir=media_root,
+        episode_id=readiness_id,
+        identity={
+            "candidate_id": candidate_id,
+            "purpose": "outcome_blind_prestart_readiness",
+            "candidate_policy_queried": False,
+            "policy_input_camera_ids": ["external", "wrist"],
+            "review_only_camera_ids": ["overview"],
+        },
+        policy_input_observations=[policy_observation],
+        terminal_observation=terminal_observation,
+    )
+    if (
+        visual.get("status") != "complete"
+        or set(visual.get("videos") or {}) != {"external", "wrist", "overview"}
+    ):
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:review_media_roundtrip_failed"]
+        )
+
+    environment.reset()
+    restored_joints = _read_arm_joint_positions(environment)
+    restored_task_sample = dict(_read_task_sample(environment, task_kind=task_kind))
+    if required_task_field not in restored_task_sample:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:restored_task_state_invalid"]
+        )
+    reset_restored = all(
+        abs(left - right) <= ARM_MOTION_EPSILON_RAD
+        for left, right in zip(reset_joints, restored_joints, strict=True)
+    )
+    if not reset_restored:
+        raise PolicyEpisodeError(
+            [f"{BLOCKER_PRESTART_READINESS}:canonical_reset_state_mismatch"]
+        )
+    queried = bool(getattr(policy, "candidate_policy_queried", False))
+    readiness = seal_prestart_readiness(
+        {
+            "candidate_id": candidate_id,
+            "episode_id": episode_id,
+            "readiness_episode_id": readiness_id,
+            "outcome_blind": True,
+            "candidate_policy_queried": queried,
+            "policy_state_advanced": False,
+            "canonical_reset_restored": reset_restored,
+            "checks": {
+                "environment_reset": True,
+                "joint_limits_readback": True,
+                "joint_state_readback": True,
+                "task_state_readback": True,
+                "policy_observation_built": True,
+                "policy_control_plane_ready": True,
+                "evidence_storage_reserved": True,
+                "exact_media_write_readback": bool(exact_frame.get("png_sha256")),
+                "multicamera_write_readback": True,
+                "review_video_encode_readback": True,
+                "environment_step_readback": True,
+                "canonical_reset_restored": reset_restored,
+            },
+            "storage_reservation": {
+                "required_free_bytes": reserve_bytes,
+                "observed_free_bytes": free_bytes,
+                "projection_is_conservative": True,
+            },
+            "policy_control_plane": policy_evidence,
+            "reset_joint_positions_rad": reset_joints,
+            "probe_joint_positions_rad": probe_joints,
+            "restored_joint_positions_rad": restored_joints,
+            "initial_task_sample_digest": canonical_digest(initial_task_sample),
+            "probe_task_sample_digest": canonical_digest(probe_task_sample),
+            "restored_task_sample_digest": canonical_digest(restored_task_sample),
+            "exact_media_frame": exact_frame,
+            "visual_evidence": visual,
+            "media_artifacts": artifacts,
+        }
+    )
+    return readiness
+
+
+def _terminal_class_for_policy_exception(
+    exc: BaseException,
+    *,
+    policy_inference_evidence: Any,
+) -> str | None:
+    """Classify only predeclared candidate-result boundaries as legitimate."""
+
+    message = str(exc)
+    safety_prefixes = (
+        BLOCKER_CHUNK_SHAPE,
+        BLOCKER_CHUNK_NONFINITE,
+        BLOCKER_JOINT_POSITION_BOUNDS,
+        BLOCKER_JOINT_VELOCITY_BOUNDS,
+        BLOCKER_GRIPPER_BOUNDS,
+        BLOCKER_CLIENT_RETURNED_NOTHING,
+        "groot_policy_response_invalid",
+        "groot_policy_actions_invalid",
+        "groot_policy_action_shape_mismatch",
+        "groot_policy_action_nonfinite",
+        "openpi_inference_response_",
+    )
+    if isinstance(exc, DroidActionExecutionError) and any(
+        str(error).startswith(safety_prefixes) for error in exc.errors
+    ):
+        return TERMINAL_POLICY_SAFETY
+    evidence = (
+        policy_inference_evidence
+        if isinstance(policy_inference_evidence, Mapping)
+        else {}
+    )
+    if (
+        evidence.get("server_response_received") is True
+        and evidence.get("action_payload_returned") is True
+        and message.startswith(safety_prefixes)
+    ):
+        return TERMINAL_POLICY_SAFETY
+    if message == "groot_droid_eef_position_outside_checkpoint_observed_support":
+        return TERMINAL_SCIENTIFIC
+    return None
+
+
 def _prevalidation_vendor_action_evidence(
     inference_evidence: Any, *, query_index: int
 ) -> dict[str, Any] | None:
@@ -540,9 +902,13 @@ def _motion_and_command_evidence(
     source_action_spaces = {
         str(action["source_action_space"]) for action in commanded_actions
     }
-    if len(source_action_spaces) != 1:
+    if len(source_action_spaces) > 1:
         raise PolicyEpisodeError(["policy_episode_source_action_space_inconsistent"])
-    source_action_space = next(iter(source_action_spaces))
+    source_action_space = (
+        next(iter(source_action_spaces))
+        if source_action_spaces
+        else "none_no_executable_action"
+    )
     target_deltas = [
         abs(float(target) - float(observed))
         for action in commanded_actions
@@ -654,6 +1020,7 @@ def run_policy_episode(
     episode_id: str | None = None,
     scoring_authorized: bool = True,
     require_complete_multicamera_media: bool = False,
+    require_prestart_readiness: bool = False,
     progress: dict[str, Any] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -741,6 +1108,9 @@ def run_policy_episode(
             "candidate_joint_state_validated": False,
             "candidate_action_applied": False,
             "episode_running": False,
+            "episode_readiness_verified": False,
+            "episode_started": False,
+            "episode_terminal_class": None,
         }
     )
 
@@ -767,6 +1137,8 @@ def run_policy_episode(
                         "candidate_joint_state_validated",
                         "candidate_action_applied",
                         "episode_running",
+                        "episode_readiness_verified",
+                        "episode_started",
                     )
                 }
                 | {
@@ -775,12 +1147,40 @@ def run_policy_episode(
                         "candidate_policy_action_queries",
                         "commanded_actions",
                         "candidate_exact_policy_input_frames",
+                        "prestart_readiness",
+                        "episode_terminal_class",
                     )
                     if key in episode_progress
                 }
             )
 
-    episode_started = time.monotonic()
+    prestart_readiness: dict[str, Any] | None = None
+    if require_prestart_readiness:
+        if media_root is None or episode_id is None:
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_PRESTART_READINESS}:media_binding_required"]
+            )
+        _emit_progress("episode_readiness_started")
+        prestart_readiness = _prestart_episode_readiness(
+            environment=environment,
+            policy=policy,
+            candidate_id=candidate_id,
+            prompt=prompt,
+            gripper=gripper,
+            task_kind=task_kind,
+            media_root=media_root,
+            episode_id=episode_id,
+            max_policy_queries=int(max_policy_queries),
+            open_loop_horizon=int(open_loop_horizon),
+            settle_window_samples=int(settle_window_samples),
+        )
+        episode_progress["prestart_readiness"] = prestart_readiness
+        episode_progress["episode_readiness_verified"] = True
+        _emit_progress("episode_readiness_verified")
+    episode_started_monotonic = time.monotonic()
+    if require_prestart_readiness:
+        episode_progress["episode_started"] = True
+        _emit_progress("episode_started")
     timings_seconds = {
         "reset_and_initial_state": 0.0,
         "policy_input_read": 0.0,
@@ -1010,6 +1410,167 @@ def run_policy_episode(
 
     episode_progress["_failure_media_finalizer"] = _seal_terminal_visual_evidence
     episode_progress["candidate_exact_policy_input_frames"] = retained_policy_frames
+
+    def _seal_legitimate_early_terminal(exc: BaseException) -> dict[str, Any]:
+        """Turn only a typed policy/scientific boundary into an episode result.
+
+        The worker calls this after ``run_policy_episode`` unwinds.  Transport,
+        renderer, disk, process, and environment exceptions are intentionally
+        unclassified and therefore remain post-start infrastructure invariant
+        violations rather than being disguised as scientific outcomes.
+        """
+
+        terminal_class = _terminal_class_for_policy_exception(
+            exc,
+            policy_inference_evidence=episode_progress.get(
+                "policy_inference_evidence"
+            ),
+        )
+        if terminal_class is None:
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_POST_START_INFRASTRUCTURE}:{type(exc).__name__}:{exc}"]
+            ) from exc
+        if (
+            not require_prestart_readiness
+            or prestart_readiness is None
+            or episode_progress.get("episode_started") is not True
+        ):
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_PRESTART_READINESS}:early_terminal_without_start_proof"]
+            ) from exc
+        visual_evidence, media_artifacts = _seal_terminal_visual_evidence()
+        visual = (
+            visual_evidence if isinstance(visual_evidence, Mapping) else {}
+        )
+        if (
+            visual.get("status") != "complete"
+            or set(visual.get("required_camera_ids") or ())
+            != {"external", "wrist", "overview"}
+            or set(visual.get("review_only_camera_ids") or ()) != {"overview"}
+            or visual.get("terminal_observation_present") is not True
+            or len(retained_multicamera_observations) != len(retained_policy_frames)
+        ):
+            raise PolicyEpisodeError(
+                [
+                    f"{BLOCKER_POST_START_INFRASTRUCTURE}:"
+                    "early_terminal_media_incomplete"
+                ]
+            ) from exc
+        visual = dict(visual)
+        visual["episode_terminal_status"] = terminal_class
+        visual["episode_terminal_reason"] = f"{type(exc).__name__}:{exc}"
+        episode_progress["visual_evidence"] = visual
+
+        motion_evidence, action_magnitudes = _motion_and_command_evidence(
+            joint_trace=joint_trace,
+            commanded_actions=commanded_actions,
+            command_response_rows=command_response_rows,
+        )
+        actual_action_steps = sum(
+            record.get("environment_step_applied") is True
+            for record in commanded_actions
+        )
+        rounded_timings = {
+            key: round(float(value), 6) for key, value in timings_seconds.items()
+        }
+        rounded_timings["total"] = round(
+            time.monotonic() - episode_started_monotonic, 6
+        )
+        terminal_reason = f"{type(exc).__name__}:{exc}"
+        score = {
+            "status": "not_scored",
+            "blockers": [terminal_class],
+            "claim_boundary": (
+                "typed candidate safety/scientific terminal retained; no task "
+                "success, ranking, or superiority claim"
+            ),
+        }
+        lifecycle = build_lifecycle(
+            readiness=prestart_readiness,
+            terminal_class=terminal_class,
+            planned_policy_queries=int(max_policy_queries),
+            planned_action_steps=int(max_policy_queries) * int(open_loop_horizon),
+            planned_settle_steps=int(settle_window_samples),
+            actual_policy_queries=len(candidate_policy_action_queries),
+            actual_action_steps=actual_action_steps,
+            actual_settle_steps=0,
+            terminal_reason=terminal_reason,
+            retained_terminal_result=True,
+        )
+        receipt: dict[str, Any] = {
+            "schema_version": EPISODE_SCHEMA_VERSION,
+            "candidate_id": candidate_id,
+            "task_kind": task_kind,
+            "task_spec": resolved_task_spec,
+            "task_spec_digest": canonical_digest(resolved_task_spec),
+            "prompt": str(prompt),
+            "policy_queries": len(candidate_policy_action_queries),
+            "policy_observations_retained": len(retained_policy_frames),
+            "max_policy_queries": int(max_policy_queries),
+            "environment_steps": actual_action_steps,
+            "settle_window_samples": int(settle_window_samples),
+            "open_loop_horizon": int(open_loop_horizon),
+            "control_hz": DROID_CONTROL_HZ,
+            "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
+            "action_space": action_magnitudes["source_action_space"],
+            "observation_conversion": describe_observation_conversion(
+                candidate_id,
+                source_hw=_measured_source_hw(observed_source_resolutions_hw),
+            ),
+            "destination_position_world_m": (
+                [float(value) for value in destination_position_world_m]
+                if destination_position_world_m is not None
+                else None
+            ),
+            "queries": queries,
+            "candidate_policy_action_queries": candidate_policy_action_queries,
+            "commanded_actions": commanded_actions,
+            "motion_evidence": motion_evidence,
+            "commanded_action_magnitudes": action_magnitudes,
+            "score": score,
+            "candidate_policy_queried": bool(
+                episode_progress.get("candidate_policy_queried")
+            ),
+            "scoring_authorized": bool(scoring_authorized),
+            "episode_id": episode_id,
+            "visual_evidence": visual,
+            "media_artifacts": media_artifacts,
+            "candidate_exact_policy_input_frames": retained_policy_frames,
+            "candidate_exact_policy_input_manifest_digest": canonical_digest(
+                {"frames": retained_policy_frames}
+            ),
+            "observation_trace_digest": canonical_digest(
+                {"observations": retained_policy_frames}
+            ),
+            "terminal_policy_exception": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "classification": terminal_class,
+            },
+            "prestart_readiness": prestart_readiness,
+            "lifecycle": lifecycle,
+            "performance_diagnostics": {
+                "clock": "time.monotonic",
+                "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
+                "environment_step_bucket_includes_renderer_when_enabled": True,
+                "timings_seconds": rounded_timings,
+            },
+        }
+        receipt["receipt_digest"] = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+        validate_policy_episode_lifecycle(receipt)
+        episode_progress["episode_terminal_class"] = terminal_class
+        _emit_progress(
+            "episode_policy_safety_terminal"
+            if terminal_class == TERMINAL_POLICY_SAFETY
+            else "episode_scientific_terminal"
+        )
+        return receipt
+
+    episode_progress["_legitimate_early_terminal_finalizer"] = (
+        _seal_legitimate_early_terminal
+    )
 
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
@@ -1548,16 +2109,42 @@ def run_policy_episode(
     timings_seconds = {
         key: round(float(value), 6) for key, value in timings_seconds.items()
     }
-    timings_seconds["total"] = round(time.monotonic() - episode_started, 6)
+    timings_seconds["total"] = round(
+        time.monotonic() - episode_started_monotonic, 6
+    )
+
+    lifecycle = None
+    if require_prestart_readiness:
+        if prestart_readiness is None:
+            raise PolicyEpisodeError(
+                [f"{BLOCKER_PRESTART_READINESS}:receipt_missing"]
+            )
+        lifecycle = build_lifecycle(
+            readiness=prestart_readiness,
+            terminal_class=TERMINAL_PLANNED_DURATION,
+            planned_policy_queries=int(max_policy_queries),
+            planned_action_steps=int(max_policy_queries) * int(open_loop_horizon),
+            planned_settle_steps=int(settle_window_samples),
+            actual_policy_queries=len(queries),
+            actual_action_steps=len(commanded_actions),
+            actual_settle_steps=step_index - len(commanded_actions),
+            terminal_reason="planned_policy_control_duration_completed",
+            retained_terminal_result=True,
+        )
 
     receipt: dict[str, Any] = {
-        "schema_version": EPISODE_SCHEMA_VERSION,
+        "schema_version": (
+            EPISODE_SCHEMA_VERSION
+            if require_prestart_readiness
+            else "adp009d_policy_episode.v3"
+        ),
         "candidate_id": candidate_id,
         "task_kind": task_kind,
         "task_spec": resolved_task_spec,
         "task_spec_digest": canonical_digest(resolved_task_spec),
         "prompt": str(prompt),
         "policy_queries": len(queries),
+        "policy_observations_retained": len(retained_policy_frames),
         "max_policy_queries": int(max_policy_queries),
         "environment_steps": step_index,
         "settle_window_samples": int(settle_window_samples),
@@ -1602,7 +2189,15 @@ def run_policy_episode(
             "timings_seconds": timings_seconds,
         },
     }
+    if prestart_readiness is not None:
+        receipt["prestart_readiness"] = prestart_readiness
+    if lifecycle is not None:
+        receipt["lifecycle"] = lifecycle
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    if require_prestart_readiness:
+        validate_policy_episode_lifecycle(receipt)
+        episode_progress["episode_terminal_class"] = TERMINAL_PLANNED_DURATION
+        _emit_progress("episode_planned_duration_complete")
     _emit_progress("episode_complete")
     return receipt
 
