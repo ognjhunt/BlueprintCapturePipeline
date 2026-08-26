@@ -48,10 +48,18 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(2, str(Path(__file__).resolve().parents[1]))
 
 from stage_task_evaluation_control_plane_release import (  # noqa: E402
     ControlPlaneReleaseError,
     stage_task_evaluation_control_plane_release,
+)
+from bootstrap_task_evaluation_splat_render_prerequisites import (  # noqa: E402
+    validate_splat_render_prerequisites,
+)
+from provision_task_evaluation_scene_configuration_release import (  # noqa: E402
+    provision_scene_configuration_release,
+    service_account_readback,
 )
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
@@ -93,6 +101,23 @@ DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "90-blueprint-deploy-identity.conf"
 )
 DEFAULT_INTAKE_VERSION_URL = "http://127.0.0.1:8765/api/live-pipeline/version"
+DEFAULT_SCENE_CONFIGURATION_ENVIRONMENT_FILE = (
+    "/etc/blueprint/task-evaluation-scene-configuration-release.env"
+)
+DEFAULT_SCENE_CONFIGURATION_RUNTIME_ROOT = (
+    "/var/lib/blueprint/task-evaluation-inputs/system-runtimes"
+)
+DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT = (
+    "/var/lib/blueprint/task-evaluation-inputs/system-runtime-prerequisites/"
+    "splat-render-v1"
+)
+DEFAULT_ARTIFIXER_SOURCE_ROOT = (
+    "/var/lib/blueprint/task-evaluation-inputs/sources/artifixer-a392c4df"
+)
+DEFAULT_CONTENT_AGENTS_SOURCE_ROOT = (
+    "/var/lib/blueprint/task-evaluation-inputs/sources/"
+    "usd-content-agents-v0.5.2-36dbf3f2"
+)
 INTAKE_START_TIMEOUT_SECONDS = 180
 DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
 SUPERSEDED_ITERATION_PROVENANCE_NAME = (
@@ -805,6 +830,80 @@ def _install_intake_runtime_identity_drop_in(
     }
 
 
+def _install_scene_configuration_environment(
+    path: Path, *, environment: Mapping[str, str]
+) -> dict[str, Any]:
+    """Atomically install exact-release, non-secret scene runtime bindings."""
+
+    expected_names = {
+        "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT",
+        "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT",
+        "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX",
+        "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX",
+    }
+    if (
+        set(environment) != expected_names
+        or path.is_symlink()
+        or (path.exists() and not stat.S_ISREG(path.stat().st_mode))
+        or any(
+            not value
+            or "\n" in value
+            or "\r" in value
+            or any(character.isspace() for character in value)
+            for value in environment.values()
+        )
+    ):
+        raise ControlPlaneDeployError("deploy_scene_configuration_environment_invalid")
+    content = (
+        "# Managed by scripts/deploy_control_plane_commit.py.\n"
+        "# Exact-release paths and public object-store prefixes only; no credentials.\n"
+        + "".join(f"{name}={environment[name]}\n" for name in sorted(environment))
+    )
+    temporary: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+        temporary = None
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ControlPlaneDeployError(
+            "deploy_scene_configuration_environment_update_failed"
+        ) from exc
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+    payload = path.read_bytes()
+    if payload != content.encode("utf-8"):
+        raise ControlPlaneDeployError(
+            "deploy_scene_configuration_environment_readback_mismatch"
+        )
+    return {
+        "path": str(path),
+        "sha256": _sha256_bytes(payload),
+        "size_bytes": len(payload),
+        "mode": "0644",
+        "credential_values_recorded": False,
+        "environment_names": sorted(environment),
+    }
+
+
 def _verify_intake_runtime(
     url: str,
     *,
@@ -866,6 +965,17 @@ def deploy_control_plane_commit(
     intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
     intake_version_url: str = DEFAULT_INTAKE_VERSION_URL,
     systemd_dir: str | Path = DEFAULT_SYSTEMD_DIR,
+    scene_configuration_environment_file: str | Path = (
+        DEFAULT_SCENE_CONFIGURATION_ENVIRONMENT_FILE
+    ),
+    scene_configuration_runtime_root: str | Path = (
+        DEFAULT_SCENE_CONFIGURATION_RUNTIME_ROOT
+    ),
+    splat_render_prerequisite_root: str | Path = (
+        DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT
+    ),
+    artifixer_source_root: str | Path = DEFAULT_ARTIFIXER_SOURCE_ROOT,
+    content_agents_source_root: str | Path = DEFAULT_CONTENT_AGENTS_SOURCE_ROOT,
     arm_path_units: bool = False,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
@@ -960,6 +1070,36 @@ def deploy_control_plane_commit(
             state_root=state,
             source_commit=source_commit,
             receipt=provenance_receipt,
+        )
+        staged_release = stage_task_evaluation_control_plane_release(
+            source_repo=source,
+            source_commit=source_commit,
+            release_root=release_root,
+            state_root=state_root,
+            active_link=active,
+            activate=False,
+        )
+        prerequisite = validate_splat_render_prerequisites(
+            root=splat_render_prerequisite_root,
+            repository_root=staged_release["release_path"],
+        )
+        prerequisite_entrypoints = prerequisite["entrypoints"]
+        scene_configuration_runtime = provision_scene_configuration_release(
+            repository_root=staged_release["release_path"],
+            source_commit=source_commit,
+            runtime_root=scene_configuration_runtime_root,
+            node_executable=prerequisite_entrypoints["node"],
+            browser_root=prerequisite_entrypoints["browser_root"],
+            browser_executable=prerequisite_entrypoints["browser"],
+            node_modules_root=prerequisite_entrypoints["node_modules"],
+            artifixer_root=artifixer_source_root,
+            content_agents_root=content_agents_source_root,
+            readback=service_account_readback(DEFAULT_SERVICE_ACCOUNT),
+            readback_actor=f"service-account:{DEFAULT_SERVICE_ACCOUNT}",
+        )
+        scene_configuration_environment = _install_scene_configuration_environment(
+            Path(scene_configuration_environment_file).expanduser(),
+            environment=scene_configuration_runtime["environment"],
         )
         _move_source_checkout(source, source_commit)
         release = stage_task_evaluation_control_plane_release(
@@ -1056,6 +1196,8 @@ def deploy_control_plane_commit(
         ],
         "intake_runtime_binding": runtime_binding,
         "intake_runtime": runtime,
+        "scene_configuration_runtime": scene_configuration_runtime,
+        "scene_configuration_environment": scene_configuration_environment,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
         # under-report what this deploy was exclusive with -- and a receipt
@@ -1132,6 +1274,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--intake-version-url", default=DEFAULT_INTAKE_VERSION_URL)
     parser.add_argument(
+        "--scene-configuration-environment-file",
+        default=DEFAULT_SCENE_CONFIGURATION_ENVIRONMENT_FILE,
+    )
+    parser.add_argument(
+        "--scene-configuration-runtime-root",
+        default=DEFAULT_SCENE_CONFIGURATION_RUNTIME_ROOT,
+    )
+    parser.add_argument(
+        "--splat-render-prerequisite-root",
+        default=DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT,
+    )
+    parser.add_argument("--artifixer-source-root", default=DEFAULT_ARTIFIXER_SOURCE_ROOT)
+    parser.add_argument(
+        "--content-agents-source-root", default=DEFAULT_CONTENT_AGENTS_SOURCE_ROOT
+    )
+    parser.add_argument(
         "--arm-path-units",
         action="store_true",
         help=(
@@ -1156,9 +1314,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             intake_runtime_drop_in=args.intake_runtime_drop_in,
             intake_version_url=args.intake_version_url,
             systemd_dir=args.systemd_dir,
+            scene_configuration_environment_file=(
+                args.scene_configuration_environment_file
+            ),
+            scene_configuration_runtime_root=args.scene_configuration_runtime_root,
+            splat_render_prerequisite_root=args.splat_render_prerequisite_root,
+            artifixer_source_root=args.artifixer_source_root,
+            content_agents_source_root=args.content_agents_source_root,
             arm_path_units=args.arm_path_units,
         )
-    except (OSError, ControlPlaneDeployError, ControlPlaneReleaseError) as exc:
+    except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(
             json.dumps(
                 {

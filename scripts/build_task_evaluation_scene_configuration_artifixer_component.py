@@ -30,7 +30,14 @@ def _sha256(path: Path) -> str:
 def _git(root: Path, *args: str) -> str:
     try:
         return subprocess.run(
-            ["git", "-C", str(root), *args],
+            [
+                "git",
+                "-c",
+                f"safe.directory={root}",
+                "-C",
+                str(root),
+                *args,
+            ],
             check=True,
             capture_output=True,
             text=True,

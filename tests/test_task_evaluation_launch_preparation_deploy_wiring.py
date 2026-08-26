@@ -48,6 +48,17 @@ def test_canonical_environment_documents_bounded_input_prefixes() -> None:
     assert "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=" in environment
 
 
+def test_preparation_loads_exact_release_scene_runtime_after_shared_environment() -> None:
+    service = text(
+        "deploy/systemd/blueprint-task-evaluation-launch-preparation.service"
+    )
+    assert service.index("EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env") < (
+        service.index(
+            "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
+        )
+    )
+
+
 def test_installer_creates_both_automatic_progression_queues() -> None:
     installer = text("scripts/install_live_pipeline_control_plane.sh")
     for queue in (

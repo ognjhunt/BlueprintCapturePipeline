@@ -43,5 +43,6 @@ Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_J
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_launch_preparation_worker --max-messages 4'

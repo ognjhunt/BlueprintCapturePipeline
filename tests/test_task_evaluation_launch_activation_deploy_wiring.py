@@ -64,3 +64,14 @@ def test_activation_prefixes_are_operator_owned_and_deploy_arms_no_paid_request(
     assert "provider_allocation_performed" not in text(
         "src/blueprint_pipeline/task_evaluation_shared_mutation_window.py"
     )
+
+
+def test_activation_loads_exact_release_scene_runtime_after_shared_environment() -> None:
+    service = text(
+        "deploy/systemd/blueprint-task-evaluation-launch-activation.service"
+    )
+    assert service.index("EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env") < (
+        service.index(
+            "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
+        )
+    )

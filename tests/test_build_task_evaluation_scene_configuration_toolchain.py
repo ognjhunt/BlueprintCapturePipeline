@@ -84,6 +84,11 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
     observed: list[Path] = []
 
     def readback(path: Path) -> bytes:
+        publication_root = next(
+            parent for parent in path.parents if parent.parent == output.parent
+        )
+        assert publication_root.stat().st_mode & 0o001
+        assert path.stat().st_mode & 0o004
         observed.append(path)
         return path.read_bytes()
 

@@ -876,6 +876,36 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
             {"unit": "blueprint-task-evaluation-launch-dispatcher.path"},
         ],
     )
+    monkeypatch.setattr(
+        deploy,
+        "validate_splat_render_prerequisites",
+        lambda **kwargs: {
+            "entrypoints": {
+                "node": "/runtime/node",
+                "browser_root": "/runtime/browser",
+                "browser": "/runtime/browser/chrome",
+                "node_modules": "/runtime/node_modules",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "provision_scene_configuration_release",
+        lambda **kwargs: {
+            "status": "ready",
+            "environment": {
+                "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT": "/runtime/splat",
+                "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT": "/runtime/toolchain",
+                "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX": "s3://blueprint-production-inputs/coordinator-release-windows/",
+                "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX": "s3://blueprint-production-inputs/task-evaluation-activations",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "service_account_readback",
+        lambda _user: lambda path: path.read_bytes(),
+    )
 
     def assert_lock_held(stage: str):
         with lock.open("r", encoding="utf-8") as probe:
@@ -947,6 +977,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         release_provenance=_provenance(tmp_path, commit),
         paid_launch_locks=(str(lock),),
         intake_runtime_drop_in=tmp_path / "drop-in",
+        scene_configuration_environment_file=tmp_path / "scene-runtime.env",
     )
 
     assert observed == [
@@ -995,6 +1026,65 @@ def test_deploy_refuses_mismatched_promotion_before_moving_source(
         )
 
     assert moved == []
+
+
+def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "d" * 40
+    source = tmp_path / "source"
+    source.mkdir()
+    original = tmp_path / "original-release"
+    original.mkdir()
+    active = tmp_path / "active"
+    active.symlink_to(original)
+    staged = tmp_path / "staged-release"
+    staged.mkdir()
+    moved: list[str] = []
+    monkeypatch.setattr(
+        deploy,
+        "_install_release_provenance",
+        lambda **kwargs: {"git_sha": commit},
+    )
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {})
+    monkeypatch.setattr(deploy, "_quiesce_active_path_units", lambda _before: [])
+    monkeypatch.setattr(
+        deploy,
+        "stage_task_evaluation_control_plane_release",
+        lambda **kwargs: {
+            "source_commit": commit,
+            "release_path": str(staged),
+            "created_release_checkout": True,
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
+        "validate_splat_render_prerequisites",
+        lambda **kwargs: (_ for _ in ()).throw(
+            ValueError("splat_render_prerequisite_manifest_invalid")
+        ),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_move_source_checkout",
+        lambda *_args, **_kwargs: moved.append("source"),
+    )
+
+    with pytest.raises(
+        ValueError, match="splat_render_prerequisite_manifest_invalid"
+    ):
+        deploy.deploy_control_plane_commit(
+            source_repo=source,
+            source_commit=commit,
+            release_root=tmp_path / "releases",
+            state_root=tmp_path / "state",
+            active_link=active,
+            release_provenance=_provenance(tmp_path, commit),
+            paid_launch_locks=(),
+        )
+
+    assert moved == []
+    assert active.resolve() == original
 
 
 def test_the_receipt_records_every_slot_it_was_exclusive_with(tmp_path: Path) -> None:
