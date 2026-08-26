@@ -37,6 +37,17 @@ NOW = datetime(2026, 7, 9, 12, tzinfo=timezone.utc)
 GPU_IMAGE_URI = f"registry.example/blueprint/unitree@sha256:{'b' * 64}"
 
 
+def test_policy_episode_module_stays_under_default_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/adp009d_policy_episode.py"
+    assert relative not in policy["grandfathered_module_line_limits"]
+    line_count = len((root / relative).read_text(encoding="utf-8").splitlines())
+    assert line_count <= policy["default_max_python_module_lines"]
+
+
 def _bandit_finding(root: Path, *, severity: str = "MEDIUM") -> dict[str, object]:
     source = root / "src" / "example.py"
     source.parent.mkdir(parents=True, exist_ok=True)
