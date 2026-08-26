@@ -481,7 +481,16 @@ def execute_artifixer_component(
         isinstance(render_inputs, Mapping)
         and render_inputs.get("status") == PENDING_PROVIDER_RENDER_STATUS
     ):
-        appearance = package_root / str(
+        # The bundle records these paths relative to the provider *runtime*
+        # root ("input/render/source_appearance.ply"), not to this component's
+        # package directory. Joining them to package_root looks under
+        # toolchain/components/<name>/package/, where the staged appearance
+        # has never existed.
+        runtime_root = Path(
+            os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT")
+            or Path(__file__).resolve().parents[1]
+        )
+        appearance = runtime_root / str(
             (render_inputs.get("source_appearance") or {}).get("path") or ""
         )
         envelope = {
@@ -491,7 +500,7 @@ def execute_artifixer_component(
                 appearance_path=appearance,
                 source_object=configuration["source_object"],
                 output_root=work / "provider_render",
-                input_root=package_root,
+                input_root=runtime_root,
             ),
         }
     _preflight, task_id = _materialize_preflight(

@@ -75,7 +75,7 @@ def _admission_permits_upload(rights_admission: Mapping[str, Any]) -> bool:
     )
 
 
-def _stage_requests_upload(stage_one_configuration: Mapping[str, Any]) -> bool:
+def stage_requests_upload(stage_one_configuration: Mapping[str, Any]) -> bool:
     disclosure = stage_one_configuration.get("provider_disclosure")
     if not isinstance(disclosure, Mapping):
         return False
@@ -118,7 +118,7 @@ def resolve_scene_configuration_disclosure(
             "scene_configuration_disclosure_inputs_invalid"
         )
     admitted = _admission_permits_upload(rights_admission)
-    requested = _stage_requests_upload(stage_one_configuration)
+    requested = stage_requests_upload(stage_one_configuration)
     accepted = _human_authority_accepts_provider(stage_one_configuration)
     source_bytes_to_provider = bool(admitted and requested and accepted)
     refusals: list[str] = []
@@ -163,6 +163,10 @@ def renders_on_provider(decision: Mapping[str, Any]) -> bool:
     )
 
 
+#: Retained so existing private imports keep working.
+_stage_requests_upload = stage_requests_upload
+
+
 MATERIALIZED_STATUS = "derived_method_inputs_materialized"
 PENDING_PROVIDER_RENDER_STATUS = "derived_method_inputs_pending_provider_render"
 RENDER_INPUT_STATUSES = frozenset({MATERIALIZED_STATUS, PENDING_PROVIDER_RENDER_STATUS})
@@ -193,6 +197,7 @@ def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bo
 
 __all__ = [
     "CONTROL_PLANE",
+    "stage_requests_upload",
     "MATERIALIZED_STATUS",
     "PENDING_PROVIDER_RENDER_STATUS",
     "RENDER_INPUT_STATUSES",

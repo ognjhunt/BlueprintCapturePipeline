@@ -974,3 +974,154 @@ def test_the_receipt_carries_and_cross_compares_its_authorizing_decision() -> No
     assert '"disclosure_decision",' in compared[: compared.find(")")], (
         "the decision is not cross-compared between receipt and bundle manifest"
     )
+
+
+def test_provider_entrypoint_restores_toolchain_modes_before_sealing() -> None:
+    """CPython's zipfile drops mode bits; the toolchain check compares them.
+
+    The bundle is unpacked on the provider with ``python -m zipfile -e``, which
+    never restores permissions, so every file lands 0644. The toolchain
+    self-check then compares each file's execute bit against the ``executable``
+    flag its own manifest recorded, and refuses on the first mismatch --
+    before any stage runs. Anything the stages exec would also raise
+    PermissionError.
+    """
+
+    from pathlib import Path as _Path
+
+    script = _Path("scripts/run_task_evaluation_scene_configuration_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    restore = script.find("task_evaluation_scene_configuration_toolchain.v1.json")
+    seal = script.find('chmod -R a-w "$RUNTIME_ROOT/toolchain"')
+    assert restore != -1, "the entrypoint never restores recorded modes"
+    assert seal != -1
+    assert restore < seal, "modes must be restored before the tree is sealed read-only"
+    assert "0o555" in script and "0o444" in script
+
+
+def test_provider_entrypoint_emits_varying_progress() -> None:
+    """A silent container reads as a hung one to the no-progress watchdog.
+
+    Every stage runs its child with ``capture_output=True``, so nothing is
+    printed between entrypoint start and exit. The watchdog compares log
+    tails and would tear the instance down mid-run. The payload has to vary
+    on its own -- the watchdog strips timestamps before comparing -- so a
+    clock is not enough.
+    """
+
+    from pathlib import Path as _Path
+
+    script = _Path("scripts/run_task_evaluation_scene_configuration_provider.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "BLUEPRINT_SCENE_CONFIGURATION_PROGRESS" in script
+    assert "tick=" in script, "the emitted payload must vary, not just repeat"
+
+
+def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
+    """An inverted ladder kills work the inner tool was still allowed to do."""
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+        _STAGE_TIMEOUTS_SECONDS,
+    )
+    from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (
+        MAX_TTL_SECONDS,
+    )
+
+    stage_one = _STAGE_TIMEOUTS_SECONDS["artifixer3d_observed_object_removal"]
+    # The stage tool grants its component 7_200s and the artifixer driver
+    # grants ArtiFixer3D 7_000s.
+    assert stage_one > 7_200
+    assert stage_one <= MAX_TTL_SECONDS
+
+
+def test_scene_configuration_gets_the_cold_pull_heartbeat_window() -> None:
+    """The lane admits an 18-minute cold Isaac pull, so the window must know."""
+
+    import inspect
+
+    from blueprint_pipeline import vast_probe_guards
+
+    source = inspect.getsource(vast_probe_guards)
+    assert '"task_evaluation_scene_configuration",' in source
+
+
+def test_provider_render_resolves_inputs_against_the_runtime_root() -> None:
+    """The bundle records these paths relative to the runtime, not the package.
+
+    ``bundle.py`` writes ``source_appearance.path`` relative to
+    ``provider_runtime`` ("input/render/source_appearance.ply"), and
+    ``_hydrate_envelope`` never absolutises it. Joining it to the component's
+    package directory looks under
+    ``toolchain/components/<name>/package/input/render/…``, where the staged
+    appearance has never existed.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_artifixer_driver as driver,
+    )
+
+    source = inspect.getsource(driver)
+    assert "appearance = package_root /" not in source, (
+        "the appearance is still resolved against the component package root"
+    )
+    assert "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" in source
+    assert "input_root=runtime_root," in source
+
+
+def test_provider_render_passes_the_exact_retained_gaussian_count() -> None:
+    """"method_input" is a qualified class; the renderer refuses without it.
+
+    The control-plane call passes the count. The provider call did not, and
+    fell back to parsing ``element vertex N`` out of the PLY header -- absent
+    whenever the source appearance is compressed or not a standard PLY. The
+    packet already carries the exact number.
+    """
+
+    import inspect
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        complete_provider_render_inputs,
+    )
+
+    source = inspect.getsource(complete_provider_render_inputs)
+    assert "retained_gaussian_count=_packet_source_count(render_inputs)" in source
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        _packet_source_count,
+    )
+
+    assert _packet_source_count(
+        {"derived_gaussian_cutout": {"source_count": 1_029_923}}
+    ) == 1_029_923
+    # A packet with no measured count keeps the original header fallback
+    # rather than raising.
+    assert _packet_source_count({}) is None
+    assert _packet_source_count({"derived_gaussian_cutout": {}}) is None
+    assert _packet_source_count(
+        {"derived_gaussian_cutout": {"source_count": 0}}
+    ) is None
+
+
+def test_stage_one_disclosure_is_checked_against_the_decision() -> None:
+    """The last raw-bytes literal, inside stage one's own adapter.
+
+    It demanded ``raw_interiorgs_bytes is False`` on the very run whose rights
+    authorize the upload -- and it fires at the *end* of stage one, after the
+    render, both OpenAI stages and the full ArtiFixer3D train have been paid
+    for.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_builtin_adapters as adapters,
+    )
+
+    source = inspect.getsource(adapters)
+    assert 'get(\n            "raw_interiorgs_bytes"\n        )\n        is not False' not in source
+    assert "stage_requests_upload(configuration)" in source
+    assert "renders_on_provider(" in source
