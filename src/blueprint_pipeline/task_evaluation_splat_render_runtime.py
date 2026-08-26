@@ -75,7 +75,15 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _repository_commit(repo: Path) -> str:
     result = subprocess.run(  # nosec B603 B607 - fixed read-only git argv
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        [
+            "git",
+            "-c",
+            f"safe.directory={repo}",
+            "-C",
+            str(repo),
+            "rev-parse",
+            "HEAD",
+        ],
         capture_output=True,
         text=True,
         check=False,

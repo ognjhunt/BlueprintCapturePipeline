@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import task_evaluation_splat_render_runtime as runtime_module
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     SCHEMA_VERSION,
@@ -112,6 +113,35 @@ def test_validates_every_runtime_byte_and_release_binding(tmp_path: Path) -> Non
     assert result["browser_executable"] == str(runtime / "browser/chrome")
     assert result["identity"]["source_commit"] == _commit()
     assert result["identity"]["full_byte_service_account_readback_passed"] is True
+
+
+def test_repository_identity_probe_admits_exact_release_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, stdout="a" * 40 + "\n", stderr="")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    release = Path("/opt/blueprint/task-evaluation-control-plane-releases") / ("a" * 40)
+
+    assert runtime_module._repository_commit(release) == "a" * 40
+    assert observed["argv"] == [
+        "git",
+        "-c",
+        f"safe.directory={release}",
+        "-C",
+        str(release),
+        "rev-parse",
+        "HEAD",
+    ]
+    assert observed["kwargs"] == {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "timeout": 30,
+    }
 
 
 def test_rejects_byte_tamper_even_when_path_still_exists(tmp_path: Path) -> None:
