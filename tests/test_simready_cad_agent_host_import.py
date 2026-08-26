@@ -435,7 +435,7 @@ def test_rejects_self_consistent_unknown_absolute_metadata_path(tmp_path: Path) 
     historical, staged, source_receipt, _source = _staged_fixture(tmp_path)
     value = json.loads(source_receipt.read_text())
     value["unexpected_future_metadata"] = {
-        "unadapted_absolute_path": "/Users/other-user/private/source.png"
+        "unadapted_absolute_path": "/opt/fixture/private/source.png"
     }
     value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
     source_receipt.write_text(json.dumps(value, sort_keys=True) + "\n")
@@ -460,7 +460,7 @@ def test_rejects_unknown_absolute_path_inside_nested_inspection_receipt(
     inspection_path = staged / inspection_source.relative_to(historical)
     inspection = json.loads(inspection_path.read_text())
     inspection["unexpected_future_metadata"] = {
-        "unadapted_absolute_path": "/Users/other-user/private/inspection.bin"
+        "unadapted_absolute_path": "/opt/fixture/private/inspection.bin"
     }
     inspection["receipt_digest"] = canonical_digest(
         inspection, digest_field="receipt_digest"
