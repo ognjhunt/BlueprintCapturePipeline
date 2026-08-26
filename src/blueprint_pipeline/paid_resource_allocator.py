@@ -191,6 +191,7 @@ from .native_task_arena_runtime_preflight_bundle import (
     load_verified_native_task_arena_runtime_preflight_bundle,
 )
 from .native_task_arena_vast import (
+    POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
     run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
     run_native_task_arena_policy_diagnostic_vast,
@@ -5673,6 +5674,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_kwargs["authorize_gated_backbone"] = bool(
                         args.adp009d_authorize_gated_backbone
                     )
+                    run_kwargs["provider_runtime_environment"] = {
+                        name: os.environ[name]
+                        for name in POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES
+                        if name in os.environ
+                    }
                 if args.native_task_arena_retain_warm_session:
                     if not controls_requested:
                         result = {
