@@ -1597,6 +1597,15 @@ def test_transient_output_fetch_error_reuses_one_allocation_and_seals_terminal_r
     transport_error_kind: str,
 ) -> None:
     fetch_count = 0
+    input_build_count = 0
+    original_inputs = _inputs
+
+    def counted_inputs(path: Path) -> SimpleNamespace:
+        nonlocal input_build_count
+        input_build_count += 1
+        return original_inputs(path)
+
+    monkeypatch.setitem(globals(), "_inputs", counted_inputs)
 
     def transient(_url: str) -> bytes:
         nonlocal fetch_count
@@ -1613,9 +1622,7 @@ def test_transient_output_fetch_error_reuses_one_allocation_and_seals_terminal_r
             raise vast.SemanticTeacherImageEditVastError(
                 "semantic_teacher_output_http:503"
             )
-        receipt = json.loads(
-            Path(_inputs(tmp_path).semantic_teacher_bundle_receipt).read_text()
-        )
+        receipt = json.loads((tmp_path / "bundle_receipt.json").read_text())
         return _runtime_archive(
             runtime_request_digest=receipt["runtime_request_digest"],
             backend_entry_digest=receipt["backend_entry_digest"],
@@ -1628,6 +1635,7 @@ def test_transient_output_fetch_error_reuses_one_allocation_and_seals_terminal_r
     )
 
     assert fetch_count == 2
+    assert input_build_count == 1
     assert result["status"] == "completed", result["blockers"]
     assert result["allocation_count"] == 1
     assert result["automatic_retry_count"] == 0
