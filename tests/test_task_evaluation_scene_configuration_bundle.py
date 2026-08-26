@@ -899,3 +899,35 @@ def test_claiming_the_bytes_crossed_without_an_authorizing_decision_fails() -> N
     assert not _receipt_disclosure_is_coherent(
         {"raw_interiorgs_bytes_in_provider_bundle": None}
     )
+
+
+def test_the_receipt_carries_and_cross_compares_its_authorizing_decision() -> None:
+    """A byte-crossing claim must travel with the decision that permitted it.
+
+    ``_receipt_disclosure_is_coherent`` can only check a claim it can see. The
+    bundle receipt is built as ``{**manifest, ...}``, so the manifest has to
+    record the envelope's decision -- otherwise a provider-render receipt says
+    the source bytes crossed and carries nothing to justify it, and the paid
+    authority refuses the bundle with ``receipt_contract_invalid``.
+
+    It must also be cross-compared between the receipt and the manifest sealed
+    inside the bundle, or a receipt's decision could drift from the bundle's
+    and the claim would be checkable only against itself.
+    """
+
+    import inspect
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle
+
+    source = inspect.getsource(bundle)
+    manifest_index = source.find(
+        '"raw_interiorgs_bytes_in_provider_bundle": provider_render,'
+    )
+    assert manifest_index != -1
+    decision_index = source.find('"disclosure_decision": (', manifest_index)
+    assert decision_index != -1, "the manifest never records the decision"
+
+    compared = source[source.find("compared_fields = (") :]
+    assert '"disclosure_decision",' in compared[: compared.find(")")], (
+        "the decision is not cross-compared between receipt and bundle manifest"
+    )

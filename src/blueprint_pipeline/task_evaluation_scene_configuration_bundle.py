@@ -372,6 +372,13 @@ def build_scene_configuration_provider_bundle(
         # not a safety guarantee -- the guarantee is the digest-bound
         # decision that authorized the crossing.
         "raw_interiorgs_bytes_in_provider_bundle": provider_render,
+        # A receipt claiming the source bytes crossed must carry the
+        # digest-bound decision that permitted it, or the claim cannot be
+        # checked anywhere the receipt travels. The receipt is built from
+        # this manifest, so recording it once covers both.
+        "disclosure_decision": (
+            portable["render_inputs_result"].get("disclosure_decision") or {}
+        ),
         "derived_rendered_view_count": len(portable["render_inputs_result"]["derived_frames"]),
         "single_parent_allocation": True,
         "nested_provider_mutations_performed": 0,
@@ -487,6 +494,10 @@ def load_scene_configuration_provider_bundle_receipt(
         "portable_construction_envelope_digest",
         "toolchain_digest",
         "raw_interiorgs_bytes_in_provider_bundle",
+        # Cross-compared with everything else it authorizes: without this, a
+        # receipt's decision could drift from the one sealed in the bundle,
+        # and the byte-crossing claim would be checkable only against itself.
+        "disclosure_decision",
         "single_parent_allocation",
         "nested_provider_mutations_performed",
         "evaluation_episode_executed",
