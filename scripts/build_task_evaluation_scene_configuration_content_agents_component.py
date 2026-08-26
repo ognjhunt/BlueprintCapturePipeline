@@ -75,17 +75,12 @@ def build_content_agents_scene_configuration_component(
     staging = Path(tempfile.mkdtemp(prefix="content-agents-scene-configuration-"))
     try:
         archive = staging / "content_agents_source.zip"
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(upstream),
-                "archive",
-                "--format=zip",
-                f"--output={archive}",
-                "HEAD",
-            ],
-            check=True,
+        _git(
+            upstream,
+            "archive",
+            "--format=zip",
+            f"--output={archive}",
+            "HEAD",
         )
         source_receipt = {
             "schema_version": "task_evaluation_content_agents_component_source.v1",
