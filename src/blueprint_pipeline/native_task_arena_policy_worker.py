@@ -43,31 +43,40 @@ _EPISODE_PROGRESS_BOOLEAN_FIELDS = (
     "candidate_joint_state_validated",
     "candidate_action_applied",
     "episode_running",
+    "episode_readiness_verified",
+    "episode_started",
 )
 _EPISODE_PHASE_ORDER = {
-    "first_observation": 1,
-    "multicamera_observation_retained": 2,
-    "policy_query_started": 3,
-    "policy_response_received": 4,
-    "policy_action_shape_refused": 5,
-    "policy_action_shape_validated": 5,
-    "policy_action_finite_refused": 6,
-    "policy_action_finite_validated": 6,
-    "policy_action_bounds_refused": 7,
-    "policy_action_bounds_validated": 7,
-    "first_policy_action": 8,
-    "native_command_validated": 9,
-    "environment_step_started": 10,
-    "episode_running": 11,
-    "joint_state_validated": 12,
-    "episode_media_sealed": 13,
-    "episode_complete": 14,
+    "episode_readiness_started": 1,
+    "episode_readiness_verified": 2,
+    "episode_started": 3,
+    "first_observation": 4,
+    "multicamera_observation_retained": 5,
+    "policy_query_started": 6,
+    "policy_response_received": 7,
+    "policy_action_shape_refused": 8,
+    "policy_action_shape_validated": 8,
+    "policy_action_finite_refused": 9,
+    "policy_action_finite_validated": 9,
+    "policy_action_bounds_refused": 10,
+    "policy_action_bounds_validated": 10,
+    "first_policy_action": 11,
+    "native_command_validated": 12,
+    "environment_step_started": 13,
+    "episode_running": 14,
+    "joint_state_validated": 15,
+    "episode_media_sealed": 16,
+    "episode_policy_safety_terminal": 17,
+    "episode_scientific_terminal": 17,
+    "episode_planned_duration_complete": 17,
+    "episode_complete": 18,
 }
 _EPISODE_PROGRESS_EVIDENCE_FIELDS = (
     "candidate_policy_action_queries",
     "commanded_actions",
     "candidate_exact_policy_input_frames",
     "policy_inference_evidence",
+    "prestart_readiness",
 )
 
 
@@ -141,6 +150,8 @@ def _public_episode_progress(progress: Mapping[str, Any]) -> dict[str, Any]:
         *_EPISODE_PROGRESS_EVIDENCE_FIELDS,
         "visual_evidence",
         "media_artifacts",
+        "episode_terminal_class",
+        "prestart_readiness",
     }
     return {key: progress[key] for key in sorted(keys) if key in progress}
 
@@ -523,6 +534,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "exact_policy_observation_retained": False,
         "multicamera_policy_observation_retained": False,
         "episode_running": False,
+        "episode_readiness_verified": False,
+        "episode_started": False,
+        "episode_lifecycle_status": "preparing",
+        "episode_terminal_class": None,
         "policy_outcome_interpretable": False,
         "scientific_outcome_admitted": False,
         "ranking_eligible": False,
@@ -759,11 +774,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             episode_id=episode_id,
             scoring_authorized=not diagnostic,
             require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
             progress=episode_progress,
             progress_callback=retain_episode_progress,
         )
         _apply_episode_progress(result, episode_progress)
         result["episode"] = episode
+        from blueprint_pipeline.policy_episode_lifecycle import (
+            validate_policy_episode_lifecycle,
+        )
+
+        lifecycle = validate_policy_episode_lifecycle(episode)
+        result["episode_lifecycle_status"] = "terminal_result_retained"
+        result["episode_terminal_class"] = lifecycle["terminal_class"]
         if diagnostic:
             result["policy_outcome_interpretable"] = False
             result["scientific_outcome_admitted"] = False
@@ -803,44 +826,99 @@ def main(argv: Sequence[str] | None = None) -> int:
                         inference_evidence
                     )
         _apply_episode_progress(result, episode_progress)
-        failure_phase = result["phase_reached"]
-        result["exception"] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-            "phase": failure_phase,
-            "traceback": traceback.format_exc(),
-        }
-        result["blockers"].append(
-            f"native_task_policy_failed_at_{failure_phase}:"
-            f"{type(exc).__name__}:{exc}"
+        legitimate_terminal = None
+        legitimate_terminal_finalizer = episode_progress.get(
+            "_legitimate_early_terminal_finalizer"
         )
-        failure_media_finalizer = episode_progress.get("_failure_media_finalizer")
         if (
-            episode_progress.get("first_observation_retained") is True
-            and callable(failure_media_finalizer)
+            episode_progress.get("episode_started") is True
+            and callable(legitimate_terminal_finalizer)
         ):
             try:
-                visual_evidence, media_artifacts = failure_media_finalizer(
-                    failure_reason=f"{type(exc).__name__}:{exc}"
+                legitimate_terminal = legitimate_terminal_finalizer(exc)
+            except BaseException:  # noqa: BLE001 - generic failure path below
+                legitimate_terminal = None
+
+        if legitimate_terminal is not None:
+            from blueprint_pipeline.policy_episode_lifecycle import (
+                TERMINAL_SCIENTIFIC,
+                validate_policy_episode_lifecycle,
+            )
+
+            lifecycle = validate_policy_episode_lifecycle(legitimate_terminal)
+            _apply_episode_progress(result, episode_progress)
+            result["episode"] = legitimate_terminal
+            result["visual_evidence"] = legitimate_terminal["visual_evidence"]
+            result["media_artifacts"] = legitimate_terminal["media_artifacts"]
+            result["episode_lifecycle_status"] = "terminal_result_retained"
+            result["episode_terminal_class"] = lifecycle["terminal_class"]
+            result["policy_outcome_interpretable"] = False
+            result["scientific_outcome_admitted"] = bool(
+                not diagnostic
+                and lifecycle["terminal_class"] == TERMINAL_SCIENTIFIC
+            )
+            result["ranking_eligible"] = False
+            if diagnostic:
+                result["diagnostic_motion_observed"] = bool(
+                    legitimate_terminal["motion_evidence"]["arm_moved"]
                 )
-                if visual_evidence is None:
-                    raise RuntimeError("post_observation_media_not_sealed")
-                result["visual_evidence"] = visual_evidence
-                result["media_artifacts"] = media_artifacts
-            except BaseException as media_exc:  # noqa: BLE001
-                result["visual_evidence"] = {
-                    "status": "incomplete_after_first_observation",
-                    "media_gap": {
-                        "type": "after_first_observation_evidence_incomplete",
-                        "reason": f"{type(media_exc).__name__}:{media_exc}",
-                    },
-                }
+            result["status"] = "completed"
+            result["phase_reached"] = "episode_complete"
+        else:
+            failure_phase = result["phase_reached"]
+            post_start = episode_progress.get("episode_started") is True
+            result["episode_lifecycle_status"] = (
+                "post_start_infrastructure_invariant_violation"
+                if post_start
+                else "blocked_before_episode_start"
+            )
+            result["exception"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "phase": failure_phase,
+                "traceback": traceback.format_exc(),
+            }
+            if post_start:
                 result["blockers"].append(
-                    "native_task_policy_post_observation_media_finalization_failed:"
-                    f"{type(media_exc).__name__}:{media_exc}"
+                    "native_task_policy_post_start_infrastructure_invariant_violation:"
+                    f"{failure_phase}:{type(exc).__name__}:{exc}"
                 )
-        if episode_progress:
-            result["partial_episode"] = _public_episode_progress(episode_progress)
+            else:
+                result["blockers"].append(
+                    f"native_task_policy_blocked_before_episode_start_at_{failure_phase}:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+            failure_media_finalizer = episode_progress.get(
+                "_failure_media_finalizer"
+            )
+            if (
+                episode_progress.get("first_observation_retained") is True
+                and callable(failure_media_finalizer)
+            ):
+                try:
+                    visual_evidence, media_artifacts = failure_media_finalizer(
+                        failure_reason=f"{type(exc).__name__}:{exc}"
+                    )
+                    if visual_evidence is None:
+                        raise RuntimeError("post_observation_media_not_sealed")
+                    result["visual_evidence"] = visual_evidence
+                    result["media_artifacts"] = media_artifacts
+                except BaseException as media_exc:  # noqa: BLE001
+                    result["visual_evidence"] = {
+                        "status": "incomplete_after_first_observation",
+                        "media_gap": {
+                            "type": "after_first_observation_evidence_incomplete",
+                            "reason": f"{type(media_exc).__name__}:{media_exc}",
+                        },
+                    }
+                    result["blockers"].append(
+                        "native_task_policy_post_observation_media_finalization_failed:"
+                        f"{type(media_exc).__name__}:{media_exc}"
+                    )
+            if episode_progress:
+                result["partial_episode"] = _public_episode_progress(
+                    episode_progress
+                )
     finally:
         if (
             policy_query_tracker is not None
