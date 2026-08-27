@@ -50,6 +50,14 @@ _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 _RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 _PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
 _ADAPTER_ID = "content_agents_rigid_replacement"
+_PARENT_NATIVE_RUNTIME_ENV = (
+    "PYTHONPATH",
+    "LD_LIBRARY_PATH",
+    "PXR_PLUGINPATH_NAME",
+    "ISAAC_PATH",
+    "EXP_PATH",
+    "CARB_APP_PATH",
+)
 PHYSICS_COMPLETION_SCHEMA_VERSION = (
     "task_evaluation_rigid_candidate_physics_completion.v1"
 )
@@ -769,13 +777,13 @@ def execute_content_agents_component(
         **values,
         "BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR": str(runtime / "runtime_output"),
     }
-    # The parent provider intentionally adds its sealed standalone ``usd-core``
-    # tree to PYTHONPATH so the pre-Kit import gate can load pxr.  The released
-    # Content Agents runtime installs ``usd-exchange`` into its own isolated
-    # venv; inheriting the parent path makes that incompatible binding win
-    # before the venv's site-packages.  Let the nested runtime use exactly the
-    # dependency closure it provisions for itself.
-    child_environment.pop("PYTHONPATH", None)
+    # The parent provider intentionally carries both a sealed standalone
+    # ``usd-core`` tree and Isaac/Kit's native runtime.  The released Content
+    # Agents runtime provisions an independent Python 3.12/OpenUSD closure.
+    # Do not let the parent's Python modules, plugin registry, or C++ loader
+    # paths cross that process boundary and silently mix incompatible ABIs.
+    for name in _PARENT_NATIVE_RUNTIME_ENV:
+        child_environment.pop(name, None)
     stage_scope = scene_configuration_openai_stage_scope(
         values, stage="content_agents"
     )
