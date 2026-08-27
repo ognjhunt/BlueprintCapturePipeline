@@ -36,10 +36,6 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_create_failure_diagnosis import diagnose_empty_create_400
-from .task_evaluation_scene_configuration_disclosure import (
-    render_inputs_disclosure_is_coherent,
-    renders_on_provider,
-)
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
@@ -78,12 +74,9 @@ from .provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
-from .task_evaluation_scene_configuration_builtin_producers import (
-    TOOLCHAIN_SCHEMA_VERSION as SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION,
-)
 from . import vast_runtime_environment_contract as vrec
-from .task_evaluation_scene_configuration_bundle import (
-    BUNDLE_SCHEMA_VERSION as SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION,
+from .task_evaluation_scene_configuration_provider_preflight import (
+    scene_configuration_bundle_contract as _scene_configuration_bundle_contract,
 )
 from .native_task_arena_execution_contract import (
     EXECUTION_MODE_CONTRACTS as NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS,
@@ -365,174 +358,6 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }
-
-
-def _scene_configuration_bundle_contract(
-    archive: zipfile.ZipFile,
-) -> tuple[dict[str, Any], set[str], list[str]]:
-    """Verify every declared portable input before provider mutation."""
-
-    root = "provider_runtime/"
-    manifest_member = root + f"{SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION}.json"
-    envelope_member = root + "input/portable_construction_envelope.v1.json"
-    toolchain_member = root + "toolchain/" + SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION + ".json"
-    required = {
-        manifest_member,
-        envelope_member,
-        toolchain_member,
-        root + "run_task_evaluation_scene_configuration_provider.sh",
-        root + "task_evaluation_scene_configuration_provider_runner.py",
-        root + "blueprint_pipeline/__init__.py",
-        root + "blueprint_pipeline/task_evaluation_scene_configuration_provider_runtime.py",
-    }
-    blockers: list[str] = []
-    try:
-        manifest = json.loads(archive.read(manifest_member).decode("utf-8"))
-        envelope = json.loads(archive.read(envelope_member).decode("utf-8"))
-        toolchain = json.loads(archive.read(toolchain_member).decode("utf-8"))
-    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
-        return {}, required, ["scene_configuration_provider_manifests_invalid"]
-    if not all(isinstance(value, Mapping) for value in (manifest, envelope, toolchain)):
-        return {}, required, ["scene_configuration_provider_manifests_invalid"]
-    manifest = dict(manifest)
-    envelope = dict(envelope)
-    toolchain = dict(toolchain)
-    source_commit = _string(manifest.get("source_commit"))
-    if (
-        manifest.get("schema_version") != SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION
-        or manifest.get("status") != "ready"
-        or manifest.get("provider_bundle_kind")
-        != "task_evaluation_scene_configuration"
-        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
-        or manifest.get("manifest_digest")
-        != canonical_digest(manifest, digest_field="manifest_digest")
-        or manifest.get("raw_interiorgs_bytes_in_provider_bundle")
-        is not renders_on_provider(
-            (envelope.get("render_inputs_result") or {}).get("disclosure_decision")
-            or {}
-        )
-        or manifest.get("single_parent_allocation") is not True
-        or manifest.get("nested_provider_mutations_performed") != 0
-        or manifest.get("evaluation_episode_executed") is not False
-    ):
-        blockers.append("scene_configuration_provider_manifest_invalid")
-    references = envelope.get("materialized_references")
-    configurations = envelope.get("stage_configuration_references")
-    render = envelope.get("render_inputs_result")
-    disclosure = envelope.get("provider_disclosure_receipt")
-    stages = (envelope.get("recipe") or {}).get("stage_sequence")
-    if (
-        envelope.get("expected_production_commit") != source_commit
-        or envelope.get("envelope_digest")
-        != canonical_digest(envelope, digest_field="envelope_digest")
-        or manifest.get("portable_construction_envelope_digest")
-        != envelope.get("envelope_digest")
-        or not isinstance(references, list)
-        or any(
-            not isinstance(row, Mapping)
-            or row.get("contract_path") == "scene.appearance.representation"
-            or row.get("materialized_path") is not None
-            for row in references or []
-        )
-        or not isinstance(configurations, list)
-        or len(configurations) != 6
-        or not isinstance(stages, list)
-        or len(stages) != 6
-        or not isinstance(render, Mapping)
-        or not render_inputs_disclosure_is_coherent(render)
-        or not isinstance(disclosure, Mapping)
-        or disclosure.get("raw_interiorgs_bytes_in_provider_bundle")
-        is not renders_on_provider(render.get("disclosure_decision") or {})
-        or disclosure.get("derived_rendered_views_in_provider_bundle")
-        is renders_on_provider(render.get("disclosure_decision") or {})
-    ):
-        blockers.append("scene_configuration_portable_envelope_invalid")
-
-    bound_rows: list[tuple[str, Mapping[str, Any]]] = []
-    if isinstance(references, list):
-        bound_rows.extend(
-            (str(row.get("provider_relative_path") or ""), row)
-            for row in references
-            if isinstance(row, Mapping)
-        )
-    if isinstance(configurations, list):
-        bound_rows.extend(
-            (str(row.get("relative_path") or ""), row)
-            for row in configurations
-            if isinstance(row, Mapping)
-        )
-    if isinstance(render, Mapping):
-        for key in ("camera_calibration", "render_manifest"):
-            row = render.get(key)
-            if isinstance(row, Mapping):
-                bound_rows.append((str(row.get("path") or ""), row))
-        bound_rows.extend(
-            (str(row.get("path") or ""), row)
-            for row in render.get("derived_frames") or []
-            if isinstance(row, Mapping)
-        )
-    seen: set[str] = set()
-    for relative, row in bound_rows:
-        if (
-            not relative
-            or relative.startswith("/")
-            or ".." in Path(relative).parts
-            or relative in seen
-        ):
-            blockers.append("scene_configuration_provider_input_path_invalid")
-            continue
-        seen.add(relative)
-        member = root + relative
-        required.add(member)
-        try:
-            body = archive.read(member)
-        except KeyError:
-            blockers.append("scene_configuration_provider_input_missing")
-            continue
-        if (
-            row.get("size_bytes") != len(body)
-            or row.get("digest")
-            != "sha256:" + hashlib.sha256(body).hexdigest()
-        ):
-            blockers.append("scene_configuration_provider_input_digest_invalid")
-
-    files = toolchain.get("files")
-    if (
-        toolchain.get("schema_version")
-        != SCENE_CONFIGURATION_TOOLCHAIN_SCHEMA_VERSION
-        or toolchain.get("status") != "published_full_byte_readback_passed"
-        or toolchain.get("source_commit") != source_commit
-        or toolchain.get("full_byte_service_account_readback_passed") is not True
-        or toolchain.get("toolchain_digest")
-        != canonical_digest(toolchain, digest_field="toolchain_digest")
-        or manifest.get("toolchain_digest") != toolchain.get("toolchain_digest")
-        or not isinstance(files, list)
-        or not files
-    ):
-        blockers.append("scene_configuration_provider_toolchain_invalid")
-    else:
-        for row in files:
-            if not isinstance(row, Mapping):
-                blockers.append("scene_configuration_provider_toolchain_invalid")
-                continue
-            relative = str(row.get("relative_path") or "")
-            if not relative or relative.startswith("/") or ".." in Path(relative).parts:
-                blockers.append("scene_configuration_provider_toolchain_invalid")
-                continue
-            member = root + "toolchain/" + relative
-            required.add(member)
-            try:
-                body = archive.read(member)
-            except KeyError:
-                blockers.append("scene_configuration_provider_toolchain_invalid")
-                continue
-            if (
-                row.get("size_bytes") != len(body)
-                or row.get("sha256")
-                != "sha256:" + hashlib.sha256(body).hexdigest()
-            ):
-                blockers.append("scene_configuration_provider_toolchain_invalid")
-    return manifest, required, sorted(set(blockers))
 
 
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
@@ -2869,7 +2694,6 @@ def _blueprint_bundle_preflight(
         "provider_runtime/toolchain/task_evaluation_scene_configuration_toolchain.v1.json",
         "provider_runtime/blueprint_pipeline/__init__.py",
         "provider_runtime/blueprint_pipeline/task_evaluation_scene_configuration_provider_runtime.py",
-        "provider_runtime/renderer/tools/splat_render/render_splat.mjs",
     }
     if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
@@ -3595,6 +3419,11 @@ def _blueprint_bundle_preflight(
                         provider_bundle_kind=provider_bundle_kind,
                         entrypoint_text=entrypoint_text,
                         runner_text=runner_text,
+                        task_evaluation_scene_configuration_diagnostic=(
+                            provider_bundle_kind
+                            == "task_evaluation_scene_configuration"
+                            and readiness.get("diagnostic_only") is True
+                        ),
                     )
                 )
                 if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:

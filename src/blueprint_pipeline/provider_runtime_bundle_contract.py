@@ -116,6 +116,7 @@ def provider_runtime_contract_blockers(
     provider_bundle_kind: str,
     entrypoint_text: str,
     runner_text: str,
+    task_evaluation_scene_configuration_diagnostic: bool = False,
 ) -> list[str]:
     """Return stable fail-closed runtime-contract blockers for a provider bundle.
 
@@ -538,9 +539,18 @@ def provider_runtime_contract_blockers(
                 "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT",
             )
         )
-        runner_valid = all(
-            token in runner_text
-            for token in (
+        expected_runner_tokens = (
+            (
+                "execute_scene_configuration_diagnostic_stage_chain",
+                "validate_scene_configuration_diagnostic_checkpoint",
+                "advance_scene_configuration_diagnostic_checkpoint",
+                "portable_construction_envelope.v1.json",
+                "diagnostic_only",
+                "qualification_eligible",
+                "executed_inside_one_parent_provider_run",
+            )
+            if task_evaluation_scene_configuration_diagnostic
+            else (
                 "execute_scene_configuration_stage_chain",
                 "portable_construction_envelope.v1.json",
                 "candidate_policy_queried",
@@ -549,6 +559,7 @@ def provider_runtime_contract_blockers(
                 "_hydrate_envelope",
             )
         )
+        runner_valid = all(token in runner_text for token in expected_runner_tokens)
         runner_blocker = (
             "provider_runner_missing_task_evaluation_scene_configuration_contract"
         )
