@@ -399,7 +399,9 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
     return sorted(set(blockers))
 
 
-def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
+def _validate_launch_profile(
+    value: Mapping[str, Any], *, reopen_external_lineage: bool
+) -> list[str]:
     profile = _mapping(value)
     blockers: list[str] = []
     blockers.extend(_native_policy_binding_blockers(profile))
@@ -483,7 +485,7 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
                 ordinal = lineage.get("attempt_ordinal")
                 if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
                     blockers.append("joint_agent_prior_spend_lineage_invalid")
-                else:
+                elif reopen_external_lineage:
                     try:
                         observed = validate_bound_lane_prior_spend(lineage, lane="joint_agent")
                     except ValueError:
@@ -618,6 +620,23 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     return sorted(set(blockers))
 
 
+def validate_launch_profile_structure(value: Mapping[str, Any]) -> list[str]:
+    """Validate a profile document without reopening its bound local evidence.
+
+    Catalog projection uses this pass before checking the profile's declared
+    immutable inputs. Execution, publication, and standing-authority paths use
+    :func:`validate_launch_profile`, which still reopens the external lineage.
+    """
+
+    return _validate_launch_profile(value, reopen_external_lineage=False)
+
+
+def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
+    """Validate a profile and reopen every external lineage it binds."""
+
+    return _validate_launch_profile(value, reopen_external_lineage=True)
+
+
 def _has_unknown_placeholder(value: str) -> bool:
     remainder = value.replace(LAUNCH_RUN_ROOT_PLACEHOLDER, "")
     return "{" in remainder or "}" in remainder
@@ -629,12 +648,9 @@ def _render_launch_path(value: str, *, run_root: Path) -> str:
     return value.replace(LAUNCH_RUN_ROOT_PLACEHOLDER, str(run_root))
 
 
-def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the only profile fields a public WebApp selector may observe."""
-
-    blockers = validate_launch_profile(profile)
-    if blockers:
-        raise TaskEvaluationLaunchError(",".join(blockers))
+def _project_public_launch_profile_descriptor(
+    profile: Mapping[str, Any],
+) -> dict[str, Any]:
     descriptor = {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
     for field in PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS:
         if field in profile:
@@ -645,6 +661,29 @@ def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, An
         "hard_ttl_seconds": allocator.get("hard_ttl_seconds"),
     }
     return descriptor
+
+
+def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Return public fields after full profile and external-lineage validation."""
+
+    blockers = validate_launch_profile(profile)
+    if blockers:
+        raise TaskEvaluationLaunchError(",".join(blockers))
+    return _project_public_launch_profile_descriptor(profile)
+
+
+def catalog_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Return public fields after catalog-safe structural validation only.
+
+    The catalog reconciler must verify the declared immutable inputs before it
+    calls this projection. This helper never authorizes execution; the full
+    public descriptor and every paid-path gate continue to reopen lineage.
+    """
+
+    blockers = validate_launch_profile_structure(profile)
+    if blockers:
+        raise TaskEvaluationLaunchError(",".join(blockers))
+    return _project_public_launch_profile_descriptor(profile)
 
 
 def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[str]:
