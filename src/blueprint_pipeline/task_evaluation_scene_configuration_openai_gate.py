@@ -98,11 +98,43 @@ def scene_configuration_openai_stage_scope(
 
 
 
-# A derived receipt authorizes only the window it is used in. The operator's own
-# file may carry a multi-week window; a receipt this lane mints for itself gets
-# a short one so a stale copy left on a host cannot authorize spend days later.
-_DERIVED_SCOPE_WINDOW = timedelta(hours=12)
+# A derived receipt authorizes only the official-cost attribution window it is
+# used in.  The authority snapshots one UTC day and extends that snapshot to
+# the midnight after its one-hour candidate window.  A fixed twelve-hour
+# receipt did not cover that requirement before noon UTC or when the candidate
+# window crossed midnight, so otherwise-valid runs still depended on the wall
+# clock.  Derive the exact required end instead of weakening the authority's
+# strict window readback.
+_STAGE_ATTRIBUTION_WINDOW = timedelta(hours=1)
 _DERIVED_SCOPE_BACKDATE = timedelta(hours=1)
+
+
+def _required_scope_end(moment: datetime) -> datetime:
+    candidate_runtime_window_end = moment + _STAGE_ATTRIBUTION_WINDOW
+    return datetime(
+        candidate_runtime_window_end.year,
+        candidate_runtime_window_end.month,
+        candidate_runtime_window_end.day,
+        tzinfo=UTC,
+    ) + timedelta(days=1)
+
+
+def _scope_covers_required_window(
+    attestation: Mapping[str, Any],
+    *,
+    moment: datetime,
+    required_end: datetime,
+) -> bool:
+    try:
+        exclusive_from = datetime.fromisoformat(
+            str(attestation["exclusive_from"]).replace("Z", "+00:00")
+        ).astimezone(UTC)
+        exclusive_until = datetime.fromisoformat(
+            str(attestation["exclusive_until"]).replace("Z", "+00:00")
+        ).astimezone(UTC)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return exclusive_from <= moment and exclusive_until >= required_end
 
 
 def stage_paid_resource_class(stage: str) -> str:
@@ -129,18 +161,25 @@ def resolve_stage_scope_attestation(
     exclusivity this receipt asserts.
     """
 
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
+    required_end = _required_scope_end(moment)
     if attestation is not None:
         try:
-            return validate_openai_cost_scope_attestation(
+            validated = validate_openai_cost_scope_attestation(
                 attestation,
                 provider_id="openai",
                 paid_resource_class=paid_resource_class,
                 project_id=project_id,
                 api_key_id=api_key_id,
             )
+            if _scope_covers_required_window(
+                validated,
+                moment=moment,
+                required_end=required_end,
+            ):
+                return validated
         except OpenAICostAuthorityError:
             pass
-    moment = now or datetime.now(UTC)
     operator_id = str(
         (attestation or {}).get("operator_id")
         or os.environ.get("BLUEPRINT_OPENAI_SCOPE_OPERATOR_ID")
@@ -153,7 +192,7 @@ def resolve_stage_scope_attestation(
         api_key_id=api_key_id,
         operator_id=operator_id,
         exclusive_from=moment - _DERIVED_SCOPE_BACKDATE,
-        exclusive_until=moment + _DERIVED_SCOPE_WINDOW,
+        exclusive_until=required_end,
     )
     return validate_openai_cost_scope_attestation(
         derived,

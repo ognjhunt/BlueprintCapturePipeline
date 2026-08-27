@@ -57,6 +57,7 @@ def test_builds_exact_stage_gate_from_parent_authority(monkeypatch, tmp_path) ->
     assert result["authorization_receipt_digest"] == "sha256:" + "a" * 64
     assert result["admin_api_key_file"] == "/private/admin-key"
     assert result["api_key_id"] == "key_content_agents"
+    assert result["require_zero_baseline"] is False
     # The gate reads the receipt the lane resolved for this stage, not the raw
     # operator path: an absent or pre-rename operator file is derived from the
     # provisioned key binding instead of stalling the run. Pin the binding the
@@ -75,9 +76,8 @@ def test_builds_exact_stage_gate_from_parent_authority(monkeypatch, tmp_path) ->
 def test_each_stage_binds_its_own_exclusive_scope(monkeypatch, tmp_path) -> None:
     """One run holds three OpenAI stages; a shared key scope cannot pass.
 
-    The official-cost gate refuses a reused scope twice over -- the operator
-    attestation binds one exact ``paid_resource_class``, and every reservation
-    demands a zero same-day baseline for its ``(project_id, api_key_id)``.
+    The operator attestation binds one exact ``paid_resource_class`` and the
+    delta snapshot is meaningful only when no sibling stage shares that key.
     This pins that each stage resolves a distinct key id and attestation file,
     which is the property the shared single-scope environment silently broke.
     """
