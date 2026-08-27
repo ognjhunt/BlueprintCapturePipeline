@@ -84,6 +84,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
         "response_store": False,
         "tracing_disabled": True,
         "raw_secret_values_recorded": False,
+        "all_frames_upright": True,
         "semantic_object_absence_review_passed": True,
         "multiview_consistency_review_passed": True,
         "rights_attestation_digest": "sha256:" + "a" * 64,
@@ -98,6 +99,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
                 "task_id": "remove-instance-104",
                 "camera_id": row["camera_id"],
                 "frame_sha256": row["sha256"],
+                "orientation_is_upright": True,
                 "source_object_absent": True,
                 "repair_is_locally_plausible": True,
                 "preserves_non_target_content": True,
@@ -125,6 +127,7 @@ def test_seals_exact_frame_ai_review_without_physics_claim(tmp_path: Path) -> No
     )
 
     assert receipt["status"] == "accepted"
+    assert receipt["all_frames_upright"] is True
     assert receipt["all_review_frames_digest_bound"] is True
     assert receipt["physics_or_collision_authority_granted"] is False
 
@@ -150,6 +153,26 @@ def test_rejects_review_missing_one_camera(tmp_path: Path) -> None:
     final, execution = _inputs(tmp_path)
     value = json.loads(execution.read_text(encoding="utf-8"))
     value["frames"].pop()
+    value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
+    execution.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationArtifixerAIVisualReviewError,
+        match="artifixer_ai_review_execution_not_acceptable",
+    ):
+        seal_artifixer_ai_visual_review(
+            final_composite_receipt_path=final,
+            review_execution_receipt_path=execution,
+            publisher_instance_id="104",
+            minimum_review_frames=2,
+            output_path=tmp_path / "review.json",
+        )
+
+
+def test_rejects_review_with_upside_down_frame(tmp_path: Path) -> None:
+    final, execution = _inputs(tmp_path)
+    value = json.loads(execution.read_text(encoding="utf-8"))
+    value["frames"][0]["orientation_is_upright"] = False
     value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
     execution.write_text(json.dumps(value), encoding="utf-8")
 
@@ -293,6 +316,7 @@ def test_paired_target_review_binds_source_mask_and_generated_frame(
 
     assert task_id == "remove-source-object-104"
     assert inventory[0]["sha256"] == _sha256(generated)
+    assert "right-side-up" in request[0]["content"][0]["text"]
     labels = [row.get("text") for row in request[0]["content"] if row.get("type") == "input_text"]
     assert "source_anchor" in labels
     assert "exact_repair_mask" in labels
