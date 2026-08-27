@@ -2262,12 +2262,17 @@ def _vast_empty_offer_search_retry_attempts() -> int:
 def _is_stale_offer_create_http_error(
     exc: urllib.error.HTTPError,
     error_text: str = "",
+    *,
+    selected_offer_absent_from_fresh_search: bool = False,
 ) -> bool:
     code = int(getattr(exc, "code", 0) or 0)
     if code in {404, 409, 410}:
         return True
     normalized = error_text.lower()
-    return code == 400 and "no_such_ask" in normalized
+    return code == 400 and (
+        "no_such_ask" in normalized
+        or (not normalized.strip() and selected_offer_absent_from_fresh_search)
+    )
 
 
 def _offer_selection_manifest(
@@ -8812,8 +8817,47 @@ def run_vast_provider_adapter(
                 # Preserve the response for the outer fail-closed HTTP error
                 # receipt when this is not the documented stale-offer race.
                 exc.fp = io.BytesIO(error_text.encode("utf-8"))
+                selected_offer_absent_from_fresh_search = False
+                catalog_readback_http_status_code: int | None = None
+                catalog_readback_offer_count: int | None = None
+                if int(exc.code or 0) == 400 and not error_text.strip():
+                    try:
+                        (
+                            catalog_readback_http_status_code,
+                            catalog_readback_response,
+                        ) = _api_json(
+                            method="POST",
+                            path="/bundles/",
+                            api_key=api_key,
+                            payload={
+                                **search_request,
+                                "limit": 1,
+                                "id": {
+                                    "eq": int(selected_offer["ask_contract_id"]),
+                                },
+                            },
+                            timeout_seconds=45,
+                        )
+                        catalog_readback_offers = _offers_from_response(
+                            catalog_readback_response
+                        )
+                        catalog_readback_offer_count = len(catalog_readback_offers)
+                        selected_offer_absent_from_fresh_search = bool(
+                            200 <= int(catalog_readback_http_status_code or 0) < 300
+                            and catalog_readback_offer_count == 0
+                        )
+                    except Exception:  # noqa: BLE001
+                        # A failed readback is not evidence that an offer vanished.
+                        # Preserve the original HTTP 400 and fail closed below.
+                        selected_offer_absent_from_fresh_search = False
                 if (
-                    not _is_stale_offer_create_http_error(exc, error_text)
+                    not _is_stale_offer_create_http_error(
+                        exc,
+                        error_text,
+                        selected_offer_absent_from_fresh_search=(
+                            selected_offer_absent_from_fresh_search
+                        ),
+                    )
                     or stale_offer_create_retry_count >= max_stale_offer_retries
                 ):
                     raise
@@ -8829,6 +8873,13 @@ def run_vast_provider_adapter(
                     if selected_machine_id is not None
                     else None,
                     "error_preview": _redact_text(error_text[:500], secret_values),
+                    "selected_offer_absent_from_fresh_search": (
+                        selected_offer_absent_from_fresh_search
+                    ),
+                    "catalog_readback_http_status_code": (
+                        catalog_readback_http_status_code
+                    ),
+                    "catalog_readback_offer_count": catalog_readback_offer_count,
                     "raw_secret_values_recorded": False,
                 }
                 create_retry_attempts.append(retry_attempt)
