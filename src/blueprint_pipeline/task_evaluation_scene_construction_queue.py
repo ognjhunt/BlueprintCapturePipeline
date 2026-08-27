@@ -378,11 +378,134 @@ def finalize_scene_construction(
     return finalization
 
 
+def preflight_scene_construction_finalization(
+    *,
+    queue_root: str | Path,
+    envelope: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prove the exact live queue item can reach either terminal state.
+
+    This check is intentionally read-only.  Preparation owns provisioning the
+    queue tree; the paid caller must not discover a missing, ambiguous, or
+    unwritable finalization target only after renting a provider.
+    """
+
+    orchestration_id = str(envelope.get("orchestration_id") or "")
+    recipe_digest = str(envelope.get("recipe_digest") or "")
+    envelope_digest = str(envelope.get("control_plane_envelope_digest") or "")
+    run_id = str(envelope.get("run_id") or "")
+    source_commit = str(envelope.get("expected_production_commit") or "")
+    if (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", orchestration_id)
+        is None
+        or not run_id
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", recipe_digest) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", envelope_digest) is None
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_binding_invalid"
+        )
+
+    candidate_root = Path(queue_root).expanduser()
+    if candidate_root.is_symlink():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_root_unsafe"
+        )
+    try:
+        root = candidate_root.resolve(strict=True)
+    except OSError as exc:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_root_unsafe"
+        ) from exc
+    if not stat.S_ISDIR(root.stat().st_mode):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_root_unsafe"
+        )
+
+    state_roots: dict[str, Path] = {}
+    for state in QUEUE_STATES:
+        child = root / state
+        if child.is_symlink() or not child.is_dir():
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_queue_state_unsafe"
+            )
+        state_roots[state] = child
+
+    filename = f"{orchestration_id}-{recipe_digest.removeprefix('sha256:')}.json"
+    matches = [
+        state_roots[state] / filename
+        for state in QUEUE_STATES
+        if (state_roots[state] / filename).exists()
+    ]
+    if len(matches) != 1 or matches[0].is_symlink():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_identity_ambiguous"
+        )
+    source = matches[0]
+    if source.parent.name not in {"pending", "processing"}:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_state_invalid"
+        )
+    try:
+        queued = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_envelope_invalid"
+        ) from exc
+    if (
+        queued.get("schema_version") != ENVELOPE_SCHEMA_VERSION
+        or queued.get("orchestration_id") != orchestration_id
+        or queued.get("run_id") != run_id
+        or queued.get("expected_production_commit") != source_commit
+        or queued.get("recipe_digest") != recipe_digest
+        or queued.get("envelope_digest") != envelope_digest
+        or queued.get("envelope_digest")
+        != canonical_digest(queued, digest_field="envelope_digest")
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_binding_invalid"
+        )
+
+    results_root = root / "results"
+    if results_root.is_symlink() or (
+        results_root.exists() and not results_root.is_dir()
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_results_unsafe"
+        )
+    writable_roots = [
+        source.parent,
+        state_roots["completed"],
+        state_roots["blocked"],
+        results_root if results_root.exists() else root,
+    ]
+    if any(not os.access(path, os.W_OK | os.X_OK) for path in writable_roots):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_destination_unwritable"
+        )
+    if (results_root / filename).exists():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_result_conflict"
+        )
+    return {
+        "status": "ready",
+        "run_id": run_id,
+        "source_commit": source_commit,
+        "construction_envelope_digest": envelope_digest,
+        "queue_path": str(source),
+        "result_path": str(results_root / filename),
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+    }
+
+
 __all__ = [
     "ENVELOPE_SCHEMA_VERSION",
     "FINALIZATION_SCHEMA_VERSION",
     "TaskEvaluationSceneConstructionQueueError",
     "ensure_scene_construction_queue_root",
     "finalize_scene_construction",
+    "preflight_scene_construction_finalization",
     "stage_scene_construction",
 ]
