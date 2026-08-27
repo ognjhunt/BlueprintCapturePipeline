@@ -67,9 +67,13 @@ run_with_progress() {
 
 python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 \
   || { write_missing_result "artifixer3d_uv_install_failed"; exit 2; }
-uv_bin="$(command -v uv)"
+# The scene-configuration parent exposes Isaac Python through a PATH shim.
+# pip installs console scripts beside the underlying interpreter, which is not
+# necessarily a PATH directory. Invoke uv as that interpreter's module so the
+# install and every use resolve through the same exact Python environment.
+uv_command=(python3 -m uv)
 export UV_NATIVE_TLS=true
-"${uv_bin}" venv "${runtime_dir}/.artifixer-venv" --python "$(command -v python3)" \
+"${uv_command[@]}" venv "${runtime_dir}/.artifixer-venv" --python "$(command -v python3)" \
   || { write_missing_result "artifixer3d_venv_failed"; exit 2; }
 artifixer_python="${runtime_dir}/.artifixer-venv/bin/python"
 export CUDA_HOME=/usr/local/cuda
@@ -109,10 +113,10 @@ if [[ "${direct_editor_backend}" == "vibe_image_edit" \
 fi
 
 if [[ "${direct_editor_backend}" == "vibe_image_edit" ]]; then
-  "${uv_bin}" pip install --python "${artifixer_python}" \
+  "${uv_command[@]}" pip install --python "${artifixer_python}" \
     torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124 \
     || { write_missing_result "artifixer3d_vibe_torch_install_failed"; exit 2; }
-  "${uv_bin}" pip install --python "${artifixer_python}" \
+  "${uv_command[@]}" pip install --python "${artifixer_python}" \
     accelerate==1.11.0 annotated-types==0.7.0 click==8.3.1 diffusers==0.33.1 \
     huggingface-hub==0.35.3 loguru==0.7.3 numpy==1.26.4 protobuf==3.20.2 \
     pydantic==2.0.3 pydantic-core==2.3.0 pydantic-settings==2.0.3 \
@@ -139,9 +143,9 @@ if [[ "${direct_editor_backend}" == "vibe_image_edit" ]]; then
   [[ "sha256:$(sha256sum "${vibe_source_dir}/LICENSE" | awk '{print $1}')" == \
       "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" ]] \
     || { write_missing_result "artifixer3d_vibe_source_license_mismatch"; exit 2; }
-  "${uv_bin}" pip install --python "${artifixer_python}" --no-deps -e "${vibe_source_dir}" \
+  "${uv_command[@]}" pip install --python "${artifixer_python}" --no-deps -e "${vibe_source_dir}" \
     || { write_missing_result "artifixer3d_vibe_source_install_failed"; exit 2; }
-  "${uv_bin}" pip check --python "${artifixer_python}" \
+  "${uv_command[@]}" pip check --python "${artifixer_python}" \
     > "${output_dir}/artifixer3d-pip-check.txt" \
     || { write_missing_result "artifixer3d_vibe_dependency_conflict"; exit 2; }
 
@@ -184,11 +188,11 @@ if receipt["blockers"]:
     raise SystemExit(";".join(receipt["blockers"]))
 PY
 else
-"${uv_bin}" pip install --python "${artifixer_python}" \
+"${uv_command[@]}" pip install --python "${artifixer_python}" \
   torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128 \
   || { write_missing_result "artifixer3d_torch_install_failed"; exit 2; }
-"${uv_bin}" pip uninstall --python "${artifixer_python}" flash-attn opencv-python || true
-"${uv_bin}" pip install --python "${artifixer_python}" \
+"${uv_command[@]}" pip uninstall --python "${artifixer_python}" flash-attn opencv-python || true
+"${uv_command[@]}" pip install --python "${artifixer_python}" \
   accelerate==1.13.0 diffusers==0.37.1 transformers==5.5.0 ftfy \
   'numpy<2.0' einops scipy wandb tqdm Pillow matplotlib opencv-python-headless \
   pyyaml torchmetrics imageio-ffmpeg h5py av torch-fidelity huggingface-hub \
@@ -225,18 +229,18 @@ fi
 # resolved requirements.  Seed the exact compatible backend first, as an
 # explicit prerequisite of the native build rather than relying on whichever
 # tooling the provider image happens to expose.
-"${uv_bin}" pip install --python "${artifixer_python}" \
+"${uv_command[@]}" pip install --python "${artifixer_python}" \
   setuptools==71.1.0 wheel==0.45.1 \
   || { write_missing_result "artifixer3d_build_dependencies_failed"; exit 2; }
 
-"${uv_bin}" pip install --python "${artifixer_python}" --no-build-isolation \
+"${uv_command[@]}" pip install --python "${artifixer_python}" --no-build-isolation \
   -r "${submodule_dir}/requirements.txt" \
   || { write_missing_result "artifixer3d_3dgrut_requirements_failed"; exit 2; }
 bash "${submodule_dir}/scripts/install_slangc.sh" /usr/local \
   || { write_missing_result "artifixer3d_slangc_install_failed"; exit 2; }
-"${uv_bin}" pip install --python "${artifixer_python}" -e "${submodule_dir}" \
+"${uv_command[@]}" pip install --python "${artifixer_python}" -e "${submodule_dir}" \
   || { write_missing_result "artifixer3d_3dgrut_install_failed"; exit 2; }
-"${uv_bin}" pip check --python "${artifixer_python}" \
+"${uv_command[@]}" pip check --python "${artifixer_python}" \
   > "${output_dir}/artifixer3d-pip-check.txt" \
   || { write_missing_result "artifixer3d_python_dependency_conflict"; exit 2; }
 
@@ -341,7 +345,7 @@ if receipt["blockers"]:
     raise SystemExit(";".join(receipt["blockers"]))
 PY
 fi
-"${uv_bin}" pip freeze --python "${artifixer_python}" > "${output_dir}/artifixer3d-pip-freeze.txt"
+"${uv_command[@]}" pip freeze --python "${artifixer_python}" > "${output_dir}/artifixer3d-pip-freeze.txt"
 
 export HF_HOME="${bundle_root}/.hf_home"
 export HF_HUB_CACHE="${bundle_root}/.hf_home/hub"

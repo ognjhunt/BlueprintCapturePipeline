@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import zipfile
@@ -679,3 +681,68 @@ def test_bundle_archive_keeps_the_entrypoint_executable(tmp_path: Path) -> None:
     assert not modes["provider_runtime/manifest.json"] & 0o111, (
         "a data member must not gain an executable bit"
     )
+
+
+def test_runtime_uses_the_python_installed_uv_when_console_script_is_off_path(
+    tmp_path: Path,
+) -> None:
+    """The Isaac Python shim and its console-script directory are distinct.
+
+    The scene provider puts a ``python3`` shim for ``/isaac-sim/python.sh`` on
+    PATH. Installing uv through that shim places the console script beside the
+    underlying interpreter, not necessarily beside the shim. Model that exact
+    layout: pip works and ``python -m uv`` is reachable, while no ``uv``
+    executable exists on PATH. Make the fake module fail its venv action; the
+    runtime must retain the existing typed venv refusal instead of exiting at
+    ``command -v uv`` with no evidence.
+    """
+
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    entrypoint = runtime / "run_public_scene_artifixer3d.sh"
+    entrypoint.write_bytes(
+        (Path(__file__).resolve().parents[1] / "scripts" / entrypoint.name).read_bytes()
+    )
+    (runtime / "artifixer3d_runtime_request.json").write_text(
+        json.dumps(
+            {
+                "direct_editor_backend": "fixture_invalid_backend",
+                "semantic_editor_only": False,
+                "pipeline_mode": "full_artifixer3d_plus",
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    python_shim = fake_bin / "python3"
+    python_shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then exit 0; fi\n'
+        'if [ "$1" = "-m" ] && [ "$2" = "uv" ]; then exit 23; fi\n'
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+    output = tmp_path / "runtime_output"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(output),
+    }
+
+    completed = subprocess.run(
+        ["/bin/bash", str(entrypoint)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=10,
+    )
+
+    result_path = output / "public_scene_artifixer3d_runtime_result.json"
+    assert completed.returncode == 2, f"stdout={completed.stdout}\nstderr={completed.stderr}"
+    assert result_path.is_file(), completed.stderr
+    assert json.loads(result_path.read_text(encoding="utf-8"))["blockers"] == [
+        "artifixer3d_venv_failed"
+    ]
