@@ -34,7 +34,13 @@ python -m blueprint_pipeline.provider_billing_audit_retention \
 
 Review the receipt count, response groups, every inode snapshot,
 `metadata_excluded_response_paths`, `directory_repairs`, and
-`predicted_relinked_bytes`. Secure legacy response files whose owner/group/mode
+`predicted_relinked_bytes`. Also review
+`unreconciled_incomplete_transactions`: a historical timestamp directory that
+has no source receipt is inventory-bound, retained exactly, and excluded from
+directory repair, object publication, relink, and deletion. Its secure regular
+`response-N-provider.json` files are hashed and snapshotted; an unknown child,
+symlink, insecure metadata, or cross-filesystem file blocks the scan globally.
+Secure legacy response files whose owner/group/mode
 differs from the current audit-owner `0600` contract remain byte-, path-, and
 inode-preserved rather than being silently coerced into a hard-link group.
 Apply only the exact reviewed plan:
