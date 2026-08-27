@@ -18,6 +18,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver imp
     _semantic_rights_and_request,
     _write_execution_authority,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+    _target_camera_ring,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -54,6 +57,10 @@ def _inputs(tmp_path: Path) -> tuple[dict, dict]:
         retained,
     )
     calibration = tmp_path / "cameras.json"
+    generated_camera = _target_camera_ring(
+        minimum_xyz=[2.91, -6.83, 0.754],
+        maximum_xyz=[3.04, -6.69, 0.884],
+    )[0]
     calibration.write_text(
         json.dumps(
             [
@@ -61,22 +68,11 @@ def _inputs(tmp_path: Path) -> tuple[dict, dict]:
                     "id": "camera-0",
                     "spec": {
                         "pose": {
-                            "T_world_camera_opencv": [
-                                [1.0, 0.0, 0.0, 0.0],
-                                [0.0, 1.0, 0.0, 0.0],
-                                [0.0, 0.0, 1.0, 1.0],
-                                [0.0, 0.0, 0.0, 1.0],
+                            "T_world_camera_opencv": generated_camera[
+                                "T_world_camera_provider_frame"
                             ]
                         },
-                        "intrinsics": {
-                            "model": "PINHOLE",
-                            "fx": 700.0,
-                            "fy": 700.0,
-                            "cx": 512.0,
-                            "cy": 512.0,
-                            "width": 1024,
-                            "height": 1024,
-                        },
+                        "intrinsics": generated_camera["intrinsics"],
                     },
                 }
             ]
