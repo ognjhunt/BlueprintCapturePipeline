@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 
+from blueprint_pipeline.core.common import redacted_failure_detail
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
     execute_scene_configuration_stage_chain,
@@ -247,7 +248,10 @@ def main() -> int:
             "evaluation_episode_executed": False,
             "candidate_policy_queried": False,
             "provider_zero_required_after_return": True,
-            "blockers": [f"scene_configuration_provider_failed:{type(exc).__name__}:{exc}"],
+            "blockers": [
+                "scene_configuration_provider_failed:"
+                + redacted_failure_detail(exc)
+            ],
             "result_digest": "",
         }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
