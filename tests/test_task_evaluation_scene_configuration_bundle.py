@@ -50,6 +50,30 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _openai_scope_attestation(
+    *, paid_resource_class: str, api_key_id: str, project_id: str = "proj_test"
+) -> str:
+    value: dict[str, object] = {
+        "schema_version": "openai_candidate_cost_scope_attestation.v1",
+        "status": "approved",
+        "issued_by_agent": False,
+        "operator_id": "fixture-cost-owner",
+        "provider_id": "openai",
+        "paid_resource_class": paid_resource_class,
+        "project_id": project_id,
+        "api_key_id": api_key_id,
+        "exclusive_use": True,
+        "candidate_reported_usage_is_authoritative": False,
+        "exclusive_from": "2026-08-01T00:00:00+00:00",
+        "exclusive_until": "2026-09-30T00:00:00+00:00",
+        "proof_effect": "none",
+    }
+    value["scope_attestation_digest"] = canonical_digest(
+        value, digest_field="scope_attestation_digest"
+    )
+    return json.dumps(value, sort_keys=True)
+
+
 def _bound(path: Path, **extra: object) -> dict[str, object]:
     return {
         "materialized_path": str(path),
@@ -870,15 +894,28 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         ("OPENAI_CONTENT_AGENTS_API_KEY_FILE", "key-content-agents"),
         (
             "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
-            '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
+            _openai_scope_attestation(
+                paid_resource_class=(
+                    "task_evaluation_scene_configuration_artifixer_semantic_teacher"
+                ),
+                api_key_id="key_semantic",
+            ),
         ),
         (
             "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
-            '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
+            _openai_scope_attestation(
+                paid_resource_class=(
+                    "task_evaluation_scene_configuration_artifixer_visual_review"
+                ),
+                api_key_id="key_review",
+            ),
         ),
         (
             "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
-            '{"schema_version":"openai_candidate_cost_scope_attestation.v1"}',
+            _openai_scope_attestation(
+                paid_resource_class="task_evaluation_scene_configuration_content_agents",
+                api_key_id="key_content_agents",
+            ),
         ),
     ):
         path = tmp_path / name.lower()
@@ -1099,6 +1136,71 @@ def test_scene_configuration_openai_runtime_files_fail_closed_on_unsafe_metadata
     with pytest.raises(
         scene_vast.TaskEvaluationSceneConfigurationVastError,
         match="scene_configuration_openai_stage_scopes_not_distinct",
+    ):
+        scene_vast._provider_runtime_inputs(authority)
+
+
+def test_scene_configuration_refuses_mismatched_stage_attestation_before_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = {
+        "authority_digest": "sha256:" + "a" * 64,
+        "external_service_spend_caps": {
+            "openai": {
+                "maximum_cost_usd": 1.0,
+                "maximum_requests": 3,
+                "stage_max_cost_usd": {
+                    "artifixer_semantic_teacher": 0.2,
+                    "artifixer_visual_review": 0.5,
+                    "content_agents": 0.3,
+                },
+            }
+        },
+    }
+    files = {
+        "OPENAI_ADMIN_API_KEY_FILE": "fixture-admin-key",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE": "fixture-semantic-key",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": "fixture-review-key",
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "fixture-content-key",
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE": (
+            _openai_scope_attestation(
+                paid_resource_class=(
+                    "task_evaluation_scene_configuration_artifixer_semantic_teacher"
+                ),
+                api_key_id="key_semantic",
+            )
+        ),
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE": (
+            _openai_scope_attestation(
+                paid_resource_class="task_evaluation_artifixer_ai_visual_review",
+                api_key_id="key_review",
+            )
+        ),
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
+            _openai_scope_attestation(
+                paid_resource_class="task_evaluation_scene_configuration_content_agents",
+                api_key_id="key_content_agents",
+            )
+        ),
+    }
+    for name, payload in files.items():
+        path = tmp_path / name.lower()
+        path.write_text(payload, encoding="utf-8")
+        path.chmod(0o640)
+        monkeypatch.setenv(name, str(path))
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
+    monkeypatch.setenv(
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID", "key_semantic"
+    )
+    monkeypatch.setenv("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_review")
+    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_ID", "key_content_agents")
+
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match=(
+            "scene_configuration_openai_stage_scope_attestation_invalid:"
+            "artifixer_visual_review"
+        ),
     ):
         scene_vast._provider_runtime_inputs(authority)
 

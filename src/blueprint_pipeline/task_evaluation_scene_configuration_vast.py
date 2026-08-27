@@ -37,6 +37,10 @@ from .task_evaluation_scene_configuration_bundle import (
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
 )
+from .task_evaluation_supervisor.openai_cost_authority import (
+    OpenAICostAuthorityError,
+    validate_openai_cost_scope_attestation,
+)
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
@@ -97,6 +101,23 @@ _OPENAI_STAGE_SCOPE_DISTINCT_GROUPS = (
         "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
         "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
         "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+    ),
+)
+_OPENAI_STAGE_SCOPE_BINDINGS = (
+    (
+        "artifixer_semantic_teacher",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+    ),
+    (
+        "artifixer_visual_review",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    ),
+    (
+        "content_agents",
+        "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
     ),
 )
 
@@ -227,6 +248,31 @@ def _provider_runtime_inputs(
             raise TaskEvaluationSceneConfigurationVastError(
                 "scene_configuration_openai_stage_scopes_not_distinct"
             )
+    for stage, api_key_id_env, attestation_file_env in _OPENAI_STAGE_SCOPE_BINDINGS:
+        try:
+            attestation = json.loads(
+                Path(secret_paths[attestation_file_env]).read_text(encoding="utf-8")
+            )
+            if not isinstance(attestation, Mapping):
+                raise OpenAICostAuthorityError(
+                    "openai_cost_scope_attestation_invalid"
+                )
+            validate_openai_cost_scope_attestation(
+                attestation,
+                provider_id="openai",
+                paid_resource_class=f"task_evaluation_scene_configuration_{stage}",
+                project_id=values["OPENAI_PROJECT_ID"],
+                api_key_id=values[api_key_id_env],
+            )
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            OpenAICostAuthorityError,
+        ) as exc:
+            raise TaskEvaluationSceneConfigurationVastError(
+                f"scene_configuration_openai_stage_scope_attestation_invalid:{stage}"
+            ) from exc
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,
