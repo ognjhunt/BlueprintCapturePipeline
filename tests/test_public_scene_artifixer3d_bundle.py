@@ -373,6 +373,17 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert request["outside_exact_support_changed_pixels_permitted"] == 0
     assert manifest["contains_raw_dataset_bytes"] is False
     assert manifest["contains_model_weights"] is False
+    build_seed = (
+        'pip install --python "${artifixer_python}" \\\n'
+        "  setuptools==71.1.0 wheel==0.45.1"
+    )
+    native_requirements = (
+        'pip install --python "${artifixer_python}" --no-build-isolation \\\n'
+        '  -r "${submodule_dir}/requirements.txt"'
+    )
+    assert build_seed in entrypoint
+    assert "artifixer3d_build_dependencies_failed" in entrypoint
+    assert entrypoint.index(build_seed) < entrypoint.index(native_requirements)
     assert 'pip install --python "${artifixer_python}" --no-build-isolation' in entrypoint
     assert '-r "${submodule_dir}/requirements.txt"' in entrypoint
     assert "submodule update --init --recursive" in entrypoint

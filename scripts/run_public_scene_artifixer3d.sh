@@ -218,6 +218,17 @@ if git -C "${submodule_dir}" submodule status --recursive | grep -Eq '^[-+U]'; t
   exit 2
 fi
 
+# ``uv venv`` deliberately creates an unseeded environment.  The pinned
+# 3DGRUT requirements include native/VCS projects installed below with
+# ``--no-build-isolation``; listing setuptools in that same requirements file
+# is too late because uv must import the build backend before it installs the
+# resolved requirements.  Seed the exact compatible backend first, as an
+# explicit prerequisite of the native build rather than relying on whichever
+# tooling the provider image happens to expose.
+"${uv_bin}" pip install --python "${artifixer_python}" \
+  setuptools==71.1.0 wheel==0.45.1 \
+  || { write_missing_result "artifixer3d_build_dependencies_failed"; exit 2; }
+
 "${uv_bin}" pip install --python "${artifixer_python}" --no-build-isolation \
   -r "${submodule_dir}/requirements.txt" \
   || { write_missing_result "artifixer3d_3dgrut_requirements_failed"; exit 2; }
