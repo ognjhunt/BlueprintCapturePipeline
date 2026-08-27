@@ -204,7 +204,10 @@ def _envelope(root: Path, commit: str) -> Path:
     inputs.mkdir()
     raw_splat = inputs / "scene-secret-raw.ply"
     raw_splat.write_bytes(b"RAW_INTERIORGS_BYTES_MUST_NEVER_LEAVE_CONTROL_PLANE")
-    sage = inputs / "sage.usda"
+    # Production CAS materialization is digest-only even though the immutable
+    # publisher URI declares an OpenUSD layer.  Keep the fixture shaped like
+    # that boundary: using the local suffix would miss the provider failure.
+    sage = inputs / "6c1e9a5a0f0f1d8e"
     sage.write_text("#usda 1.0\n", encoding="utf-8")
     cameras = inputs / "cameras.json"
     cameras.write_text('[{"id":"camera-0"}]\n', encoding="utf-8")
@@ -293,7 +296,11 @@ def _envelope(root: Path, commit: str) -> Path:
                 raw_splat,
                 contract_path="scene.appearance.representation",
             ),
-            _bound(sage, contract_path="scene.geometry.collision"),
+            _bound(
+                sage,
+                contract_path="scene.geometry.collision",
+                uri="s3://blueprint/task-evaluation/sage/839873_collision.usd",
+            ),
         ],
         "stage_configuration_references": configurations,
         "render_inputs_result": render,
@@ -989,7 +996,41 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
     assert str(tmp_path).encode() not in payloads[
         "provider_runtime/input/portable_construction_envelope.v1.json"
     ]
-    assert "provider_runtime/input/references/0001.usda" in names
+    collision_member = "provider_runtime/input/references/0001.usd"
+    assert collision_member in names
+    assert payloads[collision_member] == b"#usda 1.0\n"
+
+
+def test_bundle_refuses_collision_reference_without_declared_openusd_format(
+    tmp_path: Path,
+) -> None:
+    commit = "a" * 40
+    envelope_root = tmp_path / "envelope"
+    envelope_root.mkdir()
+    envelope_path = _envelope(envelope_root, commit)
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    collision = next(
+        row
+        for row in envelope["materialized_references"]
+        if row["contract_path"] == "scene.geometry.collision"
+    )
+    collision["uri"] = "s3://blueprint/task-evaluation/sage/collision.bin"
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    envelope_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationBundleError,
+        match="scene_configuration_bundle_collision_reference_format_invalid",
+    ):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope_path,
+            toolchain_root=_toolchain(tmp_path / "toolchain", commit),
+            repository_root=_repo(tmp_path / "repo"),
+            output_root=tmp_path / "bundle",
+            expected_source_commit=commit,
+        )
 
 
 def test_live_run_preflights_queue_finalization_before_any_mutation(

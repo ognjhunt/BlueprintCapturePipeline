@@ -34,6 +34,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority impor
     AUTHORITY_SCHEMA_VERSION,
     SCENE_CONFIGURATION_PROVIDER_IMAGE,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic import (
+    materialize_scene_configuration_warm_session_authority,
+)
 
 
 PREPARATION_SCHEMA_VERSION = (
@@ -227,6 +230,31 @@ def run_scene_configuration_diagnostic_iteration(
         args.iteration_preparation_receipt,
         field="iteration_preparation_receipt",
     )
+    retain_warm_session = bool(getattr(args, "retain_warm_session", False))
+    if retain_warm_session and not args.execute:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_warm_retention_requires_execute"
+        )
+    warm_authority_output: Path | None = None
+    warm_session_output_root: Path | None = None
+    if retain_warm_session:
+        if not args.warm_session_authority or not args.warm_session_output_root:
+            raise SceneConfigurationDiagnosticIterationError(
+                "scene_configuration_diagnostic_iteration_warm_outputs_missing"
+            )
+        warm_authority_output = _output_path(
+            args.warm_session_authority,
+            field="warm_session_authority",
+        )
+        warm_session_output_root = _output_directory(
+            args.warm_session_output_root,
+            field="warm_session_output_root",
+            empty=True,
+        )
+        if warm_session_output_root.exists():
+            raise SceneConfigurationDiagnosticIterationError(
+                "scene_configuration_diagnostic_iteration_warm_session_output_root_exists"
+            )
 
     preparation_started = clock()
     stage_started = preparation_started
@@ -365,6 +393,27 @@ def run_scene_configuration_diagnostic_iteration(
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_authority_invalid"
         )
+    if retain_warm_session:
+        try:
+            checkpoint_reference_value = json.loads(
+                checkpoint_reference.read_text(encoding="utf-8")
+            )
+            checkpoint_root = _input_directory(
+                str(checkpoint_reference_value.get("checkpoint_root") or ""),
+                field="diagnostic_checkpoint_root",
+            )
+        except (AttributeError, json.JSONDecodeError, OSError, UnicodeError) as exc:
+            raise SceneConfigurationDiagnosticIterationError(
+                "scene_configuration_diagnostic_iteration_checkpoint_reference_invalid"
+            ) from exc
+        materialize_scene_configuration_warm_session_authority(
+            bundle_receipt_path=bundle_receipt_path,
+            paid_attempt_authority_path=authority_output,
+            diagnostic_release_receipt_path=release_receipt,
+            checkpoint_root=checkpoint_root,
+            maximum_warm_iterations=args.maximum_warm_iterations,
+            output_path=warm_authority_output,
+        )
 
     preparation: dict[str, Any] = {
         "schema_version": PREPARATION_SCHEMA_VERSION,
@@ -412,6 +461,7 @@ def run_scene_configuration_diagnostic_iteration(
         "offering_publication_permitted": False,
         "terminal_e2e_completion_permitted": False,
         "paid_execution_requested": bool(args.execute),
+        "warm_session_retention_requested": retain_warm_session,
         "provider_mutation_performed_during_preparation": False,
         "raw_secret_values_recorded": False,
         "preparation_digest": "",
@@ -459,6 +509,16 @@ def run_scene_configuration_diagnostic_iteration(
     ]
     if args.execute:
         allocator_command.append("--execute")
+    if retain_warm_session:
+        allocator_command.extend(
+            [
+                "--scene-configuration-retain-warm-session",
+                "--scene-configuration-warm-session-authority",
+                str(warm_authority_output),
+                "--scene-configuration-warm-session-output-root",
+                str(warm_session_output_root),
+            ]
+        )
     _run_fixed(
         allocator_command,
         cwd=release_path,
@@ -506,6 +566,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--admission-out", required=True)
     parser.add_argument("--adapter-output", required=True)
     parser.add_argument("--iteration-preparation-receipt", required=True)
+    parser.add_argument("--retain-warm-session", action="store_true")
+    parser.add_argument("--warm-session-authority")
+    parser.add_argument("--warm-session-output-root")
+    parser.add_argument("--maximum-warm-iterations", type=int, default=8)
     parser.add_argument("--execute", action="store_true")
     return parser
 
