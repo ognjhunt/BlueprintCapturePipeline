@@ -221,20 +221,33 @@ def _stage_owner_only_runtime_secrets(
     return staged, root
 
 
-def _discard_staged_runtime_secrets(root: Path | None) -> None:
-    """Remove the private copies; never leave secret bytes behind a run."""
+def _discard_staged_runtime_secrets(root: Path | None) -> list[str]:
+    """Remove private copies and report any byte that could remain retained."""
 
     if root is None:
-        return
-    for child in sorted(root.glob("*")):
+        return []
+    failed = False
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        children = []
+        failed = True
+    for child in children:
         try:
             child.unlink()
         except OSError:
-            pass
+            failed = True
     try:
         root.rmdir()
     except OSError:
-        pass
+        failed = True
+    if root.exists():
+        failed = True
+    return (
+        ["scene_configuration_openai_runtime_secret_cleanup_failed"]
+        if failed
+        else []
+    )
 
 
 def _collect_openai_cost_snapshot(
@@ -1566,6 +1579,7 @@ def run_scene_configuration_vast(
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     adapter: dict[str, Any] = {}
     staged_secret_root: Path | None = None
+    runtime_secret_cleanup_blockers: list[str] = []
     try:
         runtime_secret_paths, staged_secret_root = (
             _stage_owner_only_runtime_secrets(
@@ -1573,9 +1587,11 @@ def run_scene_configuration_vast(
             )
         )
     except (OSError, TaskEvaluationSceneConfigurationVastError) as exc:
-        _discard_staged_runtime_secrets(staged_secret_root)
+        cleanup_blockers = _discard_staged_runtime_secrets(staged_secret_root)
         raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_openai_runtime_secret_configuration_invalid"
+            cleanup_blockers[0]
+            if cleanup_blockers
+            else "scene_configuration_openai_runtime_secret_configuration_invalid"
         ) from exc
     try:
         with _authority_environment():
@@ -1655,7 +1671,9 @@ def run_scene_configuration_vast(
                 provider_run, reason="vast_adapter_failed"
             )
     finally:
-        _discard_staged_runtime_secrets(staged_secret_root)
+        runtime_secret_cleanup_blockers = _discard_staged_runtime_secrets(
+            staged_secret_root
+        )
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
 
     teardown_path = provider_run / "vast_teardown_manifest.json"
@@ -1692,6 +1710,7 @@ def run_scene_configuration_vast(
     blockers.extend(
         str(item) for item in adapter.get("blockers") or [] if str(item)
     )
+    blockers.extend(runtime_secret_cleanup_blockers)
     expected_execution_status = (
         "completed_diagnostic_only_not_qualification_eligible"
         if diagnostic_only
@@ -1844,6 +1863,7 @@ def run_scene_configuration_vast(
         "provider_runtime_output_zip_sha256": (
             _sha256(output_zip) if output_zip.is_file() else None
         ),
+        "runtime_secret_cleanup_completed": not runtime_secret_cleanup_blockers,
         "expected_provider_download_bytes": expected_download_bytes,
         "expected_provider_upload_bytes": expected_upload_bytes,
         "provider_output_disk_requirements": output_disk_requirements,

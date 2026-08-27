@@ -2980,6 +2980,38 @@ def test_runtime_secrets_are_staged_owner_only_for_the_adapter(
     assert source.read_text(encoding="utf-8") == '{"scope":"artifixer"}\n'
 
 
+def test_runtime_secret_cleanup_failure_is_a_named_terminal_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as lane
+
+    source = tmp_path / "openai-key"
+    source.write_text("opaque-test-secret\n", encoding="utf-8")
+    source.chmod(0o640)
+    job = tmp_path / "job"
+    job.mkdir()
+    staged, root = lane._stage_owner_only_runtime_secrets(
+        job_dir=job,
+        secret_paths={"OPENAI_API_KEY_FILE": str(source)},
+    )
+    staged_path = Path(staged["OPENAI_API_KEY_FILE"])
+    original_unlink = Path.unlink
+
+    def refuse_staged_secret_unlink(path: Path, *args, **kwargs) -> None:
+        if path == staged_path:
+            raise PermissionError("simulated cleanup refusal")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_staged_secret_unlink)
+
+    assert lane._discard_staged_runtime_secrets(root) == [
+        "scene_configuration_openai_runtime_secret_cleanup_failed"
+    ]
+    assert staged_path.is_file()
+    assert root is not None and root.is_dir()
+
+
 def test_the_lane_hands_the_adapter_the_staged_paths_and_always_discards_them(
     tmp_path: Path,
 ) -> None:
@@ -3002,6 +3034,8 @@ def test_the_lane_hands_the_adapter_the_staged_paths_and_always_discards_them(
     assert source.count("_discard_staged_runtime_secrets") >= 2, (
         "the private copies must be discarded on the failure path too"
     )
+    assert "blockers.extend(runtime_secret_cleanup_blockers)" in source
+    assert '"runtime_secret_cleanup_completed"' in source
 
 
 def _decision(*, provider: bool) -> dict:
