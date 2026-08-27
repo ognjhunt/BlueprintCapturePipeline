@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
@@ -302,7 +303,13 @@ def _redact(value: str, secrets: Sequence[str]) -> str:
     result = str(value or "")
     for secret in secrets:
         result = result.replace(secret, "REDACTED_SECRET")
-    return result
+    return redacted_failure_text(result)
+
+
+def _captured_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
 
 
 def _handler(
@@ -359,16 +366,30 @@ def _handler(
                 "scene_configuration_raw_secret_environment_forbidden"
             )
         secrets = _secret_values(run_environment)
-        completed = runner(
-            [str(executable)],
-            cwd=toolchain_root,
-            env=run_environment,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_STAGE_TIMEOUTS_SECONDS[identity.adapter_id],
-        )
         log_path = output_root / "stage_producer.log"
+        timeout_seconds = _STAGE_TIMEOUTS_SECONDS[identity.adapter_id]
+        try:
+            completed = runner(
+                [str(executable)],
+                cwd=toolchain_root,
+                env=run_environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            log_path.write_text(
+                _redact(
+                    f"{_captured_text(exc.stdout)}\n{_captured_text(exc.stderr)}",
+                    secrets,
+                ),
+                encoding="utf-8",
+            )
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                f"scene_configuration_stage_producer_timeout:{identity.adapter_id}:"
+                f"{timeout_seconds}"
+            ) from exc
         log_path.write_text(
             _redact(f"{completed.stdout}\n{completed.stderr}", secrets),
             encoding="utf-8",

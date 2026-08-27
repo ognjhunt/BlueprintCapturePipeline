@@ -156,3 +156,64 @@ def test_builtin_producer_rejects_raw_secret_environment(tmp_path: Path) -> None
             dependency_results=(),
             output_root=output,
         )
+
+
+def test_builtin_producer_retains_redacted_partial_output_on_timeout(
+    tmp_path: Path,
+) -> None:
+    commit = "c" * 40
+    secret = tmp_path / "openai-key"
+    secret.write_text("timeout-secret-value\n", encoding="utf-8")
+    secret.chmod(0o400)
+
+    def time_out(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            command,
+            kwargs["timeout"],
+            output=b"partial stdout timeout-secret-value",
+            stderr=(
+                b"partial stderr timeout-secret-value "
+                b"https://object.invalid/out?X-Amz-Signature=signed-timeout-value"
+            ),
+        )
+
+    registry = builtin_scene_configuration_stage_producer_registry(
+        expected_source_commit=commit,
+        toolchain_root=_toolchain(tmp_path, commit),
+        runner=time_out,
+        environment={"OPENAI_API_KEY_FILE": str(secret)},
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    configuration = tmp_path / "configuration.json"
+    configuration.write_text("{}\n", encoding="utf-8")
+    identity = ADMITTED_PRODUCER_IDENTITIES[0]
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "scene_configuration_stage_producer_timeout:"
+            "artifixer3d_observed_object_removal:7800"
+        ),
+    ):
+        registry.execute(
+            stage={
+                "stage_id": "stage-1",
+                "capability": identity.capability,
+                "adapter": {"id": identity.adapter_id, "version": identity.version},
+                "execution_class": "gpu_canary",
+            },
+            envelope={"run_id": "configure-scene"},
+            configuration={},
+            configuration_path=configuration,
+            dependency_results=(),
+            output_root=output,
+        )
+
+    log = (output / "stage_producer.log").read_text(encoding="utf-8")
+    assert "partial stdout" in log
+    assert "partial stderr" in log
+    assert "timeout-secret-value" not in log
+    assert "signed-timeout-value" not in log
+    assert "<redacted>" in log
+    assert log.count("REDACTED_SECRET") == 2
