@@ -13,6 +13,9 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
+    TaskEvaluationSceneConfigurationContentAgentsError,
+    _metric_envelope_spec,
+    _validate_metric_envelope_dimensions,
     execute_content_agents_component,
 )
 
@@ -128,6 +131,11 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         "configuration": {
             "schema_version": "rigid_replacement_authoring_configuration.v1",
             "replacement_identity": {"id": "mug", "version": "v1"},
+            "metric_envelope": {
+                "minimum_xyz_m": [0.0, 0.0, 0.0],
+                "maximum_xyz_m": [2.0, 2.0, 2.0],
+                "maximum_dimension_relative_error": 0.05,
+            },
             "required_output": {
                 "format": "OpenUSD",
                 "rigid_body": True,
@@ -301,6 +309,10 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     assert completion["mass_kg"] == pytest.approx(0.4)
     assert completion["candidate_prior_only"] is True
     assert completion["physical_truth_claimed"] is False
+    assert completion["collision_dimensions_m"] == pytest.approx([2.0, 2.0, 2.0])
+    assert completion["metric_envelope_validation"]["status"] == (
+        "within_preregistered_metric_envelope"
+    )
     assert "center_of_mass_from_collision_bounds_center" in completion["modifications"]
     assert "diagonal_inertia_from_collision_aabb" in completion["modifications"]
     assert "physics_material_from_preregistered_bounds_midpoints" in completion["modifications"]
@@ -337,3 +349,23 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         and not prim.HasAPI(UsdPhysics.MeshCollisionAPI)
         for prim in normalized_stage.Traverse()
     )
+
+
+def test_metric_envelope_refuses_wrong_size_candidate() -> None:
+    envelope = _metric_envelope_spec(
+        {
+            "metric_envelope": {
+                "minimum_xyz_m": [2.9, -6.9, 0.75],
+                "maximum_xyz_m": [3.0, -6.7, 0.85],
+                "maximum_dimension_relative_error": 0.05,
+            }
+        }
+    )
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationContentAgentsError,
+        match="scene_configuration_content_agents_metric_envelope_mismatch",
+    ):
+        _validate_metric_envelope_dimensions(
+            envelope=envelope,
+            observed_dimensions=[0.1, 0.25, 0.1],
+        )
