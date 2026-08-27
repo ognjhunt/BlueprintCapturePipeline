@@ -116,6 +116,21 @@ def test_simready_host_import_stays_under_its_source_governance_budget() -> None
     ).is_file()
 
 
+def test_vast_adapter_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/vast_provider_adapter.py"
+    adapter_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(adapter_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert "from .vast_provider_adapter_cli import main as cli_main" in adapter_source
+    assert (
+        root / "src/blueprint_pipeline/vast_provider_adapter_cli.py"
+    ).is_file()
+
+
 def _bandit_finding(root: Path, *, severity: str = "MEDIUM") -> dict[str, object]:
     source = root / "src" / "example.py"
     source.parent.mkdir(parents=True, exist_ok=True)
