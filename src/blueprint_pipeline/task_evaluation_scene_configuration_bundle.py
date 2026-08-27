@@ -139,6 +139,16 @@ def _stage_provider_renderer(
             destination / "tools/splat_render/node_modules" / package,
         )
     source_browser = Path(str(validated_runtime["browser_executable"])).resolve()
+    source_node = Path(str(validated_runtime["node"])).resolve()
+    try:
+        source_node.relative_to(source_runtime_root)
+    except ValueError as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_provider_renderer_node_invalid"
+        ) from exc
+    bundled_node = destination / "node/bin/node"
+    _copy_file(source_node, bundled_node)
+    bundled_node.chmod(0o555)
     browser_root = source_runtime_root / "browser"
     try:
         browser_relative = source_browser.relative_to(browser_root)
@@ -164,6 +174,7 @@ def _stage_provider_renderer(
         "source_commit": source_commit,
         "source_runtime_digest": validated_runtime["identity"]["runtime_digest"],
         "entrypoints": {
+            "node": "node/bin/node",
             "browser": (Path("browser") / browser_relative).as_posix(),
             "renderer_root": ".",
         },
@@ -627,10 +638,16 @@ def _provider_renderer_archive_is_valid(
         ):
             return False
     entrypoints = renderer.get("entrypoints")
+    node = str(
+        entrypoints.get("node") if isinstance(entrypoints, Mapping) else ""
+    )
     browser = str(
         entrypoints.get("browser") if isinstance(entrypoints, Mapping) else ""
     )
-    if browser not in expected or expected[browser].get("executable") is not True:
+    if any(
+        relative not in expected or expected[relative].get("executable") is not True
+        for relative in (node, browser)
+    ):
         return False
     if any(relative not in expected for relative in _PROVIDER_RENDERER_FILES):
         return False

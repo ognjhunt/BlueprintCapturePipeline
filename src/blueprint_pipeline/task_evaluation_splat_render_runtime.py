@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -280,7 +279,6 @@ def validate_provider_bundle_splat_renderer(
     renderer_root: str | Path,
     expected_source_commit: str,
     expected_renderer_digest: str,
-    node_executable: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reopen and mode-seal the renderer extracted on a rented provider.
 
@@ -390,10 +388,16 @@ def validate_provider_bundle_splat_renderer(
                 f"provider_splat_renderer_mode_invalid:{relative}"
             )
     entrypoints = manifest.get("entrypoints")
+    node_relative = str(
+        entrypoints.get("node") if isinstance(entrypoints, Mapping) else ""
+    )
     browser_relative = str(
         entrypoints.get("browser") if isinstance(entrypoints, Mapping) else ""
     )
-    if browser_relative not in expected or expected[browser_relative][2] is not True:
+    if any(
+        relative not in expected or expected[relative][2] is not True
+        for relative in (node_relative, browser_relative)
+    ):
         raise TaskEvaluationSplatRenderRuntimeError(
             "provider_splat_renderer_entrypoints_invalid"
         )
@@ -408,12 +412,7 @@ def validate_provider_bundle_splat_renderer(
             raise TaskEvaluationSplatRenderRuntimeError(
                 f"provider_splat_renderer_package_missing:{package}"
             )
-    unresolved_node = str(node_executable or shutil.which("node") or "").strip()
-    node = Path(unresolved_node).expanduser().resolve() if unresolved_node else Path()
-    if not unresolved_node or not node.is_file() or not os.access(node, os.X_OK):
-        raise TaskEvaluationSplatRenderRuntimeError(
-            "provider_splat_renderer_node_unavailable"
-        )
+    node = (root / node_relative).resolve()
     return {
         "node": str(node),
         "browser_executable": str(root / browser_relative),
@@ -433,7 +432,7 @@ def validate_provider_bundle_splat_renderer(
 
 
 def runtime_from_provider_bundle(
-    *, provider_runtime_root: str | Path, node_executable: str | Path | None = None
+    *, provider_runtime_root: str | Path
 ) -> dict[str, Any]:
     """Resolve the renderer only from the enclosing digest-bound bundle."""
 
@@ -458,7 +457,6 @@ def runtime_from_provider_bundle(
         renderer_root=root / "renderer",
         expected_source_commit=source_commit,
         expected_renderer_digest=renderer_digest,
-        node_executable=node_executable,
     )
 
 
