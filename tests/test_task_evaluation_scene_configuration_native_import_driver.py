@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueprint_pipeline import task_evaluation_scene_configuration_native_import_driver as driver
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import (
     ADAPTER_ID,
@@ -27,17 +28,13 @@ def _environment(tmp_path: Path) -> dict[str, str]:
     output = tmp_path / "output"
     output.mkdir()
     stage_input = {
-        "schema_version": (
-            "task_evaluation_scene_configuration_stage_production_input.v1"
-        ),
+        "schema_version": ("task_evaluation_scene_configuration_stage_production_input.v1"),
         "stage": {
             "stage_id": "stage-5",
             "adapter": {"id": ADAPTER_ID, "version": "v1"},
         },
         "configuration": {
-            "schema_version": (
-                "replacement_native_import_qualification_configuration.v1"
-            ),
+            "schema_version": ("replacement_native_import_qualification_configuration.v1"),
             "replacement_identity": {"id": "rigid-object", "version": "v1"},
             "required_checks": {
                 "stage_import": True,
@@ -81,13 +78,9 @@ def _environment(tmp_path: Path) -> dict[str, str]:
     dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
     return {
         "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_input_path),
-        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(
-            dependencies_path
-        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(dependencies_path),
         "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output),
-        "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(
-            output / "component-result.json"
-        ),
+        "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(output / "component-result.json"),
     }
 
 
@@ -99,18 +92,14 @@ def _observed(*, mismatch: bool = False) -> dict:
             {
                 "asset_imported": True,
                 "rigid_body_paths": ["/World/Placement/Replacement/links/root"],
-                "collision_paths": [
-                    "/World/Placement/Replacement/links/root/geometry/collision"
-                ],
+                "collision_paths": ["/World/Placement/Replacement/links/root/geometry/collision"],
                 "support_contact_observed": True,
                 "contact_report_event_count": 5,
                 "settle_translation_m": 0.005,
                 "settle_rotation_rad": 0.01,
                 "final_state": state,
                 "final_state_digest": (
-                    canonical_digest(state)
-                    if not mismatch or index < 2
-                    else "sha256:" + "f" * 64
+                    canonical_digest(state) if not mismatch or index < 2 else "sha256:" + "f" * 64
                 ),
             }
         )
@@ -118,6 +107,13 @@ def _observed(*, mismatch: bool = False) -> dict:
         "runtime_identity": {"engine_version": "6.0.1"},
         "repeats": repeats,
     }
+
+
+def _native_runner(observed: dict):
+    def _run(*, observation_consumer, **_kwargs):
+        return observation_consumer(observed)
+
+    return _run
 
 
 def test_native_settle_uses_contact_callback_instead_of_unsafe_polling() -> None:
@@ -177,7 +173,7 @@ def test_native_driver_seals_only_three_matching_contact_settles(
     environment = _environment(tmp_path)
     result = execute_native_import_component(
         environment=environment,
-        native_runner=lambda **_kwargs: _observed(),
+        native_runner=_native_runner(_observed()),
     )
 
     assert result["status"] == "completed"
@@ -197,24 +193,60 @@ def test_native_driver_rejects_nondeterministic_reset(tmp_path: Path) -> None:
     ):
         execute_native_import_component(
             environment=_environment(tmp_path),
-            native_runner=lambda **_kwargs: _observed(mismatch=True),
+            native_runner=_native_runner(_observed(mismatch=True)),
         )
+
+
+def test_native_driver_seals_result_before_simulation_app_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Isaac shutdown may terminate Python, so durable proof must exist first."""
+
+    closed = False
+
+    class FakeSimulationApp:
+        def __init__(self, _config: dict) -> None:
+            pass
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+            raise SystemExit(0)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: FakeSimulationApp)
+    monkeypatch.setattr(
+        driver,
+        "_observe_isaac_runtime_identity",
+        lambda _app: {"engine_version": "6.0.1"},
+    )
+    observations = iter(_observed()["repeats"])
+    monkeypatch.setattr(driver, "_one_native_settle", lambda **_kwargs: next(observations))
+    environment = _environment(tmp_path)
+
+    with pytest.raises(SystemExit):
+        execute_native_import_component(environment=environment)
+
+    assert closed is True
+    component_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"])
+    component = json.loads(component_path.read_text(encoding="utf-8"))
+    artifact = component["artifacts"][0]
+    assert component["status"] == "completed"
+    assert Path(artifact["path"]).is_file()
 
 
 def test_native_driver_rejects_invalid_bounds_before_runtime(tmp_path: Path) -> None:
     environment = _environment(tmp_path)
     stage_input = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
     value = json.loads(stage_input.read_text(encoding="utf-8"))
-    value["configuration"]["required_checks"][
-        "maximum_settle_translation_m"
-    ] = float("inf")
+    value["configuration"]["required_checks"]["maximum_settle_translation_m"] = float("inf")
     stage_input.write_text(json.dumps(value), encoding="utf-8")
     executed = False
 
     def native_runner(**_kwargs):
         nonlocal executed
         executed = True
-        return _observed()
+        return _kwargs["observation_consumer"](_observed())
 
     with pytest.raises(
         TaskEvaluationSceneConfigurationNativeImportDriverError,
