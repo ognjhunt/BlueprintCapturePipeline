@@ -8832,6 +8832,10 @@ def run_vast_provider_adapter(
                 selected_offer_absent_from_fresh_search = False
                 catalog_readback_http_status_code: int | None = None
                 catalog_readback_offer_count: int | None = None
+                catalog_readback_error: str | None = None
+                create_produced_no_instance = False
+                create_inventory_http_status_code: int | None = None
+                create_inventory_error: str | None = None
                 if int(exc.code or 0) == 400 and not error_text.strip():
                     try:
                         (
@@ -8858,32 +8862,54 @@ def run_vast_provider_adapter(
                             200 <= int(catalog_readback_http_status_code or 0) < 300
                             and catalog_readback_offer_count == 0
                         )
-                    except Exception:  # noqa: BLE001
+                    except Exception as readback_exc:  # noqa: BLE001
                         # A failed readback is not evidence that an offer vanished.
                         # Preserve the original HTTP 400 and fail closed below.
                         selected_offer_absent_from_fresh_search = False
-                if (
-                    not _is_stale_offer_create_http_error(
-                        exc,
-                        error_text,
-                        selected_offer_absent_from_fresh_search=(
-                            selected_offer_absent_from_fresh_search
-                        ),
-                    )
-                    or stale_offer_create_retry_count >= max_stale_offer_retries
-                ):
-                    raise
-                selected_machine_id = _number(selected_offer.get("machine_id"))
-                if selected_machine_id is not None:
-                    excluded_machine_ids.add(int(selected_machine_id))
-                retry_attempt = {
+                        catalog_readback_error = type(readback_exc).__name__
+                    # Vast answers an unusable ask with an empty 400 and says
+                    # nothing about why. Selection and creation are separate
+                    # calls -- creation is PUT /asks/{id}/, so an offer can go
+                    # between them -- and this lane had 100 qualifying offers
+                    # but abandoned the run on the first one that failed.
+                    #
+                    # Ask the provider directly whether the create mutated
+                    # anything. Only an authenticated listing that succeeds and
+                    # contains no instance carrying the exact label we just
+                    # tried to create proves it did not, and only then is
+                    # moving to the next offer free of any double-allocation
+                    # risk. A failed listing proves nothing and still fails
+                    # closed.
+                    try:
+                        (
+                            create_inventory_http_status_code,
+                            create_inventory_payload,
+                        ) = _api_json(
+                            method="GET",
+                            path="/instances/",
+                            api_key=api_key,
+                            timeout_seconds=30,
+                        )
+                        attempted_label = _string(create_payload.get("label"))
+                        create_produced_no_instance = bool(
+                            attempted_label
+                            and 200
+                            <= int(create_inventory_http_status_code or 0)
+                            < 300
+                            and not any(
+                                _string(row.get("label")) == attempted_label
+                                for row in _active_instance_rows_from_payload(
+                                    create_inventory_payload
+                                )
+                            )
+                        )
+                    except Exception as inventory_exc:  # noqa: BLE001
+                        create_produced_no_instance = False
+                        create_inventory_error = type(inventory_exc).__name__
+                create_failure_diagnosis = {
                     "attempt": stale_offer_create_retry_count,
-                    "status": "stale_offer_retry",
                     "http_status_code": exc.code,
                     "offer_id": selected_offer.get("ask_contract_id"),
-                    "machine_id": int(selected_machine_id)
-                    if selected_machine_id is not None
-                    else None,
                     "error_preview": _redact_text(error_text[:500], secret_values),
                     "selected_offer_absent_from_fresh_search": (
                         selected_offer_absent_from_fresh_search
@@ -8892,7 +8918,50 @@ def run_vast_provider_adapter(
                         catalog_readback_http_status_code
                     ),
                     "catalog_readback_offer_count": catalog_readback_offer_count,
+                    "catalog_readback_error": catalog_readback_error,
+                    "create_produced_no_instance": create_produced_no_instance,
+                    "create_inventory_http_status_code": (
+                        create_inventory_http_status_code
+                    ),
+                    "create_inventory_error": create_inventory_error,
                     "raw_secret_values_recorded": False,
+                }
+                base_result["create_failure_diagnosis"] = create_failure_diagnosis
+                retryable = (
+                    _is_stale_offer_create_http_error(
+                        exc,
+                        error_text,
+                        selected_offer_absent_from_fresh_search=(
+                            selected_offer_absent_from_fresh_search
+                        ),
+                    )
+                    or create_produced_no_instance
+                )
+                if not retryable or stale_offer_create_retry_count >= max_stale_offer_retries:
+                    # Record why this run stopped here. Without it the receipt
+                    # says only "empty 400" and cannot distinguish a vanished
+                    # offer from a rejected payload, which is what made the
+                    # previous failure undiagnosable from its own evidence.
+                    create_failure_diagnosis["status"] = (
+                        "create_retry_budget_exhausted"
+                        if retryable
+                        else "create_failure_not_proven_safe_to_retry"
+                    )
+                    create_retry_attempts.append(create_failure_diagnosis)
+                    raise
+                selected_machine_id = _number(selected_offer.get("machine_id"))
+                if selected_machine_id is not None:
+                    excluded_machine_ids.add(int(selected_machine_id))
+                retry_attempt = {
+                    **create_failure_diagnosis,
+                    "status": (
+                        "stale_offer_retry"
+                        if selected_offer_absent_from_fresh_search
+                        else "create_no_mutation_reselect"
+                    ),
+                    "machine_id": int(selected_machine_id)
+                    if selected_machine_id is not None
+                    else None,
                 }
                 create_retry_attempts.append(retry_attempt)
                 stale_offer_create_retry_count += 1
