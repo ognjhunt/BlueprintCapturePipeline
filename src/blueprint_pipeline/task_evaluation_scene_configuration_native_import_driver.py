@@ -13,7 +13,6 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .measurement_isaac_physx_rigid_adapter import (
     _bind_isaac_runtime_environment,
-    _contact_count,
     _import_simulation_app,
     _observe_isaac_runtime_identity,
 )
@@ -152,6 +151,38 @@ def _live_pose(omni_physx: Any, prim_path: str) -> tuple[list[float], list[float
     return position, rotation
 
 
+def _subscribe_body_contact_reports(
+    *,
+    omni_physx: Any,
+    physics_schema_tools: Any,
+    body_path: str,
+    event_count: list[int],
+) -> Any:
+    """Count body contacts through PhysX's supported simulation callback."""
+
+    def _on_contact_report(contact_headers: Any, _contact_data: Any) -> None:
+        try:
+            for header in contact_headers:
+                paths: list[str] = []
+                for name in ("actor0", "actor1", "collider0", "collider1"):
+                    encoded = getattr(header, name, 0)
+                    try:
+                        paths.append(
+                            str(physics_schema_tools.intToSdfPath(int(encoded)))
+                        )
+                    except (TypeError, ValueError):
+                        paths.append(str(encoded))
+                if body_path in paths or any(
+                    path.startswith(body_path + "/") for path in paths
+                ):
+                    event_count[0] += 1
+        except Exception:  # noqa: BLE001 - absence of proof fails qualification
+            return
+
+    interface = omni_physx.get_physx_simulation_interface()
+    return interface.subscribe_contact_report_events(_on_contact_report)
+
+
 def _one_native_settle(
     *,
     asset_path: Path,
@@ -225,6 +256,13 @@ def _one_native_settle(
     body = stage.GetPrimAtPath(body_path)
     contact_api = PhysxSchema.PhysxContactReportAPI.Apply(body)
     contact_api.CreateThresholdAttr().Set(0.0)
+    contact_event_count = [0]
+    contact_subscription = _subscribe_body_contact_reports(
+        omni_physx=omni_physx,
+        physics_schema_tools=PhysicsSchemaTools,
+        body_path=body_path,
+        event_count=contact_event_count,
+    )
     simulation = SimulationContext(
         physics_dt=timestep_seconds,
         rendering_dt=timestep_seconds,
@@ -244,7 +282,6 @@ def _one_native_settle(
     simulation.play()
     initial_position, initial_rotation = _live_pose(omni_physx, body_path)
     trace: list[list[float]] = []
-    contact_count = 0
     step_count = int(math.ceil(duration_seconds / timestep_seconds))
     for _step in range(step_count):
         try:
@@ -253,11 +290,9 @@ def _one_native_settle(
             simulation.step()
         position, _rotation = _live_pose(omni_physx, body_path)
         trace.append(position)
-        contact_count += _contact_count(
-            omni_physx, PhysicsSchemaTools, body_path
-        )
     final_position, final_rotation = _live_pose(omni_physx, body_path)
     simulation.stop()
+    del contact_subscription
     if callable(clear_instance):
         clear_instance()
     translation = math.dist(initial_position, final_position)
@@ -270,8 +305,8 @@ def _one_native_settle(
         "asset_imported": True,
         "rigid_body_paths": rigid_paths,
         "collision_paths": collision_paths,
-        "support_contact_observed": contact_count > 0,
-        "contact_report_event_count": contact_count,
+        "support_contact_observed": contact_event_count[0] > 0,
+        "contact_report_event_count": contact_event_count[0],
         "settle_translation_m": translation,
         "settle_rotation_rad": rotation,
         "step_count": step_count,
