@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 import subprocess  # nosec B404 - package and entrypoint are digest-bound
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -478,11 +478,20 @@ def _semantic_rights_and_request(
     return packet_root
 
 
+def _redact_artifixer_runtime_stream(value: Any, *, secrets: Sequence[str]) -> str:
+    text = str(value or "")
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "REDACTED_SECRET")
+    return redacted_failure_text(text)
+
+
 def _emit_artifixer_runtime_diagnostics(
     *,
     completed: Any,
     runtime_result_path: Path,
     retained_root: Path | None = None,
+    secret_values: Sequence[str] = (),
 ) -> None:
     """Print the runtime's streams to stderr when its outcome is a failure.
 
@@ -515,8 +524,9 @@ def _emit_artifixer_runtime_diagnostics(
         for stream_name in ("stdout", "stderr"):
             try:
                 (retained_root / f"artifixer_runtime_{stream_name}.log").write_text(
-                    redacted_failure_text(
-                        getattr(completed, stream_name, "") or ""
+                    _redact_artifixer_runtime_stream(
+                        getattr(completed, stream_name, "") or "",
+                        secrets=secret_values,
                     ),
                     encoding="utf-8",
                 )
@@ -535,7 +545,10 @@ def _emit_artifixer_runtime_diagnostics(
         file=sys.stderr,
     )
     for stream_name in ("stdout", "stderr"):
-        text = redacted_failure_text(getattr(completed, stream_name, "") or "")
+        text = _redact_artifixer_runtime_stream(
+            getattr(completed, stream_name, "") or "",
+            secrets=secret_values,
+        )
         lines = [
             line
             for line in text.splitlines()
@@ -940,18 +953,20 @@ def execute_artifixer_component(
     runtime_result_path = (
         artifixer_output / "public_scene_artifixer3d_runtime_result.json"
     )
+    failure_secrets = failure_evidence_secret_values(
+        values, known_values=(token,)
+    )
     _emit_artifixer_runtime_diagnostics(
         completed=completed,
         runtime_result_path=runtime_result_path,
         retained_root=work,
+        secret_values=failure_secrets,
     )
     runtime_result = _read_artifixer_runtime_result(
         completed=completed,
         runtime_result_path=runtime_result_path,
         evidence_path=work / "artifixer_runtime_failure_evidence.v1.json",
-        secret_values=failure_evidence_secret_values(
-            values, known_values=(token,)
-        ),
+        secret_values=failure_secrets,
     )
     runtime_task = runtime_result["tasks"][0]
     source_task = candidate["tasks"][0]
