@@ -642,9 +642,15 @@ def test_digest_bound_provider_renderer_qualifies_and_nothing_weaker_does() -> N
 
     sealed = {
         "mode": "digest_bound_provider_bundle_renderer",
+        "schema_version": (
+            "task_evaluation_scene_configuration_provider_renderer.v1"
+        ),
         "renderer_digest": "sha256:" + "a" * 64,
         "source_runtime_digest": "sha256:" + "b" * 64,
         "source_commit": "c" * 40,
+        "platform": "linux-x86_64",
+        "file_count": 42,
+        "provider_full_byte_inventory_reopened": True,
     }
     assert module._digest_bound_renderer_identity(sealed)
 
@@ -661,6 +667,28 @@ def test_digest_bound_provider_renderer_qualifies_and_nothing_weaker_does() -> N
         assert not module._digest_bound_renderer_identity(
             {key: value for key, value in sealed.items() if key != field}
         ), f"a missing {field} must not qualify"
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "renderer_digest": "not-a-digest"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "source_runtime_digest": "sha256:abc"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "source_commit": "not-a-commit"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "schema_version": "provider_renderer.v0"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "platform": "darwin-arm64"}
+    )
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "provider_full_byte_inventory_reopened": False}
+    )
+    for invalid_count in (0, -1, True, None):
+        assert not module._digest_bound_renderer_identity(
+            {**sealed, "file_count": invalid_count}
+        )
 
 
 def test_checkout_renderer_identity_still_requires_a_clean_named_revision() -> None:

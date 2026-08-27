@@ -471,11 +471,26 @@ def _digest_bound_renderer_identity(identity: Mapping[str, Any] | None) -> bool:
 
     if not isinstance(identity, Mapping):
         return False
-    if identity.get("mode") != "digest_bound_provider_bundle_renderer":
-        return False
-    return all(
-        isinstance(identity.get(field), str) and identity.get(field)
-        for field in ("renderer_digest", "source_runtime_digest", "source_commit")
+    file_count = identity.get("file_count")
+    return bool(
+        identity.get("mode") == "digest_bound_provider_bundle_renderer"
+        and identity.get("schema_version")
+        == "task_evaluation_scene_configuration_provider_renderer.v1"
+        and identity.get("platform") == "linux-x86_64"
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(identity.get("renderer_digest") or "")
+        )
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(identity.get("source_runtime_digest") or ""),
+        )
+        and re.fullmatch(
+            r"[0-9a-f]{40}", str(identity.get("source_commit") or "")
+        )
+        and isinstance(file_count, int)
+        and not isinstance(file_count, bool)
+        and file_count > 0
+        and identity.get("provider_full_byte_inventory_reopened") is True
     )
 
 
