@@ -662,7 +662,11 @@ def cleanup_staged_wam_provider_objects(
         else {}
     )
     blockers: list[str] = []
-    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("status") != "completed":
+    manifest_status = _string(manifest.get("status"))
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest_status not in {"completed", "blocked"}
+    ):
         blockers.append("completed_staging_manifest_required")
     keys = [str(manifest.get(name) or "") for name in ("bundle_key", "output_key")]
     if not all(keys) or len(set(keys)) != 2:
@@ -671,6 +675,39 @@ def cleanup_staged_wam_provider_objects(
     expected_prefix = _string(object_store.get("key_prefix")).strip("/")
     if not expected_prefix or any(not key.startswith(expected_prefix + "/") for key in keys):
         blockers.append("staged_object_key_prefix_mismatch")
+    if manifest_status == "blocked":
+        binding_path = resolved_job_dir / STAGING_BINDING_FILENAME
+        try:
+            binding = (
+                _mapping(json.loads(binding_path.read_text(encoding="utf-8")))
+                if not binding_path.is_symlink() and binding_path.is_file()
+                else {}
+            )
+        except (OSError, json.JSONDecodeError):
+            binding = {}
+        bundle_sha256 = _string(manifest.get("bundle_sha256"))
+        expected_binding_sha256 = (
+            _staging_binding_sha256(
+                bundle_sha256=bundle_sha256,
+                bundle_key=keys[0],
+                output_key=keys[1],
+            )
+            if len(keys) == 2 and all(keys) and bundle_sha256
+            else ""
+        )
+        if (
+            binding.get("schema_version") != STAGING_BINDING_SCHEMA_VERSION
+            or binding.get("job_dir") != str(resolved_job_dir)
+            or binding.get("bundle_sha256") != bundle_sha256
+            or binding.get("bundle_key") != keys[0]
+            or binding.get("output_key") != keys[1]
+            or binding.get("staging_binding_sha256")
+            != expected_binding_sha256
+            or manifest.get("staging_binding_sha256")
+            != expected_binding_sha256
+            or binding.get("raw_secret_values_recorded") is not False
+        ):
+            blockers.append("blocked_staging_binding_invalid")
 
     access_key, _ = _read_first_file(
         explicit_path=access_key_id_file,
@@ -767,9 +804,8 @@ def cleanup_staged_wam_provider_objects(
             "provider_output_get_url.txt",
         )
     ]
-    if not blockers:
-        for path in signed_url_files:
-            path.unlink(missing_ok=True)
+    for path in signed_url_files:
+        path.unlink(missing_ok=True)
     result = {
         "schema_version": OBJECT_CLEANUP_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
