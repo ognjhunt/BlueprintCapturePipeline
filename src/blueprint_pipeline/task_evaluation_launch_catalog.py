@@ -37,8 +37,10 @@ from .task_evaluation_launch_dispatcher import (
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
     TaskEvaluationLaunchError,
+    catalog_launch_profile_descriptor,
     public_launch_profile_descriptor,
     validate_launch_profile,
+    validate_launch_profile_structure,
     verify_profile_immutable_inputs,
 )
 
@@ -86,13 +88,25 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
         # restored from an image, where none of the inputs a previous host
         # accumulated exist yet. The catalog reconciler is an ExecStartPre for
         # intake, so that is a total outage with no obvious cause.
-        blockers = validate_launch_profile(profile)
+        blockers = validate_launch_profile_structure(profile)
         if blockers:
             raise LaunchCatalogError(
                 f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
             )
-        descriptor = public_launch_profile_descriptor(profile)
         unavailable = verify_profile_immutable_inputs(profile)
+        if unavailable:
+            descriptor = catalog_launch_profile_descriptor(profile)
+        else:
+            # Once all declared bytes are present and digest-bound, retain the
+            # existing fail-closed cross-document validation. An inconsistent
+            # or tampered lineage is malformed evidence, not host unavailability.
+            blockers = validate_launch_profile(profile)
+            if blockers:
+                raise LaunchCatalogError(
+                    f"published_profile_invalid:{path.name}:"
+                    + ",".join(sorted(set(blockers)))
+                )
+            descriptor = public_launch_profile_descriptor(profile)
         # A profile whose inputs are not on this host cannot start a run here,
         # so serving it as live is the lie. Demote it in the projection rather
         # than refusing the whole catalog: the published bytes stay immutable
