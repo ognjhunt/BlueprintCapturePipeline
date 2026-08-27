@@ -8,8 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import jsonschema
-
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -38,6 +36,16 @@ def configured_scene_revision_schema() -> dict[str, Any]:
         raise TaskEvaluationConfiguredSceneRevisionError(
             "configured_scene_revision_schema_invalid"
         )
+    # Imported here, not at module scope. The scene-configuration provider
+    # bundle copies this package into an Isaac Sim container that ships no
+    # ``jsonschema``, and reaches this module only transitively: the provider's
+    # stage adapters import the orchestrator for one string constant and never
+    # validate anything against a JSON Schema. A module-scope import therefore
+    # killed the provider runner with ``ModuleNotFoundError: No module named
+    # 'jsonschema'`` before its first stage, on a GPU that was already rented.
+    # Same reason ``rfc8785`` is imported inside ``cross_runtime_canonical_json``.
+    import jsonschema
+
     jsonschema.Draft202012Validator.check_schema(value)
     return dict(value)
 
@@ -45,6 +53,8 @@ def configured_scene_revision_schema() -> dict[str, Any]:
 def validate_configured_scene_revision(
     value: Mapping[str, Any],
 ) -> dict[str, Any]:
+    import jsonschema
+
     revision = dict(value)
     validator = jsonschema.Draft202012Validator(
         configured_scene_revision_schema(),
