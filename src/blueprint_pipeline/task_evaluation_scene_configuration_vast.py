@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import stat
+import tempfile
 import zipfile
 from collections.abc import Mapping
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +42,7 @@ from .task_evaluation_scene_configuration_paid_authority import (
 )
 from .task_evaluation_supervisor.openai_cost_authority import (
     OpenAICostAuthorityError,
+    OpenAIOrganizationCostsClient,
     validate_openai_cost_scope_attestation,
 )
 from .vast_independent_watchdog_control import (
@@ -194,6 +198,45 @@ def _discard_staged_runtime_secrets(root: Path | None) -> None:
         pass
 
 
+def _collect_openai_cost_snapshot(
+    *,
+    admin_api_key_file: str,
+    project_id: str,
+    api_key_id: str,
+    start_time: int,
+    end_time: int,
+) -> Mapping[str, Any]:
+    """Query one exact stage scope without recording credential material."""
+
+    source = Path(admin_api_key_file)
+    payload = source.read_bytes()
+    if not payload:
+        raise OpenAICostAuthorityError("openai_admin_key_invalid")
+    with tempfile.TemporaryDirectory(
+        prefix="blueprint-openai-cost-preflight-"
+    ) as raw:
+        private_key = Path(raw) / "admin-key"
+        descriptor = os.open(
+            private_key,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if (
+            stat.S_IMODE(private_key.stat().st_mode) != 0o600
+            or private_key.read_bytes() != payload
+        ):
+            raise OpenAICostAuthorityError("openai_admin_key_private_copy_invalid")
+        return OpenAIOrganizationCostsClient(
+            project_id=project_id,
+            api_key_id=api_key_id,
+            admin_api_key_file=private_key,
+        ).snapshot(start_time=start_time, end_time=end_time)
+
+
 def _provider_runtime_inputs(
     authority: Mapping[str, Any],
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -273,6 +316,41 @@ def _provider_runtime_inputs(
             raise TaskEvaluationSceneConfigurationVastError(
                 f"scene_configuration_openai_stage_scope_attestation_invalid:{stage}"
             ) from exc
+    now = datetime.now(UTC)
+    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    runtime_window_end = now + timedelta(hours=1)
+    attribution_end_day = datetime(
+        runtime_window_end.year,
+        runtime_window_end.month,
+        runtime_window_end.day,
+        tzinfo=UTC,
+    ) + timedelta(days=1)
+    for stage, api_key_id_env, _attestation_file_env in _OPENAI_STAGE_SCOPE_BINDINGS:
+        try:
+            snapshot = _collect_openai_cost_snapshot(
+                admin_api_key_file=secret_paths["OPENAI_ADMIN_API_KEY_FILE"],
+                project_id=values["OPENAI_PROJECT_ID"],
+                api_key_id=values[api_key_id_env],
+                start_time=int(day_start.timestamp()),
+                end_time=int(attribution_end_day.timestamp()),
+            )
+            if not isinstance(snapshot, Mapping):
+                raise ValueError("openai_cost_snapshot_invalid")
+            observed_cost = snapshot.get("total_cost_usd")
+            if (
+                isinstance(observed_cost, bool)
+                or not math.isfinite(float(observed_cost))
+                or float(observed_cost) < 0
+            ):
+                raise ValueError("openai_cost_snapshot_invalid")
+        except (KeyError, TypeError, ValueError, OpenAICostAuthorityError) as exc:
+            raise TaskEvaluationSceneConfigurationVastError(
+                f"scene_configuration_openai_stage_cost_baseline_invalid:{stage}"
+            ) from exc
+        if float(observed_cost) != 0.0:
+            raise TaskEvaluationSceneConfigurationVastError(
+                f"scene_configuration_openai_stage_cost_baseline_not_zero:{stage}"
+            )
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,

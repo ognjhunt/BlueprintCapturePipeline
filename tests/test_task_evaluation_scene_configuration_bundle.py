@@ -74,6 +74,53 @@ def _openai_scope_attestation(
     return json.dumps(value, sort_keys=True)
 
 
+def _configure_scene_openai_runtime_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    visual_review_class: str = (
+        "task_evaluation_scene_configuration_artifixer_visual_review"
+    ),
+) -> None:
+    files = {
+        "OPENAI_ADMIN_API_KEY_FILE": "fixture-admin-key",
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE": "fixture-semantic-key",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": "fixture-review-key",
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "fixture-content-key",
+        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE": (
+            _openai_scope_attestation(
+                paid_resource_class=(
+                    "task_evaluation_scene_configuration_artifixer_semantic_teacher"
+                ),
+                api_key_id="key_semantic",
+            )
+        ),
+        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE": (
+            _openai_scope_attestation(
+                paid_resource_class=visual_review_class,
+                api_key_id="key_review",
+            )
+        ),
+        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
+            _openai_scope_attestation(
+                paid_resource_class="task_evaluation_scene_configuration_content_agents",
+                api_key_id="key_content_agents",
+            )
+        ),
+    }
+    for name, payload in files.items():
+        path = tmp_path / name.lower()
+        path.write_text(payload, encoding="utf-8")
+        path.chmod(0o640)
+        monkeypatch.setenv(name, str(path))
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
+    monkeypatch.setenv(
+        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID", "key_semantic"
+    )
+    monkeypatch.setenv("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_review")
+    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_ID", "key_content_agents")
+
+
 def _bound(path: Path, **extra: object) -> dict[str, object]:
     return {
         "materialized_path": str(path),
@@ -928,6 +975,11 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     )
     monkeypatch.setenv("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_review")
     monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_ID", "key_content_agents")
+    monkeypatch.setattr(
+        scene_vast,
+        "_collect_openai_cost_snapshot",
+        lambda **_kwargs: {"total_cost_usd": 0.0},
+    )
     dry_run = scene_vast.run_scene_configuration_vast(
         job_dir=tmp_path / "dry-run",
         bundle_receipt_path=receipt_path,
@@ -1157,43 +1209,11 @@ def test_scene_configuration_refuses_mismatched_stage_attestation_before_spend(
             }
         },
     }
-    files = {
-        "OPENAI_ADMIN_API_KEY_FILE": "fixture-admin-key",
-        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE": "fixture-semantic-key",
-        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": "fixture-review-key",
-        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "fixture-content-key",
-        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE": (
-            _openai_scope_attestation(
-                paid_resource_class=(
-                    "task_evaluation_scene_configuration_artifixer_semantic_teacher"
-                ),
-                api_key_id="key_semantic",
-            )
-        ),
-        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE": (
-            _openai_scope_attestation(
-                paid_resource_class="task_evaluation_artifixer_ai_visual_review",
-                api_key_id="key_review",
-            )
-        ),
-        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
-            _openai_scope_attestation(
-                paid_resource_class="task_evaluation_scene_configuration_content_agents",
-                api_key_id="key_content_agents",
-            )
-        ),
-    }
-    for name, payload in files.items():
-        path = tmp_path / name.lower()
-        path.write_text(payload, encoding="utf-8")
-        path.chmod(0o640)
-        monkeypatch.setenv(name, str(path))
-    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj_test")
-    monkeypatch.setenv(
-        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID", "key_semantic"
+    _configure_scene_openai_runtime_files(
+        tmp_path,
+        monkeypatch,
+        visual_review_class="task_evaluation_artifixer_ai_visual_review",
     )
-    monkeypatch.setenv("OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID", "key_review")
-    monkeypatch.setenv("OPENAI_CONTENT_AGENTS_API_KEY_ID", "key_content_agents")
 
     with pytest.raises(
         scene_vast.TaskEvaluationSceneConfigurationVastError,
@@ -1203,6 +1223,86 @@ def test_scene_configuration_refuses_mismatched_stage_attestation_before_spend(
         ),
     ):
         scene_vast._provider_runtime_inputs(authority)
+
+
+def test_scene_configuration_refuses_dirty_openai_scope_before_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = {
+        "authority_digest": "sha256:" + "a" * 64,
+        "external_service_spend_caps": {
+            "openai": {
+                "maximum_cost_usd": 1.0,
+                "maximum_requests": 3,
+                "stage_max_cost_usd": {
+                    "artifixer_semantic_teacher": 0.2,
+                    "artifixer_visual_review": 0.5,
+                    "content_agents": 0.3,
+                },
+            }
+        },
+    }
+    _configure_scene_openai_runtime_files(tmp_path, monkeypatch)
+    observed: list[str] = []
+
+    def collect(**kwargs: object) -> dict[str, float]:
+        observed.append(str(kwargs["api_key_id"]))
+        return {"total_cost_usd": 0.877128}
+
+    monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", collect)
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match=(
+            "scene_configuration_openai_stage_cost_baseline_not_zero:"
+            "artifixer_semantic_teacher"
+        ),
+    ):
+        scene_vast._provider_runtime_inputs(authority)
+
+    assert observed == ["key_semantic"]
+
+
+def test_scene_configuration_cost_preflight_uses_ephemeral_owner_only_admin_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "admin-key"
+    source.write_text("fixture-admin-key-value", encoding="utf-8")
+    source.chmod(0o640)
+    observed: dict[str, object] = {}
+
+    class Client:
+        def __init__(
+            self, *, project_id: str, api_key_id: str, admin_api_key_file: Path
+        ) -> None:
+            observed.update(
+                {
+                    "project_id": project_id,
+                    "api_key_id": api_key_id,
+                    "path": admin_api_key_file,
+                    "mode": admin_api_key_file.stat().st_mode & 0o777,
+                    "payload": admin_api_key_file.read_text(encoding="utf-8"),
+                }
+            )
+
+        def snapshot(self, *, start_time: int, end_time: int) -> dict[str, float]:
+            observed["window"] = (start_time, end_time)
+            return {"total_cost_usd": 0.0}
+
+    monkeypatch.setattr(scene_vast, "OpenAIOrganizationCostsClient", Client)
+    snapshot = scene_vast._collect_openai_cost_snapshot(
+        admin_api_key_file=str(source),
+        project_id="proj_test",
+        api_key_id="key_semantic",
+        start_time=1,
+        end_time=2,
+    )
+
+    assert snapshot == {"total_cost_usd": 0.0}
+    assert observed["mode"] == 0o600
+    assert observed["payload"] == "fixture-admin-key-value"
+    assert observed["window"] == (1, 2)
+    assert not Path(str(observed["path"])).exists()
+    assert source.stat().st_mode & 0o777 == 0o640
 
 
 def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
