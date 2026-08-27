@@ -329,24 +329,72 @@ def _standing_authorization_protections(
     profiles: Mapping[str, Mapping[str, Any]],
     directory: Path,
     now: datetime,
-) -> tuple[dict[str, set[str]], list[dict[str, Any]]]:
+) -> tuple[
+    dict[str, set[str]], list[dict[str, Any]], list[dict[str, Any]]
+]:
     _assert_directory(
         directory, blocker="release_retention_standing_authorization_root"
     )
     protected: dict[str, set[str]] = {}
     documents: list[dict[str, Any]] = []
+    terminal_orphans: list[dict[str, Any]] = []
     known_authorization_files = {f"{profile_id}.json" for profile_id in profiles}
     for child in sorted(directory.iterdir(), key=lambda item: item.name):
         if child.name == "consumed" and child.is_dir() and not child.is_symlink():
             continue
-        if (
-            child.name not in known_authorization_files
-            or child.is_symlink()
-            or not child.is_file()
-        ):
+        if child.is_symlink() or not child.is_file():
             raise ReleaseRetentionError(
                 f"release_retention_unknown_standing_authorization_child:{child.name}"
             )
+        if child.name in known_authorization_files:
+            continue
+        profile_id = child.stem
+        try:
+            authorization = load_standing_authorization(
+                profile_id=profile_id, directory=directory
+            )
+            launches, spend = consumption_totals(
+                directory=directory, profile_id=profile_id
+            )
+        except StandingAuthorizationError as exc:
+            raise ReleaseRetentionError(str(exc)) from exc
+        if authorization is None or authorization.get("profile_id") != profile_id:
+            raise ReleaseRetentionError(
+                f"release_retention_unknown_standing_authorization_child:{child.name}"
+            )
+        synthetic_profile = {
+            "profile_id": profile_id,
+            "profile_digest": authorization.get("profile_digest"),
+            "allocator": {"max_spend_usd": 0.0},
+        }
+        blockers = set(
+            validate_standing_authorization(
+                authorization,
+                profile=synthetic_profile,
+                launches_consumed=launches,
+                spend_consumed_usd=spend,
+                now=now,
+            )
+        )
+        if not blockers or blockers - _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS:
+            raise ReleaseRetentionError(
+                f"release_retention_unknown_standing_authorization_child:{child.name}"
+            )
+        _value, evidence = _read_json_file(
+            child,
+            blocker="release_retention_standing_authorization_unreadable",
+        )
+        documents.append(evidence)
+        terminal_orphans.append(
+            {
+                "path": str(child),
+                "profile_id": profile_id,
+                "terminal_blockers": sorted(blockers),
+                "launches_consumed": launches,
+                "spend_consumed_usd": spend,
+                "source_release_protected": False,
+            }
+        )
 
     for profile_id, profile in sorted(profiles.items()):
         authorization_path = directory / f"{profile_id}.json"
@@ -391,7 +439,7 @@ def _standing_authorization_protections(
                 protected.setdefault(commit, set()).add(
                     f"unconsumed_standing_authorization:{profile_id}"
                 )
-    return protected, documents
+    return protected, documents, terminal_orphans
 
 
 def _evidence_binding_protections(
@@ -528,8 +576,10 @@ def build_release_retention_plan(
                 f"live_profile_reference:{profile_id}"
             )
 
-    standing_protected, standing_documents = _standing_authorization_protections(
+    standing_protected, standing_documents, terminal_orphans = (
+        _standing_authorization_protections(
         profiles=profiles, directory=standing_root, now=moment
+        )
     )
     _merge_reasons(protected, standing_protected)
     documents.extend(standing_documents)
@@ -588,6 +638,7 @@ def build_release_retention_plan(
         "protected_commits": {
             commit: sorted(reasons) for commit, reasons in sorted(protected.items())
         },
+        "terminal_orphan_standing_authorizations": terminal_orphans,
         "reference_documents": sorted(documents, key=lambda item: item["path"]),
         "eligible_commits": eligible,
         "retained_commits": retained,

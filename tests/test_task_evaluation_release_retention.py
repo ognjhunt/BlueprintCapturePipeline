@@ -271,6 +271,73 @@ def test_plan_protects_every_live_binding_across_all_three_managed_roots(
     assert plan["production_artifact_mutation_performed"] is False
 
 
+def test_expired_orphan_standing_authorization_is_inventory_only(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    stale = "c" * 40
+    state = _base_state(tmp_path, commits=[active, stale], active_commit=active)
+    standing = state["standing_authorization_dir"]
+    assert isinstance(standing, Path)
+    profile_id = f"retired-scene-{stale}"
+    _write_json(
+        standing / f"{profile_id}.json",
+        {
+            "schema_version": "task_evaluation_standing_launch_authorization.v1",
+            "profile_id": profile_id,
+            "profile_digest": "sha256:" + "d" * 64,
+            "max_launches": 2,
+            "max_total_spend_usd": 2.0,
+            "expires_at": (NOW - timedelta(days=1)).isoformat(),
+        },
+    )
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [stale]
+    assert plan["terminal_orphan_standing_authorizations"] == [
+        {
+            "path": str(standing / f"{profile_id}.json"),
+            "profile_id": profile_id,
+            "terminal_blockers": ["standing_authorization_expired"],
+            "launches_consumed": 0,
+            "spend_consumed_usd": 0.0,
+            "source_release_protected": False,
+        }
+    ]
+
+
+def test_unexpired_or_malformed_orphan_standing_authorization_still_blocks(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    standing = state["standing_authorization_dir"]
+    assert isinstance(standing, Path)
+    profile_id = "retired-but-still-authorized"
+    _write_json(
+        standing / f"{profile_id}.json",
+        {
+            "schema_version": "task_evaluation_standing_launch_authorization.v1",
+            "profile_id": profile_id,
+            "profile_digest": "sha256:" + "d" * 64,
+            "max_launches": 2,
+            "max_total_spend_usd": 2.0,
+            "expires_at": (NOW + timedelta(days=1)).isoformat(),
+        },
+    )
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match="release_retention_unknown_standing_authorization_child",
+    ):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     "corruption",
     ("unknown_managed_child", "managed_symlink", "malformed_pending"),
