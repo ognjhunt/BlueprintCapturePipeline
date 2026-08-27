@@ -73,6 +73,9 @@ _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 _RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 _PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
 _ADAPTER_ID = "artifixer3d_observed_object_removal"
+_VISUAL_REVIEW_COST_SCOPE = (
+    "task_evaluation_scene_configuration_artifixer_visual_review"
+)
 _SEMANTIC_BACKEND_ID = "openai_gpt_image_2_2026_04_21_semantic_teacher"
 
 
@@ -718,6 +721,8 @@ def execute_artifixer_component(
             openai_project_id=str(values.get("OPENAI_PROJECT_ID") or ""),
             openai_api_key_id=review_scope["api_key_id"],
             max_cost_usd=visual_review_cap,
+            cost_lane_id=_VISUAL_REVIEW_COST_SCOPE,
+            paid_resource_class=_VISUAL_REVIEW_COST_SCOPE,
         )
     if review.get("decision") != "accepted" or not review.get("review_receipt"):
         raise TaskEvaluationSceneConfigurationArtifixerError(
