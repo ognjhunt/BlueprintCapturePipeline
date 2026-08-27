@@ -179,6 +179,7 @@ def _target_camera_ring(
                     "camera_id": (f"target-e{elevation_index}-a{azimuth_index}"),
                     "T_world_camera_provider_frame": _look_at_opencv(eye.tolist(), center.tolist()),
                     "intrinsics": {
+                        "model": "PINHOLE",
                         "fx": focal,
                         "fy": focal,
                         "cx": width / 2.0,
