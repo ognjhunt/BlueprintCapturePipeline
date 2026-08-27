@@ -622,3 +622,66 @@ def test_render_harness_diagnostics_redact_and_bound_their_output(
     assert "earlier bytes dropped" in captured
     assert "deadbeefcafe" not in captured
     assert len(captured) < module._RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES * 2
+
+
+def test_digest_bound_provider_renderer_qualifies_and_nothing_weaker_does() -> None:
+    """A rented provider cannot produce the checkout form of this provenance.
+
+    Run ``adp-new-scene-simple-relocation-839873-6e9b81ed-r2-web-20260827T041233Z``
+    rendered all eight camera frames on the GPU and was then refused with
+    ``render_evaluation_renderer_identity_incomplete``. The bundle extracts the
+    renderer into a plain directory, so ``git rev-parse`` inside it returns
+    nothing and the checkout probe can never pass there.
+
+    What that path has instead is stronger: every renderer file reopened byte
+    for byte against a digest sealed at an exact source commit. That form now
+    qualifies -- and nothing weaker does.
+    """
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    sealed = {
+        "mode": "digest_bound_provider_bundle_renderer",
+        "renderer_digest": "sha256:" + "a" * 64,
+        "source_runtime_digest": "sha256:" + "b" * 64,
+        "source_commit": "c" * 40,
+    }
+    assert module._digest_bound_renderer_identity(sealed)
+
+    # Absent, wrong-mode, malformed, or partially-bound identities do not.
+    assert not module._digest_bound_renderer_identity(None)
+    assert not module._digest_bound_renderer_identity({})
+    assert not module._digest_bound_renderer_identity(
+        {**sealed, "mode": "checkout_local_runtime"}
+    )
+    for field in ("renderer_digest", "source_runtime_digest", "source_commit"):
+        assert not module._digest_bound_renderer_identity(
+            {**sealed, field: ""}
+        ), f"an empty {field} must not qualify"
+        assert not module._digest_bound_renderer_identity(
+            {key: value for key, value in sealed.items() if key != field}
+        ), f"a missing {field} must not qualify"
+
+
+def test_checkout_renderer_identity_still_requires_a_clean_named_revision() -> None:
+    """The repository path keeps exactly the bar it had before."""
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    complete = {
+        "repository_revision": "d" * 40,
+        "repository_renderer_files_clean": True,
+        "package_version": "1.2.3",
+        "package_lock_digest": "sha256:" + "e" * 64,
+        "dependency_versions": {"@sparkjsdev/spark": "0.1.0"},
+    }
+    assert module._checkout_renderer_identity_complete(complete)
+    assert not module._checkout_renderer_identity_complete(
+        {**complete, "repository_renderer_files_clean": False}
+    )
+    assert not module._checkout_renderer_identity_complete(
+        {**complete, "repository_revision": None}
+    )
+    assert not module._checkout_renderer_identity_complete(
+        {**complete, "dependency_versions": {}}
+    )
