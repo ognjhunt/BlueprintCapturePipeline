@@ -22,16 +22,13 @@ from .task_evaluation_scene_configuration_stage_tool import (
 
 
 ADAPTER_ID = "simready_native_import_qualification"
-RUNTIME_RESULT_SCHEMA_VERSION = (
-    "task_evaluation_replacement_native_import_result.v1"
-)
-_STAGE_INPUT_SCHEMA = (
-    "task_evaluation_scene_configuration_stage_production_input.v1"
-)
+RUNTIME_RESULT_SCHEMA_VERSION = "task_evaluation_replacement_native_import_result.v1"
+_STAGE_INPUT_SCHEMA = "task_evaluation_scene_configuration_stage_production_input.v1"
 _COMPONENT_RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 _STAGE_INPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"
 _DEPENDENCIES_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
 _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
+NativeObservationConsumer = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 NativeRunner = Callable[..., Mapping[str, Any]]
 
 
@@ -103,9 +100,7 @@ def _required_path(environment: Mapping[str, str], name: str) -> Path:
     return Path(unresolved).expanduser().resolve()
 
 
-def _artifact(
-    dependencies: Any, *, role: str
-) -> tuple[dict[str, Any], Path]:
+def _artifact(dependencies: Any, *, role: str) -> tuple[dict[str, Any], Path]:
     if not isinstance(dependencies, list):
         raise TaskEvaluationSceneConfigurationNativeImportDriverError(
             "scene_configuration_native_import_dependencies_invalid"
@@ -167,14 +162,10 @@ def _subscribe_body_contact_reports(
                 for name in ("actor0", "actor1", "collider0", "collider1"):
                     encoded = getattr(header, name, 0)
                     try:
-                        paths.append(
-                            str(physics_schema_tools.intToSdfPath(int(encoded)))
-                        )
+                        paths.append(str(physics_schema_tools.intToSdfPath(int(encoded))))
                     except (TypeError, ValueError):
                         paths.append(str(encoded))
-                if body_path in paths or any(
-                    path.startswith(body_path + "/") for path in paths
-                ):
+                if body_path in paths or any(path.startswith(body_path + "/") for path in paths):
                     event_count[0] += 1
         except Exception:  # noqa: BLE001 - absence of proof fails qualification
             return
@@ -241,14 +232,10 @@ def _one_native_settle(
         raise RuntimeError("scene_configuration_native_import_bounds_invalid")
     placement.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.002 - float(lower[2])))
     rigid_paths = [
-        str(prim.GetPath())
-        for prim in stage.Traverse()
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)
     ]
     collision_paths = [
-        str(prim.GetPath())
-        for prim in stage.Traverse()
-        if prim.HasAPI(UsdPhysics.CollisionAPI)
+        str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.CollisionAPI)
     ]
     if len(rigid_paths) != 1 or not collision_paths:
         raise RuntimeError("scene_configuration_native_import_structure_invalid")
@@ -319,7 +306,10 @@ def _one_native_settle(
 
 
 def _run_native_import(
-    *, asset_path: Path, required_checks: Mapping[str, Any]
+    *,
+    asset_path: Path,
+    required_checks: Mapping[str, Any],
+    observation_consumer: NativeObservationConsumer,
 ) -> dict[str, Any]:
     _bind_isaac_runtime_environment()
     SimulationApp = _import_simulation_app()
@@ -334,9 +324,11 @@ def _run_native_import(
             )
             for _ in range(int(required_checks["state_digest_repeat_count"]))
         ]
+        return dict(
+            observation_consumer({"runtime_identity": runtime_identity, "repeats": repeats})
+        )
     finally:
         app.close()
-    return {"runtime_identity": runtime_identity, "repeats": repeats}
 
 
 def execute_native_import_component(
@@ -360,9 +352,7 @@ def execute_native_import_component(
     )
     stage = production_input.get("stage") if isinstance(production_input, Mapping) else None
     configuration = (
-        production_input.get("configuration")
-        if isinstance(production_input, Mapping)
-        else None
+        production_input.get("configuration") if isinstance(production_input, Mapping) else None
     )
     checks = configuration.get("required_checks") if isinstance(configuration, Mapping) else None
     if (
@@ -383,80 +373,85 @@ def execute_native_import_component(
     asset_record, asset_path = _artifact(
         dependencies, role="statically_qualified_replacement_asset"
     )
-    static_record, _static_path = _artifact(
-        dependencies, role="static_qualification_receipt"
-    )
-    observed = dict(native_runner(asset_path=asset_path, required_checks=checks))
-    repeats = observed.get("repeats")
-    if not isinstance(repeats, list) or len(repeats) != 3:
-        raise TaskEvaluationSceneConfigurationNativeImportDriverError(
-            "scene_configuration_native_import_execution_invalid"
+    static_record, _static_path = _artifact(dependencies, role="static_qualification_receipt")
+
+    def _seal_observation(observation: Mapping[str, Any]) -> dict[str, Any]:
+        observed = dict(observation)
+        repeats = observed.get("repeats")
+        if not isinstance(repeats, list) or len(repeats) != 3:
+            raise TaskEvaluationSceneConfigurationNativeImportDriverError(
+                "scene_configuration_native_import_execution_invalid"
+            )
+        state_digests = [str(row.get("final_state_digest") or "") for row in repeats]
+        maximum_translation = max(
+            float(row.get("settle_translation_m", math.inf)) for row in repeats
         )
-    state_digests = [str(row.get("final_state_digest") or "") for row in repeats]
-    maximum_translation = max(float(row.get("settle_translation_m", math.inf)) for row in repeats)
-    maximum_rotation = max(float(row.get("settle_rotation_rad", math.inf)) for row in repeats)
-    qualified = (
-        len(set(state_digests)) == 1
-        and all(row.get("asset_imported") is True for row in repeats)
-        and all(row.get("support_contact_observed") is True for row in repeats)
-        and all(len(row.get("rigid_body_paths") or []) == 1 for row in repeats)
-        and all(bool(row.get("collision_paths")) for row in repeats)
-        and maximum_translation
-        <= float(checks["maximum_settle_translation_m"])
-        and maximum_rotation <= float(checks["maximum_settle_rotation_rad"])
-    )
-    if not qualified:
-        raise TaskEvaluationSceneConfigurationNativeImportDriverError(
-            "scene_configuration_native_import_qualification_failed"
+        maximum_rotation = max(float(row.get("settle_rotation_rad", math.inf)) for row in repeats)
+        qualified = (
+            len(set(state_digests)) == 1
+            and all(row.get("asset_imported") is True for row in repeats)
+            and all(row.get("support_contact_observed") is True for row in repeats)
+            and all(len(row.get("rigid_body_paths") or []) == 1 for row in repeats)
+            and all(bool(row.get("collision_paths")) for row in repeats)
+            and maximum_translation <= float(checks["maximum_settle_translation_m"])
+            and maximum_rotation <= float(checks["maximum_settle_rotation_rad"])
         )
-    runtime_result: dict[str, Any] = {
-        "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
-        "status": "qualified",
-        "replacement_identity": configuration["replacement_identity"],
-        "asset_digest": asset_record["digest"],
-        "static_qualification_digest": static_record["digest"],
-        "native_isaac_executed": True,
-        "native_simulator_import_qualified": True,
-        "support_contact_observed": True,
-        "deterministic_reset_state_digest_repeat_count": 3,
-        "deterministic_reset_state_digest": state_digests[0],
-        "maximum_observed_settle_translation_m": maximum_translation,
-        "maximum_observed_settle_rotation_rad": maximum_rotation,
-        "runtime_identity": observed.get("runtime_identity"),
-        "repeats": repeats,
-        "physical_equivalence_claimed": False,
-        "evaluation_episode_executed": False,
-        "blockers": [],
-        "result_digest": "",
-    }
-    runtime_result["result_digest"] = canonical_digest(
-        runtime_result, digest_field="result_digest"
+        if not qualified:
+            raise TaskEvaluationSceneConfigurationNativeImportDriverError(
+                "scene_configuration_native_import_qualification_failed"
+            )
+        runtime_result: dict[str, Any] = {
+            "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
+            "status": "qualified",
+            "replacement_identity": configuration["replacement_identity"],
+            "asset_digest": asset_record["digest"],
+            "static_qualification_digest": static_record["digest"],
+            "native_isaac_executed": True,
+            "native_simulator_import_qualified": True,
+            "support_contact_observed": True,
+            "deterministic_reset_state_digest_repeat_count": 3,
+            "deterministic_reset_state_digest": state_digests[0],
+            "maximum_observed_settle_translation_m": maximum_translation,
+            "maximum_observed_settle_rotation_rad": maximum_rotation,
+            "runtime_identity": observed.get("runtime_identity"),
+            "repeats": repeats,
+            "physical_equivalence_claimed": False,
+            "evaluation_episode_executed": False,
+            "blockers": [],
+            "result_digest": "",
+        }
+        runtime_result["result_digest"] = canonical_digest(
+            runtime_result, digest_field="result_digest"
+        )
+        artifact_path = output_root / RUNTIME_RESULT_SCHEMA_VERSION
+        artifact_path.write_text(canonical_json(runtime_result) + "\n", encoding="utf-8")
+        artifact = {
+            "role": "native_import_runtime_result",
+            "path": str(artifact_path),
+            "digest": _sha256(artifact_path),
+            "size_bytes": artifact_path.stat().st_size,
+        }
+        component: dict[str, Any] = {
+            "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
+            "status": "completed",
+            "adapter_id": ADAPTER_ID,
+            "stage_id": stage["stage_id"],
+            "provider_mutations_performed": 0,
+            "nested_paid_execution_requested": False,
+            "artifacts": [artifact],
+            "result_digest": "",
+        }
+        component["result_digest"] = canonical_digest(component, digest_field="result_digest")
+        component_result_path.write_text(canonical_json(component) + "\n", encoding="utf-8")
+        return component
+
+    return dict(
+        native_runner(
+            asset_path=asset_path,
+            required_checks=checks,
+            observation_consumer=_seal_observation,
+        )
     )
-    artifact_path = output_root / RUNTIME_RESULT_SCHEMA_VERSION
-    artifact_path.write_text(canonical_json(runtime_result) + "\n", encoding="utf-8")
-    artifact = {
-        "role": "native_import_runtime_result",
-        "path": str(artifact_path),
-        "digest": _sha256(artifact_path),
-        "size_bytes": artifact_path.stat().st_size,
-    }
-    component: dict[str, Any] = {
-        "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
-        "status": "completed",
-        "adapter_id": ADAPTER_ID,
-        "stage_id": stage["stage_id"],
-        "provider_mutations_performed": 0,
-        "nested_paid_execution_requested": False,
-        "artifacts": [artifact],
-        "result_digest": "",
-    }
-    component["result_digest"] = canonical_digest(
-        component, digest_field="result_digest"
-    )
-    component_result_path.write_text(
-        canonical_json(component) + "\n", encoding="utf-8"
-    )
-    return component
 
 
 def main() -> int:
