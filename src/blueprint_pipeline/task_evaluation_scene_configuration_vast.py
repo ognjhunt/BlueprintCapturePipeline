@@ -46,8 +46,10 @@ from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
 )
 from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
-    SCHEMA_VERSION as DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION,
     validate_scene_configuration_diagnostic_checkpoint,
+)
+from .task_evaluation_scene_configuration_diagnostic_output import (
+    validated_advanced_checkpoint_reference,
 )
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
@@ -67,6 +69,10 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     diagnostic_parent_runtime_budget_blockers,
     parent_runtime_budget_blockers,
 )
+from .task_evaluation_scene_configuration_transfer_budget import (
+    scene_configuration_provider_transfer_byte_budget,
+)
+from .task_evaluation_scene_configuration_provider_cleanup import cleanup_scene_staging
 from .task_evaluation_scene_construction_queue import (
     TaskEvaluationSceneConstructionQueueError,
     finalize_scene_construction,
@@ -441,6 +447,16 @@ def _read(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _validated_advanced_checkpoint_reference(
+    *, extraction_root: Path, result: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    return validated_advanced_checkpoint_reference(
+        extraction_root=extraction_root,
+        result=result,
+        checkpoint_validator=validate_scene_configuration_diagnostic_checkpoint,
+    )
+
+
 def _consume_authority_once(
     authority: Mapping[str, Any], *, source_commit: str
 ) -> dict[str, Any]:
@@ -494,55 +510,6 @@ def _consume_authority_once(
         + hashlib.sha256(payload).hexdigest(),
         "record_location_disclosed": False,
     }
-
-
-def _validated_advanced_checkpoint_reference(
-    *, extraction_root: Path, result: Mapping[str, Any]
-) -> tuple[dict[str, Any] | None, str | None]:
-    reference = result.get("advanced_checkpoint")
-    if not isinstance(reference, Mapping):
-        return None, "scene_configuration_diagnostic_advanced_checkpoint_missing"
-    relative_root = str(reference.get("provider_output_relative_root") or "")
-    relative_manifest = str(reference.get("manifest_relative_path") or "")
-    if (
-        not relative_root
-        or not relative_manifest
-        or Path(relative_root).is_absolute()
-        or Path(relative_manifest).is_absolute()
-        or ".." in Path(relative_root).parts
-        or ".." in Path(relative_manifest).parts
-    ):
-        return None, "scene_configuration_diagnostic_advanced_checkpoint_unsafe"
-    root = (extraction_root / relative_root).resolve()
-    manifest = (extraction_root / relative_manifest).resolve()
-    try:
-        root.relative_to(extraction_root)
-        manifest.relative_to(root)
-    except ValueError:
-        return None, "scene_configuration_diagnostic_advanced_checkpoint_unsafe"
-    if manifest != root / f"{DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION}.json":
-        return None, "scene_configuration_diagnostic_advanced_checkpoint_unsafe"
-    try:
-        checkpoint = validate_scene_configuration_diagnostic_checkpoint(
-            checkpoint_root=root
-        )
-    except (OSError, RuntimeError, ValueError):
-        return None, "scene_configuration_diagnostic_advanced_checkpoint_invalid"
-    files = [path for path in root.rglob("*") if path.is_file()]
-    if (
-        _sha256(manifest) != reference.get("manifest_sha256")
-        or checkpoint.get("checkpoint_digest") != reference.get("checkpoint_digest")
-        or checkpoint.get("completed_stage_prefix_count")
-        != reference.get("completed_stage_prefix_count")
-        or len(files) != reference.get("file_count")
-        or sum(path.stat().st_size for path in files) != reference.get("total_bytes")
-    ):
-        return None, "scene_configuration_diagnostic_advanced_checkpoint_invalid"
-    return {
-        **dict(reference),
-        "checkpoint_root": str(root),
-        "manifest_path": str(manifest),
-    }, None
 
 
 def _completed_stage_chain_valid(
@@ -779,6 +746,16 @@ def _extract_provider_output(
                 if len(detail) > 300:
                     detail = detail[:297] + "..."
                 blockers.append(f"provider_result_blocker:{detail}")
+        if diagnostic_only and result.get("advanced_checkpoint") is not None:
+            advanced_reference, advanced_blocker = (
+                _validated_advanced_checkpoint_reference(
+                    extraction_root=root, result=result
+                )
+            )
+            if advanced_blocker is not None:
+                blockers.append(advanced_blocker)
+            elif advanced_reference is not None:
+                result["_validated_advanced_checkpoint"] = advanced_reference
     else:
         blockers.append("scene_configuration_provider_result_status_invalid")
     return result, sorted(set(blockers))
@@ -1159,43 +1136,18 @@ def _seal_live_terminal_result(
 def _provider_transfer_byte_budget(
     receipt: Mapping[str, Any],
 ) -> tuple[int, int]:
-    """Declare the transfer ceilings the hard-cap projection must price.
-
-    Vast prices inbound and outbound bytes per GB *outside* the hourly rate.
-    Leaving these at zero did not merely lose a number: it switched off
-    ``_offer_fits_total_cost_bound`` entirely, so an offer whose bandwidth
-    price alone could exceed the attempt's compute cap still passed
-    admission, and the selection receipt recorded no projected total. The
-    bundle portion of the download ceiling is the exact byte count the receipt
-    seals. The upload ceiling is a receipt-relative contract enforced against
-    the completed ZIP before the signed PUT is used, so admission and mutation
-    are bound to the same maximum rather than an unenforced estimate.
-    """
-
-    bundle = receipt.get("bundle_size_bytes")
-    if not isinstance(bundle, int) or isinstance(bundle, bool) or bundle <= 0:
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_provider_transfer_budget_inputs_invalid"
-        )
-    if PROVISIONING_DOWNLOAD_OVERHEAD_BYTES < (
-        4 * ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES
-    ):
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_provider_transfer_budget_underdeclared"
-        )
-    download = bundle + PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
-    if (
-        PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES < 1_000_000_000
-        or PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER < 2
-    ):
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_provider_transfer_budget_underdeclared"
-        )
-    upload = max(
-        PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER * bundle,
-        PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+    return scene_configuration_provider_transfer_byte_budget(
+        receipt,
+        provisioning_download_overhead_bytes=PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
+        artifixer_pinned_wheel_download_floor_bytes=(
+            ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES
+        ),
+        provider_output_upload_minimum_bytes=PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+        provider_output_upload_bundle_multiplier=(
+            PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER
+        ),
+        error_factory=TaskEvaluationSceneConfigurationVastError,
     )
-    return download, upload
 
 
 def _close_watchdog_after_adapter(
@@ -1241,8 +1193,6 @@ def _close_watchdog_after_adapter(
             not instance_ids and adapter.get("provider_create_attempted") is not True
         ),
     )
-
-
 def _recover_escaped_adapter_failure(
     *,
     provider_run: Path,
@@ -1284,6 +1234,8 @@ def _recover_escaped_adapter_failure(
         "provider_create_attempted": started_path_present,
         "vast_side_effects_may_have_occurred": started_path_present,
         "vast_instance_ids": instance_ids,
+        "retained_owned": False,
+        "continuing_spend_from_this_run": started_path_present,
         "raw_secret_values_recorded": False,
     }
     if started_path_present:
@@ -1307,6 +1259,9 @@ def run_scene_configuration_vast(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
     diagnostic_only: bool = False,
+    retain_warm_session: bool = False,
+    warm_session_authority_path: str | Path | None = None,
+    warm_session_output_root: str | Path | None = None,
     scene_construction_queue_root: str | Path | None = None,
     disk_usage_provider: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
@@ -1339,6 +1294,19 @@ def run_scene_configuration_vast(
     authority = validate_scene_configuration_paid_authority(
         _read(authority_path), bundle_receipt=receipt
     )
+    warm_session_authority: dict[str, Any] | None = None
+    if retain_warm_session:
+        from .task_evaluation_scene_configuration_warm_bootstrap import (  # noqa: PLC0415
+            validate_warm_bootstrap_request,
+        )
+
+        warm_session_authority = validate_warm_bootstrap_request(
+            requested=True, diagnostic_only=diagnostic_only,
+            authority_path=warm_session_authority_path,
+            output_root=warm_session_output_root, bundle_receipt=receipt,
+            paid_authority=authority,
+            error_factory=TaskEvaluationSceneConfigurationVastError,
+        )
     compute_cap = float(authority["provider_compute_spend_cap_usd"])
     rate = float(authority["maximum_hourly_rate_usd"])
     ttl = int(authority["maximum_single_resource_ttl_seconds"])
@@ -1657,6 +1625,7 @@ def run_scene_configuration_vast(
                 provider_runtime_output_zip=output_zip,
                 expected_provider_download_bytes=expected_download_bytes,
                 expected_provider_upload_bytes=expected_upload_bytes,
+                expected_provider_bundle_sha256=str(receipt["bundle_sha256"]),
                 provider_output_minimum_free_bytes=(
                     output_disk_requirements[
                         "required_free_bytes_before_download"
@@ -1693,6 +1662,10 @@ def run_scene_configuration_vast(
                     if runtime_secret_paths
                     else ()
                 ),
+                retain_scene_configuration_warm_session=retain_warm_session,
+                retention_watchdog_handoff=(
+                    watchdog_handoff if retain_warm_session else None
+                ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter, provider_allocation_may_have_occurred = (
@@ -1710,8 +1683,32 @@ def run_scene_configuration_vast(
         runtime_secret_cleanup_blockers = _discard_staged_runtime_secrets(
             staged_secret_root
         )
-        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        cleanup = cleanup_scene_staging(
+            adapter=adapter, staging_dir=staging_dir,
+            cleanup=cleanup_staged_wam_provider_objects,
+        )
 
+    if retain_warm_session and adapter.get("retained_owned") is True:
+        from .task_evaluation_scene_configuration_warm_bootstrap import (  # noqa: PLC0415
+            handle_retained_scene_configuration_bootstrap,
+        )
+
+        return handle_retained_scene_configuration_bootstrap(
+            adapter=adapter, cleanup=cleanup,
+            runtime_secret_cleanup_blockers=list(runtime_secret_cleanup_blockers),
+            output_zip=output_zip, job=job, provider_run=provider_run,
+            expected_upload_bytes=expected_upload_bytes,
+            warm_session_authority_path=warm_session_authority_path,
+            warm_session_output_root=warm_session_output_root,
+            paid_resource_admission_grant=paid_resource_admission_grant,
+            watchdog=watchdog, watchdog_handoff=watchdog_handoff,
+            receipt=receipt, authority=authority,
+            warm_session_authority=warm_session_authority,
+            diagnostic_claim_boundary=diagnostic_claim_boundary,
+            extract_provider_output=_extract_provider_output,
+            seal_terminal_result=_seal_terminal_result,
+            close_independent_vast_watchdog=close_independent_vast_watchdog,
+        )
     teardown_path = provider_run / "vast_teardown_manifest.json"
     teardown = _read(teardown_path) if teardown_path.is_file() else {}
     instance_ids = [
@@ -1730,6 +1727,11 @@ def run_scene_configuration_vast(
         teardown=teardown,
         instance_ids=instance_ids,
     )
+    if (
+        cleanup.get("all_objects_absent") is not True
+        and watchdog_close.get("status") == "provider_terminal"
+    ):
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     execution, blockers, extraction_disk_capacity = (
         _extract_provider_output_with_capacity_guard(
             output_zip,

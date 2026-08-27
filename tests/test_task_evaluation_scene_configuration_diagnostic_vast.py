@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import task_evaluation_scene_configuration_provider_cleanup as provider_cleanup
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as vast
 
 
@@ -172,3 +173,75 @@ def test_diagnostic_provider_output_refuses_any_publication_permission(
         diagnostic_only=True,
     )
     assert "scene_configuration_diagnostic_claim_boundary_invalid" in blockers
+
+
+def test_blocked_diagnostic_output_preserves_validated_advanced_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        vast,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        lambda **_kwargs: {
+            "checkpoint_digest": CHECKPOINT_DIGEST,
+            "completed_stage_prefix_count": 6,
+        },
+    )
+    result = _diagnostic_provider_result()
+    result["status"] = "blocked_diagnostic_only"
+    result["blockers"] = ["stage_4_refused_after_stage_3_checkpoint"]
+    result.pop("diagnostic_stage_chain")
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    archive = tmp_path / "blocked-output.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(result, sort_keys=True),
+        )
+        bundle.writestr(
+            "diagnostic_checkpoints/after-stage-6/"
+            "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json",
+            CHECKPOINT_BODY,
+        )
+
+    observed, blockers = vast._extract_provider_output(
+        archive,
+        tmp_path / "blocked-diagnostic",
+        maximum_archive_bytes=1_000_000,
+        diagnostic_only=True,
+    )
+
+    assert "provider_result_blocker:stage_4_refused_after_stage_3_checkpoint" in blockers
+    assert observed["_validated_advanced_checkpoint"]["checkpoint_digest"] == CHECKPOINT_DIGEST
+
+
+def test_escaped_adapter_finally_defers_cleanup_when_allocation_may_exist(
+    tmp_path: Path,
+) -> None:
+    provider_run = tmp_path / "provider-run"
+    provider_run.mkdir()
+    started = tmp_path / "started-instance-id"
+    started.write_text("456\n")
+
+    adapter, may_have_allocated = vast._recover_escaped_adapter_failure(
+        provider_run=provider_run,
+        started_instance_id_path=started,
+        failure_detail="fresh_ssh_probe_failed",
+    )
+    cleanup_called = False
+
+    def cleanup(_path: Path) -> dict:
+        nonlocal cleanup_called
+        cleanup_called = True
+        return {"status": "completed", "all_objects_absent": True}
+
+    cleanup_result = provider_cleanup.cleanup_scene_staging(
+        adapter=adapter,
+        staging_dir=tmp_path / "staging",
+        cleanup=cleanup,
+    )
+
+    assert may_have_allocated is True
+    assert adapter["vast_instance_ids"] == [456]
+    assert adapter["continuing_spend_from_this_run"] is True
+    assert cleanup_result["status"] == "deferred_until_provider_absent"
+    assert cleanup_called is False

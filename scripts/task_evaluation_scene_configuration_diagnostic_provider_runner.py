@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -39,6 +40,24 @@ RESULT_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
 )
 RESULT_FILENAME = "task_evaluation_scene_configuration_provider_result.v1.json"
+WARM_SOURCE_COMMIT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_COMMIT"
+WARM_OVERLAY_MANIFEST_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_OVERLAY_MANIFEST"
+)
+WARM_OVERLAY_MANIFEST_DIGEST_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_OVERLAY_MANIFEST_DIGEST"
+)
+WARM_SESSION_DIGEST_ENV = "BLUEPRINT_SCENE_CONFIGURATION_WARM_SESSION_DIGEST"
+WARM_PROVIDER_INSTANCE_ID_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_WARM_PROVIDER_INSTANCE_ID"
+)
+WARM_BOOTSTRAP_ALLOCATION_BINDING_DIGEST_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_WARM_BOOTSTRAP_ALLOCATION_BINDING_DIGEST"
+)
+WARM_OVERLAY_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_warm_source_overlay.v1"
+)
+_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def _sha256(path: Path) -> str:
@@ -54,6 +73,77 @@ def _read(path: Path) -> dict:
     if path.is_symlink() or not isinstance(value, dict):
         raise ValueError("scene_configuration_diagnostic_provider_input_invalid")
     return value
+
+
+def _diagnostic_implementation_identity(
+    *, runtime: Path, checkpoint: dict, base_source_commit: str
+) -> tuple[str, dict]:
+    """Separate a warm implementation overlay from immutable carried inputs."""
+
+    source_commit = str(os.environ.get(WARM_SOURCE_COMMIT_ENV) or "")
+    manifest_value = str(os.environ.get(WARM_OVERLAY_MANIFEST_ENV) or "")
+    expected_digest = str(
+        os.environ.get(WARM_OVERLAY_MANIFEST_DIGEST_ENV) or ""
+    )
+    session_digest = str(os.environ.get(WARM_SESSION_DIGEST_ENV) or "")
+    provider_instance_id = str(
+        os.environ.get(WARM_PROVIDER_INSTANCE_ID_ENV) or ""
+    )
+    bootstrap_binding_digest = str(
+        os.environ.get(WARM_BOOTSTRAP_ALLOCATION_BINDING_DIGEST_ENV) or ""
+    )
+    configured = [
+        bool(source_commit),
+        bool(manifest_value),
+        bool(expected_digest),
+        bool(session_digest),
+        bool(provider_instance_id),
+        bool(bootstrap_binding_digest),
+    ]
+    if not any(configured):
+        return base_source_commit, {}
+    if (
+        not all(configured)
+        or _COMMIT.fullmatch(source_commit) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", session_digest) is None
+        or re.fullmatch(r"[1-9][0-9]*", provider_instance_id) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", bootstrap_binding_digest) is None
+    ):
+        raise ValueError("scene_configuration_diagnostic_warm_overlay_identity_invalid")
+    manifest_path = Path(manifest_value).resolve()
+    expected_path = runtime / f"{WARM_OVERLAY_SCHEMA_VERSION}.json"
+    if manifest_path != expected_path or manifest_path.is_symlink():
+        raise ValueError("scene_configuration_diagnostic_warm_overlay_identity_invalid")
+    manifest = _read(manifest_path)
+    if (
+        manifest.get("schema_version") != WARM_OVERLAY_SCHEMA_VERSION
+        or manifest.get("status") != "ready"
+        or manifest.get("source_commit") != source_commit
+        or manifest.get("source_checkpoint_digest")
+        != checkpoint.get("checkpoint_digest")
+        or manifest.get("scientific_binding_digest")
+        != (checkpoint.get("scientific_bindings") or {}).get("binding_digest")
+        or manifest.get("diagnostic_only") is not True
+        or manifest.get("development_only") is not True
+        or manifest.get("qualification_eligible") is not False
+        or manifest.get("configured_revision_publication_permitted") is not False
+        or manifest.get("offering_publication_permitted") is not False
+        or manifest.get("terminal_e2e_completion_permitted") is not False
+        or manifest.get("arbitrary_command_permitted") is not False
+        or manifest.get("raw_secret_values_recorded") is not False
+        or manifest.get("manifest_digest") != expected_digest
+        or manifest.get("manifest_digest")
+        != canonical_digest(manifest, digest_field="manifest_digest")
+    ):
+        raise ValueError("scene_configuration_diagnostic_warm_overlay_identity_invalid")
+    return source_commit, {
+        "warm_source_overlay_used": True,
+        "base_bundle_source_commit": base_source_commit,
+        "diagnostic_source_overlay_manifest_digest": expected_digest,
+        "warm_session_digest": session_digest,
+        "warm_provider_instance_id": provider_instance_id,
+        "warm_bootstrap_allocation_binding_digest": bootstrap_binding_digest,
+    }
 
 
 def _runtime_file(
@@ -236,6 +326,57 @@ def _portable_stage_chain(chain: dict, *, output_root: Path) -> dict:
     return portable
 
 
+def _advanced_checkpoint_reference(
+    *, output: Path, advanced_root: Path, advanced: dict
+) -> dict:
+    manifest = advanced_root / f"{CHECKPOINT_SCHEMA_VERSION}.json"
+    return {
+        "provider_output_relative_root": advanced_root.relative_to(output).as_posix(),
+        "manifest_relative_path": manifest.relative_to(output).as_posix(),
+        "manifest_sha256": _sha256(manifest),
+        "checkpoint_digest": advanced["checkpoint_digest"],
+        "completed_stage_prefix_count": advanced["completed_stage_prefix_count"],
+        "file_count": 1 + len(advanced["inventory"]),
+        "total_bytes": sum(
+            path.stat().st_size for path in advanced_root.rglob("*") if path.is_file()
+        ),
+    }
+
+
+def _retained_checkpoint_after_failure(
+    *,
+    output: Path,
+    checkpoint_root: Path,
+    checkpoint: dict | None,
+    advanced: dict | None,
+    advanced_root: Path | None,
+) -> dict | None:
+    """Retain only a validated prefix that already carries every paid stage."""
+
+    if (
+        not isinstance(checkpoint, dict)
+        or not isinstance(advanced, dict)
+        or int(advanced.get("completed_stage_prefix_count") or 0) < 3
+    ):
+        return None
+    retained_root = advanced_root
+    if retained_root is None:
+        retained_root = (
+            output
+            / "diagnostic_checkpoints"
+            / f"carried-source-prefix-{checkpoint['completed_stage_prefix_count']}"
+        )
+        shutil.copytree(
+            checkpoint_root,
+            retained_root,
+            copy_function=shutil.copy2,
+            symlinks=False,
+        )
+    return _advanced_checkpoint_reference(
+        output=output, advanced_root=retained_root, advanced=advanced
+    )
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -259,6 +400,13 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     stages_root = output / "stages"
     stages_root.mkdir(mode=0o750)
+    checkpoint: dict | None = None
+    advanced: dict | None = None
+    advanced_root: Path | None = None
+    diagnostic_source_commit: str | None = None
+    diagnostic_run_id: str | None = None
+    warm_identity: dict = {}
+    toolchain: dict | None = None
     try:
         parent_deadline_epoch = float(os.environ[PARENT_DEADLINE_EPOCH_ENV])
         _restore_checkpoint_modes(checkpoint_root)
@@ -267,6 +415,14 @@ def main() -> int:
         )
         portable = _read(runtime / "input/portable_construction_envelope.v1.json")
         envelope = _hydrate_envelope(runtime, portable)
+        diagnostic_run_id = str(envelope["run_id"])
+        diagnostic_source_commit, warm_identity = (
+            _diagnostic_implementation_identity(
+                runtime=runtime,
+                checkpoint=checkpoint,
+                base_source_commit=str(envelope["expected_production_commit"]),
+            )
+        )
         configurations = {}
         for row in envelope["stage_configuration_references"]:
             stage_id = str(row["stage_id"])
@@ -281,8 +437,7 @@ def main() -> int:
         producers = builtin_scene_configuration_stage_producer_registry(
             expected_source_commit=str(envelope["expected_production_commit"])
         )
-        advanced: dict = checkpoint
-        advanced_root: Path | None = None
+        advanced = checkpoint
 
         def write_checkpoint(results) -> None:
             nonlocal advanced, advanced_root
@@ -299,6 +454,9 @@ def main() -> int:
         def resume_stage_one(**kwargs):
             return producers.execute(**{key: value for key, value in kwargs.items() if key not in {"checkpoint", "checkpoint_root"}})
 
+        toolchain = _read(
+            runtime / "toolchain" / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
+        )
         chain = execute_scene_configuration_diagnostic_stage_chain(
             checkpoint_root=checkpoint_root,
             envelope=envelope,
@@ -320,38 +478,20 @@ def main() -> int:
                 output_root=advanced_root,
             )
         chain = _portable_stage_chain(chain, output_root=output)
-        toolchain = _read(
-            runtime / "toolchain" / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
-        )
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": STATUS,
             "source_checkpoint_digest": checkpoint["checkpoint_digest"],
             "advanced_checkpoint_digest": advanced["checkpoint_digest"],
-            "advanced_checkpoint": {
-                "provider_output_relative_root": advanced_root.relative_to(
-                    output
-                ).as_posix(),
-                "manifest_relative_path": (
-                    advanced_root
-                    / f"{CHECKPOINT_SCHEMA_VERSION}.json"
-                ).relative_to(output).as_posix(),
-                "manifest_sha256": _sha256(
-                    advanced_root / f"{CHECKPOINT_SCHEMA_VERSION}.json"
-                ),
-                "checkpoint_digest": advanced["checkpoint_digest"],
-                "completed_stage_prefix_count": advanced[
-                    "completed_stage_prefix_count"
-                ],
-                "file_count": 1 + len(advanced["inventory"]),
-                "total_bytes": sum(
-                    path.stat().st_size
-                    for path in advanced_root.rglob("*")
-                    if path.is_file()
-                ),
-            },
-            "diagnostic_source_commit": envelope["expected_production_commit"],
+            "advanced_checkpoint": _advanced_checkpoint_reference(
+                output=output, advanced_root=advanced_root, advanced=advanced
+            ),
+            "diagnostic_source_commit": diagnostic_source_commit,
+            "diagnostic_run_id": diagnostic_run_id,
             "diagnostic_toolchain_digest": toolchain["toolchain_digest"],
+            "diagnostic_construction_envelope_digest": portable[
+                "envelope_digest"
+            ],
             "diagnostic_stage_chain": chain,
             "diagnostic_only": True,
             "qualification_eligible": False,
@@ -363,8 +503,16 @@ def main() -> int:
             "raw_secret_values_recorded": False,
             "blockers": [],
             "result_digest": "",
+            **warm_identity,
         }
     except Exception as exc:
+        retained_checkpoint_reference = _retained_checkpoint_after_failure(
+            output=output,
+            checkpoint_root=checkpoint_root,
+            checkpoint=checkpoint,
+            advanced=advanced,
+            advanced_root=advanced_root,
+        )
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked_diagnostic_only",
@@ -382,6 +530,25 @@ def main() -> int:
             ],
             "result_digest": "",
         }
+        if (
+            retained_checkpoint_reference is not None
+            and diagnostic_source_commit is not None
+            and isinstance(toolchain, dict)
+        ):
+            result.update(
+                {
+                    "source_checkpoint_digest": checkpoint["checkpoint_digest"],
+                    "advanced_checkpoint_digest": advanced["checkpoint_digest"],
+                    "advanced_checkpoint": retained_checkpoint_reference,
+                    "diagnostic_source_commit": diagnostic_source_commit,
+                    "diagnostic_run_id": diagnostic_run_id,
+                    "diagnostic_toolchain_digest": toolchain["toolchain_digest"],
+                    "diagnostic_construction_envelope_digest": portable[
+                        "envelope_digest"
+                    ],
+                    **warm_identity,
+                }
+            )
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     result_path.write_text(canonical_json(result) + "\n", encoding="utf-8")
     return 0 if result["status"] == STATUS else 2
