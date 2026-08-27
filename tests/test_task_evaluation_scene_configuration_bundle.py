@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -1521,10 +1522,94 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     assert adapter_inspection["runtime_result_status"] == "completed"
 
     observed, blockers = scene_vast._extract_provider_output(
-        archive, tmp_path / "extracted-output"
+        archive,
+        tmp_path / "extracted-output",
+        maximum_archive_bytes=archive.stat().st_size,
     )
     assert blockers == []
     assert observed["stage_chain"]["stage_count"] == 6
+
+
+def test_provider_output_extraction_seals_malformed_result_and_archive_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupt paid output must become evidence, not escape terminal sealing."""
+
+    malformed = tmp_path / "malformed.zip"
+    with zipfile.ZipFile(malformed, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            "{not-json",
+        )
+
+    observed, blockers = scene_vast._extract_provider_output(
+        malformed,
+        tmp_path / "malformed-output",
+        maximum_archive_bytes=malformed.stat().st_size,
+    )
+
+    assert observed == {}
+    assert blockers == ["scene_configuration_provider_result_contract_invalid"]
+
+    observed, blockers = scene_vast._extract_provider_output(
+        malformed,
+        tmp_path / "compressed-limit-output",
+        maximum_archive_bytes=malformed.stat().st_size - 1,
+    )
+    assert observed == {}
+    assert blockers == [
+        "scene_configuration_provider_output_zip_exceeds_declared_transfer_ceiling"
+    ]
+
+    with monkeypatch.context() as member_limit:
+        member_limit.setattr(scene_vast, "PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT", 0)
+        observed, blockers = scene_vast._extract_provider_output(
+            malformed,
+            tmp_path / "member-limit-output",
+            maximum_archive_bytes=malformed.stat().st_size,
+        )
+    assert observed == {}
+    assert blockers == [
+        "scene_configuration_provider_output_archive_member_count_invalid"
+    ]
+
+    duplicate = tmp_path / "duplicate.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(duplicate, "w") as output:
+            output.writestr("duplicate.txt", b"first")
+            output.writestr("duplicate.txt", b"second")
+    observed, blockers = scene_vast._extract_provider_output(
+        duplicate,
+        tmp_path / "duplicate-output",
+        maximum_archive_bytes=duplicate.stat().st_size,
+    )
+    assert observed == {}
+    assert blockers == [
+        "scene_configuration_provider_output_archive_duplicate_member"
+    ]
+
+    expansion = tmp_path / "expansion.zip"
+    with zipfile.ZipFile(expansion, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr("highly-compressible.txt", b"0" * 10_000)
+    monkeypatch.setattr(
+        scene_vast,
+        "PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO",
+        1,
+    )
+
+    observed, blockers = scene_vast._extract_provider_output(
+        expansion,
+        tmp_path / "expansion-output",
+        maximum_archive_bytes=expansion.stat().st_size,
+    )
+
+    assert observed == {}
+    assert blockers == [
+        "scene_configuration_provider_output_archive_expansion_invalid"
+    ]
+    assert not any((tmp_path / "expansion-output").iterdir())
 
 
 def test_provider_result_seals_archive_relative_artifact_paths(

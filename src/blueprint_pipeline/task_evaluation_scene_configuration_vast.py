@@ -466,16 +466,45 @@ def _consume_authority_once(
 
 
 def _extract_provider_output(
-    archive_path: Path, destination: Path
+    archive_path: Path,
+    destination: Path,
+    *,
+    maximum_archive_bytes: int,
 ) -> tuple[dict[str, Any], list[str]]:
     blockers: list[str] = []
+    if (
+        isinstance(maximum_archive_bytes, bool)
+        or not isinstance(maximum_archive_bytes, int)
+        or maximum_archive_bytes <= 0
+    ):
+        return {}, ["scene_configuration_provider_output_limit_invalid"]
     if destination.exists():
         return {}, ["scene_configuration_provider_output_destination_exists"]
     destination.mkdir(parents=True, mode=0o750)
     root = destination.resolve()
+    if archive_path.is_file() and archive_path.stat().st_size > maximum_archive_bytes:
+        return {}, [
+            "scene_configuration_provider_output_zip_exceeds_declared_transfer_ceiling"
+        ]
     try:
         with zipfile.ZipFile(archive_path) as archive:
-            for member in archive.infolist():
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            if len(members) > PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT:
+                blockers.append(
+                    "scene_configuration_provider_output_archive_member_count_invalid"
+                )
+            if len(names) != len(set(names)):
+                blockers.append(
+                    "scene_configuration_provider_output_archive_duplicate_member"
+                )
+            if sum(member.file_size for member in members) > (
+                maximum_archive_bytes * PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO
+            ):
+                blockers.append(
+                    "scene_configuration_provider_output_archive_expansion_invalid"
+                )
+            for member in members:
                 target = (root / member.filename).resolve()
                 mode = member.external_attr >> 16
                 if (
@@ -487,13 +516,27 @@ def _extract_provider_output(
                     )
             if not blockers:
                 archive.extractall(root)
-    except (OSError, ValueError, zipfile.BadZipFile):
+    except (
+        EOFError,
+        NotImplementedError,
+        OSError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ):
         blockers.append("scene_configuration_provider_output_zip_invalid")
+    if blockers:
+        return {}, sorted(set(blockers))
     result_path = root / RESULT_FILENAME
-    result = _read(result_path) if result_path.is_file() else {}
-    if not result:
+    if not result_path.is_file():
         blockers.append("scene_configuration_provider_result_missing")
-        return result, sorted(set(blockers))
+        return {}, sorted(set(blockers))
+    try:
+        result = _read(result_path)
+    except TaskEvaluationSceneConfigurationVastError:
+        blockers.append("scene_configuration_provider_result_contract_invalid")
+        return {}, sorted(set(blockers))
     if (
         result.get("schema_version")
         != "task_evaluation_scene_configuration_provider_result.v1"
@@ -689,6 +732,8 @@ PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 10_000_000_000
 #: the scene, renderer, browser, and native components.
 PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES = 1_000_000_000
 PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER = 2
+PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO = 4
+PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT = 10_000
 
 
 def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1068,7 +1113,9 @@ def run_scene_configuration_vast(
         ),
     )
     execution, blockers = _extract_provider_output(
-        output_zip, job / "immutable_execution"
+        output_zip,
+        job / "immutable_execution",
+        maximum_archive_bytes=expected_upload_bytes,
     )
     # The adapter's own refusal is the only record of *why* nothing was
     # allocated. Without it the result carries only the downstream
