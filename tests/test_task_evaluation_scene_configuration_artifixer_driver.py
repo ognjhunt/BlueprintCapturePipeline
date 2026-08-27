@@ -13,6 +13,7 @@ from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     materialize_artifixer3d_candidate_inputs,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver import (
+    _VISUAL_REVIEW_COST_SCOPE,
     _materialize_preflight,
     _semantic_rights_and_request,
     _write_execution_authority,
@@ -196,3 +197,18 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
     assert packet["request_count"] == 1
     assert packet["backend"]["registry_entry"]["backend_id"].startswith("openai_gpt_image_2")
     assert packet["raw_nonredistributable_source_bytes_included"] is False
+
+
+def test_visual_review_uses_the_scene_lanes_exclusive_cost_scope() -> None:
+    source = Path(
+        __import__(
+            "blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver",
+            fromlist=["__file__"],
+        ).__file__
+    ).read_text(encoding="utf-8")
+
+    assert _VISUAL_REVIEW_COST_SCOPE == (
+        "task_evaluation_scene_configuration_artifixer_visual_review"
+    )
+    assert "cost_lane_id=_VISUAL_REVIEW_COST_SCOPE" in source
+    assert "paid_resource_class=_VISUAL_REVIEW_COST_SCOPE" in source

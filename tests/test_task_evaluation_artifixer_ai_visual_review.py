@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from blueprint_pipeline import task_evaluation_artifixer_ai_visual_review as module
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_artifixer_ai_visual_review import (
     DUAL_TARGET_REVIEW_SCHEMA_VERSION,
@@ -186,6 +187,55 @@ def test_rights_scope_is_human_issued_before_generated_frames_exist(
         configuration_run_id="configure-scene-839873-v1",
     )
     assert reopened["attestation_digest"] == value["attestation_digest"]
+
+
+def test_scene_configuration_can_bind_its_visual_review_cost_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The scene lane's exclusive attestation class must reach the cost gate."""
+
+    final, _execution = _inputs(tmp_path)
+    rights = tmp_path / "rights.json"
+    materialize_artifixer_ai_visual_review_rights(
+        configuration_run_id="configure-scene-839873-v1",
+        source_scene_rights_admission_digest="sha256:" + "b" * 64,
+        accepted_by="project-owner",
+        accepted_on="2026-08-25",
+        human_authority_reference="website-configuration-consent-v1",
+        output_path=rights,
+    )
+    admin_key = tmp_path / "admin-key"
+    admin_key.write_text("not-a-real-key\n", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    class ReachedCostGate(RuntimeError):
+        pass
+
+    def build_gate(**kwargs: object) -> object:
+        observed.update(kwargs)
+        raise ReachedCostGate
+
+    monkeypatch.setattr(module, "build_openai_official_cost_run_gate", build_gate)
+    scope = "task_evaluation_scene_configuration_artifixer_visual_review"
+
+    with pytest.raises(ReachedCostGate):
+        module.run_artifixer_ai_visual_review(
+            final_composite_receipt_path=final,
+            rights_attestation_path=rights,
+            configuration_run_id="configure-scene-839873-v1",
+            publisher_instance_id="104",
+            minimum_review_frames=2,
+            output_root=tmp_path / "review",
+            openai_cost_scope_attestation_path=tmp_path / "scope.json",
+            openai_admin_api_key_file=admin_key,
+            openai_project_id="project-scene",
+            openai_api_key_id="key-scene-review",
+            cost_lane_id=scope,
+            paid_resource_class=scope,
+        )
+
+    assert observed["lane_id"] == scope
+    assert observed["paid_resource_class"] == scope
 
 
 def test_paired_target_review_binds_source_mask_and_generated_frame(

@@ -433,6 +433,8 @@ def run_artifixer_ai_visual_review(
     openai_api_key_id: str,
     model: str = AI_REVIEW_MODEL,
     max_cost_usd: float = AI_REVIEW_MAX_COST_USD,
+    cost_lane_id: str = "task_evaluation_artifixer_ai_visual_review",
+    paid_resource_class: str = "task_evaluation_artifixer_ai_visual_review",
     openai_cost_transport: Any | None = None,
     wall_clock: Any = lambda: datetime.now(timezone.utc),
 ) -> dict[str, Any]:
@@ -473,7 +475,7 @@ def run_artifixer_ai_visual_review(
         admin_api_key_file=openai_admin_api_key_file,
         project_id=openai_project_id,
         api_key_id=openai_api_key_id,
-        lane_id="task_evaluation_artifixer_ai_visual_review",
+        lane_id=cost_lane_id,
         run_id=run_id,
         request_digest=input_digest,
         candidate_digest=final["receipt_digest"],
@@ -481,7 +483,7 @@ def run_artifixer_ai_visual_review(
         max_cost_usd=max_cost_usd,
         output_root=destination / "official_openai_cost",
         provider_id="openai",
-        paid_resource_class="task_evaluation_artifixer_ai_visual_review",
+        paid_resource_class=paid_resource_class,
         transport=openai_cost_transport,
         wall_clock=wall_clock,
     )
