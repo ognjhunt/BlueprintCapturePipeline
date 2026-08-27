@@ -550,3 +550,79 @@ def test_progressive_checkpoint_refuses_changed_carried_configuration(
             stage_sequence=stages,
             configurations=configurations,
         )
+
+
+def _permute_semantic_orderings(fixture: dict, order: list[int]) -> None:
+    """Reorder the semantic request/result/teacher frame rows in place."""
+
+    request_digest: str | None = None
+    for key, rows_path in (
+        ("request_path", ("tasks", 0, "frames")),
+        ("result_path", ("tasks", 0, "frames")),
+        ("receipt_path", ("frames",)),
+    ):
+        path = fixture[key]
+        value = json.loads(path.read_text(encoding="utf-8"))
+        holder = value
+        for step in rows_path[:-1]:
+            holder = holder[step]
+        rows = holder[rows_path[-1]]
+        holder[rows_path[-1]] = [rows[index] for index in order]
+        if key == "result_path" and request_digest is not None:
+            value["source_runtime_request_digest"] = request_digest
+        digest_field = {
+            "request_path": "request_digest",
+            "result_path": "result_digest",
+            "receipt_path": "receipt_digest",
+        }[key]
+        value.pop(digest_field, None)
+        value[digest_field] = canonical_digest(value, digest_field=digest_field)
+        if key == "request_path":
+            request_digest = value[digest_field]
+        path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+
+
+def test_interleaved_semantic_camera_order_is_accepted(tmp_path: Path) -> None:
+    """The packet interleaves elevations; the calibration is elevation-major.
+
+    Run ...-15c1ade8-...-191412Z carried request order
+    [e0-a0, e1-a0, e1-a1, e0-a1, ...] against calibration
+    [e0-a0..e0-a3, e1-a0..e1-a3] -- the same eight cameras -- and the
+    checkpoint refused a correct pass with
+    scene_configuration_diagnostic_checkpoint_semantic_camera_mismatch.
+    Camera identity is the set, not each producer's ordering.
+    """
+
+    fixture = _fixture(tmp_path)
+    _permute_semantic_orderings(fixture, [0, 4, 5, 1, 6, 2, 7, 3])
+
+    root = tmp_path / "checkpoint"
+    result = materialize_scene_configuration_diagnostic_checkpoint(
+        stage_production_input_path=fixture["stage_path"],
+        render_inputs_result_path=fixture["render_path"],
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result_path=fixture["result_path"],
+        semantic_teacher_receipt_path=fixture["receipt_path"],
+        output_root=root,
+    )
+
+    assert result["camera_count"] == 8
+    assert result["semantic_teacher"]["completed_frame_count"] == 8
+
+
+def test_duplicated_semantic_camera_is_still_refused(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _permute_semantic_orderings(fixture, [0, 0, 2, 3, 4, 5, 6, 7])
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+        match="semantic_camera_mismatch",
+    ):
+        materialize_scene_configuration_diagnostic_checkpoint(
+            stage_production_input_path=fixture["stage_path"],
+            render_inputs_result_path=fixture["render_path"],
+            semantic_runtime_request_path=fixture["request_path"],
+            semantic_runtime_result_path=fixture["result_path"],
+            semantic_teacher_receipt_path=fixture["receipt_path"],
+            output_root=tmp_path / "checkpoint-dup",
+        )

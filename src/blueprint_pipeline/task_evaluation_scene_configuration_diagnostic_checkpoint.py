@@ -403,12 +403,21 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_set_invalid"
         )
-    expected_camera_ids = [row["camera_id"] for row in cameras]
+    # The semantic packet deliberately interleaves elevations for review
+    # diversity while the calibration lists them elevation-major: run
+    # ...-15c1ade8-...-191412Z carried [e0-a0, e1-a0, e1-a1, e0-a1, ...]
+    # against calibration [e0-a0..e0-a3, e1-a0..e1-a3] -- the same eight
+    # cameras. Identity is the camera SET with no duplicates; ordering is each
+    # producer's own, so requiring order equality refused a correct pass.
+    expected_camera_ids = sorted(row["camera_id"] for row in cameras)
     observed_sets = [
         [str(row.get("camera_id") or "") for row in rows if isinstance(row, Mapping)]
         for rows in (request_frames, result_frames, teacher_frames)
     ]
-    if any(ids != expected_camera_ids for ids in observed_sets):
+    if any(
+        len(ids) != len(set(ids)) or sorted(ids) != expected_camera_ids
+        for ids in observed_sets
+    ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_camera_mismatch"
         )
