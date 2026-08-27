@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+from pathlib import Path
 from typing import Any, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -16,6 +18,86 @@ LAUNCH_SUPERVISION_WEBAPP_URL_ENV = (
     "PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL"
 )
 LAUNCH_PROGRESS_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL"
+PIPELINE_SYNC_TOKEN_FILE_ENV = "PIPELINE_SYNC_TOKEN_FILE"
+
+
+class PipelineSyncTokenError(RuntimeError):
+    """The canonical file-backed WebApp synchronization token is unavailable."""
+
+
+def load_pipeline_sync_token(
+    *,
+    token: str | None = None,
+    token_file_path: str | Path | None = None,
+    require_file: bool = False,
+) -> str:
+    """Resolve a sync token without exposing its bytes in errors or receipts."""
+
+    if token is not None:
+        resolved = str(token).strip()
+        if not resolved:
+            raise PipelineSyncTokenError("pipeline_sync_token_missing")
+        if require_file:
+            raise PipelineSyncTokenError("pipeline_sync_token_file_required")
+        return resolved
+    raw_path = str(
+        token_file_path or os.getenv(PIPELINE_SYNC_TOKEN_FILE_ENV) or ""
+    ).strip()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        descriptor = -1
+        try:
+            if path.is_symlink():
+                raise PipelineSyncTokenError("pipeline_sync_token_file_unsafe")
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            metadata = os.fstat(descriptor)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or mode & ~0o640
+                or not mode & 0o440
+            ):
+                raise PipelineSyncTokenError("pipeline_sync_token_file_unsafe")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                payload = stream.read(4097)
+        except PipelineSyncTokenError:
+            raise
+        except OSError as exc:
+            raise PipelineSyncTokenError(
+                "pipeline_sync_token_file_unavailable"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(payload) > 4096:
+            raise PipelineSyncTokenError("pipeline_sync_token_file_unsafe")
+        try:
+            resolved = payload.decode("utf-8").strip()
+        except UnicodeError as exc:
+            raise PipelineSyncTokenError(
+                "pipeline_sync_token_file_unavailable"
+            ) from exc
+        if not resolved:
+            raise PipelineSyncTokenError("pipeline_sync_token_missing")
+        return resolved
+    if require_file:
+        raise PipelineSyncTokenError("pipeline_sync_token_file_required")
+    resolved = str(os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    if not resolved:
+        raise PipelineSyncTokenError("pipeline_sync_token_missing")
+    return resolved
+
+
+def _optional_pipeline_sync_token(token: str | None) -> str:
+    try:
+        return load_pipeline_sync_token(token=token)
+    except PipelineSyncTokenError:
+        return ""
 
 
 def sync_launch_progress_to_webapp(
@@ -43,7 +125,7 @@ def sync_launch_progress_to_webapp(
     resolved_url = str(
         endpoint_url or os.getenv(LAUNCH_PROGRESS_WEBAPP_URL_ENV) or ""
     ).strip()
-    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:
         return {**common, "status": "skipped", "reason": "progress_sync_not_configured"}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -113,7 +195,7 @@ def sync_launch_receipt_to_webapp(
         )
         common["configured_scene_offering_status"] = "launch_ready"
     resolved_url = str(endpoint_url or os.getenv(LAUNCH_WEBAPP_URL_ENV) or "").strip()
-    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:
         return {**common, "status": "skipped", "reason": "sync_not_configured"}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -184,7 +266,7 @@ def sync_launch_supervision_to_webapp(
     resolved_url = str(
         endpoint_url or os.getenv(LAUNCH_SUPERVISION_WEBAPP_URL_ENV) or ""
     ).strip()
-    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:
         return {**common, "status": "skipped", "reason": "sync_not_configured"}
     try:
@@ -225,6 +307,9 @@ __all__ = [
     "LAUNCH_PROGRESS_WEBAPP_URL_ENV",
     "LAUNCH_SUPERVISION_WEBAPP_URL_ENV",
     "LAUNCH_WEBAPP_URL_ENV",
+    "PIPELINE_SYNC_TOKEN_FILE_ENV",
+    "PipelineSyncTokenError",
+    "load_pipeline_sync_token",
     "sync_launch_progress_to_webapp",
     "sync_launch_receipt_to_webapp",
     "sync_launch_supervision_to_webapp",

@@ -108,6 +108,8 @@ Environment=BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secre
 # Website offering surface after a clean host rebuild. EnvironmentFile can
 # override this deployment default for non-production installations.
 Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches
+Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-publication-readiness
+Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 # A runtime drop-in may set FORCE_DRY_RUN=true while the canonical environment

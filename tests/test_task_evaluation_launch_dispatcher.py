@@ -34,6 +34,9 @@ from blueprint_pipeline.task_evaluation_launch_reconciler import (
     reconcile_launches,
     validated_succeeded_webapp_sync_row,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_publication_readiness import (
+    SceneConfigurationPublicationReadinessError,
+)
 from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -2658,6 +2661,76 @@ def test_public_catalog_projects_exact_scene_configuration_team_binding(
     assert (
         "launch_profile_public_task_evaluation_run_evaluation_episode_executed_invalid"
         in validate_public_launch_profile_descriptor(executed)
+    )
+
+
+def test_scene_configuration_publication_preflight_blocks_before_staging_or_allocator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    profile["allocator"]["argv"].extend(
+        ["--probe-kind", "task-evaluation-scene-configuration"]
+    )
+    profile["task_evaluation_run"] = {
+        "run_mode": "scene_configuration",
+        "team_namespace": "team-a",
+        "scene_id": "interiorgs-839873",
+        "task_id": "planar-mug-push",
+        "configuration_run_id": "scene-configuration-run-001",
+        "evaluation_episode_executed": False,
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    calls: list[list[str]] = []
+    observed: list[dict[str, str]] = []
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+
+    def blocked_probe(**binding: str) -> dict[str, object]:
+        observed.append(binding)
+        raise SceneConfigurationPublicationReadinessError(
+            "scene_configuration_publication_readiness_http_error:404"
+        )
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+        publication_readiness_probe=blocked_probe,
+    )
+
+    assert observed == [
+        {
+            "launch_id": request["launch_id"],
+            "run_id": request["run_id"],
+            "request_digest": request["request_digest"],
+            "team_namespace": "team-a",
+        }
+    ]
+    assert receipt["status"] == "blocked"
+    assert receipt["allocator_invoked"] is False
+    assert receipt["provider_mutation_attempted"] is False
+    assert calls == []
+    assert receipt["immutable_input_staging"]["status"] == "not_started"
+    assert receipt["publication_readiness"] == {
+        "schema_version": "task_evaluation_launch_publication_preflight.v1",
+        "status": "blocked",
+        "blockers": [
+            "scene_configuration_publication_readiness_http_error:404"
+        ],
+        "provider_mutation_performed": False,
+        "spend_authority_granted": False,
+        "raw_secret_values_recorded": False,
+    }
+    assert (
+        "scene_configuration_publication_readiness_http_error:404"
+        in receipt["blockers"]
     )
 
 

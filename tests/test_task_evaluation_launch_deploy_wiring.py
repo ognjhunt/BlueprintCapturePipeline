@@ -198,6 +198,11 @@ def test_production_launch_units_keep_webapp_offering_callbacks_reachable_after_
     assert terminal in dispatcher
     assert terminal in reconciler
     assert (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL="
+        "https://tryblueprint.io/api/internal/pipeline/"
+        "task-evaluation-launch-publication-readiness"
+    ) in dispatcher
+    assert (
         "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL="
         "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-progress"
     ) in reconciler
@@ -206,6 +211,10 @@ def test_production_launch_units_keep_webapp_offering_callbacks_reachable_after_
         "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-supervision"
     ) in supervisor
     for unit in (dispatcher, reconciler, supervisor):
+        assert (
+            "Environment=PIPELINE_SYNC_TOKEN_FILE="
+            "/etc/blueprint/provider-secrets/pipeline_sync_token"
+        ) in unit
         assert unit.index("Environment=PIPELINE_TASK_EVALUATION") < unit.index(
             "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env"
         )
@@ -216,7 +225,7 @@ def test_production_launch_units_keep_webapp_offering_callbacks_reachable_after_
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in supervisor
     assert "--public-catalog" in supervisor
     assert "paid_resource_allocator" not in supervisor
-    assert "provider-secrets" not in supervisor
+    assert "/etc/blueprint/provider-secrets" in supervisor
     assert '"$${ARGS[@]}"\'' in supervisor
 
 
@@ -353,6 +362,7 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
         "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
+        "PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token",
     ):
         assert binding in environment
 
