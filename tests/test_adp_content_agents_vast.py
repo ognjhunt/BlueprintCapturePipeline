@@ -2489,6 +2489,10 @@ def test_provider_runtime_stage_timeout_kills_posix_process_group(
 def test_provider_runtime_uses_stage_specific_bounded_timeouts() -> None:
     runner = _provider_runner_module()
     runner_source = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
+    from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
+        CONTENT_AGENTS_COMPONENT_TIMEOUT_SECONDS,
+        CONTENT_AGENTS_RUNNER_CLOSURE_MARGIN_SECONDS,
+    )
 
     assert runner.AGENT_TIMEOUT_SECONDS == {
         "material": 3_600,
@@ -2496,7 +2500,37 @@ def test_provider_runtime_uses_stage_specific_bounded_timeouts() -> None:
         "physics": 3_600,
     }
     assert sum(runner.AGENT_TIMEOUT_SECONDS.values()) == 8_400
-    assert "timeout=AGENT_TIMEOUT_SECONDS[name]" in runner_source
+    assert runner.RUNNER_TOTAL_BUDGET_SECONDS <= (
+        CONTENT_AGENTS_COMPONENT_TIMEOUT_SECONDS
+        - CONTENT_AGENTS_RUNNER_CLOSURE_MARGIN_SECONDS
+    )
+    assert "timeout=min(AGENT_TIMEOUT_SECONDS[name], remaining_seconds)" in runner_source
+    assert "content_agents_runner_budget_exhausted_before:" in runner_source
+    assert "content_agents_runner_budget_exhausted_during:" in runner_source
+
+
+def test_provider_runtime_refuses_secret_bearing_agent_evidence(
+    tmp_path: Path,
+) -> None:
+    runner = _provider_runner_module()
+    work = tmp_path / "agent-work"
+    work.mkdir()
+    opaque_secret = "opaque-provider-credential-value-839873"
+    (work / "agent-output.json").write_text(
+        json.dumps({"debug": opaque_secret}), encoding="utf-8"
+    )
+    destination = tmp_path / "retained-agent-work"
+
+    with pytest.raises(
+        ValueError, match="content_agents_output_secret_detected"
+    ):
+        runner._copy_evidence(
+            work,
+            destination,
+            env={"OPENAI_API_KEY": opaque_secret},
+        )
+
+    assert not destination.exists()
 
 
 def test_provider_runtime_uses_native_tls_before_uv_dependency_fetches() -> None:

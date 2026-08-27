@@ -60,6 +60,8 @@ _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 _RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 _PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
 _ADAPTER_ID = "content_agents_rigid_replacement"
+CONTENT_AGENTS_COMPONENT_TIMEOUT_SECONDS = 7_000
+CONTENT_AGENTS_RUNNER_CLOSURE_MARGIN_SECONDS = 1_000
 _PARENT_NATIVE_RUNTIME_ENV = (
     "PYTHONPATH",
     "LD_LIBRARY_PATH",
@@ -921,7 +923,7 @@ def execute_content_agents_component(
             capture_output=True,
             text=True,
             check=False,
-            timeout=7_000,
+            timeout=CONTENT_AGENTS_COMPONENT_TIMEOUT_SECONDS,
         )
     except Exception as exc:
         cost_gate.complete(
