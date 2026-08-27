@@ -10,6 +10,9 @@ from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
     launch_preparation_request_digest,
     validate_launch_preparation_request,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+    MAX_EXTERNAL_SERVICE_SPEND_USD,
+)
 
 
 DIGESTS = [f"sha256:{index:064x}" for index in range(1, 48)]
@@ -217,7 +220,7 @@ def test_configuration_external_service_caps_fit_total_authority() -> None:
     value = test_configuration_request()
     value["spend"]["external_service_caps"]["openai"][
         "maximum_cost_usd"
-    ] = 1.51
+    ] = MAX_EXTERNAL_SERVICE_SPEND_USD + 0.01
     with pytest.raises(
         TaskEvaluationLaunchPreparationContractError,
         match="launch_preparation_scene_configuration_external_spend_invalid",
