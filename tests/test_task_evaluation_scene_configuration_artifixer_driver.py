@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
+from blueprint_pipeline import task_evaluation_scene_configuration_artifixer_driver as driver
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
@@ -300,3 +302,52 @@ def test_selected_task_thumbnail_is_an_exact_reviewed_frame_copy(
     assert selection["camera_id"] == "camera-5"
     assert selection["derived_appearance_evidence"] is True
     assert selection["capture_or_physical_evidence"] is False
+
+
+def test_failed_artifixer_runtime_streams_survive_into_the_stage_log(
+    tmp_path: Path, capsys
+) -> None:
+    """A paid failure must carry its own cause.
+
+    Run ...-f1e07c7f-...-171647Z failed the runtime acceptance check and the
+    exported receipts said only scene_configuration_artifixer_runtime_failed:
+    the subprocess's streams were captured by the driver and discarded, so the
+    $0.74 GPU run left nothing to diagnose with. The driver's stderr feeds
+    stage_producer.log, which is proven to survive into the exported zip.
+    """
+
+    completed = types.SimpleNamespace(
+        returncode=1,
+        stdout="optimizer step 40\ntoken=sk-proj-supersecret123456\n",
+        stderr="CUDA error: out of memory at step 41\n",
+    )
+
+    driver._emit_artifixer_runtime_diagnostics(
+        completed=completed,
+        runtime_result_path=tmp_path / "public_scene_artifixer3d_runtime_result.json",
+    )
+
+    err = capsys.readouterr().err
+    assert "scene_configuration_artifixer_runtime_diagnostics" in err
+    assert '"returncode": 1' in err
+    assert '"runtime_result_present": false' in err
+    assert "CUDA error: out of memory at step 41" in err
+    assert "optimizer step 40" in err
+    assert "sk-proj-supersecret123456" not in err
+
+
+def test_successful_artifixer_runtime_emits_no_diagnostics(
+    tmp_path: Path, capsys
+) -> None:
+    result_path = tmp_path / "public_scene_artifixer3d_runtime_result.json"
+    result_path.write_text(
+        json.dumps({"status": driver.ARTIFIXER_RUNTIME_ACCEPTED_STATUS}),
+        encoding="utf-8",
+    )
+    completed = types.SimpleNamespace(returncode=0, stdout="fine", stderr="")
+
+    driver._emit_artifixer_runtime_diagnostics(
+        completed=completed, runtime_result_path=result_path
+    )
+
+    assert capsys.readouterr().err == ""
