@@ -7271,10 +7271,22 @@ def run_vast_provider_adapter(
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
     runtime_secret_values = _runtime_secret_file_values(runtime_secret_file_paths)
+    # A proven-bad host must outlive the attempt that proved it: runs
+    # ...-202000Z and ...-204021Z paid for the same container-exit failure on
+    # machines 140607 and 138964 back to back because each attempt's default
+    # avoidlist lives under its own run root and dies with it. An operator-set
+    # path makes the memory persistent; the default remains per-run.
+    environment_avoidlist = str(
+        os.environ.get("BLUEPRINT_VAST_MACHINE_AVOIDLIST_PATH") or ""
+    ).strip()
     resolved_machine_avoidlist_path = (
         Path(machine_avoidlist_path).expanduser().resolve()
         if machine_avoidlist_path
-        else _default_machine_avoidlist_path(resolved_job_dir)
+        else (
+            Path(environment_avoidlist).expanduser().resolve()
+            if environment_avoidlist
+            else _default_machine_avoidlist_path(resolved_job_dir)
+        )
     )
     resolved_session_budget_ledger_path = (
         Path(session_budget_ledger_path).expanduser().resolve()
