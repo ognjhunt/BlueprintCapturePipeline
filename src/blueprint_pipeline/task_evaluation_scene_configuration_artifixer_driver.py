@@ -57,6 +57,12 @@ from .task_evaluation_scene_configuration_component_package import (
 from .task_evaluation_scene_configuration_disclosure import (
     PENDING_PROVIDER_RENDER_STATUS,
 )
+from .task_evaluation_scene_configuration_artifixer_failure_evidence import (
+    ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+    ArtifixerRuntimeFailureEvidenceError,
+    failure_evidence_secret_values,
+    read_artifixer_runtime_result,
+)
 from .task_evaluation_scene_configuration_render_inputs import (
     complete_provider_render_inputs,
 )
@@ -462,11 +468,6 @@ def _semantic_rights_and_request(
     return packet_root
 
 
-ARTIFIXER_RUNTIME_ACCEPTED_STATUS = (
-    "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
-)
-
-
 def _emit_artifixer_runtime_diagnostics(
     *, completed: Any, runtime_result_path: Path
 ) -> None:
@@ -602,6 +603,26 @@ def _temporary_openai_key(token: str):
             os.environ.pop("OPENAI_API_KEY", None)
         else:
             os.environ["OPENAI_API_KEY"] = previous
+
+
+def _read_artifixer_runtime_result(
+    *,
+    completed: Any,
+    runtime_result_path: Path,
+    evidence_path: Path,
+    secret_values: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Read one nested result and retain its exact refusal before raising."""
+
+    try:
+        return read_artifixer_runtime_result(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            evidence_path=evidence_path,
+            secret_values=secret_values,
+        )
+    except ArtifixerRuntimeFailureEvidenceError as exc:
+        raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
 
 
 def execute_artifixer_component(
@@ -834,16 +855,14 @@ def execute_artifixer_component(
     _emit_artifixer_runtime_diagnostics(
         completed=completed, runtime_result_path=runtime_result_path
     )
-    runtime_result = _read(
-        runtime_result_path,
-        code="scene_configuration_artifixer_runtime_result_missing",
+    runtime_result = _read_artifixer_runtime_result(
+        completed=completed,
+        runtime_result_path=runtime_result_path,
+        evidence_path=work / "artifixer_runtime_failure_evidence.v1.json",
+        secret_values=failure_evidence_secret_values(
+            values, known_values=(token,)
+        ),
     )
-    if completed.returncode != 0 or runtime_result.get("status") != (
-        "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
-    ):
-        raise TaskEvaluationSceneConfigurationArtifixerError(
-            "scene_configuration_artifixer_runtime_failed"
-        )
     runtime_task = runtime_result["tasks"][0]
     source_task = candidate["tasks"][0]
     review_frames = []
