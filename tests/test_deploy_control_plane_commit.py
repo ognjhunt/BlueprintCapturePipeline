@@ -899,6 +899,11 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
     monkeypatch.setattr(
         deploy,
+        "_install_episode_compilation_runtime_directories",
+        lambda: [{"path": "/runtime/episode-compilations/pending"}],
+    )
+    monkeypatch.setattr(
+        deploy,
         "validate_splat_render_prerequisites",
         lambda **kwargs: {
             "entrypoints": {
@@ -1012,6 +1017,9 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["installed_systemd_units"][0]["unit"] == (
         "blueprint-task-evaluation-launch-dispatcher.service"
     )
+    assert receipt["episode_compilation_runtime_directories"] == [
+        {"path": "/runtime/episode-compilations/pending"}
+    ]
     assert receipt["activated_path_units"] == [
         {
             "unit": "blueprint-task-evaluation-launch-dispatcher.path",
@@ -1021,6 +1029,32 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
+
+
+def test_episode_compilation_directory_retry_skips_correct_privileged_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "episode-compilations"
+    directories = (root, *(root / state for state in ("pending", "processing", "completed", "blocked")))
+    for path in directories:
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o750)
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (os.getuid(), os.getgid())
+    )
+
+    def unexpected_mutation(*_args, **_kwargs):
+        raise AssertionError("already-correct directory must not be mutated")
+
+    monkeypatch.setattr(deploy.os, "chown", unexpected_mutation)
+    monkeypatch.setattr(Path, "chmod", unexpected_mutation)
+
+    receipts = deploy._install_episode_compilation_runtime_directories(
+        directories=tuple(str(path) for path in directories), account="test-service"
+    )
+
+    assert [row["path"] for row in receipts] == [str(path) for path in directories]
+    assert all(row["mode"] == "0750" for row in receipts)
 
 
 def test_deploy_refuses_mismatched_promotion_before_moving_source(

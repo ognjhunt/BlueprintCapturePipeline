@@ -115,6 +115,16 @@ DEFAULT_SCENE_OBJECT_DISCOVERY_RUNTIME_DIRECTORIES = (
     "/var/lib/blueprint/task-evaluation-inputs/scene-object-discoveries",
     "/var/lib/blueprint/task-evaluation-inputs/scene-object-discovery-outputs",
 )
+DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT = (
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations"
+)
+DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES = (
+    DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT,
+    *(
+        f"{DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT}/{name}"
+        for name in ("pending", "processing", "completed", "blocked")
+    ),
+)
 DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "/etc/systemd/system/blueprint-pipeline-intake.service.d/"
     "90-blueprint-deploy-identity.conf"
@@ -459,6 +469,66 @@ def _install_scene_object_discovery_runtime_directories(
         ):
             raise ControlPlaneDeployError(
                 f"deploy_scene_object_discovery_directory_readback_mismatch:{path}"
+            )
+        receipts.append(
+            {
+                "path": str(path),
+                "account": account,
+                "owner_uid": owner_uid,
+                "owner_gid": owner_gid,
+                "mode": "0750",
+            }
+        )
+    return receipts
+
+
+def _install_episode_compilation_runtime_directories(
+    *,
+    directories: Sequence[str] = DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+) -> list[dict[str, Any]]:
+    """Install every state watched or consumed by the episode queue units."""
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        raise ControlPlaneDeployError(
+            f"deploy_episode_compilation_account_missing:{account}"
+        )
+    owner_uid, owner_gid = account_ids
+    receipts: list[dict[str, Any]] = []
+    for raw_path in directories:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise ControlPlaneDeployError(
+                "deploy_episode_compilation_directory_not_absolute"
+            )
+        if path.is_symlink():
+            raise ControlPlaneDeployError(
+                f"deploy_episode_compilation_directory_symlink:{path}"
+            )
+        try:
+            path.mkdir(parents=True, exist_ok=True, mode=0o750)
+            if path.is_symlink() or not path.is_dir():
+                raise ControlPlaneDeployError(
+                    f"deploy_episode_compilation_directory_invalid:{path}"
+                )
+            metadata = path.stat()
+            if metadata.st_uid != owner_uid or metadata.st_gid != owner_gid:
+                os.chown(path, owner_uid, owner_gid)
+            if stat.S_IMODE(metadata.st_mode) != 0o750:
+                path.chmod(0o750)
+            readback = path.stat()
+        except OSError as exc:
+            raise ControlPlaneDeployError(
+                f"deploy_episode_compilation_directory_install_failed:{path}"
+            ) from exc
+        if (
+            readback.st_uid != owner_uid
+            or readback.st_gid != owner_gid
+            or stat.S_IMODE(readback.st_mode) != 0o750
+        ):
+            raise ControlPlaneDeployError(
+                f"deploy_episode_compilation_directory_readback_mismatch:{path}"
             )
         receipts.append(
             {
@@ -1279,6 +1349,9 @@ def deploy_control_plane_commit(
         scene_object_discovery_runtime_directories = (
             _install_scene_object_discovery_runtime_directories()
         )
+        episode_compilation_runtime_directories = (
+            _install_episode_compilation_runtime_directories()
+        )
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -1330,6 +1403,9 @@ def deploy_control_plane_commit(
         "installed_systemd_units": installed_systemd_units,
         "scene_object_discovery_runtime_directories": (
             scene_object_discovery_runtime_directories
+        ),
+        "episode_compilation_runtime_directories": (
+            episode_compilation_runtime_directories
         ),
         "path_unit_states": path_unit_state_receipts,
         "quiesced_path_units": quiesced_path_units,
