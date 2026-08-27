@@ -132,7 +132,7 @@ from .vast_retained_instance import (
 )
 from .vast_provider_validation import final_validation as _final_validation
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
-from .vast_args_payload_transport import args_mode_command
+from .vast_args_payload_transport import args_mode_command, onstart_mode_script
 
 
 VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
@@ -4353,7 +4353,7 @@ def _create_payload(
         )
         payload["args_str"] = args_mode_command(wrapped_script)
     else:
-        payload["onstart"] = probe_script
+        payload["onstart"] = onstart_mode_script(probe_script)
         if launch_mode == "jupyter_direct":
             payload["use_jupyter_lab"] = True
             payload["jupyter_dir"] = "/workspace"
