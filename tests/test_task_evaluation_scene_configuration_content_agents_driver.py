@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
 from PIL import Image
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdUtils
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
@@ -119,6 +121,18 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         "configuration": {
             "schema_version": "rigid_replacement_authoring_configuration.v1",
             "replacement_identity": {"id": "mug", "version": "v1"},
+            "required_output": {
+                "format": "OpenUSD",
+                "rigid_body": True,
+                "single_movable_root": True,
+                "visual_mesh_separate_from_collision": True,
+                "units": "meters",
+                "up_axis": "Z",
+                "mass_kg_bounds": [0.2, 0.8],
+                "static_friction_bounds": [0.3, 0.9],
+                "dynamic_friction_bounds": [0.2, 0.8],
+                "restitution_bounds": [0.0, 0.15],
+            },
         },
         "construction_envelope": {"render_inputs_result": {"derived_frames": [_record(reference)]}},
     }
@@ -152,10 +166,15 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
             dependency_stage, "/PhysicsGeometry"
         ).GetPrim()
         dependency_stage.SetDefaultPrim(dependency_root)
+        UsdPhysics.CollisionAPI.Apply(dependency_root)
         dependency_stage.GetRootLayer().Save()
         physics_stage = Usd.Stage.CreateNew(str(physics))
         physics_root = UsdGeom.Xform.Define(physics_stage, "/Asset").GetPrim()
         physics_stage.SetDefaultPrim(physics_root)
+        UsdGeom.SetStageMetersPerUnit(physics_stage, 1.0)
+        UsdGeom.SetStageUpAxis(physics_stage, UsdGeom.Tokens.z)
+        UsdPhysics.RigidBodyAPI.Apply(physics_root)
+        UsdPhysics.MassAPI.Apply(physics_root).CreateMassAttr(0.4)
         physics_stage.DefinePrim("/Asset/Geometry").GetReferences().AddReference(
             str(dependency), "/PhysicsGeometry"
         )
@@ -227,9 +246,40 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     )
     assert external_assets == []
     assert unresolved == []
+    replacement_stage = Usd.Stage.Open(str(replacement), load=Usd.Stage.LoadAll)
+    assert replacement_stage is not None
+    rigid = [
+        prim
+        for prim in replacement_stage.Traverse()
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+    assert len(rigid) == 1
+    mass = UsdPhysics.MassAPI(rigid[0])
+    assert float(mass.GetMassAttr().Get()) == pytest.approx(0.4)
+    assert all(math.isfinite(float(value)) for value in mass.GetCenterOfMassAttr().Get())
+    assert all(float(value) > 0.0 for value in mass.GetDiagonalInertiaAttr().Get())
+    physics_materials = [
+        UsdPhysics.MaterialAPI(prim)
+        for prim in replacement_stage.Traverse()
+        if prim.HasAPI(UsdPhysics.MaterialAPI)
+    ]
+    assert len(physics_materials) == 1
+    assert 0.3 <= float(physics_materials[0].GetStaticFrictionAttr().Get()) <= 0.9
+    assert 0.2 <= float(physics_materials[0].GetDynamicFrictionAttr().Get()) <= 0.8
+    assert 0.0 <= float(physics_materials[0].GetRestitutionAttr().Get()) <= 0.15
     receipt = json.loads((output / "replacement_authoring_receipt.v1.json").read_text())
     assert receipt["source_candidate_digest"] == _sha256(candidate)
     assert receipt["physics_authority_granted"] is False
+    completion = receipt["candidate_physics_completion"]
+    assert completion["schema_version"] == (
+        "task_evaluation_rigid_candidate_physics_completion.v1"
+    )
+    assert completion["mass_kg"] == pytest.approx(0.4)
+    assert completion["candidate_prior_only"] is True
+    assert completion["physical_truth_claimed"] is False
+    assert "center_of_mass_from_collision_bounds_center" in completion["modifications"]
+    assert "diagonal_inertia_from_collision_aabb" in completion["modifications"]
+    assert "physics_material_from_preregistered_bounds_midpoints" in completion["modifications"]
     manifest = json.loads(
         (
             output / "released_content_agents_runtime/adp_content_agents_provider_manifest.json"

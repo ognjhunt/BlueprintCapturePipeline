@@ -14,6 +14,9 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
 SCHEMA_VERSION = "task_evaluation_rigid_replacement_static_qualification.v1"
+_PHYSICS_COMPLETION_SCHEMA_VERSION = (
+    "task_evaluation_rigid_candidate_physics_completion.v1"
+)
 _FORBIDDEN_PACKAGE_SUFFIXES = {
     ".bat",
     ".cmd",
@@ -52,6 +55,78 @@ def _finite(values: Any, *, positive: bool = False) -> bool:
     )
 
 
+def _physics_bounds(value: Any) -> dict[str, list[float]] | None:
+    expected = {
+        "mass_kg",
+        "static_friction",
+        "dynamic_friction",
+        "restitution",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        return None
+    normalized: dict[str, list[float]] = {}
+    for name in sorted(expected):
+        raw = value.get(name)
+        if not isinstance(raw, list) or len(raw) != 2:
+            return None
+        try:
+            lower, upper = (float(item) for item in raw)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(lower)
+            or not math.isfinite(upper)
+            or lower > upper
+            or lower < 0.0
+            or (name == "mass_kg" and lower <= 0.0)
+            or (name != "mass_kg" and upper > 1.0)
+        ):
+            return None
+        normalized[name] = [lower, upper]
+    return normalized
+
+
+def _close_sequence(left: Any, right: Any) -> bool:
+    try:
+        left_values = [float(item) for item in left]
+        right_values = [float(item) for item in right]
+    except (TypeError, ValueError):
+        return False
+    return len(left_values) == len(right_values) and all(
+        math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-7)
+        for actual, expected in zip(left_values, right_values, strict=True)
+    )
+
+
+def _material_rows_match(left: Any, right: Any) -> bool:
+    if not isinstance(left, list) or not isinstance(right, list):
+        return False
+    left_rows = {
+        str(row.get("path") or ""): row
+        for row in left
+        if isinstance(row, Mapping)
+    }
+    right_rows = {
+        str(row.get("path") or ""): row
+        for row in right
+        if isinstance(row, Mapping)
+    }
+    if (
+        len(left_rows) != len(left)
+        or len(right_rows) != len(right)
+        or set(left_rows) != set(right_rows)
+    ):
+        return False
+    names = ("static_friction", "dynamic_friction", "restitution")
+    return all(
+        _close_sequence(
+            [left_rows[path].get(name) for name in names],
+            [right_rows[path].get(name) for name in names],
+        )
+        for path in left_rows
+    )
+
+
 def _portable_package_findings(path: Path) -> list[str]:
     findings: list[str] = []
     if path.suffix.lower() != ".usdz":
@@ -79,7 +154,9 @@ def _portable_package_findings(path: Path) -> list[str]:
     return findings
 
 
-def _usd_findings(path: Path) -> tuple[list[str], dict[str, Any]]:
+def _usd_findings(
+    path: Path, *, physics_bounds: Mapping[str, list[float]]
+) -> tuple[list[str], dict[str, Any]]:
     try:
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
     except ImportError as exc:  # pragma: no cover - provider image owns OpenUSD
@@ -184,8 +261,15 @@ def _usd_findings(path: Path) -> tuple[list[str], dict[str, Any]]:
         mass_value is None
         or not math.isfinite(mass_value)
         or mass_value <= 0.0
+        or not physics_bounds["mass_kg"][0]
+        <= mass_value
+        <= physics_bounds["mass_kg"][1]
         or not _finite(center_of_mass)
         or not _finite(inertia, positive=True)
+        or any(
+            inertia[index] > sum(inertia) - inertia[index] + 1e-12
+            for index in range(3)
+        )
     ):
         findings.append("replacement_mass_or_inertia_invalid")
     elif body is not None and bounds_rows:
@@ -210,7 +294,8 @@ def _usd_findings(path: Path) -> tuple[list[str], dict[str, Any]]:
     material_rows: list[dict[str, float]] = []
     for material in physics_materials:
         try:
-            row = {
+            row: dict[str, Any] = {
+                "path": str(material.GetPrim().GetPath()),
                 "static_friction": float(material.GetStaticFrictionAttr().Get()),
                 "dynamic_friction": float(material.GetDynamicFrictionAttr().Get()),
                 "restitution": float(material.GetRestitutionAttr().Get()),
@@ -218,10 +303,18 @@ def _usd_findings(path: Path) -> tuple[list[str], dict[str, Any]]:
         except (TypeError, ValueError):
             continue
         if (
-            all(math.isfinite(value) for value in row.values())
-            and 0.0 <= row["static_friction"] <= 1.0
-            and 0.0 <= row["dynamic_friction"] <= 1.0
-            and 0.0 <= row["restitution"] <= 1.0
+            all(
+                math.isfinite(float(row[name]))
+                and physics_bounds[name][0]
+                <= float(row[name])
+                <= physics_bounds[name][1]
+                for name in (
+                    "static_friction",
+                    "dynamic_friction",
+                    "restitution",
+                )
+            )
+            and row["dynamic_friction"] <= row["static_friction"]
         ):
             material_rows.append(row)
     if not physics_materials or len(material_rows) != len(physics_materials):
@@ -232,6 +325,7 @@ def _usd_findings(path: Path) -> tuple[list[str], dict[str, Any]]:
         "rigid_body_paths": [str(prim.GetPath()) for prim in rigid],
         "collision_prim_paths": [str(prim.GetPath()) for prim in collision_prims],
         "mass_kg": mass_value,
+        "center_of_mass_m": center_of_mass,
         "diagonal_inertia_kg_m2": inertia,
         "physics_materials": material_rows,
         "dependency_layer_count": len(layers),
@@ -256,6 +350,7 @@ def qualify_scene_configuration_rigid_asset_static(
         findings.append("replacement_asset_missing")
     digest = _sha256(asset) if asset.is_file() else ""
     size = asset.stat().st_size if asset.is_file() else 0
+    normalized_physics_bounds = _physics_bounds(graph_spec.get("physics_bounds"))
     if (
         graph_spec.get("schema_version")
         != "task_evaluation_rigid_replacement_graph.v1"
@@ -263,6 +358,7 @@ def qualify_scene_configuration_rigid_asset_static(
         or graph_spec.get("asset_version") != replacement_identity.get("version")
         or graph_spec.get("articulation_graph") != {"joints": []}
         or graph_spec.get("single_rigid_candidate") is not True
+        or normalized_physics_bounds is None
         or graph_spec.get("physics_authority_granted") is not False
     ):
         findings.append("replacement_graph_spec_invalid")
@@ -282,9 +378,41 @@ def qualify_scene_configuration_rigid_asset_static(
     ):
         findings.append("replacement_authoring_receipt_invalid")
     observed: dict[str, Any] = {}
-    if asset.is_file():
-        usd_findings, observed = _usd_findings(asset)
+    if asset.is_file() and normalized_physics_bounds is not None:
+        usd_findings, observed = _usd_findings(
+            asset, physics_bounds=normalized_physics_bounds
+        )
         findings.extend(usd_findings)
+    completion = authoring_receipt.get("candidate_physics_completion")
+    materials_match = _material_rows_match(
+        completion.get("physics_materials") if isinstance(completion, Mapping) else None,
+        observed.get("physics_materials"),
+    )
+    if (
+        not isinstance(completion, Mapping)
+        or completion.get("schema_version")
+        != _PHYSICS_COMPLETION_SCHEMA_VERSION
+        or completion.get("status") != "bounded_candidate_completed"
+        or completion.get("physics_bounds") != normalized_physics_bounds
+        or completion.get("candidate_prior_only") is not True
+        or completion.get("physical_truth_claimed") is not False
+        or completion.get("completion_digest")
+        != canonical_digest(completion, digest_field="completion_digest")
+        or not _close_sequence(
+            [completion.get("mass_kg")],
+            [observed.get("mass_kg")],
+        )
+        or not _close_sequence(
+            completion.get("center_of_mass_m"),
+            observed.get("center_of_mass_m"),
+        )
+        or not _close_sequence(
+            completion.get("diagonal_inertia_kg_m2"),
+            observed.get("diagonal_inertia_kg_m2"),
+        )
+        or not materials_match
+    ):
+        findings.append("replacement_physics_completion_invalid")
     if findings:
         raise TaskEvaluationSceneConfigurationStaticQualificationError(findings)
 
