@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import Any, Callable
 
@@ -65,6 +66,29 @@ def _metric_envelope_valid(value: Any) -> bool:
         or not isinstance(tolerance, (int, float))
         or not math.isfinite(float(tolerance))
         or not 0.0 <= float(tolerance) <= 1.0
+    ):
+        return False
+    try:
+        lower = [float(item) for item in minimum]
+        upper = [float(item) for item in maximum]
+    except (TypeError, ValueError):
+        return False
+    return all(
+        math.isfinite(lower[index])
+        and math.isfinite(upper[index])
+        and upper[index] > lower[index]
+        for index in range(3)
+    )
+
+
+def _metric_bounds_valid(minimum: Any, maximum: Any) -> bool:
+    """Match the camera-ring bounds consumed before the first paid stage."""
+
+    if (
+        not isinstance(minimum, list)
+        or not isinstance(maximum, list)
+        or len(minimum) != 3
+        or len(maximum) != 3
     ):
         return False
     try:
@@ -143,7 +167,10 @@ def _stage_one_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
     source_object = configuration.get("source_object")
+    gaussian_cutout = configuration.get("gaussian_cutout")
     required_views = configuration.get("required_views")
+    disclosure = configuration.get("provider_disclosure")
+    output_requirements = configuration.get("output_requirements")
     human = configuration.get("human_authority")
     minimum = required_views.get("minimum") if isinstance(required_views, Mapping) else None
     tuning = (
@@ -167,21 +194,54 @@ def _stage_one_refusal(
         or not source_object["publisher_instance_id"].strip()
     ):
         return "source_object.publisher_instance_id"
+    if not _metric_bounds_valid(
+        source_object.get("aabb_min_xyz_m"),
+        source_object.get("aabb_max_xyz_m"),
+    ):
+        return "source_object.aabb"
     if configuration.get("production_render_required") is not True:
         return "production_render_required"
+    if (
+        not isinstance(gaussian_cutout, Mapping)
+        or gaussian_cutout.get("selection_rule")
+        != "gaussian_center_inside_registered_source_object_aabb"
+        or isinstance(gaussian_cutout.get("aabb_padding_m"), bool)
+        or not isinstance(gaussian_cutout.get("aabb_padding_m"), (int, float))
+        or not math.isfinite(float(gaussian_cutout["aabb_padding_m"]))
+        or not 0.0 <= float(gaussian_cutout["aabb_padding_m"]) <= 0.10
+        or gaussian_cutout.get("retained_rows_must_remain_byte_exact") is not True
+    ):
+        return "gaussian_cutout"
+    disclosure_intent = None
+    if isinstance(disclosure, Mapping):
+        for key in ("source_appearance_bytes", "raw_interiorgs_bytes"):
+            if key in disclosure:
+                disclosure_intent = disclosure[key]
+                break
+    if (
+        not isinstance(disclosure, Mapping)
+        or not isinstance(disclosure_intent, bool)
+        or disclosure.get("derived_rendered_views") is not True
+    ):
+        return "provider_disclosure"
     if stage_requests_upload(configuration) is not renders_on_provider(
             (envelope.get("render_inputs_result") or {}).get("disclosure_decision")
             or {}
     ):
         return "provider_disclosure"
     if (
-        configuration.get("output_requirements", {}).get(
-            "generated_pixels_labeled"
-        )
-        is not True
+        not isinstance(output_requirements, Mapping)
+        or output_requirements.get("generated_pixels_labeled") is not True
     ):
         return "output_requirements.generated_pixels_labeled"
-    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum <= 0:
+    if (
+        not isinstance(minimum, int)
+        or isinstance(minimum, bool)
+        or not 1 <= minimum <= 8
+        or required_views.get("lossless_inputs") is not True
+        or required_views.get("mask_source")
+        != "registered_source_object_bounds_projection"
+    ):
         return "required_views.minimum"
     if (
         not isinstance(human, Mapping)
@@ -228,11 +288,20 @@ def _stage_two_refusal(
         != collision_rows[0].get("digest")
     ):
         return "collision_source_digest"
+    target = configuration.get("exact_target_prim")
     if (
-        not isinstance(configuration.get("exact_target_prim"), str)
-        or not str(configuration["exact_target_prim"]).startswith("/")
+        not isinstance(target, str)
+        or not target.startswith("/")
+        or target == "/"
+        or "//" in target
     ):
         return "exact_target_prim"
+    removal_id = str(
+        ((envelope.get("recipe") or {}).get("subject_identity") or {}).get("id")
+        or ""
+    )
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", removal_id) is None:
+        return "recipe.subject_identity.id"
     if not isinstance(configuration.get("expected_target"), Mapping):
         return "expected_target"
     if (
