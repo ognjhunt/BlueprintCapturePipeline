@@ -406,6 +406,22 @@ def _authority_environment():
                 os.environ[name] = value
 
 
+#: The bundle is not all this lane pulls. Before the first stage the onstart
+#: apt-installs its build and render toolchain, and the ArtiFixer runtime then
+#: fetches ``uv`` and builds a venv. Declaring only ``bundle_size_bytes``
+#: left all of that outside the hard-cap projection.
+#:
+#: Sized for the mode this lane actually runs. The configuration selects
+#: ``dual_target_artifixer3d_only``, which the runtime admits only with
+#: ``direct_editor_backend == "none"``, so the ``vibe_image_edit`` branch and
+#: its multi-gigabyte ``cu124`` torch wheels never execute. A reserve big
+#: enough for those wheels would price nearly the whole compute cap into
+#: bandwidth and start excluding otherwise admissible offers, which is a real
+#: cost for a download this mode does not perform. If a torch-backed direct
+#: editor is ever selected here, this number has to be revisited with it.
+PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 2_000_000_000
+
+
 def _provider_transfer_byte_budget(
     receipt: Mapping[str, Any],
 ) -> tuple[int, int]:
@@ -420,15 +436,12 @@ def _provider_transfer_byte_budget(
     the staged object store already serves, so it is measured, not guessed.
     """
 
-    download = receipt.get("bundle_size_bytes")
-    if (
-        not isinstance(download, int)
-        or isinstance(download, bool)
-        or download <= 0
-    ):
+    bundle = receipt.get("bundle_size_bytes")
+    if not isinstance(bundle, int) or isinstance(bundle, bool) or bundle <= 0:
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_provider_transfer_budget_inputs_invalid"
         )
+    download = bundle + PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
     # The upload side has no contract to price. On the provider-render path
     # the frames are produced on the rented GPU, so the bundle manifest's
     # ``derived_rendered_view_count`` is 0, and neither the manifest nor the
