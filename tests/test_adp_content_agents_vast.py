@@ -2249,6 +2249,11 @@ def test_bundle_rejects_changed_reference_bytes(
             "    enabled: false\n    vlm:\n      backend: openai",
             "    enabled: true\n    vlm:\n      backend: openai",
         ),
+        (
+            "physics_agent.yaml",
+            "collision_approx: convexHull",
+            "collision_approx: none",
+        ),
     ],
 )
 def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
@@ -4063,6 +4068,33 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
         assert payload["input"]["usd_path"] == "../input/source_asset.usda"
         if "reference_images" in payload["input"]:
             assert payload["input"]["reference_images"] == ["../input/reference.png"]
+
+
+def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) -> None:
+    """A movable scene replacement must not reach PhysX as a triangle mesh."""
+
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    content_agents._materialize_remote_configs(
+        config_sources=sources,
+        destination=destination,
+        variant="scene_configuration_v1",
+        agent_mesh_prim_paths=["/Asset/Geometry/Visual"],
+        agent_render_prim_paths=["/Asset/Geometry/Visual"],
+        agent_default_material_path="/Asset/Looks/content_agents_advisory",
+    )
+
+    physics = yaml.safe_load(
+        (destination / "physics_agent.yaml").read_text(encoding="utf-8")
+    )
+    assert physics["steps"]["apply_physics"]["collision_approx"] == (
+        "convexDecomposition"
+    )
 
 
 def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
