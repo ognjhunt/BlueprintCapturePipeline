@@ -42,6 +42,11 @@ from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate,
     scene_configuration_openai_stage_scope,
 )
+from .task_evaluation_scene_configuration_content_agents_failure_evidence import (
+    ContentAgentsRuntimeFailureEvidenceError,
+    failure_evidence_secret_values,
+    read_content_agents_runtime_result,
+)
 from .task_evaluation_scene_configuration_render_handoff import (
     ARTIFACT_ROLE as PROVIDER_RENDER_REFERENCE_ROLE,
     TaskEvaluationSceneConfigurationRenderHandoffError,
@@ -927,10 +932,25 @@ def execute_content_agents_component(
         raise
     runtime_output = runtime / "runtime_output"
     try:
-        runtime_result = _read(
-            runtime_output / "adp_content_agents_vast_result.json",
-            code="scene_configuration_content_agents_runtime_result_missing",
+        runtime_result = read_content_agents_runtime_result(
+            completed=completed,
+            runtime_result_path=(
+                runtime_output / "adp_content_agents_vast_result.json"
+            ),
+            evidence_path=(
+                runtime / "content_agents_runtime_failure_evidence.v1.json"
+            ),
+            secret_values=failure_evidence_secret_values(
+                values, known_values=(child_token,)
+            ),
         )
+    except ContentAgentsRuntimeFailureEvidenceError as exc:
+        cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=exc.runtime_result_digest,
+            runtime_exception_type=type(exc).__name__,
+        )
+        raise TaskEvaluationSceneConfigurationContentAgentsError(str(exc)) from exc
     except Exception as exc:
         cost_gate.complete(
             provider_call_performed=True,
@@ -943,10 +963,6 @@ def execute_content_agents_component(
         runtime_result_digest=str(runtime_result.get("result_digest") or "") or None,
         runtime_exception_type=None,
     )
-    if completed.returncode != 0 or runtime_result.get("status") != "completed":
-        raise TaskEvaluationSceneConfigurationContentAgentsError(
-            "scene_configuration_content_agents_runtime_failed"
-        )
     authored = _physics_output(runtime_output)
     physics_bounds = _physics_bounds(configuration)
     physics_completion = _complete_candidate_physics(
