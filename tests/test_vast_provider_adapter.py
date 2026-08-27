@@ -9227,3 +9227,72 @@ def test_interrupt_result_carries_the_signal_context_not_just_a_blocker() -> Non
     assert '"interrupt_signal_manifest_path"' in block
     for key in ("interrupt_signal", "parent_command", "cgroup", "parent_pid"):
         assert f'"{key}"' in block, key
+
+
+def test_environment_machine_avoidlist_path_survives_across_run_roots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A proven-bad host must outlive the attempt that proved it.
+
+    Runs ...-202000Z and ...-204021Z paid for the same container-exit failure
+    on two machines back to back: each attempt's default avoidlist lives under
+    its own run root and dies with it, so nothing remembered the first host.
+    """
+
+    stable = tmp_path / "persistent" / "vast_machine_avoidlist.json"
+    stable.parent.mkdir()
+    stable.write_text(
+        json.dumps(
+            {
+                "schema_version": "vast_machine_avoidlist.v1",
+                "status": "active",
+                "machine_ids": [140607, 138964],
+                "entries": [],
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_VAST_MACHINE_AVOIDLIST_PATH", str(stable))
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+
+    searched_payloads: list[dict] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            searched_payloads.append(dict(payload))
+            return 200, {"offers": []}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "run-root" / "job",
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=5,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "blocked"
+    manifest = _read_json(
+        tmp_path / "run-root" / "job" / "vast_offer_selection_manifest.json"
+    )
+    assert manifest["machine_avoidlist_path"] == str(stable)
+    assert sorted(manifest["excluded_machine_ids"]) == [138964, 140607]
