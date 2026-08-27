@@ -2968,6 +2968,42 @@ def test_scene_configuration_boundary_provisions_nested_artifixer_nvcc() -> None
     )
 
 
+def test_scene_configuration_boundary_selects_supported_artifixer_host_compiler() -> None:
+    """The Ubuntu 24.04 parent must not compile 3DGRUT with its default GCC 13.
+
+    The exact upstream 3DGRUT-ArtiFixer commit says GCC versions above 11 are
+    unsupported and directs Ubuntu 24.04 callers to install GCC/G++ 11.  The
+    standalone ArtiFixer lane already does that, but the scene-configuration
+    parent installed only ``build-essential`` before entering the same CUDA/JIT
+    graph.  Select and read back the supported compiler before the bundle is
+    downloaded, so a packaging regression refuses before the expensive stages.
+    """
+
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example.test",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+    apt_packages = script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
+
+    assert {"gcc-11", "g++-11"} <= set(apt_packages)
+    assert vpa.SCENE_CONFIGURATION_HOST_COMPILER_MAJOR == "11"
+    assert 'exec /usr/bin/gcc-11 "$@"' in script
+    assert 'exec /usr/bin/g++-11 "$@"' in script
+    assert "CC=/usr/bin/gcc-11" in script
+    assert "CXX=/usr/bin/g++-11" in script
+    assert "CUDAHOSTCXX=/usr/bin/g++-11" in script
+    assert "gcc -dumpfullversion -dumpversion" in script
+    assert "g++ -dumpfullversion -dumpversion" in script
+    assert (
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:"
+        "scene_configuration_artifixer_host_compiler_invalid:$compiler_rc"
+        in script
+    )
+    assert script.index("gcc-11") < script.index("blueprint_download_url \"$BUNDLE_URL\"")
+
+
 def test_provider_entrypoint_preserves_distinct_standalone_and_isaac_paths() -> None:
     """The pre-Kit and Kit-started processes require distinct USD bindings.
 

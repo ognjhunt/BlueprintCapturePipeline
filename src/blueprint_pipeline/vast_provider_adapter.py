@@ -1893,6 +1893,7 @@ SCENE_CONFIGURATION_CUDA_KEYRING_SHA256 = (
     "d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba"
 )
 SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE = "cuda-nvcc-12-8=12.8.93-1"
+SCENE_CONFIGURATION_HOST_COMPILER_MAJOR = "11"
 
 #: Packages the scene-configuration onstart installs, and the commands each
 #: one puts on PATH. The boundary check is derived from this map so every
@@ -1903,6 +1904,8 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "unzip": ("unzip",),
     "git": ("git",),
     "build-essential": ("gcc", "g++", "make"),
+    "gcc-11": ("gcc-11",),
+    "g++-11": ("g++-11",),
     "cmake": ("cmake",),
     "ninja-build": ("ninja",),
     SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE: ("nvcc",),
@@ -4675,12 +4678,24 @@ def _probe_shell_script(
                 "fi; "
                 'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
                 'printf \'#!/bin/sh\\nexec /isaac-sim/python.sh "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/python3"; '
-                'chmod 0755 "$WORK_DIR/scene_configuration_bin/python3"; '
+                'printf \'#!/bin/sh\\nexec /usr/bin/gcc-11 "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/gcc"; '
+                'printf \'#!/bin/sh\\nexec /usr/bin/g++-11 "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/g++"; '
+                'chmod 0755 "$WORK_DIR/scene_configuration_bin/python3" "$WORK_DIR/scene_configuration_bin/gcc" "$WORK_DIR/scene_configuration_bin/g++"; '
                 'export PATH="$WORK_DIR/scene_configuration_bin:$PATH"; '
+                'export CC=/usr/bin/gcc-11 CXX=/usr/bin/g++-11 CUDAHOSTCXX=/usr/bin/g++-11; '
                 "for required_command in "
                 + SCENE_CONFIGURATION_REQUIRED_COMMANDS
                 + '; do command -v "$required_command" >/dev/null 2>&1 || toolchain_rc=127; done; '
+                'compiler_rc=0; '
+                'if [ $toolchain_rc -eq 0 ]; then observed_gcc_major=$(gcc -dumpfullversion -dumpversion | cut -d. -f1) || compiler_rc=$?; fi; '
+                'if [ $toolchain_rc -eq 0 ]; then observed_gxx_major=$(g++ -dumpfullversion -dumpversion | cut -d. -f1) || compiler_rc=$?; fi; '
+                "if [ $toolchain_rc -eq 0 ] && { [ \"$observed_gcc_major\" != "
+                + shlex.quote(SCENE_CONFIGURATION_HOST_COMPILER_MAJOR)
+                + " ] || [ \"$observed_gxx_major\" != "
+                + shlex.quote(SCENE_CONFIGURATION_HOST_COMPILER_MAJOR)
+                + " ]; }; then compiler_rc=86; fi; "
                 "if [ $toolchain_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_toolchain_missing:$toolchain_rc; "
+                "elif [ $compiler_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_artifixer_host_compiler_invalid:$compiler_rc; "
                 "else "
                 'rm -rf "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; '
                 'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"; dl=$?; '
