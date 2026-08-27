@@ -1397,7 +1397,7 @@ def test_scene_configuration_refuses_mismatched_stage_attestation_before_spend(
         scene_vast._provider_runtime_inputs(authority)
 
 
-def test_scene_configuration_refuses_dirty_openai_scope_before_spend(
+def test_scene_configuration_accepts_nonzero_scope_for_incremental_cost_metering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     authority = {
@@ -1422,16 +1422,15 @@ def test_scene_configuration_refuses_dirty_openai_scope_before_spend(
         return {"total_cost_usd": 0.877128}
 
     monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", collect)
-    with pytest.raises(
-        scene_vast.TaskEvaluationSceneConfigurationVastError,
-        match=(
-            "scene_configuration_openai_stage_cost_baseline_not_zero:"
-            "artifixer_semantic_teacher"
-        ),
-    ):
-        scene_vast._provider_runtime_inputs(authority)
+    _secret_paths, runtime_environment = scene_vast._provider_runtime_inputs(authority)
 
-    assert observed == ["key_semantic"]
+    assert observed == ["key_semantic", "key_review", "key_content_agents"]
+    assert (
+        runtime_environment[
+            "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"
+        ]
+        == "0.2"
+    )
 
 
 def test_scene_configuration_cost_preflight_uses_ephemeral_owner_only_admin_key(
