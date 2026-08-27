@@ -15,6 +15,34 @@ export PYTHONPATH="$RUNTIME_ROOT"
 export BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT="$RUNTIME_ROOT/toolchain"
 export BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT="$RESULT_PATH"
 
+write_blocked_result() {
+  blocker="$1"
+  "$PYTHON_BIN" - "$RESULT_PATH" "$blocker" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+value = {
+    "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+    "status": "blocked",
+    "blockers": [sys.argv[2]],
+    "first_stage_started": False,
+    "evaluation_episode_executed": False,
+    "candidate_policy_queried": False,
+    "provider_zero_required_after_return": True,
+    "result_digest": "",
+}
+payload = dict(value)
+payload.pop("result_digest", None)
+value["result_digest"] = "sha256:" + hashlib.sha256(
+    json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+}
+
 if [ -d "$RUNTIME_ROOT/toolchain" ] && [ -n "$PYTHON_BIN" ]; then
   # The bundle is unpacked with `python -m zipfile -e`, and CPython's zipfile
   # never restores mode bits -- every file lands 0644 regardless of what the
@@ -66,11 +94,56 @@ progress_ticker &
 ticker_pid=$!
 trap 'kill "$ticker_pid" 2>/dev/null || true' EXIT
 
-if [ -n "$PYTHON_BIN" ]; then
+PYTHON_WHEELHOUSE="$RUNTIME_ROOT/toolchain/components/artifixer3d_observed_object_removal/package/python_wheelhouse"
+PYTHON_RUNTIME="$OUTPUT_ROOT/.venv/provider_python_runtime"
+mkdir -p "$(dirname "$PYTHON_RUNTIME")"
+python_runtime_rc=0
+if [ -z "$PYTHON_BIN" ] || [ ! -d "$PYTHON_WHEELHOUSE" ]; then
+  python_runtime_rc=86
+else
+  "$PYTHON_BIN" -m \
+  blueprint_pipeline.task_evaluation_scene_configuration_python_runtime \
+  --wheelhouse-root "$PYTHON_WHEELHOUSE" \
+  --output-root "$PYTHON_RUNTIME" \
+  >"$OUTPUT_ROOT/provider_python_runtime_setup.log" 2>&1 \
+  || python_runtime_rc=$?
+fi
+
+if [ "$python_runtime_rc" -ne 0 ]; then
+  if [ -n "$PYTHON_BIN" ]; then
+    write_blocked_result "scene_configuration_provider_python_runtime_invalid"
+  fi
+  runner_rc="$python_runtime_rc"
+else
+  export PYTHONPATH="$RUNTIME_ROOT:$PYTHON_RUNTIME"
+  # Import the actual stage modules before starting the chain. This checks the
+  # complete eager closure (including pxr from Isaac and the bundled Agents
+  # SDK/Pydantic runtime) before the first expensive render or training step.
+  if ! "$PYTHON_BIN" - \
+    >"$OUTPUT_ROOT/provider_python_import_preflight.log" 2>&1 <<'PY'
+import agents
+import numpy
+import pydantic
+import scipy
+import yaml
+from PIL import Image
+from pxr import Usd
+from blueprint_pipeline import task_evaluation_scene_configuration_artifixer_driver
+from blueprint_pipeline import task_evaluation_scene_configuration_content_agents_driver
+from blueprint_pipeline import task_evaluation_scene_configuration_native_import_driver
+
+assert agents and numpy and pydantic and scipy and yaml and Image and Usd
+assert task_evaluation_scene_configuration_artifixer_driver
+assert task_evaluation_scene_configuration_content_agents_driver
+assert task_evaluation_scene_configuration_native_import_driver
+PY
+  then
+    write_blocked_result "scene_configuration_provider_stage_import_closure_invalid"
+    runner_rc=86
+  else
   "$PYTHON_BIN" "$RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py"
   runner_rc=$?
-else
-  runner_rc=127
+  fi
 fi
 
 kill "$ticker_pid" 2>/dev/null || true

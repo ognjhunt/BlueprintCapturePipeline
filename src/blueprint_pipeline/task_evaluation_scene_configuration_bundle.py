@@ -20,6 +20,10 @@ from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
 )
+from .task_evaluation_scene_configuration_python_wheelhouse import (
+    MANIFEST_NAME as PYTHON_WHEELHOUSE_MANIFEST_NAME,
+    validate_scene_configuration_python_wheelhouse,
+)
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -49,6 +53,9 @@ _PROVIDER_RENDERER_FILES = (
     "tools/splat_render/harness.html",
     "tools/splat_render/package.json",
     "tools/splat_render/package-lock.json",
+)
+_PROVIDER_PYTHON_WHEELHOUSE_RELATIVE = Path(
+    "components/artifixer3d_observed_object_removal/package/python_wheelhouse"
 )
 
 
@@ -348,6 +355,14 @@ def build_scene_configuration_provider_bundle(
     toolchain_manifest = validate_scene_configuration_toolchain(
         root=toolchain, expected_source_commit=expected_source_commit
     )
+    try:
+        provider_python_runtime = validate_scene_configuration_python_wheelhouse(
+            root=toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE
+        )
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_provider_python_runtime_invalid"
+        ) from exc
     output = Path(output_root).resolve()
     if output.exists() and any(output.iterdir()):
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -465,6 +480,16 @@ def build_scene_configuration_provider_bundle(
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_toolchain_copy_mismatch"
         )
+    copied_python_runtime = validate_scene_configuration_python_wheelhouse(
+        root=portable_toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE
+    )
+    if (
+        copied_python_runtime["manifest_digest"]
+        != provider_python_runtime["manifest_digest"]
+    ):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_provider_python_runtime_copy_mismatch"
+        )
     provider_renderer: dict[str, Any] | None = None
     if provider_render_runtime_source is not None:
         provider_renderer = _stage_provider_renderer(
@@ -489,6 +514,19 @@ def build_scene_configuration_provider_bundle(
         "portable_construction_envelope_digest": portable["envelope_digest"],
         "toolchain_schema_version": TOOLCHAIN_SCHEMA_VERSION,
         "toolchain_digest": toolchain_manifest["toolchain_digest"],
+        "provider_python_runtime_required": True,
+        "provider_python_runtime_manifest": (
+            "toolchain/"
+            + _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE.as_posix()
+            + "/"
+            + PYTHON_WHEELHOUSE_MANIFEST_NAME
+        ),
+        "provider_python_runtime_digest": provider_python_runtime[
+            "manifest_digest"
+        ],
+        "provider_python_runtime_python_version": provider_python_runtime[
+            "python_version"
+        ],
         # The disclosure receipt beside this manifest already reports the
         # truth. A manifest that hardcodes False asserts no source bytes
         # crossed on a run where they did, which is a provenance falsehood,
@@ -736,6 +774,10 @@ def load_scene_configuration_provider_bundle_receipt(
         "construction_envelope_source_digest",
         "portable_construction_envelope_digest",
         "toolchain_digest",
+        "provider_python_runtime_required",
+        "provider_python_runtime_manifest",
+        "provider_python_runtime_digest",
+        "provider_python_runtime_python_version",
         "raw_interiorgs_bytes_in_provider_bundle",
         # Cross-compared with everything else it authorizes: without this, a
         # receipt's decision could drift from the one sealed in the bundle,

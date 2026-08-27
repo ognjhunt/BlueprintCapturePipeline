@@ -18,6 +18,9 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ARTIFIXER_TREE,
     COMPONENT_SOURCE_SCHEMA_VERSION,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
+    build_scene_configuration_python_wheelhouse,
+)
 from scripts.build_task_evaluation_scene_configuration_component_package import (
     build_scene_configuration_component_package,
 )
@@ -146,6 +149,15 @@ def build_artifixer_scene_configuration_component(
                 staging / destination_name,
                 executable=(destination_name == "run" or bool(source.stat().st_mode & 0o111)),
             )
+        # The Isaac image supplies the scientific stack, but not the OpenAI
+        # Agents SDK/Pydantic closure used by the independent visual review.
+        # Materialize exact lockfile wheels while still on the control plane;
+        # the immutable component/package inventories bind every downloaded
+        # byte and the rented provider performs no dependency resolution.
+        build_scene_configuration_python_wheelhouse(
+            lockfile_path=repository / "uv.lock",
+            output_root=staging / "python_wheelhouse",
+        )
         return build_scene_configuration_component_package(
             adapter_id="artifixer3d_observed_object_removal",
             source_root=staging,

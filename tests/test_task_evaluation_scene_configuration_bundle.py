@@ -79,9 +79,17 @@ def _repo(root: Path) -> Path:
         "def execute_scene_configuration_stage_chain(**kwargs):\n    return kwargs\n",
         encoding="utf-8",
     )
+    source_root = Path(__file__).resolve().parents[1]
+    (
+        package / "task_evaluation_scene_configuration_python_runtime.py"
+    ).write_bytes(
+        (
+            source_root
+            / "src/blueprint_pipeline/task_evaluation_scene_configuration_python_runtime.py"
+        ).read_bytes()
+    )
     scripts = root / "scripts"
     scripts.mkdir()
-    source_root = Path(__file__).resolve().parents[1]
     for name in (
         "run_task_evaluation_scene_configuration_provider.sh",
         "task_evaluation_scene_configuration_provider_runner.py",
@@ -493,6 +501,16 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
     )
     assert not any(name.startswith("provider_runtime/renderer/") for name in names)
     assert "provider_renderer_required" not in first
+    assert first["provider_python_runtime_required"] is True
+    assert first["provider_python_runtime_python_version"] == "3.12"
+    assert (
+        "provider_runtime/"
+        + first["provider_python_runtime_manifest"]
+    ) in names
+    assert (
+        "provider_runtime/blueprint_pipeline/"
+        "task_evaluation_scene_configuration_python_runtime.py"
+    ) in names
     portable = json.loads(
         payloads["provider_runtime/input/portable_construction_envelope.v1.json"]
     )
@@ -511,6 +529,59 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
         "provider_runtime/input/portable_construction_envelope.v1.json"
     ]
     assert "provider_runtime/input/references/0001.usda" in names
+
+
+def test_bundle_refuses_old_toolchain_without_provider_python_runtime(
+    tmp_path: Path,
+) -> None:
+    """A valid historical toolchain is not sufficient for the paid path."""
+
+    commit = "a" * 40
+    packages = _component_packages(tmp_path / "packages")
+    artifixer = packages["artifixer3d_observed_object_removal"]
+    wheelhouse = artifixer / "python_wheelhouse"
+    for directory in (wheelhouse / "wheels", wheelhouse, artifixer):
+        directory.chmod(0o755)
+    shutil.rmtree(wheelhouse)
+    package_manifest_path = (
+        artifixer
+        / "task_evaluation_scene_configuration_component_package.v1.json"
+    )
+    package_manifest_path.chmod(0o644)
+    package_manifest = json.loads(package_manifest_path.read_text(encoding="utf-8"))
+    package_manifest["files"] = [
+        row
+        for row in package_manifest["files"]
+        if not row["relative_path"].startswith("python_wheelhouse/")
+    ]
+    package_manifest["package_digest"] = canonical_digest(
+        package_manifest, digest_field="package_digest"
+    )
+    package_manifest_path.write_text(json.dumps(package_manifest), encoding="utf-8")
+    package_manifest_path.chmod(0o444)
+    artifixer.chmod(0o555)
+    toolchain = tmp_path / "old-toolchain"
+    build_published_scene_configuration_toolchain(
+        source_commit=commit,
+        output_root=toolchain,
+        readback=lambda path: path.read_bytes(),
+        readback_actor="service-account:test",
+        component_packages=packages,
+    )
+    source = tmp_path / "old-toolchain-source"
+    source.mkdir()
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationBundleError,
+        match="scene_configuration_bundle_provider_python_runtime_invalid",
+    ):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=_envelope(source, commit),
+            toolchain_root=toolchain,
+            repository_root=_repo(tmp_path / "old-toolchain-repo"),
+            output_root=tmp_path / "old-toolchain-bundle",
+            expected_source_commit=commit,
+        )
 
 
 def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path) -> None:
@@ -1358,6 +1429,31 @@ def test_provider_entrypoint_emits_varying_progress() -> None:
     )
     assert "BLUEPRINT_SCENE_CONFIGURATION_PROGRESS" in script
     assert "tick=" in script, "the emitted payload must vary, not just repeat"
+
+
+def test_provider_materializes_and_preflights_sealed_python_closure() -> None:
+    """Stage-only dependencies must be present before expensive stage one."""
+
+    from pathlib import Path as _Path
+
+    script = _Path(
+        "scripts/run_task_evaluation_scene_configuration_provider.sh"
+    ).read_text(encoding="utf-8")
+    materialize = script.find(
+        "blueprint_pipeline.task_evaluation_scene_configuration_python_runtime"
+    )
+    runtime_parent = script.find('mkdir -p "$(dirname "$PYTHON_RUNTIME")"')
+    import_preflight = script.find("import agents")
+    runner = script.find(
+        '"$RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py"'
+    )
+    assert runtime_parent != -1
+    assert materialize != -1
+    assert import_preflight != -1
+    assert runner != -1
+    assert runtime_parent < materialize < import_preflight < runner
+    assert "scene_configuration_provider_python_runtime_invalid" in script
+    assert "scene_configuration_provider_stage_import_closure_invalid" in script
 
 
 def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:

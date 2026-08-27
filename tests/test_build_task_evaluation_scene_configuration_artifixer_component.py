@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     validate_scene_configuration_component_package,
 )
@@ -59,6 +61,53 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
 
     monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", artifixer_commit)
     monkeypatch.setattr(subject, "ARTIFIXER_TREE", artifixer_tree)
+
+    def build_python_runtime(*, lockfile_path, output_root):
+        assert lockfile_path == repository / "uv.lock"
+        root = Path(output_root)
+        wheels = root / "wheels"
+        wheels.mkdir(parents=True)
+        body = b"fixture-wheel"
+        filename = "openai_agents-1.0.0-py3-none-any.whl"
+        (wheels / filename).write_bytes(body)
+        manifest = {
+            "schema_version": (
+                "task_evaluation_scene_configuration_python_wheelhouse.v1"
+            ),
+            "status": "ready",
+            "python_version": "3.12",
+            "implementation": "cpython",
+            "platform": "linux-x86_64",
+            "platform_tags": ["manylinux_2_17_x86_64"],
+            "lockfile_sha256": "sha256:" + "1" * 64,
+            "root_distributions": ["openai-agents"],
+            "requirements": [{"name": "openai-agents", "version": "1.0.0"}],
+            "wheels": [
+                {
+                    "distribution": "openai-agents",
+                    "version": "1.0.0",
+                    "filename": filename,
+                    "sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+                    "size_bytes": len(body),
+                }
+            ],
+            "sdists_allowed": False,
+            "provider_network_install_required": False,
+            "manifest_digest": "",
+        }
+        manifest["manifest_digest"] = canonical_digest(
+            manifest, digest_field="manifest_digest"
+        )
+        (root / f'{manifest["schema_version"]}.json').write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
+
+    monkeypatch.setattr(
+        subject,
+        "build_scene_configuration_python_wheelhouse",
+        build_python_runtime,
+    )
     output = tmp_path / "component"
     value = build_artifixer_scene_configuration_component(
         repository_root=repository,
@@ -79,3 +128,8 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
     assert source_receipt["tree"] == artifixer_tree
     assert source_receipt["files"]
     assert (output / "run").stat().st_mode & 0o111
+    assert (
+        output
+        / "python_wheelhouse"
+        / "task_evaluation_scene_configuration_python_wheelhouse.v1.json"
+    ).is_file()
