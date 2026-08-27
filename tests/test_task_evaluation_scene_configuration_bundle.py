@@ -2342,10 +2342,14 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     """
 
     receipt = _build(tmp_path, "bundle")
+    expected_upload = max(
+        2 * receipt["bundle_size_bytes"],
+        scene_vast.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+    )
 
     assert scene_vast._provider_transfer_byte_budget(receipt) == (
         receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
-        0,
+        expected_upload,
     )
     assert receipt["bundle_size_bytes"] > 0
     observed_pinned_wheel_floor = 2_209_255_046
@@ -2373,6 +2377,17 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
         observed_pinned_wheel_floor,
     )
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match="scene_configuration_provider_transfer_budget_underdeclared",
+    ):
+        scene_vast._provider_transfer_byte_budget(receipt)
+    monkeypatch.setattr(
+        scene_vast,
+        "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
+        10_000_000_000,
+    )
+    monkeypatch.setattr(scene_vast, "PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES", 1)
     with pytest.raises(
         scene_vast.TaskEvaluationSceneConfigurationVastError,
         match="scene_configuration_provider_transfer_budget_underdeclared",
@@ -2487,14 +2502,21 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     expected_download = (
         receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
     )
+    expected_upload = max(
+        2 * receipt["bundle_size_bytes"],
+        scene_vast.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+    )
     assert captured["expected_provider_download_bytes"] == expected_download
-    assert captured["expected_provider_upload_bytes"] == 0
+    assert captured["expected_provider_upload_bytes"] == expected_upload
+    assert captured["provider_runtime_environment"][
+        "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES"
+    ] == str(expected_upload)
     # The cap the caller hands the allocator is still the authority's own,
     # unwidened by the transfer accounting.
     assert captured["hard_cap_usd"] == authority["provider_compute_spend_cap_usd"]
     assert captured["target_spend_usd"] == authority["provider_compute_spend_cap_usd"]
     assert result["expected_provider_download_bytes"] == expected_download
-    assert result["expected_provider_upload_bytes"] == 0
+    assert result["expected_provider_upload_bytes"] == expected_upload
 
 
 def test_scene_configuration_bundle_bytes_can_price_an_offer_out_of_the_cap(
@@ -2502,25 +2524,25 @@ def test_scene_configuration_bundle_bytes_can_price_an_offer_out_of_the_cap(
 ) -> None:
     """Proves the wired budget has a live admission consequence.
 
-    With a zero ceiling the bound short-circuits to ``True`` for the very
-    offer whose bandwidth alone blows the cap; with the bundle's real byte
-    count the same offer is refused.
+    With a zero upload ceiling the bound omits the provider's outbound rate
+    and admits the offer; with the exact enforced ceiling the same offer is
+    refused before allocation.
     """
 
     receipt = _build(tmp_path, "bundle")
     download_bytes, upload_bytes = scene_vast._provider_transfer_byte_budget(receipt)
-    gb = download_bytes / 1_000_000_000.0
+    upload_gb = upload_bytes / 1_000_000_000.0
     offer = {
         "hourly_rate_usd": 0.40,
-        "provider_download_cost_per_gb_usd": 1.0 / gb,
-        "provider_upload_cost_per_gb_usd": 0.0,
+        "provider_download_cost_per_gb_usd": 0.0,
+        "provider_upload_cost_per_gb_usd": 1.0 / upload_gb,
     }
 
     assert vpa._offer_fits_total_cost_bound(
         offer,
         hard_cap_usd=0.75,
         max_live_minutes=30,
-        expected_provider_download_bytes=0,
+        expected_provider_download_bytes=download_bytes,
         expected_provider_upload_bytes=0,
     )
     assert not vpa._offer_fits_total_cost_bound(

@@ -130,6 +130,7 @@ from .vast_retained_instance import (
     retention_decision as _retention_decision,
 )
 from .vast_provider_validation import final_validation as _final_validation
+from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
 
 
 VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
@@ -4537,32 +4538,8 @@ def _probe_shell_script(
         "fi; "
         "return 127; "
         "}; "
-        "blueprint_upload_put() { "
-        'blueprint_upload_url="$1"; blueprint_upload_path="$2"; '
-        'if command -v curl >/dev/null 2>&1; then curl -fsS -X PUT -H \'Content-Type: application/zip\' --data-binary @"$blueprint_upload_path" "$blueprint_upload_url" >/tmp/blueprint_provider_upload_response.json; return $?; fi; '
-        'blueprint_upload_py="${PY_NET:-${RUNTIME_PY:-}}"; '
-        'if [ -n "$blueprint_upload_py" ]; then '
-        'BLUEPRINT_UPLOAD_URL="$blueprint_upload_url" BLUEPRINT_UPLOAD_PATH="$blueprint_upload_path" "$blueprint_upload_py" - <<\'PY\' >/tmp/blueprint_provider_upload_response.json\n'
-        "import os\n"
-        "import sys\n"
-        "import urllib.request\n"
-        "url = os.environ.get('BLUEPRINT_UPLOAD_URL', '')\n"
-        "path = os.environ.get('BLUEPRINT_UPLOAD_PATH', '')\n"
-        "try:\n"
-        "    with open(path, 'rb') as handle:\n"
-        "        data = handle.read()\n"
-        "    request = urllib.request.Request(url, data=data, method='PUT', headers={'Content-Type': 'application/zip', 'User-Agent': 'BlueprintVastProbe/1.0'})\n"
-        "    with urllib.request.urlopen(request, timeout=120) as response:\n"
-        "        sys.stdout.buffer.write(response.read())\n"
-        "except Exception as exc:\n"
-        "    print('BLUEPRINT_VAST_PY_UPLOAD_ERROR:%s' % type(exc).__name__)\n"
-        "    raise SystemExit(1)\n"
-        "PY\n"
-        "return $?; "
-        "fi; "
-        "return 127; "
-        "}; "
-        f"blueprint_http_get {quoted_url}; hb=$?; "
+        + provider_output_upload_shell_fragment()
+        + f"blueprint_http_get {quoted_url}; hb=$?; "
         "if [ $hb -eq 0 ]; then echo BLUEPRINT_VAST_HEARTBEAT_OK; "
         "else echo BLUEPRINT_VAST_HEARTBEAT_BLOCKED:$hb; fi; "
         "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; smi=$?; "
