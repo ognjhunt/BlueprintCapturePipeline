@@ -477,6 +477,11 @@ def build_scene_configuration_provider_bundle(
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
+    diagnostic_mode_requested = bool(
+        fresh_diagnostic_bootstrap
+        or diagnostic_checkpoint_root is not None
+        or diagnostic_checkpoint_reference_path is not None
+    )
     if (
         diagnostic_checkpoint_root is not None
         and diagnostic_checkpoint_reference_path is not None
@@ -502,9 +507,16 @@ def build_scene_configuration_provider_bundle(
     envelope_path = Path(construction_envelope_path).resolve()
     envelope = _read(envelope_path, code="scene_configuration_bundle_envelope_invalid")
     render_inputs = envelope.get("render_inputs_result")
+    construction_source_commit = str(
+        envelope.get("expected_production_commit") or ""
+    )
     if (
         envelope.get("schema_version") != ENVELOPE_SCHEMA_VERSION
-        or envelope.get("expected_production_commit") != expected_source_commit
+        or _COMMIT.fullmatch(construction_source_commit) is None
+        or (
+            not diagnostic_mode_requested
+            and construction_source_commit != expected_source_commit
+        )
         or envelope.get("envelope_digest")
         != canonical_digest(envelope, digest_field="envelope_digest")
         or not isinstance(render_inputs, Mapping)
@@ -546,7 +558,7 @@ def build_scene_configuration_provider_bundle(
     repo = Path(repository_root).resolve()
     toolchain = Path(toolchain_root).resolve()
     toolchain_manifest = validate_scene_configuration_toolchain(
-        root=toolchain, expected_source_commit=expected_source_commit
+        root=toolchain, expected_source_commit=construction_source_commit
     )
     try:
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
@@ -768,7 +780,7 @@ def build_scene_configuration_provider_bundle(
     portable_toolchain = runtime / "toolchain"
     _copy_tree(toolchain, portable_toolchain)
     copied_toolchain_manifest = validate_scene_configuration_toolchain(
-        root=portable_toolchain, expected_source_commit=expected_source_commit
+        root=portable_toolchain, expected_source_commit=construction_source_commit
     )
     if copied_toolchain_manifest["toolchain_digest"] != toolchain_manifest["toolchain_digest"]:
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -850,6 +862,7 @@ def build_scene_configuration_provider_bundle(
     if diagnostic_mode:
         manifest.update(
             {
+                "construction_source_commit": construction_source_commit,
                 "source_diagnostic_checkpoint_digest": (
                     diagnostic_checkpoint["checkpoint_digest"]
                     if diagnostic_checkpoint is not None
@@ -1062,6 +1075,10 @@ def load_scene_configuration_provider_bundle_receipt(
                 or receipt.get("configured_revision_publication_permitted") is not False
                 or receipt.get("offering_publication_permitted") is not False
                 or receipt.get("terminal_e2e_completion_permitted") is not False
+                or _COMMIT.fullmatch(
+                    str(receipt.get("construction_source_commit") or "")
+                )
+                is None
                 or _DIGEST.fullmatch(
                     str(
                         receipt.get("diagnostic_scientific_binding_digest")
@@ -1121,6 +1138,7 @@ def load_scene_configuration_provider_bundle_receipt(
                     "diagnostic_bootstrap_mode",
                     "diagnostic_scientific_binding_digest",
                     "diagnostic_stage_sequence_ids",
+                    "construction_source_commit",
                 )
             )
         )
@@ -1282,6 +1300,7 @@ def load_scene_configuration_provider_bundle_receipt(
     )
     if diagnostic_only:
         compared_fields += (
+            "construction_source_commit",
             "source_diagnostic_checkpoint_digest",
             "carried_completed_stage_count",
             "diagnostic_bootstrap_mode",

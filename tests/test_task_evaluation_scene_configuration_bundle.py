@@ -1032,6 +1032,56 @@ def test_fresh_diagnostic_bootstrap_ships_renderer_and_no_checkpoint(
     assert preflight["status"] == "passed"
 
 
+def test_fresh_diagnostic_separates_executable_and_construction_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    construction_commit = "a" * 40
+    diagnostic_commit = "b" * 40
+    source = tmp_path / "split-identity-source"
+    source.mkdir()
+    envelope = _provider_render_envelope(source, construction_commit)
+    toolchain = _toolchain(
+        tmp_path / "split-identity-toolchain", construction_commit
+    )
+    repo = _repo(tmp_path / "split-identity-repo")
+    runtime, identity = _provider_runtime(
+        tmp_path, repo=repo, commit=construction_commit
+    )
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
+
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        output_root=tmp_path / "split-identity-bundle",
+        expected_source_commit=diagnostic_commit,
+        fresh_diagnostic_bootstrap=True,
+    )
+
+    assert receipt["source_commit"] == diagnostic_commit
+    assert receipt["construction_source_commit"] == construction_commit
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        portable = json.loads(
+            archive.read(
+                "provider_runtime/input/portable_construction_envelope.v1.json"
+            )
+        )
+    assert portable["expected_production_commit"] == construction_commit
+    reopened = load_scene_configuration_provider_bundle_receipt(
+        tmp_path
+        / "split-identity-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json",
+        expected_source_commit=diagnostic_commit,
+        diagnostic_only=True,
+    )
+    assert reopened["construction_source_commit"] == construction_commit
+
+
 def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
     assert authority_module._required_external_stage_minima(
         diagnostic_only=True,

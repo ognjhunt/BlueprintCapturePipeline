@@ -161,8 +161,13 @@ def scene_configuration_bundle_contract(
     configurations = envelope.get("stage_configuration_references")
     disclosure = envelope.get("provider_disclosure_receipt")
     stages = (envelope.get("recipe") or {}).get("stage_sequence")
+    expected_envelope_commit = (
+        manifest.get("construction_source_commit")
+        if diagnostic_only
+        else source_commit
+    )
     if (
-        envelope.get("expected_production_commit") != source_commit
+        envelope.get("expected_production_commit") != expected_envelope_commit
         or envelope.get("envelope_digest")
         != canonical_digest(envelope, digest_field="envelope_digest")
         or manifest.get("portable_construction_envelope_digest")

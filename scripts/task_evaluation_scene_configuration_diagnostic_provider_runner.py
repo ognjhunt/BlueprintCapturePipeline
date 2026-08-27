@@ -533,7 +533,7 @@ def main() -> int:
             _diagnostic_implementation_identity(
                 runtime=runtime,
                 checkpoint=checkpoint or {},
-                base_source_commit=str(envelope["expected_production_commit"]),
+                base_source_commit=str(bundle_manifest["source_commit"]),
             )
         )
         configurations = {}
