@@ -88,6 +88,43 @@ def _legacy_webapp_headers(token: str, *, nonce: str, body: str = "") -> dict[st
     }
 
 
+def test_nonce_store_reuses_peer_owned_exact_directory_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "shared-nonce-store"
+    root.mkdir(mode=0o700)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(root))
+    chmod_calls: list[Path] = []
+    original_chmod = Path.chmod
+
+    def refuse_root_chmod(path: Path, mode: int, *args, **kwargs) -> None:
+        if path.resolve() == root.resolve():
+            chmod_calls.append(path)
+            raise PermissionError("peer-owned exact directory must not be mutated")
+        original_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", refuse_root_chmod)
+
+    assert service._nonce_store_dir() == root.resolve()
+    assert chmod_calls == []
+
+
+def test_nonce_store_refuses_when_secure_mode_cannot_be_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "shared-nonce-store"
+    root.mkdir(mode=0o755)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(root))
+    monkeypatch.setattr(
+        Path,
+        "chmod",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    with pytest.raises(RuntimeError, match="^intake_nonce_store_permission_install_failed$"):
+        service._nonce_store_dir()
+
+
 def _capture_root(tmp_path: Path) -> Path:
     capture_root = tmp_path / "storage" / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
     _write_json(

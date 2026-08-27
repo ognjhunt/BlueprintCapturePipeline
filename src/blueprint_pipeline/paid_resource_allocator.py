@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -1027,7 +1028,26 @@ def maybe_launch_detached_gpu_canary(
         }
     root = declared.resolve()
     ensure_dir(root)
-    os.chmod(root, 0o700)
+    try:
+        if stat.S_IMODE(root.stat().st_mode) != 0o700:
+            os.chmod(root, 0o700)
+        installed_mode = stat.S_IMODE(root.stat().st_mode)
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": [
+                "detached_gpu_canary_supervisor_dir_permission_install_failed"
+            ],
+            "provider_mutations_performed": 0,
+        }
+    if not root.is_dir() or installed_mode != 0o700:
+        return {
+            "status": "blocked",
+            "blockers": [
+                "detached_gpu_canary_supervisor_dir_permission_install_failed"
+            ],
+            "provider_mutations_performed": 0,
+        }
     manifest_path = root / DETACHED_GPU_CANARY_MANIFEST
     log_path = root / DETACHED_GPU_CANARY_LOG
     lock_path = root / DETACHED_GPU_CANARY_LOCK

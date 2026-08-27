@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import re
+import stat
 
 # Subprocess use is limited to fixed systemctl argv plus a strict unit allowlist.
 import subprocess as subprocess  # nosec B404 - compatibility re-export for tests
@@ -461,7 +462,14 @@ def _nonce_store_dir() -> Path:
         else _manifest_path().expanduser().resolve().parent / "intake_nonce_store"
     )
     ensure_dir(root)
-    root.chmod(0o700)
+    try:
+        if stat.S_IMODE(root.stat().st_mode) != 0o700:
+            root.chmod(0o700)
+        installed_mode = stat.S_IMODE(root.stat().st_mode)
+    except OSError as exc:
+        raise RuntimeError("intake_nonce_store_permission_install_failed") from exc
+    if not root.is_dir() or installed_mode != 0o700:
+        raise RuntimeError("intake_nonce_store_permission_install_failed")
     return root
 
 
