@@ -172,6 +172,11 @@ def test_component_failure_retains_its_redacted_output(
 
     adapter_id = "artifixer3d_observed_object_removal"
     environment, _result_path = _environment(tmp_path, adapter_id=adapter_id)
+    opaque_secret = "opaque-file-credential-value-839873"
+    secret_path = tmp_path / "openai-key"
+    secret_path.write_text(opaque_secret, encoding="utf-8")
+    secret_path.chmod(0o600)
+    environment["OPENAI_API_KEY_FILE"] = str(secret_path)
 
     def run(command, **_kwargs):
         return subprocess.CompletedProcess(
@@ -182,6 +187,7 @@ def test_component_failure_retains_its_redacted_output(
                 "Traceback (most recent call last):\n"
                 "  File \"runner.py\", line 4, in <module>\n"
                 "RuntimeError: refused with Authorization: Bearer sk-not-a-real-key\n"
+                f"opaque credential={opaque_secret}\n"
             ),
         )
 
@@ -202,6 +208,8 @@ def test_component_failure_retains_its_redacted_output(
     assert "loaded 1029923 gaussians" in captured
     # ...and its credential material does not.
     assert "sk-not-a-real-key" not in captured
+    assert opaque_secret not in captured
+    assert "REDACTED_SECRET" in captured
     assert "<redacted>" in captured
 
 

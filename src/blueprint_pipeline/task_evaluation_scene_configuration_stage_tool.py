@@ -25,11 +25,13 @@ from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_ROOT_ENV,
+    _secret_values,
     _validate_toolchain,
 )
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
     PRODUCTION_RESULT_SCHEMA_VERSION,
+    TaskEvaluationSceneConfigurationStageProducerError,
 )
 
 
@@ -220,10 +222,14 @@ def _validate_component_result(
 _COMPONENT_FAILURE_STREAM_TAIL_BYTES = 20_000
 
 
-def _failure_stream_tail(value: Any) -> str:
+def _failure_stream_tail(value: Any, *, secrets: Sequence[str] = ()) -> str:
     """Redact one captured stream and keep its tail, saying what was dropped."""
 
-    text = redacted_failure_text("" if value is None else value)
+    text = "" if value is None else str(value)
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "REDACTED_SECRET")
+    text = redacted_failure_text(text)
     if len(text) <= _COMPONENT_FAILURE_STREAM_TAIL_BYTES:
         return text
     dropped = len(text) - _COMPONENT_FAILURE_STREAM_TAIL_BYTES
@@ -236,6 +242,7 @@ def _emit_component_failure_diagnostics(
     adapter_id: str,
     completed: Any,
     component_result_written: bool,
+    secret_values: Sequence[str] = (),
 ) -> None:
     """Print the component's own redacted output before refusing.
 
@@ -258,7 +265,9 @@ def _emit_component_failure_diagnostics(
         f"component_result_written={component_result_written}",
     ]
     for name in ("stdout", "stderr"):
-        tail = _failure_stream_tail(getattr(completed, name, None))
+        tail = _failure_stream_tail(
+            getattr(completed, name, None), secrets=secret_values
+        )
         lines.append(f"--- component {name} ---")
         lines.append(tail if tail.strip() else "<empty>")
     print("\n".join(lines), file=sys.stderr, flush=True)
@@ -326,6 +335,17 @@ def execute_stage_tool(
         **values,
         _COMPONENT_RESULT_ENV: str(component_result_path),
     }
+    try:
+        secret_values = tuple(_secret_values(component_environment))
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TaskEvaluationSceneConfigurationStageProducerError,
+    ) as exc:
+        raise TaskEvaluationSceneConfigurationStageToolError(
+            "scene_configuration_stage_tool_secret_file_invalid"
+        ) from exc
     completed = runner(
         [str(component)],
         cwd=toolchain_root,
@@ -340,6 +360,7 @@ def execute_stage_tool(
             adapter_id=adapter_id,
             completed=completed,
             component_result_written=component_result_path.is_file(),
+            secret_values=secret_values,
         )
         raise TaskEvaluationSceneConfigurationStageToolError(
             f"scene_configuration_component_failed:{adapter_id}:"
