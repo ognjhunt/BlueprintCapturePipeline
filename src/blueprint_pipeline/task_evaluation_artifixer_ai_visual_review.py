@@ -442,6 +442,7 @@ def run_artifixer_ai_visual_review(
     paid_resource_class: str = "task_evaluation_artifixer_ai_visual_review",
     openai_cost_transport: Any | None = None,
     wall_clock: Any = lambda: datetime.now(timezone.utc),
+    require_zero_baseline: bool = True,
 ) -> dict[str, Any]:
     """Execute the fixed structured reviewer and seal an accepted decision."""
 
@@ -491,6 +492,7 @@ def run_artifixer_ai_visual_review(
         paid_resource_class=paid_resource_class,
         transport=openai_cost_transport,
         wall_clock=wall_clock,
+        require_zero_baseline=require_zero_baseline,
     )
     cost_reservation = cost_gate.reserve()
     audit = InferenceReservationAudit(run_root=destination, run_id=run_id)
