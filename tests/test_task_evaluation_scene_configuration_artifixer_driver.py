@@ -428,9 +428,12 @@ def test_failed_artifixer_runtime_streams_survive_into_the_stage_log(
         stderr="CUDA error: out of memory at step 41\n",
     )
 
+    retained = tmp_path / "retained"
+    retained.mkdir()
     driver._emit_artifixer_runtime_diagnostics(
         completed=completed,
         runtime_result_path=tmp_path / "public_scene_artifixer3d_runtime_result.json",
+        retained_root=retained,
     )
 
     err = capsys.readouterr().err
@@ -440,6 +443,42 @@ def test_failed_artifixer_runtime_streams_survive_into_the_stage_log(
     assert "CUDA error: out of memory at step 41" in err
     assert "optimizer step 40" in err
     assert "sk-proj-supersecret123456" not in err
+    # The full streams survive as files even when the inline relay truncates.
+    full_stderr = (retained / "artifixer_runtime_stderr.log").read_text(
+        encoding="utf-8"
+    )
+    assert "CUDA error: out of memory at step 41" in full_stderr
+    assert "sk-proj-supersecret123456" not in full_stderr
+
+
+def test_download_progress_noise_is_filtered_from_the_inline_tail(
+    tmp_path: Path, capsys
+) -> None:
+    """wget progress rows crowded the marker out of run ...-183325Z's log."""
+
+    progress = "\n".join(
+        f" {50000 + 50 * i}K .......... .......... .......... 83%  266M 0s"
+        for i in range(2_000)
+    )
+    completed = types.SimpleNamespace(
+        returncode=1,
+        stdout="",
+        stderr=progress + "\nRuntimeError: optimizer diverged at step 7\n",
+    )
+
+    driver._emit_artifixer_runtime_diagnostics(
+        completed=completed,
+        runtime_result_path=tmp_path / "missing.json",
+        retained_root=tmp_path,
+    )
+
+    err = capsys.readouterr().err
+    assert "scene_configuration_artifixer_runtime_diagnostics" in err
+    assert "RuntimeError: optimizer diverged at step 7" in err
+    # The full unfiltered stream is still on disk.
+    assert "266M" in (tmp_path / "artifixer_runtime_stderr.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_successful_artifixer_runtime_emits_no_diagnostics(
@@ -453,7 +492,8 @@ def test_successful_artifixer_runtime_emits_no_diagnostics(
     completed = types.SimpleNamespace(returncode=0, stdout="fine", stderr="")
 
     driver._emit_artifixer_runtime_diagnostics(
-        completed=completed, runtime_result_path=result_path
+        completed=completed, runtime_result_path=result_path, retained_root=tmp_path
     )
 
     assert capsys.readouterr().err == ""
+    assert not (tmp_path / "artifixer_runtime_stderr.log").exists()
