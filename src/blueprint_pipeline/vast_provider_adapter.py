@@ -1875,19 +1875,27 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
     }
 
 
+#: The scene's nested ArtiFixer runtime imports 3DGRUT's CUDA JIT graph and
+#: explicitly refuses without ``nvcc``.  The Isaac image used by production
+#: does not contain it: run
+#: ``adp-new-scene-simple-relocation-839873-7c0ec0c0-r2-web-20260827T015257Z``
+#: proved that even with ``/usr/local/cuda/bin`` on PATH.  Install the smallest
+#: NVIDIA CUDA 12.8 compiler package that satisfies that existing gate.  The
+#: repository keyring is digest-pinned before dpkg sees it; do not replace this
+#: with an unverified repository bootstrap or remove ``nvcc`` from the nested
+#: preflight.
+SCENE_CONFIGURATION_CUDA_KEYRING_URL = (
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/"
+    "x86_64/cuda-keyring_1.1-1_all.deb"
+)
+SCENE_CONFIGURATION_CUDA_KEYRING_SHA256 = (
+    "d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba"
+)
+SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE = "cuda-nvcc-12-8=12.8.93-1"
+
 #: Packages the scene-configuration onstart installs, and the commands each
-#: one puts on PATH. The boundary check below is derived from this map rather
-#: than written beside it, because the two drifted apart the first time they
-#: were written separately: the check demanded ``nvcc`` while the install line
-#: could not provide it, so every run refused with
-#: ``scene_configuration_runtime_toolchain_missing:127`` before downloading the
-#: bundle. Nothing in this lane compiles CUDA -- the ArtiFixer runtime installs
-#: prebuilt ``cu124`` torch wheels and does an editable ``--no-deps`` install of
-#: a pure-Python source tree, and no ``CUDAExtension`` or ``cpp_extension`` call
-#: exists anywhere in the vendored source. (Upstream's own ``Dockerfile.cuda13``
-#: does install ``cuda-toolkit-13-0``; that is their container recipe for a
-#: cu130 build, not the runtime this lane provisions.) A precondition that can
-#: never be satisfied is not fail-closed, it is fail-always.
+#: one puts on PATH. The boundary check is derived from this map so every
+#: command demanded before bundle execution is installed by the same caller.
 SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "curl": ("curl",),
     "wget": ("wget",),
@@ -1896,6 +1904,7 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "build-essential": ("gcc", "g++", "make"),
     "cmake": ("cmake",),
     "ninja-build": ("ninja",),
+    SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE: ("nvcc",),
     "ffmpeg": ("ffmpeg",),
     "libgl1": (),
     "libglib2.0-0": (),
@@ -2851,6 +2860,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/toolchain/task_evaluation_scene_configuration_toolchain.v1.json",
         "provider_runtime/blueprint_pipeline/__init__.py",
         "provider_runtime/blueprint_pipeline/task_evaluation_scene_configuration_provider_runtime.py",
+        "provider_runtime/renderer/tools/splat_render/render_splat.mjs",
     }
     if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
@@ -4666,14 +4676,25 @@ def _probe_shell_script(
             script += (
                 common_start
                 + "RUNTIME_PY=/isaac-sim/python.sh; "
-                'export PATH="/usr/local/cuda/bin:$PATH"; '
+                'export PATH="/usr/local/cuda-12.8/bin:/usr/local/cuda/bin:$PATH"; '
                 'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
                 "else toolchain_rc=0; "
-                "if command -v apt-get >/dev/null 2>&1; then "
+                'CUDA_KEYRING="$WORK_DIR/cuda-keyring.deb"; '
+                "blueprint_download_url "
+                + shlex.quote(SCENE_CONFIGURATION_CUDA_KEYRING_URL)
+                + ' "$CUDA_KEYRING" || toolchain_rc=$?; '
+                'if [ $toolchain_rc -eq 0 ]; then observed_cuda_keyring_sha=$("$RUNTIME_PY" -c \'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())\' "$CUDA_KEYRING") || toolchain_rc=$?; fi; '
+                "if [ $toolchain_rc -eq 0 ] && [ \"$observed_cuda_keyring_sha\" != "
+                + shlex.quote(SCENE_CONFIGURATION_CUDA_KEYRING_SHA256)
+                + " ]; then toolchain_rc=86; fi; "
+                'if [ $toolchain_rc -eq 0 ]; then dpkg -i "$CUDA_KEYRING" >/tmp/blueprint_scene_configuration_cuda_keyring.log 2>&1 || toolchain_rc=$?; fi; '
+                'rm -f "$CUDA_KEYRING"; '
+                "if [ $toolchain_rc -eq 0 ] && command -v apt-get >/dev/null 2>&1; then "
                 "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1 && "
-                "DEBIAN_FRONTEND=noninteractive timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "
+                "DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "
                 + SCENE_CONFIGURATION_APT_PACKAGES
                 + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
+                "elif [ $toolchain_rc -eq 0 ]; then toolchain_rc=127; "
                 "fi; "
                 'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
                 'printf \'#!/bin/sh\\nexec /isaac-sim/python.sh "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/python3"; '
