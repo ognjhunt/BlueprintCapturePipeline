@@ -572,6 +572,22 @@ def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
         match="bundle_provider_renderer_invalid",
     ):
         load_scene_configuration_provider_bundle_receipt(rebound_path)
+    missing_renderer_preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "provider-render-missing-entry-preflight",
+        generated_at="2026-08-26T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=missing_renderer,
+        provider_bundle_url="https://objects.example.test/provider-render.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert missing_renderer_preflight["status"] == "blocked"
+    assert (
+        "provider_runtime_bundle_required_entries_missing"
+        in missing_renderer_preflight["blockers"]
+    )
+    assert required_renderer in missing_renderer_preflight["missing_zip_entries"]
 
 
 def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) -> None:
@@ -903,7 +919,10 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
         'do command -v "$required_command"'
     ) in script
     assert 'exec /isaac-sim/python.sh "$@"' in script
-    assert 'export PATH="/usr/local/cuda/bin:$PATH"' in script
+    assert (
+        'export PATH="/usr/local/cuda-12.8/bin:/usr/local/cuda/bin:$PATH"'
+        in script
+    )
     for excluded in (
         ".artifixer-venv",
         ".hf_home",
@@ -2706,23 +2725,18 @@ def test_provider_runner_imports_in_the_bundle_layout_without_the_repo_tree(
     )
 
 
-def test_scene_configuration_boundary_requires_only_what_it_installs() -> None:
-    """The onstart's toolchain gate must be satisfiable by the same onstart.
+def test_scene_configuration_boundary_provisions_nested_artifixer_nvcc() -> None:
+    """The parent must provision the compiler demanded by nested ArtiFixer.
 
     Run ``adp-new-scene-simple-relocation-839873-7c0ec0c0-r2-web-20260827T015257Z``
     rented an RTX A6000, passed the Isaac smoke, and refused with
     ``BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_toolchain_missing:127``
-    before downloading the bundle. The required-command list asked for
-    ``nvcc``; the apt install one line above it cannot provide a CUDA
-    compiler, and nothing in this lane compiles CUDA -- the ArtiFixer runtime
-    installs prebuilt ``cu124`` torch wheels and editable-installs a
-    pure-Python tree. A precondition nothing can satisfy is not fail-closed,
-    it is fail-always: it costs a full provider allocation per run and can
-    never pass.
-
-    So the two are now derived from one map, and this pins that: every
-    required command comes from a package the same script installs, or from
-    the ``python3`` shim it writes onto PATH.
+    before downloading the bundle because the image did not contain ``nvcc``.
+    Removing that command from the parent check only deferred the same refusal:
+    the shipped stage-1 script imports 3DGRUT's CUDA JIT graph and has its own
+    correct ``nvcc`` preflight. The parent therefore installs a version-pinned
+    CUDA compiler through a digest-pinned NVIDIA repository keyring, then keeps
+    deriving its required commands from the packages it installs.
     """
 
     provided = set(vpa.SCENE_CONFIGURATION_SHIMMED_COMMANDS).union(
@@ -2735,7 +2749,7 @@ def test_scene_configuration_boundary_requires_only_what_it_installs() -> None:
         "onstart requires commands it does not provision: "
         f"{sorted(required - provided)}"
     )
-    assert "nvcc" not in required
+    assert "nvcc" in required
     # Every package named for the apt line is actually installed by it.
     script = vpa._probe_shell_script(
         "https://heartbeat.example.test",
@@ -2743,8 +2757,26 @@ def test_scene_configuration_boundary_requires_only_what_it_installs() -> None:
         enable_blueprint_bundle=True,
         provider_bundle_kind="task_evaluation_scene_configuration",
     )
+    apt_packages = script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
     for package in vpa.SCENE_CONFIGURATION_PROVISIONED_COMMANDS:
-        assert package in script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
+        assert package in apt_packages
+    assert vpa.SCENE_CONFIGURATION_CUDA_NVCC_PACKAGE in apt_packages
+    assert vpa.SCENE_CONFIGURATION_CUDA_KEYRING_URL in script
+    assert vpa.SCENE_CONFIGURATION_CUDA_KEYRING_SHA256 in script
+    assert "/usr/local/cuda-12.8/bin" in script
+    assert script.index(vpa.SCENE_CONFIGURATION_CUDA_KEYRING_URL) < script.index(
+        "dpkg -i"
+    ) < script.index(" install -y ") < script.index("for required_command in")
+
+    nested_stage = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "run_public_scene_artifixer3d.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        'required_commands = ("git", "gcc", "g++", "cmake", "ninja", "nvcc", "slangc")'
+        in nested_stage
+    )
 
 
 def test_provider_entrypoint_preserves_distinct_standalone_and_isaac_paths() -> None:
