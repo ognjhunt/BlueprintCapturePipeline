@@ -1745,7 +1745,9 @@ def test_scene_configuration_bundle_bytes_can_price_an_offer_out_of_the_cap(
 PROVIDER_RUNTIME_AVAILABLE_THIRD_PARTY = frozenset({"PIL", "numpy"})
 
 
-def _provider_runner_module_scope_third_party(repo: Path) -> dict[str, set[str]]:
+def _provider_runner_module_scope_third_party(
+    repo: Path,
+) -> tuple[dict[str, set[str]], set[str]]:
     """Third-party packages the provider runner needs at *import* time.
 
     Walks only imports that execute when a module is imported -- module body,
@@ -1823,7 +1825,7 @@ def _provider_runner_module_scope_third_party(repo: Path) -> dict[str, set[str]]
                     pending.append(name)
                 elif name not in stdlib:
                     third_party.setdefault(name, set()).add(module)
-    return third_party
+    return third_party, seen
 
 
 def test_provider_runner_imports_nothing_the_provider_image_lacks() -> None:
@@ -1845,7 +1847,7 @@ def test_provider_runner_imports_nothing_the_provider_image_lacks() -> None:
     """
 
     repo = Path(__file__).resolve().parents[1]
-    third_party = _provider_runner_module_scope_third_party(repo)
+    third_party, reached_modules = _provider_runner_module_scope_third_party(repo)
     unavailable = {
         name: sorted(via)
         for name, via in third_party.items()
@@ -1856,9 +1858,16 @@ def test_provider_runner_imports_nothing_the_provider_image_lacks() -> None:
         "provider runner import closure needs packages the Isaac Sim image is "
         f"not observed to supply: {unavailable}"
     )
-    # The closure must still reach the modules that pull the two available
-    # packages, or the assertion above would pass by walking nothing.
-    assert PROVIDER_RUNTIME_AVAILABLE_THIRD_PARTY <= set(third_party)
+    # The closure must still reach the actual provider runtime and both stage
+    # registries, or the assertion above would pass by walking nothing. The
+    # scene-specific static gate intentionally removed the generic validator's
+    # eager numpy/PIL dependency, so an empty third-party closure is valid.
+    assert {
+        "task_evaluation_scene_configuration_provider_runtime",
+        "task_evaluation_scene_configuration_builtin_adapters",
+        "task_evaluation_scene_configuration_builtin_producers",
+        "task_evaluation_scene_configuration_static_qualification",
+    } <= reached_modules
 
 
 def test_scene_configuration_validators_still_enforce_their_schemas() -> None:

@@ -16,9 +16,6 @@ from .task_evaluation_scene_configuration_disclosure import (
     stage_requests_upload,
 )
 from .source_collider_subtree_removal import remove_source_collider_subtree
-from .simready_graph_asset_static_qualification import (
-    qualify_simready_graph_asset_static,
-)
 from .task_evaluation_scene_configuration_adapters import (
     ADMITTED_STAGE_ADAPTER_IDENTITIES,
     SceneConfigurationAdapterIdentity,
@@ -27,6 +24,10 @@ from .task_evaluation_scene_configuration_adapters import (
 )
 from .task_evaluation_scene_configuration_orchestrator import (
     STAGE_RESULT_SCHEMA_VERSION,
+)
+from .task_evaluation_scene_configuration_static_qualification import (
+    SCHEMA_VERSION as STATIC_QUALIFICATION_SCHEMA_VERSION,
+    qualify_scene_configuration_rigid_asset_static,
 )
 
 
@@ -641,13 +642,19 @@ def execute_simready_static_rigid_qualification(
             "simready_static_rigid_configuration_or_binding_invalid"
         )
     qualification_path = output_root / "static_qualification_receipt.v1.json"
-    qualification = qualify_simready_graph_asset_static(
-        spec=graph_spec,
-        authoring_receipt_path=authoring_receipt,
+    qualification = qualify_scene_configuration_rigid_asset_static(
+        asset_path=asset,
+        graph_spec=graph_spec,
+        authoring_receipt=authoring,
+        replacement_identity=identity,
         output_path=qualification_path,
     )
     if (
-        qualification.get("status")
+        qualification.get("schema_version")
+        != STATIC_QUALIFICATION_SCHEMA_VERSION
+        or qualification.get("result_digest")
+        != canonical_digest(qualification, digest_field="result_digest")
+        or qualification.get("status")
         != "authored_structure_statically_qualified"
         or qualification.get("authored_structure_statically_qualified") is not True
         or qualification.get("structural_findings") != []

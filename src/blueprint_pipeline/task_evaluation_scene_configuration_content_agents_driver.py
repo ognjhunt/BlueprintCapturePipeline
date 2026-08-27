@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 from .adp_content_agents_vast import (
     CONTENT_IMAGE_MODEL,
@@ -284,9 +284,10 @@ def _reference_frames(stage_input: Mapping[str, Any]) -> list[Path]:
 
 
 def _physics_output(root: Path) -> Path:
+    physics_root = root / "physics_workdir"
     candidates = sorted(
         path
-        for path in (root / "physics_workdir").rglob("*")
+        for path in physics_root.rglob("*")
         if path.is_file() and path.suffix.lower() in {".usd", ".usda", ".usdc"}
     )
     preferred = [path for path in candidates if "physics" in path.name.lower()]
@@ -295,6 +296,29 @@ def _physics_output(root: Path) -> Path:
             "scene_configuration_content_agents_physics_output_missing"
         )
     return (preferred or candidates)[0]
+
+
+def _package_replacement_asset(source: Path, destination: Path) -> None:
+    """Carry the exact authored layer and every referenced asset together."""
+
+    stage = Usd.Stage.Open(str(source), load=Usd.Stage.LoadAll)
+    if stage is None or not stage.GetDefaultPrim().IsValid():
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_output_invalid"
+        )
+    try:
+        packaged = UsdUtils.CreateNewUsdzPackage(
+            Sdf.AssetPath(str(source)), str(destination)
+        )
+    except Exception as exc:
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_output_package_failed"
+        ) from exc
+    reopened = Usd.Stage.Open(str(destination), load=Usd.Stage.LoadAll)
+    if not packaged or reopened is None or not reopened.GetDefaultPrim().IsValid():
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_output_package_failed"
+        )
 
 
 def execute_content_agents_component(
@@ -477,8 +501,8 @@ def execute_content_agents_component(
             "scene_configuration_content_agents_runtime_failed"
         )
     authored = _physics_output(runtime_output)
-    asset = output_root / "content_agents_replacement_candidate.usda"
-    shutil.copyfile(authored, asset)
+    asset = output_root / "content_agents_replacement_candidate.usdz"
+    _package_replacement_asset(authored, asset)
     identity = configuration["replacement_identity"]
     graph = {
         "schema_version": "task_evaluation_rigid_replacement_graph.v1",
