@@ -1165,6 +1165,7 @@ def deploy_control_plane_commit(
     active_link: str | Path,
     release_provenance: str | Path | None = None,
     iteration: bool = False,
+    canary: bool = False,
     restart_units: Sequence[str] = DEFAULT_RESTART_UNITS,
     paid_launch_locks: Sequence[str] = DEFAULT_PAID_LAUNCH_LOCKS,
     intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
@@ -1205,6 +1206,8 @@ def deploy_control_plane_commit(
         or state in releases.parents
     ):
         raise ControlPlaneDeployError("deploy_state_root_overlaps_checkout")
+    if canary and not iteration:
+        raise ControlPlaneDeployError("deploy_canary_requires_iteration")
     if iteration:
         # An iteration deploy trades promotion evidence for cycle time. The
         # full lane takes ~15 minutes; a fix-and-fire loop that waits for it
@@ -1230,12 +1233,33 @@ def deploy_control_plane_commit(
         # this mode replaces, so refuse it however this tool was invoked.
         # Fail closed: a stale or missing origin/main refuses rather than
         # admits, and the operator fetches and retries.
-        code, _ = _git(source, "merge-base", "--is-ancestor", source_commit, "origin/main")
-        if code != 0:
-            raise ControlPlaneDeployError("deploy_iteration_commit_not_on_origin_main")
+        if canary:
+            # A canary deploy exists for the fix-and-fire loop on a lane that
+            # is already development_only: waiting for a merge (review, CI,
+            # rebase churn against a fast-moving main) costs 5-15 minutes per
+            # attempt and buys nothing the canary evidence can use. What is
+            # still NOT traded away is immutability: the commit must be
+            # reachable from some pushed origin ref, so the running bytes are
+            # publicly recorded and can never silently diverge from the
+            # repository. Local-only or dirty-tree commits still refuse.
+            code, reachable = _git(
+                source,
+                "branch",
+                "--remotes",
+                "--contains",
+                source_commit,
+            )
+            if code != 0 or not reachable.strip():
+                raise ControlPlaneDeployError(
+                    "deploy_canary_commit_not_pushed_to_origin"
+                )
+        else:
+            code, _ = _git(source, "merge-base", "--is-ancestor", source_commit, "origin/main")
+            if code != 0:
+                raise ControlPlaneDeployError("deploy_iteration_commit_not_on_origin_main")
         provenance_receipt = {
             "schema_version": "blueprint.deploy_release_provenance.v1",
-            "status": "iteration",
+            "status": "canary" if canary else "iteration",
             "git_sha": source_commit,
             "promotion_eligible": False,
             "claim_boundary": {
@@ -1462,6 +1486,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--canary",
+        action="store_true",
+        help=(
+            "With --iteration: accept any commit pushed to origin (not only "
+            "origin/main ancestors). For fix-and-fire debugging on a "
+            "development_only lane; the release is stamped status=canary and "
+            "promotion_eligible=false. Unpushed or dirty-tree commits still "
+            "refuse."
+        ),
+    )
+    parser.add_argument(
         "--iteration",
         action="store_true",
         help=(
@@ -1535,6 +1570,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             active_link=args.active_link,
             release_provenance=args.release_provenance,
             iteration=args.iteration,
+            canary=args.canary,
             restart_units=tuple(args.restart_unit or ()),
             paid_launch_locks=tuple(args.paid_launch_lock or DEFAULT_PAID_LAUNCH_LOCKS),
             intake_runtime_drop_in=args.intake_runtime_drop_in,
