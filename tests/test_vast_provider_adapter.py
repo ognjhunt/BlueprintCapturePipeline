@@ -2527,6 +2527,111 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     assert teardown["continuing_spend_from_this_run"] is False
 
 
+def test_vast_adapter_retries_empty_create_400_only_after_offer_absence_readback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+    catalog_readback_payloads: list[dict[str, object]] = []
+
+    offers = [
+        {
+            "id": 401,
+            "ask_contract_id": 401,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.25,
+            "driver_version": "580.159.03",
+            "machine_id": 9401,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+        {
+            "id": 402,
+            "ask_contract_id": 402,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.26,
+            "driver_version": "580.159.03",
+            "machine_id": 9402,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+    ]
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            if payload.get("id") == {"eq": 401}:
+                catalog_readback_payloads.append(dict(payload))
+                return 200, {"offers": []}
+            return 200, {"offers": offers}
+        if method == "PUT" and path == "/asks/401/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/401/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b""),
+            )
+        if method == "PUT" and path == "/asks/402/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 4020}
+        if method == "GET" and path == "/instances/4020/":
+            return 200, _created_instance_detail(dph_total=0.26)
+        if method == "PUT" and path == "/instances/request_logs/4020":
+            return 200, {"success": True, "result_url": "https://logs.example/empty-400"}
+        if method == "DELETE" and path == "/instances/4020/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/empty-400"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "completed"
+    assert created_paths == ["/asks/401/", "/asks/402/"]
+    assert len(catalog_readback_payloads) == 1
+    assert catalog_readback_payloads[0]["limit"] == 1
+    retry = _read_json(tmp_path / "vast_offer_selection_manifest.json")[
+        "create_retry_attempts"
+    ][0]
+    assert retry["selected_offer_absent_from_fresh_search"] is True
+    assert retry["catalog_readback_http_status_code"] == 200
+    assert retry["catalog_readback_offer_count"] == 0
+
+
 def test_vast_adapter_researches_empty_capacity_before_authority_or_create(
     tmp_path: Path,
     monkeypatch,
@@ -2748,6 +2853,23 @@ def test_vast_adapter_does_not_retry_unrelated_create_http_400() -> None:
         BytesIO(b'{"error":"invalid_args","msg":"invalid image"}'),
     )
     assert vpa._is_stale_offer_create_http_error(error, "invalid image") is False
+
+    empty_error = urllib.error.HTTPError(
+        "https://vast.invalid/api/v0/asks/301/",
+        400,
+        "bad request",
+        {},
+        BytesIO(b""),
+    )
+    assert vpa._is_stale_offer_create_http_error(empty_error, "") is False
+    assert (
+        vpa._is_stale_offer_create_http_error(
+            empty_error,
+            "",
+            selected_offer_absent_from_fresh_search=True,
+        )
+        is True
+    )
 
 
 def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
