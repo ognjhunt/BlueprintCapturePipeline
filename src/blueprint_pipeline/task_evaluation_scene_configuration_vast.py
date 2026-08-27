@@ -69,6 +69,7 @@ from .task_evaluation_scene_configuration_openai_gate import (
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
+    close_independent_vast_watchdog_without_allocation,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_provider_transfer_upload import EXPECTED_PROVIDER_UPLOAD_BYTES_ENV
@@ -861,6 +862,51 @@ def _provider_transfer_byte_budget(
     return download, upload
 
 
+def _close_watchdog_after_adapter(
+    *,
+    job_dir: Path,
+    handle: Any,
+    adapter: Mapping[str, Any],
+    teardown: Mapping[str, Any],
+    instance_ids: list[int],
+) -> dict[str, Any]:
+    """Close only from exact instance teardown or independently proven zero.
+
+    A rejected create request sets ``provider_create_attempted`` because the
+    mutation boundary was reached, but the adapter can still prove that Vast
+    returned no instance identity and that no side effect may have occurred.
+    Treating every attempted create as ambiguous left the independent watchdog
+    alive until its hard TTL even after provider-zero was true.  The no-
+    allocation closer is the stronger path here: it refuses if a started-id
+    file exists and double-reads both lane-scoped and global Vast inventory
+    before publishing terminal evidence.
+    """
+
+    provider_teardown_completed = (
+        teardown.get("continuing_spend_from_this_run") is False
+    )
+    rejected_create_proves_no_allocation = bool(
+        not instance_ids
+        and provider_teardown_completed
+        and adapter.get("provider_create_attempted") is True
+        and adapter.get("vast_side_effects_may_have_occurred") is False
+    )
+    if rejected_create_proves_no_allocation:
+        return close_independent_vast_watchdog_without_allocation(
+            job_dir=job_dir,
+            handle=handle,
+        )
+    return close_independent_vast_watchdog(
+        job_dir=job_dir,
+        handle=handle,
+        instance_ids=instance_ids,
+        provider_teardown_completed=provider_teardown_completed,
+        provider_allocation_impossible=(
+            not instance_ids and adapter.get("provider_create_attempted") is not True
+        ),
+    )
+
+
 def run_scene_configuration_vast(
     *,
     job_dir: str | Path,
@@ -1121,16 +1167,12 @@ def run_scene_configuration_vast(
         )
         if isinstance(value, int) and not isinstance(value, bool) and value > 0
     ]
-    watchdog_close = close_independent_vast_watchdog(
+    watchdog_close = _close_watchdog_after_adapter(
         job_dir=job,
         handle=watchdog,
+        adapter=adapter,
+        teardown=teardown,
         instance_ids=instance_ids,
-        provider_teardown_completed=(
-            teardown.get("continuing_spend_from_this_run") is False
-        ),
-        provider_allocation_impossible=(
-            not instance_ids and adapter.get("provider_create_attempted") is not True
-        ),
     )
     execution, blockers = _extract_provider_output(
         output_zip,
