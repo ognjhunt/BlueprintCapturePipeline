@@ -18,6 +18,12 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters imp
 from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (
     _usd_findings,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+    MATERIALIZED_STATUS,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_render_handoff import (
+    materialize_provider_render_handoff,
+)
 
 
 pytest.importorskip("pxr")
@@ -141,6 +147,29 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     runtime.mkdir()
     appearance = runtime / "configured-appearance.usdc"
     appearance.write_bytes(b"generated-appearance")
+    reference = runtime / "reference.png"
+    reference.write_bytes(b"digest-bound-reference")
+    render_inputs = {
+        "status": MATERIALIZED_STATUS,
+        "derived_frames": [
+            {
+                "camera_id": "camera-0",
+                "path": str(reference),
+                "digest": sha256(reference),
+                "size_bytes": reference.stat().st_size,
+            }
+        ],
+        "derived_frame_count": 1,
+        "render_completed_on_provider": False,
+        "result_digest": "",
+    }
+    render_inputs["result_digest"] = canonical_digest(
+        render_inputs, digest_field="result_digest"
+    )
+    render_handoff = materialize_provider_render_handoff(
+        render_inputs=render_inputs,
+        output_root=runtime,
+    )
     review = {
         "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
         "status": "accepted",
@@ -196,7 +225,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     output.mkdir()
 
     result = execute_artifixer3d_observed_object_removal(
-        envelope={},
+        envelope={"render_inputs_result": render_inputs},
         stage={
             "stage_id": "stage-1",
             "capability": "observed_appearance_object_removal",
@@ -210,6 +239,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
             artifact("configured_appearance_without_source_object", appearance),
             artifact("appearance_removal_receipt", receipt_path),
             artifact("appearance_visual_review_receipt", review_path),
+            render_handoff,
         ),
     )
 
@@ -217,6 +247,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "configured_appearance_without_source_object",
         "appearance_removal_receipt",
         "appearance_visual_review_receipt",
+        "provider_render_reference_manifest",
     }
     assert result["provider_mutations_performed"] == 0
 

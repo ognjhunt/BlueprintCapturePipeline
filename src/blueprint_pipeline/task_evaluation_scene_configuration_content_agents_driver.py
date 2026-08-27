@@ -42,6 +42,11 @@ from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate,
     scene_configuration_openai_stage_scope,
 )
+from .task_evaluation_scene_configuration_render_handoff import (
+    ARTIFACT_ROLE as PROVIDER_RENDER_REFERENCE_ROLE,
+    TaskEvaluationSceneConfigurationRenderHandoffError,
+    validate_provider_render_handoff,
+)
 
 
 _INPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"
@@ -361,28 +366,54 @@ def _validate_source_receipt(runtime: Path) -> None:
         )
 
 
-def _reference_frames(stage_input: Mapping[str, Any]) -> list[Path]:
-    render = (stage_input.get("construction_envelope") or {}).get("render_inputs_result") or {}
-    paths: list[Path] = []
-    for row in render.get("derived_frames") or []:
-        if not isinstance(row, Mapping):
-            continue
-        path = Path(str(row.get("path") or "")).expanduser().resolve()
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or path.stat().st_size != row.get("size_bytes")
-            or _sha256(path) != row.get("digest")
-        ):
-            raise TaskEvaluationSceneConfigurationContentAgentsError(
-                "scene_configuration_content_agents_reference_invalid"
-            )
-        paths.append(path)
-    if not paths:
+def _reference_frames(
+    stage_input: Mapping[str, Any], dependencies: list[Any]
+) -> list[Path]:
+    """Resolve stage 1's explicit render handoff, never stale envelope state."""
+
+    matches = [
+        artifact
+        for result in dependencies
+        if isinstance(result, Mapping)
+        for artifact in result.get("output_artifacts") or []
+        if isinstance(artifact, Mapping)
+        and artifact.get("role") == PROVIDER_RENDER_REFERENCE_ROLE
+    ]
+    if len(matches) != 1:
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_references_missing"
         )
-    return paths
+    record = matches[0]
+    unresolved_path = Path(str(record.get("path") or "")).expanduser()
+    path = unresolved_path.resolve()
+    if (
+        unresolved_path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != record.get("size_bytes")
+        or _sha256(path) != record.get("digest")
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_reference_invalid"
+        )
+    try:
+        manifest, frames = validate_provider_render_handoff(path)
+    except TaskEvaluationSceneConfigurationRenderHandoffError as exc:
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_reference_invalid"
+        ) from exc
+    render = (
+        (stage_input.get("construction_envelope") or {}).get(
+            "render_inputs_result"
+        )
+        or {}
+    )
+    if manifest.get("control_plane_render_result_digest") != render.get(
+        "result_digest"
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_reference_invalid"
+        )
+    return list(frames)
 
 
 def _physics_output(root: Path) -> Path:
@@ -775,7 +806,7 @@ def execute_content_agents_component(
         runtime / "content_agents_source",
     )
     normalized = _normalize_candidate(source_candidate, runtime / "input/source_asset.usda")
-    references = _reference_frames(stage_input)
+    references = _reference_frames(stage_input, dependencies)
     reference_relpaths: list[str] = []
     for index, source in enumerate(references):
         name = "reference.png" if index == 0 else f"reference_{index + 1:04d}.png"

@@ -15,8 +15,16 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
     TaskEvaluationSceneConfigurationContentAgentsError,
     _metric_envelope_spec,
+    _reference_frames,
     _validate_metric_envelope_dimensions,
     execute_content_agents_component,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+    MATERIALIZED_STATUS,
+    PENDING_PROVIDER_RENDER_STATUS,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_render_handoff import (
+    materialize_provider_render_handoff,
 )
 
 
@@ -111,9 +119,17 @@ def _package(path: Path) -> None:
         (path / destination_name).write_bytes((assets / source_name).read_bytes())
 
 
-def test_reuses_released_content_agents_runner_and_seals_candidate(
+def test_provider_render_handoff_feeds_released_content_agents_runner(
     tmp_path: Path,
 ) -> None:
+    """Stage 3 must consume the render stage 1 completed on the provider.
+
+    The immutable construction envelope correctly stays in the pending state.
+    Before the explicit stage artifact existed, stage 1 completed eight frames
+    only in its local variable and this path deterministically refused with
+    ``scene_configuration_content_agents_references_missing``.
+    """
+
     candidate = tmp_path / "candidate.usda"
     _candidate(candidate)
     reference = tmp_path / "reference.png"
@@ -122,6 +138,31 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     _package(package)
     output = tmp_path / "output"
     output.mkdir()
+    pending_render = {
+        "status": PENDING_PROVIDER_RENDER_STATUS,
+        "derived_frames": [],
+        "derived_frame_count": 0,
+        "result_digest": "",
+    }
+    pending_render["result_digest"] = canonical_digest(
+        pending_render, digest_field="result_digest"
+    )
+    completed_render = {
+        "status": MATERIALIZED_STATUS,
+        "derived_frames": [_record(reference)],
+        "derived_frame_count": 1,
+        "control_plane_result_digest": pending_render["result_digest"],
+        "render_completed_on_provider": True,
+        "result_digest": "",
+    }
+    completed_render["derived_frames"][0]["camera_id"] = "camera-0"
+    completed_render["result_digest"] = canonical_digest(
+        completed_render, digest_field="result_digest"
+    )
+    render_handoff = materialize_provider_render_handoff(
+        render_inputs=completed_render,
+        output_root=output,
+    )
     stage_input = {
         "run_id": "configure-scene-839873-v1",
         "stage": {
@@ -149,11 +190,14 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
                 "restitution_bounds": [0.0, 0.15],
             },
         },
-        "construction_envelope": {"render_inputs_result": {"derived_frames": [_record(reference)]}},
+        "construction_envelope": {"render_inputs_result": pending_render},
     }
     stage_input_path = output / "input.json"
     stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
-    dependencies = [{"output_artifacts": [_record(candidate, role="source_object_candidate_mesh")]}]
+    dependencies = [
+        {"output_artifacts": [render_handoff]},
+        {"output_artifacts": [_record(candidate, role="source_object_candidate_mesh")]},
+    ]
     dependencies_path = output / "dependencies.json"
     dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
     component_result = output / "component-result.json"
@@ -278,6 +322,8 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     )
     assert external_assets == []
     assert unresolved == []
+
+
     replacement_stage = Usd.Stage.Open(str(replacement), load=Usd.Stage.LoadAll)
     assert replacement_stage is not None
     rigid = [
@@ -349,6 +395,55 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         and not prim.HasAPI(UsdPhysics.MeshCollisionAPI)
         for prim in normalized_stage.Traverse()
     )
+
+
+def test_provider_render_handoff_reopens_frame_bytes_before_content_spend(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(reference)
+    pending = {
+        "status": PENDING_PROVIDER_RENDER_STATUS,
+        "result_digest": "",
+    }
+    pending["result_digest"] = canonical_digest(
+        pending, digest_field="result_digest"
+    )
+    completed = {
+        "status": MATERIALIZED_STATUS,
+        "derived_frames": [
+            {
+                "camera_id": "camera-0",
+                **_record(reference),
+            }
+        ],
+        "derived_frame_count": 1,
+        "control_plane_result_digest": pending["result_digest"],
+        "render_completed_on_provider": True,
+        "result_digest": "",
+    }
+    completed["result_digest"] = canonical_digest(
+        completed, digest_field="result_digest"
+    )
+    handoff_root = tmp_path / "handoff"
+    handoff_root.mkdir()
+    handoff = materialize_provider_render_handoff(
+        render_inputs=completed, output_root=handoff_root
+    )
+    manifest = json.loads(Path(handoff["path"]).read_text(encoding="utf-8"))
+    sealed_frame = Path(handoff["path"]).parent / manifest["frames"][0][
+        "relative_path"
+    ]
+    sealed_frame.write_bytes(b"tampered-after-stage-1")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationContentAgentsError,
+        match="scene_configuration_content_agents_reference_invalid",
+    ):
+        _reference_frames(
+            {"construction_envelope": {"render_inputs_result": pending}},
+            [{"output_artifacts": [handoff]}],
+        )
 
 
 def test_metric_envelope_refuses_wrong_size_candidate() -> None:

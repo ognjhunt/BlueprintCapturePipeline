@@ -47,6 +47,7 @@ _EXPECTED_ROLES = {
             "configured_appearance_without_source_object",
             "appearance_removal_receipt",
             "appearance_visual_review_receipt",
+            "provider_render_reference_manifest",
         }
     ),
     "content_agents_rigid_replacement": frozenset(
