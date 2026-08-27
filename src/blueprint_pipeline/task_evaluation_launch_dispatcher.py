@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
@@ -1225,6 +1226,15 @@ def _scene_configuration_terminal_projection(
 
     revision_reference = result.get("configured_scene_revision_reference")
     bundle_reference = result.get("configured_scene_bundle_reference")
+    result_blockers: list[str] = []
+    for item in result.get("blockers") or []:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        detail = " ".join(redacted_failure_text(item).split())
+        if detail:
+            result_blockers.append(
+                "scene_configuration_result:" + detail[:512]
+            )
     valid = (
         result.get("status") == "completed"
         and result.get("configuration_completed") is True
@@ -1244,7 +1254,12 @@ def _scene_configuration_terminal_projection(
         is not None
     )
     if not valid:
-        return None, ["scene_configuration_terminal_publication_evidence_invalid"]
+        return None, sorted(
+            set(
+                ["scene_configuration_terminal_publication_evidence_invalid"]
+                + result_blockers
+            )
+        )
     return {
         "schema_version": "task_evaluation_scene_configuration_terminal_evidence.v1",
         "configuration_completed": True,
