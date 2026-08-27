@@ -15,7 +15,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .common import (
+    ensure_dir,
+    redacted_failure_detail,
+    utc_now_iso,
+    write_json,
+)
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
 from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
 from .paid_resource_admission import (
@@ -537,6 +543,15 @@ def _extract_provider_output(
     except TaskEvaluationSceneConfigurationVastError:
         blockers.append("scene_configuration_provider_result_contract_invalid")
         return {}, sorted(set(blockers))
+    provider_blockers = result.get("blockers")
+    provider_blockers_valid = bool(
+        isinstance(provider_blockers, list)
+        and len(provider_blockers) <= 32
+        and all(
+            isinstance(item, str) and bool(item.strip())
+            for item in provider_blockers
+        )
+    )
     if (
         result.get("schema_version")
         != "task_evaluation_scene_configuration_provider_result.v1"
@@ -545,9 +560,12 @@ def _extract_provider_output(
         or result.get("evaluation_episode_executed") is not False
         or result.get("candidate_policy_queried") is not False
         or result.get("provider_zero_required_after_return") is not True
+        or not provider_blockers_valid
     ):
         blockers.append("scene_configuration_provider_result_contract_invalid")
     if result.get("status") == "completed":
+        if provider_blockers != []:
+            blockers.append("scene_configuration_provider_result_contract_invalid")
         chain = result.get("stage_chain")
         if (
             not isinstance(chain, Mapping)
@@ -563,7 +581,16 @@ def _extract_provider_output(
             != canonical_digest(chain, digest_field="result_digest")
         ):
             blockers.append("scene_configuration_stage_chain_invalid")
-    elif result.get("status") != "blocked":
+    elif result.get("status") == "blocked":
+        if not provider_blockers_valid or not provider_blockers:
+            blockers.append("scene_configuration_provider_result_contract_invalid")
+        else:
+            for item in provider_blockers:
+                detail = " ".join(redacted_failure_text(item).split())
+                if len(detail) > 300:
+                    detail = detail[:297] + "..."
+                blockers.append(f"provider_result_blocker:{detail}")
+    else:
         blockers.append("scene_configuration_provider_result_status_invalid")
     return result, sorted(set(blockers))
 
