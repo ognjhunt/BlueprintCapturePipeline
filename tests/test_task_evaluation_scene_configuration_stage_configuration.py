@@ -19,10 +19,26 @@ def _checks() -> list[dict]:
     return [
         {
             "schema_version": "observed_appearance_object_removal_configuration.v1",
-            "source_object": {"publisher_instance_id": "104"},
+            "source_object": {
+                "publisher_instance_id": "104",
+                "aabb_min_xyz_m": [0.0, 0.0, 0.0],
+                "aabb_max_xyz_m": [0.2, 0.2, 0.3],
+            },
             "production_render_required": True,
-            "required_views": {"minimum": 8},
-            "provider_disclosure": {"raw_interiorgs_bytes": False},
+            "gaussian_cutout": {
+                "selection_rule": "gaussian_center_inside_registered_source_object_aabb",
+                "aabb_padding_m": 0.01,
+                "retained_rows_must_remain_byte_exact": True,
+            },
+            "required_views": {
+                "minimum": 8,
+                "lossless_inputs": True,
+                "mask_source": "registered_source_object_bounds_projection",
+            },
+            "provider_disclosure": {
+                "raw_interiorgs_bytes": False,
+                "derived_rendered_views": True,
+            },
             "output_requirements": {"generated_pixels_labeled": True},
             "human_authority": {
                 "accepted_by": "fixture-owner",
@@ -226,4 +242,87 @@ def test_stage_three_refuses_physically_impossible_friction_bounds() -> None:
     ):
         validate_immutable_stage_configurations(
             envelope=_envelope(), configurations=configurations
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "predicate"),
+    [
+        ("bounds", "source_object.aabb"),
+        ("gaussian_cutout", "gaussian_cutout"),
+        ("disclosure_intent", "provider_disclosure"),
+        ("derived_views", "provider_disclosure"),
+        ("view_count", "required_views.minimum"),
+        ("lossless_views", "required_views.minimum"),
+        ("mask_source", "required_views.minimum"),
+        ("tuning", "artifixer_tuning"),
+    ],
+)
+def test_stage_one_refuses_each_late_config_predicate_before_provider_mutation(
+    case: str, predicate: str
+) -> None:
+    configurations = _configuration_map()
+    stage = configurations["stage-1"]
+    if case == "bounds":
+        stage["source_object"]["aabb_max_xyz_m"] = [0.0, 0.2, 0.3]
+    elif case == "gaussian_cutout":
+        stage["gaussian_cutout"]["aabb_padding_m"] = 0.11
+    elif case == "disclosure_intent":
+        stage["provider_disclosure"].pop("raw_interiorgs_bytes")
+    elif case == "derived_views":
+        stage["provider_disclosure"]["derived_rendered_views"] = False
+    elif case == "view_count":
+        stage["required_views"]["minimum"] = 9
+    elif case == "lossless_views":
+        stage["required_views"]["lossless_inputs"] = False
+    elif case == "mask_source":
+        stage["required_views"]["mask_source"] = "unbound_mask"
+    elif case == "tuning":
+        stage["artifixer3d_steps"] = 30_001
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationStageConfigurationError,
+        match=(
+            "scene_configuration_stage_configuration_preflight_failed:"
+            "stage-1:observed_appearance_object_removal:"
+            f"{predicate}"
+        ),
+    ):
+        validate_immutable_stage_configurations(
+            envelope=_envelope(), configurations=configurations
+        )
+
+
+@pytest.mark.parametrize("target", ["", "Root/Target", "/", "/Root//Target"])
+def test_stage_two_refuses_invalid_exact_target_syntax_before_provider_mutation(
+    target: str,
+) -> None:
+    configurations = _configuration_map()
+    configurations["stage-2"]["exact_target_prim"] = target
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationStageConfigurationError,
+        match=(
+            "scene_configuration_stage_configuration_preflight_failed:"
+            "stage-2:collision_object_excision:exact_target_prim"
+        ),
+    ):
+        validate_immutable_stage_configurations(
+            envelope=_envelope(), configurations=configurations
+        )
+
+
+def test_stage_two_refuses_invalid_removal_id_before_provider_mutation() -> None:
+    envelope = _envelope()
+    envelope["recipe"]["subject_identity"]["id"] = "scene 839873 replacement"
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationStageConfigurationError,
+        match=(
+            "scene_configuration_stage_configuration_preflight_failed:"
+            "stage-2:collision_object_excision:recipe.subject_identity.id"
+        ),
+    ):
+        validate_immutable_stage_configurations(
+            envelope=envelope, configurations=_configuration_map()
         )
