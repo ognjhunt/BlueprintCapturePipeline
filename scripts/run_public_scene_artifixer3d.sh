@@ -185,7 +185,7 @@ if receipt["blockers"]:
 PY
 else
 "${uv_bin}" pip install --python "${artifixer_python}" \
-  torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128 \
+  torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128 \
   || { write_missing_result "artifixer3d_torch_install_failed"; exit 2; }
 "${uv_bin}" pip uninstall --python "${artifixer_python}" flash-attn opencv-python || true
 "${uv_bin}" pip install --python "${artifixer_python}" \

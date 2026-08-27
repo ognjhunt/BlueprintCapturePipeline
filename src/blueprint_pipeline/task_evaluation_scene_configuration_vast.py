@@ -665,15 +665,22 @@ def _authority_environment():
 #: fetches ``uv`` and builds a venv. Declaring only ``bundle_size_bytes``
 #: left all of that outside the hard-cap projection.
 #:
-#: Sized for the mode this lane actually runs. The configuration selects
-#: ``dual_target_artifixer3d_only``, which the runtime admits only with
-#: ``direct_editor_backend == "none"``, so the ``vibe_image_edit`` branch and
-#: its multi-gigabyte ``cu124`` torch wheels never execute. A reserve big
-#: enough for those wheels would price nearly the whole compute cap into
-#: bandwidth and start excluding otherwise admissible offers, which is a real
-#: cost for a download this mode does not perform. If a torch-backed direct
-#: editor is ever selected here, this number has to be revisited with it.
-PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 2_000_000_000
+#: The production ``dual_target_artifixer3d_only`` path skips the VIBE editor,
+#: but it does *not* skip Torch: ``run_public_scene_artifixer3d.sh`` installs
+#: the CUDA 12.8 build before importing the 3DGRUT JIT graph.  The exact Torch
+#: wheel plus only cuDNN, NCCL, cuSPARSELt, NVSHMEM, and torchvision already
+#: total this many bytes in their publisher indexes.  CUDA Toolkit components,
+#: Triton, the remaining Python closure, apt packages, ``uv``, and pinned source
+#: fetches are additional.  The previous 2 GB allowance was therefore smaller
+#: than a provable subset of what the caller downloads and underpriced every
+#: offer before allocation.
+ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES = 2_209_255_046
+
+#: Conservative pre-allocation ceiling for all non-bundle downloads above.
+#: Keep this fail-closed: a tighter value needs a complete publisher-size
+#: inventory, not an assumption that one of the executed install branches is
+#: skipped.
+PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 10_000_000_000
 
 
 def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -757,6 +764,12 @@ def _provider_transfer_byte_budget(
     if not isinstance(bundle, int) or isinstance(bundle, bool) or bundle <= 0:
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_provider_transfer_budget_inputs_invalid"
+        )
+    if PROVISIONING_DOWNLOAD_OVERHEAD_BYTES < (
+        4 * ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES
+    ):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_provider_transfer_budget_underdeclared"
         )
     download = bundle + PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
     # The upload side has no contract to price. On the provider-render path
