@@ -169,3 +169,35 @@ def test_unreadable_receipt_file_reads_as_absent(tmp_path) -> None:
     unreadable = tmp_path / "missing.json"
 
     assert read_stage_scope_attestation(unreadable) is None
+
+
+def test_derivation_accepts_a_human_operator_id_with_spaces() -> None:
+    """Real operator receipts are signed by people, not opaque tokens.
+
+    The production visual-review receipt carries
+    ``Nijel Hunt <ohstnhunt@gmail.com>``. Deriving once ran that through the
+    opaque-identifier rule, which refuses whitespace, so the lane failed with
+    ``operator_id:invalid`` while the operator's own receipt sat there valid.
+    """
+
+    human = "Nijel Hunt <ohstnhunt@gmail.com>"
+
+    resolved = _resolve(
+        _attestation(paid_resource_class=STALE_CLASS, operator_id=human)
+    )
+
+    assert resolved["operator_id"] == human
+    assert resolved["paid_resource_class"] == TARGET_CLASS
+
+
+def test_derivation_still_refuses_an_empty_operator_id() -> None:
+    resolved = resolve_stage_scope_attestation(
+        attestation=_attestation(paid_resource_class=STALE_CLASS, operator_id="   "),
+        paid_resource_class=TARGET_CLASS,
+        project_id=PROJECT,
+        api_key_id=KEY,
+        now=NOW,
+    )
+
+    # Falls back to the binding-derived identity rather than an empty one.
+    assert resolved["operator_id"].strip()

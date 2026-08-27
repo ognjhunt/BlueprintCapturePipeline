@@ -121,6 +121,23 @@ def openai_cost_authority_binding_digest(
     )
 
 
+def _operator_id(value: Any) -> str:
+    """Normalize an operator identity exactly as the validator accepts it.
+
+    ``_identifier`` refuses whitespace, which suits opaque provider ids but not
+    this field: operator receipts are signed by people and carry values like
+    ``Nijel Hunt <name@example.com>``. Validation only requires a non-empty
+    value, so deriving must not be stricter than the contract the derived
+    receipt has to satisfy -- being stricter refused the whole lane while the
+    operator's own receipt sat there valid.
+    """
+
+    text = str(value or "").strip()
+    if not text or len(text) > 255:
+        raise OpenAICostAuthorityError("operator_id:invalid")
+    return text
+
+
 def _issuance_authority_valid(attestation: Mapping[str, Any]) -> bool:
     """Whether this attestation's issuer is one this program accepts.
 
@@ -178,7 +195,7 @@ def derive_operator_scope_attestation(
         "status": "approved",
         "issued_by_agent": True,
         "derived_from_operator_scope_binding": True,
-        "operator_id": _identifier(operator_id, field="operator_id"),
+        "operator_id": _operator_id(operator_id),
         "provider_id": _identifier(provider_id, field="provider_id"),
         "paid_resource_class": _identifier(
             paid_resource_class, field="paid_resource_class"
