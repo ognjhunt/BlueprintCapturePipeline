@@ -197,6 +197,22 @@ def test_native_driver_rejects_nondeterministic_reset(tmp_path: Path) -> None:
         )
 
 
+def test_native_driver_rejects_unexpected_isaac_runtime_identity(
+    tmp_path: Path,
+) -> None:
+    observed = _observed()
+    observed["runtime_identity"] = {"engine_version": "6.0.0"}
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationNativeImportDriverError,
+        match="native_import_runtime_identity_invalid",
+    ):
+        execute_native_import_component(
+            environment=_environment(tmp_path),
+            native_runner=_native_runner(observed),
+        )
+
+
 def test_native_driver_seals_result_before_simulation_app_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

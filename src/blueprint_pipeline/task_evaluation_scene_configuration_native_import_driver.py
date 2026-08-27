@@ -12,6 +12,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .measurement_isaac_physx_rigid_adapter import (
+    ISAAC_VERSION,
     _bind_isaac_runtime_environment,
     _import_simulation_app,
     _observe_isaac_runtime_identity,
@@ -377,6 +378,14 @@ def execute_native_import_component(
 
     def _seal_observation(observation: Mapping[str, Any]) -> dict[str, Any]:
         observed = dict(observation)
+        runtime_identity = observed.get("runtime_identity")
+        if (
+            not isinstance(runtime_identity, Mapping)
+            or runtime_identity.get("engine_version") != ISAAC_VERSION
+        ):
+            raise TaskEvaluationSceneConfigurationNativeImportDriverError(
+                "scene_configuration_native_import_runtime_identity_invalid"
+            )
         repeats = observed.get("repeats")
         if not isinstance(repeats, list) or len(repeats) != 3:
             raise TaskEvaluationSceneConfigurationNativeImportDriverError(
@@ -413,7 +422,7 @@ def execute_native_import_component(
             "deterministic_reset_state_digest": state_digests[0],
             "maximum_observed_settle_translation_m": maximum_translation,
             "maximum_observed_settle_rotation_rad": maximum_rotation,
-            "runtime_identity": observed.get("runtime_identity"),
+            "runtime_identity": dict(runtime_identity),
             "repeats": repeats,
             "physical_equivalence_claimed": False,
             "evaluation_episode_executed": False,
