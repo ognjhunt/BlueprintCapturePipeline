@@ -42,6 +42,15 @@ MAX_PROVIDER_COMPUTE_SPEND_USD = 6.0
 # bound an attempt, not to starve it below one complete pass.
 MAX_EXTERNAL_SERVICE_SPEND_USD = 3.0
 MAX_ATTEMPT_SPEND_USD = 10.0
+# Scene configuration sends eight immutable review frames through the selected
+# semantic-teacher backend.  Its registry binds a fail-closed maximum of $0.30
+# per request, so an authority below $2.40 cannot fund the admitted frame set.
+# The additional $0.50 reserve covers the two later OpenAI-backed stages without
+# changing the independent semantic-teacher or evaluation-episode policies.
+MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 2.4
+MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.3
+MIN_CONTENT_AGENTS_SPEND_USD = 0.2
+MIN_EXTERNAL_SERVICE_SPEND_USD = 2.9
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
 OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (
@@ -119,6 +128,10 @@ __all__ = [
     "MAX_EXTERNAL_SERVICE_SPEND_USD",
     "MAX_HOURLY_RATE_USD",
     "MAX_PROVIDER_COMPUTE_SPEND_USD",
+    "MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD",
+    "MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD",
+    "MIN_CONTENT_AGENTS_SPEND_USD",
+    "MIN_EXTERNAL_SERVICE_SPEND_USD",
     "OUTPUT_AND_CLOSURE_RESERVE_SECONDS",
     "OUTPUT_CLOSURE_RESERVE_SECONDS_ENV",
     "PARENT_DEADLINE_EPOCH_ENV",
