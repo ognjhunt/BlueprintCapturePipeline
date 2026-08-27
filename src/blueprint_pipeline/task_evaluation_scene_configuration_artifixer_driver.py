@@ -62,6 +62,9 @@ from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate,
     scene_configuration_openai_stage_scope,
 )
+from .task_evaluation_scene_configuration_render_handoff import (
+    materialize_provider_render_handoff,
+)
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
 )
@@ -540,6 +543,10 @@ def execute_artifixer_component(
                 input_root=runtime_root,
             ),
         }
+    render_handoff = materialize_provider_render_handoff(
+        render_inputs=envelope["render_inputs_result"],
+        output_root=output_root,
+    )
     _preflight, task_id = _materialize_preflight(
         envelope=envelope,
         configuration=configuration,
@@ -789,6 +796,7 @@ def execute_artifixer_component(
         {"role": "configured_appearance_without_source_object", **_component_record(appearance)},
         {"role": "appearance_removal_receipt", **_component_record(removal_path)},
         {"role": "appearance_visual_review_receipt", **_component_record(copied_review)},
+        render_handoff,
     ]
     result = {
         "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,

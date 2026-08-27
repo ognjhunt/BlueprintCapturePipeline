@@ -94,6 +94,7 @@ def test_executes_only_manifest_bound_component_and_seals_artifacts(
             "configured_appearance_without_source_object",
             "appearance_removal_receipt",
             "appearance_visual_review_receipt",
+            "provider_render_reference_manifest",
         ):
             path = output / f"{role}.bin"
             path.write_bytes(role.encode())

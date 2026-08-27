@@ -25,6 +25,11 @@ from .task_evaluation_scene_configuration_adapters import (
 from .task_evaluation_scene_configuration_orchestrator import (
     STAGE_RESULT_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_render_handoff import (
+    ARTIFACT_ROLE as PROVIDER_RENDER_REFERENCE_ROLE,
+    TaskEvaluationSceneConfigurationRenderHandoffError,
+    validate_provider_render_handoff,
+)
 from .task_evaluation_scene_configuration_static_qualification import (
     SCHEMA_VERSION as STATIC_QUALIFICATION_SCHEMA_VERSION,
     qualify_scene_configuration_rigid_asset_static,
@@ -320,14 +325,25 @@ def execute_artifixer3d_observed_object_removal(
     review_record, review_path = _provider_runtime_artifact(
         provider_runtime_artifacts, role="appearance_visual_review_receipt"
     )
+    render_reference_record, render_reference_path = _provider_runtime_artifact(
+        provider_runtime_artifacts, role=PROVIDER_RENDER_REFERENCE_ROLE
+    )
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         review = json.loads(review_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        render_reference, _render_reference_frames = (
+            validate_provider_render_handoff(render_reference_path)
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        TaskEvaluationSceneConfigurationRenderHandoffError,
+    ) as exc:
         raise TaskEvaluationSceneConfigurationAdapterError(
             "artifixer3d_object_removal_receipt_invalid"
         ) from exc
     source_object = configuration.get("source_object")
+    input_render = envelope.get("render_inputs_result") or {}
     if (
         configuration.get("schema_version")
         != "observed_appearance_object_removal_configuration.v1"
@@ -381,6 +397,10 @@ def execute_artifixer3d_observed_object_removal(
         or not str(review["reviewer"].get("model") or "")
         or review.get("receipt_digest")
         != canonical_digest(review, digest_field="receipt_digest")
+        or render_reference.get("control_plane_render_result_digest")
+        != input_render.get("result_digest")
+        or render_reference.get("render_completed_on_provider")
+        is not renders_on_provider(input_render.get("disclosure_decision") or {})
     ):
         raise TaskEvaluationSceneConfigurationAdapterError(
             "artifixer3d_object_removal_result_invalid"
@@ -404,6 +424,7 @@ def execute_artifixer3d_observed_object_removal(
             },
             {"role": "appearance_removal_receipt", **copied_receipt},
             {"role": "appearance_visual_review_receipt", **copied_review},
+            dict(render_reference_record),
         ],
     )
 

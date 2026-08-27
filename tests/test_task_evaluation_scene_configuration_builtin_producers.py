@@ -63,6 +63,7 @@ def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
             "configured_appearance_without_source_object",
             "appearance_removal_receipt",
             "appearance_visual_review_receipt",
+            "provider_render_reference_manifest",
         )
         artifacts = []
         for role in roles:
@@ -120,7 +121,7 @@ def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
         output_root=output,
     )
 
-    assert len(artifacts) == 3
+    assert len(artifacts) == 4
     assert calls == [[str(toolchain / "stages" / identity.adapter_id)]]
     log = (output / "stage_producer.log").read_text(encoding="utf-8")
     assert "super-secret-value" not in log
