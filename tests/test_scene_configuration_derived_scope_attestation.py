@@ -103,11 +103,37 @@ def test_derived_receipt_carries_the_operator_id_when_one_exists() -> None:
     assert resolved["operator_id"] == "independent-cost-owner"
 
 
-def test_derived_receipt_window_is_short_lived() -> None:
-    resolved = _resolve(None)
+@pytest.mark.parametrize(
+    "moment",
+    [
+        datetime(2026, 8, 27, 0, 1, tzinfo=UTC),
+        datetime(2026, 8, 27, 11, 59, tzinfo=UTC),
+        datetime(2026, 8, 27, 23, 30, tzinfo=UTC),
+    ],
+)
+def test_derived_receipt_covers_the_whole_official_cost_window(
+    moment: datetime,
+) -> None:
+    """UTC day boundaries cannot make a freshly derived receipt unusable."""
 
+    resolved = resolve_stage_scope_attestation(
+        attestation=None,
+        paid_resource_class=TARGET_CLASS,
+        project_id=PROJECT,
+        api_key_id=KEY,
+        now=moment,
+    )
+
+    runtime_window_end = moment + timedelta(hours=1)
+    required_end = datetime(
+        runtime_window_end.year,
+        runtime_window_end.month,
+        runtime_window_end.day,
+        tzinfo=UTC,
+    ) + timedelta(days=1)
     exclusive_until = datetime.fromisoformat(resolved["exclusive_until"])
-    assert exclusive_until - NOW <= timedelta(hours=12)
+    assert exclusive_until == required_end
+    assert exclusive_until - moment <= timedelta(hours=25)
 
 
 def test_valid_operator_receipt_is_honoured_unchanged() -> None:
@@ -118,6 +144,20 @@ def test_valid_operator_receipt_is_honoured_unchanged() -> None:
     assert resolved["issued_by_agent"] is False
     assert "derived_from_operator_scope_binding" not in resolved
     assert resolved["exclusive_until"] == operator_receipt["exclusive_until"]
+
+
+def test_valid_but_expiring_operator_receipt_is_refreshed() -> None:
+    """Static validity cannot defer a guaranteed reserve-time refusal."""
+
+    expiring = _attestation(exclusive_until=(NOW + timedelta(hours=2)).isoformat())
+
+    resolved = _resolve(expiring)
+
+    assert resolved["issued_by_agent"] is True
+    assert resolved["derived_from_operator_scope_binding"] is True
+    assert datetime.fromisoformat(resolved["exclusive_until"]) > datetime.fromisoformat(
+        expiring["exclusive_until"]
+    )
 
 
 def test_agent_issued_receipt_without_derivation_is_refused_by_the_validator() -> None:
@@ -147,7 +187,7 @@ def test_laundered_receipt_cannot_smuggle_its_own_window() -> None:
 
     assert resolved["derived_from_operator_scope_binding"] is True
     exclusive_until = datetime.fromisoformat(resolved["exclusive_until"])
-    assert exclusive_until - NOW <= timedelta(hours=12)
+    assert exclusive_until - NOW <= timedelta(hours=25)
 
 
 def test_derivation_still_binds_the_exact_provisioned_key() -> None:

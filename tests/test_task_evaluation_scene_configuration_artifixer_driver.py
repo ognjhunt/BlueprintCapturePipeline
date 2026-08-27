@@ -249,6 +249,9 @@ def test_visual_review_uses_the_scene_lanes_exclusive_cost_scope() -> None:
     assert "cost_lane_id=_VISUAL_REVIEW_COST_SCOPE" in source
     assert "paid_resource_class=_VISUAL_REVIEW_COST_SCOPE" in source
     assert "require_zero_baseline=False" in source
+    assert "review_attestation_path = materialize_stage_scope_attestation(" in source
+    assert "openai_cost_scope_attestation_path=review_attestation_path" in source
+    assert 'review_scope["attestation_file"]' not in source
 
 
 def test_selected_task_thumbnail_is_an_exact_reviewed_frame_copy(

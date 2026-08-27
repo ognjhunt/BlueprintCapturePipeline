@@ -59,6 +59,7 @@ from .task_evaluation_scene_configuration_render_inputs import (
     complete_provider_render_inputs,
 )
 from .task_evaluation_scene_configuration_openai_gate import (
+    materialize_stage_scope_attestation,
     scene_configuration_openai_stage_gate,
     scene_configuration_openai_stage_scope,
 )
@@ -810,6 +811,11 @@ def execute_artifixer_component(
     review_scope = scene_configuration_openai_stage_scope(
         values, stage="artifixer_visual_review"
     )
+    review_attestation_path = materialize_stage_scope_attestation(
+        values,
+        stage="artifixer_visual_review",
+        output_root=work / "artifixer_visual_review_scope",
+    )
     review_token = _stage_openai_token(values, stage="artifixer_visual_review")
     with _temporary_openai_key(review_token):
         visual_review_cap = float(
@@ -825,9 +831,7 @@ def execute_artifixer_component(
             publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
             minimum_review_frames=int(configuration["required_views"]["minimum"]),
             output_root=work / "independent_visual_review",
-            openai_cost_scope_attestation_path=Path(
-                review_scope["attestation_file"]
-            ),
+            openai_cost_scope_attestation_path=review_attestation_path,
             openai_admin_api_key_file=_required_path(values, "OPENAI_ADMIN_API_KEY_FILE"),
             openai_project_id=str(values.get("OPENAI_PROJECT_ID") or ""),
             openai_api_key_id=review_scope["api_key_id"],
