@@ -313,6 +313,33 @@ def test_guard_is_ready_when_every_existing_launch_lock_slot_is_usable(tmp_path)
     assert report["paid_launch_lock_slots"]["status"] == "usable"
 
 
+def test_guard_does_not_rechmod_an_already_usable_launch_lock_slot(
+    tmp_path, monkeypatch
+):
+    """A peer-created exact-mode slot needs proof of use, not metadata mutation."""
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    slot = vast_launch_lock_paths(base)[0]
+    slot.touch(mode=0o600)
+    slot.chmod(0o600)
+    original_chmod = Path.chmod
+
+    def refuse_noop(path, mode, **kwargs):
+        if path == slot:
+            raise PermissionError("already-usable slot must not be rechmodded")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", refuse_noop)
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["status"] == "ready", report["blockers"]
+    assert report["paid_launch_lock_slots"]["status"] == "usable"
+
+
 def test_guard_probes_every_slot_the_adapter_would_use(tmp_path):
     """The checked set is rediscovered from the adapter, never hand-listed.
 

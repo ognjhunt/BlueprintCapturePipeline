@@ -8,11 +8,13 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import city_launch_evidence_policy as policy
 from blueprint_pipeline.city_launch_evidence_policy import (
     RUN_SCHEMA_VERSION,
     build_artifact_inventory,
     evidence_policy,
     prepare_evidence_root,
+    prepare_run_root,
     validate_run,
 )
 from blueprint_pipeline.common import write_json
@@ -49,6 +51,44 @@ def test_prepare_evidence_root_enforces_private_permissions(tmp_path: Path) -> N
     evidence_root = prepare_evidence_root(tmp_path / "evidence", source_root=source_root)
 
     assert evidence_root.stat().st_mode & 0o777 == 0o700
+
+
+def test_exact_private_roots_are_not_rechmodded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "repo"
+    source_root.mkdir()
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir(mode=0o700)
+    run_root = tmp_path / "run"
+    run_root.mkdir(mode=0o700)
+    protected = {evidence_root.resolve(), run_root.resolve()}
+    original_chmod = policy.os.chmod
+
+    def refuse_noop(path: str | os.PathLike[str], mode: int) -> None:
+        if Path(path).resolve() in protected:
+            raise PermissionError("already-private directory must not be rechmodded")
+        original_chmod(path, mode)
+
+    monkeypatch.setattr(policy.os, "chmod", refuse_noop)
+
+    assert prepare_evidence_root(evidence_root, source_root=source_root) == evidence_root
+    prepare_run_root(run_root)
+
+
+def test_private_root_mode_installation_is_proven_by_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "repo"
+    source_root.mkdir()
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir(mode=0o755)
+    monkeypatch.setattr(policy.os, "chmod", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(
+        ValueError, match="^city_launch_evidence_root_permission_install_failed$"
+    ):
+        prepare_evidence_root(evidence_root, source_root=source_root)
 
 
 def test_validate_run_checks_schema_inventory_retention_and_freshness(tmp_path: Path) -> None:
