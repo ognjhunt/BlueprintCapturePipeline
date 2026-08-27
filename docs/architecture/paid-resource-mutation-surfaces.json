@@ -16,6 +16,7 @@
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
       "src/blueprint_pipeline/teleport_paid_allocator.py"
     ],
     "require_paid_resource_admission": [
@@ -38,6 +39,7 @@
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
       "src/blueprint_pipeline/teleport_paid_allocator.py"
     ]
   },
@@ -391,6 +393,24 @@
       "required_markers": [
         "require_paid_resource_admission_grant",
         "skypilot_pilot_launch_disabled"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": [
+        "upload_file",
+        "get_object",
+        "full_byte_service_account_readback_passed"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "run_scene_configuration_vast"
       ]
     },
     {
