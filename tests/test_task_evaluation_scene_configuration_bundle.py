@@ -636,7 +636,69 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     assert "run_task_evaluation_scene_configuration_provider.sh" in script
     assert "task_evaluation_scene_configuration_provider_output.zip" in script
     assert "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" in script
+    assert "scene_configuration_runtime_toolchain_missing" in script
+    assert "timeout 300 apt-get" in script
+    assert script.index(" install -y curl wget unzip git build-essential") < script.index(
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED"
+    )
+    assert (
+        "for required_command in python3 git gcc g++ cmake ninja nvcc Xvfb; "
+        'do command -v "$required_command"'
+    ) in script
+    assert 'exec /isaac-sim/python.sh "$@"' in script
+    assert 'export PATH="/usr/local/cuda/bin:$PATH"' in script
+    for excluded in (
+        ".artifixer-venv",
+        ".hf_home",
+        ".venv",
+        ".ovrtx_venv",
+        ".ovrtx_native_venv",
+        ".ovphysx_venv",
+        ".git",
+        "__pycache__",
+        "artifixer_bundle",
+        "artifixer_execution",
+        "artifixer_output",
+        "content_agents_source",
+    ):
+        assert excluded in script
+    assert "excluded_parts.isdisjoint(relative.parts)" in script
+    assert "provider_output_zip_exclusions.json" in script
     subprocess.run(["bash", "-n", "-c", script], check=True)
+
+    runtime_output = tmp_path / "runtime-output"
+    work_dir = tmp_path / "provider-work"
+    (runtime_output / "stages/stage-1/producer").mkdir(parents=True)
+    kept = runtime_output / "stages/stage-1/producer/appearance_removal_receipt.v1.json"
+    kept.write_text('{"status":"completed"}\n', encoding="utf-8")
+    excluded = (
+        runtime_output
+        / "stages/stage-1/producer/released_artifixer_runtime/artifixer_execution/model.bin"
+    )
+    excluded.parent.mkdir(parents=True)
+    excluded.write_bytes(b"reproducible-scratch")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT", str(runtime_output))
+    monkeypatch.setenv("BLUEPRINT_VAST_WORK_DIR", str(work_dir))
+    work_dir.mkdir()
+    archive_marker = "$RUNTIME_PY - <<'PY'\n"
+    archive_start = script.index(
+        archive_marker, script.index("BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE")
+    ) + len(archive_marker)
+    archive_end = script.index("\nPY\n", archive_start)
+    archive_program = script[archive_start:archive_end]
+    exec(compile(archive_program, "<scene-configuration-output-archive>", "exec"), {})
+
+    with zipfile.ZipFile(
+        work_dir / "task_evaluation_scene_configuration_provider_output.zip"
+    ) as archive:
+        archived = set(archive.namelist())
+        assert kept.relative_to(runtime_output).as_posix() in archived
+        assert excluded.relative_to(runtime_output).as_posix() not in archived
+        exclusions = json.loads(archive.read("provider_output_zip_exclusions.json"))
+    assert exclusions["schema_version"] == (
+        "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1"
+    )
+    assert "artifixer_execution" in exclusions["excluded_directory_names"]
 
 
 def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(

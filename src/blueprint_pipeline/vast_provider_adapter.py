@@ -4596,7 +4596,19 @@ def _probe_shell_script(
             script += (
                 common_start
                 + "RUNTIME_PY=/isaac-sim/python.sh; "
+                'export PATH="/usr/local/cuda/bin:$PATH"; '
                 'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
+                "else toolchain_rc=0; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y curl wget unzip git build-essential cmake ninja-build ffmpeg libgl1 libglib2.0-0 libopengl0 libvulkan1 xvfb >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
+                "fi; "
+                'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
+                'printf \'#!/bin/sh\\nexec /isaac-sim/python.sh "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/python3"; '
+                'chmod 0755 "$WORK_DIR/scene_configuration_bin/python3"; '
+                'export PATH="$WORK_DIR/scene_configuration_bin:$PATH"; '
+                'for required_command in python3 git gcc g++ cmake ninja nvcc Xvfb; do command -v "$required_command" >/dev/null 2>&1 || toolchain_rc=127; done; '
+                "if [ $toolchain_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_toolchain_missing:$toolchain_rc; "
                 "else "
                 'rm -rf "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; '
                 'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"; dl=$?; '
@@ -4620,11 +4632,15 @@ def _probe_shell_script(
                 "output_dir = Path(os.environ.get('BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT', '/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output'))\n"
                 "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
                 "output_zip = work_dir / 'task_evaluation_scene_configuration_provider_output.zip'\n"
+                "excluded_parts = {'.artifixer-venv', '.hf_home', '.venv', '.ovrtx_venv', '.ovrtx_native_venv', '.ovphysx_venv', '.git', '__pycache__', 'artifixer_bundle', 'artifixer_execution', 'artifixer_output', 'content_agents_source'}\n"
                 "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:\n"
                 "    if output_dir.is_dir():\n"
+                "        archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'task_evaluation_scene_configuration_provider_output_zip_exclusions.v1', 'excluded_directory_names': sorted(excluded_parts)}, sort_keys=True))\n"
                 "        for path in sorted(output_dir.rglob('*')):\n"
                 "            if path.is_file():\n"
-                "                archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "                relative = path.relative_to(output_dir)\n"
+                "                if excluded_parts.isdisjoint(relative.parts):\n"
+                "                    archive.write(path, relative.as_posix())\n"
                 "    else:\n"
                 "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, sort_keys=True))\n"
                 "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
@@ -4635,7 +4651,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; "
             )
         elif provider_bundle_kind == "adp_simpler":
             script += (
