@@ -50,6 +50,13 @@ def _candidate(path: Path) -> None:
     )
     mesh.CreateFaceVertexCountsAttr([3])
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+    UsdGeom.Xformable(mesh.GetPrim()).AddTranslateOp().Set(
+        Gf.Vec3d(2.9742285, -6.7605156, 0.818319)
+    )
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(
+        UsdPhysics.Tokens.convexHull
+    )
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     stage.GetRootLayer().Save()
@@ -287,3 +294,29 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
     )
     assert manifest["input_variant"] == "scene_configuration_v1"
     assert manifest["retry_cap"] == 0
+    normalization = manifest["input_usd_normalization"]
+    assert normalization["stripped_physics_schemas"] == [
+        "CollisionAPI",
+        "MeshCollisionAPI",
+    ]
+    assert normalization["candidate_rigid_body_root_transform_identity"] is True
+    local_bounds = normalization["candidate_local_bounds_m"]
+    assert local_bounds["minimum"][2] == pytest.approx(0.0, abs=1e-7)
+    assert (
+        local_bounds["minimum"][0] + local_bounds["maximum"][0]
+    ) / 2.0 == pytest.approx(0.0, abs=1e-7)
+    assert (
+        local_bounds["minimum"][1] + local_bounds["maximum"][1]
+    ) / 2.0 == pytest.approx(0.0, abs=1e-7)
+    normalized_stage = Usd.Stage.Open(
+        str(output / "released_content_agents_runtime/input/source_asset.usda")
+    )
+    assert normalized_stage is not None
+    normalized_asset = normalized_stage.GetDefaultPrim()
+    assert str(normalized_asset.GetPath()) == "/Asset"
+    assert not UsdGeom.Xformable(normalized_asset).GetOrderedXformOps()
+    assert all(
+        not prim.HasAPI(UsdPhysics.CollisionAPI)
+        and not prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+        for prim in normalized_stage.Traverse()
+    )

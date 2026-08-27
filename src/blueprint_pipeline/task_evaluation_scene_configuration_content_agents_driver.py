@@ -152,11 +152,14 @@ def _normalize_candidate(source: Path, destination: Path) -> dict[str, Any]:
     asset_spec = Sdf.CreatePrimInLayer(layer, Sdf.Path("/Asset"))
     asset_spec.specifier = Sdf.SpecifierDef
     asset_spec.typeName = "Xform"
+    geometry_spec = Sdf.CreatePrimInLayer(layer, Sdf.Path("/Asset/Geometry"))
+    geometry_spec.specifier = Sdf.SpecifierDef
+    geometry_spec.typeName = "Xform"
     if not Sdf.CopySpec(
         source_layer,
         Sdf.Path("/Root/SourceObjectCandidate"),
         layer,
-        Sdf.Path("/Asset/Visual"),
+        Sdf.Path("/Asset/Geometry/Visual"),
     ):
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_input_copy_failed"
@@ -171,24 +174,78 @@ def _normalize_candidate(source: Path, destination: Path) -> dict[str, Any]:
     UsdGeom.SetStageMetersPerUnit(stage, UsdGeom.GetStageMetersPerUnit(source_stage))
     UsdGeom.SetStageUpAxis(stage, UsdGeom.GetStageUpAxis(source_stage))
     asset = stage.GetPrimAtPath("/Asset")
-    visual = stage.GetPrimAtPath("/Asset/Visual")
+    geometry = stage.GetPrimAtPath("/Asset/Geometry")
+    visual = stage.GetPrimAtPath("/Asset/Geometry/Visual")
     meshes = [prim for prim in Usd.PrimRange(visual) if prim.IsA(UsdGeom.Mesh)]
     if (
         not asset.IsValid()
+        or not geometry.IsValid()
         or not visual.IsValid()
         or not meshes
-        or any(
-            prim.HasAPI(UsdPhysics.RigidBodyAPI)
-            or prim.HasAPI(UsdPhysics.CollisionAPI)
-            or prim.IsA(UsdPhysics.Joint)
-            for prim in Usd.PrimRange(asset)
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_candidate_scope_invalid"
         )
+    stripped_physics_schemas: set[str] = set()
+    physics_apis = (
+        UsdPhysics.ArticulationRootAPI,
+        UsdPhysics.CollisionAPI,
+        UsdPhysics.MassAPI,
+        UsdPhysics.MaterialAPI,
+        UsdPhysics.MeshCollisionAPI,
+        UsdPhysics.RigidBodyAPI,
+    )
+    for prim in Usd.PrimRange(visual):
+        if prim.IsA(UsdPhysics.Joint):
+            raise TaskEvaluationSceneConfigurationContentAgentsError(
+                "scene_configuration_content_agents_candidate_scope_invalid"
+            )
+        for schema in physics_apis:
+            if prim.HasAPI(schema):
+                stripped_physics_schemas.add(schema.__name__)
+                prim.RemoveAPI(schema)
+        for property_name in prim.GetPropertyNames():
+            if str(property_name).startswith(("physics:", "physx")):
+                prim.RemoveProperty(property_name)
+    if any(
+        str(schema).startswith(("Physics", "Physx"))
+        for prim in Usd.PrimRange(visual)
+        for schema in prim.GetAppliedSchemas()
     ):
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_candidate_scope_invalid"
         )
     for prim in meshes:
         UsdGeom.Imageable(prim).GetPurposeAttr().Set(UsdGeom.Tokens.default_)
+    source_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+            UsdGeom.Tokens.guide,
+        ],
+        useExtentsHint=False,
+    )
+    source_bounds = source_cache.ComputeWorldBound(visual).ComputeAlignedRange()
+    if source_bounds.IsEmpty():
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_candidate_bounds_invalid"
+        )
+    source_lower = source_bounds.GetMin()
+    source_upper = source_bounds.GetMax()
+    source_center = [
+        (float(source_lower[index]) + float(source_upper[index])) / 2.0
+        for index in range(3)
+    ]
+    source_to_candidate_translation = [
+        -source_center[0],
+        -source_center[1],
+        -float(source_lower[2]),
+    ]
+    UsdGeom.Xformable(geometry).AddTranslateOp(
+        opSuffix="blueprintCandidateLocalFrame"
+    ).Set(Gf.Vec3d(*source_to_candidate_translation))
     material = UsdShade.Material.Define(stage, "/Asset/Looks/GeneratedCandidate")
     for prim in meshes:
         if not UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]:
@@ -202,14 +259,47 @@ def _normalize_candidate(source: Path, destination: Path) -> dict[str, Any]:
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_candidate_bounds_invalid"
         )
+    normalized_lower = [float(value) for value in bounds.GetMin()]
+    normalized_upper = [float(value) for value in bounds.GetMax()]
+    if (
+        not math.isclose(normalized_lower[2], 0.0, rel_tol=0.0, abs_tol=1e-7)
+        or not math.isclose(
+            (normalized_lower[0] + normalized_upper[0]) / 2.0,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-7,
+        )
+        or not math.isclose(
+            (normalized_lower[1] + normalized_upper[1]) / 2.0,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-7,
+        )
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_candidate_local_frame_invalid"
+        )
     return {
         "source_input_usd_sha256": _sha256(source),
         "normalized_input_usd_sha256": _sha256(destination),
         "transformations": [
             "copy_exact_sage_candidate_subtree_to_asset_working_copy",
+            "strip_source_collision_and_physics_authority_from_working_copy",
+            "rebase_working_copy_to_object_local_xy_center_and_bottom_z_zero",
             "normalize_mesh_purpose_to_default",
             "bind_missing_materials_to_generated_candidate_material",
         ],
+        "stripped_physics_schemas": sorted(stripped_physics_schemas),
+        "source_world_bounds_m": {
+            "minimum": [float(value) for value in source_lower],
+            "maximum": [float(value) for value in source_upper],
+        },
+        "source_to_candidate_translation_m": source_to_candidate_translation,
+        "candidate_local_bounds_m": {
+            "minimum": normalized_lower,
+            "maximum": normalized_upper,
+        },
+        "candidate_rigid_body_root_transform_identity": True,
         "default_purpose_bbox_nonempty": True,
         "scene_configuration_sage_candidate_working_copy": True,
         "mesh_count": len(meshes),
