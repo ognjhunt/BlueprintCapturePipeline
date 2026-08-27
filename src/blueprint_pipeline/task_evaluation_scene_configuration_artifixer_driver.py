@@ -479,7 +479,10 @@ def _semantic_rights_and_request(
 
 
 def _emit_artifixer_runtime_diagnostics(
-    *, completed: Any, runtime_result_path: Path
+    *,
+    completed: Any,
+    runtime_result_path: Path,
+    retained_root: Path | None = None,
 ) -> None:
     """Print the runtime's streams to stderr when its outcome is a failure.
 
@@ -503,6 +506,22 @@ def _emit_artifixer_runtime_diagnostics(
         ARTIFIXER_RUNTIME_ACCEPTED_STATUS
     ):
         return
+    # Full streams go to files under the retained runtime directory: run
+    # ...-183325Z proved the inline route lossy -- the runtime's own wget
+    # progress filled the stage tool's 20 KB relay window and pushed both the
+    # marker and the actual error out of the exported log. Files under the
+    # stage output root survive into the exported zip whole.
+    if retained_root is not None:
+        for stream_name in ("stdout", "stderr"):
+            try:
+                (retained_root / f"artifixer_runtime_{stream_name}.log").write_text(
+                    redacted_failure_text(
+                        getattr(completed, stream_name, "") or ""
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
     print(
         "scene_configuration_artifixer_runtime_diagnostics "
         + json.dumps(
@@ -517,8 +536,16 @@ def _emit_artifixer_runtime_diagnostics(
     )
     for stream_name in ("stdout", "stderr"):
         text = redacted_failure_text(getattr(completed, stream_name, "") or "")
+        lines = [
+            line
+            for line in text.splitlines()
+            # Download progress dominates these streams and carries nothing: a
+            # wget progress row is dots, percentages and rates.
+            if not (set(line) <= set(" .0123456789KMGs%") and len(line) > 20)
+        ]
+        tail = "\n".join(lines)[-4_000:]
         print(
-            f"--- artifixer runtime {stream_name} tail ---\n{text[-20_000:]}",
+            f"--- artifixer runtime {stream_name} tail ---\n{tail}",
             file=sys.stderr,
         )
 
@@ -914,7 +941,9 @@ def execute_artifixer_component(
         artifixer_output / "public_scene_artifixer3d_runtime_result.json"
     )
     _emit_artifixer_runtime_diagnostics(
-        completed=completed, runtime_result_path=runtime_result_path
+        completed=completed,
+        runtime_result_path=runtime_result_path,
+        retained_root=work,
     )
     runtime_result = _read_artifixer_runtime_result(
         completed=completed,
