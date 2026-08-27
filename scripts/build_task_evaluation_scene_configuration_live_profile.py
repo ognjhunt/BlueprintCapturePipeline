@@ -159,6 +159,7 @@ def build_scene_configuration_live_profile(
         max_spend_usd=max_spend_usd,
         revision=revision,
         pod_name=pod_name,
+        profile_binding_identity=pod_name,
         extra_paths={"attempt_authority": attempt_authority_path},
         extra_values={
             "team_namespace": team_namespace,
