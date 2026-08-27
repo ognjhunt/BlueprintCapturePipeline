@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from blueprint_pipeline import task_evaluation_scene_configuration_openai_gate as gate
@@ -54,9 +57,19 @@ def test_builds_exact_stage_gate_from_parent_authority(monkeypatch, tmp_path) ->
     assert result["authorization_receipt_digest"] == "sha256:" + "a" * 64
     assert result["admin_api_key_file"] == "/private/admin-key"
     assert result["api_key_id"] == "key_content_agents"
-    assert result["scope_attestation_path"] == (
-        "/private/cost-scope-content-agents.json"
+    # The gate reads the receipt the lane resolved for this stage, not the raw
+    # operator path: an absent or pre-rename operator file is derived from the
+    # provisioned key binding instead of stalling the run. Pin the binding the
+    # receipt carries rather than where it happens to live.
+    resolved = json.loads(
+        Path(result["scope_attestation_path"]).read_text(encoding="utf-8")
     )
+    assert resolved["paid_resource_class"] == (
+        "task_evaluation_scene_configuration_content_agents"
+    )
+    assert resolved["api_key_id"] == "key_content_agents"
+    assert resolved["project_id"] == "proj_test"
+    assert resolved["exclusive_use"] is True
 
 
 def test_each_stage_binds_its_own_exclusive_scope(monkeypatch, tmp_path) -> None:

@@ -1364,9 +1364,21 @@ def test_scene_configuration_openai_runtime_files_fail_closed_on_unsafe_metadata
         scene_vast._provider_runtime_inputs(authority)
 
 
-def test_scene_configuration_refuses_mismatched_stage_attestation_before_spend(
+def test_scene_configuration_resolves_pre_rename_stage_attestation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A renamed paid resource class must not cost a production run.
+
+    PR #1167 bound the visual-review stage to
+    ``task_evaluation_scene_configuration_artifixer_visual_review``; the
+    operator receipt on the production host still declared the pre-rename
+    ``task_evaluation_artifixer_ai_visual_review``. Scene 839873 then refused
+    at the no-spend allocator dry run for a name mismatch alone. Exclusivity is
+    proven by the distinct provisioned key per stage, which
+    ``scene_configuration_openai_stage_scopes_not_distinct`` still enforces
+    above, so the lane now derives an equivalent receipt and continues.
+    """
+
     authority = {
         "authority_digest": "sha256:" + "a" * 64,
         "external_service_spend_caps": {
@@ -1388,13 +1400,11 @@ def test_scene_configuration_refuses_mismatched_stage_attestation_before_spend(
     )
 
     with pytest.raises(
-        scene_vast.TaskEvaluationSceneConfigurationVastError,
-        match=(
-            "scene_configuration_openai_stage_scope_attestation_invalid:"
-            "artifixer_visual_review"
-        ),
-    ):
+        scene_vast.TaskEvaluationSceneConfigurationVastError
+    ) as excinfo:
         scene_vast._provider_runtime_inputs(authority)
+
+    assert "openai_stage_scope_attestation_invalid" not in str(excinfo.value)
 
 
 def test_scene_configuration_accepts_nonzero_scope_for_incremental_cost_metering(
