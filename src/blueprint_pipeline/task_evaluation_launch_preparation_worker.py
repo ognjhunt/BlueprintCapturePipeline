@@ -356,6 +356,7 @@ def materialize_preparation_references(
     *,
     request: Mapping[str, Any],
     input_root: str | Path,
+    content_store_root: str | Path | None = None,
     allowed_uri_prefixes: Sequence[str],
     service_account: str,
     source_commit: str,
@@ -389,9 +390,17 @@ def materialize_preparation_references(
         )
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     root = root.resolve(strict=True)
+    content_root = Path(content_store_root or root).expanduser()
+    if content_root.is_symlink():
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_content_store_root_unsafe"
+        )
+    content_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    content_root = content_root.resolve(strict=True)
     rows, unique_object_count = _materialize_reference_records(
         references=collect_preparation_references(validated),
         input_root=root,
+        content_store_root=content_root,
         allowed_uri_prefixes=validated_prefixes,
         fetcher=fetcher,
     )
@@ -404,6 +413,9 @@ def materialize_preparation_references(
         "source_commit": source_commit,
         "reference_count": len(rows),
         "unique_object_count": unique_object_count,
+        "content_addressed_reuse_count": sum(
+            row["content_addressed_reuse"] for row in rows
+        ),
         "references": rows,
         "full_byte_service_account_readback_passed": all(
             row["full_byte_service_account_readback_passed"] for row in rows
@@ -426,12 +438,14 @@ def _materialize_reference_records(
     *,
     references: Sequence[Mapping[str, Any]],
     input_root: str | Path,
+    content_store_root: str | Path | None = None,
     allowed_uri_prefixes: Sequence[str],
     fetcher: ReferenceFetcher,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch and hash typed references without assuming their parent contract."""
 
     root = Path(input_root).resolve(strict=True)
+    content_root = Path(content_store_root or root).resolve(strict=True)
     rows: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, int], Path] = {}
     for reference in references:
@@ -446,15 +460,16 @@ def _materialize_reference_records(
         destination = by_identity.get(identity)
         reused = destination is not None
         if destination is None:
-            destination = root / digest.removeprefix("sha256:")
-            by_identity[identity] = destination
-            if destination.is_symlink():
+            filename = digest.removeprefix("sha256:")
+            cached = content_root / filename
+            if cached.is_symlink():
                 raise TaskEvaluationLaunchPreparationWorkerError(
                     "launch_preparation_materialized_target_unsafe"
                 )
-            if not destination.exists():
-                temporary = root / (
-                    f".{destination.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"
+            reused = cached.exists()
+            if not cached.exists():
+                temporary = content_root / (
+                    f".{cached.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"
                 )
                 try:
                     fetcher(uri, temporary, size)
@@ -470,11 +485,11 @@ def _materialize_reference_records(
                     finally:
                         os.close(descriptor)
                     try:
-                        os.link(temporary, destination, follow_symlinks=False)
+                        os.link(temporary, cached, follow_symlinks=False)
                     except FileExistsError:
                         pass
                     directory = os.open(
-                        root,
+                        content_root,
                         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
                     )
                     try:
@@ -483,17 +498,53 @@ def _materialize_reference_records(
                         os.close(directory)
                 finally:
                     temporary.unlink(missing_ok=True)
-            if destination.is_symlink() or not stat.S_ISREG(
-                destination.lstat().st_mode
+            if cached.is_symlink() or not stat.S_ISREG(
+                cached.lstat().st_mode
             ):
                 raise TaskEvaluationLaunchPreparationWorkerError(
                     "launch_preparation_materialized_target_unsafe"
                 )
-            observed_digest, observed_size = _sha256_and_size(destination)
+            observed_digest, observed_size = _sha256_and_size(cached)
             if observed_digest != digest or observed_size != size:
                 raise TaskEvaluationLaunchPreparationWorkerError(
                     "launch_preparation_materialized_target_identity_mismatch"
                 )
+            destination = root / filename
+            if destination != cached:
+                if destination.is_symlink():
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_materialized_target_unsafe"
+                    )
+                projection_created = False
+                try:
+                    os.link(cached, destination, follow_symlinks=False)
+                    projection_created = True
+                except FileExistsError:
+                    pass
+                if projection_created:
+                    directory = os.open(
+                        root,
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                    )
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
+                if (
+                    destination.is_symlink()
+                    or not stat.S_ISREG(destination.lstat().st_mode)
+                    or destination.stat().st_ino != cached.stat().st_ino
+                    or destination.stat().st_dev != cached.stat().st_dev
+                ):
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_materialized_projection_invalid"
+                    )
+                observed_digest, observed_size = _sha256_and_size(destination)
+                if observed_digest != digest or observed_size != size:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        "launch_preparation_materialized_target_identity_mismatch"
+                    )
+            by_identity[identity] = destination
         rows.append(
             {
                 **reference,
@@ -509,6 +560,7 @@ def materialize_recipe_configuration_references(
     *,
     recipe: Mapping[str, Any],
     input_root: str | Path,
+    content_store_root: str | Path | None = None,
     allowed_uri_prefixes: Sequence[str],
     fetcher: ReferenceFetcher = default_reference_fetcher,
 ) -> list[dict[str, Any]]:
@@ -522,6 +574,13 @@ def materialize_recipe_configuration_references(
             "launch_preparation_input_root_unsafe"
         )
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    content_root = Path(content_store_root or root).expanduser()
+    if content_root.is_symlink():
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_content_store_root_unsafe"
+        )
+    content_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    content_root = content_root.resolve(strict=True)
     references = [
         {
             "contract_path": f"construction.recipe.stage_sequence.{index}.configuration",
@@ -532,6 +591,7 @@ def materialize_recipe_configuration_references(
     rows, _ = _materialize_reference_records(
         references=references,
         input_root=root,
+        content_store_root=content_root,
         allowed_uri_prefixes=validated_prefixes,
         fetcher=fetcher,
     )
@@ -659,6 +719,7 @@ def process_launch_preparation_queue(
     results_root.mkdir(mode=0o750, exist_ok=True)
     conflicts_root = results_root / "conflicts"
     conflicts_root.mkdir(mode=0o750, exist_ok=True)
+    content_store_root = Path(input_root) / "content-addressed" / "sha256"
     processed: list[dict[str, Any]] = []
     for source in sorted((root / "pending").glob("*.json"))[:max_messages]:
         claimed = root / "processing" / source.name
@@ -679,6 +740,7 @@ def process_launch_preparation_queue(
             result = materialize_preparation_references(
                 request=envelope["request"],
                 input_root=Path(input_root) / str(envelope["request"]["preparation_id"]),
+                content_store_root=content_store_root,
                 allowed_uri_prefixes=allowed_uri_prefixes,
                 service_account=service_account,
                 source_commit=observed_source_commit,
@@ -806,6 +868,7 @@ def process_launch_preparation_queue(
                 revision_input_rows, _ = _materialize_reference_records(
                     references=transitive_references,
                     input_root=revision_inputs_root,
+                    content_store_root=content_store_root,
                     allowed_uri_prefixes=validate_allowed_uri_prefixes(
                         allowed_uri_prefixes
                     ),
@@ -824,6 +887,10 @@ def process_launch_preparation_queue(
                         (row["digest"], row["size_bytes"])
                         for row in result["references"]
                     }
+                )
+                result["content_addressed_reuse_count"] = sum(
+                    row["content_addressed_reuse"]
+                    for row in result["references"]
                 )
                 result["result_digest"] = canonical_digest(
                     result, digest_field="result_digest"
@@ -880,6 +947,7 @@ def process_launch_preparation_queue(
                             / str(envelope["request"]["preparation_id"])
                             / "construction-stage-configurations"
                         ),
+                        content_store_root=content_store_root,
                         allowed_uri_prefixes=allowed_uri_prefixes,
                         fetcher=fetcher,
                     )
@@ -891,6 +959,10 @@ def process_launch_preparation_queue(
                         (row["digest"], row["size_bytes"])
                         for row in result["references"]
                     }
+                )
+                result["content_addressed_reuse_count"] = sum(
+                    row["content_addressed_reuse"]
+                    for row in result["references"]
                 )
                 stage_one_path = Path(
                     str(recipe_configuration_references[0]["materialized_path"])

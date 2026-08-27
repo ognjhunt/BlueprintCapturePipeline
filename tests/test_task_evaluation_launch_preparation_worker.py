@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -366,6 +367,94 @@ def test_materializes_every_reference_and_full_byte_reads_back(tmp_path) -> None
         path = Path(row["materialized_path"])
         assert path.read_bytes() == payloads[row["uri"]]
         assert path.stat().st_mode & 0o777 == 0o440
+
+
+def test_reuses_digest_objects_across_release_bound_preparations(tmp_path) -> None:
+    first, payloads = request_with_fetchable_bytes()
+    second = copy.deepcopy(first)
+    second["expected_production_commit"] = "b" * 40
+    second["preparation_id"] = "team-a-scene-841007-zero-v2"
+    second["run_id"] = "run-scene-841007-zero-v2"
+    content_store = tmp_path / "inputs" / "content-addressed" / "sha256"
+    fetch_count = 0
+
+    def counted_fetch(uri: str, destination: Path, maximum_bytes: int) -> None:
+        nonlocal fetch_count
+        fetch_count += 1
+        fetcher(payloads)(uri, destination, maximum_bytes)
+
+    first_result = materialize_preparation_references(
+        request=first,
+        input_root=tmp_path / "inputs" / first["preparation_id"],
+        content_store_root=content_store,
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=first["expected_production_commit"],
+        fetcher=counted_fetch,
+    )
+    first_fetch_count = fetch_count
+    assert first_fetch_count == first_result["unique_object_count"]
+    assert first_result["source_commit"] == "a" * 40
+
+    second_result = materialize_preparation_references(
+        request=second,
+        input_root=tmp_path / "inputs" / second["preparation_id"],
+        content_store_root=content_store,
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=second["expected_production_commit"],
+        fetcher=counted_fetch,
+    )
+
+    assert fetch_count == first_fetch_count
+    assert second_result["preparation_id"] == second["preparation_id"]
+    assert second_result["source_commit"] == "b" * 40
+    assert second_result["content_addressed_reuse_count"] == second_result[
+        "reference_count"
+    ]
+    assert all(
+        os.path.samefile(first_row["materialized_path"], second_row["materialized_path"])
+        for first_row, second_row in zip(
+            first_result["references"], second_result["references"], strict=True
+        )
+    )
+    assert second_result["result_digest"] == canonical_digest(
+        second_result, digest_field="result_digest"
+    )
+
+
+def test_reused_digest_object_still_requires_full_byte_readback(tmp_path) -> None:
+    value, payloads = request_with_fetchable_bytes()
+    content_store = tmp_path / "inputs" / "content-addressed" / "sha256"
+    first = materialize_preparation_references(
+        request=value,
+        input_root=tmp_path / "inputs" / value["preparation_id"],
+        content_store_root=content_store,
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads),
+    )
+    corrupted = Path(first["references"][0]["materialized_path"])
+    corrupted.chmod(0o640)
+    corrupted.write_bytes(b"corrupt-cache-entry")
+
+    def forbidden_fetch(*_args) -> None:
+        raise AssertionError("an existing cache entry must be verified, not fetched")
+
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationWorkerError,
+        match="launch_preparation_materialized_target_identity_mismatch",
+    ):
+        materialize_preparation_references(
+            request=value,
+            input_root=tmp_path / "inputs" / "second-preparation",
+            content_store_root=content_store,
+            allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+            service_account=SERVICE_ACCOUNT,
+            source_commit=value["expected_production_commit"],
+            fetcher=forbidden_fetch,
+        )
 
 
 def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> None:
