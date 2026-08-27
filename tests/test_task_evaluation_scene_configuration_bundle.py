@@ -2001,3 +2001,40 @@ def test_scene_configuration_boundary_requires_only_what_it_installs() -> None:
     )
     for package in vpa.SCENE_CONFIGURATION_PROVISIONED_COMMANDS:
         assert package in script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
+
+
+def test_provider_entrypoint_never_discards_the_image_pythonpath() -> None:
+    """Assigning PYTHONPATH bare removes the Isaac runtime, USD included.
+
+    Run ``adp-new-scene-simple-relocation-839873-80fd006f-r2-web-20260827T024309Z``
+    rented an RTX GPU, cleared the toolchain gate, built the stage Python
+    runtime, and refused at the import preflight with
+    ``ModuleNotFoundError: No module named 'pxr'`` --
+    ``scene_configuration_provider_stage_import_closure_invalid``, exit 86,
+    ``first_stage_started: false``.
+
+    ``pxr`` is genuinely in the eager import closure of the content-agents
+    stage driver, so the preflight was right to demand it. What removed it was
+    the line above: the entrypoint assigned ``PYTHONPATH`` a bare value, and
+    the Isaac Sim image publishes its own runtime through that variable in the
+    container environment. ``run_public_scene_artifixer3d.sh`` already gets
+    this right at both of its exports; this pins the same rule for every
+    export in the scene-configuration entrypoint.
+    """
+
+    repo = Path(__file__).resolve().parents[1]
+    script = (
+        repo / "scripts" / "run_task_evaluation_scene_configuration_provider.sh"
+    ).read_text(encoding="utf-8")
+
+    exports = [
+        line.strip()
+        for line in script.splitlines()
+        if line.strip().startswith("export PYTHONPATH=")
+    ]
+    assert exports, "entrypoint no longer sets PYTHONPATH; update this contract"
+    discarding = [line for line in exports if "${PYTHONPATH:+" not in line]
+    assert not discarding, (
+        "these exports replace the image's PYTHONPATH instead of appending to "
+        f"it, which removes Isaac's own runtime: {discarding}"
+    )
