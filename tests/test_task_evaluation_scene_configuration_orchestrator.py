@@ -6,6 +6,8 @@ import os
 import pwd
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
     stage_launch_preparation_request,
@@ -18,6 +20,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_orchestrator import 
     PROVIDER_EXECUTION_SCHEMA_VERSION,
     STAGE_RESULT_SCHEMA_VERSION,
     process_scene_configuration_queue,
+)
+from blueprint_pipeline.task_evaluation_scene_construction_queue import (
+    TaskEvaluationSceneConstructionQueueError,
+    finalize_scene_construction,
 )
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_worker import (
@@ -203,3 +209,77 @@ def test_parent_run_without_provider_zero_blocks_configuration_result(
     ]
     assert observed == [f"stage-{index}" for index in range(1, 7)]
     assert len(list((queue / "blocked").glob("*.json"))) == 1
+
+
+def test_paid_lane_finalizes_exact_pending_construction_once(tmp_path) -> None:
+    value, queue, _inputs = staged_configuration(tmp_path)
+    pending = next((queue / "pending").glob("*.json"))
+    envelope = json.loads(pending.read_text(encoding="utf-8"))
+    portable = {
+        **envelope,
+        "control_plane_envelope_digest": envelope["envelope_digest"],
+    }
+    terminal = {
+        "status": "completed",
+        "run_id": envelope["run_id"],
+        "source_commit": value["expected_production_commit"],
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "full_byte_service_account_readback_passed": True,
+        "continuing_spend_from_this_run": False,
+        "blockers": [],
+    }
+
+    first = finalize_scene_construction(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result=terminal,
+    )
+    second = finalize_scene_construction(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result=terminal,
+    )
+
+    assert first == second
+    assert first["finalization_performed"] is True
+    assert first["queue_state"] == "completed"
+    assert first["result_digest"] == canonical_digest(
+        first, digest_field="result_digest"
+    )
+    assert not list((queue / "pending").glob("*.json"))
+    assert len(list((queue / "completed").glob("*.json"))) == 1
+    assert len(list((queue / "results").glob("*.json"))) == 1
+
+
+def test_paid_lane_refuses_to_finalize_a_different_envelope(tmp_path) -> None:
+    value, queue, _inputs = staged_configuration(tmp_path)
+    pending = next((queue / "pending").glob("*.json"))
+    envelope = json.loads(pending.read_text(encoding="utf-8"))
+    portable = {
+        **envelope,
+        "control_plane_envelope_digest": "sha256:" + "f" * 64,
+    }
+    terminal = {
+        "status": "blocked",
+        "run_id": envelope["run_id"],
+        "source_commit": value["expected_production_commit"],
+        "continuing_spend_from_this_run": False,
+        "blockers": ["fixture_refusal"],
+    }
+
+    with pytest.raises(
+        TaskEvaluationSceneConstructionQueueError,
+        match="scene_construction_queue_finalization_binding_invalid",
+    ):
+        finalize_scene_construction(
+            queue_root=queue,
+            envelope=portable,
+            terminal_result=terminal,
+        )
+
+    assert pending.is_file()
+    assert not list((queue / "completed").glob("*.json"))
+    assert not list((queue / "blocked").glob("*.json"))

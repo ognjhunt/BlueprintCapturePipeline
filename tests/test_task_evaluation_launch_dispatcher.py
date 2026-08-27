@@ -891,6 +891,22 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
             "size_bytes": 200,
         },
     }
+    queue_finalization = {
+        "schema_version": "task_evaluation_scene_construction_finalization.v1",
+        "status": "completed",
+        "queue_state": "completed",
+        "finalization_performed": True,
+        "orchestration_id": "prepare-scene-1",
+        "run_id": "scene-run-1",
+        "source_commit": "a" * 40,
+        "result_digest": "",
+    }
+    queue_finalization["result_digest"] = canonical_digest(
+        queue_finalization, digest_field="result_digest"
+    )
+    result["run_id"] = queue_finalization["run_id"]
+    result["source_commit"] = queue_finalization["source_commit"]
+    result["scene_construction_queue_finalization"] = queue_finalization
     _write(result_path, result)
     profile = {
         "terminal_contract": {
@@ -927,6 +943,9 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
             "configured_scene_bundle_reference"
         ],
         "publication_result_digest": "sha256:" + "b" * 64,
+        "scene_construction_queue_finalization_digest": queue_finalization[
+            "result_digest"
+        ],
         "full_byte_service_account_readback_passed": True,
     }
 

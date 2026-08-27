@@ -52,6 +52,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipel
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 # Serial remains the safe default. Operators may explicitly raise this to 2 or
 # 3; the dispatcher rejects every other value before claiming a request, and
 # each worker still crosses the canonical allocator's independent spend,

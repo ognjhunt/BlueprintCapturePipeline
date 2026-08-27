@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -17,6 +18,7 @@ from .task_evaluation_scene_configuration_disclosure import (
 
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_scene_construction_envelope.v1"
+FINALIZATION_SCHEMA_VERSION = "task_evaluation_scene_construction_finalization.v1"
 QUEUE_STATES = ("pending", "processing", "completed", "blocked")
 
 
@@ -223,9 +225,158 @@ def stage_scene_construction(
     return receipt
 
 
+def finalize_scene_construction(
+    *,
+    queue_root: str | Path,
+    envelope: Mapping[str, Any],
+    terminal_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Move one exact construction envelope to its immutable terminal state."""
+
+    orchestration_id = str(envelope.get("orchestration_id") or "")
+    recipe_digest = str(envelope.get("recipe_digest") or "")
+    envelope_digest = str(envelope.get("control_plane_envelope_digest") or "")
+    run_id = str(envelope.get("run_id") or "")
+    source_commit = str(envelope.get("expected_production_commit") or "")
+    if (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", orchestration_id)
+        is None
+        or not run_id
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", recipe_digest) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", envelope_digest) is None
+        or terminal_result.get("run_id") != run_id
+        or terminal_result.get("source_commit") != source_commit
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_binding_invalid"
+        )
+    root = ensure_scene_construction_queue_root(queue_root)
+    filename = f"{orchestration_id}-{recipe_digest.removeprefix('sha256:')}.json"
+    matches = [
+        root / state / filename
+        for state in QUEUE_STATES
+        if (root / state / filename).exists()
+    ]
+    if len(matches) != 1 or matches[0].is_symlink():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_identity_ambiguous"
+        )
+    source = matches[0]
+    try:
+        queued = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_envelope_invalid"
+        ) from exc
+    if (
+        queued.get("schema_version") != ENVELOPE_SCHEMA_VERSION
+        or queued.get("orchestration_id") != orchestration_id
+        or queued.get("run_id") != run_id
+        or queued.get("expected_production_commit") != source_commit
+        or queued.get("recipe_digest") != recipe_digest
+        or queued.get("envelope_digest") != envelope_digest
+        or queued.get("envelope_digest")
+        != canonical_digest(queued, digest_field="envelope_digest")
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_binding_invalid"
+        )
+    completed = (
+        terminal_result.get("status") == "completed"
+        and terminal_result.get("configuration_completed") is True
+        and terminal_result.get("configured_scene_published") is True
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(terminal_result.get("configured_scene_revision_digest") or ""),
+        )
+        is not None
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(terminal_result.get("publication_result_digest") or ""),
+        )
+        is not None
+        and terminal_result.get("full_byte_service_account_readback_passed") is True
+        and terminal_result.get("continuing_spend_from_this_run") is False
+        and not terminal_result.get("blockers")
+    )
+    terminal_state = "completed" if completed else "blocked"
+    target = root / terminal_state / filename
+    results_root = root / "results"
+    if results_root.is_symlink():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_queue_finalization_results_unsafe"
+        )
+    results_root.mkdir(mode=0o750, exist_ok=True)
+    result_path = results_root / filename
+    finalization: dict[str, Any] = {
+        "schema_version": FINALIZATION_SCHEMA_VERSION,
+        "status": "completed" if completed else "blocked",
+        "queue_state": terminal_state,
+        "orchestration_id": orchestration_id,
+        "run_id": run_id,
+        "source_commit": source_commit,
+        "recipe_digest": recipe_digest,
+        "construction_envelope_digest": envelope_digest,
+        "configuration_completed": terminal_result.get("configuration_completed")
+        is True,
+        "configured_scene_published": terminal_result.get(
+            "configured_scene_published"
+        )
+        is True,
+        "configured_scene_revision_digest": terminal_result.get(
+            "configured_scene_revision_digest"
+        ),
+        "publication_result_digest": terminal_result.get(
+            "publication_result_digest"
+        ),
+        "full_byte_service_account_readback_passed": terminal_result.get(
+            "full_byte_service_account_readback_passed"
+        )
+        is True,
+        "continuing_spend_from_this_run": terminal_result.get(
+            "continuing_spend_from_this_run"
+        ),
+        "finalization_performed": True,
+        "queue_path": str(target),
+        "result_path": str(result_path),
+        "blockers": sorted(
+            set(str(item) for item in terminal_result.get("blockers") or [] if str(item))
+        ),
+        "result_digest": "",
+    }
+    finalization["result_digest"] = canonical_digest(
+        finalization, digest_field="result_digest"
+    )
+    try:
+        _write_exclusive(result_path, finalization)
+    except FileExistsError:
+        try:
+            existing = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_queue_finalization_result_conflict"
+            ) from exc
+        if existing != finalization:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_queue_finalization_result_conflict"
+            )
+    if source != target:
+        try:
+            os.replace(source, target)
+        except FileNotFoundError:
+            if not target.is_file():
+                raise TaskEvaluationSceneConstructionQueueError(
+                    "scene_construction_queue_finalization_race"
+                ) from None
+    return finalization
+
+
 __all__ = [
     "ENVELOPE_SCHEMA_VERSION",
+    "FINALIZATION_SCHEMA_VERSION",
     "TaskEvaluationSceneConstructionQueueError",
     "ensure_scene_construction_queue_root",
+    "finalize_scene_construction",
     "stage_scene_construction",
 ]
