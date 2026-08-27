@@ -21,6 +21,8 @@ SCENE_CONFIGURATION_ALLOCATOR = (
 CONFIGURED_SCENE_OBJECT_STORE = (
     "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py"
 )
+VAST_PROVIDER_ADAPTER = "src/blueprint_pipeline/vast_provider_adapter.py"
+VAST_PROVIDER_ADAPTER_CLI = "src/blueprint_pipeline/vast_provider_adapter_cli.py"
 
 
 def test_request_dict_runpod_create_is_discovered_and_unclassified() -> None:
@@ -161,6 +163,25 @@ def test_scene_configuration_paid_surfaces_are_exactly_classified() -> None:
             "full_byte_service_account_readback_passed",
         ],
     }
+
+
+def test_extracted_vast_cli_keeps_the_disable_gate_separately_classified() -> None:
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
+    surfaces = {row["path"]: row for row in manifest["surfaces"]}
+
+    assert surfaces[VAST_PROVIDER_ADAPTER] == {
+        "path": VAST_PROVIDER_ADAPTER,
+        "classification": "grant_gated_legacy_adapter",
+        "required_markers": ["require_paid_resource_admission_grant"],
+    }
+    assert surfaces[VAST_PROVIDER_ADAPTER_CLI] == {
+        "path": VAST_PROVIDER_ADAPTER_CLI,
+        "classification": "hard_disabled_legacy_launcher",
+        "required_markers": ["legacy_vast_provider_mutation_cli_disabled"],
+    }
+    assert "paid_resource_mutation_surface_marker_missing:" + VAST_PROVIDER_ADAPTER not in (
+        verifier.verify()
+    )
 
 
 def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
