@@ -3,12 +3,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import jsonschema
 import pytest
 
 import blueprint_pipeline.materialization as materialization
+from blueprint_pipeline import capture_intake as capture_intake_module
 from blueprint_pipeline.capture_intake import (
     CaptureIntakeError,
     build_capture_admission,
@@ -112,6 +114,35 @@ def test_monocular_materialization_is_content_addressed_idempotent_and_reduced_a
     assert json.loads(
         (first.artifact_root / "capture_intake_object_manifest.json").read_text()
     )["raw_inputs_mutated"] is False
+
+
+def test_link_race_does_not_rechmod_an_already_sealed_shared_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"shared-capture-object"
+    source = tmp_path / "source.mp4"
+    source.write_bytes(payload)
+    object_path = tmp_path / "objects" / "capture.mp4"
+    original_chmod = Path.chmod
+
+    def peer_wins_link(_source: object, destination: object) -> None:
+        peer_object = Path(destination)
+        peer_object.write_bytes(payload)
+        original_chmod(peer_object, 0o440)
+        raise FileExistsError
+
+    def reject_object_chmod(path: Path, mode: int, **kwargs: object) -> None:
+        if path == object_path:
+            raise PermissionError("shared inode belongs to another operator")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(capture_intake_module.os, "link", peer_wins_link)
+    monkeypatch.setattr(Path, "chmod", reject_object_chmod)
+
+    capture_intake_module._store_object(source, object_path, _digest(payload))
+
+    assert object_path.read_bytes() == payload
+    assert os.stat(object_path).st_mode & 0o777 == 0o440
 
 
 def test_intake_identifier_cannot_escape_the_content_addressed_store(tmp_path: Path) -> None:
