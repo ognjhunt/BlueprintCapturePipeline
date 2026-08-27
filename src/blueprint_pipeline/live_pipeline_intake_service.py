@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
@@ -126,6 +126,10 @@ from .task_evaluation_run_state import (
 from .task_evaluation_result_delivery import (
     TaskEvaluationResultDeliveryError,
     resolve_task_evaluation_result_artifact,
+)
+from .task_evaluation_configured_scene_object_store import (
+    TaskEvaluationConfiguredSceneObjectStoreError,
+    read_configured_scene_object,
 )
 from .task_evaluation_method_catalog import (
     TaskEvaluationMethodCatalogError,
@@ -2879,6 +2883,31 @@ def create_app() -> FastAPI:
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
                 "X-Blueprint-Artifact-SHA256": str(record["sha256"]),
+            },
+        )
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-configured-scene-artifact-readback",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def read_task_evaluation_configured_scene_artifact(
+        reference: Dict[str, Any],
+    ) -> Response:
+        try:
+            payload = await run_in_threadpool(
+                read_configured_scene_object,
+                reference=reference,
+                maximum_size_bytes=16 * 1024 * 1024,
+            )
+        except TaskEvaluationConfiguredSceneObjectStoreError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(
+            content=payload,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Blueprint-Artifact-SHA256": str(reference["digest"]),
             },
         )
 

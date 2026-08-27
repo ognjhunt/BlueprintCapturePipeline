@@ -890,7 +890,53 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
             "digest": "sha256:" + "d" * 64,
             "size_bytes": 200,
         },
+        "task_thumbnail_reference": {
+            "uri": "s3://blueprint/configured/task-thumbnail.png",
+            "digest": "sha256:" + "e" * 64,
+            "size_bytes": 300,
+        },
+        "task_thumbnail_selection_receipt_reference": {
+            "uri": "s3://blueprint/configured/thumbnail-selection.json",
+            "digest": "sha256:" + "f" * 64,
+            "size_bytes": 400,
+        },
     }
+    offering = {
+        "schema_version": "task_evaluation_configured_scene_offering.v1",
+        "status": "launch_ready",
+        "configuration_run_id": "scene-run-1",
+        "team_namespace": "team-a",
+        "catalog_visibility": "team_only",
+        "scene_identity": {"id": "scene-1", "version": "v1"},
+        "task": {
+            "identity": {"id": "push-1", "version": "v1"},
+            "kind": "rigid_relocation",
+            "strategy": "planar_push",
+            "subject_identity": {"id": "object-1", "version": "v1"},
+        },
+        "presentation": {
+            "task_thumbnail": result["task_thumbnail_reference"],
+            "selection_receipt": result[
+                "task_thumbnail_selection_receipt_reference"
+            ],
+        },
+        "evaluation_preparation_binding": {
+            "configured_scene_revision": result[
+                "configured_scene_revision_reference"
+            ],
+            "configured_scene_revision_digest": result[
+                "configured_scene_revision_digest"
+            ],
+            "configured_scene_bundle": result[
+                "configured_scene_bundle_reference"
+            ],
+        },
+        "offering_digest": "",
+    }
+    offering["offering_digest"] = canonical_digest(
+        offering, digest_field="offering_digest"
+    )
+    result["configured_scene_offering"] = offering
     queue_finalization = {
         "schema_version": "task_evaluation_scene_construction_finalization.v1",
         "status": "completed",
@@ -942,6 +988,11 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
         "configured_scene_bundle_reference": result[
             "configured_scene_bundle_reference"
         ],
+        "task_thumbnail_reference": result["task_thumbnail_reference"],
+        "task_thumbnail_selection_receipt_reference": result[
+            "task_thumbnail_selection_receipt_reference"
+        ],
+        "configured_scene_offering": offering,
         "publication_result_digest": "sha256:" + "b" * 64,
         "scene_construction_queue_finalization_digest": queue_finalization[
             "result_digest"

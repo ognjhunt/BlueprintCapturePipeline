@@ -96,6 +96,14 @@ def validate_configured_scene_revision(
         raise TaskEvaluationConfiguredSceneRevisionError(
             "configured_scene_revision_task_scene_identity_conflict"
         )
+    presentation = revision.get("presentation")
+    if isinstance(presentation, Mapping) and (
+        presentation["selection"]["frame_digest"]
+        != presentation["task_thumbnail"]["digest"]
+    ):
+        raise TaskEvaluationConfiguredSceneRevisionError(
+            "configured_scene_revision_thumbnail_binding_invalid"
+        )
     return revision
 
 

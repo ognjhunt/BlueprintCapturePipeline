@@ -170,6 +170,8 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         render_inputs=render_inputs,
         output_root=runtime,
     )
+    thumbnail_path = runtime / "configured-task-thumbnail.png"
+    thumbnail_path.write_bytes(b"exact-selected-render-frame")
     review = {
         "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
         "status": "accepted",
@@ -182,6 +184,12 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "ai_visual_review_completed": True,
         "human_review_completed": False,
         "generated_output_is_capture_or_physical_evidence": False,
+        "task_thumbnail_is_exact_review_frame": True,
+        "task_thumbnail_selection": {
+            "camera_id": "camera-03",
+            "frame_sha256": sha256(thumbnail_path),
+            "rationale": "Upright task view.",
+        },
         "reviewer": {
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
@@ -239,6 +247,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
             artifact("configured_appearance_without_source_object", appearance),
             artifact("appearance_removal_receipt", receipt_path),
             artifact("appearance_visual_review_receipt", review_path),
+            artifact("configured_task_thumbnail", thumbnail_path),
             render_handoff,
         ),
     )
@@ -247,6 +256,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "configured_appearance_without_source_object",
         "appearance_removal_receipt",
         "appearance_visual_review_receipt",
+        "configured_task_thumbnail",
         "provider_render_reference_manifest",
     }
     assert result["provider_mutations_performed"] == 0

@@ -162,6 +162,63 @@ def _component_record(path: Path) -> dict[str, Any]:
     }
 
 
+def _materialize_selected_task_thumbnail(
+    *,
+    review_receipt: Mapping[str, Any],
+    review_frames: list[Mapping[str, Any]],
+    destination: Path,
+) -> dict[str, Any]:
+    """Copy exactly one AI-selected, already-reviewed frame without alteration."""
+
+    thumbnail_selection = review_receipt.get("task_thumbnail_selection")
+    reviewer = review_receipt.get("reviewer")
+    if (
+        not isinstance(thumbnail_selection, Mapping)
+        or not isinstance(reviewer, Mapping)
+        or reviewer.get("kind") != "ai"
+        or not str(reviewer.get("identity") or "")
+        or not str(reviewer.get("model") or "")
+        or review_receipt.get("task_thumbnail_is_exact_review_frame") is not True
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_thumbnail_selection_invalid"
+        )
+    thumbnail_matches = [
+        frame
+        for frame in review_frames
+        if frame.get("camera_id") == thumbnail_selection.get("camera_id")
+        and isinstance(frame.get("final_frame"), Mapping)
+        and frame["final_frame"].get("sha256")
+        == thumbnail_selection.get("frame_sha256")
+    ]
+    if len(thumbnail_matches) != 1:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_thumbnail_selection_invalid"
+        )
+    selected_frame = Path(str(thumbnail_matches[0]["final_frame"].get("path") or ""))
+    if (
+        selected_frame.is_symlink()
+        or not selected_frame.is_file()
+        or _sha256(selected_frame) != thumbnail_selection.get("frame_sha256")
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_thumbnail_selection_invalid"
+        )
+    shutil.copyfile(selected_frame, destination)
+    if _sha256(destination) != thumbnail_selection["frame_sha256"]:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_thumbnail_copy_mismatch"
+        )
+    return {
+        "camera_id": thumbnail_selection["camera_id"],
+        "frame_sha256": thumbnail_selection["frame_sha256"],
+        "rationale": thumbnail_selection["rationale"],
+        "reviewer": dict(reviewer),
+        "derived_appearance_evidence": True,
+        "capture_or_physical_evidence": False,
+    }
+
+
 def _materialized(envelope: Mapping[str, Any], contract_path: str) -> tuple[dict[str, Any], Path]:
     rows = [
         row
@@ -788,6 +845,16 @@ def execute_artifixer_component(
             "scene_configuration_artifixer_visual_review_rejected"
         )
     review_receipt_path = Path(review["review_receipt"]["path"])
+    review_receipt = _read(
+        review_receipt_path,
+        code="scene_configuration_artifixer_visual_review_receipt_invalid",
+    )
+    thumbnail = output_root / "configured_task_thumbnail.png"
+    thumbnail_selection = _materialize_selected_task_thumbnail(
+        review_receipt=review_receipt,
+        review_frames=review_frames,
+        destination=thumbnail,
+    )
     native = runtime_task["native_appearance"]
     appearance_source = Path(native["isaac_nurec_usdz"]["path"])
     appearance = output_root / "configured_appearance_without_source_object.usdz"
@@ -803,6 +870,7 @@ def execute_artifixer_component(
         "visual_review_receipt_sha256": _sha256(copied_review),
         "semantic_object_free_visual_review_passed": True,
         "multiview_consistency_review_passed": True,
+        "task_thumbnail_selection": thumbnail_selection,
         "generated_pixels_labeled": True,
         "appearance_authority": "generated_support_not_observed_source_or_physics_truth",
         "result_digest": "",
@@ -814,6 +882,7 @@ def execute_artifixer_component(
         {"role": "configured_appearance_without_source_object", **_component_record(appearance)},
         {"role": "appearance_removal_receipt", **_component_record(removal_path)},
         {"role": "appearance_visual_review_receipt", **_component_record(copied_review)},
+        {"role": "configured_task_thumbnail", **_component_record(thumbnail)},
         render_handoff,
     ]
     result = {

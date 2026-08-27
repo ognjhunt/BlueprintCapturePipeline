@@ -52,7 +52,11 @@ _PROMPT = (
     "target source object must be absent, the locally generated replacement "
     "surface must be visually plausible, and all non-target content must remain "
     "unchanged. Then decide whether the set is mutually consistent across "
-    "cameras. Return every task/camera exactly once. Reject uncertainty. This is "
+    "cameras. Return every task/camera exactly once. Also choose exactly one "
+    "accepted, upright final frame as the task thumbnail: prefer a clear "
+    "wide-enough view that communicates the task surface and configured scene, "
+    "and bind the choice to its camera id and exact frame digest. Reject "
+    "uncertainty. This is "
     "appearance review only, never collision, physics, or physical-world proof."
 )
 
@@ -75,6 +79,14 @@ class ArtifixerFrameReviewDecision(BaseModel):
     rationale: str = Field(min_length=1, max_length=1_000)
 
 
+class ArtifixerThumbnailSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    camera_id: str = Field(min_length=1, max_length=200)
+    frame_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    rationale: str = Field(min_length=1, max_length=1_000)
+
+
 class ArtifixerAIVisualReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -86,6 +98,7 @@ class ArtifixerAIVisualReviewOutput(BaseModel):
     frames: list[ArtifixerFrameReviewDecision] = Field(
         min_length=1, max_length=AI_REVIEW_MAX_FRAMES
     )
+    task_thumbnail: ArtifixerThumbnailSelection
 
 
 def _read(path: Path, *, code: str) -> dict[str, Any]:
@@ -415,6 +428,41 @@ def _validate_decisions(
     return observed == expected
 
 
+def _validated_thumbnail_selection(
+    *, execution: Mapping[str, Any], inventory: Sequence[Mapping[str, Any]]
+) -> dict[str, str] | None:
+    selection = execution.get("task_thumbnail")
+    if not isinstance(selection, Mapping):
+        return None
+    expected = {
+        (str(row["camera_id"]), str(row["sha256"])) for row in inventory
+    }
+    identity = (
+        str(selection.get("camera_id") or ""),
+        str(selection.get("frame_sha256") or ""),
+    )
+    if (
+        set(selection) != {"camera_id", "frame_sha256", "rationale"}
+        or identity not in expected
+        or not str(selection.get("rationale") or "").strip()
+    ):
+        return None
+    accepted = {
+        (str(row.get("camera_id") or ""), str(row.get("frame_sha256") or ""))
+        for row in execution.get("frames") or []
+        if isinstance(row, Mapping)
+        and row.get("decision") == "accepted"
+        and row.get("orientation_is_upright") is True
+    }
+    if identity not in accepted:
+        return None
+    return {
+        "camera_id": identity[0],
+        "frame_sha256": identity[1],
+        "rationale": str(selection["rationale"]).strip(),
+    }
+
+
 def _record(path: Path) -> dict[str, Any]:
     resolved = path.expanduser().resolve()
     return {
@@ -558,6 +606,13 @@ def run_artifixer_ai_visual_review(
             and row.preserves_non_target_content
             for row in output.frames
         )
+        and any(
+            row.camera_id == output.task_thumbnail.camera_id
+            and row.frame_sha256 == output.task_thumbnail.frame_sha256
+            and row.decision == "accepted"
+            and row.orientation_is_upright
+            for row in output.frames
+        )
     )
     execution: dict[str, Any] = {
         "schema_version": EXECUTION_SCHEMA_VERSION,
@@ -578,6 +633,7 @@ def run_artifixer_ai_visual_review(
             "sdk_version": invocation.sdk_version,
         },
         "frames": structured["frames"],
+        "task_thumbnail": structured["task_thumbnail"],
         "summary": structured["summary"],
         "all_frames_upright": accepted and output.all_frames_upright,
         "semantic_object_absence_review_passed": (
@@ -663,6 +719,9 @@ def seal_artifixer_ai_visual_review(
     task_id, inventory = _frame_inventory(final_path=final_path, final=final)
     reviewer = execution.get("reviewer")
     accepted = _validate_decisions(execution=execution, task_id=task_id, inventory=inventory)
+    thumbnail = _validated_thumbnail_selection(
+        execution=execution, inventory=inventory
+    )
     if (
         len(inventory) < minimum_review_frames
         or execution.get("schema_version") != EXECUTION_SCHEMA_VERSION
@@ -688,6 +747,7 @@ def seal_artifixer_ai_visual_review(
         or execution.get("execution_digest")
         != canonical_digest(execution, digest_field="execution_digest")
         or not accepted
+        or thumbnail is None
     ):
         raise TaskEvaluationArtifixerAIVisualReviewError(
             "artifixer_ai_review_execution_not_acceptable"
@@ -704,6 +764,8 @@ def seal_artifixer_ai_visual_review(
         "review_frame_count": len(inventory),
         "review_frame_inventory_digest": canonical_digest({"frames": inventory}),
         "all_review_frames_digest_bound": True,
+        "task_thumbnail_selection": thumbnail,
+        "task_thumbnail_is_exact_review_frame": True,
         "reviewer": dict(reviewer),
         "review_execution_receipt": {
             "sha256": _sha256(execution_path),
@@ -736,6 +798,7 @@ __all__ = [
     "AI_REVIEW_MAX_COST_USD",
     "AI_REVIEW_MODEL",
     "ArtifixerAIVisualReviewOutput",
+    "ArtifixerThumbnailSelection",
     "ArtifixerFrameReviewDecision",
     "EXECUTION_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",

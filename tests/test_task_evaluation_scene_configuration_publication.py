@@ -5,11 +5,16 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_publication import (
+    MAX_TASK_THUMBNAIL_SIZE_BYTES,
+    TaskEvaluationSceneConfigurationPublicationError,
+    _thumbnail_selection,
     publish_configured_scene_revision,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
@@ -33,6 +38,83 @@ def _artifact(role: str, path: Path) -> dict[str, object]:
         "digest": _sha256(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def _thumbnail_artifacts(root: Path) -> list[dict[str, object]]:
+    thumbnail = root / "configured-task-thumbnail.png"
+    thumbnail.write_bytes(b"exact-reviewed-frame")
+    review = {
+        "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
+        "status": "accepted",
+        "review_frame_count": 8,
+        "task_thumbnail_is_exact_review_frame": True,
+        "task_thumbnail_selection": {
+            "camera_id": "camera-3",
+            "frame_sha256": _sha256(thumbnail),
+            "rationale": "The task surface and configured scene are both clear.",
+        },
+        "reviewer": {
+            "kind": "ai",
+            "identity": "artifixer-independent-vision-reviewer-v1",
+            "runtime": "openai_agents_sdk",
+            "model": "gpt-5.6-terra",
+        },
+        "receipt_digest": "",
+    }
+    review["receipt_digest"] = canonical_digest(
+        review, digest_field="receipt_digest"
+    )
+    review_path = root / "appearance-review.json"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    return [
+        _artifact("appearance_visual_review_receipt", review_path),
+        _artifact("configured_task_thumbnail", thumbnail),
+    ]
+
+
+def test_thumbnail_size_ceiling_matches_private_website_delivery(
+    tmp_path: Path,
+) -> None:
+    thumbnail = tmp_path / "thumbnail.png"
+    review_path = tmp_path / "review.json"
+
+    def seal(size: int) -> None:
+        thumbnail.write_bytes(b"x" * size)
+        review = {
+            "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
+            "status": "accepted",
+            "review_frame_count": 8,
+            "task_thumbnail_is_exact_review_frame": True,
+            "task_thumbnail_selection": {
+                "camera_id": "camera-3",
+                "frame_sha256": _sha256(thumbnail),
+                "rationale": "Upright task view.",
+            },
+            "reviewer": {
+                "kind": "ai",
+                "identity": "artifixer-independent-vision-reviewer-v1",
+                "runtime": "openai_agents_sdk",
+                "model": "gpt-5.6-terra",
+            },
+            "receipt_digest": "",
+        }
+        review["receipt_digest"] = canonical_digest(
+            review, digest_field="receipt_digest"
+        )
+        review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    seal(MAX_TASK_THUMBNAIL_SIZE_BYTES)
+    assert _thumbnail_selection(
+        review_receipt_path=review_path, thumbnail_path=thumbnail
+    )["frame_digest"] == _sha256(thumbnail)
+    seal(MAX_TASK_THUMBNAIL_SIZE_BYTES + 1)
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationPublicationError,
+        match="scene_configuration_publication_thumbnail_selection_invalid",
+    ):
+        _thumbnail_selection(
+            review_receipt_path=review_path, thumbnail_path=thumbnail
+        )
 
 
 def _disclosure_decision(*, provider: bool) -> dict[str, object]:
@@ -71,6 +153,7 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
         path = artifacts / name
         path.write_bytes((role + "\n").encode())
         rows.append(_artifact(role, path))
+    rows.extend(_thumbnail_artifacts(artifacts))
     stage_results = [{"output_artifacts": rows}]
     envelope = {
         "run_id": request["run_id"],
@@ -133,6 +216,21 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     assert result["configured_scene_revision_reference"]["uri"].startswith(
         "s3://blueprint-production-inputs/"
     )
+    assert revision["presentation"]["task_thumbnail"]["digest"] == _sha256(
+        artifacts / "configured-task-thumbnail.png"
+    )
+    assert revision["presentation"]["selection"]["camera_id"] == "camera-3"
+    assert revision["presentation"]["selected_from_exact_reviewed_frame_count"] == 8
+    assert result["configured_scene_offering"]["status"] == "launch_ready"
+    assert result["configured_scene_offering"]["evaluation_preparation_binding"][
+        "configuration_source_commit"
+    ] == revision["source_commit"]
+    assert "source_commit" not in result["configured_scene_offering"][
+        "evaluation_preparation_binding"
+    ]
+    assert result["configured_scene_offering"]["evaluation_preparation_binding"][
+        "configured_scene_revision"
+    ] == result["configured_scene_revision_reference"]
     assert result["provider_mutation_performed"] is False
 
 
@@ -157,6 +255,7 @@ def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None
         path = artifacts / name
         path.write_bytes((role + "\n").encode())
         rows.append(_artifact(role, path))
+    rows.extend(_thumbnail_artifacts(artifacts))
     decision = _disclosure_decision(provider=True)
     envelope = {
         "run_id": request["run_id"],

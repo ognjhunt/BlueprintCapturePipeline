@@ -1087,6 +1087,46 @@ def test_live_pipeline_intake_service_accepts_signed_request_and_rejects_replay(
     assert "replayed intake signature nonce" in replay.text
 
 
+def test_configured_scene_thumbnail_readback_returns_exact_private_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "incoming"))
+    expected = b"exact-digest-bound-thumbnail"
+    reference = {
+        "uri": "s3://blueprint-production-inputs/blueprint/arm-decision-proof-v1/configured-scenes/team/thumbnail/sha256/"
+        + "a" * 64
+        + "/task-thumbnail.png",
+        "digest": "sha256:" + "a" * 64,
+        "size_bytes": len(expected),
+    }
+    observed: dict[str, object] = {}
+
+    def readback(*, reference: dict[str, object], maximum_size_bytes: int) -> bytes:
+        observed.update(reference)
+        assert maximum_size_bytes == 16 * 1024 * 1024
+        return expected
+
+    monkeypatch.setattr(service, "read_configured_scene_object", readback)
+    body = json.dumps(reference, separators=(",", ":"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-configured-scene-artifact-readback",
+        content=body,
+        headers=_signed_intake_headers(
+            "test-intake-token",
+            body,
+            nonce="configured-scene-thumbnail-readback",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.content == expected
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-blueprint-artifact-sha256"] == reference["digest"]
+    assert observed == reference
+
+
 def test_legacy_webapp_hmac_compatibility_is_explicit_scoped_and_replay_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

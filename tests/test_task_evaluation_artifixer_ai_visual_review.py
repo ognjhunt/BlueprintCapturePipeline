@@ -109,6 +109,11 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
             }
             for row in inventory
         ],
+        "task_thumbnail": {
+            "camera_id": inventory[1]["camera_id"],
+            "frame_sha256": inventory[1]["sha256"],
+            "rationale": "This view clearly shows the task surface and configured scene.",
+        },
         "execution_digest": "",
     }
     execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
@@ -130,6 +135,12 @@ def test_seals_exact_frame_ai_review_without_physics_claim(tmp_path: Path) -> No
     assert receipt["status"] == "accepted"
     assert receipt["all_frames_upright"] is True
     assert receipt["all_review_frames_digest_bound"] is True
+    assert receipt["task_thumbnail_selection"] == {
+        "camera_id": "camera-1",
+        "frame_sha256": _sha256(tmp_path / "frame-1.png"),
+        "rationale": "This view clearly shows the task surface and configured scene.",
+    }
+    assert receipt["task_thumbnail_is_exact_review_frame"] is True
     assert receipt["physics_or_collision_authority_granted"] is False
 
 
@@ -174,6 +185,26 @@ def test_rejects_review_with_upside_down_frame(tmp_path: Path) -> None:
     final, execution = _inputs(tmp_path)
     value = json.loads(execution.read_text(encoding="utf-8"))
     value["frames"][0]["orientation_is_upright"] = False
+    value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
+    execution.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationArtifixerAIVisualReviewError,
+        match="artifixer_ai_review_execution_not_acceptable",
+    ):
+        seal_artifixer_ai_visual_review(
+            final_composite_receipt_path=final,
+            review_execution_receipt_path=execution,
+            publisher_instance_id="104",
+            minimum_review_frames=2,
+            output_path=tmp_path / "review.json",
+        )
+
+
+def test_rejects_thumbnail_not_bound_to_one_reviewed_frame(tmp_path: Path) -> None:
+    final, execution = _inputs(tmp_path)
+    value = json.loads(execution.read_text(encoding="utf-8"))
+    value["task_thumbnail"]["frame_sha256"] = "sha256:" + "f" * 64
     value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
     execution.write_text(json.dumps(value), encoding="utf-8")
 
