@@ -364,6 +364,12 @@ def _load_verified_preparation(
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_scene_construction_envelope_ambiguous"
             )
+        queue_state = candidates[0].parent.name
+        if queue_state not in {"pending", "processing"}:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_scene_construction_queue_state_invalid:"
+                f"{queue_state}"
+            )
         construction_envelope_path = candidates[0].resolve()
         construction_envelope = _load_sealed(
             construction_envelope_path,

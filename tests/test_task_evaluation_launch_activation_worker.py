@@ -210,9 +210,7 @@ def test_activation_consumes_production_compiler_adapter_without_codex_handoff(
     assert loaded_adapter["result_digest"] == adapter["result_digest"]
 
 
-def test_activation_consumes_scene_construction_envelope_without_codex_handoff(
-    tmp_path: Path,
-) -> None:
+def _stage_scene_configuration_preparation(tmp_path: Path):
     preparation, payloads = production_request_with_fetchable_bytes()
     preparation_queue = tmp_path / "preparation-queue"
     input_root = tmp_path / "inputs"
@@ -245,6 +243,29 @@ def test_activation_consumes_scene_construction_envelope_without_codex_handoff(
             "expected_production_commit"
         ],
     }
+    return (
+        preparation,
+        payloads,
+        preparation_queue,
+        input_root,
+        construction_queue,
+        result,
+        activation,
+    )
+
+
+def test_activation_consumes_scene_construction_envelope_without_codex_handoff(
+    tmp_path: Path,
+) -> None:
+    (
+        _preparation,
+        _payloads,
+        preparation_queue,
+        input_root,
+        construction_queue,
+        result,
+        activation,
+    ) = _stage_scene_configuration_preparation(tmp_path)
 
     loaded_request, loaded_result, construction, references = (
         worker._load_verified_preparation(
@@ -262,6 +283,120 @@ def test_activation_consumes_scene_construction_envelope_without_codex_handoff(
         "construction_queue_envelope_digest"
     ]
     assert "construction.recipe.stage_sequence.0.configuration" in references
+
+
+@pytest.mark.parametrize("terminal_state", ["blocked", "completed"])
+def test_activation_refuses_terminal_scene_construction_before_side_effects(
+    tmp_path: Path,
+    terminal_state: str,
+) -> None:
+    (
+        preparation,
+        payloads,
+        preparation_queue,
+        input_root,
+        construction_queue,
+        preparation_result,
+        _activation_binding,
+    ) = _stage_scene_configuration_preparation(tmp_path)
+    construction_envelope = next((construction_queue / "pending").glob("*.json"))
+    os.replace(
+        construction_envelope,
+        construction_queue / terminal_state / construction_envelope.name,
+    )
+
+    request = activation_request(lane="task_evaluation_scene_configuration")
+    request["activation_id"] = (
+        f"activation-scene-configuration-terminal-{terminal_state}"
+    )
+    request["preparation"] = {
+        "preparation_id": preparation["preparation_id"],
+        "request_digest": launch_preparation_request_digest(preparation),
+        "result_digest": preparation_result["result_digest"],
+    }
+    request["team_namespace"] = preparation["team_namespace"]
+    request["expected_production_commit"] = preparation[
+        "expected_production_commit"
+    ]
+    now = datetime.now(timezone.utc)
+    request["authorization"]["authorized_on"] = now.isoformat()
+    request["authorization"]["standing_authorization_expires_at"] = (
+        now + timedelta(hours=1)
+    ).isoformat()
+    for name, reference in request["lineage"].items():
+        if name == "kind":
+            continue
+        content = json.dumps({"kind": name}).encode()
+        reference.update(_reference(str(reference["uri"]), content))
+        payloads[str(reference["uri"])] = content
+    window_bytes = _release_window(request, now)
+    request["release_window"] = _reference(
+        "s3://blueprint-production-inputs/coordinator-release-windows/"
+        "release-window.json",
+        window_bytes,
+    )
+    payloads[request["release_window"]["uri"]] = window_bytes
+
+    activation_queue = tmp_path / "activation-queue"
+    stage_launch_activation_request(
+        value=request,
+        queue_root=activation_queue,
+        submitted_by="blueprint-webapp",
+    )
+    profile_dir = tmp_path / "profiles"
+    catalog_path = tmp_path / "catalog.json"
+    authorization_dir = tmp_path / "standing-authorizations"
+    fetch_called = False
+    preparer_called = False
+
+    def forbidden_fetch(
+        _uri: str, _destination: Path, _maximum_bytes: int
+    ) -> None:
+        nonlocal fetch_called
+        fetch_called = True
+        raise AssertionError("terminal construction must block before fetch")
+
+    def forbidden_preparer(**_kwargs):
+        nonlocal preparer_called
+        preparer_called = True
+        raise AssertionError("terminal construction must block before publication")
+
+    run = process_launch_activation_queue(
+        queue_root=activation_queue,
+        preparation_queue_root=preparation_queue,
+        preparation_input_root=input_root,
+        activation_root=tmp_path / "activations",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+        repository_root=tmp_path,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        release_window_prefix=(
+            "s3://blueprint-production-inputs/coordinator-release-windows/"
+        ),
+        profile_dir=profile_dir,
+        webapp_catalog=catalog_path,
+        standing_authorization_dir=authorization_dir,
+        scene_construction_queue_root=construction_queue,
+        scene_configuration_toolchain_root=scene_configuration_toolchain(
+            tmp_path / "toolchain",
+            preparation["expected_production_commit"],
+        ),
+        source_commit=preparation["expected_production_commit"],
+        fetcher=forbidden_fetch,
+        preparer=forbidden_preparer,
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "launch_activation_scene_construction_queue_state_invalid:"
+        f"{terminal_state}"
+    ]
+    assert fetch_called is False
+    assert preparer_called is False
+    assert not profile_dir.exists()
+    assert not catalog_path.exists()
+    assert not authorization_dir.exists()
 
 
 def test_activation_builds_robot_neutral_scene_configuration_context(
