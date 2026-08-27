@@ -1,10 +1,19 @@
 """Build the locked Python runtime missing from the Isaac provider image.
 
-The exact Isaac Sim 6.0.1 image already supplies PIL, NumPy, SciPy, PyYAML,
-and USD.  The scene-configuration stages additionally need the OpenAI Agents
-SDK (and its Pydantic closure).  Resolve that closure from ``uv.lock`` before a
-GPU is rented, download only hash-bound wheels, and ship the resulting
-wheelhouse inside the immutable component package.
+The exact Isaac Sim 6.0.1 image supplies PIL, NumPy, SciPy and PyYAML to a
+bare ``/isaac-sim/python.sh`` process.  It does **not** supply USD: ``pxr``
+lives behind the Kit extension registry and only reaches ``sys.path`` once
+``SimulationApp`` has bootstrapped, which no stage component does -- each one
+is launched as a plain ``python -m blueprint_pipeline.<driver>``.  Run
+``adp-new-scene-simple-relocation-839873-5283bd16-r2-web-20260827T031205Z``
+proved it: the preflight's first six imports resolved and ``from pxr import
+Usd`` raised ``ModuleNotFoundError`` on a rented GPU.  So USD is shipped here
+too, from the same ``usd-core`` wheel the rest of the repo already depends on.
+
+The scene-configuration stages also need the OpenAI Agents SDK (and its
+Pydantic closure).  Resolve every root's closure from ``uv.lock`` before a GPU
+is rented, download only hash-bound wheels, and ship the resulting wheelhouse
+inside the immutable component package.
 """
 
 from __future__ import annotations
@@ -35,7 +44,22 @@ TARGET_PLATFORM_TAGS = (
     "manylinux_2_28_x86_64",
     "manylinux_2_35_x86_64",
 )
-ROOT_DISTRIBUTIONS = ("openai-agents",)
+ROOT_DISTRIBUTIONS = ("openai-agents", "usd-core")
+#: Which supplier each module in the provider entrypoint's import preflight
+#: comes from. The preflight and this map are cross-checked in the bundle
+#: tests, so an import cannot be added to the entrypoint without naming who
+#: ships it, and a module cannot claim a wheelhouse root that is not built.
+#: ``pydantic`` arrives inside the ``openai-agents`` closure rather than as a
+#: root of its own.
+PROVIDER_PREFLIGHT_MODULE_SOURCES: dict[str, str] = {
+    "agents": "wheelhouse:openai-agents",
+    "pydantic": "wheelhouse:openai-agents",
+    "pxr": "wheelhouse:usd-core",
+    "numpy": "isaac-image",
+    "scipy": "isaac-image",
+    "yaml": "isaac-image",
+    "PIL": "isaac-image",
+}
 MANIFEST_NAME = f"{SCHEMA_VERSION}.json"
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_WHEEL_BYTES = 256 * 1024**2

@@ -2038,3 +2038,63 @@ def test_provider_entrypoint_never_discards_the_image_pythonpath() -> None:
         "these exports replace the image's PYTHONPATH instead of appending to "
         f"it, which removes Isaac's own runtime: {discarding}"
     )
+
+
+def test_provider_preflight_imports_all_have_a_declared_supplier() -> None:
+    """Nothing may be demanded at the provider boundary without a supplier.
+
+    Run ``adp-new-scene-simple-relocation-839873-5283bd16-r2-web-20260827T031205Z``
+    rented a GPU and refused at the stage import preflight with
+    ``ModuleNotFoundError: No module named 'pxr'`` --
+    ``scene_configuration_provider_stage_import_closure_invalid``, exit 86,
+    ``first_stage_started: false``.
+
+    The preflight was right to demand USD: ``pxr`` is module-scope in the
+    content-agents driver and in ``adp_content_agents_vast``. The wheelhouse
+    simply did not ship it, on the belief that the Isaac image supplies USD --
+    which holds only once ``SimulationApp`` has bootstrapped Kit, and every
+    stage component is launched as a plain ``python -m``. The run proved it:
+    the preflight's first six imports resolved and the seventh did not.
+
+    So the entrypoint's preflight list and the wheelhouse's roots are now
+    cross-checked. Adding an import without naming its supplier fails here,
+    and so does naming a wheelhouse root that is never built.
+    """
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
+        PROVIDER_PREFLIGHT_MODULE_SOURCES,
+        ROOT_DISTRIBUTIONS,
+    )
+
+    repo = Path(__file__).resolve().parents[1]
+    script = (
+        repo / "scripts" / "run_task_evaluation_scene_configuration_provider.sh"
+    ).read_text(encoding="utf-8")
+
+    body = script.split("provider_python_import_preflight.log", 1)[1]
+    body = body.split("<<'PY'", 1)[1].split("\nPY\n", 1)[0]
+    imported: set[str] = set()
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("import "):
+            imported.add(line[len("import ") :].split()[0].split(".")[0])
+        elif line.startswith("from ") and " import " in line:
+            module = line[len("from ") :].split(" import ", 1)[0].strip()
+            if not module.startswith("blueprint_pipeline"):
+                imported.add(module.split(".")[0])
+
+    assert imported, "could not read the preflight's imports from the entrypoint"
+    undeclared = sorted(imported - set(PROVIDER_PREFLIGHT_MODULE_SOURCES))
+    assert not undeclared, (
+        "the provider preflight imports modules with no declared supplier: "
+        f"{undeclared}"
+    )
+    for module, source in PROVIDER_PREFLIGHT_MODULE_SOURCES.items():
+        if source.startswith("wheelhouse:"):
+            distribution = source.split(":", 1)[1]
+            assert distribution in ROOT_DISTRIBUTIONS, (
+                f"{module} is declared to come from the wheelhouse distribution "
+                f"{distribution!r}, which is not built: {ROOT_DISTRIBUTIONS}"
+            )
+    # The one the rented GPU actually refused on.
+    assert PROVIDER_PREFLIGHT_MODULE_SOURCES["pxr"] == "wheelhouse:usd-core"

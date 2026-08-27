@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
+    ROOT_DISTRIBUTIONS,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
 )
@@ -45,8 +48,15 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
             wheelhouse = root / "python_wheelhouse"
             wheels = wheelhouse / "wheels"
             wheels.mkdir(parents=True)
-            wheel = wheels / "openai_agents-1.0.0-py3-none-any.whl"
-            wheel.write_bytes(b"fixture-wheel")
+            # Derived from the shipped root list, not restated. When
+            # ``usd-core`` was added so the provider could import ``pxr``, a
+            # hardcoded copy here made nine unrelated tests fail on a manifest
+            # mismatch instead of on anything real.
+            built_wheels = []
+            for distribution in ROOT_DISTRIBUTIONS:
+                built = wheels / f"{distribution.replace('-', '_')}-1.0.0-py3-none-any.whl"
+                built.write_bytes(f"fixture-wheel:{distribution}".encode())
+                built_wheels.append((distribution, built))
             python_manifest = {
                 "schema_version": (
                     "task_evaluation_scene_configuration_python_wheelhouse.v1"
@@ -57,18 +67,20 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
                 "platform": "linux-x86_64",
                 "platform_tags": ["manylinux_2_17_x86_64"],
                 "lockfile_sha256": "sha256:" + "1" * 64,
-                "root_distributions": ["openai-agents"],
+                "root_distributions": list(ROOT_DISTRIBUTIONS),
                 "requirements": [
-                    {"name": "openai-agents", "version": "1.0.0"}
+                    {"name": distribution, "version": "1.0.0"}
+                    for distribution, _ in built_wheels
                 ],
                 "wheels": [
                     {
-                        "distribution": "openai-agents",
+                        "distribution": distribution,
                         "version": "1.0.0",
-                        "filename": wheel.name,
-                        "sha256": _sha256(wheel),
-                        "size_bytes": wheel.stat().st_size,
+                        "filename": built.name,
+                        "sha256": _sha256(built),
+                        "size_bytes": built.stat().st_size,
                     }
+                    for distribution, built in built_wheels
                 ],
                 "sdists_allowed": False,
                 "provider_network_install_required": False,
@@ -84,10 +96,11 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
                 json.dumps(python_manifest), encoding="utf-8"
             )
             python_manifest_path.chmod(0o444)
-            wheel.chmod(0o444)
+            for _distribution, built in built_wheels:
+                built.chmod(0o444)
             wheels.chmod(0o555)
             wheelhouse.chmod(0o555)
-            for path in (python_manifest_path, wheel):
+            for path in [python_manifest_path, *(b for _d, b in built_wheels)]:
                 package_files.append(
                     {
                         "relative_path": path.relative_to(root).as_posix(),
@@ -164,7 +177,11 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
     assert receipt["full_byte_service_account_readback_passed"] is True
     assert receipt["provider_mutation_performed"] is False
     assert receipt["paid_resource_allocated"] is False
-    assert len(observed) == 3 * len(ADMITTED_PRODUCER_IDENTITIES) + 3
+    # Two per producer plus its driver, then the toolchain manifest, the
+    # wheelhouse manifest, and one wheel per shipped root distribution.
+    assert len(observed) == 3 * len(ADMITTED_PRODUCER_IDENTITIES) + 2 + len(
+        ROOT_DISTRIBUTIONS
+    )
     assert not output.stat().st_mode & 0o222
     assert all(not path.stat().st_mode & 0o222 for path in output.rglob("*"))
     for identity in ADMITTED_PRODUCER_IDENTITIES:
