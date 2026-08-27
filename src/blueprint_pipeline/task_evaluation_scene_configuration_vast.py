@@ -70,6 +70,7 @@ from .task_evaluation_scene_configuration_runtime_budget import (
 from .task_evaluation_scene_construction_queue import (
     TaskEvaluationSceneConstructionQueueError,
     finalize_scene_construction,
+    preflight_scene_construction_finalization,
 )
 from .task_evaluation_supervisor.openai_cost_authority import (
     OpenAICostAuthorityError,
@@ -1379,6 +1380,41 @@ def run_scene_configuration_vast(
                 scene_construction_queue_root=scene_construction_queue_root,
             )
         return _seal_terminal_result(job, blocked)
+    if execute and not diagnostic_only:
+        try:
+            if scene_construction_queue_root is None or not str(
+                scene_construction_queue_root
+            ).strip():
+                raise TaskEvaluationSceneConstructionQueueError(
+                    "scene_construction_queue_finalization_root_missing"
+                )
+            preflight_scene_construction_finalization(
+                queue_root=scene_construction_queue_root,
+                envelope=_portable_construction_envelope(receipt),
+            )
+        except (OSError, ValueError) as exc:
+            blocked = {
+                "schema_version": result_schema_version,
+                "status": blocked_status,
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                **diagnostic_claim_boundary,
+                "continuing_spend_from_this_run": False,
+                "blockers": [
+                    "scene_construction_queue_finalization_preflight_failed:"
+                    + redacted_failure_detail(exc)
+                ],
+            }
+            return _seal_live_terminal_result(
+                job,
+                blocked,
+                receipt=receipt,
+                scene_construction_queue_root=scene_construction_queue_root,
+            )
     runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
         return _seal_terminal_result(

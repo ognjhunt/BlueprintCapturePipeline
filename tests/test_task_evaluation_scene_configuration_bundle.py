@@ -43,8 +43,11 @@ from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget impor
 )
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
+    TaskEvaluationSceneConstructionQueueError,
     ensure_scene_construction_queue_root,
+    preflight_scene_construction_finalization,
 )
+from blueprint_pipeline import task_evaluation_scene_construction_queue as scene_queue
 from blueprint_pipeline import vast_provider_adapter as vpa
 from scripts.build_task_evaluation_scene_configuration_live_profile import (
     build_scene_configuration_live_profile,
@@ -521,6 +524,47 @@ def _provider_runtime(
     return runtime, identity
 
 
+def test_scene_construction_finalization_preflight_binds_exact_writable_queue_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _build(tmp_path, "bundle")
+    receipt = load_scene_configuration_provider_bundle_receipt(
+        tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    )
+    queue_root = _construction_queue(tmp_path)
+    envelope = scene_vast._portable_construction_envelope(receipt)
+
+    ready = preflight_scene_construction_finalization(
+        queue_root=queue_root,
+        envelope=envelope,
+    )
+
+    assert ready["status"] == "ready"
+    assert ready["run_id"] == receipt["run_id"]
+    assert ready["construction_envelope_digest"] == envelope[
+        "control_plane_envelope_digest"
+    ]
+    assert ready["provider_mutation_performed"] is False
+    assert ready["paid_execution_requested"] is False
+
+    real_access = scene_queue.os.access
+    monkeypatch.setattr(
+        scene_queue.os,
+        "access",
+        lambda path, mode: False
+        if Path(path).name == "completed"
+        else real_access(path, mode),
+    )
+    with pytest.raises(
+        TaskEvaluationSceneConstructionQueueError,
+        match="scene_construction_queue_finalization_destination_unwritable",
+    ):
+        preflight_scene_construction_finalization(
+            queue_root=queue_root,
+            envelope=envelope,
+        )
+
+
 def _build_provider_render_bundle(
     tmp_path: Path, name: str, monkeypatch: pytest.MonkeyPatch
 ) -> dict:
@@ -946,6 +990,70 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
         "provider_runtime/input/portable_construction_envelope.v1.json"
     ]
     assert "provider_runtime/input/references/0001.usda" in names
+
+
+def test_live_run_preflights_queue_finalization_before_any_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text("{}", encoding="utf-8")
+    authority = {
+        "authority_digest": "sha256:" + "e" * 64,
+        "hard_attempt_spend_cap_usd": MAX_ATTEMPT_SPEND_USD,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+        "maximum_single_resource_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
+        "external_service_spend_caps": {
+            "openai": {"maximum_cost_usd": 1.5, "maximum_requests": 32}
+        },
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "validate_scene_configuration_paid_authority",
+        lambda _value, **_kwargs: authority,
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("mutation reached before queue finalization preflight")
+
+    monkeypatch.setattr(scene_vast, "_provider_runtime_inputs", forbidden)
+    monkeypatch.setattr(
+        scene_vast, "stage_wam_provider_bundle_object_store", forbidden
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "preflight_scene_construction_finalization",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_queue_finalization_destination_unwritable"
+            )
+        ),
+    )
+
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "job",
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=object(),
+        execute=True,
+        scene_construction_queue_root=_construction_queue(tmp_path),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert len(result["blockers"]) == 1
+    assert result["blockers"][0].startswith(
+        "scene_construction_queue_finalization_preflight_failed:"
+    )
+    assert result["blockers"][0].endswith(
+        "scene_construction_queue_finalization_destination_unwritable"
+    )
+    assert result["scene_construction_queue_finalization"]["queue_state"] == (
+        "blocked"
+    )
 
 
 def test_preallocation_refusal_seals_canonical_terminal_result(
