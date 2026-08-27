@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .task_evaluation_launch_dispatcher import canonical_digest
+from .task_evaluation_release_reference_lock import release_reference_lock
 
 REQUEST_SCHEMA_VERSION = "task_evaluation_terminal_resource_release_request.v1"
 QUEUE_RECEIPT_SCHEMA_VERSION = "task_evaluation_terminal_resource_release_queue_receipt.v1"
@@ -107,7 +108,7 @@ def validate_terminal_resource_release_request(value: Mapping[str, Any]) -> list
     return sorted(set(blockers))
 
 
-def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
+def _write_immutable_locked(path: Path, value: Mapping[str, Any]) -> bool:
     payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -120,6 +121,11 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
                 f"immutable_terminal_resource_release_conflict:{path.name}"
             )
         return False
+
+
+def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
+    with release_reference_lock(path.parents[2], exclusive=False):
+        return _write_immutable_locked(path, value)
 
 
 RECEIPT_FILENAME = "terminal_resource_release_receipt.json"
@@ -180,7 +186,7 @@ def _retained_receipt(state_root: str | Path, release_id: str) -> dict[str, Any]
         return None
 
 
-def stage_terminal_resource_release_request(
+def _stage_terminal_resource_release_request_locked(
     *, value: Mapping[str, Any], queue_root: str | Path,
     state_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -241,6 +247,19 @@ def stage_terminal_resource_release_request(
         "terminal_resource_release_digest": digest,
         "provider_mutation_performed": False,
     }
+
+
+def stage_terminal_resource_release_request(
+    *,
+    value: Mapping[str, Any],
+    queue_root: str | Path,
+    state_root: str | Path | None = None,
+) -> dict[str, Any]:
+    queue = Path(queue_root).expanduser().resolve()
+    with release_reference_lock(queue.parent, exclusive=False):
+        return _stage_terminal_resource_release_request_locked(
+            value=value, queue_root=queue_root, state_root=state_root
+        )
 
 
 __all__ = [

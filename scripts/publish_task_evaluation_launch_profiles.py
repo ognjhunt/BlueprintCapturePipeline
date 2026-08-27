@@ -27,6 +27,9 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
+from blueprint_pipeline.task_evaluation_release_reference_lock import (
+    release_reference_lock,
+)
 
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
@@ -264,7 +267,7 @@ def _seal_immutable_input_permissions(
             )
 
 
-def publish_profiles(
+def _publish_profiles_locked(
     *,
     profile_paths: Sequence[str | Path],
     profile_dir: str | Path,
@@ -373,6 +376,26 @@ def publish_profiles(
         "webapp_catalog_contains_allocator_arguments": False,
         "webapp_catalog_contains_secret_values": False,
     }
+
+
+def publish_profiles(
+    *,
+    profile_paths: Sequence[str | Path],
+    profile_dir: str | Path,
+    webapp_catalog_out: str | Path,
+    service_account: str | None = None,
+    service_group: str | None = None,
+) -> dict[str, Any]:
+    catalog_path = Path(webapp_catalog_out).expanduser().resolve()
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    with release_reference_lock(catalog_path.parent, exclusive=False):
+        return _publish_profiles_locked(
+            profile_paths=profile_paths,
+            profile_dir=profile_dir,
+            webapp_catalog_out=webapp_catalog_out,
+            service_account=service_account,
+            service_group=service_group,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

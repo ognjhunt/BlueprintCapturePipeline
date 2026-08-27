@@ -15,6 +15,7 @@ from .task_evaluation_scene_configuration_disclosure import (
     RENDER_INPUT_STATUSES,
     render_inputs_disclosure_is_coherent,
 )
+from .task_evaluation_release_reference_lock import release_reference_lock
 
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_scene_construction_envelope.v1"
@@ -55,7 +56,7 @@ def ensure_scene_construction_queue_root(queue_root: str | Path) -> Path:
     return root
 
 
-def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+def _write_exclusive_locked(path: Path, value: Mapping[str, Any]) -> None:
     payload = _canonical_bytes(value)
     descriptor = -1
     try:
@@ -86,6 +87,11 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+    with release_reference_lock(path.parents[2], exclusive=False):
+        _write_exclusive_locked(path, value)
 
 
 def stage_scene_construction(
