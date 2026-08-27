@@ -490,6 +490,73 @@ def seal_lane_terminal_artifacts(
     return _without_absent_teardown(sealed, teardown)
 
 
+def seal_preprovider_unallocated_lane_terminal_artifacts(
+    result: Mapping[str, Any],
+    *,
+    attempt_root: str | Path,
+    lane: str,
+    reason: str,
+    extra_artifact_roots: Mapping[str, str | Path] | None = None,
+    binding: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Seal a terminal refusal that proves the provider adapter was not entered.
+
+    This is deliberately narrower than :func:`seal_unallocated_provider_teardown`.
+    It is the caller-facing seam for a lane that stops before its provider adapter:
+    the terminal result must say that zero provider mutations occurred and that
+    continuing spend is false, no provider identity or cost may be present, and no
+    adapter result may exist.  Anything less stays blocked without manufacturing a
+    teardown receipt.
+
+    When those facts agree, the helper records the no-allocation teardown and then
+    delegates to the ordinary digest-bound inventory.  That gives the dispatcher
+    the same ``teardown_manifest_path`` and ``artifact_manifest_path`` contract as
+    an allocated attempt without pretending that a provider teardown occurred.
+    """
+
+    terminal = dict(result)
+    root = Path(attempt_root).expanduser().resolve()
+    provider_run = root / PROVIDER_RUN_DIRNAME
+    teardown = provider_run / TEARDOWN_MANIFEST_NAME
+
+    # A normal allocated/provider attempt already owns its terminal artifacts.
+    # Do not replace or reinterpret them through the pre-provider path.
+    if teardown.is_file():
+        return terminal
+    if terminal.get("status") not in {"blocked", "failed"}:
+        return _blocked(
+            terminal, "preprovider_unallocated_terminal_status_invalid"
+        )
+
+    adapter_result = provider_run / ADAPTER_RESULT_NAME
+    exact_no_allocation = (
+        terminal.get("provider_mutations_performed") == 0
+        and terminal.get("continuing_spend_from_this_run") is False
+        and not _result_reached_a_provider(terminal)
+        and not adapter_result.exists()
+    )
+    if not exact_no_allocation:
+        return _blocked(
+            terminal, "preprovider_unallocated_terminal_proof_invalid"
+        )
+
+    sealed_teardown = seal_unallocated_provider_teardown(
+        provider_run,
+        reason=reason,
+    )
+    if sealed_teardown is None or not sealed_teardown.is_file():
+        return _blocked(
+            terminal, "preprovider_unallocated_teardown_seal_failed"
+        )
+    return seal_lane_terminal_artifacts(
+        terminal,
+        attempt_root=root,
+        lane=lane,
+        extra_artifact_roots=extra_artifact_roots,
+        binding=binding,
+    )
+
+
 __all__ = [
     "ADAPTER_RESULT_NAME",
     "PROVIDER_EVIDENCE_DIRNAME",
@@ -499,5 +566,6 @@ __all__ = [
     "TaskEvaluationArtifactManifestError",
     "build_task_evaluation_artifact_manifest",
     "seal_lane_terminal_artifacts",
+    "seal_preprovider_unallocated_lane_terminal_artifacts",
     "seal_direct_provider_lane_terminal_artifacts",
 ]

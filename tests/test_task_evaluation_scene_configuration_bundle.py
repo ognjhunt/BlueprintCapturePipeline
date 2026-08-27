@@ -707,6 +707,23 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
     assert result["continuing_spend_from_this_run"] is False
     assert result["object_store_cleanup"]["all_objects_absent"] is True
     assert result["scene_construction_queue_finalization"]["queue_state"] == "blocked"
+    teardown_path = Path(result["teardown_manifest_path"])
+    artifact_manifest_path = Path(result["artifact_manifest_path"])
+    teardown = json.loads(teardown_path.read_text(encoding="utf-8"))
+    artifact_manifest = json.loads(
+        artifact_manifest_path.read_text(encoding="utf-8")
+    )
+    assert teardown["status"] == "not_required_provider_adapter_never_invoked"
+    assert teardown["vast_instance_ids"] == []
+    assert teardown["teardown_actions_performed"] == []
+    assert teardown["continuing_spend_from_this_run"] is False
+    assert artifact_manifest["status"] == "completed"
+    assert artifact_manifest["binding"]["allocator_lane"] == (
+        scene_vast.PROVIDER_BUNDLE_KIND
+    )
+    assert artifact_manifest["binding"]["source_commit"] == result["source_commit"]
+    assert "teardown_manifest" in artifact_manifest["required_roles"]
+    assert "teardown_manifest" in artifact_manifest["observed_roles"]
     assert not list((tmp_path / "construction-queue" / "pending").glob("*.json"))
     assert len(list((tmp_path / "construction-queue" / "blocked").glob("*.json"))) == 1
     assert result["result_digest"] == canonical_digest(

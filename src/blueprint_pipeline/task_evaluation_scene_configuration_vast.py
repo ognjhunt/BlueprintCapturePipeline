@@ -36,6 +36,7 @@ from .task_evaluation_artifact_manifest import (
     PROVIDER_RUN_DIRNAME,
     TaskEvaluationArtifactManifestError,
     build_task_evaluation_artifact_manifest,
+    seal_preprovider_unallocated_lane_terminal_artifacts,
     seal_unallocated_provider_teardown,
 )
 from .task_evaluation_scene_configuration_bundle import (
@@ -824,6 +825,18 @@ def _seal_live_terminal_result(
         blockers.append("scene_construction_queue_finalization_not_completed")
         result["status"] = "blocked"
     result["blockers"] = sorted(set(blockers))
+    result = seal_preprovider_unallocated_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane=PROVIDER_BUNDLE_KIND,
+        reason="scene_configuration_provider_adapter_not_invoked",
+        binding={
+            "source_commit": receipt.get("source_commit"),
+            "bundle_sha256": receipt.get("bundle_sha256"),
+            "provider": "vast",
+            "result_schema_version": RESULT_SCHEMA_VERSION,
+        },
+    )
     return _seal_terminal_result(job, result)
 
 
