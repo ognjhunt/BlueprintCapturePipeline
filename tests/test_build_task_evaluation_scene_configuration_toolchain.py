@@ -33,6 +33,69 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
         driver = root / "run"
         driver.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         driver.chmod(0o555)
+        package_files = [
+            {
+                "relative_path": "run",
+                "sha256": _sha256(driver),
+                "size_bytes": driver.stat().st_size,
+                "executable": True,
+            }
+        ]
+        if identity.adapter_id == "artifixer3d_observed_object_removal":
+            wheelhouse = root / "python_wheelhouse"
+            wheels = wheelhouse / "wheels"
+            wheels.mkdir(parents=True)
+            wheel = wheels / "openai_agents-1.0.0-py3-none-any.whl"
+            wheel.write_bytes(b"fixture-wheel")
+            python_manifest = {
+                "schema_version": (
+                    "task_evaluation_scene_configuration_python_wheelhouse.v1"
+                ),
+                "status": "ready",
+                "python_version": "3.12",
+                "implementation": "cpython",
+                "platform": "linux-x86_64",
+                "platform_tags": ["manylinux_2_17_x86_64"],
+                "lockfile_sha256": "sha256:" + "1" * 64,
+                "root_distributions": ["openai-agents"],
+                "requirements": [
+                    {"name": "openai-agents", "version": "1.0.0"}
+                ],
+                "wheels": [
+                    {
+                        "distribution": "openai-agents",
+                        "version": "1.0.0",
+                        "filename": wheel.name,
+                        "sha256": _sha256(wheel),
+                        "size_bytes": wheel.stat().st_size,
+                    }
+                ],
+                "sdists_allowed": False,
+                "provider_network_install_required": False,
+                "manifest_digest": "",
+            }
+            python_manifest["manifest_digest"] = canonical_digest(
+                python_manifest, digest_field="manifest_digest"
+            )
+            python_manifest_path = wheelhouse / (
+                "task_evaluation_scene_configuration_python_wheelhouse.v1.json"
+            )
+            python_manifest_path.write_text(
+                json.dumps(python_manifest), encoding="utf-8"
+            )
+            python_manifest_path.chmod(0o444)
+            wheel.chmod(0o444)
+            wheels.chmod(0o555)
+            wheelhouse.chmod(0o555)
+            for path in (python_manifest_path, wheel):
+                package_files.append(
+                    {
+                        "relative_path": path.relative_to(root).as_posix(),
+                        "sha256": _sha256(path),
+                        "size_bytes": path.stat().st_size,
+                        "executable": False,
+                    }
+                )
         manifest = {
             "schema_version": COMPONENT_PACKAGE_SCHEMA_VERSION,
             "status": "immutable_component_ready",
@@ -57,14 +120,7 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
             ),
             "secrets_via_files_only": True,
             "raw_secret_values_in_argv_or_logs": False,
-            "files": [
-                {
-                    "relative_path": "run",
-                    "sha256": _sha256(driver),
-                    "size_bytes": driver.stat().st_size,
-                    "executable": True,
-                }
-            ],
+            "files": package_files,
             "package_digest": "",
         }
         manifest["package_digest"] = canonical_digest(
@@ -108,7 +164,7 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
     assert receipt["full_byte_service_account_readback_passed"] is True
     assert receipt["provider_mutation_performed"] is False
     assert receipt["paid_resource_allocated"] is False
-    assert len(observed) == 3 * len(ADMITTED_PRODUCER_IDENTITIES) + 1
+    assert len(observed) == 3 * len(ADMITTED_PRODUCER_IDENTITIES) + 3
     assert not output.stat().st_mode & 0o222
     assert all(not path.stat().st_mode & 0o222 for path in output.rglob("*"))
     for identity in ADMITTED_PRODUCER_IDENTITIES:
