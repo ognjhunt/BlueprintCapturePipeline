@@ -43,6 +43,10 @@ from .task_evaluation_immutable_input_resolver import (
 from .task_evaluation_launch_terminal_evidence import (
     terminal_evidence as _build_terminal_evidence,
 )
+from .task_evaluation_launch_context import (
+    is_identifier as _is_identifier,
+    validate_task_evaluation_run_context,
+)
 
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -106,7 +110,10 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
     "execution_admission",
     "claim_ceiling",
 )
-PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = ("source_commit",)
+PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
+    "source_commit",
+    "task_evaluation_run",
+)
 
 
 class TaskEvaluationLaunchError(ValueError):
@@ -173,15 +180,6 @@ def _is_digest(value: Any) -> bool:
         text.startswith(_DIGEST_PREFIX)
         and len(text) == len(_DIGEST_PREFIX) + 64
         and all(character in "0123456789abcdef" for character in text[len(_DIGEST_PREFIX) :])
-    )
-
-
-def _is_identifier(value: Any) -> bool:
-    text = str(value or "")
-    return (
-        bool(text)
-        and len(text) <= 192
-        and all(character.isalnum() or character in "._-" for character in text)
     )
 
 
@@ -417,6 +415,13 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
         r"[0-9a-f]{40}", str(profile.get("source_commit") or "")
     ):
         blockers.append("launch_profile_source_commit_invalid")
+    if "task_evaluation_run" in profile:
+        blockers.extend(
+            validate_task_evaluation_run_context(
+                profile.get("task_evaluation_run"),
+                blocker_prefix="launch_profile_task_evaluation_run",
+            )
+        )
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -669,6 +674,13 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         r"[0-9a-f]{40}", str(descriptor.get("source_commit") or "")
     ):
         blockers.append("launch_profile_public_source_commit_invalid")
+    if "task_evaluation_run" in descriptor:
+        blockers.extend(
+            validate_task_evaluation_run_context(
+                descriptor.get("task_evaluation_run"),
+                blocker_prefix="launch_profile_public_task_evaluation_run",
+            )
+        )
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")

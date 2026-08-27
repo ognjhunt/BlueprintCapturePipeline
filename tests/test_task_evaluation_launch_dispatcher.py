@@ -2544,6 +2544,49 @@ def test_public_descriptor_requires_bounded_authorization_projection(
     )
 
 
+def test_public_catalog_projects_exact_scene_configuration_team_binding(
+    tmp_path: Path,
+) -> None:
+    """A terminal offering must bind back to the team that configured the scene."""
+
+    profile = _profile(tmp_path)
+    context = {
+        "run_mode": "scene_configuration",
+        "team_namespace": "team-a",
+        "scene_id": "interiorgs-839873",
+        "task_id": "planar-mug-push",
+        "configuration_run_id": "scene-configuration-run-001",
+        "evaluation_episode_executed": False,
+    }
+    profile["task_evaluation_run"] = context
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    source = tmp_path / "staging" / "profile.json"
+    _write(source, profile)
+
+    publish_profiles(
+        profile_paths=[source],
+        profile_dir=tmp_path / "published",
+        webapp_catalog_out=tmp_path / "catalog.json",
+    )
+
+    descriptor = json.loads((tmp_path / "catalog.json").read_text())[0]
+    assert descriptor["task_evaluation_run"] == context
+    assert validate_public_launch_profile_descriptor(descriptor) == []
+
+    smuggled = json.loads(json.dumps(descriptor))
+    smuggled["task_evaluation_run"]["launch_id"] = "another-team-launch"
+    assert "launch_profile_public_task_evaluation_run_fields_invalid" in (
+        validate_public_launch_profile_descriptor(smuggled)
+    )
+
+    executed = json.loads(json.dumps(descriptor))
+    executed["task_evaluation_run"]["evaluation_episode_executed"] = True
+    assert (
+        "launch_profile_public_task_evaluation_run_evaluation_episode_executed_invalid"
+        in validate_public_launch_profile_descriptor(executed)
+    )
+
+
 def test_prelaunch_skill_failure_blocks_before_canonical_allocator(tmp_path: Path) -> None:
     """A profile-bound skill failure is retained and can never become a GPU launch."""
 
