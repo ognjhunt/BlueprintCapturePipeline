@@ -14,19 +14,18 @@ executes a paid provider in the HTTP request or promotes proof claims.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hmac
 import json
 import os
 import re
+
 # Subprocess use is limited to fixed systemctl argv plus a strict unit allowlist.
-import subprocess  # nosec B404
+import subprocess as subprocess  # nosec B404 - compatibility re-export for tests
 import time
-import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
@@ -53,6 +52,41 @@ from .live_pipeline_control_plane import (
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
 )
+from .live_pipeline_intake_runtime_controls import (
+    DEFAULT_INTAKE_MAX_BODY_BYTES as DEFAULT_INTAKE_MAX_BODY_BYTES,
+    DEFAULT_INTAKE_MAX_CONCURRENT as DEFAULT_INTAKE_MAX_CONCURRENT,
+    DEFAULT_INTAKE_MAX_JSON_DEPTH as DEFAULT_INTAKE_MAX_JSON_DEPTH,
+    DEFAULT_INTAKE_MAX_JSON_ITEMS as DEFAULT_INTAKE_MAX_JSON_ITEMS,
+    DEFAULT_INTAKE_MAX_QUEUE_FILES as DEFAULT_INTAKE_MAX_QUEUE_FILES,
+    DEFAULT_INTAKE_MAX_STORAGE_BYTES as DEFAULT_INTAKE_MAX_STORAGE_BYTES,
+    DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE as DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE,
+    DEFAULT_MANIFEST_PATH,
+    INTAKE_ALLOW_TRIGGER_ENV as INTAKE_ALLOW_TRIGGER_ENV,
+    INTAKE_MAX_BODY_BYTES_ENV as INTAKE_MAX_BODY_BYTES_ENV,
+    INTAKE_MAX_CONCURRENT_ENV as INTAKE_MAX_CONCURRENT_ENV,
+    INTAKE_MAX_JSON_DEPTH_ENV as INTAKE_MAX_JSON_DEPTH_ENV,
+    INTAKE_MAX_JSON_ITEMS_ENV as INTAKE_MAX_JSON_ITEMS_ENV,
+    INTAKE_MAX_QUEUE_FILES_ENV as INTAKE_MAX_QUEUE_FILES_ENV,
+    INTAKE_MAX_STORAGE_BYTES_ENV as INTAKE_MAX_STORAGE_BYTES_ENV,
+    INTAKE_RATE_LIMIT_PER_MINUTE_ENV as INTAKE_RATE_LIMIT_PER_MINUTE_ENV,
+    INTAKE_TRIGGER_ENV as INTAKE_TRIGGER_ENV,
+    INTAKE_TRIGGER_SYSTEMD_UNIT_ENV as INTAKE_TRIGGER_SYSTEMD_UNIT_ENV,
+    INTAKE_WORK_DIR_ENV,
+    TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV as TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV,
+    TASK_EVALUATION_LAUNCH_PATH_UNIT as TASK_EVALUATION_LAUNCH_PATH_UNIT,
+    TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV,
+    TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV as TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV,
+    TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV as TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV,
+    TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV as TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV,
+    TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV as TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV,
+    _admission_state_paths as _admission_state_paths,
+    _claim_intake_admission as _claim_intake_admission,
+    _release_intake_admission as _release_intake_admission,
+    _trigger_control_plane,
+    _trigger_task_evaluation_launch_dispatcher,
+    _trigger_task_evaluation_terminal_resource_release_dispatcher,
+    build_require_admission,
+)
 from .public_scene_artifixer3d_bundle import (
     DEFAULT_REMOVAL_PIPELINE_POLICY,
     DUAL_TARGET_PIPELINE_MODE,
@@ -62,7 +96,7 @@ from .live_pipeline_input_intake import (
     build_live_pipeline_input_intake,
     translate_decision_evidence_envelope_to_legacy_execution_request,
 )
-from .core.security_controls import json_shape_within_limits, strict_identifier
+from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import canonical_digest
 from .scene_placement.robot_profile import default_robot_id_for_embodiment
 from .scene_object_discovery_contract import SceneObjectDiscoveryContractError
@@ -136,9 +170,6 @@ from .task_evaluation_terminal_resource_release_contract import (
 )
 
 
-DEFAULT_MANIFEST_PATH = (
-    "/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"
-)
 # This constant names an environment variable; it is not a credential value.
 INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"  # nosec B105
 INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
@@ -146,27 +177,16 @@ INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV = (
     "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID"
 )
 INTAKE_MAX_CLOCK_SKEW_SECONDS_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_MAX_CLOCK_SKEW_SECONDS"
-INTAKE_WORK_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"
-INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
-INTAKE_ALLOW_TRIGGER_ENV = "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
 INTAKE_OVERWRITE_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE"
 INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV = "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT"
 INTAKE_CAPTURE_ROOT_BY_SITE_ENV = "BLUEPRINT_LIVE_PIPELINE_CAPTURE_ROOT_BY_SITE_JSON"
 INTAKE_CLIENT_SECRETS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON"
 INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
 INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
-INTAKE_TRIGGER_SYSTEMD_UNIT_ENV = "BLUEPRINT_LIVE_PIPELINE_TRIGGER_SYSTEMD_UNIT"
 TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
 SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV = "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT"
-TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
-)
-TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT"
-)
-TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV = (
-    "BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER"
 )
 TASK_EVALUATION_LAUNCH_EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV = (
@@ -175,41 +195,17 @@ TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV = (
 TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
 )
-TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE"
-TASK_EVALUATION_LAUNCH_PATH_UNIT = (
-    "blueprint-task-evaluation-launch-dispatcher.path"
-)
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT"
 )
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT"
 )
-TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT"
-)
-TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV = (
-    "BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER"
-)
-INTAKE_MAX_BODY_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_BODY_BYTES"
-INTAKE_MAX_JSON_DEPTH_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_DEPTH"
-INTAKE_MAX_JSON_ITEMS_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_ITEMS"
-INTAKE_RATE_LIMIT_PER_MINUTE_ENV = "BLUEPRINT_LIVE_PIPELINE_RATE_LIMIT_PER_MINUTE"
-INTAKE_MAX_CONCURRENT_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_CONCURRENT"
-INTAKE_MAX_QUEUE_FILES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_QUEUE_FILES"
-INTAKE_MAX_STORAGE_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_STORAGE_BYTES"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 PIPELINE_SOURCE_COMMIT_ENV = "BLUEPRINT_SOURCE_COMMIT"
 DEPLOYMENT_IDENTITY_SCHEMA_VERSION = "blueprint_pipeline_deployment_identity.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
-DEFAULT_INTAKE_MAX_BODY_BYTES = 2 * 1024 * 1024
-DEFAULT_INTAKE_MAX_JSON_DEPTH = 32
-DEFAULT_INTAKE_MAX_JSON_ITEMS = 100_000
-DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE = 120
-DEFAULT_INTAKE_MAX_CONCURRENT = 8
-DEFAULT_INTAKE_MAX_QUEUE_FILES = 10_000
-DEFAULT_INTAKE_MAX_STORAGE_BYTES = 20 * 1024 * 1024 * 1024
 # Retained as an inert compatibility surface for older tests/importers. Replay
 # authority is the shared filesystem store below, never this process-local map.
 _INTAKE_NONCE_CACHE: Dict[str, float] = {}
@@ -257,7 +253,10 @@ def _task_evaluation_terminal_resource_release_queue_root(manifest_path: Path) -
     configured = _string(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV))
     if configured:
         return Path(configured).expanduser().resolve()
-    return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_terminal_resource_releases"
+    return (
+        _work_dir(manifest_path).expanduser().resolve()
+        / "task_evaluation_terminal_resource_releases"
+    )
 
 
 def _task_evaluation_terminal_resource_release_state_root(manifest_path: Path) -> Path:
@@ -1447,178 +1446,6 @@ def _redacted_closure_evidence_response(
     }
 
 
-def _trigger_control_plane() -> Dict[str, Any]:
-    unit = _string(os.getenv(INTAKE_TRIGGER_SYSTEMD_UNIT_ENV))
-    allowed = _truthy(os.getenv(INTAKE_ALLOW_TRIGGER_ENV))
-    if not unit:
-        return {
-            "status": "not_configured",
-            "performed": False,
-            "allowed": allowed,
-            "systemd_unit_configured": False,
-        }
-    if not allowed:
-        return {
-            "status": "blocked",
-            "performed": False,
-            "allowed": False,
-            "systemd_unit_configured": True,
-            "blockers": [f"missing_env_{INTAKE_ALLOW_TRIGGER_ENV}"],
-        }
-    if not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
-        return {
-            "status": "blocked",
-            "performed": False,
-            "allowed": True,
-            "systemd_unit_configured": True,
-            "blockers": ["intake_trigger_systemd_unit_invalid"],
-        }
-    command_argv = ["systemctl", "start", "--no-block", unit]
-    # The executable/arguments are fixed and the unit is constrained by the regex above.
-    completed = subprocess.run(  # nosec B603
-        command_argv,
-        shell=False,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return {
-        "status": "triggered" if completed.returncode == 0 else "failed",
-        "performed": completed.returncode == 0,
-        "allowed": True,
-        "systemd_unit_configured": True,
-        "systemd_unit": unit,
-        "command_argv_count": len(command_argv),
-        "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
-    }
-
-
-def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:
-    unit = _string(os.getenv(TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV))
-    mode = _string(os.getenv(TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV)) or "systemctl"
-    allowed = _truthy(os.getenv(TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV))
-    profile_dir = _string(os.getenv(TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV))
-    blockers: list[str] = []
-    if not profile_dir:
-        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV}")
-    elif not Path(profile_dir).expanduser().resolve().is_dir():
-        blockers.append("task_evaluation_launch_profile_dir_missing")
-    if mode not in {"systemctl", "systemd_path"}:
-        blockers.append(f"invalid_env_{TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV}")
-    if mode == "systemctl" and not unit:
-        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV}")
-    elif mode == "systemctl" and not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
-        blockers.append("task_evaluation_launch_trigger_systemd_unit_invalid")
-    if not allowed:
-        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV}")
-    if blockers:
-        return {
-            "status": "blocked",
-            "performed": False,
-            "allowed": allowed,
-            "blockers": sorted(set(blockers)),
-        }
-    if mode == "systemd_path":
-        # Read-only verification only. HTTP intake must never arm or start a
-        # release watcher: an operator may have stopped it to freeze paid
-        # submissions, and accepting a request as "armed" while it is inactive
-        # leaves the durable queue silently unclaimed.
-        observed: dict[str, str] = {}
-        for probe in ("is-enabled", "is-active"):
-            completed = subprocess.run(  # nosec B603 B607 - fixed read-only argv
-                ["systemctl", probe, TASK_EVALUATION_LAUNCH_PATH_UNIT],
-                shell=False,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            observed[probe] = completed.stdout.strip() or (
-                "disabled" if probe == "is-enabled" else "inactive"
-            )
-        if observed["is-active"] != "active":
-            return {
-                "status": "blocked",
-                "performed": False,
-                "allowed": True,
-                "trigger_mode": mode,
-                "systemd_path_unit": TASK_EVALUATION_LAUNCH_PATH_UNIT,
-                "systemd_path_enabled_state": observed["is-enabled"],
-                "systemd_path_active_state": observed["is-active"],
-                "blockers": ["task_evaluation_launch_systemd_path_inactive"],
-                "provider_mutation_performed": False,
-            }
-        return {
-            "status": "armed_by_systemd_path",
-            "performed": True,
-            "allowed": True,
-            "trigger_mode": mode,
-            "systemd_path_unit": TASK_EVALUATION_LAUNCH_PATH_UNIT,
-            "systemd_path_enabled_state": observed["is-enabled"],
-            "systemd_path_active_state": observed["is-active"],
-            "provider_mutation_performed": False,
-        }
-    command_argv = ["systemctl", "start", "--no-block", unit]
-    completed = subprocess.run(  # nosec B603 - fixed executable plus strict unit allowlist
-        command_argv,
-        shell=False,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return {
-        "status": "triggered" if completed.returncode == 0 else "failed",
-        "performed": completed.returncode == 0,
-        "allowed": True,
-        "systemd_unit": unit,
-        "command_argv_count": len(command_argv),
-        "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
-    }
-
-
-def _trigger_task_evaluation_terminal_resource_release_dispatcher() -> Dict[str, Any]:
-    """Start the independent release-only worker; no provider work occurs in HTTP."""
-
-    unit = _string(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV))
-    allowed = _truthy(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV))
-    if not unit:
-        return {
-            "status": "blocked", "performed": False, "allowed": allowed,
-            "blockers": [f"missing_env_{TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV}"],
-        }
-    if not allowed:
-        return {
-            "status": "blocked", "performed": False, "allowed": False,
-            "blockers": [f"missing_env_{TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV}"],
-        }
-    if not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
-        return {
-            "status": "blocked", "performed": False, "allowed": True,
-            "blockers": ["terminal_resource_release_trigger_systemd_unit_invalid"],
-        }
-    command_argv = ["systemctl", "start", "--no-block", unit]
-    completed = subprocess.run(  # nosec B603 - fixed executable and strict unit allowlist
-        command_argv, shell=False, check=False, capture_output=True, text=True, timeout=60,
-    )
-    return {
-        "status": "triggered" if completed.returncode == 0 else "failed",
-        "performed": completed.returncode == 0,
-        "allowed": True,
-        "systemd_unit": unit,
-        "command_argv_count": len(command_argv),
-        "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
-        "provider_mutation_performed": False,
-    }
-
-
 async def _require_token(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -1743,146 +1570,7 @@ async def _require_token(
     return "legacy-bearer"
 
 
-def _intake_storage_usage(root: Path) -> tuple[int, int]:
-    file_count = 0
-    size_bytes = 0
-    if not root.exists():
-        return 0, 0
-    for path in root.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        file_count += 1
-        try:
-            size_bytes += path.stat().st_size
-        except OSError:
-            continue
-    return file_count, size_bytes
-
-
-def _admission_state_paths() -> tuple[Path, Path]:
-    root = _work_dir(_manifest_path()).expanduser().resolve() / ".admission"
-    ensure_dir(root)
-    root.chmod(0o700)
-    return root / "state.json", root / "state.lock"
-
-
-def _claim_intake_admission(client_id: str) -> str:
-    state_path, lock_path = _admission_state_paths()
-    work_root = _work_dir(_manifest_path()).expanduser().resolve()
-    file_count, storage_bytes = _intake_storage_usage(work_root)
-    if file_count >= _positive_int_env(INTAKE_MAX_QUEUE_FILES_ENV, DEFAULT_INTAKE_MAX_QUEUE_FILES):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="intake queue file quota exceeded",
-        )
-    if storage_bytes >= _positive_int_env(
-        INTAKE_MAX_STORAGE_BYTES_ENV, DEFAULT_INTAKE_MAX_STORAGE_BYTES
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="intake storage quota exceeded",
-        )
-    now = time.time()
-    lease_id = f"lease-{uuid.uuid4().hex}"
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        state_payload = _read_mapping_file(state_path)
-        rates = {
-            str(key): [
-                float(item)
-                for item in value
-                if isinstance(item, (int, float)) and float(item) > now - 60.0
-            ]
-            for key, value in _mapping(state_payload.get("rate_windows")).items()
-            if isinstance(value, list)
-        }
-        active = {
-            str(key): dict(value)
-            for key, value in _mapping(state_payload.get("active_leases")).items()
-            if isinstance(value, Mapping)
-            and float(value.get("started_at_epoch") or 0.0) > now - 600.0
-        }
-        client_window = rates.setdefault(client_id, [])
-        if len(client_window) >= _positive_int_env(
-            INTAKE_RATE_LIMIT_PER_MINUTE_ENV,
-            DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="intake client rate limit exceeded",
-            )
-        if len(active) >= _positive_int_env(
-            INTAKE_MAX_CONCURRENT_ENV,
-            DEFAULT_INTAKE_MAX_CONCURRENT,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="intake concurrency quota exceeded",
-            )
-        client_window.append(now)
-        active[lease_id] = {
-            "client_id_sha256": sha256(client_id.encode("utf-8")).hexdigest(),
-            "started_at_epoch": now,
-        }
-        write_json(
-            state_path,
-            {
-                "schema_version": "blueprint_live_intake_admission_state.v1",
-                "updated_at": utc_now_iso(),
-                "rate_windows": rates,
-                "active_leases": active,
-            },
-        )
-    return lease_id
-
-
-def _release_intake_admission(lease_id: str) -> None:
-    state_path, lock_path = _admission_state_paths()
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        state_payload = _read_mapping_file(state_path)
-        active = _mapping(state_payload.get("active_leases"))
-        active.pop(lease_id, None)
-        write_json(
-            state_path,
-            {
-                **state_payload,
-                "schema_version": "blueprint_live_intake_admission_state.v1",
-                "updated_at": utc_now_iso(),
-                "active_leases": active,
-            },
-        )
-
-
-async def _require_admission(
-    request: Request,
-    client_id: str = Depends(_require_token),
-) -> AsyncIterator[str]:
-    body = await request.body()
-    if len(body) > _positive_int_env(INTAKE_MAX_BODY_BYTES_ENV, DEFAULT_INTAKE_MAX_BODY_BYTES):
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="intake request body exceeds byte limit",
-        )
-    if body:
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = None
-        if parsed is not None and not json_shape_within_limits(
-            parsed,
-            max_depth=_positive_int_env(INTAKE_MAX_JSON_DEPTH_ENV, DEFAULT_INTAKE_MAX_JSON_DEPTH),
-            max_items=_positive_int_env(INTAKE_MAX_JSON_ITEMS_ENV, DEFAULT_INTAKE_MAX_JSON_ITEMS),
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="intake JSON depth or item limit exceeded",
-            )
-    lease_id = _claim_intake_admission(client_id)
-    try:
-        yield client_id
-    finally:
-        _release_intake_admission(lease_id)
+_require_admission = build_require_admission(_require_token)
 
 
 def running_source_commit(module_path: str | Path | None = None) -> str:
@@ -1979,17 +1667,13 @@ def create_app() -> FastAPI:
     @app.get("/api/live-pipeline/version")
     def deployment_identity() -> JSONResponse:
         payload = deployment_identity_payload()
-        return JSONResponse(
-            status_code=200 if payload["commit_proven"] else 503, content=payload
-        )
+        return JSONResponse(status_code=200 if payload["commit_proven"] else 503, content=payload)
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
         manifest_path = _manifest_path()
         authentication_configured = bool(_string(os.getenv(INTAKE_TOKEN_ENV)) or _client_secrets())
-        public_catalog_value = _string(
-            os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV)
-        )
+        public_catalog_value = _string(os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV))
         public_catalog_ready = False
         if public_catalog_value:
             try:
@@ -2027,20 +1711,14 @@ def create_app() -> FastAPI:
             "task_evaluation_launch_preparation_queue": {
                 "supported": True,
                 "configured": bool(
-                    _string(
-                        os.getenv(
-                            TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV
-                        )
-                    )
+                    _string(os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV))
                 ),
                 "asynchronous_no_spend_preparation_only": True,
                 "accepts_host_paths_or_commands": False,
             },
             "scene_object_discovery_queue": {
                 "supported": True,
-                "configured": bool(
-                    _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
-                ),
+                "configured": bool(_string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))),
                 "asynchronous_preparation_only": True,
                 "provider_execution_requires_separate_activation": True,
                 "accepts_host_paths_or_commands": False,
@@ -2048,11 +1726,7 @@ def create_app() -> FastAPI:
             "task_evaluation_launch_activation_queue": {
                 "supported": True,
                 "configured": bool(
-                    _string(
-                        os.getenv(
-                            TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV
-                        )
-                    )
+                    _string(os.getenv(TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV))
                 ),
                 "requires_exact_release_window": True,
                 "paid_execution_inside_http_request": False,
@@ -2069,9 +1743,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/live-pipeline/task-evaluation-launch-profiles")
     def task_evaluation_launch_profiles() -> JSONResponse:
-        catalog_value = _string(
-            os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV)
-        )
+        catalog_value = _string(os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV))
         if not catalog_value:
             return JSONResponse(
                 status_code=503,
@@ -2122,14 +1794,10 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_intake_receipt.v1"),
                     "status": "blocked",
                     "accepted": False,
-                    "blockers": [
-                        "launch_preparation_production_commit_not_proven"
-                    ],
+                    "blockers": ["launch_preparation_production_commit_not_proven"],
                     "provider_mutation_performed_inside_http_request": False,
                     "catalog_mutation_performed_inside_http_request": False,
                     "paid_execution_requested": False,
@@ -2140,14 +1808,10 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=409,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_intake_receipt.v1"),
                     "status": "rejected",
                     "accepted": False,
-                    "blockers": [
-                        "launch_preparation_production_commit_mismatch"
-                    ],
+                    "blockers": ["launch_preparation_production_commit_mismatch"],
                     "expected_production_commit": expected_commit,
                     "observed_production_commit": deployment.get("source_commit"),
                     "provider_mutation_performed_inside_http_request": False,
@@ -2155,21 +1819,15 @@ def create_app() -> FastAPI:
                     "paid_execution_requested": False,
                 },
             )
-        queue_root = _string(
-            os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV)
-        )
+        queue_root = _string(os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV))
         if not queue_root:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_intake_receipt.v1"),
                     "status": "blocked",
                     "accepted": False,
-                    "blockers": [
-                        "task_evaluation_launch_preparation_queue_not_configured"
-                    ],
+                    "blockers": ["task_evaluation_launch_preparation_queue_not_configured"],
                     "provider_mutation_performed_inside_http_request": False,
                     "catalog_mutation_performed_inside_http_request": False,
                     "paid_execution_requested": False,
@@ -2180,17 +1838,13 @@ def create_app() -> FastAPI:
                 stage_launch_preparation_request,
                 value=payload,
                 queue_root=queue_root,
-                submitted_by=_string(
-                    getattr(request.state, "intake_client_id", "")
-                ),
+                submitted_by=_string(getattr(request.state, "intake_client_id", "")),
             )
         except TaskEvaluationLaunchPreparationContractError as exc:
             return JSONResponse(
                 status_code=400,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_intake_receipt.v1"),
                     "status": "rejected",
                     "accepted": False,
                     "blockers": [str(exc)],
@@ -2202,15 +1856,9 @@ def create_app() -> FastAPI:
         except TaskEvaluationLaunchPreparationQueueError as exc:
             blocker = str(exc)
             return JSONResponse(
-                status_code=(
-                    409
-                    if blocker == "launch_preparation_id_immutable_conflict"
-                    else 503
-                ),
+                status_code=(409 if blocker == "launch_preparation_id_immutable_conflict" else 503),
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_intake_receipt.v1"),
                     "status": "blocked",
                     "accepted": False,
                     "blockers": [blocker],
@@ -2222,9 +1870,7 @@ def create_app() -> FastAPI:
         # The queue path is an internal worker capability, not part of the
         # customer-facing intake contract.  Seal a public receipt after
         # removing it so the WebApp never learns production filesystem layout.
-        public_receipt = {
-            key: value for key, value in receipt.items() if key != "queue_path"
-        }
+        public_receipt = {key: value for key, value in receipt.items() if key != "queue_path"}
         public_receipt["receipt_digest"] = canonical_digest(
             public_receipt, digest_field="receipt_digest"
         )
@@ -2245,28 +1891,20 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=400,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_status.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_status.v1"),
                     "status": "rejected",
                     "blockers": ["launch_preparation_id_invalid"],
                     "provider_mutation_performed_by_status_read": False,
                 },
             )
-        queue_root = _string(
-            os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV)
-        )
+        queue_root = _string(os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV))
         if not queue_root:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_status.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_status.v1"),
                     "status": "blocked",
-                    "blockers": [
-                        "task_evaluation_launch_preparation_queue_not_configured"
-                    ],
+                    "blockers": ["task_evaluation_launch_preparation_queue_not_configured"],
                     "provider_mutation_performed_by_status_read": False,
                 },
             )
@@ -2280,9 +1918,7 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_preparation_status.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_preparation_status.v1"),
                     "status": "blocked",
                     "blockers": [str(exc)],
                     "provider_mutation_performed_by_status_read": False,
@@ -2368,9 +2004,7 @@ def create_app() -> FastAPI:
             blocker = str(exc)
             return JSONResponse(
                 status_code=(
-                    409
-                    if blocker == "scene_object_discovery_id_immutable_conflict"
-                    else 503
+                    409 if blocker == "scene_object_discovery_id_immutable_conflict" else 503
                 ),
                 content={
                     "schema_version": "scene_object_discovery_intake_receipt.v1",
@@ -2389,9 +2023,7 @@ def create_app() -> FastAPI:
     )
     async def get_scene_object_discovery_status(discovery_id: str) -> JSONResponse:
         try:
-            normalized_id = strict_identifier(
-                discovery_id, field="discovery_id", max_length=192
-            )
+            normalized_id = strict_identifier(discovery_id, field="discovery_id", max_length=192)
         except ValueError:
             return JSONResponse(
                 status_code=400,
@@ -2460,10 +2092,9 @@ def create_app() -> FastAPI:
                 },
             )
         deployment = deployment_identity_payload()
-        if (
-            deployment.get("commit_proven") is not True
-            or payload.get("expected_production_commit") != deployment.get("source_commit")
-        ):
+        if deployment.get("commit_proven") is not True or payload.get(
+            "expected_production_commit"
+        ) != deployment.get("source_commit"):
             return JSONResponse(
                 status_code=409,
                 content={
@@ -2523,9 +2154,7 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_activation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_activation_intake_receipt.v1"),
                     "status": "blocked",
                     "accepted": False,
                     "blockers": ["launch_activation_production_commit_not_proven"],
@@ -2540,9 +2169,7 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=409,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_activation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_activation_intake_receipt.v1"),
                     "status": "rejected",
                     "accepted": False,
                     "blockers": ["launch_activation_production_commit_mismatch"],
@@ -2554,21 +2181,15 @@ def create_app() -> FastAPI:
                     "paid_execution_requested": False,
                 },
             )
-        queue_root = _string(
-            os.getenv(TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV)
-        )
+        queue_root = _string(os.getenv(TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV))
         if not queue_root:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_activation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_activation_intake_receipt.v1"),
                     "status": "blocked",
                     "accepted": False,
-                    "blockers": [
-                        "task_evaluation_launch_activation_queue_not_configured"
-                    ],
+                    "blockers": ["task_evaluation_launch_activation_queue_not_configured"],
                     "provider_mutation_performed_inside_http_request": False,
                     "catalog_mutation_performed_inside_http_request": False,
                     "standing_authorization_published_inside_http_request": False,
@@ -2580,17 +2201,13 @@ def create_app() -> FastAPI:
                 stage_launch_activation_request,
                 value=payload,
                 queue_root=queue_root,
-                submitted_by=_string(
-                    getattr(request.state, "intake_client_id", "")
-                ),
+                submitted_by=_string(getattr(request.state, "intake_client_id", "")),
             )
         except TaskEvaluationLaunchActivationContractError as exc:
             return JSONResponse(
                 status_code=400,
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_activation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_activation_intake_receipt.v1"),
                     "status": "rejected",
                     "accepted": False,
                     "blockers": [str(exc)],
@@ -2603,15 +2220,9 @@ def create_app() -> FastAPI:
         except TaskEvaluationLaunchActivationQueueError as exc:
             blocker = str(exc)
             return JSONResponse(
-                status_code=(
-                    409
-                    if blocker == "launch_activation_id_immutable_conflict"
-                    else 503
-                ),
+                status_code=(409 if blocker == "launch_activation_id_immutable_conflict" else 503),
                 content={
-                    "schema_version": (
-                        "task_evaluation_launch_activation_intake_receipt.v1"
-                    ),
+                    "schema_version": ("task_evaluation_launch_activation_intake_receipt.v1"),
                     "status": "blocked",
                     "accepted": False,
                     "blockers": [blocker],
@@ -2631,9 +2242,7 @@ def create_app() -> FastAPI:
         activation_id: str,
     ) -> JSONResponse:
         try:
-            normalized_id = strict_identifier(
-                activation_id, field="activation_id", max_length=192
-            )
+            normalized_id = strict_identifier(activation_id, field="activation_id", max_length=192)
         except ValueError:
             return JSONResponse(
                 status_code=400,
@@ -2644,18 +2253,14 @@ def create_app() -> FastAPI:
                     "provider_mutation_performed_by_status_read": False,
                 },
             )
-        queue_root = _string(
-            os.getenv(TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV)
-        )
+        queue_root = _string(os.getenv(TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV))
         if not queue_root:
             return JSONResponse(
                 status_code=503,
                 content={
                     "schema_version": "task_evaluation_launch_activation_status.v1",
                     "status": "blocked",
-                    "blockers": [
-                        "task_evaluation_launch_activation_queue_not_configured"
-                    ],
+                    "blockers": ["task_evaluation_launch_activation_queue_not_configured"],
                     "provider_mutation_performed_by_status_read": False,
                 },
             )
@@ -3014,7 +2619,7 @@ def create_app() -> FastAPI:
                     "phase_status": "verified",
                     "observed_at_iso": datetime.now(timezone.utc).isoformat(),
                     "elapsed_seconds": 0.0,
-                }
+                },
             )
             if webapp_record_binding.get("status") != "succeeded":
                 reason = str(webapp_record_binding.get("reason") or "unknown")
@@ -3253,9 +2858,7 @@ def create_app() -> FastAPI:
         "/api/live-pipeline/task-evaluation-runs/{run_id}/artifacts/{artifact_id}",
         dependencies=[Depends(_require_admission)],
     )
-    async def read_task_evaluation_result_artifact(
-        run_id: str, artifact_id: str
-    ) -> FileResponse:
+    async def read_task_evaluation_result_artifact(run_id: str, artifact_id: str) -> FileResponse:
         manifest_path = _manifest_path().resolve()
         state_root = _task_evaluation_run_root(manifest_path)
         try:
@@ -3266,11 +2869,7 @@ def create_app() -> FastAPI:
             )
         except (TaskEvaluationResultDeliveryError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        disposition = (
-            "inline"
-            if record.get("content_type") == "video/mp4"
-            else "attachment"
-        )
+        disposition = "inline" if record.get("content_type") == "video/mp4" else "attachment"
         return FileResponse(
             path,
             media_type=str(record.get("content_type") or "application/octet-stream"),
