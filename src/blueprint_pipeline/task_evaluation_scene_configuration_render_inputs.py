@@ -106,7 +106,11 @@ def _look_at_opencv(eye: Sequence[float], target: Sequence[float]) -> list[list[
         )
     forward /= norm
     down_seed = np.asarray([0.0, 0.0, -1.0], dtype=np.float64)
-    right = np.cross(forward, down_seed)
+    # OpenCV camera columns are +x right, +y down, +z forward.  The right
+    # vector must therefore be ``world_down x forward``.  Reversing this
+    # cross product flips both image x and image y, producing a geometrically
+    # valid camera that is nevertheless rolled 180 degrees.
+    right = np.cross(down_seed, forward)
     if float(np.linalg.norm(right)) <= 1e-9:
         right = np.asarray([1.0, 0.0, 0.0], dtype=np.float64)
     right /= np.linalg.norm(right)
@@ -174,10 +178,20 @@ def _target_camera_ring(
                     math.sin(elevation),
                 ]
             )
+            pose = _look_at_opencv(eye.tolist(), center.tolist())
+            if float(
+                np.dot(
+                    np.asarray(pose, dtype=np.float64)[:3, 1],
+                    np.asarray([0.0, 0.0, -1.0]),
+                )
+            ) <= 0.0:
+                raise TaskEvaluationSceneConfigurationRenderInputsError(
+                    "scene_configuration_render_camera_orientation_invalid"
+                )
             rows.append(
                 {
                     "camera_id": (f"target-e{elevation_index}-a{azimuth_index}"),
-                    "T_world_camera_provider_frame": _look_at_opencv(eye.tolist(), center.tolist()),
+                    "T_world_camera_provider_frame": pose,
                     "intrinsics": {
                         "model": "PINHOLE",
                         "fx": focal,

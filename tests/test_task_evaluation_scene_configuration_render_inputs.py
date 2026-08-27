@@ -11,12 +11,31 @@ from PIL import Image
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+    _target_camera_ring,
     materialize_scene_configuration_render_inputs,
 )
 
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_target_camera_ring_keeps_world_down_as_image_down() -> None:
+    """The OpenCV camera may not silently roll every provider frame 180 degrees."""
+
+    world_down = np.asarray([0.0, 0.0, -1.0])
+    ring = _target_camera_ring(
+        minimum_xyz=[2.91, -6.83, 0.754],
+        maximum_xyz=[3.04, -6.69, 0.884],
+    )
+
+    assert len(ring) == 8
+    for row in ring:
+        rotation = np.asarray(row["T_world_camera_provider_frame"], dtype=np.float64)[
+            :3, :3
+        ]
+        image_down = rotation[:, 1]
+        assert float(np.dot(image_down, world_down)) > 0.0
 
 
 def test_renders_derived_views_without_disclosing_raw_splat(tmp_path: Path) -> None:
