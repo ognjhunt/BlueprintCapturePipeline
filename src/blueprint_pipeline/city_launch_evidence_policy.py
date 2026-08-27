@@ -56,6 +56,19 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
+def _install_private_directory_mode(path: Path, *, blocker: str) -> None:
+    """Install and prove 0700 without remutating an already-correct directory."""
+
+    try:
+        if stat.S_IMODE(path.stat().st_mode) != 0o700:
+            os.chmod(path, 0o700)
+        installed_mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        raise ValueError(blocker) from exc
+    if installed_mode != 0o700:
+        raise ValueError(blocker)
+
+
 def prepare_evidence_root(output_root: Path, *, source_root: Path) -> Path:
     """Create a private evidence root and reject storage inside the source checkout."""
 
@@ -70,16 +83,17 @@ def prepare_evidence_root(output_root: Path, *, source_root: Path) -> Path:
             "set BLUEPRINT_CITY_LAUNCH_OUTPUT_ROOT to a private artifact location"
         )
     resolved.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(resolved, 0o700)
-    mode = stat.S_IMODE(resolved.stat().st_mode)
-    if mode & 0o077:
-        raise ValueError(f"city-launch evidence root must be private (0700); found {mode:04o}")
+    _install_private_directory_mode(
+        resolved, blocker="city_launch_evidence_root_permission_install_failed"
+    )
     return resolved
 
 
 def prepare_run_root(run_root: Path) -> None:
     run_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(run_root, 0o700)
+    _install_private_directory_mode(
+        run_root, blocker="city_launch_run_root_permission_install_failed"
+    )
 
 
 def sha256_file(path: Path) -> str:

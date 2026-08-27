@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import re
+import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -247,7 +248,11 @@ def _check_paid_launch_lock_slots(
         existed = slot.exists()
         try:
             with slot.open("a+", encoding="utf-8"):
-                slot.chmod(0o600)
+                if stat.S_IMODE(slot.stat().st_mode) != 0o600:
+                    slot.chmod(0o600)
+                installed_mode = stat.S_IMODE(slot.stat().st_mode)
+            if installed_mode != 0o600:
+                raise OSError("paid launch lock slot mode readback failed")
         except OSError as exc:
             unusable.append(f"{slot.name}:{type(exc).__name__}")
             blockers.append(f"paid_launch_lock_slot_unusable:{slot.name}")
