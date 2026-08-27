@@ -31,6 +31,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
@@ -91,6 +92,56 @@ def _render_harness_failure_codes(
         if str(blocker).strip()
     )
     return codes
+
+
+#: Retained tail per captured stream, matching the scene-configuration stage
+#: tool's bound so a renderer looping on output cannot bury the stage log.
+_RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES = 20_000
+
+
+def _render_harness_stream_tail(value: object) -> str:
+    text = redacted_failure_text("" if value is None else value)
+    if len(text) <= _RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES:
+        return text
+    dropped = len(text) - _RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES
+    return f"<{dropped} earlier bytes dropped>\n{text[-_RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES:]}"
+
+
+def _emit_render_harness_diagnostics(
+    *,
+    returncode: int | None,
+    stderr: str,
+    stdout: str,
+    harness_output: Mapping[str, Any],
+) -> None:
+    """Print the harness's own redacted output before classifying it away.
+
+    ``_render_harness_failure_codes`` matches a fixed set of substrings and
+    discards everything else, so a cause it does not recognise reaches the
+    caller as bare ``render_harness_failed``. The harness had already written
+    the answer: a failed render carries ``page_errors`` naming the exact
+    console error and an ``error`` with the JavaScript stack. Dropping them
+    means a render that dies on a rented GPU can only be diagnosed by renting
+    another one. The classifier is unchanged -- this only stops the evidence
+    being thrown away on the way past.
+    """
+
+    lines = [
+        "render_harness_failed",
+        f"returncode={returncode}",
+        f"harness_status={harness_output.get('status')!r}",
+        f"graphics_backend={harness_output.get('graphics_backend')!r}",
+    ]
+    for page_error in harness_output.get("page_errors") or []:
+        lines.append(f"page_error: {_render_harness_stream_tail(page_error)}")
+    error = harness_output.get("error")
+    if error:
+        lines.append(f"harness_error: {_render_harness_stream_tail(error)}")
+    for name, value in (("stdout", stdout), ("stderr", stderr)):
+        tail = _render_harness_stream_tail(value)
+        lines.append(f"--- renderer {name} ---")
+        lines.append(tail if tail.strip() else "<empty>")
+    print("\n".join(lines), file=sys.stderr, flush=True)
 
 
 def _nonempty_expected_frame_count(expected_paths: Sequence[Path]) -> int:
@@ -659,6 +710,12 @@ def render_splat_at_exact_cameras(
         except (ValueError, json.JSONDecodeError):
             harness_output = {}
     if process.returncode != 0 or harness_output.get("status") != "completed":
+        _emit_render_harness_diagnostics(
+            returncode=process.returncode,
+            stderr=stderr,
+            stdout=stdout,
+            harness_output=harness_output,
+        )
         raise SealedCameraRenderError(
             _render_harness_failure_codes(
                 stderr=stderr,

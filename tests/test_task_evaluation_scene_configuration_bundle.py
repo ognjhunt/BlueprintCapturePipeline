@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -1777,3 +1780,71 @@ def test_scene_configuration_validators_still_enforce_their_schemas() -> None:
         recipe.validate_scene_construction_recipe({"schema_version": "wrong"})
     with pytest.raises(preparation.TaskEvaluationLaunchPreparationContractError):
         preparation.validate_launch_preparation_request({"schema_version": "wrong"})
+
+
+def test_provider_runner_imports_in_the_bundle_layout_without_the_repo_tree(
+    tmp_path: Path,
+) -> None:
+    """Import the runner the way the rented GPU does, not a proxy for it.
+
+    The provider bundle copies ``src/blueprint_pipeline`` to
+    ``provider_runtime/blueprint_pipeline`` and carries no repository
+    ``docs/``, ``scripts/`` or ``src/``. Two paid runs died on that difference
+    and nothing else: first ``ModuleNotFoundError: No module named
+    'jsonschema'``, then ``image_editor_registry_unreadable`` from a
+    module-scope registry read whose ``parents[2]`` default resolves inside
+    the bundle root, where the repository's ``docs/`` tree has never existed.
+
+    A static import scan cannot see the second one -- the package is present,
+    the *file it reads at import time* is not. So this actually performs the
+    import, in that layout, in a subprocess whose only path entry is the
+    bundle's runtime root.
+    """
+
+    repo = Path(__file__).resolve().parents[1]
+    runtime = tmp_path / "task_evaluation_scene_configuration_provider_bundle" / "provider_runtime"
+    runtime.mkdir(parents=True)
+    shutil.copytree(
+        repo / "src" / "blueprint_pipeline",
+        runtime / "blueprint_pipeline",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    shutil.copyfile(
+        repo / "scripts" / "task_evaluation_scene_configuration_provider_runner.py",
+        runtime / "task_evaluation_scene_configuration_provider_runner.py",
+    )
+    assert not (runtime.parent / "docs").exists()
+    assert not (runtime.parent / "src").exists()
+
+    # Every module the provider actually starts a process on. The stage
+    # drivers are *not* in the runner's import closure -- the stage tool
+    # execs each component's own ``run`` script, which does
+    # ``python -m blueprint_pipeline.<driver>`` -- so importing only the
+    # runner would have missed the registry read that killed stage 1.
+    entrypoints = (
+        "task_evaluation_scene_configuration_provider_runner",
+        "blueprint_pipeline.task_evaluation_scene_configuration_stage_tool",
+        "blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver",
+        "blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver",
+        "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver",
+    )
+    failures: dict[str, str] = {}
+    for module in entrypoints:
+        completed = subprocess.run(
+            [sys.executable, "-c", f"import {module}"],
+            cwd=tmp_path,
+            env={
+                "PYTHONPATH": str(runtime),
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(tmp_path),
+            },
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if completed.returncode != 0:
+            failures[module] = completed.stderr[-2000:]
+
+    assert not failures, "provider entrypoints fail to import in the bundle layout:\n" + "\n\n".join(
+        f"### {module}\n{detail}" for module, detail in failures.items()
+    )

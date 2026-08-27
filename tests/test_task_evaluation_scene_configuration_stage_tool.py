@@ -152,3 +152,81 @@ def test_rejects_scene_selected_adapter_or_artifact_path(tmp_path: Path) -> None
             environment=environment,
             runner=lambda *_args, **_kwargs: None,
         )
+
+
+def test_component_failure_retains_its_redacted_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A paid stage that dies must say why in the run that paid for it.
+
+    Run ``adp-new-scene-simple-relocation-839873-032eaa09-r2-web-20260827T011512Z``
+    rented an RTX 4090, reached stage 1, and returned exactly
+    ``scene_configuration_component_failed:artifixer3d_observed_object_removal:1``.
+    The component's traceback had been captured by ``capture_output=True`` and
+    then dropped, so the only way to read it was to rent the GPU again. The
+    stage producer retains this process's stderr, so the redacted streams
+    written here travel out with the run's own evidence.
+    """
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result_path = _environment(tmp_path, adapter_id=adapter_id)
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="loaded 1029923 gaussians\n",
+            stderr=(
+                "Traceback (most recent call last):\n"
+                "  File \"runner.py\", line 4, in <module>\n"
+                "RuntimeError: refused with Authorization: Bearer sk-not-a-real-key\n"
+            ),
+        )
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationStageToolError,
+        match=f"scene_configuration_component_failed:{adapter_id}:1",
+    ):
+        execute_stage_tool(
+            adapter_id=adapter_id, environment=environment, runner=run
+        )
+
+    captured = capsys.readouterr().err
+    assert f"scene_configuration_component_failed:{adapter_id}" in captured
+    assert "returncode=1" in captured
+    assert "component_result_written=False" in captured
+    # The component's own cause survives...
+    assert "RuntimeError: refused with" in captured
+    assert "loaded 1029923 gaussians" in captured
+    # ...and its credential material does not.
+    assert "sk-not-a-real-key" not in captured
+    assert "<redacted>" in captured
+
+
+def test_component_failure_output_is_bounded_and_says_what_it_dropped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A component looping on output must not bury the log that has to survive."""
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_tool import (
+        _COMPONENT_FAILURE_STREAM_TAIL_BYTES,
+    )
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result_path = _environment(tmp_path, adapter_id=adapter_id)
+    noise = "x" * (_COMPONENT_FAILURE_STREAM_TAIL_BYTES * 3)
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr=noise + "\nFINAL CAUSE\n"
+        )
+
+    with pytest.raises(TaskEvaluationSceneConfigurationStageToolError):
+        execute_stage_tool(
+            adapter_id=adapter_id, environment=environment, runner=run
+        )
+
+    captured = capsys.readouterr().err
+    assert "FINAL CAUSE" in captured
+    assert "earlier bytes dropped" in captured
+    assert len(captured) < _COMPONENT_FAILURE_STREAM_TAIL_BYTES * 2
