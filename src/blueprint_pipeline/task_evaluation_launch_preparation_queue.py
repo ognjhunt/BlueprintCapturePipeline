@@ -17,6 +17,7 @@ from .task_evaluation_launch_preparation_contract import (
     launch_preparation_request_digest,
     validate_launch_preparation_request,
 )
+from .task_evaluation_release_reference_lock import release_reference_lock
 
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
@@ -70,7 +71,7 @@ def ensure_launch_preparation_queue_root(queue_root: str | Path) -> Path:
     return resolved
 
 
-def write_launch_preparation_record_exclusive(
+def _write_launch_preparation_record_exclusive_locked(
     path: Path, value: Mapping[str, Any]
 ) -> None:
     payload = _canonical_bytes(value)
@@ -115,6 +116,13 @@ def write_launch_preparation_record_exclusive(
         if descriptor >= 0:
             os.close(descriptor)
         temporary_path.unlink(missing_ok=True)
+
+
+def write_launch_preparation_record_exclusive(
+    path: Path, value: Mapping[str, Any]
+) -> None:
+    with release_reference_lock(path.parents[2], exclusive=False):
+        _write_launch_preparation_record_exclusive_locked(path, value)
 
 
 def stage_launch_preparation_request(

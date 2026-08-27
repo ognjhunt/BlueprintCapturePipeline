@@ -44,6 +44,9 @@ from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
     load_standing_authorization,
     validate_standing_authorization,
 )
+from blueprint_pipeline.task_evaluation_release_reference_lock import (
+    release_reference_lock,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_release_retention_plan.v1"
@@ -553,6 +556,7 @@ def build_release_retention_plan(
         profile_dir=profiles_root, public_catalog=catalog_path
     )
     live_profile_ids: set[str] = set()
+    live_required_commits: set[str] = set()
     for root in live_roots:
         for path, value, evidence in _json_documents(
             root, blocker="release_retention_live_reference_root"
@@ -562,6 +566,7 @@ def build_release_retention_plan(
                 protected.setdefault(commit, set()).add(
                     f"live_reference:{path.parent.name}/{path.name}"
                 )
+                live_required_commits.add(commit)
             live_profile_ids.update(profile_ids)
             documents.append(evidence)
     for profile_id in sorted(live_profile_ids):
@@ -575,6 +580,7 @@ def build_release_retention_plan(
             protected.setdefault(commit, set()).add(
                 f"live_profile_reference:{profile_id}"
             )
+            live_required_commits.add(commit)
 
     standing_protected, standing_documents, terminal_orphans = (
         _standing_authorization_protections(
@@ -582,12 +588,20 @@ def build_release_retention_plan(
         )
     )
     _merge_reasons(protected, standing_protected)
+    live_required_commits.update(standing_protected)
     documents.extend(standing_documents)
     evidence_protected, evidence_documents = _evidence_binding_protections(
         evidence_root
     )
     _merge_reasons(protected, evidence_protected)
+    live_required_commits.update(evidence_protected)
     documents.extend(evidence_documents)
+
+    for commit in sorted(live_required_commits):
+        if commit not in release_artifacts:
+            raise ReleaseRetentionError(
+                f"release_retention_live_reference_release_missing:{commit}"
+            )
 
     by_commit: dict[str, list[dict[str, Any]]] = {}
     for commit, artifact in release_artifacts.items():
@@ -785,7 +799,7 @@ def _remove_runtime_tree(path: Path, *, commit: str, kind: str) -> None:
         )
 
 
-def apply_release_retention_plan(
+def _apply_release_retention_plan_locked(
     *,
     dry_run_plan_path: str | Path,
     acknowledgement: str,
@@ -893,6 +907,27 @@ def apply_release_retention_plan(
     )
     _write_exclusive(output_path, result)
     return result
+
+
+def apply_release_retention_plan(
+    *,
+    dry_run_plan_path: str | Path,
+    acknowledgement: str,
+    receipt_out: str | Path,
+) -> dict[str, Any]:
+    """Hold the global reference lock across final revalidation and deletion."""
+
+    plan_path = _absolute_path(dry_run_plan_path, field="dry_run_plan")
+    plan = _read_plan(plan_path)
+    public_catalog = _absolute_path(
+        str(plan.get("public_catalog") or ""), field="public_catalog"
+    )
+    with release_reference_lock(public_catalog.parent, exclusive=True):
+        return _apply_release_retention_plan_locked(
+            dry_run_plan_path=dry_run_plan_path,
+            acknowledgement=acknowledgement,
+            receipt_out=receipt_out,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

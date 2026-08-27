@@ -1,11 +1,15 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+import blueprint_pipeline.task_evaluation_release_retention as retention
 
 from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
@@ -367,6 +371,24 @@ def test_any_ambiguous_managed_or_live_state_blocks_the_whole_plan(
     assert (release_root / stale).is_dir()
 
 
+def test_live_reference_to_missing_release_blocks_the_whole_plan(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    missing = "d" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    pending = state["live_reference_roots"][0]  # type: ignore[index]
+    _write_json(pending / "missing.json", {"source_commit": missing})
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match=f"release_retention_live_reference_release_missing:{missing}",
+    ):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active  # type: ignore[arg-type]
+        )
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -482,6 +504,50 @@ def test_apply_rejects_a_binding_added_after_dry_run_before_any_delete(
     assert isinstance(runtime_root, Path)
     assert (release_root / stale).is_dir()
     assert (runtime_root / "splat-render" / stale).is_dir()
+
+
+def test_apply_holds_exclusive_reference_lock_through_every_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    active = "a" * 40
+    stale = "c" * 40
+    state = _base_state(tmp_path, commits=[active, stale], active_commit=active)
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    lock_active = False
+    removed_paths: list[Path] = []
+
+    @contextmanager
+    def observed_lock(root: str | Path, *, exclusive: bool):
+        nonlocal lock_active
+        assert Path(root) == Path(state["public_catalog"]).parent
+        assert exclusive is True
+        lock_active = True
+        try:
+            yield
+        finally:
+            lock_active = False
+
+    def remove(path: Path, **_kwargs: object) -> None:
+        assert lock_active is True
+        removed_paths.append(path)
+        shutil.rmtree(path)
+
+    monkeypatch.setattr(retention, "release_reference_lock", observed_lock)
+    monkeypatch.setattr(retention, "_remove_git_worktree", remove)
+    monkeypatch.setattr(retention, "_remove_runtime_tree", remove)
+
+    apply_release_retention_plan(
+        dry_run_plan_path=plan_path,
+        acknowledgement=APPLY_ACKNOWLEDGEMENT,
+        receipt_out=tmp_path / "receipt.json",
+    )
+
+    assert lock_active is False
+    assert len(removed_paths) == 3
 
 
 def test_expired_or_consumed_authorization_does_not_pin_runtime_forever(

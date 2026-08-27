@@ -23,6 +23,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from blueprint_pipeline.task_evaluation_release_reference_lock import (
+    release_reference_lock,
+)
+
 
 SCHEMA_VERSION = "task_evaluation_control_plane_release.v1"
 
@@ -361,21 +365,22 @@ def stage_task_evaluation_control_plane_release(
         _write_exact(stage_path, stage_receipt)
 
     if activate:
-        _activate_release(active_link=active, release_path=release_path)
-        activation_receipt: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "status": "activated",
-            "source_commit": commit,
-            "release_path": str(release_path),
-            "active_link": str(active),
-            "active_link_target": str(release_path),
-            "provider_mutation_performed": False,
-            "raw_secret_values_recorded": False,
-        }
-        activation_receipt["receipt_digest"] = _canonical_digest(
-            activation_receipt, digest_field="receipt_digest"
-        )
-        _write_exact(state / commit / "activation.json", activation_receipt)
+        with release_reference_lock(state, exclusive=False):
+            _activate_release(active_link=active, release_path=release_path)
+            activation_receipt: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "status": "activated",
+                "source_commit": commit,
+                "release_path": str(release_path),
+                "active_link": str(active),
+                "active_link_target": str(release_path),
+                "provider_mutation_performed": False,
+                "raw_secret_values_recorded": False,
+            }
+            activation_receipt["receipt_digest"] = _canonical_digest(
+                activation_receipt, digest_field="receipt_digest"
+            )
+            _write_exact(state / commit / "activation.json", activation_receipt)
     result = dict(stage_receipt)
     result["created_release_checkout"] = created
     result["release_git_index"] = git_index

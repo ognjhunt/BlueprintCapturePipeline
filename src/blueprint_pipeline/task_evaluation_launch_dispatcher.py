@@ -839,7 +839,7 @@ def validate_launch_request_against_public_catalog(
     return blockers
 
 
-def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
+def _write_immutable_locked(path: Path, value: Mapping[str, Any]) -> bool:
     payload = (_canonical_json(value) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -850,6 +850,13 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
         if path.read_bytes() != payload:
             raise TaskEvaluationLaunchError(f"immutable_launch_conflict:{path.name}")
         return False
+
+
+def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
+    from .task_evaluation_release_reference_lock import release_reference_lock
+
+    with release_reference_lock(path.parents[2], exclusive=False):
+        return _write_immutable_locked(path, value)
 
 
 def stage_launch_request(*, value: Mapping[str, Any], queue_root: str | Path) -> dict[str, Any]:
