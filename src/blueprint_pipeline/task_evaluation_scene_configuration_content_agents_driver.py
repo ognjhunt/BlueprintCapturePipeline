@@ -448,6 +448,66 @@ def _vector3(value: Any) -> list[float]:
     return result if all(math.isfinite(item) for item in result) else []
 
 
+def _metric_envelope_spec(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    raw = configuration.get("metric_envelope")
+    if not isinstance(raw, Mapping):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_metric_envelope_invalid"
+        )
+    minimum = _vector3(raw.get("minimum_xyz_m"))
+    maximum = _vector3(raw.get("maximum_xyz_m"))
+    tolerance = raw.get("maximum_dimension_relative_error")
+    if (
+        not minimum
+        or not maximum
+        or isinstance(tolerance, bool)
+        or not isinstance(tolerance, (int, float))
+        or not math.isfinite(float(tolerance))
+        or not 0.0 <= float(tolerance) <= 1.0
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_metric_envelope_invalid"
+        )
+    dimensions = [maximum[index] - minimum[index] for index in range(3)]
+    if not all(value > 0.0 for value in dimensions):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_metric_envelope_invalid"
+        )
+    return {
+        "minimum_xyz_m": minimum,
+        "maximum_xyz_m": maximum,
+        "expected_dimensions_m": dimensions,
+        "maximum_dimension_relative_error": float(tolerance),
+    }
+
+
+def _validate_metric_envelope_dimensions(
+    *, envelope: Mapping[str, Any], observed_dimensions: Any
+) -> dict[str, Any]:
+    observed = _vector3(observed_dimensions)
+    expected = _vector3(envelope.get("expected_dimensions_m"))
+    tolerance = float(envelope["maximum_dimension_relative_error"])
+    if not observed or not expected or not all(value > 0.0 for value in observed):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_metric_envelope_invalid"
+        )
+    relative_errors = [
+        abs(observed[index] - expected[index]) / expected[index]
+        for index in range(3)
+    ]
+    if any(error > tolerance for error in relative_errors):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_metric_envelope_mismatch"
+        )
+    return {
+        "status": "within_preregistered_metric_envelope",
+        "expected_dimensions_m": expected,
+        "observed_collision_dimensions_m": observed,
+        "dimension_relative_errors": relative_errors,
+        "maximum_dimension_relative_error": tolerance,
+    }
+
+
 def _complete_candidate_physics(
     source: Path, *, bounds: Mapping[str, list[float]]
 ) -> dict[str, Any]:
@@ -629,6 +689,11 @@ def _complete_candidate_physics(
         "mass_kg": mass,
         "center_of_mass_m": center,
         "diagonal_inertia_kg_m2": inertia,
+        "collision_bounds_body_frame_m": {
+            "minimum": lower,
+            "maximum": upper,
+        },
+        "collision_dimensions_m": dimensions,
         "physics_materials": material_rows,
         "modifications": sorted(set(modifications)),
         "candidate_prior_only": True,
@@ -694,6 +759,7 @@ def execute_content_agents_component(
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_input_invalid"
         )
+    metric_envelope = _metric_envelope_spec(configuration)
     source_record, source_candidate = _dependency_candidate(dependencies)
     output_root = _required_path(values, _OUTPUT_ENV)
     package_root = _required_path(values, _PACKAGE_ENV)
@@ -854,6 +920,15 @@ def execute_content_agents_component(
     physics_bounds = _physics_bounds(configuration)
     physics_completion = _complete_candidate_physics(
         authored, bounds=physics_bounds
+    )
+    physics_completion["metric_envelope_validation"] = (
+        _validate_metric_envelope_dimensions(
+            envelope=metric_envelope,
+            observed_dimensions=physics_completion["collision_dimensions_m"],
+        )
+    )
+    physics_completion["completion_digest"] = canonical_digest(
+        physics_completion, digest_field="completion_digest"
     )
     asset = output_root / "content_agents_replacement_candidate.usdz"
     _package_replacement_asset(authored, asset)
