@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -438,11 +439,28 @@ def _write_json_once(path: Path, value: Mapping[str, Any]) -> None:
             raise CaptureIntakeError([f"immutable_artifact_conflict:{path.name}"])
 
 
+def _seal_content_object_permissions(object_path: Path) -> None:
+    """Install the immutable mode only when the shared inode needs it."""
+
+    if stat.S_IMODE(object_path.stat().st_mode) != 0o440:
+        try:
+            object_path.chmod(0o440)
+        except OSError as exc:
+            raise CaptureIntakeError(
+                ["content_addressed_object_permission_install_failed"]
+            ) from exc
+    if stat.S_IMODE(object_path.stat().st_mode) != 0o440:
+        raise CaptureIntakeError(
+            ["content_addressed_object_permission_readback_failed"]
+        )
+
+
 def _store_object(source: Path, object_path: Path, expected_digest: str) -> None:
     object_path.parent.mkdir(parents=True, exist_ok=True)
     if object_path.exists():
         if not object_path.is_file() or _file_digest(object_path) != expected_digest:
             raise CaptureIntakeError(["content_addressed_object_conflict"])
+        _seal_content_object_permissions(object_path)
         return
     descriptor, temporary_name = tempfile.mkstemp(prefix=".capture-object-", dir=object_path.parent)
     os.close(descriptor)
@@ -456,7 +474,7 @@ def _store_object(source: Path, object_path: Path, expected_digest: str) -> None
         except FileExistsError:
             if _file_digest(object_path) != expected_digest:
                 raise CaptureIntakeError(["content_addressed_object_conflict"])
-        object_path.chmod(0o440)
+        _seal_content_object_permissions(object_path)
     finally:
         temporary.unlink(missing_ok=True)
 
