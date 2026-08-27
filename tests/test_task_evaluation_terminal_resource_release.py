@@ -72,7 +72,24 @@ def _zero(path: Path) -> dict[str, object]:
     report = {
         "schema_version": "gpu_spend_guard.v1",
         "provider_zero_verified": True,
-        "provider_zero": {"status": "verified", "blockers": []},
+        "live_instance_count": 0,
+        "total_burn_per_hour_usd": 0.0,
+        "inventory_results": [
+            {
+                "provider": provider,
+                "status": "succeeded",
+                "row_count": 0,
+                "required": True,
+            }
+            for provider in ("runpod", "vast", "digitalocean")
+        ],
+        "provider_zero": {
+            "status": "verified",
+            "required_provider_ids": ["digitalocean", "runpod", "vast"],
+            "global_live_instance_count": 0,
+            "global_total_burn_per_hour_usd": 0.0,
+            "blockers": [],
+        },
     }
     write_json(path, report)
     return {"exit_code": 0, "report": report, "raw_process_output_recorded": False}
@@ -123,6 +140,72 @@ def test_exact_terminal_release_requires_label_then_proves_exact_absence_and_glo
     assert receipt["provider_zero_verified"] is True
     assert receipt["execution_result"] == "not_observed"
     assert receipt["automatic_retry_performed"] is False
+
+
+def test_terminal_release_rejects_contradictory_provider_zero_claim(
+    tmp_path: Path,
+) -> None:
+    request_path = tmp_path / "request.json"
+    write_json(request_path, _request())
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict[str, object]:
+            return {
+                "status": "absent",
+                "provider": "vast",
+                "instance_id": instance_id,
+                "provider_absence_confirmed": True,
+            }
+
+    def contradictory(path: Path) -> dict[str, object]:
+        report = {
+            "schema_version": "gpu_spend_guard.v1",
+            "provider_zero_verified": True,
+            "live_instance_count": 0,
+            "total_burn_per_hour_usd": 0.0,
+            "inventory_results": [],
+            "provider_zero": {
+                "status": "verified",
+                "required_provider_ids": [],
+                "global_live_instance_count": 0,
+                "global_total_burn_per_hour_usd": 0.0,
+                "blockers": [],
+            },
+        }
+        write_json(path, report)
+        return {"exit_code": 0, "report": report}
+
+    receipt = dispatch_terminal_resource_release(
+        request_path=request_path,
+        state_root=tmp_path / "state",
+        provider_factory=lambda _name: Provider(),
+        provider_zero_guard=contradictory,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["exact_provider_absence_confirmed"] is True
+    assert receipt["provider_zero_verified"] is False
+    assert "terminal_resource_release_global_provider_zero_unverified" in receipt[
+        "blockers"
+    ]
+
+
+def test_provider_zero_guard_never_reuses_stale_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "provider-zero.json"
+    _zero(output)
+    monkeypatch.setattr(
+        release_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=2),
+    )
+
+    result = release_module._provider_zero_guard(output_path=output)
+
+    assert result["report"] == {}
+    assert result["exit_code"] == 2
+    assert not output.exists()
 
 
 def test_label_or_live_state_mismatch_never_deletes_the_provider_record(tmp_path: Path) -> None:
