@@ -18,7 +18,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters imp
 
 
 pytest.importorskip("pxr")
-from pxr import Usd  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils  # noqa: E402
 
 
 def sha256(path: Path) -> str:
@@ -32,6 +32,39 @@ def artifact(role: str, path: Path) -> dict[str, object]:
         "digest": sha256(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def _portable_rigid_asset(path: Path) -> None:
+    dependency_path = path.with_suffix(".body.usda")
+    dependency = Usd.Stage.CreateNew(str(dependency_path))
+    body = UsdGeom.Xform.Define(dependency, "/Body").GetPrim()
+    dependency.SetDefaultPrim(body)
+    UsdPhysics.RigidBodyAPI.Apply(body)
+    mass = UsdPhysics.MassAPI.Apply(body)
+    mass.CreateMassAttr(1.0)
+    mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.0, 0.0))
+    mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1, 0.1, 0.1))
+    collider = UsdGeom.Cube.Define(dependency, "/Body/Collider")
+    collider.CreateSizeAttr(0.1)
+    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+    material = UsdShade.Material.Define(dependency, "/Body/PhysicsMaterial")
+    physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    physics_material.CreateStaticFrictionAttr(0.5)
+    physics_material.CreateDynamicFrictionAttr(0.4)
+    physics_material.CreateRestitutionAttr(0.1)
+    dependency.GetRootLayer().Save()
+
+    source = path.with_suffix(".usda")
+    stage = Usd.Stage.CreateNew(str(source))
+    root = UsdGeom.Xform.Define(stage, "/Asset").GetPrim()
+    stage.SetDefaultPrim(root)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    stage.DefinePrim("/Asset/Body", "Xform").GetReferences().AddReference(
+        str(dependency_path), "/Body"
+    )
+    stage.GetRootLayer().Save()
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(path))
 
 
 def test_artifixer_handler_admits_only_qualified_generated_appearance(
@@ -328,25 +361,37 @@ def test_sage_exact_prim_excision_removes_only_requested_prim(tmp_path: Path) ->
 
 
 def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     dependency = tmp_path / "dependency"
     dependency.mkdir()
-    asset = dependency / "mug.usda"
-    asset.write_text("#usda 1.0\n", encoding="utf-8")
+    asset = dependency / "mug.usdz"
+    _portable_rigid_asset(asset)
     graph_spec = {
+        "schema_version": "task_evaluation_rigid_replacement_graph.v1",
         "asset_id": "replacement-mug",
+        "asset_version": "v1",
         "articulation_graph": {"joints": []},
+        "single_rigid_candidate": True,
+        "physics_authority_granted": False,
     }
     graph_spec_path = dependency / "graph-spec.json"
     graph_spec_path.write_text(json.dumps(graph_spec), encoding="utf-8")
     authoring = {
+        "schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
+        "status": "authored_candidate_pending_qualification",
+        "replacement_identity": {"id": "replacement-mug", "version": "v1"},
         "output_usd": {
             "path": str(asset),
             "sha256": sha256(asset),
             "size_bytes": asset.stat().st_size,
-        }
+        },
+        "physics_authority_granted": False,
+        "result_digest": "",
     }
+    authoring["result_digest"] = canonical_digest(
+        authoring, digest_field="result_digest"
+    )
     authoring_path = dependency / "authoring.json"
     authoring_path.write_text(json.dumps(authoring), encoding="utf-8")
 
@@ -390,24 +435,6 @@ def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
     configuration_path = tmp_path / "static.json"
     configuration_path.write_text(json.dumps(configuration), encoding="utf-8")
 
-    def qualify(**kwargs):
-        receipt = {
-            "status": "authored_structure_statically_qualified",
-            "authored_structure_statically_qualified": True,
-            "structural_findings": [],
-            "replacement_usd": {"sha256": sha256(asset)},
-            "claim_boundary": {"native_simulator_import_qualified": False},
-        }
-        Path(kwargs["output_path"]).write_text(
-            json.dumps(receipt), encoding="utf-8"
-        )
-        return receipt
-
-    monkeypatch.setattr(
-        "blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters."
-        "qualify_simready_graph_asset_static",
-        qualify,
-    )
     result = execute_simready_static_rigid_qualification(
         envelope={
             "recipe": {
@@ -430,6 +457,13 @@ def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
         "static_qualification_receipt",
     }
     assert result["provider_mutations_performed"] == 0
+    qualification = json.loads(
+        (output / "static_qualification_receipt.v1.json").read_text()
+    )
+    assert qualification["schema_version"] == (
+        "task_evaluation_rigid_replacement_static_qualification.v1"
+    )
+    assert qualification["checks"]["no_external_unpinned_dependencies"] is True
 
 
 def test_native_import_handler_promotes_only_exact_static_asset(

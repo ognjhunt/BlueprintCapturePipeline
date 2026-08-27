@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 from PIL import Image
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdUtils
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
@@ -146,7 +146,20 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         runtime_output = Path(env["BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR"])
         physics = runtime_output / "physics_workdir/physics_candidate.usda"
         physics.parent.mkdir(parents=True)
-        physics.write_bytes((Path(command[0]).parent / "input/source_asset.usda").read_bytes())
+        dependency = physics.parent / "physics_dependency.usda"
+        dependency_stage = Usd.Stage.CreateNew(str(dependency))
+        dependency_root = UsdGeom.Cube.Define(
+            dependency_stage, "/PhysicsGeometry"
+        ).GetPrim()
+        dependency_stage.SetDefaultPrim(dependency_root)
+        dependency_stage.GetRootLayer().Save()
+        physics_stage = Usd.Stage.CreateNew(str(physics))
+        physics_root = UsdGeom.Xform.Define(physics_stage, "/Asset").GetPrim()
+        physics_stage.SetDefaultPrim(physics_root)
+        physics_stage.DefinePrim("/Asset/Geometry").GetReferences().AddReference(
+            str(dependency), "/PhysicsGeometry"
+        )
+        physics_stage.GetRootLayer().Save()
         (runtime_output / "adp_content_agents_vast_result.json").write_text(
             json.dumps(
                 {
@@ -197,6 +210,23 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
         "replacement_graph_spec",
     }
     assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")
+    replacement = next(
+        Path(row["path"])
+        for row in result["artifacts"]
+        if row["role"] == "replacement_asset"
+    )
+    layers, external_assets, unresolved = UsdUtils.ComputeAllDependencies(
+        Sdf.AssetPath(str(replacement))
+    )
+    assert replacement.suffix == ".usdz"
+    assert len(layers) == 2
+    assert all(
+        layer.identifier == str(replacement)
+        or layer.identifier.startswith(str(replacement) + "[")
+        for layer in layers
+    )
+    assert external_assets == []
+    assert unresolved == []
     receipt = json.loads((output / "replacement_authoring_receipt.v1.json").read_text())
     assert receipt["source_candidate_digest"] == _sha256(candidate)
     assert receipt["physics_authority_granted"] is False
