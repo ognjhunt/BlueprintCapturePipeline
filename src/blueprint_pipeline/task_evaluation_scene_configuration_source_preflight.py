@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,27 @@ def _request_reference_matches(
     )
 
 
+def _dimensions(minimum: Any, maximum: Any) -> list[float]:
+    if (
+        not isinstance(minimum, list)
+        or not isinstance(maximum, list)
+        or len(minimum) != 3
+        or len(maximum) != 3
+    ):
+        return []
+    try:
+        lower = [float(item) for item in minimum]
+        upper = [float(item) for item in maximum]
+    except (TypeError, ValueError):
+        return []
+    dimensions = [upper[index] - lower[index] for index in range(3)]
+    return (
+        dimensions
+        if all(math.isfinite(item) and item > 0.0 for item in dimensions)
+        else []
+    )
+
+
 def validate_scene_configuration_source_preflight(
     *,
     envelope: Mapping[str, Any],
@@ -86,6 +108,9 @@ def validate_scene_configuration_source_preflight(
         stage_by_capability.get("observed_appearance_object_removal", "")
     )
     stage_two = configurations.get(stage_by_capability.get("collision_object_excision", ""))
+    stage_three = configurations.get(
+        stage_by_capability.get("rigid_replacement_authoring", "")
+    )
     if not isinstance(stage_one, Mapping) or not isinstance(stage_two, Mapping):
         # Other bundle fixtures and future recipes without these capabilities
         # are outside this source contract.
@@ -191,6 +216,36 @@ def validate_scene_configuration_source_preflight(
         raise TaskEvaluationSceneConfigurationSourcePreflightError(
             "scene_configuration_source_preflight_collision_target_invalid"
         )
+
+    if isinstance(stage_three, Mapping):
+        metric_envelope = stage_three.get("metric_envelope") or {}
+        metric_minimum = metric_envelope.get("minimum_xyz_m")
+        metric_maximum = metric_envelope.get("maximum_xyz_m")
+        metric_dimensions = _dimensions(metric_minimum, metric_maximum)
+        target_dimensions = _dimensions(
+            expected_target.get("aabb_min_xyz_m"),
+            expected_target.get("aabb_max_xyz_m"),
+        )
+        tolerance = metric_envelope.get("maximum_dimension_relative_error")
+        if (
+            metric_minimum != stage_one_source.get("aabb_min_xyz_m")
+            or metric_maximum != stage_one_source.get("aabb_max_xyz_m")
+            or not metric_dimensions
+            or not target_dimensions
+            or isinstance(tolerance, bool)
+            or not isinstance(tolerance, (int, float))
+            or not math.isfinite(float(tolerance))
+            or not 0.0 <= float(tolerance) <= 1.0
+            or any(
+                abs(target_dimensions[index] - metric_dimensions[index])
+                / metric_dimensions[index]
+                > float(tolerance)
+                for index in range(3)
+            )
+        ):
+            raise TaskEvaluationSceneConfigurationSourcePreflightError(
+                "scene_configuration_source_preflight_replacement_envelope_invalid"
+            )
 
 
 __all__ = [
