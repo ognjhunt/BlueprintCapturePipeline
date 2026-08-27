@@ -240,3 +240,81 @@ def test_the_wrapper_fetches_main_specifically(tmp_path: Path) -> None:
     assert "git fetch -q origin main" in text
     assert "git fetch -q origin\n" not in text
     assert "merge-base --is-ancestor" in text
+
+
+def _push_branch(clone: Path, commit: str, branch: str) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "-C", str(clone), "push", "-q", "origin", f"{commit}:refs/heads/{branch}"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(clone), "fetch", "-q", "origin"],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_canary_accepts_a_pushed_branch_commit(tmp_path: Path) -> None:
+    """Canary trades the merge wait, never immutability.
+
+    A fix-and-fire loop that merges before every deploy spends 5-15 minutes
+    per attempt on review, CI, and rebase churn for evidence the canary run
+    cannot use. A commit pushed to any origin ref is still publicly recorded,
+    so the running bytes cannot silently diverge from the repository.
+    """
+
+    clone, _merged, unmerged = _repo_with_main(tmp_path)
+    _push_branch(clone, unmerged, "debug/canary")
+    roots = _disjoint_roots(tmp_path)
+    roots["source_repo"] = str(clone)
+
+    with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
+        deploy_mod.deploy_control_plane_commit(
+            source_commit=unmerged,
+            release_provenance=None,
+            iteration=True,
+            canary=True,
+            systemd_dir=tmp_path / "systemd",
+            **roots,
+        )
+    message = str(excinfo.value)
+    # It fails later on this synthetic host, but NOT on reachability.
+    assert "deploy_canary_commit_not_pushed_to_origin" not in message
+    assert "deploy_iteration_commit_not_on_origin_main" not in message
+
+
+def test_canary_still_refuses_an_unpushed_commit(tmp_path: Path) -> None:
+    clone, _merged, unmerged = _repo_with_main(tmp_path)
+    roots = _disjoint_roots(tmp_path)
+    roots["source_repo"] = str(clone)
+
+    with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
+        deploy_mod.deploy_control_plane_commit(
+            source_commit=unmerged,
+            release_provenance=None,
+            iteration=True,
+            canary=True,
+            **roots,
+        )
+    assert "deploy_canary_commit_not_pushed_to_origin" in str(excinfo.value)
+
+
+def test_canary_requires_iteration_mode(tmp_path: Path) -> None:
+    """A canary flag on a promotion deploy is a contradiction, not a shortcut."""
+
+    clone, merged, _unmerged = _repo_with_main(tmp_path)
+    roots = _disjoint_roots(tmp_path)
+    roots["source_repo"] = str(clone)
+
+    with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
+        deploy_mod.deploy_control_plane_commit(
+            source_commit=merged,
+            release_provenance=None,
+            iteration=False,
+            canary=True,
+            **roots,
+        )
+    assert "deploy_canary_requires_iteration" in str(excinfo.value)
