@@ -90,9 +90,8 @@ _VAST_STALE_OFFER_RETRY_ENV = (
     "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 )
 # One exclusive (key file, key id, operator attestation) triple per OpenAI
-# stage: the official-cost gate refuses a shared scope, both by attestation
-# ``paid_resource_class`` and by the same-day zero-cost baseline it demands
-# for each ``(project_id, api_key_id)`` before any stage may spend.
+# stage. The official-cost gate binds the observed same-day baseline for each
+# ``(project_id, api_key_id)`` and charges only this stage's later delta.
 _OPENAI_RUNTIME_FILE_ENVS = (
     "OPENAI_ADMIN_API_KEY_FILE",
     "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
@@ -365,10 +364,6 @@ def _provider_runtime_inputs(
             raise TaskEvaluationSceneConfigurationVastError(
                 f"scene_configuration_openai_stage_cost_baseline_invalid:{stage}"
             ) from exc
-        if float(observed_cost) != 0.0:
-            raise TaskEvaluationSceneConfigurationVastError(
-                f"scene_configuration_openai_stage_cost_baseline_not_zero:{stage}"
-            )
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,
