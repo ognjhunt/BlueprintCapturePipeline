@@ -2327,7 +2327,7 @@ def test_stage_one_disclosure_is_checked_against_the_decision() -> None:
 
 
 def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The declared ceiling must cover the bundle and pinned stage bootstrap.
 
@@ -2368,6 +2368,16 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
             match="scene_configuration_provider_transfer_budget_inputs_invalid",
         ):
             scene_vast._provider_transfer_byte_budget(broken)
+    monkeypatch.setattr(
+        scene_vast,
+        "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
+        observed_pinned_wheel_floor,
+    )
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match="scene_configuration_provider_transfer_budget_underdeclared",
+    ):
+        scene_vast._provider_transfer_byte_budget(receipt)
 
 
 def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(

@@ -765,6 +765,12 @@ def _provider_transfer_byte_budget(
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_provider_transfer_budget_inputs_invalid"
         )
+    if PROVISIONING_DOWNLOAD_OVERHEAD_BYTES < (
+        4 * ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES
+    ):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_provider_transfer_budget_underdeclared"
+        )
     download = bundle + PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
     # The upload side has no contract to price. On the provider-render path
     # the frames are produced on the rented GPU, so the bundle manifest's
