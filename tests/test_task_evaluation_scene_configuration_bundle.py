@@ -1104,7 +1104,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         },
     )
     authority_path = tmp_path / "authority.json"
-    authority = authority_module.materialize_scene_configuration_paid_authority(
+    authority_arguments = dict(
         bundle_receipt_path=receipt_path,
         project_spend_reconciliation_path=project_path,
         initial_provider_zero_path=zero_path,
@@ -1121,12 +1121,70 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
         output_path=authority_path,
         provider_compute_spend_cap_usd=MAX_PROVIDER_COMPUTE_SPEND_USD,
-        openai_max_cost_usd=1.5,
+        openai_max_cost_usd=2.9,
         openai_max_requests=32,
-        openai_artifixer_semantic_teacher_max_cost_usd=0.4,
-        openai_artifixer_visual_review_max_cost_usd=0.75,
-        openai_content_agents_max_cost_usd=0.35,
+        openai_artifixer_semantic_teacher_max_cost_usd=2.4,
+        openai_artifixer_visual_review_max_cost_usd=0.3,
+        openai_content_agents_max_cost_usd=0.2,
     )
+    authority = authority_module.materialize_scene_configuration_paid_authority(
+        **authority_arguments
+    )
+
+    for suffix, overrides in (
+        (
+            "semantic-underfunded",
+            {
+                "openai_artifixer_semantic_teacher_max_cost_usd": 1.0,
+                "openai_artifixer_visual_review_max_cost_usd": 0.95,
+                "openai_content_agents_max_cost_usd": 0.95,
+            },
+        ),
+        (
+            "aggregate-underfunded",
+            {
+                "openai_max_cost_usd": 2.8,
+                "openai_artifixer_visual_review_max_cost_usd": 0.2,
+                "openai_content_agents_max_cost_usd": 0.2,
+            },
+        ),
+        (
+            "visual-review-underfunded",
+            {
+                "openai_artifixer_visual_review_max_cost_usd": 0.29,
+                "openai_content_agents_max_cost_usd": 0.21,
+            },
+        ),
+        (
+            "content-agents-underfunded",
+            {
+                "openai_artifixer_visual_review_max_cost_usd": 0.31,
+                "openai_content_agents_max_cost_usd": 0.19,
+            },
+        ),
+        (
+            "attempt-cap-not-canonical",
+            {
+                "hard_cap_usd": 9.9,
+                "provider_compute_spend_cap_usd": 5.9,
+            },
+        ),
+        (
+            "compute-cap-not-canonical",
+            {"provider_compute_spend_cap_usd": 5.9},
+        ),
+    ):
+        with pytest.raises(
+            authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+            match="scene_configuration_authority_configuration_invalid",
+        ):
+            authority_module.materialize_scene_configuration_paid_authority(
+                **{
+                    **authority_arguments,
+                    **overrides,
+                    "output_path": tmp_path / f"authority-{suffix}.json",
+                }
+            )
 
     assert authority["retry_cap"] == 0
     # Prior spend remains reconciled and receipt-bound, but it no longer
@@ -1143,10 +1201,74 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     assert authority["maximum_automatic_retries"] == 0
     assert authority["external_service_spend_caps"]["openai"][
         "maximum_cost_usd"
-    ] == 1.5
+    ] == 2.9
     assert authority_module.validate_scene_configuration_paid_authority(
         authority, bundle_receipt=receipt
     ) == authority
+    for aggregate_cost, stage_overrides in (
+        (
+            2.8,
+            {
+                "artifixer_semantic_teacher": 2.4,
+                "artifixer_visual_review": 0.2,
+                "content_agents": 0.2,
+            },
+        ),
+        (
+            2.9,
+            {
+                "artifixer_semantic_teacher": 1.0,
+                "artifixer_visual_review": 0.95,
+                "content_agents": 0.95,
+            },
+        ),
+        (
+            2.9,
+            {
+                "artifixer_semantic_teacher": 2.4,
+                "artifixer_visual_review": 0.29,
+                "content_agents": 0.21,
+            },
+        ),
+        (
+            2.9,
+            {
+                "artifixer_semantic_teacher": 2.4,
+                "artifixer_visual_review": 0.31,
+                "content_agents": 0.19,
+            },
+        ),
+    ):
+        underfunded = json.loads(json.dumps(authority))
+        openai = underfunded["external_service_spend_caps"]["openai"]
+        openai["maximum_cost_usd"] = aggregate_cost
+        openai["stage_max_cost_usd"] = stage_overrides
+        underfunded["authority_digest"] = canonical_digest(
+            underfunded, digest_field="authority_digest"
+        )
+        with pytest.raises(
+            authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+            match="authority_contract_invalid",
+        ):
+            authority_module.validate_scene_configuration_paid_authority(
+                underfunded, bundle_receipt=receipt
+            )
+    for field, value in (
+        ("hard_attempt_spend_cap_usd", 9.9),
+        ("provider_compute_spend_cap_usd", 5.9),
+    ):
+        noncanonical = json.loads(json.dumps(authority))
+        noncanonical[field] = value
+        noncanonical["authority_digest"] = canonical_digest(
+            noncanonical, digest_field="authority_digest"
+        )
+        with pytest.raises(
+            authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+            match="authority_contract_invalid",
+        ):
+            authority_module.validate_scene_configuration_paid_authority(
+                noncanonical, bundle_receipt=receipt
+            )
     provider_receipt = {
         **receipt,
         "raw_interiorgs_bytes_in_provider_bundle": True,

@@ -25,6 +25,10 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD,
     MAX_HOURLY_RATE_USD,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
+    MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+    MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+    MIN_CONTENT_AGENTS_SPEND_USD,
+    MIN_EXTERNAL_SERVICE_SPEND_USD,
     REQUIRED_PARENT_TTL_SECONDS,
 )
 
@@ -206,8 +210,15 @@ def materialize_scene_configuration_paid_authority(
     }
     external_contract_valid = (
         math.isfinite(external_cap)
-        and 0 <= external_cap <= MAX_EXTERNAL_SERVICE_SPEND_USD
+        and MIN_EXTERNAL_SERVICE_SPEND_USD
+        <= external_cap
+        <= MAX_EXTERNAL_SERVICE_SPEND_USD
         and all(math.isfinite(value) and value >= 0 for value in stage_caps.values())
+        and stage_caps["artifixer_semantic_teacher"]
+        >= MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+        and stage_caps["artifixer_visual_review"]
+        >= MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+        and stage_caps["content_agents"] >= MIN_CONTENT_AGENTS_SPEND_USD
         and sum(stage_caps.values()) <= external_cap + 1e-9
         and isinstance(openai_max_requests, int)
         and not isinstance(openai_max_requests, bool)
@@ -215,8 +226,9 @@ def materialize_scene_configuration_paid_authority(
             (external_cap == 0 and openai_max_requests == 0)
             or (external_cap > 0 and 1 <= openai_max_requests <= 100)
         )
+        and abs(compute_cap - MAX_PROVIDER_COMPUTE_SPEND_USD) <= 1e-9
+        and abs(float(hard_cap_usd) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
         and compute_cap + external_cap <= float(hard_cap_usd) + 1e-9
-        and 0 < float(hard_cap_usd) <= MAX_ATTEMPT_SPEND_USD
     )
     raw_source_authorized = (
         receipt.get("raw_interiorgs_bytes_in_provider_bundle") is True
@@ -331,7 +343,9 @@ def validate_scene_configuration_paid_authority(
         and isinstance(external_cost, (int, float))
         and not isinstance(external_cost, bool)
         and math.isfinite(float(external_cost))
-        and 0 <= float(external_cost) <= MAX_EXTERNAL_SERVICE_SPEND_USD
+        and MIN_EXTERNAL_SERVICE_SPEND_USD
+        <= float(external_cost)
+        <= MAX_EXTERNAL_SERVICE_SPEND_USD
         and isinstance(external_requests, int)
         and not isinstance(external_requests, bool)
         and (
@@ -352,11 +366,18 @@ def validate_scene_configuration_paid_authority(
             and float(value) >= 0
             for value in stage_caps.values()
         )
+        and float(stage_caps["artifixer_semantic_teacher"])
+        >= MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+        and float(stage_caps["artifixer_visual_review"])
+        >= MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+        and float(stage_caps["content_agents"])
+        >= MIN_CONTENT_AGENTS_SPEND_USD
         and sum(float(value) for value in stage_caps.values())
         <= float(external_cost) + 1e-9
+        and abs(float(compute_cap) - MAX_PROVIDER_COMPUTE_SPEND_USD) <= 1e-9
+        and abs(float(total_cap) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
         and float(compute_cap) + float(external_cost)
         <= float(total_cap) + 1e-9
-        and 0 < float(total_cap) <= MAX_ATTEMPT_SPEND_USD
         and external.get("credentials_via_ephemeral_private_file_only") is True
     )
     expected_raw_source_authorized = (
