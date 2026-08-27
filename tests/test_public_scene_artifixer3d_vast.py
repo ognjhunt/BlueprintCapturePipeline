@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import stat
 import subprocess
 import zipfile
 
@@ -13,6 +14,7 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
 )
+from blueprint_pipeline.provider_archive import extract_provider_archive
 from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     build_artifixer3d_bundle,
     materialize_artifixer3d_use_attestation,
@@ -219,8 +221,14 @@ def test_bundle_kind_and_static_contract_are_registered(
     bundle = Path(receipt["bundle"]["path"])
     assert "adp_artifixer3d" in PROVIDER_RUNTIME_BUNDLE_KINDS
     with zipfile.ZipFile(bundle) as archive:
-        entrypoint = archive.read("provider_runtime/run_public_scene_artifixer3d.sh").decode()
+        entrypoint_name = "provider_runtime/run_public_scene_artifixer3d.sh"
+        entrypoint = archive.read(entrypoint_name).decode()
+        entrypoint_mode = stat.S_IMODE(archive.getinfo(entrypoint_name).external_attr >> 16)
         runner = archive.read("provider_runtime/public_scene_artifixer3d_runner.py").decode()
+    assert entrypoint_mode & 0o111
+    extracted_root = tmp_path / "extracted-provider-bundle"
+    extract_provider_archive(bundle, extracted_root)
+    assert stat.S_IMODE((extracted_root / entrypoint_name).stat().st_mode) & 0o111
     assert (
         provider_runtime_contract_blockers(
             provider_bundle_kind="adp_artifixer3d",
