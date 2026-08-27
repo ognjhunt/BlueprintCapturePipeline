@@ -629,6 +629,20 @@ def _zip_tree(source: Path, destination: Path) -> None:
                 shutil.copyfileobj(input_stream, output, length=1024 * 1024)
 
 
+def _require_executable_archive_entrypoint(bundle_path: Path) -> None:
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            archived_mode = stat.S_IMODE(archive.getinfo(ENTRYPOINT).external_attr >> 16)
+    except (KeyError, OSError, zipfile.BadZipFile) as exc:
+        raise ArtiFixer3DBundleError(
+            ["artifixer3d_provider_entrypoint_archive_invalid"]
+        ) from exc
+    if archived_mode & 0o111 == 0:
+        raise ArtiFixer3DBundleError(
+            ["artifixer3d_provider_entrypoint_not_executable"]
+        )
+
+
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
@@ -977,7 +991,13 @@ def build_artifixer3d_bundle(
         if artifixer_source_receipt_path is not None
         else _copy_source_release(source, source_root)
     )
-    shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, runtime / Path(ENTRYPOINT).name)
+    entrypoint_path = runtime / Path(ENTRYPOINT).name
+    shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, entrypoint_path)
+    entrypoint_path.chmod(0o755)
+    if stat.S_IMODE(entrypoint_path.stat().st_mode) != 0o755:
+        raise ArtiFixer3DBundleError(
+            ["artifixer3d_provider_entrypoint_permission_install_failed"]
+        )
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
     runtime_package = runtime / "blueprint_pipeline"
     runtime_package.mkdir()
@@ -1298,6 +1318,7 @@ def build_artifixer3d_bundle(
     _write_json(runtime / Path(MANIFEST).name, manifest)
     bundle_path = output / "public_scene_artifixer3d_provider_bundle.zip"
     _zip_tree(stage, bundle_path)
+    _require_executable_archive_entrypoint(bundle_path)
     rehearsal = rehearse_provider_bundle_entrypoint(
         bundle_path=bundle_path,
         entrypoint_relative_path=ENTRYPOINT,
