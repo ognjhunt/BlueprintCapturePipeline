@@ -294,6 +294,9 @@ def _make_launch(
         "request_digest": request["request_digest"],
         "receipt_digest": receipt["receipt_digest"],
         "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": receipt["status"],
+            "already_exists": False,
             "launch_id": launch_id,
             "run_id": launch_id,
             "request_digest": request["request_digest"],
