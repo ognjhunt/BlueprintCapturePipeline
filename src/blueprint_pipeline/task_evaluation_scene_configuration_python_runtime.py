@@ -19,6 +19,14 @@ from typing import Any
 
 SCHEMA_VERSION = "task_evaluation_scene_configuration_python_wheelhouse.v1"
 MANIFEST_NAME = f"{SCHEMA_VERSION}.json"
+#: Deliberately a second copy of the builder's ``ROOT_DISTRIBUTIONS``. This
+#: module runs on the provider and imports nothing from ``blueprint_pipeline``
+#: so it can verify the sealed wheelhouse independently of whatever produced
+#: it. The cost of that independence is drift, so the two are pinned equal by
+#: ``test_provider_runtime_expects_the_same_roots_the_builder_ships``: adding
+#: ``usd-core`` to the builder alone left this list refusing every wheelhouse
+#: with ``scene_configuration_python_wheelhouse_manifest_invalid``.
+EXPECTED_ROOT_DISTRIBUTIONS = ("openai-agents", "usd-core")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MAX_MEMBER_BYTES = 256 * 1024**2
 _MAX_TOTAL_BYTES = 768 * 1024**2
@@ -121,7 +129,7 @@ def materialize_scene_configuration_python_runtime(
         or manifest.get("python_version") != "3.12"
         or manifest.get("implementation") != "cpython"
         or manifest.get("platform") != "linux-x86_64"
-        or manifest.get("root_distributions") != ["openai-agents"]
+        or manifest.get("root_distributions") != list(EXPECTED_ROOT_DISTRIBUTIONS)
         or manifest.get("sdists_allowed") is not False
         or manifest.get("provider_network_install_required") is not False
         or manifest.get("manifest_digest")

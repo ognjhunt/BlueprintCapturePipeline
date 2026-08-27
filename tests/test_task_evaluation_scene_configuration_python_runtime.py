@@ -15,6 +15,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_python_runtime impor
     materialize_scene_configuration_python_runtime,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
+    ROOT_DISTRIBUTIONS,
     MANIFEST_NAME,
     build_scene_configuration_python_wheelhouse,
     plan_scene_configuration_python_wheelhouse,
@@ -35,9 +36,24 @@ def _wheel(distribution: str, module: str) -> tuple[str, bytes]:
 
 
 def _lock(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
-    agents_name, agents = _wheel("openai-agents", "provider_agents_fixture")
+    # One wheel per shipped root, derived rather than restated: the fixture
+    # lock must close over whatever the wheelhouse actually builds, or adding
+    # a root fails here as "locked_package_ambiguous" (the resolver's message
+    # for "not exactly one candidate") instead of on anything real.
+    fixture_modules = {"openai-agents": "provider_agents_fixture"}
+    roots = {
+        distribution: _wheel(
+            distribution,
+            fixture_modules.get(
+                distribution,
+                f"provider_{distribution.replace('-', '_')}_fixture",
+            ),
+        )
+        for distribution in ROOT_DISTRIBUTIONS
+    }
     pydantic_name, pydantic = _wheel("pydantic", "provider_pydantic_fixture")
-    values = {agents_name: agents, pydantic_name: pydantic}
+    values = {filename: body for filename, body in roots.values()}
+    values[pydantic_name] = pydantic
 
     def row(name: str, filename: str, body: bytes, *, dependency: str = "") -> str:
         dependencies = f'dependencies = [{{ name = "{dependency}" }}]\n' if dependency else ""
@@ -56,7 +72,15 @@ def _lock(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text(
         "version = 1\n"
-        + row("openai-agents", agents_name, agents, dependency="pydantic")
+        + "".join(
+            row(
+                distribution,
+                filename,
+                body,
+                dependency="pydantic" if distribution == "openai-agents" else "",
+            )
+            for distribution, (filename, body) in roots.items()
+        )
         + row("pydantic", pydantic_name, pydantic),
         encoding="utf-8",
     )
@@ -85,7 +109,7 @@ def test_builds_and_materializes_exact_provider_dependency_closure(
 
     assert manifest["manifest_digest"] == reopened["manifest_digest"]
     assert {row["name"] for row in manifest["requirements"]} == {
-        "openai-agents",
+        *ROOT_DISTRIBUTIONS,
         "pydantic",
     }
     sys.path.insert(0, str(runtime))
@@ -110,6 +134,10 @@ def test_real_lock_closes_agents_sdk_and_pydantic_for_python_312() -> None:
     names = {row["name"] for row in plan["requirements"]}
 
     assert {"openai-agents", "openai", "pydantic", "pydantic-core"} <= names
+    # USD is not on the provider's bare interpreter path, so the closure has
+    # to carry it. See the module docstring and run
+    # adp-new-scene-simple-relocation-839873-5283bd16-r2-web-20260827T031205Z.
+    assert "usd-core" in names
     assert plan["wheels"]
     assert all("cp311" not in row["filename"] for row in plan["wheels"])
 
@@ -150,3 +178,26 @@ def test_materializer_refuses_tampered_or_wrong_platform_runtime(
             runtime_platform="linux",
             runtime_machine="x86_64",
         )
+
+
+def test_provider_runtime_expects_the_same_roots_the_builder_ships() -> None:
+    """The standalone verifier's copy of the root list must not drift.
+
+    ``task_evaluation_scene_configuration_python_runtime`` imports nothing from
+    ``blueprint_pipeline`` on purpose -- it verifies the sealed wheelhouse on
+    the provider independently of whatever built it -- so it keeps its own copy
+    of the expected roots. Adding ``usd-core`` to the builder alone left that
+    copy refusing every wheelhouse it was handed with
+    ``scene_configuration_python_wheelhouse_manifest_invalid``.
+    """
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_python_runtime import (
+        EXPECTED_ROOT_DISTRIBUTIONS,
+        SCHEMA_VERSION as RUNTIME_SCHEMA_VERSION,
+    )
+    from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
+        SCHEMA_VERSION as WHEELHOUSE_SCHEMA_VERSION,
+    )
+
+    assert tuple(EXPECTED_ROOT_DISTRIBUTIONS) == tuple(ROOT_DISTRIBUTIONS)
+    assert RUNTIME_SCHEMA_VERSION == WHEELHOUSE_SCHEMA_VERSION
