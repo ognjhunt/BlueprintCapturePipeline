@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -14,6 +15,7 @@ from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver import (
     _VISUAL_REVIEW_COST_SCOPE,
+    _artifixer_tuning,
     _materialize_preflight,
     _semantic_rights_and_request,
     _write_execution_authority,
@@ -118,6 +120,43 @@ def _inputs(tmp_path: Path) -> tuple[dict, dict]:
         },
     }
     return envelope, configuration
+
+
+def test_nullable_production_tuning_resolves_before_paid_semantic_edits() -> None:
+    assert _artifixer_tuning(
+        {
+            "transition_radius_pixels": None,
+            "artifixer3d_steps": None,
+            "random_seed": None,
+        }
+    ) == {
+        "transition_radius_pixels": 3,
+        "artifixer3d_steps": 30_000,
+        "random_seed": 839_873,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("transition_radius_pixels", -1),
+        ("artifixer3d_steps", 30_001),
+        ("random_seed", True),
+    ],
+)
+def test_invalid_production_tuning_fails_closed_before_paid_semantic_edits(
+    name: str, value: object
+) -> None:
+    configuration = {
+        "transition_radius_pixels": None,
+        "artifixer3d_steps": None,
+        "random_seed": None,
+        name: value,
+    }
+    with pytest.raises(
+        RuntimeError, match="scene_configuration_artifixer_tuning_invalid"
+    ):
+        _artifixer_tuning(configuration)
 
 
 def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path) -> None:

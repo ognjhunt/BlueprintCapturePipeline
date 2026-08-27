@@ -110,6 +110,39 @@ def _required_path(environment: Mapping[str, str], name: str) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _artifixer_tuning(configuration: Mapping[str, Any]) -> dict[str, int]:
+    """Resolve nullable website tuning before any paid semantic edit."""
+
+    supplied = {
+        "transition_radius_pixels": configuration.get("transition_radius_pixels"),
+        "artifixer3d_steps": configuration.get("artifixer3d_steps"),
+        "random_seed": configuration.get("random_seed"),
+    }
+    defaults = {
+        "transition_radius_pixels": 3,
+        "artifixer3d_steps": 30_000,
+        "random_seed": 839_873,
+    }
+    resolved = {
+        name: defaults[name] if value is None else value
+        for name, value in supplied.items()
+    }
+    if (
+        isinstance(resolved["transition_radius_pixels"], bool)
+        or not isinstance(resolved["transition_radius_pixels"], int)
+        or resolved["transition_radius_pixels"] < 0
+        or isinstance(resolved["artifixer3d_steps"], bool)
+        or not isinstance(resolved["artifixer3d_steps"], int)
+        or not 1 <= resolved["artifixer3d_steps"] <= 30_000
+        or isinstance(resolved["random_seed"], bool)
+        or not isinstance(resolved["random_seed"], int)
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_tuning_invalid"
+        )
+    return resolved
+
+
 def _record(path: Path) -> dict[str, Any]:
     return {
         "path": str(path.resolve()),
@@ -466,6 +499,7 @@ def execute_artifixer_component(
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_input_invalid"
         )
+    tuning = _artifixer_tuning(configuration)
     output_root = _required_path(values, _OUTPUT_ENV)
     package_root = _required_path(values, _PACKAGE_ENV)
     component_result_path = _required_path(values, _RESULT_ENV)
@@ -586,7 +620,7 @@ def execute_artifixer_component(
         source_candidate_inputs_receipt_path=candidate_path,
         semantic_teacher_receipt_paths=[teacher_receipt_path],
         output_root=dual_root,
-        transition_radius_pixels=int(configuration.get("transition_radius_pixels", 3)),
+        transition_radius_pixels=tuning["transition_radius_pixels"],
     )
     dual_path = dual_root / "public_scene_artifixer3d_dual_target_inputs.v1.json"
     use_attestation_path = work / "artifixer3d_use_attestation.v1.json"
@@ -619,8 +653,8 @@ def execute_artifixer_component(
             "component_package_digest": package_manifest["package_digest"],
         },
         pipeline_mode=DUAL_TARGET_PIPELINE_MODE,
-        artifixer3d_steps=int(configuration.get("artifixer3d_steps", 30_000)),
-        random_seed=int(configuration.get("random_seed", 839_873)),
+        artifixer3d_steps=tuning["artifixer3d_steps"],
+        random_seed=tuning["random_seed"],
     )
     extracted = work / "artifixer_execution"
     extract_provider_archive(Path(bundle["bundle"]["path"]), extracted)
