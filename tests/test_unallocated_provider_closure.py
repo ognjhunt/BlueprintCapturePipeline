@@ -21,6 +21,7 @@ import pytest
 from blueprint_pipeline.task_evaluation_artifact_manifest import (
     TEARDOWN_MANIFEST_NAME,
     UNALLOCATED_TEARDOWN_STATUS,
+    seal_preprovider_unallocated_lane_terminal_artifacts,
     seal_unallocated_provider_teardown,
 )
 from blueprint_pipeline.task_evaluation_launch_reconciler import (
@@ -171,6 +172,119 @@ def test_the_sealer_never_raises_on_an_unusable_run_directory(tmp_path) -> None:
     blocker.write_text("not a directory", encoding="utf-8")
 
     assert seal_unallocated_provider_teardown(blocker, reason="whatever") is None
+
+
+def test_preprovider_terminal_sealer_records_digest_bound_zero_allocation(
+    tmp_path: Path,
+) -> None:
+    result = {
+        "status": "blocked",
+        "provider_mutations_performed": 0,
+        "continuing_spend_from_this_run": False,
+        "blockers": ["fixture_preprovider_refusal"],
+    }
+
+    sealed = seal_preprovider_unallocated_lane_terminal_artifacts(
+        result,
+        attempt_root=tmp_path,
+        lane="fixture_lane",
+        reason="fixture_preprovider_refusal",
+        binding={"source_commit": "a" * 40},
+    )
+
+    teardown_path = Path(sealed["teardown_manifest_path"])
+    manifest_path = Path(sealed["artifact_manifest_path"])
+    teardown = json.loads(teardown_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert teardown["status"] == UNALLOCATED_TEARDOWN_STATUS
+    assert teardown["vast_instance_ids"] == []
+    assert teardown["teardown_actions_performed"] == []
+    assert teardown["continuing_spend_from_this_run"] is False
+    assert manifest["status"] == "completed"
+    assert manifest["binding"] == {
+        "allocator_lane": "fixture_lane",
+        "retry_cap": 0,
+        "source_commit": "a" * 40,
+    }
+    assert "teardown_manifest" in manifest["required_roles"]
+    assert "teardown_manifest" in manifest["observed_roles"]
+    assert sealed["blockers"] == ["fixture_preprovider_refusal"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "write_adapter_result", "expected_blocker"),
+    [
+        (
+            {"provider_mutations_performed": 1},
+            False,
+            "preprovider_unallocated_terminal_proof_invalid",
+        ),
+        (
+            {"continuing_spend_from_this_run": True},
+            False,
+            "preprovider_unallocated_terminal_proof_invalid",
+        ),
+        (
+            {"continuing_spend_from_this_run": None},
+            False,
+            "preprovider_unallocated_terminal_proof_invalid",
+        ),
+        (
+            {"vast_instance_ids": [47593142]},
+            False,
+            "preprovider_unallocated_terminal_proof_invalid",
+        ),
+        (
+            {},
+            True,
+            "preprovider_unallocated_terminal_proof_invalid",
+        ),
+        (
+            {"status": "completed"},
+            False,
+            "preprovider_unallocated_terminal_status_invalid",
+        ),
+    ],
+    ids=[
+        "provider-mutation",
+        "continuing-spend",
+        "unknown-spend",
+        "provider-identity",
+        "adapter-entered",
+        "completed-without-provider",
+    ],
+)
+def test_preprovider_terminal_sealer_refuses_ambiguous_or_allocated_evidence(
+    tmp_path: Path,
+    overrides: dict,
+    write_adapter_result: bool,
+    expected_blocker: str,
+) -> None:
+    result = {
+        "status": "blocked",
+        "provider_mutations_performed": 0,
+        "continuing_spend_from_this_run": False,
+        "blockers": ["fixture_terminal_failure"],
+        **overrides,
+    }
+    provider_run = tmp_path / "vast_provider_run"
+    if write_adapter_result:
+        provider_run.mkdir()
+        (provider_run / "vast_provider_adapter_result.json").write_text(
+            json.dumps({"status": "blocked", "vast_instance_ids": []}),
+            encoding="utf-8",
+        )
+
+    sealed = seal_preprovider_unallocated_lane_terminal_artifacts(
+        result,
+        attempt_root=tmp_path,
+        lane="fixture_lane",
+        reason="fixture_terminal_failure",
+    )
+
+    assert expected_blocker in sealed["blockers"]
+    assert not (provider_run / TEARDOWN_MANIFEST_NAME).exists()
+    assert not (tmp_path / "artifact_manifest.json").exists()
 
 
 def test_every_lane_that_catches_an_adapter_failure_seals_the_absence() -> None:
