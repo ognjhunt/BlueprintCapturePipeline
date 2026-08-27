@@ -444,7 +444,13 @@
       "path": "src/blueprint_pipeline/vast_provider_adapter.py",
       "classification": "grant_gated_legacy_adapter",
       "required_markers": [
-        "require_paid_resource_admission_grant",
+        "require_paid_resource_admission_grant"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/vast_provider_adapter_cli.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": [
         "legacy_vast_provider_mutation_cli_disabled"
       ]
     },
