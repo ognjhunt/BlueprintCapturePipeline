@@ -33,6 +33,10 @@ from .task_evaluation_scene_configuration_stage_configuration import (
     TaskEvaluationSceneConfigurationStageConfigurationError,
     validate_immutable_stage_configurations,
 )
+from .task_evaluation_scene_configuration_source_preflight import (
+    TaskEvaluationSceneConfigurationSourcePreflightError,
+    validate_scene_configuration_source_preflight,
+)
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -489,6 +493,12 @@ def build_scene_configuration_provider_bundle(
             envelope=envelope, configurations=configuration_values
         )
     except TaskEvaluationSceneConfigurationStageConfigurationError as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
+    try:
+        validate_scene_configuration_source_preflight(
+            envelope=envelope, configurations=configuration_values
+        )
+    except TaskEvaluationSceneConfigurationSourcePreflightError as exc:
         raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
     repo = Path(repository_root).resolve()
     toolchain = Path(toolchain_root).resolve()
