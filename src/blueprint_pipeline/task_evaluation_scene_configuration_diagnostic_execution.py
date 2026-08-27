@@ -33,6 +33,7 @@ RESULT_SCHEMA_VERSION = (
 STATUS = "closed_diagnostic_only_not_qualification_eligible"
 DiagnosticParentLaunchExecutor = Callable[..., Mapping[str, Any]]
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 
 
 class TaskEvaluationSceneConfigurationDiagnosticExecutionError(RuntimeError):
@@ -66,6 +67,11 @@ def _validate_launch(
         or launch.get("teardown_completed") is not True
         or launch.get("provider_zero_confirmed") is not True
         or launch.get("source_checkpoint_digest") != checkpoint_digest
+        or _COMMIT.fullmatch(str(launch.get("diagnostic_source_commit") or "")) is None
+        or _DIGEST.fullmatch(
+            str(launch.get("diagnostic_toolchain_digest") or "")
+        )
+        is None
         or launch.get("diagnostic_only") is not True
         or launch.get("qualification_eligible") is not False
         or launch.get("executed_inside_one_parent_provider_run") is not False
@@ -136,6 +142,14 @@ def execute_scene_configuration_diagnostic_retry(
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": STATUS,
         "source_checkpoint_digest": checkpoint["checkpoint_digest"],
+        "checkpoint_source_commit_provenance": checkpoint.get(
+            "source_commit_provenance"
+        ),
+        "checkpoint_source_toolchain_digest_provenance": checkpoint.get(
+            "source_toolchain_digest_provenance"
+        ),
+        "diagnostic_source_commit": launch["diagnostic_source_commit"],
+        "diagnostic_toolchain_digest": launch["diagnostic_toolchain_digest"],
         "diagnostic_stage_chain_digest": launch["diagnostic_stage_chain"][
             "result_digest"
         ],

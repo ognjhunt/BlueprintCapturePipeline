@@ -105,12 +105,65 @@ def _copy_inventory_file(
 
 
 def _normalized_semantic_request(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove provenance-only fields while retaining every scientific choice."""
+    """Remove locations/provenance while retaining scientific bytes and choices."""
 
-    normalized = json.loads(json.dumps(dict(value)))
-    normalized.pop("source_commit_sha", None)
-    normalized.pop("request_digest", None)
-    return normalized
+    omitted = {
+        "path",
+        "relative_path",
+        "source_commit_sha",
+        "source_packet_digest",
+        "request_digest",
+    }
+
+    def normalize(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            return {
+                str(key): normalize(child)
+                for key, child in item.items()
+                if str(key) not in omitted
+            }
+        if isinstance(item, list):
+            return [normalize(child) for child in item]
+        return item
+
+    return normalize(value)
+
+
+def _portable_render_template(render_inputs: Mapping[str, Any]) -> dict[str, Any]:
+    value = json.loads(json.dumps(dict(render_inputs)))
+    source = value.get("source_appearance") or {}
+    source.pop("path", None)
+    source["checkpoint_role"] = None
+    value["source_appearance"] = source
+    for field, role in (
+        ("camera_calibration", "camera_calibration"),
+        ("render_manifest", "render_manifest"),
+    ):
+        row = value.get(field) or {}
+        row.pop("path", None)
+        row["checkpoint_role"] = role
+        value[field] = row
+    for frame in value.get("derived_frames") or []:
+        camera_id = str(frame.get("camera_id") or "")
+        frame.pop("path", None)
+        frame["checkpoint_role"] = f"raw_frame:{camera_id}"
+        mask = frame.get("source_object_mask") or {}
+        mask.pop("path", None)
+        mask["checkpoint_role"] = f"source_object_mask:{camera_id}"
+        frame["source_object_mask"] = mask
+    cutout = value.get("derived_gaussian_cutout") or {}
+    retained = cutout.get("retained_scene_without_source_object") or {}
+    retained.pop("path", None)
+    retained["checkpoint_role"] = "retained_scene_without_source_object"
+    cutout["retained_scene_without_source_object"] = retained
+    candidate = cutout.get("source_object_candidate")
+    if isinstance(candidate, dict):
+        candidate.pop("path", None)
+        candidate["checkpoint_role"] = None
+    value["derived_gaussian_cutout"] = cutout
+    value["source_checkpoint_render_result_digest"] = value.get("result_digest")
+    value["result_digest"] = ""
+    return value
 
 
 def _canonical_json_file_digest(value: Mapping[str, Any]) -> str:
@@ -147,31 +200,10 @@ def _scientific_bindings(
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_configuration_mismatch"
         )
-    bundle_input_digest = str(
-        envelope.get("portable_envelope_digest")
-        or envelope.get("envelope_digest")
-        or ""
-    )
-    construction_digest = str(
-        envelope.get("control_plane_envelope_digest")
-        or envelope.get("envelope_digest")
-        or ""
-    )
-    recipe = envelope.get("recipe")
-    recipe_digest = str(
-        envelope.get("recipe_digest")
-        or ((recipe or {}).get("recipe_digest") if isinstance(recipe, Mapping) else "")
-        or ""
-    )
-    toolchain_digest = str(stage_input.get("toolchain_digest") or "")
     source_splat_digest = str(render_inputs.get("source_splat_digest") or "")
     calibration_digest = str(calibration.get("digest") or "")
     if (
-        _DIGEST.fullmatch(bundle_input_digest) is None
-        or _DIGEST.fullmatch(construction_digest) is None
-        or _DIGEST.fullmatch(recipe_digest) is None
-        or _DIGEST.fullmatch(toolchain_digest) is None
-        or _DIGEST.fullmatch(source_splat_digest) is None
+        _DIGEST.fullmatch(source_splat_digest) is None
         or _DIGEST.fullmatch(calibration_digest) is None
         or source_appearance.get("digest") != source_splat_digest
         or not isinstance(source_appearance.get("size_bytes"), int)
@@ -184,11 +216,7 @@ def _scientific_bindings(
         "source_splat_digest": source_splat_digest,
         "source_splat_size_bytes": source_appearance["size_bytes"],
         "camera_calibration_digest": calibration_digest,
-        "source_bundle_input_digest": bundle_input_digest,
-        "source_construction_envelope_digest": construction_digest,
-        "recipe_digest": recipe_digest,
         "stage_configuration_digest": configuration_digest,
-        "toolchain_digest": toolchain_digest,
         "renderer_runtime": dict(renderer_runtime),
         "renderer_runtime_digest": canonical_digest(renderer_runtime),
         "disclosure_decision": dict(disclosure),
@@ -443,6 +471,28 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         bindings = _scientific_bindings(
             stage_input=stage_input, render_inputs=render_inputs
         )
+        source_bundle_input_digest = str(
+            envelope.get("portable_envelope_digest")
+            or envelope.get("envelope_digest")
+            or ""
+        )
+        source_construction_envelope_digest = str(
+            envelope.get("control_plane_envelope_digest")
+            or envelope.get("envelope_digest")
+            or ""
+        )
+        source_toolchain_digest = str(stage_input.get("toolchain_digest") or "")
+        if any(
+            _DIGEST.fullmatch(value) is None
+            for value in (
+                source_bundle_input_digest,
+                source_construction_envelope_digest,
+                source_toolchain_digest,
+            )
+        ):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_provenance_invalid"
+            )
         checkpoint: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "status": STATUS,
@@ -454,7 +504,13 @@ def materialize_scene_configuration_diagnostic_checkpoint(
             "terminal_e2e_completion_permitted": False,
             "source_commit_provenance": source_commit,
             "source_run_id_provenance": stage_input.get("run_id"),
+            "source_bundle_input_digest_provenance": source_bundle_input_digest,
+            "source_construction_envelope_digest_provenance": (
+                source_construction_envelope_digest
+            ),
+            "source_toolchain_digest_provenance": source_toolchain_digest,
             "scientific_bindings": bindings,
+            "render_inputs_template": _portable_render_template(render_inputs),
             "camera_count": 8,
             "cameras": checkpoint_frames,
             "semantic_teacher": {
@@ -474,6 +530,8 @@ def materialize_scene_configuration_diagnostic_checkpoint(
                 "status": "completed_8_of_8_unreviewed_candidates",
             },
             "inventory": sorted(inventory, key=lambda row: row["relative_path"]),
+            "completed_stage_prefix_count": 0,
+            "completed_stage_results": [],
             "raw_secret_values_recorded": False,
             "checkpoint_digest": "",
         }
@@ -501,9 +559,11 @@ def validate_scene_configuration_diagnostic_checkpoint(
         code="scene_configuration_diagnostic_checkpoint_invalid",
     )
     bindings = value.get("scientific_bindings")
+    render_template = value.get("render_inputs_template")
     semantic = value.get("semantic_teacher")
     inventory = value.get("inventory")
     cameras = value.get("cameras")
+    completed_stage_results = value.get("completed_stage_results")
     if (
         unresolved_root.is_symlink()
         or not root.is_dir()
@@ -519,6 +579,7 @@ def validate_scene_configuration_diagnostic_checkpoint(
         or value.get("checkpoint_digest")
         != canonical_digest(value, digest_field="checkpoint_digest")
         or not isinstance(bindings, Mapping)
+        or not isinstance(render_template, Mapping)
         or bindings.get("binding_digest")
         != canonical_digest(bindings, digest_field="binding_digest")
         or (
@@ -535,6 +596,10 @@ def validate_scene_configuration_diagnostic_checkpoint(
         or len(cameras) != 8
         or not isinstance(inventory, list)
         or not inventory
+        or not isinstance(completed_stage_results, list)
+        or value.get("completed_stage_prefix_count")
+        != len(completed_stage_results)
+        or not 0 <= len(completed_stage_results) <= 6
     ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_invalid"
@@ -598,6 +663,354 @@ def validate_scene_configuration_diagnostic_checkpoint(
     return value
 
 
+def _stage_configuration_digest(configuration_path: Path) -> str:
+    if configuration_path.is_symlink() or not configuration_path.is_file():
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_stage_configuration_invalid"
+        )
+    return _sha256(configuration_path)
+
+
+def _portable_stage_result(
+    *,
+    result: Mapping[str, Any],
+    stage_id: str,
+    configuration_path: Path,
+    checkpoint_root: Path,
+    inventory: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if (
+        result.get("schema_version")
+        != "task_evaluation_scene_configuration_stage_result.v1"
+        or result.get("status") != "completed"
+        or result.get("stage_id") != stage_id
+        or result.get("configuration_digest")
+        != _stage_configuration_digest(configuration_path)
+        or result.get("diagnostic_only") is not True
+        or result.get("qualification_eligible") is not False
+        or result.get("executed_inside_one_parent_provider_run") is not False
+        or result.get("configured_revision_publication_permitted") is not False
+        or result.get("offering_publication_permitted") is not False
+        or result.get("terminal_e2e_completion_permitted") is not False
+        or result.get("stage_result_digest")
+        != canonical_digest(result, digest_field="stage_result_digest")
+        or not isinstance(result.get("output_artifacts"), list)
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            f"scene_configuration_diagnostic_completed_stage_invalid:{stage_id}"
+        )
+    portable = json.loads(json.dumps(dict(result)))
+    portable_artifacts = portable["output_artifacts"]
+    for index, (source_row, target_row) in enumerate(
+        zip(result["output_artifacts"], portable_artifacts, strict=True)
+    ):
+        role = str(source_row.get("role") or "") if isinstance(source_row, Mapping) else ""
+        source = _bound_file(
+            source_row,
+            code=f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}",
+        )
+        checkpoint_role = f"completed_stage:{stage_id}:{role}"
+        inventory.append(
+            _copy_inventory_file(
+                source=source,
+                root=checkpoint_root,
+                relative=(
+                    f"completed_stages/{stage_id}/{index:04d}"
+                    f"{source.suffix.lower() or '.bin'}"
+                ),
+                role=checkpoint_role,
+            )
+        )
+        target_row.pop("path", None)
+        target_row["checkpoint_role"] = checkpoint_role
+    portable["source_stage_result_digest"] = portable["stage_result_digest"]
+    portable["stage_result_digest"] = canonical_digest(
+        portable, digest_field="stage_result_digest"
+    )
+    return portable
+
+
+def advance_scene_configuration_diagnostic_checkpoint(
+    *,
+    checkpoint_root: str | Path,
+    stage_results: list[Mapping[str, Any]],
+    stage_sequence: list[Mapping[str, Any]],
+    configurations: Mapping[str, tuple[Mapping[str, Any], Path]],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Advance a diagnostic checkpoint through one contiguous valid stage prefix."""
+
+    source_root = Path(checkpoint_root).expanduser().resolve()
+    source = validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=source_root
+    )
+    if (
+        len(stage_sequence) != 6
+        or len(stage_results) > 6
+        or any(not isinstance(row, Mapping) for row in stage_sequence)
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_completed_stage_prefix_invalid"
+        )
+    expected_ids = [str(row.get("stage_id") or "") for row in stage_sequence]
+    observed_ids = [str(row.get("stage_id") or "") for row in stage_results]
+    if observed_ids != expected_ids[: len(observed_ids)]:
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_completed_stage_prefix_invalid"
+        )
+    carried_count = int(source["completed_stage_prefix_count"])
+    if len(stage_results) < carried_count:
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_completed_stage_regression"
+        )
+    root = Path(output_root).expanduser().resolve()
+    if root.is_symlink() or root.exists():
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_output_invalid"
+        )
+    root.mkdir(parents=True, mode=0o750)
+    inventory: list[dict[str, Any]] = []
+    try:
+        for row in source["inventory"]:
+            source_path = source_root / str(row["relative_path"])
+            inventory.append(
+                _copy_inventory_file(
+                    source=source_path,
+                    root=root,
+                    relative=str(row["relative_path"]),
+                    role=str(row["role"]),
+                )
+            )
+        portable_results = json.loads(
+            json.dumps(source["completed_stage_results"])
+        )
+        for index in range(carried_count, len(stage_results)):
+            stage_id = expected_ids[index]
+            configuration = configurations.get(stage_id)
+            if configuration is None:
+                raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                    "scene_configuration_diagnostic_stage_configuration_invalid"
+                )
+            portable_results.append(
+                _portable_stage_result(
+                    result=stage_results[index],
+                    stage_id=stage_id,
+                    configuration_path=configuration[1],
+                    checkpoint_root=root,
+                    inventory=inventory,
+                )
+            )
+        advanced = json.loads(json.dumps(source))
+        advanced["status"] = STATUS
+        advanced["inventory"] = sorted(
+            inventory, key=lambda row: row["relative_path"]
+        )
+        advanced["completed_stage_prefix_count"] = len(portable_results)
+        advanced["completed_stage_results"] = portable_results
+        advanced["checkpoint_digest"] = canonical_digest(
+            advanced, digest_field="checkpoint_digest"
+        )
+        manifest = root / f"{SCHEMA_VERSION}.json"
+        manifest.write_text(canonical_json(advanced) + "\n", encoding="utf-8")
+        return advanced
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+
+def hydrate_scene_configuration_diagnostic_completed_stages(
+    *,
+    checkpoint_root: str | Path,
+    stage_sequence: list[Mapping[str, Any]],
+    configurations: Mapping[str, tuple[Mapping[str, Any], Path]],
+) -> list[dict[str, Any]]:
+    """Reopen the contiguous carried dependency results and every artifact."""
+
+    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=checkpoint_root
+    )
+    carried = checkpoint["completed_stage_results"]
+    if (
+        len(stage_sequence) != 6
+        or len(carried) != checkpoint["completed_stage_prefix_count"]
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_completed_stage_prefix_invalid"
+        )
+    root = Path(checkpoint_root).expanduser().resolve()
+    by_role = {
+        str(row["role"]): root / str(row["relative_path"])
+        for row in checkpoint["inventory"]
+    }
+    results: list[dict[str, Any]] = []
+    for index, portable in enumerate(carried):
+        stage_id = str(stage_sequence[index].get("stage_id") or "")
+        configuration = configurations.get(stage_id)
+        value = json.loads(json.dumps(portable))
+        if (
+            configuration is None
+            or value.get("stage_id") != stage_id
+            or value.get("configuration_digest")
+            != _stage_configuration_digest(configuration[1])
+            or value.get("diagnostic_only") is not True
+            or value.get("qualification_eligible") is not False
+            or value.get("stage_result_digest")
+            != canonical_digest(value, digest_field="stage_result_digest")
+        ):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                f"scene_configuration_diagnostic_completed_stage_invalid:{stage_id}"
+            )
+        for artifact in value.get("output_artifacts") or []:
+            role = artifact.pop("checkpoint_role", None)
+            path = by_role.get(str(role or ""))
+            if path is None:
+                raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                    f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}"
+                )
+            artifact["path"] = str(path.resolve())
+        value["stage_result_digest"] = canonical_digest(
+            value, digest_field="stage_result_digest"
+        )
+        results.append(value)
+    return results
+
+
+def hydrate_scene_configuration_diagnostic_render_inputs(
+    *,
+    checkpoint_root: str | Path,
+    expected_scientific_binding_digest: str,
+) -> dict[str, Any]:
+    """Resolve checkpoint roles to immutable local bytes for resumed stage 1."""
+
+    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=checkpoint_root,
+        expected_scientific_binding_digest=expected_scientific_binding_digest,
+    )
+    root = Path(checkpoint_root).expanduser().resolve()
+    by_role = {
+        str(row["role"]): root / str(row["relative_path"])
+        for row in checkpoint["inventory"]
+    }
+    render = json.loads(json.dumps(checkpoint["render_inputs_template"]))
+
+    def hydrate(row: dict[str, Any], *, required: bool = True) -> None:
+        role = row.pop("checkpoint_role", None)
+        if role is None and not required:
+            return
+        path = by_role.get(str(role or ""))
+        if path is None:
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_role_missing"
+            )
+        row["path"] = str(path.resolve())
+
+    hydrate(render["source_appearance"], required=False)
+    hydrate(render["camera_calibration"])
+    hydrate(render["render_manifest"])
+    for frame in render["derived_frames"]:
+        hydrate(frame)
+        hydrate(frame["source_object_mask"])
+    cutout = render["derived_gaussian_cutout"]
+    hydrate(cutout["retained_scene_without_source_object"])
+    candidate = cutout.get("source_object_candidate")
+    if isinstance(candidate, dict):
+        hydrate(candidate, required=False)
+    render["result_digest"] = canonical_digest(render, digest_field="result_digest")
+    return render
+
+
+def hydrate_scene_configuration_diagnostic_semantic_outputs(
+    *,
+    checkpoint_root: str | Path,
+    current_semantic_runtime_request: Mapping[str, Any],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Copy exactly eight sealed edits after checking the rebuilt request."""
+
+    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=checkpoint_root
+    )
+    if (
+        current_semantic_runtime_request.get("schema_version")
+        != _SEMANTIC_REQUEST_SCHEMA
+        or current_semantic_runtime_request.get("request_digest")
+        != canonical_digest(
+            current_semantic_runtime_request, digest_field="request_digest"
+        )
+        or canonical_digest(
+            _normalized_semantic_request(current_semantic_runtime_request)
+        )
+        != checkpoint["semantic_teacher"]["scientific_request_digest"]
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_request_mismatch"
+        )
+    tasks = current_semantic_runtime_request.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) != 1:
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_request_mismatch"
+        )
+    task_id = str(tasks[0].get("task_id") or "")
+    request_frames = tasks[0].get("frames")
+    camera_ids = [row["camera_id"] for row in checkpoint["cameras"]]
+    if (
+        not task_id
+        or not isinstance(request_frames, list)
+        or [str(row.get("camera_id") or "") for row in request_frames]
+        != camera_ids
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_request_mismatch"
+        )
+    root = Path(checkpoint_root).expanduser().resolve()
+    source_by_role = {
+        str(row["role"]): root / str(row["relative_path"])
+        for row in checkpoint["inventory"]
+    }
+    output = Path(output_root).expanduser().resolve()
+    if output.is_symlink() or output.exists():
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_output_invalid"
+        )
+    task_root = output / "tasks" / task_id
+    task_root.mkdir(parents=True, mode=0o750)
+    for index, camera_id in enumerate(camera_ids):
+        source = source_by_role[f"semantic_teacher_frame:{camera_id}"]
+        destination = task_root / f"{index:05d}.png"
+        shutil.copyfile(source, destination)
+        if destination.stat().st_size != source.stat().st_size or _sha256(
+            destination
+        ) != _sha256(source):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_semantic_copy_mismatch"
+            )
+    semantic = checkpoint["semantic_teacher"]
+    result: dict[str, Any] = {
+        "schema_version": _SEMANTIC_RESULT_SCHEMA,
+        "status": "completed_unreviewed_semantic_teacher_candidates",
+        "source_runtime_request_digest": current_semantic_runtime_request[
+            "request_digest"
+        ],
+        "backend_id": semantic["backend_id"],
+        "backend_entry_digest": semantic["backend_entry_digest"],
+        "adapter_id": semantic["adapter_id"],
+        "model_snapshot": semantic["model_snapshot"],
+        "request_count": 8,
+        "successful_request_count": 8,
+        "failed_request_count": 0,
+        "tasks": [{"task_id": task_id, "camera_count": 8}],
+        "raw_secret_values_recorded": False,
+        "diagnostic_checkpoint_reused": True,
+        "provider_calls_performed": 0,
+        "source_checkpoint_runtime_result_digest": semantic[
+            "runtime_result_digest"
+        ],
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
 def diagnostic_checkpoint_scientific_binding_digest(
     *, stage_input: Mapping[str, Any], render_inputs: Mapping[str, Any]
 ) -> str:
@@ -614,7 +1027,11 @@ __all__ = [
     "SCHEMA_VERSION",
     "STATUS",
     "TaskEvaluationSceneConfigurationDiagnosticCheckpointError",
+    "advance_scene_configuration_diagnostic_checkpoint",
     "diagnostic_checkpoint_scientific_binding_digest",
+    "hydrate_scene_configuration_diagnostic_completed_stages",
+    "hydrate_scene_configuration_diagnostic_render_inputs",
+    "hydrate_scene_configuration_diagnostic_semantic_outputs",
     "materialize_scene_configuration_diagnostic_checkpoint",
     "validate_scene_configuration_diagnostic_checkpoint",
 ]

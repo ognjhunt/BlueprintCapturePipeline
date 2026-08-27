@@ -11,7 +11,11 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_checkpoint import (
     SCHEMA_VERSION,
     TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+    advance_scene_configuration_diagnostic_checkpoint,
     diagnostic_checkpoint_scientific_binding_digest,
+    hydrate_scene_configuration_diagnostic_completed_stages,
+    hydrate_scene_configuration_diagnostic_render_inputs,
+    hydrate_scene_configuration_diagnostic_semantic_outputs,
     materialize_scene_configuration_diagnostic_checkpoint,
     validate_scene_configuration_diagnostic_checkpoint,
 )
@@ -334,6 +338,7 @@ def test_cross_commit_reuse_key_depends_on_scientific_bytes_not_commit_label(
     )
     next_stage = json.loads(json.dumps(fixture["stage_input"]))
     next_stage["source_commit"] = "b" * 40
+    next_stage["toolchain_digest"] = "sha256:" + "e" * 64
     next_stage["construction_envelope"]["expected_production_commit"] = "b" * 40
     next_stage["construction_envelope"]["envelope_digest"] = canonical_digest(
         next_stage["construction_envelope"], digest_field="envelope_digest"
@@ -343,6 +348,71 @@ def test_cross_commit_reuse_key_depends_on_scientific_bytes_not_commit_label(
         stage_input=next_stage,
         render_inputs=fixture["render_result"],
     ) == original
+
+
+def test_hydration_reuses_exact_frames_and_skips_semantic_provider(
+    tmp_path: Path,
+) -> None:
+    root, checkpoint, fixture = _materialize(tmp_path)
+    hydrated = hydrate_scene_configuration_diagnostic_render_inputs(
+        checkpoint_root=root,
+        expected_scientific_binding_digest=checkpoint["scientific_bindings"][
+            "binding_digest"
+        ],
+    )
+    semantic_request = json.loads(
+        fixture["request_path"].read_text(encoding="utf-8")
+    )
+    semantic = hydrate_scene_configuration_diagnostic_semantic_outputs(
+        checkpoint_root=root,
+        current_semantic_runtime_request=semantic_request,
+        output_root=tmp_path / "hydrated-semantic",
+    )
+
+    assert hydrated["derived_frame_count"] == 8
+    assert all(Path(row["path"]).is_file() for row in hydrated["derived_frames"])
+    assert semantic["successful_request_count"] == 8
+    assert semantic["provider_calls_performed"] == 0
+    assert semantic["diagnostic_checkpoint_reused"] is True
+    assert len(list((tmp_path / "hydrated-semantic").rglob("*.png"))) == 8
+
+
+def test_semantic_model_or_prompt_change_refuses_reuse(tmp_path: Path) -> None:
+    root, _checkpoint, fixture = _materialize(tmp_path)
+    request = json.loads(fixture["request_path"].read_text(encoding="utf-8"))
+    request["prompt"] = "A different scientific instruction."
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+        match="scene_configuration_diagnostic_checkpoint_semantic_request_mismatch",
+    ):
+        hydrate_scene_configuration_diagnostic_semantic_outputs(
+            checkpoint_root=root,
+            current_semantic_runtime_request=request,
+            output_root=tmp_path / "hydrated-semantic",
+        )
+
+
+def test_renderer_identity_change_refuses_reuse(tmp_path: Path) -> None:
+    root, checkpoint, fixture = _materialize(tmp_path)
+    changed_render = json.loads(json.dumps(fixture["render_result"]))
+    changed_render["renderer_runtime"]["renderer_digest"] = "sha256:" + "f" * 64
+    changed_stage = fixture["stage_input"]
+    changed = diagnostic_checkpoint_scientific_binding_digest(
+        stage_input=changed_stage,
+        render_inputs=changed_render,
+    )
+
+    assert changed != checkpoint["scientific_bindings"]["binding_digest"]
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+        match="scene_configuration_diagnostic_checkpoint_invalid",
+    ):
+        validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=root,
+            expected_scientific_binding_digest=changed,
+        )
 
 
 def test_checkpoint_refuses_a_different_scientific_binding(tmp_path: Path) -> None:
@@ -355,4 +425,106 @@ def test_checkpoint_refuses_a_different_scientific_binding(tmp_path: Path) -> No
         validate_scene_configuration_diagnostic_checkpoint(
             checkpoint_root=root,
             expected_scientific_binding_digest="sha256:" + "f" * 64,
+        )
+
+
+def _stage_prefix(tmp_path: Path, count: int):
+    stages = []
+    configurations = {}
+    results = []
+    for index in range(1, 7):
+        stage_id = f"stage-{index}"
+        stages.append(
+            {
+                "stage_id": stage_id,
+                "depends_on": [] if index == 1 else [f"stage-{index - 1}"],
+            }
+        )
+        configuration_path = tmp_path / f"stage-{index}.json"
+        configuration_path.write_text(
+            canonical_json({"stage": index}) + "\n", encoding="utf-8"
+        )
+        configurations[stage_id] = ({"stage": index}, configuration_path)
+        if index <= count:
+            artifact = tmp_path / f"artifact-{index}.bin"
+            artifact.write_bytes(f"artifact-{index}".encode())
+            result = {
+                "schema_version": "task_evaluation_scene_configuration_stage_result.v1",
+                "status": "completed",
+                "stage_id": stage_id,
+                "configuration_digest": _sha256(configuration_path),
+                "output_artifacts": [
+                    {
+                        "role": f"stage-{index}-output",
+                        **_bound(artifact),
+                    }
+                ],
+                "diagnostic_only": True,
+                "qualification_eligible": False,
+                "executed_inside_one_parent_provider_run": False,
+                "configured_revision_publication_permitted": False,
+                "offering_publication_permitted": False,
+                "terminal_e2e_completion_permitted": False,
+                "stage_result_digest": "",
+            }
+            result["stage_result_digest"] = canonical_digest(
+                result, digest_field="stage_result_digest"
+            )
+            results.append(result)
+    return stages, configurations, results
+
+
+def test_progressive_checkpoint_carries_valid_completed_stage_prefix(
+    tmp_path: Path,
+) -> None:
+    root, _checkpoint, _fixture_rows = _materialize(tmp_path)
+    stages, configurations, results = _stage_prefix(tmp_path, 3)
+    advanced_root = tmp_path / "advanced"
+    advanced = advance_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=root,
+        stage_results=results,
+        stage_sequence=stages,
+        configurations=configurations,
+        output_root=advanced_root,
+    )
+    hydrated = hydrate_scene_configuration_diagnostic_completed_stages(
+        checkpoint_root=advanced_root,
+        stage_sequence=stages,
+        configurations=configurations,
+    )
+
+    assert advanced["completed_stage_prefix_count"] == 3
+    assert [row["stage_id"] for row in hydrated] == [
+        "stage-1",
+        "stage-2",
+        "stage-3",
+    ]
+    assert all(
+        Path(row["output_artifacts"][0]["path"]).is_file() for row in hydrated
+    )
+
+
+def test_progressive_checkpoint_refuses_changed_carried_configuration(
+    tmp_path: Path,
+) -> None:
+    root, _checkpoint, _fixture_rows = _materialize(tmp_path)
+    stages, configurations, results = _stage_prefix(tmp_path, 1)
+    advanced_root = tmp_path / "advanced"
+    advance_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=root,
+        stage_results=results,
+        stage_sequence=stages,
+        configurations=configurations,
+        output_root=advanced_root,
+    )
+    configurations["stage-1"][1].write_text('{"stage":"changed"}\n', encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+        match="scene_configuration_diagnostic_completed_stage_invalid:stage-1",
+    ):
+        hydrate_scene_configuration_diagnostic_completed_stages(
+            checkpoint_root=advanced_root,
+            stage_sequence=stages,
+            configurations=configurations,
         )

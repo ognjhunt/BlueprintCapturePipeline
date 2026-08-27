@@ -48,6 +48,8 @@ def _launch(checkpoint_digest: str) -> dict:
         "teardown_completed": True,
         "provider_zero_confirmed": True,
         "source_checkpoint_digest": checkpoint_digest,
+        "diagnostic_source_commit": "a" * 40,
+        "diagnostic_toolchain_digest": "sha256:" + "a" * 64,
         "diagnostic_only": True,
         "qualification_eligible": False,
         "executed_inside_one_parent_provider_run": False,
