@@ -9,7 +9,7 @@ import os
 import stat
 import tempfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,6 +28,7 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
+from .provider_output_disk_capacity import observe_provider_output_disk_capacity
 from .spend_authority_consumption_root import (
     SpendAuthorityRootError,
     prepare_consumption_root,
@@ -763,6 +764,91 @@ PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES = 1_000_000_000
 PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER = 2
 PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO = 4
 PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT = 10_000
+#: Space retained beyond the declared archive and its maximum permitted
+#: expansion for filesystem metadata, terminal manifests, and publication
+#: temporaries. This is operational headroom, not a larger ZIP allowance.
+PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES = 512 * 1024 * 1024
+
+
+def _provider_output_disk_requirements(maximum_archive_bytes: int) -> dict[str, int]:
+    """Return the one capacity formula used before transfer and extraction."""
+
+    if (
+        isinstance(maximum_archive_bytes, bool)
+        or not isinstance(maximum_archive_bytes, int)
+        or maximum_archive_bytes <= 0
+        or PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO < 1
+        or PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES <= 0
+    ):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_provider_output_disk_requirement_invalid"
+        )
+    maximum_expanded_bytes = (
+        maximum_archive_bytes * PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO
+    )
+    return {
+        "maximum_archive_bytes": maximum_archive_bytes,
+        "maximum_expanded_bytes": maximum_expanded_bytes,
+        "operational_reserve_bytes": PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES,
+        "required_free_bytes_before_download": (
+            maximum_archive_bytes
+            + maximum_expanded_bytes
+            + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+        ),
+        # At this checkpoint the ZIP is already resident, so free space no
+        # longer includes those bytes. Counting it again would require 2x the
+        # archive without protecting any additional write.
+        "required_free_bytes_before_extraction": (
+            maximum_expanded_bytes + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+        ),
+    }
+
+
+def _provider_output_disk_capacity(
+    *,
+    destination_directory: Path,
+    required_free_bytes: int,
+    phase: str,
+    disk_usage_provider: Callable[[Path], Any] | None = None,
+) -> dict[str, Any]:
+    """Measure the destination filesystem and fail closed on unknown capacity."""
+
+    return observe_provider_output_disk_capacity(
+        destination_directory=destination_directory,
+        required_free_bytes=required_free_bytes,
+        phase=phase,
+        schema_version="scene_configuration_provider_output_disk_capacity.v1",
+        blocker_prefix="scene_configuration_provider_output",
+        disk_usage_provider=disk_usage_provider,
+    )
+
+
+def _extract_provider_output_with_capacity_guard(
+    archive_path: Path,
+    destination: Path,
+    *,
+    maximum_archive_bytes: int,
+    disk_usage_provider: Callable[[Path], Any] | None = None,
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    """Re-stat free bytes immediately before invoking the unchanged extractor."""
+
+    requirements = _provider_output_disk_requirements(maximum_archive_bytes)
+    capacity = _provider_output_disk_capacity(
+        destination_directory=destination.parent,
+        required_free_bytes=requirements[
+            "required_free_bytes_before_extraction"
+        ],
+        phase="before_extraction",
+        disk_usage_provider=disk_usage_provider,
+    )
+    if capacity["status"] != "ready":
+        return {}, list(capacity["blockers"]), capacity
+    result, blockers = _extract_provider_output(
+        archive_path,
+        destination,
+        maximum_archive_bytes=maximum_archive_bytes,
+    )
+    return result, blockers, capacity
 
 
 def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -935,6 +1021,7 @@ def run_scene_configuration_vast(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
     scene_construction_queue_root: str | Path | None = None,
+    disk_usage_provider: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
     """Run exactly one configuration allocation and close every owned resource."""
 
@@ -1009,6 +1096,41 @@ def run_scene_configuration_vast(
     expected_download_bytes, expected_upload_bytes = _provider_transfer_byte_budget(
         receipt
     )
+    provider_run = job / PROVIDER_RUN_DIRNAME
+    ensure_dir(provider_run)
+    output_disk_requirements = _provider_output_disk_requirements(
+        expected_upload_bytes
+    )
+    preallocation_disk_capacity = _provider_output_disk_capacity(
+        destination_directory=provider_run,
+        required_free_bytes=output_disk_requirements[
+            "required_free_bytes_before_download"
+        ],
+        phase="before_allocation_and_staging",
+        disk_usage_provider=disk_usage_provider,
+    )
+    if preallocation_disk_capacity["status"] != "ready":
+        return _seal_live_terminal_result(
+            job,
+            {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked",
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                "continuing_spend_from_this_run": False,
+                "expected_provider_download_bytes": expected_download_bytes,
+                "expected_provider_upload_bytes": expected_upload_bytes,
+                "provider_output_disk_requirements": output_disk_requirements,
+                "provider_output_disk_capacity": preallocation_disk_capacity,
+                "blockers": list(preallocation_disk_capacity["blockers"]),
+            },
+            receipt=receipt,
+            scene_construction_queue_root=scene_construction_queue_root,
+        )
     runtime_environment = dict(runtime_environment)
     runtime_environment[EXPECTED_PROVIDER_UPLOAD_BYTES_ENV] = str(
         expected_upload_bytes
@@ -1127,7 +1249,6 @@ def run_scene_configuration_vast(
             scene_construction_queue_root=scene_construction_queue_root,
         )
 
-    provider_run = job / PROVIDER_RUN_DIRNAME
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     adapter: dict[str, Any] = {}
     staged_secret_root: Path | None = None
@@ -1170,6 +1291,11 @@ def run_scene_configuration_vast(
                 provider_runtime_output_zip=output_zip,
                 expected_provider_download_bytes=expected_download_bytes,
                 expected_provider_upload_bytes=expected_upload_bytes,
+                provider_output_minimum_free_bytes=(
+                    output_disk_requirements[
+                        "required_free_bytes_before_download"
+                    ]
+                ),
                 enable_isaac_smoke=True,
                 enable_blueprint_bundle=True,
                 provider_bundle_kind=PROVIDER_BUNDLE_KIND,
@@ -1232,10 +1358,13 @@ def run_scene_configuration_vast(
         teardown=teardown,
         instance_ids=instance_ids,
     )
-    execution, blockers = _extract_provider_output(
-        output_zip,
-        job / "immutable_execution",
-        maximum_archive_bytes=expected_upload_bytes,
+    execution, blockers, extraction_disk_capacity = (
+        _extract_provider_output_with_capacity_guard(
+            output_zip,
+            job / "immutable_execution",
+            maximum_archive_bytes=expected_upload_bytes,
+            disk_usage_provider=disk_usage_provider,
+        )
     )
     # The adapter's own refusal is the only record of *why* nothing was
     # allocated. Without it the result carries only the downstream
@@ -1345,6 +1474,11 @@ def run_scene_configuration_vast(
         ),
         "expected_provider_download_bytes": expected_download_bytes,
         "expected_provider_upload_bytes": expected_upload_bytes,
+        "provider_output_disk_requirements": output_disk_requirements,
+        "provider_output_disk_capacity": {
+            "before_allocation_and_staging": preallocation_disk_capacity,
+            "before_extraction": extraction_disk_capacity,
+        },
         "stage_chain_result_digest": (execution.get("stage_chain") or {}).get(
             "result_digest"
         ),

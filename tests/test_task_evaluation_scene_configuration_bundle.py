@@ -1881,6 +1881,179 @@ def test_provider_output_extraction_seals_malformed_result_and_archive_expansion
     assert not any((tmp_path / "expansion-output").iterdir())
 
 
+def test_scene_configuration_provider_output_disk_formula_and_rechecks_are_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ZIP, its allowed expansion, and reserve must fit before paid work.
+
+    The second check deliberately excludes the ZIP after it is resident.  Both
+    boundaries are inclusive: exactly the required free bytes may proceed.
+    """
+
+    archive_ceiling = 1_000_000_000
+    requirements = scene_vast._provider_output_disk_requirements(archive_ceiling)
+    maximum_expanded = (
+        archive_ceiling * scene_vast.PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO
+    )
+    assert requirements == {
+        "maximum_archive_bytes": archive_ceiling,
+        "maximum_expanded_bytes": maximum_expanded,
+        "operational_reserve_bytes": (
+            scene_vast.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+        ),
+        "required_free_bytes_before_download": (
+            archive_ceiling
+            + maximum_expanded
+            + scene_vast.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+        ),
+        "required_free_bytes_before_extraction": (
+            maximum_expanded
+            + scene_vast.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+        ),
+    }
+
+    archive = tmp_path / "capacity-output.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("evidence.txt", b"evidence")
+    extraction_required = requirements["required_free_bytes_before_extraction"]
+    called = {"extract": 0}
+    original_extract = scene_vast._extract_provider_output
+
+    def observed_extract(*args, **kwargs):  # type: ignore[no-untyped-def]
+        called["extract"] += 1
+        return original_extract(*args, **kwargs)
+
+    monkeypatch.setattr(scene_vast, "_extract_provider_output", observed_extract)
+    observed, blockers, capacity = (
+        scene_vast._extract_provider_output_with_capacity_guard(
+            archive,
+            tmp_path / "insufficient-extraction",
+            maximum_archive_bytes=archive_ceiling,
+            disk_usage_provider=lambda _path: type(
+                "Usage", (), {"free": extraction_required - 1}
+            )(),
+        )
+    )
+    assert observed == {}
+    assert blockers == [
+        "scene_configuration_provider_output_disk_capacity_insufficient"
+    ]
+    assert capacity["status"] == "blocked"
+    assert called["extract"] == 0
+    assert not (tmp_path / "insufficient-extraction").exists()
+
+    _observed, blockers, capacity = (
+        scene_vast._extract_provider_output_with_capacity_guard(
+            archive,
+            tmp_path / "exact-boundary-extraction",
+            maximum_archive_bytes=archive_ceiling,
+            disk_usage_provider=lambda _path: type(
+                "Usage", (), {"free": extraction_required}
+            )(),
+        )
+    )
+    assert capacity["status"] == "ready"
+    assert called["extract"] == 1
+    assert blockers == ["scene_configuration_provider_result_missing"]
+
+    def disk_error(_path: Path):
+        raise OSError("fixture disk probe unavailable")
+
+    unavailable = scene_vast._provider_output_disk_capacity(
+        destination_directory=tmp_path,
+        required_free_bytes=1,
+        phase="fixture",
+        disk_usage_provider=disk_error,
+    )
+    invalid = scene_vast._provider_output_disk_capacity(
+        destination_directory=tmp_path,
+        required_free_bytes=1,
+        phase="fixture",
+        disk_usage_provider=lambda _path: type("Usage", (), {"free": "unknown"})(),
+    )
+    assert unavailable["blockers"] == [
+        "scene_configuration_provider_output_disk_capacity_unavailable"
+    ]
+    assert invalid["blockers"] == unavailable["blockers"]
+
+
+def test_vast_provider_output_get_rechecks_capacity_before_fake_object_store(
+    tmp_path: Path,
+) -> None:
+    """Insufficient or unknown space must prevent the signed object GET itself."""
+
+    with pytest.raises(
+        ValueError, match="invalid_vast_provider_output_minimum_free_bytes"
+    ):
+        vpa.run_vast_provider_adapter(
+            job_dir=tmp_path / "invalid-capacity",
+            provider_output_minimum_free_bytes=True,
+        )
+    output = tmp_path / "provider-output.zip"
+    minimum = 5_000_000_000
+    calls: list[str] = []
+
+    def fake_object_store_get(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs["url"])
+        Path(kwargs["output_path"]).write_bytes(b"provider-output")
+        return {
+            "status": "completed",
+            "http_status_code": 200,
+            "downloaded_size_bytes": len(b"provider-output"),
+        }
+
+    blocked = vpa._download_provider_output_with_capacity_guard(
+        url="https://objects.example.test/output.zip?signature=fixture",
+        output_path=output,
+        minimum_free_bytes=minimum,
+        disk_usage_provider=lambda _path: type(
+            "Usage", (), {"free": minimum - 1}
+        )(),
+        downloader=fake_object_store_get,
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["download_attempted"] is False
+    assert blocked["blockers"] == ["provider_output_disk_capacity_insufficient"]
+    assert calls == []
+    assert not output.exists()
+
+    def disk_error(_path: Path):
+        raise OSError("fixture disk probe unavailable")
+
+    unavailable = vpa._download_provider_output_with_capacity_guard(
+        url="https://objects.example.test/output.zip?signature=fixture",
+        output_path=output,
+        minimum_free_bytes=minimum,
+        disk_usage_provider=disk_error,
+        downloader=fake_object_store_get,
+    )
+    invalid = vpa._download_provider_output_with_capacity_guard(
+        url="https://objects.example.test/output.zip?signature=fixture",
+        output_path=output,
+        minimum_free_bytes=minimum,
+        disk_usage_provider=lambda _path: type("Usage", (), {"free": None})(),
+        downloader=fake_object_store_get,
+    )
+    assert unavailable["blockers"] == ["provider_output_disk_capacity_unavailable"]
+    assert invalid["blockers"] == unavailable["blockers"]
+    assert unavailable["download_attempted"] is False
+    assert invalid["download_attempted"] is False
+    assert calls == []
+
+    completed = vpa._download_provider_output_with_capacity_guard(
+        url="https://objects.example.test/output.zip?signature=fixture",
+        output_path=output,
+        minimum_free_bytes=minimum,
+        disk_usage_provider=lambda _path: type("Usage", (), {"free": minimum})(),
+        downloader=fake_object_store_get,
+    )
+    assert completed["status"] == "completed"
+    assert completed["download_attempted"] is True
+    assert completed["disk_capacity"]["status"] == "ready"
+    assert len(calls) == 1
+    assert output.read_bytes() == b"provider-output"
+
+
 def test_provider_result_seals_archive_relative_artifact_paths(
     tmp_path: Path,
 ) -> None:
@@ -2897,6 +3070,16 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         return {"status": "blocked", "blockers": ["stubbed_no_allocation"]}
 
     monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", _adapter)
+    expected_download = (
+        receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
+    )
+    expected_upload = max(
+        2 * receipt["bundle_size_bytes"],
+        scene_vast.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+    )
+    required_free = scene_vast._provider_output_disk_requirements(expected_upload)[
+        "required_free_bytes_before_download"
+    ]
 
     result = scene_vast.run_scene_configuration_vast(
         job_dir=tmp_path / "job",
@@ -2905,17 +3088,12 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         paid_resource_admission_grant=object(),
         execute=True,
         scene_construction_queue_root=_construction_queue(tmp_path),
+        disk_usage_provider=lambda _path: types.SimpleNamespace(free=required_free),
     )
 
-    expected_download = (
-        receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
-    )
-    expected_upload = max(
-        2 * receipt["bundle_size_bytes"],
-        scene_vast.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
-    )
     assert captured["expected_provider_download_bytes"] == expected_download
     assert captured["expected_provider_upload_bytes"] == expected_upload
+    assert captured["provider_output_minimum_free_bytes"] == required_free
     assert captured["provider_runtime_environment"][
         "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES"
     ] == str(expected_upload)
@@ -2930,6 +3108,92 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     assert captured["session_max_live_minutes"] == 420
     assert result["expected_provider_download_bytes"] == expected_download
     assert result["expected_provider_upload_bytes"] == expected_upload
+
+
+def test_scene_configuration_refuses_insufficient_output_disk_before_staging_or_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paid run cannot begin when its declared return envelope cannot fit."""
+
+    receipt = _build(tmp_path, "disk-capacity-bundle")
+    receipt_path = (
+        tmp_path
+        / "disk-capacity-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    )
+    authority_path = tmp_path / "disk-capacity-authority.json"
+    authority_path.write_text("{}", encoding="utf-8")
+    authority = {
+        "authority_digest": "sha256:" + "e" * 64,
+        "hard_attempt_spend_cap_usd": MAX_ATTEMPT_SPEND_USD,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+        "maximum_single_resource_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
+        "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+        "external_service_spend_caps": {
+            "openai": {"maximum_cost_usd": 1.5, "maximum_requests": 32}
+        },
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "validate_scene_configuration_paid_authority",
+        lambda _value, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+    )
+    monkeypatch.setattr(
+        scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
+    )
+    calls = {"staging": 0, "watchdog": 0, "adapter": 0}
+
+    def must_not_stage(**_kwargs):
+        calls["staging"] += 1
+        raise AssertionError("object-store staging crossed disk refusal")
+
+    def must_not_arm(**_kwargs):
+        calls["watchdog"] += 1
+        raise AssertionError("watchdog crossed disk refusal")
+
+    def must_not_allocate(**_kwargs):
+        calls["adapter"] += 1
+        raise AssertionError("provider adapter crossed disk refusal")
+
+    monkeypatch.setattr(
+        scene_vast, "stage_wam_provider_bundle_object_store", must_not_stage
+    )
+    monkeypatch.setattr(scene_vast, "arm_independent_vast_watchdog", must_not_arm)
+    monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", must_not_allocate)
+    _download, upload = scene_vast._provider_transfer_byte_budget(receipt)
+    requirement = scene_vast._provider_output_disk_requirements(upload)[
+        "required_free_bytes_before_download"
+    ]
+
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "disk-capacity-job",
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=object(),
+        execute=True,
+        scene_construction_queue_root=_construction_queue(tmp_path),
+        disk_usage_provider=lambda _path: type(
+            "Usage", (), {"free": requirement - 1}
+        )(),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["blockers"] == [
+        "scene_configuration_provider_output_disk_capacity_insufficient"
+    ]
+    assert result["provider_output_disk_capacity"]["phase"] == (
+        "before_allocation_and_staging"
+    )
+    assert result["provider_output_disk_capacity"]["observed_free_bytes"] == (
+        requirement - 1
+    )
+    assert calls == {"staging": 0, "watchdog": 0, "adapter": 0}
 
 
 def test_scene_configuration_bundle_bytes_can_price_an_offer_out_of_the_cap(

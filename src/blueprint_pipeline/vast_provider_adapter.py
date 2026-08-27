@@ -90,7 +90,9 @@ from .native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     required_archive_entries as native_task_arena_required_archive_entries,
 )
-from .wam_async_runner_common import download_url_to_file
+from .provider_output_disk_capacity import (
+    download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
+)
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_attempt_preservation import (
     VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
@@ -7378,6 +7380,7 @@ def run_vast_provider_adapter(
     stale_offer_create_retry_limit: int | None = None,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    provider_output_minimum_free_bytes: int = 0,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -7390,6 +7393,7 @@ def run_vast_provider_adapter(
     for field, value in (
         ("expected_provider_download_bytes", expected_provider_download_bytes),
         ("expected_provider_upload_bytes", expected_provider_upload_bytes),
+        ("provider_output_minimum_free_bytes", provider_output_minimum_free_bytes),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"invalid_vast_{field}")
@@ -9509,11 +9513,16 @@ def run_vast_provider_adapter(
             # been fetched. The object's presence is stronger evidence than a
             # line claiming it was written.
             if _string(provider_output_get_url):
-                transfer = download_url_to_file(
+                transfer = _download_provider_output_with_capacity_guard(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
-                    user_agent="BlueprintVastProviderAdapter/1.0",
-                    timeout_seconds=60,
+                    minimum_free_bytes=provider_output_minimum_free_bytes,
+                )
+                output_download_manifest.update(
+                    {
+                        "download_attempted": transfer.get("download_attempted"),
+                        "disk_capacity": transfer.get("disk_capacity"),
+                    }
                 )
                 if transfer["status"] == "completed":
                     output_download_manifest.update(
@@ -9530,7 +9539,10 @@ def run_vast_provider_adapter(
                             "status": "blocked",
                             "error_type": transfer.get("error_type"),
                             "http_status_code": transfer.get("http_status_code"),
-                            "blockers": ["provider_output_get_url_download_failed"],
+                            "blockers": list(
+                                transfer.get("blockers")
+                                or ["provider_output_get_url_download_failed"]
+                            ),
                         }
                     )
             elif provider_upload_ok and not _string(provider_output_get_url):
@@ -9579,6 +9591,9 @@ def run_vast_provider_adapter(
                 and provider_completed_or_blocked
             )
             completion_blockers: list[str] = []
+            completion_blockers.extend(
+                _string_list(output_download_manifest.get("blockers"))
+            )
             if not provider_started:
                 completion_blockers.append("provider_bundle_start_marker_missing")
             if not provider_downloaded:
