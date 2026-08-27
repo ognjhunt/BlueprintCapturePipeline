@@ -26,6 +26,10 @@ _FORBIDDEN_PACKAGE_SUFFIXES = {
     ".py",
     ".sh",
 }
+_DYNAMIC_MESH_COLLISION_APPROXIMATIONS = {
+    "convexDecomposition",
+    "convexHull",
+}
 
 
 class TaskEvaluationSceneConfigurationStaticQualificationError(ValueError):
@@ -217,6 +221,23 @@ def _usd_findings(
     collision_prims = [
         prim for prim in prims if prim.HasAPI(UsdPhysics.CollisionAPI)
     ]
+    dynamic_mesh_collision_rows: list[dict[str, str]] = []
+    for prim in collision_prims:
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        approximation = (
+            UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+            if prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+            else None
+        )
+        value = str(approximation or "")
+        dynamic_mesh_collision_rows.append(
+            {"path": str(prim.GetPath()), "approximation": value}
+        )
+        if value not in _DYNAMIC_MESH_COLLISION_APPROXIMATIONS:
+            findings.append(
+                "replacement_dynamic_mesh_collision_approximation_invalid"
+            )
     bounds_rows: list[tuple[list[float], list[float]]] = []
     cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(),
@@ -324,6 +345,7 @@ def _usd_findings(
         "default_prim": str(stage.GetDefaultPrim().GetPath()),
         "rigid_body_paths": [str(prim.GetPath()) for prim in rigid],
         "collision_prim_paths": [str(prim.GetPath()) for prim in collision_prims],
+        "dynamic_mesh_collision_approximations": dynamic_mesh_collision_rows,
         "mass_kg": mass_value,
         "center_of_mass_m": center_of_mass,
         "diagonal_inertia_kg_m2": inertia,
@@ -432,6 +454,7 @@ def qualify_scene_configuration_rigid_asset_static(
             "single_movable_rigid_root": True,
             "collision_geometry_present": True,
             "collision_geometry_nonempty_and_finite": True,
+            "dynamic_mesh_collision_approximation_safe": True,
             "mass_and_inertia_positive_finite": True,
             "materials_within_preregistered_bounds": True,
             "no_external_unpinned_dependencies": True,

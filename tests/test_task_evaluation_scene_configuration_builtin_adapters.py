@@ -15,6 +15,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters imp
     execute_simready_static_rigid_qualification,
     execute_simready_native_import_qualification,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (
+    _usd_findings,
+)
 
 
 pytest.importorskip("pxr")
@@ -42,7 +45,9 @@ def artifact(role: str, path: Path) -> dict[str, object]:
     }
 
 
-def _portable_rigid_asset(path: Path) -> None:
+def _portable_rigid_asset(
+    path: Path, *, dynamic_triangle_mesh: bool = False
+) -> None:
     dependency_path = path.with_suffix(".body.usda")
     dependency = Usd.Stage.CreateNew(str(dependency_path))
     body = UsdGeom.Xform.Define(dependency, "/Body").GetPrim()
@@ -52,8 +57,21 @@ def _portable_rigid_asset(path: Path) -> None:
     mass.CreateMassAttr(0.5)
     mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.0, 0.0))
     mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1, 0.1, 0.1))
-    collider = UsdGeom.Cube.Define(dependency, "/Body/Collider")
-    collider.CreateSizeAttr(0.1)
+    if dynamic_triangle_mesh:
+        collider = UsdGeom.Mesh.Define(dependency, "/Body/Collider")
+        collider.CreatePointsAttr(
+            [
+                Gf.Vec3f(-0.05, -0.05, -0.05),
+                Gf.Vec3f(0.05, -0.05, -0.05),
+                Gf.Vec3f(0.0, 0.05, -0.05),
+                Gf.Vec3f(0.0, 0.0, 0.05),
+            ]
+        )
+        collider.CreateFaceVertexCountsAttr([3, 3, 3, 3])
+        collider.CreateFaceVertexIndicesAttr([0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3])
+    else:
+        collider = UsdGeom.Cube.Define(dependency, "/Body/Collider")
+        collider.CreateSizeAttr(0.1)
     UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
     material = UsdShade.Material.Define(dependency, "/Body/PhysicsMaterial")
     physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
@@ -102,6 +120,18 @@ def _physics_completion() -> dict[str, object]:
         completion, digest_field="completion_digest"
     )
     return completion
+
+
+def test_static_gate_rejects_dynamic_triangle_mesh_collision(tmp_path: Path) -> None:
+    asset = tmp_path / "dynamic-triangle-mesh.usdz"
+    _portable_rigid_asset(asset, dynamic_triangle_mesh=True)
+
+    findings, observed = _usd_findings(asset, physics_bounds=PHYSICS_BOUNDS)
+
+    assert "replacement_dynamic_mesh_collision_approximation_invalid" in findings
+    assert observed["dynamic_mesh_collision_approximations"] == [
+        {"path": "/Asset/Body/Collider", "approximation": ""}
+    ]
 
 
 def test_artifixer_handler_admits_only_qualified_generated_appearance(

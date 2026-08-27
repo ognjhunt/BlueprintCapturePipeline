@@ -1759,6 +1759,7 @@ def _validate_remote_configs(
         else {}
     )
     physics_steps = dict(physics.get("steps") or {})
+    physics_apply = dict(physics_steps.get("apply_physics") or {})
     material_steps = dict(material.get("steps") or {})
     material_predict = dict(material_steps.get("predict") or {})
     material_vlm = dict(material_predict.get("vlm") or {})
@@ -1832,6 +1833,8 @@ def _validate_remote_configs(
         or predict_vlm.get("backend") != "openai"
         or predict_vlm.get("model") != CONTENT_LLM_MODEL
         or predict_vlm.get("reasoning_effort") != CONTENT_LLM_REASONING_EFFORT
+        or physics_apply.get("collision_approx")
+        not in {"convexHull", "convexDecomposition"}
         or material_rendering_modes != {"composition", "prim_only"}
         or physics_rendering_modes != {"composition", "prim_only"}
         or (physics_dataset.get("prim_filters") or {}).get("skip_invisible") is not True
@@ -1965,7 +1968,14 @@ def _materialize_remote_configs(
                 payload["steps"]["build_dataset_usd"]["prim_filters"][
                     "paths"
                 ] = render_paths
-                payload["steps"]["apply_physics"]["collision_approx"] = "none"
+                # This candidate is a movable rigid body. PhysX does not admit a
+                # raw triangle-mesh collider on a dynamic body, and the Physics
+                # Agent response schema does not supply a per-record override.
+                # Preserve the mug's concavity better than a single convex hull
+                # while keeping the authored collider native-runtime-safe.
+                payload["steps"]["apply_physics"][
+                    "collision_approx"
+                ] = "convexDecomposition"
                 payload["steps"]["apply_physics"][
                     "mass_scale_policy"
                 ] = "skip_mass"
