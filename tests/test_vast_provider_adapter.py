@@ -2632,6 +2632,216 @@ def test_vast_adapter_retries_empty_create_400_only_after_offer_absence_readback
     assert retry["catalog_readback_offer_count"] == 0
 
 
+def test_vast_adapter_reselects_when_create_provably_allocated_nothing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """An empty 400 must not end a run that allocated nothing.
+
+    Scene 839873 died here: Vast answered the create with an empty 400, the
+    catalog still listed the offer, so the vanished-offer proof did not apply
+    and the run stopped with 100 qualifying offers left unused. Creation is
+    ``PUT /asks/{id}/``, so an offer must be named and selection and creation
+    are separate calls -- being unable to advance past one bad ask throws away
+    the whole search.
+
+    Asking the provider whether anything was created is the missing proof: a
+    successful listing with no instance carrying the attempted label means the
+    next offer can be tried with no double-allocation risk.
+    """
+
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+    instance_listings = 0
+
+    offers = [
+        {
+            "id": 501,
+            "ask_contract_id": 501,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.25,
+            "driver_version": "580.159.03",
+            "machine_id": 9501,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+        {
+            "id": 502,
+            "ask_contract_id": 502,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.26,
+            "driver_version": "580.159.03",
+            "machine_id": 9502,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+    ]
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal instance_listings
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            instance_listings += 1
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            if payload.get("id") == {"eq": 501}:
+                # The offer is still listed, so the vanished-offer proof does
+                # not apply -- exactly the production case.
+                return 200, {"offers": [offers[0]]}
+            return 200, {"offers": offers}
+        if method == "PUT" and path == "/asks/501/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/501/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b""),
+            )
+        if method == "PUT" and path == "/asks/502/":
+            created_paths.append(path)
+            return 200, {"success": True, "new_contract": 5020}
+        if method == "GET" and path == "/instances/5020/":
+            return 200, _created_instance_detail(dph_total=0.26)
+        if method == "PUT" and path == "/instances/request_logs/5020":
+            return 200, {"success": True, "result_url": "https://logs.example/no-mutation"}
+        if method == "DELETE" and path == "/instances/5020/":
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        assert url == "https://logs.example/no-mutation"
+        return (
+            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+            "RTX A6000, 580.159.03, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "completed"
+    assert created_paths == ["/asks/501/", "/asks/502/"]
+    assert result["excluded_machine_ids"] == [9501]
+    retry = _read_json(tmp_path / "vast_offer_selection_manifest.json")[
+        "create_retry_attempts"
+    ][0]
+    assert retry["status"] == "create_no_mutation_reselect"
+    assert retry["selected_offer_absent_from_fresh_search"] is False
+    assert retry["create_produced_no_instance"] is True
+    assert retry["create_inventory_http_status_code"] == 200
+    teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
+    assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_fails_closed_when_create_mutation_is_unproven(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """No proof, no retry: an unreadable inventory must still fail closed."""
+
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    created_paths: list[str] = []
+    prelaunch_done = False
+
+    offers = [
+        {
+            "id": 601,
+            "ask_contract_id": 601,
+            "gpu_name": "RTX A6000",
+            "gpu_ram": 49152,
+            "dph_total": 0.25,
+            "driver_version": "580.159.03",
+            "machine_id": 9601,
+            "num_gpus": 1,
+            "rentable": True,
+        },
+    ]
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        nonlocal prelaunch_done
+        assert api_key == secret
+        if method == "GET" and path == "/instances/":
+            if not prelaunch_done:
+                prelaunch_done = True
+                return 200, {"instances": []}
+            # The post-create listing is the one that must prove non-mutation.
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/instances/",
+                503,
+                "unavailable",
+                {},
+                BytesIO(b""),
+            )
+        if method == "POST" and path == "/bundles/":
+            if payload.get("id") == {"eq": 601}:
+                return 200, {"offers": offers}
+            return 200, {"offers": offers}
+        if method == "PUT" and path == "/asks/601/":
+            created_paths.append(path)
+            raise urllib.error.HTTPError(
+                "https://vast.invalid/api/v0/asks/601/",
+                400,
+                "bad request",
+                {},
+                BytesIO(b""),
+            )
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == ["vast_api_http_error"]
+    assert created_paths == ["/asks/601/"]
+    diagnosis = result["create_failure_diagnosis"]
+    assert diagnosis["status"] == "create_failure_not_proven_safe_to_retry"
+    assert diagnosis["create_produced_no_instance"] is False
+    assert diagnosis["create_inventory_error"] == "HTTPError"
+    assert diagnosis["catalog_readback_offer_count"] == 1
+
+
 def test_vast_adapter_researches_empty_capacity_before_authority_or_create(
     tmp_path: Path,
     monkeypatch,

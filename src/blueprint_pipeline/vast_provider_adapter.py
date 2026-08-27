@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .vast_create_failure_diagnosis import diagnose_empty_create_400
 from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
@@ -8829,70 +8830,77 @@ def run_vast_provider_adapter(
                 # Preserve the response for the outer fail-closed HTTP error
                 # receipt when this is not the documented stale-offer race.
                 exc.fp = io.BytesIO(error_text.encode("utf-8"))
-                selected_offer_absent_from_fresh_search = False
-                catalog_readback_http_status_code: int | None = None
-                catalog_readback_offer_count: int | None = None
                 if int(exc.code or 0) == 400 and not error_text.strip():
-                    try:
-                        (
-                            catalog_readback_http_status_code,
-                            catalog_readback_response,
-                        ) = _api_json(
-                            method="POST",
-                            path="/bundles/",
-                            api_key=api_key,
-                            payload={
-                                **search_request,
-                                "limit": 1,
-                                "id": {
-                                    "eq": int(selected_offer["ask_contract_id"]),
-                                },
-                            },
-                            timeout_seconds=45,
-                        )
-                        catalog_readback_offers = _offers_from_response(
-                            catalog_readback_response
-                        )
-                        catalog_readback_offer_count = len(catalog_readback_offers)
-                        selected_offer_absent_from_fresh_search = bool(
-                            200 <= int(catalog_readback_http_status_code or 0) < 300
-                            and catalog_readback_offer_count == 0
-                        )
-                    except Exception:  # noqa: BLE001
-                        # A failed readback is not evidence that an offer vanished.
-                        # Preserve the original HTTP 400 and fail closed below.
-                        selected_offer_absent_from_fresh_search = False
-                if (
-                    not _is_stale_offer_create_http_error(
+                    empty_400_diagnosis = diagnose_empty_create_400(
+                        api_json=_api_json,
+                        api_key=api_key,
+                        search_request=search_request,
+                        offer_id=int(selected_offer["ask_contract_id"]),
+                        attempted_label=_string(create_payload.get("label")),
+                        offers_from_response=_offers_from_response,
+                        active_instance_rows=_active_instance_rows_from_payload,
+                        instance_label=lambda row: _string(row.get("label")),
+                    )
+                else:
+                    empty_400_diagnosis = {
+                        "selected_offer_absent_from_fresh_search": False,
+                        "catalog_readback_http_status_code": None,
+                        "catalog_readback_offer_count": None,
+                        "catalog_readback_error": None,
+                        "create_produced_no_instance": False,
+                        "create_inventory_http_status_code": None,
+                        "create_inventory_error": None,
+                    }
+                selected_offer_absent_from_fresh_search = bool(
+                    empty_400_diagnosis["selected_offer_absent_from_fresh_search"]
+                )
+                create_produced_no_instance = bool(
+                    empty_400_diagnosis["create_produced_no_instance"]
+                )
+                create_failure_diagnosis = {
+                    **empty_400_diagnosis,
+                    "attempt": stale_offer_create_retry_count,
+                    "http_status_code": exc.code,
+                    "offer_id": selected_offer.get("ask_contract_id"),
+                    "error_preview": _redact_text(error_text[:500], secret_values),
+                    "raw_secret_values_recorded": False,
+                }
+                base_result["create_failure_diagnosis"] = create_failure_diagnosis
+                retryable = (
+                    _is_stale_offer_create_http_error(
                         exc,
                         error_text,
                         selected_offer_absent_from_fresh_search=(
                             selected_offer_absent_from_fresh_search
                         ),
                     )
-                    or stale_offer_create_retry_count >= max_stale_offer_retries
-                ):
+                    or create_produced_no_instance
+                )
+                if not retryable or stale_offer_create_retry_count >= max_stale_offer_retries:
+                    # Record why this run stopped here. Without it the receipt
+                    # says only "empty 400" and cannot distinguish a vanished
+                    # offer from a rejected payload, which is what made the
+                    # previous failure undiagnosable from its own evidence.
+                    create_failure_diagnosis["status"] = (
+                        "create_retry_budget_exhausted"
+                        if retryable
+                        else "create_failure_not_proven_safe_to_retry"
+                    )
+                    create_retry_attempts.append(create_failure_diagnosis)
                     raise
                 selected_machine_id = _number(selected_offer.get("machine_id"))
                 if selected_machine_id is not None:
                     excluded_machine_ids.add(int(selected_machine_id))
                 retry_attempt = {
-                    "attempt": stale_offer_create_retry_count,
-                    "status": "stale_offer_retry",
-                    "http_status_code": exc.code,
-                    "offer_id": selected_offer.get("ask_contract_id"),
+                    **create_failure_diagnosis,
+                    "status": (
+                        "stale_offer_retry"
+                        if selected_offer_absent_from_fresh_search
+                        else "create_no_mutation_reselect"
+                    ),
                     "machine_id": int(selected_machine_id)
                     if selected_machine_id is not None
                     else None,
-                    "error_preview": _redact_text(error_text[:500], secret_values),
-                    "selected_offer_absent_from_fresh_search": (
-                        selected_offer_absent_from_fresh_search
-                    ),
-                    "catalog_readback_http_status_code": (
-                        catalog_readback_http_status_code
-                    ),
-                    "catalog_readback_offer_count": catalog_readback_offer_count,
-                    "raw_secret_values_recorded": False,
                 }
                 create_retry_attempts.append(retry_attempt)
                 stale_offer_create_retry_count += 1
