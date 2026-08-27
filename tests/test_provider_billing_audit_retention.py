@@ -253,6 +253,79 @@ def test_apply_repairs_reviewed_directory_metadata_before_relink(
     assert second_receipt.parent.stat().st_mode & 0o777 == 0o700
 
 
+def test_incomplete_transactions_are_inventory_bound_and_never_mutated(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    audit_root = fixture["audit_root"]
+    assert isinstance(audit_root, Path)
+    empty = audit_root / "20260827T002000.000001Z"
+    empty.mkdir(mode=0o700)
+    orphan = audit_root / "20260827T003000.000001Z"
+    orphan.mkdir(mode=0o700)
+    orphan_response = orphan / "response-001-runpod.json"
+    orphan_response.write_bytes(b'{"unreconciled":true}')
+    orphan_response.chmod(0o600)
+    orphan_inode = orphan_response.stat().st_ino
+    orphan_bytes = orphan_response.read_bytes()
+    plan = build_provider_billing_audit_retention_plan(audit_root=audit_root)
+
+    assert plan["unreconciled_incomplete_transaction_count"] == 2
+    assert plan["unreconciled_retained_bytes"] == len(orphan_bytes)
+    assert [
+        row["directory"]["path"]
+        for row in plan["unreconciled_incomplete_transactions"]
+    ] == [str(empty), str(orphan)]
+    assert all(
+        row["mutation_eligible"] is False
+        for row in plan["unreconciled_incomplete_transactions"]
+    )
+    assert str(empty) not in {row["path"] for row in plan["directory_repairs"]}
+    assert str(orphan) not in {row["path"] for row in plan["directory_repairs"]}
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan))
+
+    apply_provider_billing_audit_retention_plan(
+        dry_run_plan_path=plan_path,
+        acknowledgement=APPLY_ACKNOWLEDGEMENT,
+        receipt_out=tmp_path / "apply.json",
+    )
+
+    assert empty.is_dir()
+    assert orphan.is_dir()
+    assert orphan_response.read_bytes() == orphan_bytes
+    assert orphan_response.stat().st_ino == orphan_inode
+    assert orphan_response.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("invalid_kind", ["unknown_name", "symlink"])
+def test_ambiguous_incomplete_transaction_child_blocks_globally(
+    tmp_path: Path, invalid_kind: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    audit_root = fixture["audit_root"]
+    assert isinstance(audit_root, Path)
+    incomplete = audit_root / "20260827T002000.000001Z"
+    incomplete.mkdir(mode=0o700)
+    if invalid_kind == "unknown_name":
+        invalid = incomplete / "unexpected.bin"
+        invalid.write_bytes(b"ambiguous")
+    else:
+        target = tmp_path / "outside.json"
+        target.write_bytes(b"ambiguous")
+        invalid = incomplete / "response-001-vast.json"
+        invalid.symlink_to(target)
+
+    with pytest.raises(
+        ProviderBillingAuditRetentionError,
+        match="provider_billing_audit_incomplete_transaction_"
+        "(child|response)_invalid",
+    ):
+        build_provider_billing_audit_retention_plan(audit_root=audit_root)
+    assert invalid.exists() or invalid.is_symlink()
+    assert not (audit_root / "objects").exists()
+
+
 def test_apply_rejects_plan_or_receipt_inside_managed_root(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     audit_root = fixture["audit_root"]

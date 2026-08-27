@@ -451,6 +451,7 @@ def _scan_locked(audit_root: Path, root_info: os.stat_result) -> dict[str, Any]:
     receipts: list[dict[str, Any]] = []
     directories: list[dict[str, Any]] = []
     directory_repairs: list[dict[str, Any]] = []
+    incomplete_transactions: list[dict[str, Any]] = []
     audit_directories = 0
     for directory in sorted(audit_root.iterdir(), key=lambda item: item.name):
         if directory.name == OBJECT_DIRECTORY:
@@ -471,6 +472,47 @@ def _scan_locked(audit_root: Path, root_info: os.stat_result) -> dict[str, Any]:
             )
         directory_snapshot = _directory_snapshot(directory)
         directories.append(directory_snapshot)
+        receipt_path = directory / "provider_billing_source_receipt.json"
+        if not os.path.lexists(receipt_path):
+            orphan_responses: list[dict[str, Any]] = []
+            retained_bytes = 0
+            for path in sorted(directory.iterdir(), key=lambda item: item.name):
+                if not _RESPONSE_NAME_RE.fullmatch(path.name):
+                    raise ProviderBillingAuditRetentionError(
+                        "provider_billing_audit_incomplete_transaction_child_invalid"
+                    )
+                if path.is_symlink() or not path.is_file():
+                    raise ProviderBillingAuditRetentionError(
+                        "provider_billing_audit_incomplete_transaction_response_invalid"
+                    )
+                try:
+                    payload = path.read_bytes()
+                except OSError as exc:
+                    raise ProviderBillingAuditRetentionError(
+                        "provider_billing_audit_incomplete_transaction_response_unreadable"
+                    ) from exc
+                digest = _payload_digest(payload)
+                _validate_retained_file(
+                    path,
+                    expected_digest=digest,
+                    expected_size=len(payload),
+                    audit_device=root_info.st_dev,
+                    audit_uid=root_info.st_uid,
+                    audit_gid=root_info.st_gid,
+                )
+                orphan_responses.append(_snapshot(path, digest=digest))
+                retained_bytes += len(payload)
+            incomplete_transactions.append(
+                {
+                    "directory": directory_snapshot,
+                    "response_files": orphan_responses,
+                    "retained_bytes": retained_bytes,
+                    "retention_reason": "source_receipt_missing",
+                    "mutation_eligible": False,
+                }
+            )
+            audit_directories += 1
+            continue
         if (
             directory_info.st_uid != root_info.st_uid
             or directory_info.st_gid != root_info.st_gid
@@ -484,7 +526,6 @@ def _scan_locked(audit_root: Path, root_info: os.stat_result) -> dict[str, Any]:
                     "target_gid": int(root_info.st_gid),
                 }
             )
-        receipt_path = directory / "provider_billing_source_receipt.json"
         receipt, receipt_bytes = _read_json(
             receipt_path, blocker="provider_billing_audit_receipt_invalid"
         )
@@ -608,6 +649,13 @@ def _scan_locked(audit_root: Path, root_info: os.stat_result) -> dict[str, Any]:
         "receipts": sorted(receipts, key=lambda item: item["path"]),
         "audit_directories": sorted(directories, key=lambda item: item["path"]),
         "directory_repairs": sorted(directory_repairs, key=lambda item: item["path"]),
+        "unreconciled_incomplete_transactions": sorted(
+            incomplete_transactions, key=lambda item: item["directory"]["path"]
+        ),
+        "unreconciled_incomplete_transaction_count": len(incomplete_transactions),
+        "unreconciled_retained_bytes": sum(
+            item["retained_bytes"] for item in incomplete_transactions
+        ),
         "objects": objects,
         "response_groups": groups,
         "metadata_excluded_response_paths": sorted(
@@ -855,6 +903,12 @@ def apply_provider_billing_audit_retention_plan(
                 *list(plan.get("objects") or []),
                 *list(plan.get("metadata_excluded_response_paths") or []),
             ]
+            for transaction in plan.get("unreconciled_incomplete_transactions") or []:
+                if not isinstance(transaction, Mapping):
+                    raise ProviderBillingAuditRetentionError(
+                        "provider_billing_audit_dry_run_plan_invalid"
+                    )
+                all_snapshots.extend(transaction.get("response_files") or [])
             for group in plan.get("response_groups") or []:
                 if not isinstance(group, Mapping):
                     raise ProviderBillingAuditRetentionError(
