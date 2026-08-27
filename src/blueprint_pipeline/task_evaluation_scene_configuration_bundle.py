@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
@@ -24,6 +25,13 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     validate_scene_configuration_toolchain,
 )
 from .task_evaluation_scene_construction_queue import ENVELOPE_SCHEMA_VERSION
+from .task_evaluation_splat_render_runtime import (
+    DEFAULT_ENVIRONMENT_VARIABLE as SPLAT_RENDER_RUNTIME_ROOT_ENV,
+    PROVIDER_RENDERER_REQUIRED_PACKAGES,
+    PROVIDER_RENDERER_SCHEMA_VERSION,
+    TaskEvaluationSplatRenderRuntimeError,
+    validate_splat_render_runtime,
+)
 
 
 PROBE_KIND = "task-evaluation-scene-configuration"
@@ -35,6 +43,13 @@ RESULT_FILENAME = "task_evaluation_scene_configuration_provider_result.v1.json"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _MAX_MEMBER_BYTES = 2 * 1024**3
 _MAX_TOTAL_BYTES = 8 * 1024**3
+_PROVIDER_RENDERER_FILES = (
+    "tools/splat_render/render_splat.mjs",
+    "tools/splat_render/src/render_entry.mjs",
+    "tools/splat_render/harness.html",
+    "tools/splat_render/package.json",
+    "tools/splat_render/package-lock.json",
+)
 
 
 class TaskEvaluationSceneConfigurationBundleError(ValueError):
@@ -100,6 +115,75 @@ def _copy_tree(source: Path, destination: Path) -> None:
     ):
         directory.chmod(0o555)
     destination.chmod(0o555)
+
+
+def _stage_provider_renderer(
+    *,
+    runtime: Path,
+    repo: Path,
+    source_runtime_root: Path,
+    validated_runtime: Mapping[str, Any],
+    source_commit: str,
+) -> dict[str, Any]:
+    """Stage only the renderer, lockfile vendors, and Chromium needed remotely."""
+
+    destination = runtime / "renderer"
+    for relative in _PROVIDER_RENDERER_FILES:
+        target = destination / relative
+        _copy_file(repo / relative, target)
+        target.chmod(0o444)
+    source_renderer = Path(str(validated_runtime["renderer_root"])).resolve()
+    for package in PROVIDER_RENDERER_REQUIRED_PACKAGES:
+        _copy_tree(
+            source_renderer / "tools/splat_render/node_modules" / package,
+            destination / "tools/splat_render/node_modules" / package,
+        )
+    source_browser = Path(str(validated_runtime["browser_executable"])).resolve()
+    browser_root = source_runtime_root / "browser"
+    try:
+        browser_relative = source_browser.relative_to(browser_root)
+    except ValueError as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_provider_renderer_browser_invalid"
+        ) from exc
+    _copy_tree(browser_root, destination / "browser")
+    files = [
+        {
+            "relative_path": path.relative_to(destination).as_posix(),
+            "sha256": _sha256(path),
+            "size_bytes": path.stat().st_size,
+            "executable": bool(path.stat().st_mode & 0o111),
+        }
+        for path in sorted(destination.rglob("*"))
+        if path.is_file()
+    ]
+    manifest: dict[str, Any] = {
+        "schema_version": PROVIDER_RENDERER_SCHEMA_VERSION,
+        "status": "ready_for_provider_render",
+        "platform": "linux-x86_64",
+        "source_commit": source_commit,
+        "source_runtime_digest": validated_runtime["identity"]["runtime_digest"],
+        "entrypoints": {
+            "browser": (Path("browser") / browser_relative).as_posix(),
+            "renderer_root": ".",
+        },
+        "files": files,
+        "renderer_digest": "",
+    }
+    manifest["renderer_digest"] = canonical_digest(
+        manifest, digest_field="renderer_digest"
+    )
+    manifest_path = destination / f"{PROVIDER_RENDERER_SCHEMA_VERSION}.json"
+    manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
+    manifest_path.chmod(0o444)
+    for directory in sorted(
+        (path for path in destination.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        directory.chmod(0o555)
+    destination.chmod(0o555)
+    return manifest
 
 
 def _bound_file(row: Mapping[str, Any], *, code: str) -> Path:
@@ -202,7 +286,7 @@ def _zip_tree(source: Path, destination: Path) -> None:
         for path in sorted(item for item in source.rglob("*") if item.is_file()):
             size = path.stat().st_size
             total += size
-            if size <= 0 or size > _MAX_MEMBER_BYTES or total > _MAX_TOTAL_BYTES:
+            if size > _MAX_MEMBER_BYTES or total > _MAX_TOTAL_BYTES:
                 raise TaskEvaluationSceneConfigurationBundleError(
                     "scene_configuration_bundle_archive_limit_exceeded"
                 )
@@ -221,6 +305,7 @@ def build_scene_configuration_provider_bundle(
     construction_envelope_path: str | Path,
     toolchain_root: str | Path,
     repository_root: str | Path,
+    splat_render_runtime_root: str | Path | None = None,
     output_root: str | Path,
     expected_source_commit: str,
 ) -> dict[str, Any]:
@@ -267,6 +352,24 @@ def build_scene_configuration_provider_bundle(
     provider_render = renders_on_provider(
         render_inputs.get("disclosure_decision") or {}
     )
+    provider_render_runtime: dict[str, Any] | None = None
+    provider_render_runtime_source: Path | None = None
+    if provider_render:
+        unresolved_runtime = str(splat_render_runtime_root or "").strip()
+        if not unresolved_runtime:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_provider_render_runtime_missing"
+            )
+        provider_render_runtime_source = Path(unresolved_runtime).expanduser()
+        try:
+            provider_render_runtime = validate_splat_render_runtime(
+                runtime_root=provider_render_runtime_source,
+                repo_root=repo,
+            )
+        except (OSError, TaskEvaluationSplatRenderRuntimeError) as exc:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_provider_render_runtime_invalid"
+            ) from exc
     portable = json.loads(json.dumps(envelope))
     portable["control_plane_envelope_digest"] = envelope["envelope_digest"]
     portable_refs = []
@@ -351,6 +454,15 @@ def build_scene_configuration_provider_bundle(
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_toolchain_copy_mismatch"
         )
+    provider_renderer: dict[str, Any] | None = None
+    if provider_render_runtime_source is not None:
+        provider_renderer = _stage_provider_renderer(
+            runtime=runtime,
+            repo=repo,
+            source_runtime_root=provider_render_runtime_source.resolve(),
+            validated_runtime=provider_render_runtime,
+            source_commit=expected_source_commit,
+        )
     _copy_tree(repo / "src/blueprint_pipeline", runtime / "blueprint_pipeline")
     _copy_file(repo / "scripts/run_task_evaluation_scene_configuration_provider.sh", stage / ENTRYPOINT)
     _copy_file(repo / "scripts/task_evaluation_scene_configuration_provider_runner.py", stage / RUNNER)
@@ -386,6 +498,16 @@ def build_scene_configuration_provider_bundle(
         "expected_result_filename": RESULT_FILENAME,
         "manifest_digest": "",
     }
+    if provider_renderer is not None:
+        manifest.update(
+            {
+                "provider_renderer_required": True,
+                "provider_renderer_digest": provider_renderer["renderer_digest"],
+                "provider_renderer_source_runtime_digest": provider_renderer[
+                    "source_runtime_digest"
+                ],
+            }
+        )
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     (runtime / f"{BUNDLE_SCHEMA_VERSION}.json").write_text(
         canonical_json(manifest) + "\n", encoding="utf-8"
@@ -423,6 +545,104 @@ def _receipt_disclosure_is_coherent(receipt: Mapping[str, Any]) -> bool:
     if crossed is False:
         return True
     return crossed is True and renders_on_provider(decision or {})
+
+
+def _provider_renderer_archive_is_valid(
+    archive: zipfile.ZipFile, bundle_manifest: Mapping[str, Any]
+) -> bool:
+    prefix = "provider_runtime/renderer/"
+    manifest_member = prefix + f"{PROVIDER_RENDERER_SCHEMA_VERSION}.json"
+    members = {
+        info.filename: info
+        for info in archive.infolist()
+        if info.filename.startswith(prefix) and not info.is_dir()
+    }
+    required = bundle_manifest.get("provider_renderer_required") is True
+    if not required:
+        return not members and not any(
+            key in bundle_manifest
+            for key in (
+                "provider_renderer_required",
+                "provider_renderer_digest",
+                "provider_renderer_source_runtime_digest",
+            )
+        )
+    try:
+        renderer_value = json.loads(archive.read(manifest_member).decode("utf-8"))
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(renderer_value, Mapping):
+        return False
+    renderer = dict(renderer_value)
+    rows = renderer.get("files")
+    if (
+        renderer.get("schema_version") != PROVIDER_RENDERER_SCHEMA_VERSION
+        or renderer.get("status") != "ready_for_provider_render"
+        or renderer.get("platform") != "linux-x86_64"
+        or renderer.get("source_commit") != bundle_manifest.get("source_commit")
+        or renderer.get("source_runtime_digest")
+        != bundle_manifest.get("provider_renderer_source_runtime_digest")
+        or renderer.get("renderer_digest")
+        != bundle_manifest.get("provider_renderer_digest")
+        or renderer.get("renderer_digest")
+        != canonical_digest(renderer, digest_field="renderer_digest")
+        or not isinstance(rows, list)
+        or not rows
+    ):
+        return False
+    expected: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return False
+        relative = str(row.get("relative_path") or "")
+        if (
+            not relative
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+            or relative in expected
+            or not isinstance(row.get("size_bytes"), int)
+            or isinstance(row.get("size_bytes"), bool)
+            or row.get("size_bytes") < 0
+            or not isinstance(row.get("executable"), bool)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(row.get("sha256") or ""))
+            is None
+        ):
+            return False
+        expected[relative] = row
+    if set(members) != {
+        manifest_member,
+        *(prefix + relative for relative in expected),
+    }:
+        return False
+    for relative, row in expected.items():
+        member = prefix + relative
+        info = members[member]
+        body = archive.read(member)
+        archived_mode = info.external_attr >> 16
+        if (
+            len(body) != row["size_bytes"]
+            or "sha256:" + hashlib.sha256(body).hexdigest() != row["sha256"]
+            or not stat.S_ISREG(archived_mode)
+            or bool(archived_mode & 0o111) != row["executable"]
+        ):
+            return False
+    entrypoints = renderer.get("entrypoints")
+    browser = str(
+        entrypoints.get("browser") if isinstance(entrypoints, Mapping) else ""
+    )
+    if browser not in expected or expected[browser].get("executable") is not True:
+        return False
+    if any(relative not in expected for relative in _PROVIDER_RENDERER_FILES):
+        return False
+    return all(
+        any(
+            relative.startswith(
+                f"tools/splat_render/node_modules/{package}/"
+            )
+            for relative in expected
+        )
+        for package in PROVIDER_RENDERER_REQUIRED_PACKAGES
+    )
 
 
 def load_scene_configuration_provider_bundle_receipt(
@@ -469,11 +689,17 @@ def load_scene_configuration_provider_bundle_receipt(
                         f"provider_runtime/{BUNDLE_SCHEMA_VERSION}.json"
                     ).decode("utf-8")
                 )
+                provider_renderer_valid = _provider_renderer_archive_is_valid(
+                    archive,
+                    internal_value if isinstance(internal_value, Mapping) else {},
+                )
             internal = (
                 dict(internal_value)
                 if isinstance(internal_value, Mapping)
                 else {}
             )
+            if not provider_renderer_valid:
+                errors.append("bundle_provider_renderer_invalid")
         except (
             KeyError,
             OSError,
@@ -504,6 +730,12 @@ def load_scene_configuration_provider_bundle_receipt(
         "expected_result_filename",
         "manifest_digest",
     )
+    if receipt.get("provider_renderer_required") is True:
+        compared_fields += (
+            "provider_renderer_required",
+            "provider_renderer_digest",
+            "provider_renderer_source_runtime_digest",
+        )
     if (
         not internal
         or internal.get("manifest_digest")
@@ -536,6 +768,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--construction-envelope", required=True)
     parser.add_argument("--toolchain-root", required=True)
     parser.add_argument("--repository-root", required=True)
+    parser.add_argument(
+        "--splat-render-runtime-root",
+        default=os.getenv(SPLAT_RENDER_RUNTIME_ROOT_ENV, ""),
+    )
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--expected-source-commit", required=True)
     args = parser.parse_args(argv)
@@ -543,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         construction_envelope_path=args.construction_envelope,
         toolchain_root=args.toolchain_root,
         repository_root=args.repository_root,
+        splat_render_runtime_root=args.splat_render_runtime_root,
         output_root=args.output_root,
         expected_source_commit=args.expected_source_commit,
     )

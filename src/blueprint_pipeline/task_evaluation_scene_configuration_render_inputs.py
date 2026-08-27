@@ -33,7 +33,11 @@ from .gaussian_splat_decode import (
     write_standard_3dgs_ply_subset_exact,
 )
 from .sealed_camera_render import render_splat_at_exact_cameras
-from .task_evaluation_splat_render_runtime import runtime_from_environment
+from .task_evaluation_splat_render_runtime import (
+    SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION,
+    runtime_from_environment,
+    runtime_from_provider_bundle,
+)
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_render_inputs.v1"
@@ -708,7 +712,21 @@ def complete_provider_render_inputs(
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_completion_calibration_invalid"
         )
-    runtime = dict(runtime_resolver(repo_root=Path(__file__).resolve().parents[2]))
+    repository_root = Path(__file__).resolve().parents[2]
+    provider_runtime_root = Path(__file__).resolve().parents[1]
+    provider_bundle_manifest = (
+        provider_runtime_root
+        / f"{SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION}.json"
+    )
+    runtime = dict(
+        runtime_from_provider_bundle(provider_runtime_root=provider_runtime_root)
+        if runtime_resolver is runtime_from_environment
+        and provider_bundle_manifest.is_file()
+        else runtime_resolver(repo_root=repository_root)
+    )
+    render_repository_root = Path(
+        str(runtime.get("repository_root") or repository_root)
+    ).resolve()
     rendered = dict(
         renderer(
             splat_path=splat,
@@ -728,7 +746,7 @@ def complete_provider_render_inputs(
             # the source appearance is compressed or not a standard PLY. The
             # packet already carries the exact number.
             retained_gaussian_count=_packet_source_count(render_inputs),
-            repo_root=Path(__file__).resolve().parents[2],
+            repo_root=render_repository_root,
             node=str(runtime["node"]),
             renderer_runtime_root=str(runtime["renderer_root"]),
             browser_executable=str(runtime["browser_executable"]),

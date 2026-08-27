@@ -425,7 +425,9 @@ def test_rights_admitted_scene_defers_the_render_to_the_provider(tmp_path: Path)
     )
 
 
-def test_provider_completes_the_owed_render_into_the_same_packet(tmp_path: Path) -> None:
+def test_provider_completes_the_owed_render_into_the_same_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The GPU finishes what the control plane deferred, in the same shape.
 
     Whatever the rest of the chain consumed before must still be there
@@ -436,6 +438,10 @@ def test_provider_completes_the_owed_render_into_the_same_packet(tmp_path: Path)
 
     from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
         complete_provider_render_inputs,
+    )
+    from blueprint_pipeline import task_evaluation_scene_configuration_render_inputs as render_module
+    from blueprint_pipeline.task_evaluation_splat_render_runtime import (
+        SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION,
     )
     from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
         resolve_scene_configuration_disclosure,
@@ -502,10 +508,35 @@ def test_provider_completes_the_owed_render_into_the_same_packet(tmp_path: Path)
         "result_digest": "sha256:" + "c" * 64,
     }
 
-    observed_backend: dict[str, str] = {}
+    provider_runtime = tmp_path / "provider_runtime"
+    provider_package = provider_runtime / "blueprint_pipeline"
+    provider_package.mkdir(parents=True)
+    fake_module = provider_package / "task_evaluation_scene_configuration_render_inputs.py"
+    fake_module.write_text("# provider copy\n", encoding="utf-8")
+    (provider_runtime / f"{SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION}.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    provider_renderer = provider_runtime / "renderer"
+    provider_renderer.mkdir()
+    monkeypatch.setattr(render_module, "__file__", str(fake_module))
+    monkeypatch.setattr(
+        render_module,
+        "runtime_from_provider_bundle",
+        lambda *, provider_runtime_root: {
+            "node": "/provider/node",
+            "browser_executable": "/provider/chrome",
+            "renderer_root": str(provider_renderer),
+            "repository_root": str(provider_renderer),
+            "identity": {"mode": "provider_bundle"},
+        },
+    )
+
+    observed_backend: dict[str, object] = {}
 
     def render(**kwargs):
         observed_backend["graphics_backend"] = kwargs["graphics_backend"]
+        observed_backend["repo_root"] = kwargs["repo_root"]
+        observed_backend["node"] = kwargs["node"]
         output = Path(kwargs["output_dir"])
         frames = output / "frames"
         frames.mkdir(parents=True)
@@ -545,16 +576,12 @@ def test_provider_completes_the_owed_render_into_the_same_packet(tmp_path: Path)
         },
         output_root=tmp_path / "provider-out",
         renderer=render,
-        runtime_resolver=lambda **_kwargs: {
-            "node": "/runtime/node",
-            "browser_executable": "/runtime/chrome",
-            "renderer_root": "/runtime/renderer",
-            "identity": {"mode": "provider_runtime"},
-        },
     )
 
     # A real GPU is demanded; the renderer refuses software fallback itself.
     assert observed_backend["graphics_backend"] == "egl"
+    assert observed_backend["repo_root"] == provider_renderer.resolve()
+    assert observed_backend["node"] == "/provider/node"
     assert completed["status"] == "derived_method_inputs_materialized"
     assert completed["derived_frame_count"] == 8
     assert completed["render_completed_on_provider"] is True
