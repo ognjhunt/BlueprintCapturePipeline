@@ -51,6 +51,9 @@ def build_native_import_scene_configuration_component(
             "set -eu\n"
             "PYTHON_BIN=/isaac-sim/python.sh\n"
             "if [ ! -x \"$PYTHON_BIN\" ]; then PYTHON_BIN=$(command -v python3); fi\n"
+            "RUNTIME_ROOT=${BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT:-/workspace/task_evaluation_scene_configuration_provider_bundle/provider_runtime}\n"
+            "ISAAC_PYTHONPATH=${BLUEPRINT_SCENE_CONFIGURATION_ISAAC_PYTHONPATH-}\n"
+            "export PYTHONPATH=\"$RUNTIME_ROOT${ISAAC_PYTHONPATH:+:$ISAAC_PYTHONPATH}\"\n"
             "exec \"$PYTHON_BIN\" -m "
             "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver\n",
             encoding="utf-8",

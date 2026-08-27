@@ -67,9 +67,12 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
         root = Path(output_root)
         wheels = root / "wheels"
         wheels.mkdir(parents=True)
-        body = b"fixture-wheel"
+        body = b"fixture-agents-wheel"
+        usd_body = b"fixture-usd-wheel"
         filename = "openai_agents-1.0.0-py3-none-any.whl"
+        usd_filename = "usd_core-1.0.0-py3-none-any.whl"
         (wheels / filename).write_bytes(body)
+        (wheels / usd_filename).write_bytes(usd_body)
         manifest = {
             "schema_version": (
                 "task_evaluation_scene_configuration_python_wheelhouse.v1"
@@ -80,8 +83,11 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
             "platform": "linux-x86_64",
             "platform_tags": ["manylinux_2_17_x86_64"],
             "lockfile_sha256": "sha256:" + "1" * 64,
-            "root_distributions": ["openai-agents"],
-            "requirements": [{"name": "openai-agents", "version": "1.0.0"}],
+            "root_distributions": ["openai-agents", "usd-core"],
+            "requirements": [
+                {"name": "openai-agents", "version": "1.0.0"},
+                {"name": "usd-core", "version": "1.0.0"},
+            ],
             "wheels": [
                 {
                     "distribution": "openai-agents",
@@ -89,7 +95,15 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
                     "filename": filename,
                     "sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
                     "size_bytes": len(body),
-                }
+                },
+                {
+                    "distribution": "usd-core",
+                    "version": "1.0.0",
+                    "filename": usd_filename,
+                    "sha256": "sha256:"
+                    + hashlib.sha256(usd_body).hexdigest(),
+                    "size_bytes": len(usd_body),
+                },
             ],
             "sdists_allowed": False,
             "provider_network_install_required": False,

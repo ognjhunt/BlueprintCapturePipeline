@@ -121,7 +121,7 @@ def materialize_scene_configuration_python_runtime(
         or manifest.get("python_version") != "3.12"
         or manifest.get("implementation") != "cpython"
         or manifest.get("platform") != "linux-x86_64"
-        or manifest.get("root_distributions") != ["openai-agents"]
+        or manifest.get("root_distributions") != ["openai-agents", "usd-core"]
         or manifest.get("sdists_allowed") is not False
         or manifest.get("provider_network_install_required") is not False
         or manifest.get("manifest_digest")
