@@ -422,10 +422,18 @@ def test_failed_artifixer_runtime_streams_survive_into_the_stage_log(
     stage_producer.log, which is proven to survive into the exported zip.
     """
 
+    opaque_file_secret = "opaque-file-credential-value-839873"
     completed = types.SimpleNamespace(
         returncode=1,
-        stdout="optimizer step 40\ntoken=sk-proj-supersecret123456\n",
-        stderr="CUDA error: out of memory at step 41\n",
+        stdout=(
+            "optimizer step 40\n"
+            "token=sk-proj-supersecret123456\n"
+            f"file_token={opaque_file_secret}\n"
+        ),
+        stderr=(
+            "CUDA error: out of memory at step 41\n"
+            f"credential={opaque_file_secret}\n"
+        ),
     )
 
     retained = tmp_path / "retained"
@@ -434,6 +442,7 @@ def test_failed_artifixer_runtime_streams_survive_into_the_stage_log(
         completed=completed,
         runtime_result_path=tmp_path / "public_scene_artifixer3d_runtime_result.json",
         retained_root=retained,
+        secret_values=(opaque_file_secret,),
     )
 
     err = capsys.readouterr().err
@@ -443,12 +452,20 @@ def test_failed_artifixer_runtime_streams_survive_into_the_stage_log(
     assert "CUDA error: out of memory at step 41" in err
     assert "optimizer step 40" in err
     assert "sk-proj-supersecret123456" not in err
+    assert opaque_file_secret not in err
+    assert "REDACTED_SECRET" in err
     # The full streams survive as files even when the inline relay truncates.
     full_stderr = (retained / "artifixer_runtime_stderr.log").read_text(
         encoding="utf-8"
     )
     assert "CUDA error: out of memory at step 41" in full_stderr
     assert "sk-proj-supersecret123456" not in full_stderr
+    assert opaque_file_secret not in full_stderr
+    assert "REDACTED_SECRET" in full_stderr
+    full_stdout = (retained / "artifixer_runtime_stdout.log").read_text(
+        encoding="utf-8"
+    )
+    assert opaque_file_secret not in full_stdout
 
 
 def test_download_progress_noise_is_filtered_from_the_inline_tail(
