@@ -1933,6 +1933,37 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     assert observed["stage_chain"]["stage_count"] == 6
 
 
+def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
+    receipt = {
+        "run_id": "scene-839873-run",
+        "source_commit": "a" * 40,
+        "portable_construction_envelope_digest": "sha256:" + "b" * 64,
+    }
+    execution = {
+        "run_id": receipt["run_id"],
+        "source_commit": receipt["source_commit"],
+        "construction_envelope_digest": receipt[
+            "portable_construction_envelope_digest"
+        ],
+        "stage_chain": {"run_id": receipt["run_id"]},
+    }
+
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == []
+
+    execution["run_id"] = "different-run"
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == ["scene_configuration_provider_run_id_mismatch"]
+
+    execution["run_id"] = receipt["run_id"]
+    execution["stage_chain"] = {"run_id": "different-run"}
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == ["scene_configuration_provider_run_id_mismatch"]
+
+
 def test_blocked_provider_result_retains_its_redacted_failure_in_terminal_blockers(
     tmp_path: Path,
 ) -> None:
@@ -2546,6 +2577,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         chain = {
             "schema_version": "task_evaluation_scene_configuration_provider_stage_chain.v1",
             "status": "completed",
+            "run_id": receipt["run_id"],
             "stage_results": stages,
             "stage_count": 6,
             "executed_inside_one_parent_provider_run": True,
