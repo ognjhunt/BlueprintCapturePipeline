@@ -190,7 +190,11 @@ class OpenAIOfficialCostRunGate:
             or value.get("candidate_digest") != self.candidate_digest
             or value.get("authorization_receipt_digest")
             != self.authorization_receipt_digest
-            or value.get("zero_cost_baseline_confirmed") is not True
+            # Recorded, not necessarily zero. The completion path subtracts
+            # the baseline, so a scope that already spent today still yields an
+            # exact per-run cost. Lanes that require an untouched scope keep
+            # `require_zero_baseline` on and are refused before this point.
+            or not isinstance(value.get("zero_cost_baseline_confirmed"), bool)
             or value.get("strict_official_billing_satisfied") is not False
             or not isinstance(provider, Mapping)
             or provider.get("candidate_id") != self.run_id
@@ -372,6 +376,7 @@ def _authority(
     paid_resource_class: str,
     transport: Callable[..., Mapping[str, Any]] | None,
     wall_clock: Callable[[], datetime],
+    require_zero_baseline: bool = True,
 ) -> OpenAIProjectCandidateCostAuthority:
     client = OpenAIOrganizationCostsClient(
         project_id=project_id,
@@ -385,6 +390,7 @@ def _authority(
         scope_attestation=_read_attestation(scope_attestation_path),
         provider_id=provider_id,
         paid_resource_class=paid_resource_class,
+        require_zero_baseline=require_zero_baseline,
         wall_clock=wall_clock,
     )
 
@@ -406,11 +412,13 @@ def build_openai_official_cost_run_gate(
     paid_resource_class: str,
     transport: Callable[..., Mapping[str, Any]] | None = None,
     wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    require_zero_baseline: bool = True,
 ) -> OpenAIOfficialCostRunGate:
     """Build the shared gate used by the two Scene 840920 OpenAI paths."""
 
     try:
         authority = _authority(
+            require_zero_baseline=require_zero_baseline,
             scope_attestation_path=scope_attestation_path,
             admin_api_key_file=admin_api_key_file,
             project_id=project_id,

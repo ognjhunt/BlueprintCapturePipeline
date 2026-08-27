@@ -372,6 +372,11 @@ class OpenAIProjectCandidateCostAuthority:
     authority_id: str = OPENAI_COST_AUTHORITY_ID
     attribution_window_seconds: int = 3_600
     reconciliation_delay_seconds: int = 86_400
+    #: Refuse when the scope has already spent inside the attribution window.
+    #: Default strict: a lane that has not thought about it keeps the old
+    #: guarantee that the window's whole cost is this run's. Lanes that record
+    #: the baseline and attribute the delta opt out explicitly.
+    require_zero_baseline: bool = True
     wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def __post_init__(self) -> None:
@@ -441,7 +446,18 @@ class OpenAIProjectCandidateCostAuthority:
             start_time=int(day_start.timestamp()),
             end_time=int(attribution_end_day.timestamp()),
         )
-        if float(baseline["total_cost_usd"]) != 0.0:
+        # The baseline is recorded, not required to be zero. Attribution comes
+        # from the delta between this snapshot and the one taken at settlement,
+        # which is what the completion path has always computed. Demanding zero
+        # made the scope usable once per UTC day and no more: a stage that had
+        # already spent could not reserve again even though the run's own cost
+        # was still exactly measurable. It also disagreed with settlement below,
+        # which compared the whole window's cost to the reservation and so would
+        # have failed the second run of a day on someone else's spend.
+        baseline_cost_usd = float(baseline["total_cost_usd"])
+        if baseline_cost_usd < 0:
+            raise OpenAICostAuthorityError("openai_cost_scope_baseline_invalid")
+        if self.require_zero_baseline and baseline_cost_usd != 0.0:
             raise OpenAICostAuthorityError("openai_cost_scope_baseline_not_zero")
         reconciliation_not_before = attribution_end_day + timedelta(
             seconds=self.reconciliation_delay_seconds
@@ -472,6 +488,7 @@ class OpenAIProjectCandidateCostAuthority:
             "api_key_id": self.client.api_key_id,
             "exclusive_scope_attestation_digest": self.scope_attestation_digest,
             "baseline_cost_snapshot": baseline,
+            "baseline_cost_usd": baseline_cost_usd,
             "candidate_reported_usage_is_authoritative": False,
             "proof_effect": "none",
         }
@@ -518,7 +535,21 @@ class OpenAIProjectCandidateCostAuthority:
                 start_time=int(value["attribution_start_time"]),
                 end_time=int(value["attribution_end_time"]),
             )
-            provider_observed_cost_usd = float(final_snapshot["total_cost_usd"])
+            # Attribute the delta, not the window. The window starts at the
+            # scope's UTC day boundary and therefore includes anything the scope
+            # spent before this reservation; charging that to this run would
+            # both misreport it and trip the over-reservation check below.
+            baseline_cost_usd = float(
+                value.get(
+                    "baseline_cost_usd",
+                    value["baseline_cost_snapshot"]["total_cost_usd"],
+                )
+            )
+            provider_observed_cost_usd = (
+                float(final_snapshot["total_cost_usd"]) - baseline_cost_usd
+            )
+            if provider_observed_cost_usd < 0:
+                raise OpenAICostAuthorityError("openai_cost_settlement_delta_invalid")
             reserved_max = float(value["reserved_max_cost_usd"])
             if provider_observed_cost_usd <= reserved_max:
                 status = "reconciled"
