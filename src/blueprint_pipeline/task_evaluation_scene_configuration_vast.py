@@ -1229,6 +1229,62 @@ def _close_watchdog_after_adapter(
     )
 
 
+def _recover_escaped_adapter_failure(
+    *,
+    provider_run: Path,
+    started_instance_id_path: Path,
+    failure_detail: str,
+) -> tuple[dict[str, Any], bool]:
+    """Preserve post-create identity when adapter finalization escapes.
+
+    The adapter writes the independent watchdog handoff immediately after Vast
+    returns an instance id.  Its own ``finally`` normally destroys that
+    instance and seals the adapter and teardown receipts, but an error while
+    sealing those receipts can escape to this caller.  In that case the
+    handoff is the only durable proof that allocation occurred; calling the
+    unallocated sealer would contradict it.
+    """
+
+    started_path_present = (
+        started_instance_id_path.exists() or started_instance_id_path.is_symlink()
+    )
+    instance_ids: list[int] = []
+    blockers = [f"vast_adapter_failed:{failure_detail}"]
+    if started_path_present:
+        try:
+            if started_instance_id_path.is_symlink():
+                raise ValueError("started instance id path is a symlink")
+            candidate = started_instance_id_path.read_text(encoding="utf-8").strip()
+            instance_id = int(candidate)
+            if instance_id <= 0 or candidate != str(instance_id):
+                raise ValueError("started instance id is not canonical")
+            instance_ids.append(instance_id)
+        except (OSError, ValueError):
+            blockers.append("vast_started_instance_id_evidence_invalid")
+
+    adapter = {
+        "schema_version": "vast_provider_adapter_result.v1",
+        "status": "blocked",
+        "reason": "vast_adapter_finalization_failed",
+        "blockers": blockers,
+        "provider_create_attempted": started_path_present,
+        "vast_side_effects_may_have_occurred": started_path_present,
+        "vast_instance_ids": instance_ids,
+        "raw_secret_values_recorded": False,
+    }
+    if started_path_present:
+        try:
+            write_json(
+                provider_run / "vast_provider_adapter_result.json",
+                adapter,
+            )
+        except OSError:
+            adapter["blockers"].append(
+                "vast_adapter_failure_receipt_write_failed"
+            )
+    return adapter, started_path_present
+
+
 def run_scene_configuration_vast(
     *,
     job_dir: str | Path,
@@ -1587,13 +1643,17 @@ def run_scene_configuration_vast(
                 ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        adapter = {
-            "status": "blocked",
-            "blockers": [
-                f"vast_adapter_failed:{redacted_failure_detail(exc)}"
-            ],
-        }
-        seal_unallocated_provider_teardown(provider_run, reason="vast_adapter_failed")
+        adapter, provider_allocation_may_have_occurred = (
+            _recover_escaped_adapter_failure(
+                provider_run=provider_run,
+                started_instance_id_path=watchdog.started_instance_id_path,
+                failure_detail=redacted_failure_detail(exc),
+            )
+        )
+        if not provider_allocation_may_have_occurred:
+            seal_unallocated_provider_teardown(
+                provider_run, reason="vast_adapter_failed"
+            )
     finally:
         _discard_staged_runtime_secrets(staged_secret_root)
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
