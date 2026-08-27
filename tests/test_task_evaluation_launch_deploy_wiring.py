@@ -184,6 +184,31 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "--guard-report" in reconciler
 
     assert "task_evaluation_launch_supervisor" in supervisor
+
+
+def test_production_launch_units_keep_webapp_offering_callbacks_reachable_after_rebuild() -> None:
+    dispatcher = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service")
+    reconciler = _text("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service")
+    supervisor = _text("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service")
+    terminal = (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches"
+    )
+
+    assert terminal in dispatcher
+    assert terminal in reconciler
+    assert (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-progress"
+    ) in reconciler
+    assert (
+        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-supervision"
+    ) in supervisor
+    for unit in (dispatcher, reconciler, supervisor):
+        assert unit.index("Environment=PIPELINE_TASK_EVALUATION") < unit.index(
+            "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env"
+        )
     assert "ReadOnlyPaths=" in supervisor
     assert "task-evaluation-launches" in supervisor
     assert "task-evaluation-launch-runs" in supervisor
