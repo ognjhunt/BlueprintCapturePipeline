@@ -17,6 +17,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime imp
     TaskEvaluationSceneConfigurationProviderRuntimeError,
     execute_scene_configuration_stage_chain,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+    OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
+    SERIAL_GPU_STAGE_TIMEOUT_SECONDS,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
     PRODUCTION_RESULT_SCHEMA_VERSION,
@@ -169,3 +173,33 @@ def test_rejects_any_stage_that_claims_a_nested_provider_mutation(
             registry=_registry([], nested_mutation=True),
             producer_registry=_producers(),
         )
+
+
+def test_refuses_before_stage_when_parent_cannot_cover_remaining_chain(
+    tmp_path: Path,
+) -> None:
+    envelope, configurations = _inputs(tmp_path)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    observed: list[str] = []
+    now = 1_000.0
+    required = SERIAL_GPU_STAGE_TIMEOUT_SECONDS + OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationProviderRuntimeError,
+        match=(
+            "scene_configuration_parent_runtime_budget_insufficient:"
+            f"stage-1:{required}:{required - 1}"
+        ),
+    ):
+        execute_scene_configuration_stage_chain(
+            envelope=envelope,
+            configurations=configurations,
+            output_root=outputs,
+            registry=_registry(observed),
+            producer_registry=_producers(),
+            parent_deadline_epoch=now + required - 1,
+            clock=lambda: now,
+        )
+
+    assert observed == []

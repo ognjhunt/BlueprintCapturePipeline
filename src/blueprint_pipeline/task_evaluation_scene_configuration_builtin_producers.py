@@ -23,6 +23,9 @@ from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
     validate_scene_configuration_component_package,
 )
+from .task_evaluation_scene_configuration_runtime_budget import (
+    GPU_STAGE_TIMEOUT_SECONDS,
+)
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
     PRODUCTION_RESULT_SCHEMA_VERSION,
@@ -36,18 +39,10 @@ TOOLCHAIN_SCHEMA_VERSION = "task_evaluation_scene_configuration_toolchain.v1"
 TOOLCHAIN_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
-# A stage's budget must exceed the budget it grants its own child, or the
-# producer kills work the inner tool was still allowed to do. The stage tool
-# allows its component 7_200s and the artifixer driver allows ArtiFixer3D
-# 7_000s, so anything below that here is an inverted ladder. Stage one
-# additionally performs the eight-camera GPU render the control plane used to
-# do before its OpenAI and training work begins. Every value stays under the
-# 9_000s TTL ceiling in task_evaluation_scene_configuration_paid_authority.
-_STAGE_TIMEOUTS_SECONDS = {
-    "artifixer3d_observed_object_removal": 7_800,
-    "content_agents_rigid_replacement": 7_800,
-    "simready_native_import_qualification": 1_800,
-}
+# Compatibility alias retained for focused tests and existing callers.  The
+# canonical mapping lives with the serialized parent-runtime contract so the
+# parent budget cannot drift from the child allowances it must cover.
+_STAGE_TIMEOUTS_SECONDS = GPU_STAGE_TIMEOUT_SECONDS
 _EXPECTED_ARTIFACT_ROLES = {
     "artifixer3d_observed_object_removal": frozenset(
         {

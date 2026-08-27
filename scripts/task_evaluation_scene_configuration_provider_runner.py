@@ -13,6 +13,9 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
     execute_scene_configuration_stage_chain,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+    PARENT_DEADLINE_EPOCH_ENV,
+)
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_provider_result.v1"
@@ -198,6 +201,12 @@ def main() -> int:
         )
     ).resolve()
     portable = _read(runtime / "input/portable_construction_envelope.v1.json")
+    try:
+        parent_deadline_epoch = float(os.environ[PARENT_DEADLINE_EPOCH_ENV])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "scene_configuration_parent_runtime_deadline_invalid"
+        ) from exc
     portable_envelope_digest = str(portable.get("envelope_digest") or "")
     envelope = _hydrate_envelope(runtime, portable)
     configurations = {}
@@ -214,6 +223,7 @@ def main() -> int:
                 envelope=envelope,
                 configurations=configurations,
                 output_root=stages_root,
+                parent_deadline_epoch=parent_deadline_epoch,
             ),
             output_root=output,
         )

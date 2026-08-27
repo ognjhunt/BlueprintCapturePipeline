@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_configuration_runtime_budget import (
+    MAX_EXTERNAL_SERVICE_SPEND_USD,
+    REQUIRED_PARENT_TTL_SECONDS,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_launch_preparation_request.v1"
@@ -154,9 +158,18 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         stage_caps = openai["stage_max_cost_usd"]
         openai_cap = float(openai["maximum_cost_usd"])
         request_count = int(openai["maximum_requests"])
+        if spend["hard_ttl_seconds"] != REQUIRED_PARENT_TTL_SECONDS:
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_scene_configuration_parent_runtime_budget_invalid"
+            )
         if (
             float(spend["provider_compute_spend_cap_usd"]) + openai_cap
             > float(spend["hard_cap_usd"]) + 1e-9
+            or float(spend["provider_compute_spend_cap_usd"]) + 1e-9
+            < float(spend["maximum_hourly_rate_usd"])
+            * REQUIRED_PARENT_TTL_SECONDS
+            / 3_600
+            or openai_cap > MAX_EXTERNAL_SERVICE_SPEND_USD
             or sum(float(value) for value in stage_caps.values())
             > openai_cap + 1e-9
             or (openai_cap == 0) != (request_count == 0)
@@ -164,6 +177,13 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_scene_configuration_external_spend_invalid"
             )
+    elif (
+        float(spend["hard_cap_usd"]) > 5.0
+        or int(spend["hard_ttl_seconds"]) > 9_000
+    ):
+        raise TaskEvaluationLaunchPreparationContractError(
+            "launch_preparation_episode_spend_invalid"
+        )
     output_mounts = [
         mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
     ]

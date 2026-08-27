@@ -20,13 +20,17 @@ from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
 )
 from .task_evaluation_scene_configuration_disclosure import renders_on_provider
+from .task_evaluation_scene_configuration_runtime_budget import (
+    MAX_ATTEMPT_SPEND_USD,
+    MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MAX_HOURLY_RATE_USD,
+    MAX_PROVIDER_COMPUTE_SPEND_USD,
+    REQUIRED_PARENT_TTL_SECONDS,
+)
 
 
 AUTHORITY_SCHEMA_VERSION = "task_evaluation_scene_configuration_paid_authority.v1"
-MAX_ATTEMPT_SPEND_USD = 5.0
-MAX_PROVIDER_COMPUTE_SPEND_USD = 1.0
-MAX_HOURLY_RATE_USD = 0.80
-MAX_TTL_SECONDS = 9_000
+MAX_TTL_SECONDS = REQUIRED_PARENT_TTL_SECONDS
 MIN_TTL_SECONDS = 600
 MAX_PROVIDER_ZERO_AGE_SECONDS = 900
 _OCI_DIGEST = re.compile(r"[^\s]+@sha256:[0-9a-f]{64}")
@@ -202,7 +206,7 @@ def materialize_scene_configuration_paid_authority(
     }
     external_contract_valid = (
         math.isfinite(external_cap)
-        and external_cap >= 0
+        and 0 <= external_cap <= MAX_EXTERNAL_SERVICE_SPEND_USD
         and all(math.isfinite(value) and value >= 0 for value in stage_caps.values())
         and sum(stage_caps.values()) <= external_cap + 1e-9
         and isinstance(openai_max_requests, int)
@@ -327,7 +331,7 @@ def validate_scene_configuration_paid_authority(
         and isinstance(external_cost, (int, float))
         and not isinstance(external_cost, bool)
         and math.isfinite(float(external_cost))
-        and float(external_cost) >= 0
+        and 0 <= float(external_cost) <= MAX_EXTERNAL_SERVICE_SPEND_USD
         and isinstance(external_requests, int)
         and not isinstance(external_requests, bool)
         and (

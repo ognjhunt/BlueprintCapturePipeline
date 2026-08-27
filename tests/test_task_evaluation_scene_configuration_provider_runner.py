@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 
@@ -29,6 +30,10 @@ def test_provider_runner_redacts_failure_before_retaining_result(
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT", str(runtime))
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT", str(output))
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT", str(result_path))
+    monkeypatch.setenv(
+        "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH",
+        str(time.time() + 25_200),
+    )
     monkeypatch.setattr(
         runner,
         "_read",
