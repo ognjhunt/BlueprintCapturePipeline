@@ -51,6 +51,9 @@ from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
 from .task_evaluation_scene_configuration_diagnostic_output import (
     validated_advanced_checkpoint_reference,
 )
+from .task_evaluation_scene_configuration_execution_binding import (
+    provider_execution_binding_blockers as _provider_execution_binding_blockers,
+)
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
 )
@@ -799,47 +802,6 @@ def _portable_construction_envelope(
             "scene_configuration_publication_envelope_invalid"
         )
     return envelope
-
-
-def _provider_execution_binding_blockers(
-    execution: Mapping[str, Any],
-    receipt: Mapping[str, Any],
-    *,
-    diagnostic_only: bool,
-) -> list[str]:
-    blockers: list[str] = []
-    chain = execution.get(
-        "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
-    )
-    result_run_id = (
-        chain.get("run_id")
-        if diagnostic_only and isinstance(chain, Mapping)
-        else execution.get("run_id")
-    )
-    if result_run_id != receipt.get("run_id") or (
-        not diagnostic_only
-        and (
-            not isinstance(chain, Mapping)
-            or chain.get("run_id") != receipt.get("run_id")
-        )
-    ):
-        blockers.append("scene_configuration_provider_run_id_mismatch")
-    provider_source_commit = execution.get(
-        "diagnostic_source_commit" if diagnostic_only else "source_commit"
-    )
-    if provider_source_commit != receipt.get("source_commit"):
-        blockers.append("scene_configuration_provider_source_commit_mismatch")
-    if (
-        not diagnostic_only
-        and execution.get("construction_envelope_digest")
-        != receipt.get("portable_construction_envelope_digest")
-    ):
-        blockers.append("scene_configuration_provider_envelope_mismatch")
-    if diagnostic_only and execution.get(
-        "source_checkpoint_digest"
-    ) != receipt.get("source_diagnostic_checkpoint_digest"):
-        blockers.append("scene_configuration_diagnostic_checkpoint_mismatch")
-    return blockers
 
 
 def _publication_stage_results(

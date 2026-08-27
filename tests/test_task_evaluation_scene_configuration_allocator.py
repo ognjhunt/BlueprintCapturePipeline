@@ -114,6 +114,9 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
             ],
             "execute": True,
             "diagnostic_only": False,
+            "retain_warm_session": False,
+            "warm_session_authority_path": None,
+            "warm_session_output_root": None,
             "scene_construction_queue_root": str(tmp_path / "scene-queue"),
         }
     ]
@@ -137,8 +140,13 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
         "allowed_active_vast_instance_ids": [],
         "retry_cap": 0,
         "diagnostic_only": False,
+        "retain_warm_session": False,
+        "warm_session_authority_digest": None,
         "source_diagnostic_checkpoint_digest": None,
         "carried_completed_stage_count": None,
+        "diagnostic_bootstrap_mode": None,
+        "diagnostic_scientific_binding_digest": None,
+        "diagnostic_stage_sequence_ids": None,
     }
 
 
@@ -167,11 +175,17 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
         else pytest.fail("diagnostic release validated against wrong identity"),
     )
     checkpoint_digest = "sha256:" + "1" * 64
+    scientific_binding_digest = "sha256:" + "3" * 64
     prepared = {
         **_prepared_bundle(),
         "diagnostic_only": True,
         "source_diagnostic_checkpoint_digest": checkpoint_digest,
         "carried_completed_stage_count": 3,
+        "diagnostic_bootstrap_mode": "checkpoint_resume",
+        "diagnostic_scientific_binding_digest": scientific_binding_digest,
+        "diagnostic_stage_sequence_ids": [
+            f"stage-{index + 1}" for index in range(6)
+        ],
     }
     monkeypatch.setattr(
         lane,
@@ -218,6 +232,15 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
         "source_diagnostic_checkpoint_digest"
     ] == checkpoint_digest
     assert admission["allocation_binding"]["carried_completed_stage_count"] == 3
+    assert admission["allocation_binding"]["diagnostic_bootstrap_mode"] == (
+        "checkpoint_resume"
+    )
+    assert admission["allocation_binding"][
+        "diagnostic_scientific_binding_digest"
+    ] == scientific_binding_digest
+    assert admission["allocation_binding"][
+        "diagnostic_stage_sequence_ids"
+    ] == [f"stage-{index + 1}" for index in range(6)]
     assert admission["allocation_binding"][
         "diagnostic_release_receipt_digest"
     ] == diagnostic_release_digest

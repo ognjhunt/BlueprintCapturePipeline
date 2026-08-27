@@ -369,6 +369,21 @@ def run_scene_configuration_allocator_probe(
             if prepared_bundle
             else None
         ),
+        "diagnostic_bootstrap_mode": (
+            prepared_bundle.get("diagnostic_bootstrap_mode")
+            if prepared_bundle
+            else None
+        ),
+        "diagnostic_scientific_binding_digest": (
+            prepared_bundle.get("diagnostic_scientific_binding_digest")
+            if prepared_bundle
+            else None
+        ),
+        "diagnostic_stage_sequence_ids": (
+            prepared_bundle.get("diagnostic_stage_sequence_ids")
+            if prepared_bundle
+            else None
+        ),
     }
     if diagnostic_only:
         allocation_binding.update(

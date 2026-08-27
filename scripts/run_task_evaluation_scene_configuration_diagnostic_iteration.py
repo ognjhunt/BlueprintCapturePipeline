@@ -30,6 +30,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_release i
     stage_scene_configuration_diagnostic_release,
     validate_scene_configuration_diagnostic_release_receipt,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (
     AUTHORITY_SCHEMA_VERSION,
     SCENE_CONFIGURATION_PROVIDER_IMAGE,
@@ -201,10 +205,23 @@ def run_scene_configuration_diagnostic_iteration(
     splat_runtime = _input_directory(
         args.splat_render_runtime_root, field="splat_render_runtime_root"
     )
-    checkpoint_reference = _input_file(
-        args.diagnostic_checkpoint_reference,
-        field="diagnostic_checkpoint_reference",
+    fresh_diagnostic_bootstrap = bool(args.fresh_diagnostic_bootstrap)
+    diagnostic_bootstrap_mode = (
+        FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+        if fresh_diagnostic_bootstrap
+        else CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
     )
+    if fresh_diagnostic_bootstrap:
+        if args.diagnostic_checkpoint_reference:
+            raise SceneConfigurationDiagnosticIterationError(
+                "scene_configuration_diagnostic_iteration_checkpoint_source_ambiguous"
+            )
+        checkpoint_reference = None
+    else:
+        checkpoint_reference = _input_file(
+            args.diagnostic_checkpoint_reference,
+            field="diagnostic_checkpoint_reference",
+        )
     project_spend = _input_file(
         args.project_spend_reconciliation,
         field="project_spend_reconciliation",
@@ -289,9 +306,13 @@ def run_scene_configuration_diagnostic_iteration(
         str(bundle_output),
         "--expected-source-commit",
         args.source_commit,
-        "--diagnostic-checkpoint-reference",
-        str(checkpoint_reference),
     ]
+    if fresh_diagnostic_bootstrap:
+        bundle_command.append("--fresh-diagnostic-bootstrap")
+    else:
+        bundle_command.extend(
+            ["--diagnostic-checkpoint-reference", str(checkpoint_reference)]
+        )
     _run_fixed(
         bundle_command,
         cwd=release_path,
@@ -315,6 +336,16 @@ def run_scene_configuration_diagnostic_iteration(
         or bundle_receipt.get("configured_revision_publication_permitted") is not False
         or bundle_receipt.get("offering_publication_permitted") is not False
         or bundle_receipt.get("terminal_e2e_completion_permitted") is not False
+        or bundle_receipt.get("diagnostic_bootstrap_mode")
+        != diagnostic_bootstrap_mode
+        or (
+            fresh_diagnostic_bootstrap
+            and (
+                bundle_receipt.get("source_diagnostic_checkpoint_digest")
+                is not None
+                or bundle_receipt.get("carried_completed_stage_count") != 0
+            )
+        )
     ):
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_bundle_receipt_invalid"
@@ -389,23 +420,32 @@ def run_scene_configuration_diagnostic_iteration(
         or authority.get("configured_revision_publication_permitted") is not False
         or authority.get("offering_publication_permitted") is not False
         or authority.get("terminal_e2e_completion_permitted") is not False
+        or authority.get("diagnostic_bootstrap_mode")
+        != diagnostic_bootstrap_mode
     ):
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_authority_invalid"
         )
     if retain_warm_session:
-        try:
-            checkpoint_reference_value = json.loads(
-                checkpoint_reference.read_text(encoding="utf-8")
-            )
-            checkpoint_root = _input_directory(
-                str(checkpoint_reference_value.get("checkpoint_root") or ""),
-                field="diagnostic_checkpoint_root",
-            )
-        except (AttributeError, json.JSONDecodeError, OSError, UnicodeError) as exc:
-            raise SceneConfigurationDiagnosticIterationError(
-                "scene_configuration_diagnostic_iteration_checkpoint_reference_invalid"
-            ) from exc
+        checkpoint_root: Path | None = None
+        if not fresh_diagnostic_bootstrap:
+            try:
+                checkpoint_reference_value = json.loads(
+                    checkpoint_reference.read_text(encoding="utf-8")
+                )
+                checkpoint_root = _input_directory(
+                    str(checkpoint_reference_value.get("checkpoint_root") or ""),
+                    field="diagnostic_checkpoint_root",
+                )
+            except (
+                AttributeError,
+                json.JSONDecodeError,
+                OSError,
+                UnicodeError,
+            ) as exc:
+                raise SceneConfigurationDiagnosticIterationError(
+                    "scene_configuration_diagnostic_iteration_checkpoint_reference_invalid"
+                ) from exc
         materialize_scene_configuration_warm_session_authority(
             bundle_receipt_path=bundle_receipt_path,
             paid_attempt_authority_path=authority_output,
@@ -462,6 +502,7 @@ def run_scene_configuration_diagnostic_iteration(
         "terminal_e2e_completion_permitted": False,
         "paid_execution_requested": bool(args.execute),
         "warm_session_retention_requested": retain_warm_session,
+        "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
         "provider_mutation_performed_during_preparation": False,
         "raw_secret_values_recorded": False,
         "preparation_digest": "",
@@ -540,7 +581,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--construction-envelope", required=True)
     parser.add_argument("--toolchain-root", required=True)
     parser.add_argument("--splat-render-runtime-root", required=True)
-    parser.add_argument("--diagnostic-checkpoint-reference", required=True)
+    parser.add_argument("--diagnostic-checkpoint-reference")
+    parser.add_argument("--fresh-diagnostic-bootstrap", action="store_true")
     parser.add_argument("--bundle-output-root", required=True)
     parser.add_argument("--project-spend-reconciliation", required=True)
     parser.add_argument("--initial-provider-zero", required=True)

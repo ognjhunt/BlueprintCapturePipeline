@@ -46,6 +46,7 @@ def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
         toolchain_root=str(toolchain.resolve()),
         splat_render_runtime_root=str(runtime.resolve()),
         diagnostic_checkpoint_reference=str(checkpoint.resolve()),
+        fresh_diagnostic_bootstrap=False,
         bundle_output_root=str((tmp_path / "bundle-output").resolve()),
         project_spend_reconciliation=str(project_spend.resolve()),
         initial_provider_zero=str(provider_zero.resolve()),
@@ -133,6 +134,11 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
                         "terminal_e2e_completion_permitted": False,
                         "bundle_sha256": "sha256:" + "2" * 64,
                         "receipt_digest": "sha256:" + "3" * 64,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
+                        "source_diagnostic_checkpoint_digest": (
+                            "sha256:" + "5" * 64
+                        ),
+                        "carried_completed_stage_count": 3,
                     }
                 ),
                 encoding="utf-8",
@@ -152,6 +158,7 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
                         "authority_digest": "sha256:" + "4" * 64,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
                     }
                 ),
                 encoding="utf-8",
@@ -233,11 +240,13 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
         lambda *_args, **_kwargs: {},
     )
     allocator_commands: list[list[str]] = []
+    bundle_commands: list[list[str]] = []
 
     def runner(argv, **_kwargs):
         command = list(argv)
         module = command[command.index("-m") + 1]
         if module.endswith("bundle"):
+            bundle_commands.append(command)
             output = Path(command[command.index("--output-root") + 1])
             output.mkdir(parents=True)
             (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
@@ -251,6 +260,11 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
                         "bundle_sha256": "sha256:" + "2" * 64,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
+                        "source_diagnostic_checkpoint_digest": (
+                            "sha256:" + "3" * 64
+                        ),
+                        "carried_completed_stage_count": 3,
                     }
                 ),
                 encoding="utf-8",
@@ -267,6 +281,7 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
                         "configured_revision_publication_permitted": False,
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
                     }
                 ),
                 encoding="utf-8",
@@ -282,8 +297,11 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
     assert allocator_commands and allocator_commands[0][-1] == "--execute"
 
 
+@pytest.mark.parametrize("fresh_bootstrap", [False, True])
 def test_execute_can_retain_one_warm_session_through_canonical_allocator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fresh_bootstrap: bool,
 ) -> None:
     args = _args(tmp_path, execute=True)
     args.retain_warm_session = True
@@ -291,10 +309,14 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
     args.warm_session_output_root = str((tmp_path / "warm-session").resolve())
     checkpoint_root = tmp_path / "checkpoint"
     checkpoint_root.mkdir()
-    Path(args.diagnostic_checkpoint_reference).write_text(
-        json.dumps({"checkpoint_root": str(checkpoint_root.resolve())}),
-        encoding="utf-8",
-    )
+    if fresh_bootstrap:
+        args.fresh_diagnostic_bootstrap = True
+        args.diagnostic_checkpoint_reference = None
+    else:
+        Path(args.diagnostic_checkpoint_reference).write_text(
+            json.dumps({"checkpoint_root": str(checkpoint_root.resolve())}),
+            encoding="utf-8",
+        )
     release_path = Path(args.release_root) / SOURCE_COMMIT
     release_path.mkdir(parents=True)
     (release_path / "src").mkdir()
@@ -324,11 +346,13 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
         lambda **kwargs: warm_calls.append(kwargs) or {},
     )
     allocator_commands: list[list[str]] = []
+    bundle_commands: list[list[str]] = []
 
     def runner(argv, **_kwargs):
         command = list(argv)
         module = command[command.index("-m") + 1]
         if module.endswith("bundle"):
+            bundle_commands.append(command)
             output = Path(command[command.index("--output-root") + 1])
             output.mkdir(parents=True)
             (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
@@ -342,6 +366,15 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
                         "bundle_sha256": "sha256:" + "2" * 64,
+                        "diagnostic_bootstrap_mode": (
+                            "fresh" if fresh_bootstrap else "checkpoint_resume"
+                        ),
+                        "source_diagnostic_checkpoint_digest": (
+                            None if fresh_bootstrap else "sha256:" + "3" * 64
+                        ),
+                        "carried_completed_stage_count": (
+                            0 if fresh_bootstrap else 3
+                        ),
                     }
                 ),
                 encoding="utf-8",
@@ -358,6 +391,9 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
                         "configured_revision_publication_permitted": False,
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
+                        "diagnostic_bootstrap_mode": (
+                            "fresh" if fresh_bootstrap else "checkpoint_resume"
+                        ),
                     }
                 ),
                 encoding="utf-8",
@@ -372,12 +408,23 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
     )
 
     assert len(warm_calls) == 1
-    assert warm_calls[0]["checkpoint_root"] == checkpoint_root.resolve()
+    assert warm_calls[0]["checkpoint_root"] == (
+        None if fresh_bootstrap else checkpoint_root.resolve()
+    )
+    assert ("--fresh-diagnostic-bootstrap" in bundle_commands[0]) is (
+        fresh_bootstrap
+    )
+    assert ("--diagnostic-checkpoint-reference" in bundle_commands[0]) is (
+        not fresh_bootstrap
+    )
     command = allocator_commands[0]
     assert "--scene-configuration-retain-warm-session" in command
     assert command[command.index("--scene-configuration-warm-session-authority") + 1] == args.warm_session_authority
     assert command[command.index("--scene-configuration-warm-session-output-root") + 1] == args.warm_session_output_root
     assert result["warm_session_retention_requested"] is True
+    assert result["diagnostic_bootstrap_mode"] == (
+        "fresh" if fresh_bootstrap else "checkpoint_resume"
+    )
 
 
 def test_child_failure_is_redacted_and_does_not_print_child_output(

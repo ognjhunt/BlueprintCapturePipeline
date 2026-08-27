@@ -16,8 +16,13 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
 )
 from .task_evaluation_scene_configuration_disclosure import (
+    PENDING_PROVIDER_RENDER_STATUS,
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
+)
+from .task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
 )
 from .task_evaluation_splat_render_runtime import PROVIDER_RENDERER_SCHEMA_VERSION
 
@@ -58,13 +63,19 @@ def scene_configuration_bundle_contract(
     toolchain = dict(toolchain)
     source_commit = _string(manifest.get("source_commit"))
     diagnostic_only = manifest.get("diagnostic_only") is True
+    diagnostic_bootstrap_mode = manifest.get("diagnostic_bootstrap_mode")
+    fresh_diagnostic_bootstrap = (
+        diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+    )
     render = envelope.get("render_inputs_result")
     renders_at_provider = (
         isinstance(render, Mapping)
         and renders_on_provider(render.get("disclosure_decision") or {})
     )
     provider_renderer_required = manifest.get("provider_renderer_required") is True
-    expected_provider_renderer = renders_at_provider and not diagnostic_only
+    expected_provider_renderer = renders_at_provider and (
+        not diagnostic_only or fresh_diagnostic_bootstrap
+    )
     if provider_renderer_required:
         required.update(
             {
@@ -107,6 +118,38 @@ def scene_configuration_bundle_contract(
                 or manifest.get("configured_revision_publication_permitted") is not False
                 or manifest.get("offering_publication_permitted") is not False
                 or manifest.get("terminal_e2e_completion_permitted") is not False
+                or diagnostic_bootstrap_mode
+                not in {
+                    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+                    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+                }
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}",
+                    _string(
+                        manifest.get("diagnostic_scientific_binding_digest")
+                    ),
+                )
+                is None
+                or (
+                    fresh_diagnostic_bootstrap
+                    and (
+                        manifest.get("source_diagnostic_checkpoint_digest")
+                        is not None
+                        or manifest.get("carried_completed_stage_count") != 0
+                    )
+                )
+                or (
+                    not fresh_diagnostic_bootstrap
+                    and re.fullmatch(
+                        r"sha256:[0-9a-f]{64}",
+                        _string(
+                            manifest.get(
+                                "source_diagnostic_checkpoint_digest"
+                            )
+                        ),
+                    )
+                    is None
+                )
             )
         )
         or manifest.get("single_parent_allocation") is not True
@@ -135,6 +178,15 @@ def scene_configuration_bundle_contract(
         or len(configurations) != 6
         or not isinstance(stages, list)
         or len(stages) != 6
+        or (
+            diagnostic_only
+            and manifest.get("diagnostic_stage_sequence_ids")
+            != [
+                str(row.get("stage_id") or "")
+                for row in stages or []
+                if isinstance(row, Mapping)
+            ]
+        )
         or not isinstance(render, Mapping)
         or not render_inputs_disclosure_is_coherent(render)
         or not isinstance(disclosure, Mapping)
@@ -144,9 +196,19 @@ def scene_configuration_bundle_contract(
         is expected_provider_renderer
         or (
             diagnostic_only
+            and not fresh_diagnostic_bootstrap
             and (
                 render.get("diagnostic_checkpoint_reused") is not True
                 or render.get("provider_render_skipped") is not True
+            )
+        )
+        or (
+            diagnostic_only
+            and fresh_diagnostic_bootstrap
+            and (
+                render.get("status")
+                != PENDING_PROVIDER_RENDER_STATUS
+                or render.get("provider_render_required") is not True
             )
         )
     ):

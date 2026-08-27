@@ -31,6 +31,11 @@ from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_runtime i
     STATUS,
     execute_scene_configuration_diagnostic_stage_chain,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+    validate_diagnostic_bootstrap_mode,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     PARENT_DEADLINE_EPOCH_ENV,
 )
@@ -39,7 +44,12 @@ from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget impor
 RESULT_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
 )
+BUNDLE_SCHEMA_VERSION = "task_evaluation_scene_configuration_provider_bundle.v1"
 RESULT_FILENAME = "task_evaluation_scene_configuration_provider_result.v1.json"
+WARM_READINESS_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_warm_readiness.v1"
+)
+WARM_READINESS_FILENAME = WARM_READINESS_SCHEMA_VERSION + ".json"
 WARM_SOURCE_COMMIT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_COMMIT"
 WARM_OVERLAY_MANIFEST_ENV = (
     "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_OVERLAY_MANIFEST"
@@ -73,6 +83,17 @@ def _read(path: Path) -> dict:
     if path.is_symlink() or not isinstance(value, dict):
         raise ValueError("scene_configuration_diagnostic_provider_input_invalid")
     return value
+
+
+def _effective_diagnostic_bootstrap_mode(
+    *, bundle_bootstrap_mode: object, warm_source_commit: str
+) -> str:
+    bundle_mode = validate_diagnostic_bootstrap_mode(bundle_bootstrap_mode)
+    return (
+        CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
+        if warm_source_commit
+        else bundle_mode
+    )
 
 
 def _diagnostic_implementation_identity(
@@ -377,6 +398,73 @@ def _retained_checkpoint_after_failure(
     )
 
 
+def _install_warm_ready_checkpoint(
+    *,
+    runtime: Path,
+    checkpoint_root: Path,
+    checkpoint: dict,
+    diagnostic_bootstrap_mode: str,
+    expected_scientific_binding_digest: str,
+) -> dict:
+    """Install only a validated Stage-3+ prefix as the warm runtime source."""
+
+    completed_count = checkpoint.get("completed_stage_prefix_count")
+    completed_results = checkpoint.get("completed_stage_results")
+    completed_ids = (
+        [str(row.get("stage_id") or "") for row in completed_results]
+        if isinstance(completed_results, list)
+        and all(isinstance(row, dict) for row in completed_results)
+        else []
+    )
+    if (
+        not isinstance(completed_count, int)
+        or isinstance(completed_count, bool)
+        or completed_count < 3
+        or len(completed_ids) != completed_count
+        or any(not stage_id for stage_id in completed_ids)
+        or (checkpoint.get("scientific_bindings") or {}).get("binding_digest")
+        != expected_scientific_binding_digest
+    ):
+        raise ValueError("scene_configuration_warm_checkpoint_prefix_invalid")
+    validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=checkpoint_root,
+        expected_scientific_binding_digest=expected_scientific_binding_digest,
+    )
+    checkpoint_target = runtime / "input/diagnostic_checkpoint"
+    checkpoint_staging = runtime / "input/.diagnostic_checkpoint.next"
+    shutil.rmtree(checkpoint_staging, ignore_errors=True)
+    shutil.copytree(
+        checkpoint_root,
+        checkpoint_staging,
+        copy_function=shutil.copy2,
+        symlinks=False,
+    )
+    validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=checkpoint_staging,
+        expected_scientific_binding_digest=expected_scientific_binding_digest,
+    )
+    shutil.rmtree(checkpoint_target, ignore_errors=True)
+    os.replace(checkpoint_staging, checkpoint_target)
+    readiness = {
+        "schema_version": WARM_READINESS_SCHEMA_VERSION,
+        "status": "ready_after_validated_stage_three_prefix",
+        "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
+        "advanced_checkpoint_digest": checkpoint["checkpoint_digest"],
+        "completed_stage_prefix_count": completed_count,
+        "completed_stage_ids": completed_ids,
+        "scientific_binding_digest": expected_scientific_binding_digest,
+        "raw_secret_values_recorded": False,
+        "readiness_digest": "",
+    }
+    readiness["readiness_digest"] = canonical_digest(
+        readiness, digest_field="readiness_digest"
+    )
+    (runtime / WARM_READINESS_FILENAME).write_text(
+        canonical_json(readiness) + "\n", encoding="utf-8"
+    )
+    return readiness
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -407,19 +495,44 @@ def main() -> int:
     diagnostic_run_id: str | None = None
     warm_identity: dict = {}
     toolchain: dict | None = None
+    active_checkpoint_root: Path | None = None
+    source_checkpoint_digest: str | None = None
+    diagnostic_bootstrap_mode: str | None = None
     try:
         parent_deadline_epoch = float(os.environ[PARENT_DEADLINE_EPOCH_ENV])
-        _restore_checkpoint_modes(checkpoint_root)
-        checkpoint = validate_scene_configuration_diagnostic_checkpoint(
-            checkpoint_root=checkpoint_root
+        bundle_manifest = _read(runtime / f"{BUNDLE_SCHEMA_VERSION}.json")
+        diagnostic_bootstrap_mode = _effective_diagnostic_bootstrap_mode(
+            bundle_bootstrap_mode=bundle_manifest.get(
+                "diagnostic_bootstrap_mode"
+            ),
+            warm_source_commit=str(os.environ.get(WARM_SOURCE_COMMIT_ENV) or ""),
         )
+        if diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE:
+            if checkpoint_root.exists():
+                raise ValueError(
+                    "scene_configuration_fresh_diagnostic_checkpoint_unexpected"
+                )
+        else:
+            if (
+                diagnostic_bootstrap_mode
+                != CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
+            ):
+                raise ValueError(
+                    "scene_configuration_diagnostic_bootstrap_mode_invalid"
+                )
+            _restore_checkpoint_modes(checkpoint_root)
+            checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+                checkpoint_root=checkpoint_root
+            )
+            active_checkpoint_root = checkpoint_root
+            source_checkpoint_digest = checkpoint["checkpoint_digest"]
         portable = _read(runtime / "input/portable_construction_envelope.v1.json")
         envelope = _hydrate_envelope(runtime, portable)
         diagnostic_run_id = str(envelope["run_id"])
         diagnostic_source_commit, warm_identity = (
             _diagnostic_implementation_identity(
                 runtime=runtime,
-                checkpoint=checkpoint,
+                checkpoint=checkpoint or {},
                 base_source_commit=str(envelope["expected_production_commit"]),
             )
         )
@@ -431,25 +544,60 @@ def main() -> int:
         registry = SceneConfigurationAdapterRegistry(
             builtin_scene_configuration_adapter_handlers()
         )
-        os.environ[
-            "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
-        ] = str(checkpoint_root)
+        if checkpoint is not None:
+            os.environ[
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
+            ] = str(checkpoint_root)
+        else:
+            os.environ.pop(
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT", None
+            )
         producers = builtin_scene_configuration_stage_producer_registry(
             expected_source_commit=str(envelope["expected_production_commit"])
         )
         advanced = checkpoint
 
-        def write_checkpoint(results) -> None:
-            nonlocal advanced, advanced_root
+        def write_checkpoint(results, source_checkpoint_root: Path) -> None:
+            nonlocal checkpoint, active_checkpoint_root, advanced, advanced_root
+            if checkpoint is None:
+                checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+                    checkpoint_root=source_checkpoint_root
+                )
+                if (
+                    (checkpoint.get("scientific_bindings") or {}).get(
+                        "binding_digest"
+                    )
+                    != bundle_manifest.get(
+                        "diagnostic_scientific_binding_digest"
+                    )
+                ):
+                    raise ValueError(
+                        "scene_configuration_fresh_diagnostic_binding_mismatch"
+                    )
+            previous_checkpoint_root = source_checkpoint_root.resolve()
             destination = output / "diagnostic_checkpoints" / f"after-stage-{len(results)}"
             advanced = advance_scene_configuration_diagnostic_checkpoint(
-                checkpoint_root=checkpoint_root,
+                checkpoint_root=previous_checkpoint_root,
                 stage_results=list(results),
                 stage_sequence=envelope["recipe"]["stage_sequence"],
                 configurations=configurations,
                 output_root=destination,
             )
             advanced_root = destination
+            checkpoint = advanced
+            active_checkpoint_root = destination.resolve()
+            if previous_checkpoint_root.is_relative_to(output.resolve()):
+                shutil.rmtree(previous_checkpoint_root)
+            if int(advanced["completed_stage_prefix_count"]) >= 3:
+                _install_warm_ready_checkpoint(
+                    runtime=runtime,
+                    checkpoint_root=active_checkpoint_root,
+                    checkpoint=advanced,
+                    diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
+                    expected_scientific_binding_digest=bundle_manifest[
+                        "diagnostic_scientific_binding_digest"
+                    ],
+                )
 
         def resume_stage_one(**kwargs):
             return producers.execute(**{key: value for key, value in kwargs.items() if key not in {"checkpoint", "checkpoint_root"}})
@@ -458,7 +606,13 @@ def main() -> int:
             runtime / "toolchain" / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
         )
         chain = execute_scene_configuration_diagnostic_stage_chain(
-            checkpoint_root=checkpoint_root,
+            diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
+            checkpoint_root=(
+                None
+                if diagnostic_bootstrap_mode
+                == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+                else checkpoint_root
+            ),
             envelope=envelope,
             configurations=configurations,
             output_root=stages_root,
@@ -469,9 +623,13 @@ def main() -> int:
             parent_deadline_epoch=parent_deadline_epoch,
         )
         if advanced_root is None:
+            if active_checkpoint_root is None:
+                raise ValueError(
+                    "scene_configuration_fresh_diagnostic_checkpoint_missing"
+                )
             advanced_root = output / "diagnostic_checkpoints" / "after-stage-6"
             advanced = advance_scene_configuration_diagnostic_checkpoint(
-                checkpoint_root=checkpoint_root,
+                checkpoint_root=active_checkpoint_root,
                 stage_results=chain["stage_results"],
                 stage_sequence=envelope["recipe"]["stage_sequence"],
                 configurations=configurations,
@@ -481,7 +639,7 @@ def main() -> int:
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": STATUS,
-            "source_checkpoint_digest": checkpoint["checkpoint_digest"],
+            "source_checkpoint_digest": source_checkpoint_digest,
             "advanced_checkpoint_digest": advanced["checkpoint_digest"],
             "advanced_checkpoint": _advanced_checkpoint_reference(
                 output=output, advanced_root=advanced_root, advanced=advanced
@@ -493,6 +651,10 @@ def main() -> int:
                 "envelope_digest"
             ],
             "diagnostic_stage_chain": chain,
+            "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
+            "diagnostic_scientific_binding_digest": bundle_manifest[
+                "diagnostic_scientific_binding_digest"
+            ],
             "diagnostic_only": True,
             "qualification_eligible": False,
             "executed_inside_one_parent_provider_run": False,
@@ -508,7 +670,7 @@ def main() -> int:
     except Exception as exc:
         retained_checkpoint_reference = _retained_checkpoint_after_failure(
             output=output,
-            checkpoint_root=checkpoint_root,
+            checkpoint_root=(active_checkpoint_root or checkpoint_root),
             checkpoint=checkpoint,
             advanced=advanced,
             advanced_root=advanced_root,
@@ -537,7 +699,7 @@ def main() -> int:
         ):
             result.update(
                 {
-                    "source_checkpoint_digest": checkpoint["checkpoint_digest"],
+                    "source_checkpoint_digest": source_checkpoint_digest,
                     "advanced_checkpoint_digest": advanced["checkpoint_digest"],
                     "advanced_checkpoint": retained_checkpoint_reference,
                     "diagnostic_source_commit": diagnostic_source_commit,
@@ -545,6 +707,10 @@ def main() -> int:
                     "diagnostic_toolchain_digest": toolchain["toolchain_digest"],
                     "diagnostic_construction_envelope_digest": portable[
                         "envelope_digest"
+                    ],
+                    "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
+                    "diagnostic_scientific_binding_digest": bundle_manifest[
+                        "diagnostic_scientific_binding_digest"
                     ],
                     **warm_identity,
                 }

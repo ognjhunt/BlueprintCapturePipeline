@@ -852,10 +852,16 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         "validate_scene_configuration_diagnostic_checkpoint",
         lambda **_kwargs: checkpoint,
     )
+    def scientific_binding(**kwargs):
+        assert kwargs["stage_input"]["stage"] == envelope["recipe"][
+            "stage_sequence"
+        ][0]
+        return checkpoint["scientific_bindings"]["binding_digest"]
+
     monkeypatch.setattr(
         bundle_module,
         "diagnostic_checkpoint_scientific_binding_digest",
-        lambda **_kwargs: checkpoint["scientific_bindings"]["binding_digest"],
+        scientific_binding,
     )
     checkpoint_files = [path for path in checkpoint_root.rglob("*") if path.is_file()]
     checkpoint_manifest = (
@@ -951,6 +957,100 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
             output_root=tmp_path / "unsafe-diagnostic-bundle",
             expected_source_commit=commit,
         )
+
+
+def test_fresh_diagnostic_bootstrap_ships_renderer_and_no_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    source = tmp_path / "fresh-diagnostic-source"
+    source.mkdir()
+    envelope = _provider_render_envelope(source, commit)
+    toolchain = _toolchain(tmp_path / "fresh-diagnostic-toolchain", commit)
+    repo = _repo(tmp_path / "fresh-diagnostic-repo")
+    runtime, identity = _provider_runtime(tmp_path, repo=repo, commit=commit)
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
+
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        output_root=tmp_path / "fresh-diagnostic-bundle",
+        expected_source_commit=commit,
+        fresh_diagnostic_bootstrap=True,
+    )
+
+    assert receipt["diagnostic_only"] is True
+    assert receipt["qualification_eligible"] is False
+    assert receipt["diagnostic_bootstrap_mode"] == "fresh"
+    assert receipt["source_diagnostic_checkpoint_digest"] is None
+    assert receipt["carried_completed_stage_count"] == 0
+    assert receipt["diagnostic_scientific_binding_digest"].startswith(
+        "sha256:"
+    )
+    assert receipt["raw_interiorgs_bytes_in_provider_bundle"] is True
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        runner = archive.read(
+            "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
+        )
+    assert any(name.startswith("provider_runtime/renderer/") for name in names)
+    assert any(
+        name.startswith("provider_runtime/input/render/source_appearance")
+        for name in names
+    )
+    assert not any(
+        name.startswith("provider_runtime/input/diagnostic_checkpoint/")
+        for name in names
+    )
+    assert runner == (
+        repo / "scripts/task_evaluation_scene_configuration_diagnostic_provider_runner.py"
+    ).read_bytes()
+    reopened = load_scene_configuration_provider_bundle_receipt(
+        tmp_path
+        / "fresh-diagnostic-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json",
+        diagnostic_only=True,
+    )
+    assert reopened["bundle_sha256"] == receipt["bundle_sha256"]
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "fresh-diagnostic-preflight",
+        generated_at="2026-08-27T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/fresh-diagnostic.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
+
+
+def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
+    assert authority_module._required_external_stage_minima(
+        diagnostic_only=True,
+        diagnostic_bootstrap_mode="fresh",
+        carried_stage_count=0,
+    ) == {
+        "artifixer_semantic_teacher": 2.4,
+        "artifixer_visual_review": 0.3,
+        "content_agents": 0.2,
+    }
+    assert authority_module._required_external_stage_minima(
+        diagnostic_only=True,
+        diagnostic_bootstrap_mode="checkpoint_resume",
+        carried_stage_count=3,
+    ) == {
+        "artifixer_semantic_teacher": 0.0,
+        "artifixer_visual_review": 0.0,
+        "content_agents": 0.0,
+    }
 
 
 def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) -> None:
