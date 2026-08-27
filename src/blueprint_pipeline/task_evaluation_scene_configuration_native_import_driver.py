@@ -20,6 +20,9 @@ from .measurement_isaac_physx_rigid_adapter import (
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_stage_configuration import (
+    native_import_checks_valid,
+)
 
 
 ADAPTER_ID = "simready_native_import_qualification"
@@ -35,43 +38,6 @@ NativeRunner = Callable[..., Mapping[str, Any]]
 
 class TaskEvaluationSceneConfigurationNativeImportDriverError(RuntimeError):
     """The exact asset could not be qualified in the native runtime."""
-
-
-def _positive_finite(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-        and float(value) > 0.0
-    )
-
-
-def _required_checks_valid(value: Any) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {
-        "stage_import",
-        "rigid_body_enabled",
-        "collider_enabled",
-        "gravity_settle_seconds",
-        "maximum_settle_translation_m",
-        "maximum_settle_rotation_rad",
-        "support_contact_required",
-        "explosion_or_tunneling_forbidden",
-        "deterministic_reset_required",
-        "state_digest_repeat_count",
-    }:
-        return False
-    return (
-        value["stage_import"] is True
-        and value["rigid_body_enabled"] is True
-        and value["collider_enabled"] is True
-        and _positive_finite(value["gravity_settle_seconds"])
-        and _positive_finite(value["maximum_settle_translation_m"])
-        and _positive_finite(value["maximum_settle_rotation_rad"])
-        and value["support_contact_required"] is True
-        and value["explosion_or_tunneling_forbidden"] is True
-        and value["deterministic_reset_required"] is True
-        and value["state_digest_repeat_count"] == 3
-    )
 
 
 def _sha256(path: Path) -> str:
@@ -364,7 +330,7 @@ def execute_native_import_component(
         or not isinstance(configuration, Mapping)
         or configuration.get("schema_version")
         != "replacement_native_import_qualification_configuration.v1"
-        or not _required_checks_valid(checks)
+        or not native_import_checks_valid(checks)
         or component_result_path.exists()
         or component_result_path.parent != output_root
     ):

@@ -366,6 +366,106 @@ def _build(tmp_path: Path, name: str) -> dict:
     )
 
 
+def _bind_real_stage_three_configuration(
+    envelope_path: Path, *, include_authority_denial: bool
+) -> bytes:
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    subject = {"id": "scene-839873-mug-replacement", "version": "v1"}
+    configuration = {
+        "schema_version": "rigid_replacement_authoring_configuration.v1",
+        "replacement_identity": subject,
+        "metric_envelope": {
+            "minimum_xyz_m": [0.0, 0.0, 0.0],
+            "maximum_xyz_m": [0.2, 0.2, 0.3],
+            "maximum_dimension_relative_error": 0.05,
+        },
+        "required_output": {
+            "format": "OpenUSD",
+            "rigid_body": True,
+            "single_movable_root": True,
+            "units": "meters",
+            "up_axis": "Z",
+            "mass_kg_bounds": [0.2, 0.8],
+            "static_friction_bounds": [0.3, 0.9],
+            "dynamic_friction_bounds": [0.2, 0.8],
+            "restitution_bounds": [0.0, 0.15],
+        },
+    }
+    if include_authority_denial:
+        configuration["physics_authority_granted_by_authoring"] = False
+    payload = (json.dumps(configuration, indent=1) + "\n").encode()
+    path = Path(envelope["stage_configuration_references"][2]["materialized_path"])
+    path.write_bytes(payload)
+    envelope["recipe"]["subject_identity"] = subject
+    envelope["recipe"]["stage_sequence"][2][
+        "capability"
+    ] = "rigid_replacement_authoring"
+    envelope["stage_configuration_references"][2].update(
+        {"digest": _sha256(path), "size_bytes": path.stat().st_size}
+    )
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    envelope_path.write_text(json.dumps(envelope), encoding="utf-8")
+    return payload
+
+
+def test_bundle_refuses_invalid_stage_configuration_before_output_creation(
+    tmp_path: Path,
+) -> None:
+    commit = "a" * 40
+    source = tmp_path / "invalid-stage-configuration-source"
+    source.mkdir()
+    envelope = _envelope(source, commit)
+    _bind_real_stage_three_configuration(
+        envelope, include_authority_denial=False
+    )
+    output = tmp_path / "invalid-stage-configuration-bundle"
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationBundleError,
+        match=(
+            "scene_configuration_stage_configuration_preflight_failed:"
+            "stage-3:rigid_replacement_authoring:"
+            "physics_authority_granted_by_authoring"
+        ),
+    ):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope,
+            toolchain_root=tmp_path / "toolchain-was-not-needed",
+            repository_root=tmp_path / "repo-was-not-needed",
+            output_root=output,
+            expected_source_commit=commit,
+        )
+
+    assert not output.exists()
+
+
+def test_bundle_preserves_valid_external_stage_configuration_bytes(
+    tmp_path: Path,
+) -> None:
+    commit = "a" * 40
+    source = tmp_path / "valid-stage-configuration-source"
+    source.mkdir()
+    envelope = _envelope(source, commit)
+    expected = _bind_real_stage_three_configuration(
+        envelope, include_authority_denial=True
+    )
+    toolchain = _toolchain(tmp_path / "valid-stage-configuration-toolchain", commit)
+    repo = _repo(tmp_path / "valid-stage-configuration-repo")
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        output_root=tmp_path / "valid-stage-configuration-bundle",
+        expected_source_commit=commit,
+    )
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        actual = archive.read("provider_runtime/input/configurations/stage-3.json")
+    assert actual == expected
+
+
 def _construction_queue(tmp_path: Path) -> Path:
     envelope_path = tmp_path / "source" / "envelope.json"
     envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
