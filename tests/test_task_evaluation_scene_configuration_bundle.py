@@ -1245,6 +1245,27 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     )
     assert "artifixer_execution" in exclusions["excluded_directory_names"]
 
+    outside = tmp_path / "outside-provider-output.txt"
+    outside.write_text("must-not-enter-provider-output\n", encoding="utf-8")
+    leaked = runtime_output / "stages/stage-6/adapter/outside-link.txt"
+    leaked.parent.mkdir(parents=True)
+    leaked.symlink_to(outside)
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "scene_configuration_provider_output_symlink_forbidden:"
+            "stages/stage-6/adapter/outside-link.txt"
+        ),
+    ):
+        exec(
+            compile(
+                archive_program,
+                "<scene-configuration-output-archive-symlink>",
+                "exec",
+            ),
+            {},
+        )
+
 
 def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
