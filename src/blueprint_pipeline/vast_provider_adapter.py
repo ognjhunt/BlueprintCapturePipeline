@@ -1901,6 +1901,7 @@ SCENE_CONFIGURATION_HOST_COMPILER_MAJOR = "11"
 #: one puts on PATH. The boundary check is derived from this map so every
 #: command demanded before bundle execution is installed by the same caller.
 SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
+    "coreutils": ("timeout",),
     "curl": ("curl",),
     "wget": ("wget",),
     "unzip": ("unzip",),

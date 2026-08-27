@@ -53,6 +53,13 @@ from .task_evaluation_scene_configuration_publication import (
     RESULT_SCHEMA_VERSION as PUBLICATION_RESULT_SCHEMA_VERSION,
     publish_configured_scene_revision,
 )
+from .task_evaluation_scene_configuration_runtime_budget import (
+    OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
+    OUTPUT_CLOSURE_RESERVE_SECONDS_ENV,
+    PARENT_DEADLINE_EPOCH_ENV,
+    ceil_live_minutes,
+    parent_runtime_budget_blockers,
+)
 from .task_evaluation_scene_construction_queue import (
     TaskEvaluationSceneConstructionQueueError,
     finalize_scene_construction,
@@ -925,6 +932,35 @@ def run_scene_configuration_vast(
     authority = validate_scene_configuration_paid_authority(
         _read(authority_path), bundle_receipt=receipt
     )
+    compute_cap = float(authority["provider_compute_spend_cap_usd"])
+    rate = float(authority["maximum_hourly_rate_usd"])
+    ttl = int(authority["maximum_single_resource_ttl_seconds"])
+    runtime_budget_blockers = parent_runtime_budget_blockers(
+        ttl_seconds=ttl,
+        maximum_hourly_rate_usd=rate,
+        provider_compute_spend_cap_usd=compute_cap,
+    )
+    if runtime_budget_blockers:
+        blocked = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "bundle_sha256": receipt["bundle_sha256"],
+            "authority_digest": authority["authority_digest"],
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "continuing_spend_from_this_run": False,
+            "blockers": runtime_budget_blockers,
+        }
+        if execute:
+            return _seal_live_terminal_result(
+                job,
+                blocked,
+                receipt=receipt,
+                scene_construction_queue_root=scene_construction_queue_root,
+            )
+        return _seal_terminal_result(job, blocked)
     runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
         return _seal_terminal_result(
@@ -951,9 +987,11 @@ def run_scene_configuration_vast(
         resource_class="vast_provider_adapter",
         require_allocation_binding=True,
     )
-    hard_cap = float(authority["provider_compute_spend_cap_usd"])
-    rate = float(authority["maximum_hourly_rate_usd"])
-    ttl = int(authority["maximum_single_resource_ttl_seconds"])
+    external_cap = float(
+        authority["external_service_spend_caps"]["openai"]["maximum_cost_usd"]
+    )
+    provider_all_in_cap = float(authority["hard_attempt_spend_cap_usd"]) - external_cap
+    live_minutes = ceil_live_minutes(ttl)
     bundle_path = Path(str(receipt["bundle_path"])).resolve()
     expected_download_bytes, expected_upload_bytes = _provider_transfer_byte_budget(
         receipt
@@ -995,7 +1033,7 @@ def run_scene_configuration_vast(
         )
     watchdog_handoff, watchdog = arm_independent_vast_watchdog(
         job_dir=job,
-        max_live_minutes=max(1, ttl // 60),
+        max_live_minutes=live_minutes,
         generated_at=utc_now_iso(),
         allowed_active_instance_ids=(),
         pod_name_prefix=WATCHDOG_POD_NAME_PREFIX,
@@ -1026,6 +1064,13 @@ def run_scene_configuration_vast(
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
         )
+    runtime_environment = dict(runtime_environment)
+    runtime_environment[PARENT_DEADLINE_EPOCH_ENV] = str(
+        watchdog.deadline_epoch
+    )
+    runtime_environment[OUTPUT_CLOSURE_RESERVE_SECONDS_ENV] = str(
+        OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+    )
     consumption = _consume_authority_once(
         authority, source_commit=str(receipt["source_commit"])
     )
@@ -1092,10 +1137,10 @@ def run_scene_configuration_vast(
                 allow_vast_api_call=True,
                 allow_instance_launch=True,
                 max_hourly_rate=rate,
-                target_spend_usd=hard_cap,
-                hard_cap_usd=hard_cap,
-                max_live_minutes=max(1, ttl // 60),
-                session_max_live_minutes=max(1, ttl // 60),
+                target_spend_usd=provider_all_in_cap,
+                hard_cap_usd=provider_all_in_cap,
+                max_live_minutes=live_minutes,
+                session_max_live_minutes=live_minutes,
                 public_image=str(authority["container_image"]),
                 isaac_image=str(authority["container_image"]),
                 ngc_image_login_mode="always",

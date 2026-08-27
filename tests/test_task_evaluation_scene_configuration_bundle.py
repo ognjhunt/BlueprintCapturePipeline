@@ -32,6 +32,15 @@ from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bun
 from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as authority_module
 from blueprint_pipeline import task_evaluation_live_profile as live_profile_module
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
+from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+    MAX_ATTEMPT_SPEND_USD,
+    MAX_HOURLY_RATE_USD,
+    MAX_PROVIDER_COMPUTE_SPEND_USD,
+    OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
+    PARENT_DEADLINE_EPOCH_ENV,
+    REQUIRED_PARENT_TTL_SECONDS,
+    SERIAL_GPU_STAGE_TIMEOUT_SECONDS,
+)
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
     ensure_scene_construction_queue_root,
@@ -646,9 +655,13 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
     authority_path.write_text("{}", encoding="utf-8")
     authority = {
         "authority_digest": "sha256:" + "e" * 64,
-        "provider_compute_spend_cap_usd": 0.75,
-        "maximum_hourly_rate_usd": 0.50,
-        "maximum_single_resource_ttl_seconds": 1_800,
+        "hard_attempt_spend_cap_usd": MAX_ATTEMPT_SPEND_USD,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+        "maximum_single_resource_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
+        "external_service_spend_caps": {
+            "openai": {"maximum_cost_usd": 1.5, "maximum_requests": 32}
+        },
     }
     monkeypatch.setattr(
         scene_vast,
@@ -699,6 +712,54 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
     assert result["result_digest"] == canonical_digest(
         result, digest_field="result_digest"
     )
+
+
+def test_insufficient_parent_runtime_authority_refuses_before_any_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The serialized stage chain must fit before staging or allocation."""
+
+    _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text("{}", encoding="utf-8")
+    authority = {
+        "authority_digest": "sha256:" + "e" * 64,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+        "maximum_single_resource_ttl_seconds": 9_000,
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "validate_scene_configuration_paid_authority",
+        lambda _value, **_kwargs: authority,
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("mutation boundary reached with insufficient authority")
+
+    monkeypatch.setattr(scene_vast, "_provider_runtime_inputs", forbidden)
+    monkeypatch.setattr(
+        scene_vast, "stage_wam_provider_bundle_object_store", forbidden
+    )
+    monkeypatch.setattr(scene_vast, "arm_independent_vast_watchdog", forbidden)
+    monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", forbidden)
+
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "job",
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=object(),
+        execute=True,
+        scene_construction_queue_root=_construction_queue(tmp_path),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["blockers"] == [
+        "scene_configuration_parent_runtime_budget_insufficient:25200:9000"
+    ]
 
 
 def test_live_terminal_result_refuses_missing_construction_queue_root(
@@ -1039,10 +1100,10 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
             "adp-new-scene-simple-relocation-839873-aaaaaaaaaaaa-20260825t120500z"
         ),
         max_hourly_rate_usd=0.50,
-        hard_cap_usd=2.25,
-        hard_ttl_seconds=1_800,
+        hard_cap_usd=MAX_ATTEMPT_SPEND_USD,
+        hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
         output_path=authority_path,
-        provider_compute_spend_cap_usd=0.75,
+        provider_compute_spend_cap_usd=MAX_PROVIDER_COMPUTE_SPEND_USD,
         openai_max_cost_usd=1.5,
         openai_max_requests=32,
         openai_artifixer_semantic_teacher_max_cost_usd=0.4,
@@ -1056,8 +1117,11 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     # tightly bounded one-shot attempt.
     assert authority["aggregate_goal_spend_before_attempt_usd"] == 500.0
     assert "aggregate_goal_spend_cap_usd" not in authority
-    assert authority["hard_attempt_spend_cap_usd"] == 2.25
-    assert authority["provider_compute_spend_cap_usd"] == 0.75
+    assert authority["hard_attempt_spend_cap_usd"] == MAX_ATTEMPT_SPEND_USD
+    assert (
+        authority["provider_compute_spend_cap_usd"]
+        == MAX_PROVIDER_COMPUTE_SPEND_USD
+    )
     assert authority["maximum_provider_allocations"] == 1
     assert authority["maximum_automatic_retries"] == 0
     assert authority["external_service_spend_caps"]["openai"][
@@ -1200,8 +1264,8 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         raw_manifest_uri=str(publication_path),
         revision="r1",
         max_hourly_rate_usd=0.50,
-        hard_ttl_seconds=1_800,
-        max_spend_usd=2.25,
+        hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
+        max_spend_usd=MAX_ATTEMPT_SPEND_USD,
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",
@@ -1237,8 +1301,8 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         raw_manifest_uri=str(publication_path),
         revision="r1",
         max_hourly_rate_usd=0.50,
-        hard_ttl_seconds=1_800,
-        max_spend_usd=2.25,
+        hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
+        max_spend_usd=MAX_ATTEMPT_SPEND_USD,
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",
@@ -1274,8 +1338,8 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         raw_manifest_uri=str(publication_path),
         revision="r1",
         max_hourly_rate_usd=0.50,
-        hard_ttl_seconds=1_800,
-        max_spend_usd=2.25,
+        hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
+        max_spend_usd=MAX_ATTEMPT_SPEND_USD,
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",
@@ -1790,10 +1854,14 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     authority_path.write_text("{}", encoding="utf-8")
     authority = {
         "authority_digest": "sha256:" + "e" * 64,
-        "provider_compute_spend_cap_usd": 0.75,
-        "maximum_hourly_rate_usd": 0.50,
-        "maximum_single_resource_ttl_seconds": 1_800,
+        "hard_attempt_spend_cap_usd": MAX_ATTEMPT_SPEND_USD,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+        "maximum_single_resource_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
         "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+        "external_service_spend_caps": {
+            "openai": {"maximum_cost_usd": 1.5, "maximum_requests": 32}
+        },
     }
     monkeypatch.setattr(
         scene_vast,
@@ -1829,6 +1897,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             types.SimpleNamespace(
                 pod_name_prefix=kwargs["pod_name_prefix"] + "fixture-",
                 started_instance_id_path=Path(kwargs["job_dir"]) / "started.json",
+                deadline_epoch=9_999_999_999.0,
             ),
         ),
     )
@@ -2399,6 +2468,13 @@ def test_provider_materializes_and_preflights_sealed_python_closure() -> None:
     assert runtime_parent < materialize < import_preflight < runner
     assert "scene_configuration_provider_python_runtime_invalid" in script
     assert "scene_configuration_provider_stage_import_closure_invalid" in script
+    assert "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH" in script
+    assert "timeout --signal=TERM --kill-after=30" in script
+    assert (
+        "scene_configuration_parent_runtime_budget_exhausted_during_stage_chain"
+        in script
+    )
+    assert "timeout" in vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS.split()
 
 
 def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
@@ -2416,6 +2492,11 @@ def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
     # grants ArtiFixer3D 7_000s.
     assert stage_one > 7_200
     assert stage_one <= MAX_TTL_SECONDS
+    assert sum(_STAGE_TIMEOUTS_SECONDS.values()) == SERIAL_GPU_STAGE_TIMEOUT_SECONDS
+    assert (
+        SERIAL_GPU_STAGE_TIMEOUT_SECONDS + OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+        < MAX_TTL_SECONDS
+    )
 
 
 def test_scene_configuration_gets_the_cold_pull_heartbeat_window() -> None:
@@ -2601,18 +2682,22 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     authority_path.write_text("{}", encoding="utf-8")
     authority = {
         "authority_digest": "sha256:" + "e" * 64,
-        "provider_compute_spend_cap_usd": 0.75,
-        "maximum_hourly_rate_usd": 0.50,
-        "maximum_single_resource_ttl_seconds": 1_800,
+        "hard_attempt_spend_cap_usd": MAX_ATTEMPT_SPEND_USD,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+        "maximum_single_resource_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
         "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
         "external_service_spend_caps": {
-            "openai": {"maximum_cost_usd": 0.0, "maximum_requests": 0}
+            "openai": {"maximum_cost_usd": 1.5, "maximum_requests": 32}
         },
     }
     monkeypatch.setattr(
         scene_vast,
         "validate_scene_configuration_paid_authority",
         lambda _value, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
     )
     monkeypatch.setattr(
         scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
@@ -2642,6 +2727,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
             types.SimpleNamespace(
                 pod_name_prefix=kwargs["pod_name_prefix"] + "abc-",
                 started_instance_id_path=Path(kwargs["job_dir"]) / "started.json",
+                deadline_epoch=9_999_999_999.0,
             ),
         ),
     )
@@ -2694,10 +2780,15 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     assert captured["provider_runtime_environment"][
         "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES"
     ] == str(expected_upload)
-    # The cap the caller hands the allocator is still the authority's own,
-    # unwidened by the transfer accounting.
-    assert captured["hard_cap_usd"] == authority["provider_compute_spend_cap_usd"]
-    assert captured["target_spend_usd"] == authority["provider_compute_spend_cap_usd"]
+    assert captured["provider_runtime_environment"][PARENT_DEADLINE_EPOCH_ENV] == str(
+        9_999_999_999.0
+    )
+    provider_all_in_cap = MAX_ATTEMPT_SPEND_USD - 1.5
+    assert provider_all_in_cap + 1.5 == MAX_ATTEMPT_SPEND_USD
+    assert captured["hard_cap_usd"] == provider_all_in_cap
+    assert captured["target_spend_usd"] == provider_all_in_cap
+    assert captured["max_live_minutes"] == 420
+    assert captured["session_max_live_minutes"] == 420
     assert result["expected_provider_download_bytes"] == expected_download
     assert result["expected_provider_upload_bytes"] == expected_upload
 

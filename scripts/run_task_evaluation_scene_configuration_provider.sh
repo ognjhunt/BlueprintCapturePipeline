@@ -21,6 +21,9 @@ export PYTHONPATH="$RUNTIME_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT="$RUNTIME_ROOT/toolchain"
 export BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT="$RESULT_PATH"
 
+PARENT_DEADLINE_EPOCH=${BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH:-}
+OUTPUT_CLOSURE_RESERVE_SECONDS=${BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS:-}
+
 write_blocked_result() {
   blocker="$1"
   "$PYTHON_BIN" - "$RESULT_PATH" "$blocker" <<'PY'
@@ -147,8 +150,35 @@ PY
     write_blocked_result "scene_configuration_provider_stage_import_closure_invalid"
     runner_rc=86
   else
-  "$PYTHON_BIN" "$RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py"
-  runner_rc=$?
+  runner_timeout_seconds=$(
+    "$PYTHON_BIN" - "$PARENT_DEADLINE_EPOCH" "$OUTPUT_CLOSURE_RESERVE_SECONDS" <<'PY'
+import math
+import sys
+import time
+
+try:
+    deadline = float(sys.argv[1])
+    closure = int(sys.argv[2])
+    remaining = math.floor(deadline - time.time() - closure)
+except (TypeError, ValueError):
+    raise SystemExit(86)
+if closure <= 0 or remaining <= 0:
+    raise SystemExit(86)
+print(remaining)
+PY
+  )
+  deadline_rc=$?
+  if [ "$deadline_rc" -ne 0 ]; then
+    write_blocked_result "scene_configuration_parent_runtime_deadline_invalid"
+    runner_rc=86
+  else
+    timeout --signal=TERM --kill-after=30 "${runner_timeout_seconds}s" \
+      "$PYTHON_BIN" "$RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py"
+    runner_rc=$?
+    if [ "$runner_rc" -eq 124 ] || [ "$runner_rc" -eq 137 ]; then
+      write_blocked_result "scene_configuration_parent_runtime_budget_exhausted_during_stage_chain"
+    fi
+  fi
   fi
 fi
 

@@ -8,7 +8,8 @@ execute a robot episode.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ from .task_evaluation_scene_configuration_orchestrator import (
 from .task_evaluation_scene_configuration_stage_producers import (
     SceneConfigurationStageProducerRegistry,
 )
+from .task_evaluation_scene_configuration_runtime_budget import (
+    OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
+    required_remaining_stage_seconds,
+)
 
 
 RESULT_SCHEMA_VERSION = (
@@ -47,6 +52,8 @@ def execute_scene_configuration_stage_chain(
     output_root: str | Path,
     registry: SceneConfigurationAdapterRegistry | None = None,
     producer_registry: SceneConfigurationStageProducerRegistry | None = None,
+    parent_deadline_epoch: float | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     """Execute all six stages once without any nested paid mutation."""
 
@@ -84,6 +91,16 @@ def execute_scene_configuration_stage_chain(
                 "scene_configuration_provider_stage_set_invalid"
             )
         stage_id = str(stage["stage_id"])
+        if parent_deadline_epoch is not None:
+            remaining_seconds = parent_deadline_epoch - clock()
+            required_seconds = required_remaining_stage_seconds(
+                stages, start_index=index
+            )
+            if remaining_seconds < required_seconds:
+                raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+                    "scene_configuration_parent_runtime_budget_insufficient:"
+                    f"{stage_id}:{required_seconds}:{max(0, int(remaining_seconds))}"
+                )
         expected_dependencies = [] if index == 0 else [stages[index - 1]["stage_id"]]
         if stage.get("depends_on") != expected_dependencies:
             raise TaskEvaluationSceneConfigurationProviderRuntimeError(
@@ -140,6 +157,15 @@ def execute_scene_configuration_stage_chain(
                 f"scene_configuration_provider_stage_result_invalid:{stage_id}"
             )
         results.append(result)
+    if (
+        parent_deadline_epoch is not None
+        and parent_deadline_epoch - clock() < OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+    ):
+        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+            "scene_configuration_parent_runtime_budget_insufficient:"
+            f"output_closure:{OUTPUT_AND_CLOSURE_RESERVE_SECONDS}:"
+            f"{max(0, int(parent_deadline_epoch - clock()))}"
+        )
     chain: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "completed",

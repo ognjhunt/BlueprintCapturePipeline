@@ -25,8 +25,9 @@ def ref(index: int) -> dict[str, object]:
 
 def configuration_spend() -> dict[str, object]:
     return {
-        "hard_cap_usd": 2.25,
-        "provider_compute_spend_cap_usd": 0.75,
+        "hard_cap_usd": 10.0,
+        "hard_ttl_seconds": 25_200,
+        "provider_compute_spend_cap_usd": 6.0,
         "external_service_caps": {
             "openai": {
                 "maximum_cost_usd": 1.5,
@@ -206,10 +207,56 @@ def test_configuration_run_cannot_claim_an_episode_or_bind_a_controller() -> Non
 
 def test_configuration_external_service_caps_fit_total_authority() -> None:
     value = test_configuration_request()
-    value["spend"]["hard_cap_usd"] = 2.0
+    value["spend"]["hard_cap_usd"] = 7.0
     with pytest.raises(
         TaskEvaluationLaunchPreparationContractError,
         match="launch_preparation_scene_configuration_external_spend_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+    value = test_configuration_request()
+    value["spend"]["external_service_caps"]["openai"][
+        "maximum_cost_usd"
+    ] = 1.51
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_scene_configuration_external_spend_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+
+def test_configuration_requires_canonical_parent_runtime_authority() -> None:
+    value = test_configuration_request()
+    value["spend"]["hard_ttl_seconds"] = 9_000
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_scene_configuration_parent_runtime_budget_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+    value = test_configuration_request()
+    value["spend"]["provider_compute_spend_cap_usd"] = 5.59
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_scene_configuration_external_spend_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+
+def test_episode_mode_preserves_prior_spend_and_ttl_ceilings() -> None:
+    value = request()
+    value["spend"]["hard_cap_usd"] = 5.01
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_episode_spend_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+    value = request()
+    value["spend"]["hard_ttl_seconds"] = 9_001
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_episode_spend_invalid",
     ):
         validate_launch_preparation_request(value)
 
