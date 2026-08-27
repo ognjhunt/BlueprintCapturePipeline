@@ -21,6 +21,14 @@ pytest.importorskip("pxr")
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils  # noqa: E402
 
 
+PHYSICS_BOUNDS = {
+    "mass_kg": [0.2, 0.8],
+    "static_friction": [0.3, 0.9],
+    "dynamic_friction": [0.2, 0.8],
+    "restitution": [0.0, 0.15],
+}
+
+
 def sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -41,7 +49,7 @@ def _portable_rigid_asset(path: Path) -> None:
     dependency.SetDefaultPrim(body)
     UsdPhysics.RigidBodyAPI.Apply(body)
     mass = UsdPhysics.MassAPI.Apply(body)
-    mass.CreateMassAttr(1.0)
+    mass.CreateMassAttr(0.5)
     mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.0, 0.0))
     mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1, 0.1, 0.1))
     collider = UsdGeom.Cube.Define(dependency, "/Body/Collider")
@@ -65,6 +73,35 @@ def _portable_rigid_asset(path: Path) -> None:
     )
     stage.GetRootLayer().Save()
     assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(path))
+
+
+def _physics_completion() -> dict[str, object]:
+    completion: dict[str, object] = {
+        "schema_version": "task_evaluation_rigid_candidate_physics_completion.v1",
+        "status": "bounded_candidate_completed",
+        "rigid_body_path": "/Asset/Body",
+        "collision_prim_paths": ["/Asset/Body/Collider"],
+        "physics_bounds": PHYSICS_BOUNDS,
+        "mass_kg": 0.5,
+        "center_of_mass_m": [0.0, 0.0, 0.0],
+        "diagonal_inertia_kg_m2": [0.1, 0.1, 0.1],
+        "physics_materials": [
+            {
+                "path": "/Asset/Body/PhysicsMaterial",
+                "static_friction": 0.5,
+                "dynamic_friction": 0.4,
+                "restitution": 0.1,
+            }
+        ],
+        "modifications": [],
+        "candidate_prior_only": True,
+        "physical_truth_claimed": False,
+        "completion_digest": "",
+    }
+    completion["completion_digest"] = canonical_digest(
+        completion, digest_field="completion_digest"
+    )
+    return completion
 
 
 def test_artifixer_handler_admits_only_qualified_generated_appearance(
@@ -213,8 +250,8 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
 ) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    asset = runtime / "mug.usda"
-    asset.write_text("#usda 1.0\n", encoding="utf-8")
+    asset = runtime / "mug.usdz"
+    _portable_rigid_asset(asset)
     source_candidate = runtime / "source-candidate.usda"
     source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
     identity = {"id": "replacement-mug", "version": "v1"}
@@ -230,6 +267,8 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
             "sha256": sha256(asset),
             "size_bytes": asset.stat().st_size,
         },
+        "candidate_physics_completion": _physics_completion(),
+        "physics_authority_granted": False,
         "result_digest": "",
     }
     receipt["result_digest"] = canonical_digest(
@@ -237,13 +276,31 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
     )
     receipt_path = runtime / "authoring.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    graph = {"asset_id": "replacement-mug", "articulation_graph": {"joints": []}}
+    graph = {
+        "schema_version": "task_evaluation_rigid_replacement_graph.v1",
+        "asset_id": "replacement-mug",
+        "asset_version": "v1",
+        "articulation_graph": {"joints": []},
+        "single_rigid_candidate": True,
+        "physics_bounds": PHYSICS_BOUNDS,
+        "physics_authority_granted": False,
+    }
     graph_path = runtime / "graph.json"
     graph_path.write_text(json.dumps(graph), encoding="utf-8")
     configuration = {
         "schema_version": "rigid_replacement_authoring_configuration.v1",
         "replacement_identity": identity,
-        "required_output": {"rigid_body": True, "single_movable_root": True},
+        "required_output": {
+            "format": "OpenUSD",
+            "rigid_body": True,
+            "single_movable_root": True,
+            "units": "meters",
+            "up_axis": "Z",
+            "mass_kg_bounds": PHYSICS_BOUNDS["mass_kg"],
+            "static_friction_bounds": PHYSICS_BOUNDS["static_friction"],
+            "dynamic_friction_bounds": PHYSICS_BOUNDS["dynamic_friction"],
+            "restitution_bounds": PHYSICS_BOUNDS["restitution"],
+        },
         "physics_authority_granted_by_authoring": False,
     }
     configuration_path = tmp_path / "authoring-configuration.json"
@@ -373,6 +430,7 @@ def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
         "asset_version": "v1",
         "articulation_graph": {"joints": []},
         "single_rigid_candidate": True,
+        "physics_bounds": PHYSICS_BOUNDS,
         "physics_authority_granted": False,
     }
     graph_spec_path = dependency / "graph-spec.json"
@@ -386,6 +444,7 @@ def test_static_handler_requires_exact_stage3_asset_spec_and_receipt(
             "sha256": sha256(asset),
             "size_bytes": asset.stat().st_size,
         },
+        "candidate_physics_completion": _physics_completion(),
         "physics_authority_granted": False,
         "result_digest": "",
     }

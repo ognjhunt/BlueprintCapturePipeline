@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess  # nosec B404 - executable is package-manifest-bound
@@ -18,7 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 from .adp_content_agents_vast import (
     CONTENT_IMAGE_MODEL,
@@ -49,6 +50,9 @@ _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 _RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 _PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
 _ADAPTER_ID = "content_agents_rigid_replacement"
+PHYSICS_COMPLETION_SCHEMA_VERSION = (
+    "task_evaluation_rigid_candidate_physics_completion.v1"
+)
 _EXPECTED_PACKAGE_FILES = {
     "content_agents_source.zip",
     "content_agents_source_receipt.json",
@@ -298,6 +302,247 @@ def _physics_output(root: Path) -> Path:
     return (preferred or candidates)[0]
 
 
+def _physics_bounds(configuration: Mapping[str, Any]) -> dict[str, list[float]]:
+    required = configuration.get("required_output")
+    source_keys = {
+        "mass_kg": "mass_kg_bounds",
+        "static_friction": "static_friction_bounds",
+        "dynamic_friction": "dynamic_friction_bounds",
+        "restitution": "restitution_bounds",
+    }
+    bounds: dict[str, list[float]] = {}
+    if not isinstance(required, Mapping):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_bounds_invalid"
+        )
+    for destination, source in source_keys.items():
+        raw = required.get(source)
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise TaskEvaluationSceneConfigurationContentAgentsError(
+                "scene_configuration_content_agents_physics_bounds_invalid"
+            )
+        try:
+            lower, upper = (float(value) for value in raw)
+        except (TypeError, ValueError) as exc:
+            raise TaskEvaluationSceneConfigurationContentAgentsError(
+                "scene_configuration_content_agents_physics_bounds_invalid"
+            ) from exc
+        if (
+            not math.isfinite(lower)
+            or not math.isfinite(upper)
+            or lower > upper
+            or lower < 0.0
+            or (destination == "mass_kg" and lower <= 0.0)
+            or (destination != "mass_kg" and upper > 1.0)
+        ):
+            raise TaskEvaluationSceneConfigurationContentAgentsError(
+                "scene_configuration_content_agents_physics_bounds_invalid"
+            )
+        bounds[destination] = [lower, upper]
+    return bounds
+
+
+def _vector3(value: Any) -> list[float]:
+    try:
+        result = [float(value[index]) for index in range(3)]
+    except (TypeError, ValueError, IndexError):
+        return []
+    return result if all(math.isfinite(item) for item in result) else []
+
+
+def _complete_candidate_physics(
+    source: Path, *, bounds: Mapping[str, list[float]]
+) -> dict[str, Any]:
+    """Complete missing candidate-only COM/inertia and enforce sealed bounds."""
+
+    stage = Usd.Stage.Open(str(source), load=Usd.Stage.LoadAll)
+    if (
+        stage is None
+        or not stage.GetDefaultPrim().IsValid()
+        or float(UsdGeom.GetStageMetersPerUnit(stage)) != 1.0
+        or str(UsdGeom.GetStageUpAxis(stage)).upper() != "Z"
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_output_frame_invalid"
+        )
+    prims = list(stage.Traverse())
+    rigid = [prim for prim in prims if prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+    collision = [prim for prim in prims if prim.HasAPI(UsdPhysics.CollisionAPI)]
+    if (
+        len(rigid) != 1
+        or not collision
+        or any(
+            prim.IsA(UsdPhysics.Joint)
+            or prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+            for prim in prims
+        )
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_structure_invalid"
+        )
+    body = rigid[0]
+    rigid_api = UsdPhysics.RigidBodyAPI(body)
+    if (
+        rigid_api.GetRigidBodyEnabledAttr().Get() is False
+        or rigid_api.GetKinematicEnabledAttr().Get() is True
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_structure_invalid"
+        )
+
+    cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+            UsdGeom.Tokens.guide,
+        ],
+        useExtentsHint=False,
+    )
+    world_to_body = (
+        UsdGeom.XformCache(Usd.TimeCode.Default())
+        .GetLocalToWorldTransform(body)
+        .GetInverse()
+    )
+    local_points: list[Gf.Vec3d] = []
+    for prim in collision:
+        aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        if aligned.IsEmpty():
+            continue
+        lower = aligned.GetMin()
+        upper = aligned.GetMax()
+        for x in (lower[0], upper[0]):
+            for y in (lower[1], upper[1]):
+                for z in (lower[2], upper[2]):
+                    local_points.append(
+                        world_to_body.Transform(Gf.Vec3d(float(x), float(y), float(z)))
+                    )
+    if not local_points:
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_collision_bounds_invalid"
+        )
+    lower = [min(float(point[index]) for point in local_points) for index in range(3)]
+    upper = [max(float(point[index]) for point in local_points) for index in range(3)]
+    dimensions = [upper[index] - lower[index] for index in range(3)]
+    if not all(math.isfinite(value) and value > 0.0 for value in dimensions):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_collision_bounds_invalid"
+        )
+
+    modifications: list[str] = []
+    mass_api = UsdPhysics.MassAPI.Apply(body)
+    mass_lower, mass_upper = bounds["mass_kg"]
+    try:
+        mass = float(mass_api.GetMassAttr().Get())
+    except (TypeError, ValueError):
+        mass = math.nan
+    if not math.isfinite(mass) or not mass_lower <= mass <= mass_upper:
+        mass = (mass_lower + mass_upper) / 2.0
+        mass_api.CreateMassAttr(mass)
+        modifications.append("mass_from_preregistered_bounds_midpoint")
+
+    center = _vector3(mass_api.GetCenterOfMassAttr().Get())
+    if not center or any(
+        center[index] < lower[index] or center[index] > upper[index]
+        for index in range(3)
+    ):
+        center = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
+        mass_api.CreateCenterOfMassAttr(Gf.Vec3f(*center))
+        modifications.append("center_of_mass_from_collision_bounds_center")
+
+    inertia = _vector3(mass_api.GetDiagonalInertiaAttr().Get())
+    inertia_valid = bool(inertia) and all(value > 0.0 for value in inertia)
+    if inertia_valid:
+        inertia_valid = all(
+            inertia[index] <= sum(inertia) - inertia[index] + 1e-12
+            for index in range(3)
+        )
+    if not inertia_valid:
+        x, y, z = dimensions
+        inertia = [
+            mass * (y * y + z * z) / 12.0,
+            mass * (x * x + z * z) / 12.0,
+            mass * (x * x + y * y) / 12.0,
+        ]
+        mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(*inertia))
+        modifications.append("diagonal_inertia_from_collision_aabb")
+
+    material_apis = [
+        UsdPhysics.MaterialAPI(prim)
+        for prim in prims
+        if prim.HasAPI(UsdPhysics.MaterialAPI)
+    ]
+    if not material_apis:
+        material = UsdShade.Material.Define(
+            stage, "/Asset/Looks/BlueprintPhysicsCandidate"
+        )
+        material_apis = [UsdPhysics.MaterialAPI.Apply(material.GetPrim())]
+        for prim in collision:
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                material, UsdShade.Tokens.weakerThanDescendants, "physics"
+            )
+        modifications.append("physics_material_from_preregistered_bounds_midpoints")
+    material_rows: list[dict[str, Any]] = []
+    attributes = {
+        "static_friction": "GetStaticFrictionAttr",
+        "dynamic_friction": "GetDynamicFrictionAttr",
+        "restitution": "GetRestitutionAttr",
+    }
+    for material_api in material_apis:
+        values: dict[str, float] = {}
+        changed = False
+        for name, getter_name in attributes.items():
+            lower_bound, upper_bound = bounds[name]
+            attribute = getattr(material_api, getter_name)()
+            try:
+                value = float(attribute.Get())
+            except (TypeError, ValueError):
+                value = math.nan
+            if not math.isfinite(value) or not lower_bound <= value <= upper_bound:
+                value = (lower_bound + upper_bound) / 2.0
+                attribute.Set(value)
+                changed = True
+            values[name] = value
+        if values["dynamic_friction"] > values["static_friction"]:
+            values["static_friction"] = sum(bounds["static_friction"]) / 2.0
+            values["dynamic_friction"] = sum(bounds["dynamic_friction"]) / 2.0
+            material_api.GetStaticFrictionAttr().Set(values["static_friction"])
+            material_api.GetDynamicFrictionAttr().Set(values["dynamic_friction"])
+            changed = True
+        if changed:
+            modifications.append("physics_material_values_conformed_to_bounds")
+        material_rows.append(
+            {"path": str(material_api.GetPrim().GetPath()), **values}
+        )
+
+    stage.GetRootLayer().Save()
+    reopened = Usd.Stage.Open(str(source), load=Usd.Stage.LoadAll)
+    if reopened is None or not reopened.GetDefaultPrim().IsValid():
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_physics_completion_readback_invalid"
+        )
+    completion: dict[str, Any] = {
+        "schema_version": PHYSICS_COMPLETION_SCHEMA_VERSION,
+        "status": "bounded_candidate_completed",
+        "rigid_body_path": str(body.GetPath()),
+        "collision_prim_paths": sorted(str(prim.GetPath()) for prim in collision),
+        "physics_bounds": {key: list(value) for key, value in bounds.items()},
+        "mass_kg": mass,
+        "center_of_mass_m": center,
+        "diagonal_inertia_kg_m2": inertia,
+        "physics_materials": material_rows,
+        "modifications": sorted(set(modifications)),
+        "candidate_prior_only": True,
+        "physical_truth_claimed": False,
+        "completion_digest": "",
+    }
+    completion["completion_digest"] = canonical_digest(
+        completion, digest_field="completion_digest"
+    )
+    return completion
+
+
 def _package_replacement_asset(source: Path, destination: Path) -> None:
     """Carry the exact authored layer and every referenced asset together."""
 
@@ -501,6 +746,10 @@ def execute_content_agents_component(
             "scene_configuration_content_agents_runtime_failed"
         )
     authored = _physics_output(runtime_output)
+    physics_bounds = _physics_bounds(configuration)
+    physics_completion = _complete_candidate_physics(
+        authored, bounds=physics_bounds
+    )
     asset = output_root / "content_agents_replacement_candidate.usdz"
     _package_replacement_asset(authored, asset)
     identity = configuration["replacement_identity"]
@@ -510,6 +759,7 @@ def execute_content_agents_component(
         "asset_version": identity["version"],
         "articulation_graph": {"joints": []},
         "single_rigid_candidate": True,
+        "physics_bounds": physics_bounds,
         "physics_authority_granted": False,
     }
     graph_path = output_root / "replacement_graph_spec.v1.json"
@@ -529,6 +779,7 @@ def execute_content_agents_component(
             "sha256": _sha256(asset),
             "size_bytes": asset.stat().st_size,
         },
+        "candidate_physics_completion": physics_completion,
         "physics_authority_granted": False,
         "result_digest": "",
     }

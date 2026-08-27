@@ -444,14 +444,30 @@ def execute_content_agents_rigid_replacement(
             "content_agents_replacement_result_invalid"
         ) from exc
     identity = configuration.get("replacement_identity")
+    required_output = configuration.get("required_output")
+    expected_physics_bounds = (
+        {
+            "mass_kg": required_output.get("mass_kg_bounds"),
+            "static_friction": required_output.get("static_friction_bounds"),
+            "dynamic_friction": required_output.get("dynamic_friction_bounds"),
+            "restitution": required_output.get("restitution_bounds"),
+        }
+        if isinstance(required_output, Mapping)
+        else {}
+    )
+    completion = receipt.get("candidate_physics_completion")
     if (
         configuration.get("schema_version")
         != "rigid_replacement_authoring_configuration.v1"
         or identity != envelope["recipe"]["subject_identity"]
-        or configuration.get("required_output", {}).get("rigid_body") is not True
-        or configuration.get("required_output", {}).get("single_movable_root")
-        is not True
+        or not isinstance(required_output, Mapping)
+        or required_output.get("format") != "OpenUSD"
+        or required_output.get("rigid_body") is not True
+        or required_output.get("single_movable_root") is not True
+        or required_output.get("units") != "meters"
+        or required_output.get("up_axis") != "Z"
         or configuration.get("physics_authority_granted_by_authoring") is not False
+        or asset.suffix.lower() != ".usdz"
         or receipt.get("schema_version")
         != "task_evaluation_rigid_replacement_authoring_result.v1"
         or receipt.get("status") != "authored_candidate_pending_qualification"
@@ -466,8 +482,23 @@ def execute_content_agents_rigid_replacement(
         != asset_record.get("size_bytes")
         or receipt.get("result_digest")
         != canonical_digest(receipt, digest_field="result_digest")
+        or not isinstance(completion, Mapping)
+        or completion.get("schema_version")
+        != "task_evaluation_rigid_candidate_physics_completion.v1"
+        or completion.get("status") != "bounded_candidate_completed"
+        or completion.get("physics_bounds") != expected_physics_bounds
+        or completion.get("candidate_prior_only") is not True
+        or completion.get("physical_truth_claimed") is not False
+        or completion.get("completion_digest")
+        != canonical_digest(completion, digest_field="completion_digest")
+        or graph.get("schema_version")
+        != "task_evaluation_rigid_replacement_graph.v1"
         or graph.get("asset_id") != identity.get("id")
+        or graph.get("asset_version") != identity.get("version")
         or graph.get("articulation_graph", {}).get("joints") != []
+        or graph.get("single_rigid_candidate") is not True
+        or graph.get("physics_bounds") != expected_physics_bounds
+        or graph.get("physics_authority_granted") is not False
     ):
         raise TaskEvaluationSceneConfigurationAdapterError(
             "content_agents_replacement_result_invalid"
