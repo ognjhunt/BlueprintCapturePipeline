@@ -13,6 +13,24 @@ CHECKPOINT_BODY = b'{}\n'
 CHECKPOINT_DIGEST = "sha256:" + "a" * 64
 
 
+def test_terminal_result_explicitly_records_that_no_raw_secrets_were_retained(
+    tmp_path: Path,
+) -> None:
+    result = vast._seal_terminal_result(
+        tmp_path,
+        {
+            "schema_version": vast.RESULT_SCHEMA_VERSION,
+            "status": "refused",
+            "blockers": ["test_refusal"],
+        },
+    )
+
+    assert result["raw_secret_values_recorded"] is False
+    assert result["result_digest"] == canonical_digest(
+        result, digest_field="result_digest"
+    )
+
+
 def _diagnostic_provider_result() -> dict:
     stage_results = []
     for index in range(1, 7):
@@ -20,6 +38,12 @@ def _diagnostic_provider_result() -> dict:
             "schema_version": "task_evaluation_scene_configuration_stage_result.v1",
             "status": "completed",
             "stage_id": f"stage-{index}",
+            "canonical_allocator": None,
+            "provider_mutations_performed": 0,
+            "paid_execution_requested": False,
+            "executed_inside_parent_configuration_run": True,
+            "raw_secret_values_recorded": False,
+            "output_artifacts": [],
             "diagnostic_only": True,
             "qualification_eligible": False,
             "executed_inside_one_parent_provider_run": False,
@@ -37,8 +61,12 @@ def _diagnostic_provider_result() -> dict:
             "task_evaluation_scene_configuration_diagnostic_stage_chain.v1"
         ),
         "status": "completed_diagnostic_only_not_qualification_eligible",
+        "run_id": "diagnostic-run-1",
         "stage_count": 6,
         "stage_results": stage_results,
+        "stage_result_digests": [
+            stage["stage_result_digest"] for stage in stage_results
+        ],
         "executed_inside_one_parent_provider_run": False,
         "nested_provider_mutations_performed": 0,
         "nested_paid_execution_requested": False,
