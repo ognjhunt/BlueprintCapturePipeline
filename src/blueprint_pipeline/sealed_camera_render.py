@@ -436,6 +436,49 @@ def _browser_process_environment(
     return environment
 
 
+def _checkout_renderer_identity_complete(identity: Mapping[str, Any]) -> bool:
+    """Whether the git probe pinned the renderer to a clean, named revision."""
+
+    return bool(
+        identity["repository_revision"]
+        and identity["repository_renderer_files_clean"]
+        and identity["package_version"]
+        and identity["package_lock_digest"]
+        and identity["dependency_versions"].get("@sparkjsdev/spark")
+    )
+
+
+def _digest_bound_renderer_identity(identity: Mapping[str, Any] | None) -> bool:
+    """Whether the renderer was reopened full-byte against a sealed digest.
+
+    The git probe above is the repository answer, and it is the only answer a
+    checkout can give. A rented provider has no checkout: the bundle extracts
+    the renderer into a plain directory, so ``git rev-parse`` returns nothing
+    and that probe can never pass there no matter how well pinned the bytes
+    are. Run
+    ``adp-new-scene-simple-relocation-839873-6e9b81ed-r2-web-20260827T041233Z``
+    hit exactly that -- the render completed and wrote its eight frames on the
+    GPU, and the stage was refused afterwards for provenance the provider path
+    is structurally unable to produce.
+
+    What the provider does have is a stronger binding, not a weaker one: every
+    renderer file reopened byte for byte and matched against a digest sealed at
+    an exact source commit, which is what
+    ``validate_provider_bundle_splat_renderer`` returns. Accepting that form
+    keeps the gate closed -- an absent, malformed, or non-digest-bound identity
+    still fails, and so does a checkout whose renderer files are dirty.
+    """
+
+    if not isinstance(identity, Mapping):
+        return False
+    if identity.get("mode") != "digest_bound_provider_bundle_renderer":
+        return False
+    return all(
+        isinstance(identity.get(field), str) and identity.get(field)
+        for field in ("renderer_digest", "source_runtime_digest", "source_commit")
+    )
+
+
 def render_splat_at_exact_cameras(
     *,
     splat_path: str | Path,
@@ -727,12 +770,9 @@ def render_splat_at_exact_cameras(
         [node, "--version"], capture_output=True, text=True
     ).stdout.strip()
     renderer_source_identity = _renderer_source_identity(root, node_version=node_version)
-    if authorization_class in QUALIFIED_AUTHORIZATION_CLASSES and (
-        not renderer_source_identity["repository_revision"]
-        or not renderer_source_identity["repository_renderer_files_clean"]
-        or not renderer_source_identity["package_version"]
-        or not renderer_source_identity["package_lock_digest"]
-        or not renderer_source_identity["dependency_versions"].get("@sparkjsdev/spark")
+    if authorization_class in QUALIFIED_AUTHORIZATION_CLASSES and not (
+        _digest_bound_renderer_identity(renderer_runtime_identity)
+        or _checkout_renderer_identity_complete(renderer_source_identity)
     ):
         raise SealedCameraRenderError(["render_evaluation_renderer_identity_incomplete"])
     rendered_rows = []
