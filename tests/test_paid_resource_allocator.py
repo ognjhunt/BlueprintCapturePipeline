@@ -179,6 +179,70 @@ def test_detached_gpu_canary_launcher_starts_new_session_without_recording_argum
     ).stat().st_mode & 0o777 == 0o600
 
 
+def test_detached_gpu_canary_reuses_peer_owned_exact_supervisor_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "supervisor"
+    root.mkdir(mode=0o700)
+    chmod_calls: list[Path] = []
+    original_chmod = allocator.os.chmod
+
+    def refuse_root_chmod(path: str | bytes | os.PathLike[str], mode: int) -> None:
+        resolved = Path(path).resolve()
+        if resolved == root.resolve():
+            chmod_calls.append(resolved)
+            raise PermissionError("peer-owned exact directory must not be mutated")
+        original_chmod(path, mode)
+
+    class _Process:
+        pid = 12345
+
+    monkeypatch.setattr(allocator.os, "chmod", refuse_root_chmod)
+    monkeypatch.setattr(
+        allocator.subprocess, "Popen", lambda *_args, **_kwargs: _Process()
+    )
+
+    result = allocator.maybe_launch_detached_gpu_canary(
+        command="gpu-canary",
+        execute=True,
+        supervisor_dir=str(root),
+        argv=["gpu-canary", "--execute"],
+        repo_root=tmp_path,
+    )
+
+    assert result is not None and result["status"] == "supervisor_started"
+    assert chmod_calls == []
+
+
+def test_detached_gpu_canary_refuses_when_supervisor_mode_cannot_be_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "supervisor"
+    root.mkdir(mode=0o755)
+    monkeypatch.setattr(
+        allocator.os,
+        "chmod",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    result = allocator.maybe_launch_detached_gpu_canary(
+        command="gpu-canary",
+        execute=True,
+        supervisor_dir=str(root),
+        argv=["gpu-canary", "--execute"],
+        repo_root=tmp_path,
+    )
+
+    assert result == {
+        "status": "blocked",
+        "blockers": [
+            "detached_gpu_canary_supervisor_dir_permission_install_failed"
+        ],
+        "provider_mutations_performed": 0,
+    }
+    assert list(root.iterdir()) == []
+
+
 def test_generic_gpu_canary_still_requires_its_own_legacy_inputs(
     tmp_path: Path,
 ) -> None:
