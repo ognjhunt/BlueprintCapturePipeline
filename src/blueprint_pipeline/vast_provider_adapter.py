@@ -1877,6 +1877,47 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
     }
 
 
+#: Packages the scene-configuration onstart installs, and the commands each
+#: one puts on PATH. The boundary check below is derived from this map rather
+#: than written beside it, because the two drifted apart the first time they
+#: were written separately: the check demanded ``nvcc`` while the install line
+#: could not provide it, so every run refused with
+#: ``scene_configuration_runtime_toolchain_missing:127`` before downloading the
+#: bundle. Nothing in this lane compiles CUDA -- the ArtiFixer runtime installs
+#: prebuilt ``cu124`` torch wheels and does an editable ``--no-deps`` install of
+#: a pure-Python source tree, and no ``CUDAExtension`` or ``cpp_extension`` call
+#: exists anywhere in the vendored source. (Upstream's own ``Dockerfile.cuda13``
+#: does install ``cuda-toolkit-13-0``; that is their container recipe for a
+#: cu130 build, not the runtime this lane provisions.) A precondition that can
+#: never be satisfied is not fail-closed, it is fail-always.
+SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
+    "curl": ("curl",),
+    "wget": ("wget",),
+    "unzip": ("unzip",),
+    "git": ("git",),
+    "build-essential": ("gcc", "g++", "make"),
+    "cmake": ("cmake",),
+    "ninja-build": ("ninja",),
+    "ffmpeg": ("ffmpeg",),
+    "libgl1": (),
+    "libglib2.0-0": (),
+    "libopengl0": (),
+    "libvulkan1": (),
+    "xvfb": ("Xvfb",),
+}
+#: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
+#: not by apt, so it is named separately rather than assumed.
+SCENE_CONFIGURATION_SHIMMED_COMMANDS: tuple[str, ...] = ("python3",)
+SCENE_CONFIGURATION_APT_PACKAGES = " ".join(SCENE_CONFIGURATION_PROVISIONED_COMMANDS)
+SCENE_CONFIGURATION_REQUIRED_COMMANDS = " ".join(
+    sorted(
+        set(SCENE_CONFIGURATION_SHIMMED_COMMANDS).union(
+            *SCENE_CONFIGURATION_PROVISIONED_COMMANDS.values()
+        )
+    )
+)
+
+
 def _projected_provider_transfer_cost_usd(
     offer: Mapping[str, Any],
     *,
@@ -4601,13 +4642,17 @@ def _probe_shell_script(
                 "else toolchain_rc=0; "
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1 && "
-                "DEBIAN_FRONTEND=noninteractive timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y curl wget unzip git build-essential cmake ninja-build ffmpeg libgl1 libglib2.0-0 libopengl0 libvulkan1 xvfb >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
+                "DEBIAN_FRONTEND=noninteractive timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "
+                + SCENE_CONFIGURATION_APT_PACKAGES
+                + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
                 "fi; "
                 'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
                 'printf \'#!/bin/sh\\nexec /isaac-sim/python.sh "$@"\\n\' > "$WORK_DIR/scene_configuration_bin/python3"; '
                 'chmod 0755 "$WORK_DIR/scene_configuration_bin/python3"; '
                 'export PATH="$WORK_DIR/scene_configuration_bin:$PATH"; '
-                'for required_command in python3 git gcc g++ cmake ninja nvcc Xvfb; do command -v "$required_command" >/dev/null 2>&1 || toolchain_rc=127; done; '
+                "for required_command in "
+                + SCENE_CONFIGURATION_REQUIRED_COMMANDS
+                + '; do command -v "$required_command" >/dev/null 2>&1 || toolchain_rc=127; done; '
                 "if [ $toolchain_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_toolchain_missing:$toolchain_rc; "
                 "else "
                 'rm -rf "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; '

@@ -712,11 +712,11 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     assert "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" in script
     assert "scene_configuration_runtime_toolchain_missing" in script
     assert "timeout 300 apt-get" in script
-    assert script.index(" install -y curl wget unzip git build-essential") < script.index(
-        "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED"
-    )
+    assert script.index(
+        f" install -y {vpa.SCENE_CONFIGURATION_APT_PACKAGES}"
+    ) < script.index("BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED")
     assert (
-        "for required_command in python3 git gcc g++ cmake ninja nvcc Xvfb; "
+        f"for required_command in {vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS}; "
         'do command -v "$required_command"'
     ) in script
     assert 'exec /isaac-sim/python.sh "$@"' in script
@@ -1577,10 +1577,14 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     receipt = _build(tmp_path, "bundle")
 
     assert scene_vast._provider_transfer_byte_budget(receipt) == (
-        receipt["bundle_size_bytes"],
+        receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
         0,
     )
     assert receipt["bundle_size_bytes"] > 0
+    # Large enough to cover the onstart toolchain and venv provisioning, and
+    # small enough that bandwidth does not price out otherwise admissible
+    # offers against the attempt's compute cap.
+    assert 1_000_000_000 <= scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES <= 3_000_000_000
 
     for broken in ({}, {"bundle_size_bytes": 0}, {"bundle_size_bytes": True}):
         with pytest.raises(
@@ -1693,13 +1697,16 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         execute=True,
     )
 
-    assert captured["expected_provider_download_bytes"] == receipt["bundle_size_bytes"]
+    expected_download = (
+        receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
+    )
+    assert captured["expected_provider_download_bytes"] == expected_download
     assert captured["expected_provider_upload_bytes"] == 0
     # The cap the caller hands the allocator is still the authority's own,
     # unwidened by the transfer accounting.
     assert captured["hard_cap_usd"] == authority["provider_compute_spend_cap_usd"]
     assert captured["target_spend_usd"] == authority["provider_compute_spend_cap_usd"]
-    assert result["expected_provider_download_bytes"] == receipt["bundle_size_bytes"]
+    assert result["expected_provider_download_bytes"] == expected_download
     assert result["expected_provider_upload_bytes"] == 0
 
 
@@ -1953,3 +1960,44 @@ def test_provider_runner_imports_in_the_bundle_layout_without_the_repo_tree(
     assert not failures, "provider entrypoints fail to import in the bundle layout:\n" + "\n\n".join(
         f"### {module}\n{detail}" for module, detail in failures.items()
     )
+
+
+def test_scene_configuration_boundary_requires_only_what_it_installs() -> None:
+    """The onstart's toolchain gate must be satisfiable by the same onstart.
+
+    Run ``adp-new-scene-simple-relocation-839873-7c0ec0c0-r2-web-20260827T015257Z``
+    rented an RTX A6000, passed the Isaac smoke, and refused with
+    ``BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_toolchain_missing:127``
+    before downloading the bundle. The required-command list asked for
+    ``nvcc``; the apt install one line above it cannot provide a CUDA
+    compiler, and nothing in this lane compiles CUDA -- the ArtiFixer runtime
+    installs prebuilt ``cu124`` torch wheels and editable-installs a
+    pure-Python tree. A precondition nothing can satisfy is not fail-closed,
+    it is fail-always: it costs a full provider allocation per run and can
+    never pass.
+
+    So the two are now derived from one map, and this pins that: every
+    required command comes from a package the same script installs, or from
+    the ``python3`` shim it writes onto PATH.
+    """
+
+    provided = set(vpa.SCENE_CONFIGURATION_SHIMMED_COMMANDS).union(
+        *vpa.SCENE_CONFIGURATION_PROVISIONED_COMMANDS.values()
+    )
+    required = set(vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS.split())
+
+    assert required, "the boundary check must verify something"
+    assert required <= provided, (
+        "onstart requires commands it does not provision: "
+        f"{sorted(required - provided)}"
+    )
+    assert "nvcc" not in required
+    # Every package named for the apt line is actually installed by it.
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example.test",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+    for package in vpa.SCENE_CONFIGURATION_PROVISIONED_COMMANDS:
+        assert package in script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
