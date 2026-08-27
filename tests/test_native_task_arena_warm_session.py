@@ -245,6 +245,43 @@ def test_warm_log_fetch_reads_dispatch_namespace_not_workload_namespace(
     assert remote_log_path in calls[1]["remote_argv"][2]
 
 
+def test_warm_dispatch_can_bind_a_dedicated_process_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        warm_vast,
+        "enroll_vast_ssh_host_key",
+        lambda *_args, **_kwargs: {
+            "status": "enrolled",
+            "known_hosts_file": str(tmp_path / "vast_ssh_known_hosts"),
+        },
+    )
+
+    def fake_ssh(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed", "blockers": [], "stdout": "7654 7654 7654\n"}
+
+    monkeypatch.setattr(warm_vast, "_run_pinned_ssh", fake_ssh)
+    result = warm_vast._dispatch_warm_script_over_ssh(
+        job=tmp_path,
+        session={"ssh_host": "ssh.example", "ssh_port": 12345},
+        remote_script="#!/usr/bin/env bash\nexit 0\n",
+        attempt_key="c" * 16,
+        require_dedicated_session=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["remote_pid"] == 7654
+    assert result["remote_process_group_id"] == 7654
+    assert result["remote_session_id"] == 7654
+    assert result["transport"] == "strict_pinned_ssh_stdin_dedicated_session.v1"
+    remote_command = " ".join(observed["remote_argv"])
+    assert "nohup setsid /bin/bash -c" in remote_command
+    assert "BLUEPRINT_SCENE_WARM_DISPATCH_ATTEMPT" in remote_command
+    assert "session.identity" in remote_command
+
+
 def test_pinned_ssh_uses_service_bound_identity_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

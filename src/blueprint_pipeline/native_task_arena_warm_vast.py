@@ -303,6 +303,7 @@ def _dispatch_warm_script_over_ssh(
     session: Mapping[str, Any],
     remote_script: str,
     attempt_key: str,
+    require_dedicated_session: bool = False,
 ) -> dict[str, Any]:
     """Stream the dispatcher over SSH; Vast's execute API caps commands at 512 B."""
 
@@ -343,15 +344,53 @@ def _dispatch_warm_script_over_ssh(
     # that proves the cache hit and output upload. Keep dispatch evidence in a
     # sibling namespace that the workload never mutates.
     remote_dir = f"/workspace/native_task_arena_warm_dispatches/{attempt_key}"
-    wrapper = (
-        "set -euo pipefail; "
-        f"mkdir -p {shlex.quote(remote_dir)}; "
-        f"cat > {shlex.quote(remote_dir + '/run.sh')}; "
-        f"chmod 700 {shlex.quote(remote_dir + '/run.sh')}; "
-        f"nohup bash {shlex.quote(remote_dir + '/run.sh')} > "
-        f"{shlex.quote(remote_dir + '/run.log')} 2>&1 < /dev/null & "
-        "pid=$!; case \"$pid\" in ''|*[!0-9]*) exit 78;; esac; printf '%s\\n' \"$pid\""
-    )
+    run_path = remote_dir + "/run.sh"
+    log_path = remote_dir + "/run.log"
+    if require_dedicated_session:
+        identity_path = remote_dir + "/session.identity"
+        session_runner = """set -euo pipefail
+identity=$1
+run_path=$2
+attempt_key=$3
+export BLUEPRINT_SCENE_WARM_DISPATCH_ATTEMPT="$attempt_key"
+read -r actual_pid actual_pgid actual_sid < <(ps -o pid= -o pgid= -o sid= -p "$$")
+case "$actual_pid:$actual_pgid:$actual_sid" in
+  "$actual_pid:$actual_pid:$actual_pid") ;;
+  *) exit 79;;
+esac
+tmp="$identity.$$"
+printf '%s %s %s\\n' "$actual_pid" "$actual_pgid" "$actual_sid" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$identity"
+exec /bin/bash "$run_path"
+"""
+        wrapper = (
+            "set -euo pipefail; "
+            f"mkdir -p {shlex.quote(remote_dir)}; "
+            f"cat > {shlex.quote(run_path)}; "
+            f"chmod 700 {shlex.quote(run_path)}; "
+            f"rm -f {shlex.quote(identity_path)}; "
+            f"nohup setsid /bin/bash -c {shlex.quote(session_runner)} -- "
+            f"{shlex.quote(identity_path)} {shlex.quote(run_path)} "
+            f"{shlex.quote(attempt_key)} > {shlex.quote(log_path)} "
+            "2>&1 < /dev/null & launcher=$!; "
+            "case \"$launcher\" in ''|*[!0-9]*) exit 78;; esac; "
+            "waits=0; while [ ! -s "
+            f"{shlex.quote(identity_path)}"
+            " ] && [ \"$waits\" -lt 50 ]; do waits=$((waits + 1)); sleep 0.1; done; "
+            f"test -s {shlex.quote(identity_path)} || exit 78; "
+            f"cat {shlex.quote(identity_path)}"
+        )
+    else:
+        wrapper = (
+            "set -euo pipefail; "
+            f"mkdir -p {shlex.quote(remote_dir)}; "
+            f"cat > {shlex.quote(run_path)}; "
+            f"chmod 700 {shlex.quote(run_path)}; "
+            f"nohup bash {shlex.quote(run_path)} > "
+            f"{shlex.quote(log_path)} 2>&1 < /dev/null & "
+            "pid=$!; case \"$pid\" in ''|*[!0-9]*) exit 78;; esac; printf '%s\\n' \"$pid\""
+        )
     result = _run_pinned_ssh(
         session=session,
         known_hosts_file=str(enrollment["known_hosts_file"]),
@@ -360,19 +399,47 @@ def _dispatch_warm_script_over_ssh(
         timeout_seconds=30,
     )
     stdout = str(result.get("stdout") or "")
-    pid_match = re.fullmatch(r"([1-9][0-9]*)\n?", stdout)
-    if result.get("status") != "completed" or pid_match is None:
-        result["status"] = "blocked"
-        result["blockers"] = sorted(
-            set(
-                list(result.get("blockers") or [])
-                + ["native_task_arena_warm_dispatch_pid_unproven"]
-            )
+    if require_dedicated_session:
+        identity_match = re.fullmatch(
+            r"([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)\n?",
+            stdout,
         )
+        identity_values = (
+            tuple(int(identity_match.group(index)) for index in range(1, 4))
+            if identity_match is not None
+            else ()
+        )
+        identity_proven = len(identity_values) == 3 and len(set(identity_values)) == 1
+        if result.get("status") == "completed" and identity_proven:
+            result["remote_pid"] = identity_values[0]
+            result["remote_process_group_id"] = identity_values[1]
+            result["remote_session_id"] = identity_values[2]
+        else:
+            result["status"] = "blocked"
+            result["blockers"] = sorted(
+                set(
+                    list(result.get("blockers") or [])
+                    + ["native_task_arena_warm_dispatch_pid_unproven"]
+                )
+            )
     else:
-        result["remote_pid"] = int(pid_match.group(1))
+        pid_match = re.fullmatch(r"([1-9][0-9]*)\n?", stdout)
+        if result.get("status") == "completed" and pid_match is not None:
+            result["remote_pid"] = int(pid_match.group(1))
+        else:
+            result["status"] = "blocked"
+            result["blockers"] = sorted(
+                set(
+                    list(result.get("blockers") or [])
+                    + ["native_task_arena_warm_dispatch_pid_unproven"]
+                )
+            )
     result["host_key_enrollment"] = enrollment
-    result["transport"] = "strict_pinned_ssh_stdin.v1"
+    result["transport"] = (
+        "strict_pinned_ssh_stdin_dedicated_session.v1"
+        if require_dedicated_session
+        else "strict_pinned_ssh_stdin.v1"
+    )
     (job / "warm_dispatch.log").write_text(
         (
             f"status={result.get('status')}\n"

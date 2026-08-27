@@ -1909,6 +1909,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "diagnosis only; never qualify or publish the result."
         ),
     )
+    gpu.add_argument(
+        "--scene-configuration-retain-warm-session",
+        action="store_true",
+        help=(
+            "Retain the one admitted diagnostic Vast worker under its independent "
+            "watchdog for immutable checkpoint-resume source overlays."
+        ),
+    )
+    gpu.add_argument("--scene-configuration-warm-session-authority")
+    gpu.add_argument("--scene-configuration-warm-session-output-root")
+    gpu.add_argument(
+        "--scene-configuration-warm-action",
+        choices=("iterate", "closeout"),
+    )
+    gpu.add_argument("--scene-configuration-warm-session-root")
+    gpu.add_argument("--scene-configuration-warm-iteration-authority")
+    gpu.add_argument("--scene-configuration-warm-closeout-receipt")
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-aura-exact-residual-bundle-receipt")

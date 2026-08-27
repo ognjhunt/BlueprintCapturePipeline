@@ -120,6 +120,7 @@ from .wam_provider_output import (
 from .retained_gpu_session_lifecycle import record_retained_gpu_state
 from .vast_retained_instance import (
     NATIVE_TASK_ARENA_WARM_RETENTION_MODE,
+    SCENE_CONFIGURATION_WARM_RETENTION_MODE,
     bind_all_in_cost,
     record_initial_lifecycle,
     record_terminal_lifecycle,
@@ -4199,10 +4200,24 @@ def _probe_shell_script(
     enable_isaac_smoke: bool = False,
     enable_blueprint_bundle: bool = False,
     provider_bundle_kind: str = "isaac",
+    expected_provider_bundle_sha256: str | None = None,
 ) -> str:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    if expected_provider_bundle_sha256 is not None and re.fullmatch(
+        r"sha256:[0-9a-f]{64}", expected_provider_bundle_sha256
+    ) is None:
+        raise ValueError("expected_provider_bundle_sha256_invalid")
     quoted_url = shlex.quote(heartbeat_url)
+    scene_bundle_digest_guard = (
+        'actual_bundle_sha="sha256:$(sha256sum "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" | cut -d" " -f1)"; '
+        "if [ \"$actual_bundle_sha\" != "
+        + shlex.quote(expected_provider_bundle_sha256)
+        + ' ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_bundle_digest_mismatch; bundle_digest_rc=86; '
+        "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; echo BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED; bundle_digest_rc=0; fi; "
+        if expected_provider_bundle_sha256 is not None
+        else "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; bundle_digest_rc=0; "
+    )
     # Unconditional, and retried.  This began as an allowlist of the four kinds
     # observed to fail, but an HTTP/2 stream reset is a property of the
     # transport and the object size, not of what is inside the zip: a bundle
@@ -4534,7 +4549,9 @@ def _probe_shell_script(
                 'rm -rf "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_output.zip"; '
                 'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
-                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                "else "
+                + scene_bundle_digest_guard
+                + "if [ $bundle_digest_rc -eq 0 ]; then "
                 '$RUNTIME_PY -m zipfile -e "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
                 'elif [ ! -f "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
@@ -4545,6 +4562,9 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
                 'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                'rm -rf "$WORK_DIR/.blueprint-runtime-secrets" "$WORK_DIR/blueprint_runtime_secret_exports.sh"; secret_scrub_rc=$?; '
+                'if [ $secret_scrub_rc -eq 0 ] && [ ! -e "$WORK_DIR/.blueprint-runtime-secrets" ] && [ ! -e "$WORK_DIR/blueprint_runtime_secret_exports.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_RUNTIME_SECRETS_SCRUBBED; else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_secret_scrub_failed; fi; '
+                'if [ $secret_scrub_rc -eq 0 ] && [ -d "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/diagnostic_checkpoint/task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_READY; else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_warm_runtime_not_ready; fi; '
                 "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"
                 "import os\n"
@@ -4575,7 +4595,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; fi; "
             )
         elif provider_bundle_kind == "adp_simpler":
             script += (
@@ -7204,6 +7224,7 @@ def run_vast_provider_adapter(
     started_instance_id_path: str | Path | None = None,
     retain_instance_on_runtime_failure: bool = False,
     retain_native_task_arena_warm_session: bool = False,
+    retain_scene_configuration_warm_session: bool = False,
     retention_watchdog_handoff: Mapping[str, Any] | None = None,
     forward_hf_token: bool = True,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -7212,6 +7233,7 @@ def run_vast_provider_adapter(
     stale_offer_create_retry_limit: int | None = None,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    expected_provider_bundle_sha256: str | None = None,
     provider_output_minimum_free_bytes: int = 0,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
@@ -7220,7 +7242,32 @@ def run_vast_provider_adapter(
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
-    if retain_native_task_arena_warm_session and retain_instance_on_runtime_failure:
+    if (
+        retain_scene_configuration_warm_session
+        and provider_bundle_kind != "task_evaluation_scene_configuration"
+    ):
+        raise ValueError("scene_configuration_warm_retention_bundle_kind_invalid")
+    if expected_provider_bundle_sha256 is not None and re.fullmatch(
+        r"sha256:[0-9a-f]{64}", expected_provider_bundle_sha256
+    ) is None:
+        raise ValueError("expected_provider_bundle_sha256_invalid")
+    if retain_scene_configuration_warm_session and expected_provider_bundle_sha256 is None:
+        raise ValueError("scene_configuration_warm_bundle_sha256_missing")
+    retention_requested = any(
+        (
+            retain_instance_on_runtime_failure,
+            retain_native_task_arena_warm_session,
+            retain_scene_configuration_warm_session,
+        )
+    )
+    if sum(
+        int(value)
+        for value in (
+            retain_instance_on_runtime_failure,
+            retain_native_task_arena_warm_session,
+            retain_scene_configuration_warm_session,
+        )
+    ) > 1:
         raise ValueError("multiple_vast_retention_modes_invalid")
     for field, value in (
         ("expected_provider_download_bytes", expected_provider_download_bytes),
@@ -7551,6 +7598,7 @@ def run_vast_provider_adapter(
         "vast_instance_ids": instance_ids,
         "vast_launch_mode": launch_mode,
         "provider_bundle_kind": provider_bundle_kind,
+        "provider_bundle_sha256": expected_provider_bundle_sha256,
         "ngc_image_login_mode": resolved_image_login_mode,
         "vast_template_hash_present": bool(template_hash),
         "use_vast_template_image": use_vast_template_image,
@@ -8615,6 +8663,7 @@ def run_vast_provider_adapter(
                 enable_isaac_smoke=enable_isaac_smoke,
                 enable_blueprint_bundle=enable_blueprint_bundle,
                 provider_bundle_kind=provider_bundle_kind,
+                expected_provider_bundle_sha256=expected_provider_bundle_sha256,
             )
             create_payload = _create_payload(
                 image=create_request_image,
@@ -8807,7 +8856,7 @@ def run_vast_provider_adapter(
             raise RuntimeError("vast_create_response_missing_instance_id")
         started_at_monotonic = time.monotonic()
         instance_ids.append(instance_id)
-        if retain_instance_on_runtime_failure or retain_native_task_arena_warm_session:
+        if retention_requested:
             record_initial_lifecycle(
                 resolved_job_dir,
                 instance_id=instance_id,
@@ -9315,6 +9364,18 @@ def run_vast_provider_adapter(
                 "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED" in heartbeat_text
             )
             provider_upload_ok = "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK" in heartbeat_text
+            scene_runtime_secrets_scrubbed = (
+                "BLUEPRINT_VAST_SCENE_CONFIGURATION_RUNTIME_SECRETS_SCRUBBED"
+                in heartbeat_text
+            )
+            scene_warm_runtime_ready = (
+                "BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_READY"
+                in heartbeat_text
+            )
+            scene_bundle_sha256_verified = (
+                "BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED"
+                in heartbeat_text
+            )
             provider_completed_or_blocked = (
                 "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED" in heartbeat_text
             )
@@ -9510,6 +9571,15 @@ def run_vast_provider_adapter(
                     "provider_bundle_downloaded": provider_downloaded,
                     "provider_entrypoint_started": provider_entrypoint_started,
                     "provider_entrypoint_exit_code": provider_entrypoint_exit_code,
+                    "scene_configuration_runtime_secrets_scrubbed": (
+                        scene_runtime_secrets_scrubbed
+                    ),
+                    "scene_configuration_warm_runtime_ready": (
+                        scene_warm_runtime_ready
+                    ),
+                    "scene_configuration_bundle_sha256_verified": (
+                        scene_bundle_sha256_verified
+                    ),
                     "provider_remote_blocked_markers": provider_blocked_markers,
                     "provider_completed_or_blocked_marker_seen": provider_completed_or_blocked,
                     "provider_output_upload_ok": provider_upload_ok,
@@ -9693,6 +9763,37 @@ def run_vast_provider_adapter(
             ).read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
+        provider_command = _read_mapping_json(
+            resolved_job_dir / "vast_provider_command_result.json"
+        )
+        fresh_ssh_secret_probe: dict[str, Any] = {}
+        if retain_scene_configuration_warm_session:
+            try:
+                from .vast_scene_warm_secret_probe import (  # noqa: PLC0415
+                    probe_fresh_ssh_secret_environment_absent,
+                )
+
+                fresh_ssh_secret_probe = (
+                    probe_fresh_ssh_secret_environment_absent(
+                        {
+                            "ssh_host": startup_probe.get("instance_ssh_host"),
+                            "ssh_port": startup_probe.get("instance_ssh_port"),
+                        },
+                        attempt_dir=(
+                            resolved_job_dir
+                            / "scene_warm_fresh_ssh_secret_probe"
+                        ),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - uncertainty requires teardown
+                fresh_ssh_secret_probe = {
+                    "status": "blocked",
+                    "fresh_ssh_runtime_secret_environment_absent": False,
+                    "blockers": [
+                        "fresh_ssh_runtime_secret_environment_probe_failed"
+                    ],
+                    "raw_secret_values_recorded": False,
+                }
         warm_worker_evidence = {
             "provider_bundle_kind": provider_bundle_kind,
             "runtime_dependency_cache_ready": _runtime_dependency_cache_ready(
@@ -9708,19 +9809,56 @@ def run_vast_provider_adapter(
             ),
             "ssh_host": startup_probe.get("instance_ssh_host"),
             "ssh_port": startup_probe.get("instance_ssh_port"),
+            "scene_configuration_bundle_downloaded": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get("provider_bundle_downloaded") is True
+            ),
+            "scene_configuration_bundle_sha256_verified": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get(
+                    "scene_configuration_bundle_sha256_verified"
+                )
+                is True
+            ),
+            "scene_configuration_entrypoint_started": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get("provider_entrypoint_started") is True
+            ),
+            "scene_configuration_runtime_root_ready": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get("provider_bundle_downloaded") is True
+                and provider_command.get("provider_entrypoint_started") is True
+                and provider_command.get("scene_configuration_warm_runtime_ready")
+                is True
+            ),
+            "scene_configuration_runtime_secrets_scrubbed": (
+                provider_command.get(
+                    "scene_configuration_runtime_secrets_scrubbed"
+                )
+                is True
+            ),
+            "fresh_ssh_runtime_secret_environment_absent": (
+                fresh_ssh_secret_probe.get(
+                    "fresh_ssh_runtime_secret_environment_absent"
+                )
+                is True
+            ),
         }
         retention_decision = _retention_decision(
-            requested=(
-                retain_instance_on_runtime_failure
-                or retain_native_task_arena_warm_session
-            ),
+            requested=retention_requested,
             watchdog_handoff=retention_watchdog_handoff,
             instance_ids=instance_ids,
             startup_probe=startup_probe,
             gpu_sanity=gpu_sanity,
             video_smoke=video_smoke,
             retention_mode=(
-                NATIVE_TASK_ARENA_WARM_RETENTION_MODE
+                SCENE_CONFIGURATION_WARM_RETENTION_MODE
+                if retain_scene_configuration_warm_session
+                else NATIVE_TASK_ARENA_WARM_RETENTION_MODE
                 if retain_native_task_arena_warm_session
                 else "cosmos_server"
             ),
@@ -9731,10 +9869,7 @@ def run_vast_provider_adapter(
             resolved_job_dir / "vast_retained_instance_decision.json",
             retention_decision,
         )
-        if (
-            retain_instance_on_runtime_failure
-            or retain_native_task_arena_warm_session
-        ) and instance_ids:
+        if retention_requested and instance_ids:
             lifecycle_recorded = _record_lifecycle_or_block(
                 base_result,
                 operation="terminal",
@@ -9830,7 +9965,7 @@ def run_vast_provider_adapter(
                     }
                 )
         if (
-            (retain_instance_on_runtime_failure or retain_native_task_arena_warm_session)
+            retention_requested
             and instance_ids
             and not retention_authorized
             and not continuing_spend
