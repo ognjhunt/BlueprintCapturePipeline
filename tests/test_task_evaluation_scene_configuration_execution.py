@@ -15,6 +15,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_orchestrator import 
 from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
     RESULT_SCHEMA_VERSION as STAGE_CHAIN_SCHEMA_VERSION,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+    CONTROL_PLANE,
+    SCHEMA_VERSION as DISCLOSURE_SCHEMA_VERSION,
+)
 from tests.test_task_evaluation_launch_preparation_contract import (
     test_configuration_request as configuration_request_fixture,
 )
@@ -41,7 +45,26 @@ def test_one_canonical_parent_launch_publishes_one_reusable_revision(
                 "raw_source_bytes_to_external_provider": False,
             },
         },
+        "render_inputs_result": {
+            "status": "derived_method_inputs_materialized",
+            "raw_interiorgs_bytes_in_provider_packet": False,
+            "disclosure_decision": {
+                "schema_version": DISCLOSURE_SCHEMA_VERSION,
+                "render_execution_site": CONTROL_PLANE,
+                "source_appearance_bytes_to_provider": False,
+                "decision_digest": "",
+            },
+        },
+        "provider_disclosure_receipt": {
+            "raw_interiorgs_bytes_in_provider_bundle": False,
+        },
     }
+    envelope["render_inputs_result"]["disclosure_decision"][
+        "decision_digest"
+    ] = canonical_digest(
+        envelope["render_inputs_result"]["disclosure_decision"],
+        digest_field="decision_digest",
+    )
     launch_calls = 0
 
     def launch(*, envelope, configurations, output_root):

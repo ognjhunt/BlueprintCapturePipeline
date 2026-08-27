@@ -19,6 +19,7 @@ from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
 )
+from .task_evaluation_scene_configuration_disclosure import renders_on_provider
 
 
 AUTHORITY_SCHEMA_VERSION = "task_evaluation_scene_configuration_paid_authority.v1"
@@ -213,6 +214,21 @@ def materialize_scene_configuration_paid_authority(
         and compute_cap + external_cap <= float(hard_cap_usd) + 1e-9
         and 0 < float(hard_cap_usd) <= MAX_ATTEMPT_SPEND_USD
     )
+    raw_source_authorized = (
+        receipt.get("raw_interiorgs_bytes_in_provider_bundle") is True
+    )
+    disclosure_decision = receipt.get("disclosure_decision")
+    disclosure_decision_digest = (
+        disclosure_decision.get("decision_digest")
+        if isinstance(disclosure_decision, Mapping)
+        else None
+    )
+    if raw_source_authorized and not renders_on_provider(
+        disclosure_decision or {}
+    ):
+        raise TaskEvaluationSceneConfigurationAuthorityError(
+            "scene_configuration_authority_provider_disclosure_invalid"
+        )
     if (
         not authorization_reference.strip()
         or not authorized_by.strip()
@@ -276,7 +292,8 @@ def materialize_scene_configuration_paid_authority(
             "external_provider_owned": [],
             "same_goal_concurrent": [],
         },
-        "raw_interiorgs_bytes_authorized_for_provider": False,
+        "raw_interiorgs_bytes_authorized_for_provider": raw_source_authorized,
+        "provider_disclosure_decision_digest": disclosure_decision_digest,
         "evaluation_episode_authorized": False,
         "authority_digest": "",
     }
@@ -338,6 +355,15 @@ def validate_scene_configuration_paid_authority(
         and 0 < float(total_cap) <= MAX_ATTEMPT_SPEND_USD
         and external.get("credentials_via_ephemeral_private_file_only") is True
     )
+    expected_raw_source_authorized = (
+        bundle_receipt.get("raw_interiorgs_bytes_in_provider_bundle") is True
+    )
+    disclosure_decision = bundle_receipt.get("disclosure_decision")
+    expected_disclosure_decision_digest = (
+        disclosure_decision.get("decision_digest")
+        if isinstance(disclosure_decision, Mapping)
+        else None
+    )
     if (
         authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or authority.get("authority_kind")
@@ -365,7 +391,14 @@ def validate_scene_configuration_paid_authority(
             ttl=authority.get("maximum_single_resource_ttl_seconds"),
         )
         or not external_contract_valid
-        or authority.get("raw_interiorgs_bytes_authorized_for_provider") is not False
+        or authority.get("raw_interiorgs_bytes_authorized_for_provider")
+        is not expected_raw_source_authorized
+        or authority.get("provider_disclosure_decision_digest")
+        != expected_disclosure_decision_digest
+        or (
+            expected_raw_source_authorized
+            and not renders_on_provider(disclosure_decision or {})
+        )
         or authority.get("evaluation_episode_authorized") is not False
         or authority.get("active_instance_allowlist")
         != {"external_provider_owned": [], "same_goal_concurrent": []}

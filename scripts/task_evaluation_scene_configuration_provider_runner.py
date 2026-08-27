@@ -129,6 +129,54 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
     return envelope
 
 
+def _portable_stage_chain(chain: dict, *, output_root: Path) -> dict:
+    """Bind every provider artifact to its archive-relative output path."""
+
+    root = output_root.resolve()
+    portable = json.loads(json.dumps(chain))
+    results = portable.get("stage_results")
+    if not isinstance(results, list):
+        raise ValueError("scene_configuration_provider_stage_chain_invalid")
+    for result in results:
+        if not isinstance(result, dict):
+            raise ValueError("scene_configuration_provider_stage_chain_invalid")
+        artifacts = result.get("output_artifacts")
+        if not isinstance(artifacts, list):
+            raise ValueError("scene_configuration_provider_artifact_inventory_invalid")
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                raise ValueError("scene_configuration_provider_artifact_inventory_invalid")
+            source = Path(str(artifact.get("path") or ""))
+            if source.is_symlink():
+                raise ValueError("scene_configuration_provider_artifact_portability_invalid")
+            source = source.resolve()
+            try:
+                relative = source.relative_to(root)
+            except ValueError as exc:
+                raise ValueError(
+                    "scene_configuration_provider_artifact_portability_invalid"
+                ) from exc
+            if (
+                not source.is_file()
+                or source.stat().st_size != artifact.get("size_bytes")
+                or _sha256(source) != artifact.get("digest")
+            ):
+                raise ValueError(
+                    "scene_configuration_provider_artifact_portability_invalid"
+                )
+            artifact["provider_output_relative_path"] = relative.as_posix()
+        result["stage_result_digest"] = canonical_digest(
+            result, digest_field="stage_result_digest"
+        )
+    portable["stage_result_digests"] = [
+        result["stage_result_digest"] for result in results
+    ]
+    portable["result_digest"] = canonical_digest(
+        portable, digest_field="result_digest"
+    )
+    return portable
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -160,10 +208,13 @@ def main() -> int:
     stages_root = output / "stages"
     stages_root.mkdir(mode=0o750)
     try:
-        chain = execute_scene_configuration_stage_chain(
-            envelope=envelope,
-            configurations=configurations,
-            output_root=stages_root,
+        chain = _portable_stage_chain(
+            execute_scene_configuration_stage_chain(
+                envelope=envelope,
+                configurations=configurations,
+                output_root=stages_root,
+            ),
+            output_root=output,
         )
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -192,7 +243,7 @@ def main() -> int:
             "source_construction_envelope_digest": envelope.get(
                 "control_plane_envelope_digest"
             ),
-            "first_stage_started": stages_root.exists(),
+            "first_stage_started": any(stages_root.iterdir()),
             "evaluation_episode_executed": False,
             "candidate_policy_queried": False,
             "provider_zero_required_after_return": True,

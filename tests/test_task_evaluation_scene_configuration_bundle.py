@@ -934,6 +934,40 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     assert authority_module.validate_scene_configuration_paid_authority(
         authority, bundle_receipt=receipt
     ) == authority
+    provider_receipt = {
+        **receipt,
+        "raw_interiorgs_bytes_in_provider_bundle": True,
+        "disclosure_decision": _decision(provider=True),
+    }
+    provider_authority = {
+        **authority,
+        "raw_interiorgs_bytes_authorized_for_provider": True,
+        "provider_disclosure_decision_digest": provider_receipt[
+            "disclosure_decision"
+        ]["decision_digest"],
+        "authority_digest": "",
+    }
+    provider_authority["authority_digest"] = canonical_digest(
+        provider_authority, digest_field="authority_digest"
+    )
+    assert authority_module.validate_scene_configuration_paid_authority(
+        provider_authority, bundle_receipt=provider_receipt
+    ) == provider_authority
+    falsely_denied = {
+        **provider_authority,
+        "raw_interiorgs_bytes_authorized_for_provider": False,
+        "authority_digest": "",
+    }
+    falsely_denied["authority_digest"] = canonical_digest(
+        falsely_denied, digest_field="authority_digest"
+    )
+    with pytest.raises(
+        authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+        match="authority_contract_invalid",
+    ):
+        authority_module.validate_scene_configuration_paid_authority(
+            falsely_denied, bundle_receipt=provider_receipt
+        )
     for name, value in (
         ("OPENAI_ADMIN_API_KEY_FILE", "test-admin-key"),
         ("OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE", "key-semantic"),
@@ -1050,6 +1084,12 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     )
     assert allocator_argv[bundle_index + 1] == str(receipt_path.resolve())
     assert "execution_result_path" in profile["terminal_contract"][
+        "required_path_fields"
+    ]
+    assert "configured_scene_revision_path" in profile["terminal_contract"][
+        "required_path_fields"
+    ]
+    assert "publication_result_path" in profile["terminal_contract"][
         "required_path_fields"
     ]
     pod_index = allocator_argv.index("--pod-name")
@@ -1354,6 +1394,352 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     )
     assert blockers == []
     assert observed["stage_chain"]["stage_count"] == 6
+
+
+def test_provider_result_seals_archive_relative_artifact_paths(
+    tmp_path: Path,
+) -> None:
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/task_evaluation_scene_configuration_provider_runner.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "scene_configuration_portable_runner", runner_path
+    )
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    output = tmp_path / "runtime_output"
+    artifact = output / "stages/stage-1/adapter/configured.usda"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"#usda 1.0\n")
+    stage = {
+        "output_artifacts": [
+            {
+                "role": "configured_scene",
+                "path": str(artifact),
+                "digest": _sha256(artifact),
+                "size_bytes": artifact.stat().st_size,
+            }
+        ],
+        "stage_result_digest": "",
+    }
+    stage["stage_result_digest"] = canonical_digest(
+        stage, digest_field="stage_result_digest"
+    )
+    chain = {
+        "stage_results": [stage],
+        "stage_result_digests": [stage["stage_result_digest"]],
+        "result_digest": "",
+    }
+    chain["result_digest"] = canonical_digest(
+        chain, digest_field="result_digest"
+    )
+
+    portable = runner._portable_stage_chain(chain, output_root=output)
+
+    row = portable["stage_results"][0]["output_artifacts"][0]
+    assert row["provider_output_relative_path"] == (
+        "stages/stage-1/adapter/configured.usda"
+    )
+    assert portable["stage_results"][0]["stage_result_digest"] == canonical_digest(
+        portable["stage_results"][0], digest_field="stage_result_digest"
+    )
+    assert portable["result_digest"] == canonical_digest(
+        portable, digest_field="result_digest"
+    )
+
+
+def test_control_plane_rehydrates_only_digest_bound_provider_artifacts(
+    tmp_path: Path,
+) -> None:
+    extraction = tmp_path / "immutable_execution"
+    artifact = extraction / "stages/stage-1/adapter/configured.usda"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"#usda 1.0\n")
+    stage_results = [
+        {
+            "output_artifacts": (
+                [
+                    {
+                        "role": "configured_scene",
+                        "path": "/workspace/runtime_output/stages/stage-1/adapter/configured.usda",
+                        "provider_output_relative_path": (
+                            "stages/stage-1/adapter/configured.usda"
+                        ),
+                        "digest": _sha256(artifact),
+                        "size_bytes": artifact.stat().st_size,
+                    }
+                ]
+                if index == 0
+                else []
+            )
+        }
+        for index in range(6)
+    ]
+    execution = {"stage_chain": {"stage_results": stage_results}}
+
+    hydrated = scene_vast._publication_stage_results(
+        execution, extraction_root=extraction
+    )
+
+    assert hydrated[0]["output_artifacts"][0]["path"] == str(artifact.resolve())
+    execution["stage_chain"]["stage_results"][0]["output_artifacts"][0][
+        "provider_output_relative_path"
+    ] = "../outside.usda"
+    with pytest.raises(
+        scene_vast.TaskEvaluationSceneConfigurationVastError,
+        match="scene_configuration_provider_artifact_portability_invalid",
+    ):
+        scene_vast._publication_stage_results(
+            execution, extraction_root=extraction
+        )
+
+
+def test_completed_vast_run_cannot_finish_without_publishing_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import types
+
+    receipt = _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text("{}", encoding="utf-8")
+    authority = {
+        "authority_digest": "sha256:" + "e" * 64,
+        "provider_compute_spend_cap_usd": 0.75,
+        "maximum_hourly_rate_usd": 0.50,
+        "maximum_single_resource_ttl_seconds": 1_800,
+        "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "validate_scene_configuration_paid_authority",
+        lambda _value, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+    )
+    monkeypatch.setattr(
+        scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
+    )
+
+    def stage(*, job_dir, **_kwargs):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text(
+                f"https://objects.example.test/{name}", encoding="utf-8"
+            )
+        return {"status": "completed"}
+
+    monkeypatch.setattr(scene_vast, "stage_wam_provider_bundle_object_store", stage)
+    monkeypatch.setattr(
+        scene_vast,
+        "arm_independent_vast_watchdog",
+        lambda **kwargs: (
+            {"status": "armed"},
+            types.SimpleNamespace(
+                pod_name_prefix=kwargs["pod_name_prefix"] + "fixture-",
+                started_instance_id_path=Path(kwargs["job_dir"]) / "started.json",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "close_independent_vast_watchdog",
+        lambda **_kwargs: {"status": "provider_terminal"},
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "cleanup_staged_wam_provider_objects",
+        lambda _root: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "_consume_authority_once",
+        lambda _authority, **_kwargs: {"status": "consumed"},
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "_stage_owner_only_runtime_secrets",
+        lambda **_kwargs: ({}, None),
+    )
+    from tests.test_task_evaluation_launch_preparation_contract import (
+        test_configuration_request as configuration_request_fixture,
+    )
+
+    request = configuration_request_fixture()
+    request["run_id"] = receipt["run_id"]
+    request["expected_production_commit"] = receipt["source_commit"]
+    publication_envelope = {
+        "run_id": receipt["run_id"],
+        "team_namespace": request["team_namespace"],
+        "expected_production_commit": receipt["source_commit"],
+        "request": request,
+        "recipe": {
+            "scene_identity": request["scene"]["identity"],
+            "task_identity": request["task"]["identity"],
+            "subject_identity": request["task"]["subject"]["identity"],
+        },
+        "render_inputs_result": {
+            "status": "derived_method_inputs_materialized",
+            "raw_interiorgs_bytes_in_provider_packet": False,
+        },
+        "provider_disclosure_receipt": {
+            "raw_interiorgs_bytes_in_provider_bundle": False,
+        },
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "_portable_construction_envelope",
+        lambda _receipt: publication_envelope,
+    )
+
+    roles = {
+        "configured_appearance_without_source_object": "appearance.usdc",
+        "appearance_removal_receipt": "appearance-receipt.json",
+        "configured_collision_without_source_object": "collision.usda",
+        "collision_excision_receipt": "collision-receipt.json",
+        "statically_qualified_replacement_asset": "static.usda",
+        "static_qualification_receipt": "static-receipt.json",
+        "native_qualified_replacement_asset": "native.usda",
+        "native_import_qualification_receipt": "native-receipt.json",
+        "configured_scene_bundle_candidate_manifest": "candidate.json",
+        "scene_assembly_receipt": "assembly-receipt.json",
+    }
+
+    def adapter(**kwargs):
+        provider_run = Path(kwargs["job_dir"])
+        provider_run.mkdir(parents=True, exist_ok=True)
+        (provider_run / "vast_teardown_manifest.json").write_text(
+            json.dumps(
+                {
+                    "continuing_spend_from_this_run": False,
+                    "vast_instance_ids": [123],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (provider_run / "vast_provider_adapter_result.json").write_text(
+            json.dumps({"status": "completed", "vast_instance_ids": [123]}),
+            encoding="utf-8",
+        )
+        rows = []
+        archive_members: dict[str, bytes] = {}
+        for role, name in roles.items():
+            relative = f"stages/stage-1/adapter/{name}"
+            payload = (role + "\n").encode()
+            archive_members[relative] = payload
+            rows.append(
+                {
+                    "role": role,
+                    "path": "/workspace/runtime_output/" + relative,
+                    "provider_output_relative_path": relative,
+                    "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "size_bytes": len(payload),
+                }
+            )
+        stages = [
+            {
+                "stage_id": f"stage-{index + 1}",
+                "output_artifacts": rows if index == 0 else [],
+                "stage_result_digest": "sha256:" + f"{index + 1:064x}",
+            }
+            for index in range(6)
+        ]
+        chain = {
+            "schema_version": "task_evaluation_scene_configuration_provider_stage_chain.v1",
+            "status": "completed",
+            "stage_results": stages,
+            "stage_count": 6,
+            "executed_inside_one_parent_provider_run": True,
+            "nested_provider_mutations_performed": 0,
+            "nested_paid_execution_requested": False,
+            "evaluation_episode_executed": False,
+            "retry_cap": 0,
+            "result_digest": "",
+        }
+        chain["result_digest"] = canonical_digest(
+            chain, digest_field="result_digest"
+        )
+        provider_result = {
+            "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+            "status": "completed",
+            "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "construction_envelope_digest": receipt[
+                "portable_construction_envelope_digest"
+            ],
+            "stage_chain": chain,
+            "evaluation_episode_executed": False,
+            "candidate_policy_queried": False,
+            "provider_zero_required_after_return": True,
+            "result_digest": "",
+        }
+        provider_result["result_digest"] = canonical_digest(
+            provider_result, digest_field="result_digest"
+        )
+        with zipfile.ZipFile(kwargs["provider_runtime_output_zip"], "w") as archive:
+            for name, payload in archive_members.items():
+                archive.writestr(name, payload)
+            archive.writestr(
+                "task_evaluation_scene_configuration_provider_result.v1.json",
+                json.dumps(provider_result),
+            )
+        return {
+            "status": "completed",
+            "vast_instance_ids": [123],
+            "provider_create_attempted": True,
+        }
+
+    monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", adapter)
+    object_store = tmp_path / "configured-object-store"
+    object_store.mkdir()
+
+    def publisher_factory():
+        def publish(*, path: Path, object_name: str):
+            destination = object_store / object_name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+            return {
+                "uri": f"s3://blueprint-inputs/{object_name}",
+                "digest": _sha256(path),
+                "size_bytes": path.stat().st_size,
+                "full_byte_service_account_readback_passed": True,
+                "readback_digest": _sha256(destination),
+                "readback_size_bytes": destination.stat().st_size,
+            }
+
+        return publish
+
+    monkeypatch.setattr(
+        scene_vast, "configured_scene_object_store_publisher", publisher_factory
+    )
+
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "job",
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=object(),
+        execute=True,
+    )
+
+    assert result["status"] == "completed", result["blockers"]
+    assert result["configured_scene_published"] is True
+    assert result["full_byte_service_account_readback_passed"] is True
+    assert Path(result["configured_scene_revision_path"]).is_file()
+    assert Path(result["publication_result_path"]).is_file()
+    assert result["configured_scene_revision_reference"]["uri"].startswith(
+        "s3://blueprint-inputs/"
+    )
+    manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
+    assert "configured_scene_publication" in manifest["observed_roles"]
 
 
 def test_scene_configuration_watchdog_prefix_is_in_the_blueprint_namespace() -> None:

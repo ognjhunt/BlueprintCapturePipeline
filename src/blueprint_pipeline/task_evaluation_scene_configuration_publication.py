@@ -14,6 +14,10 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
+from .task_evaluation_scene_configuration_disclosure import (
+    render_inputs_disclosure_is_coherent,
+    renders_on_provider,
+)
 
 
 Publisher = Callable[..., Mapping[str, Any]]
@@ -130,16 +134,31 @@ def publish_configured_scene_revision(
 
     request = envelope.get("request")
     recipe = envelope.get("recipe")
+    render_inputs = envelope.get("render_inputs_result")
+    disclosure_receipt = envelope.get("provider_disclosure_receipt")
+    raw_source_sent = (
+        disclosure_receipt.get("raw_interiorgs_bytes_in_provider_bundle")
+        if isinstance(disclosure_receipt, Mapping)
+        else render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
+        if isinstance(render_inputs, Mapping)
+        else None
+    )
+    disclosure_decision = (
+        render_inputs.get("disclosure_decision")
+        if isinstance(render_inputs, Mapping)
+        else None
+    )
     if (
         not isinstance(recipe, Mapping)
         or not isinstance(request, Mapping)
+        or not isinstance(render_inputs, Mapping)
+        or not render_inputs_disclosure_is_coherent(render_inputs)
+        or not isinstance(raw_source_sent, bool)
+        or raw_source_sent
+        is not renders_on_provider(disclosure_decision or {})
         or request.get("run_mode") != "scene_configuration"
         or request.get("scene", {}).get("mode") != "configure_source_scene"
         or request.get("construction", {}).get("mode") != "production_recipe"
-        or recipe.get("provider_disclosure", {}).get(
-            "raw_source_bytes_to_external_provider"
-        )
-        is not False
     ):
         raise TaskEvaluationSceneConfigurationPublicationError(
             "scene_configuration_publication_envelope_invalid"
@@ -245,7 +264,12 @@ def publish_configured_scene_revision(
                 }
                 for row in scene["rights"]["evidence"]
             ],
-            "raw_source_sent_to_external_provider": False,
+            "raw_source_sent_to_external_provider": raw_source_sent,
+            **(
+                {"provider_disclosure_decision": dict(disclosure_decision)}
+                if isinstance(disclosure_decision, Mapping)
+                else {}
+            ),
         },
         "appearance": {
             "observed_source": dict(scene["appearance"]["representation"]),

@@ -5,11 +5,17 @@ import json
 import shutil
 from pathlib import Path
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_publication import (
     publish_configured_scene_revision,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+    CONTROL_PLANE,
+    PROVIDER_GPU,
+    SCHEMA_VERSION as DISCLOSURE_SCHEMA_VERSION,
 )
 from tests.test_task_evaluation_launch_preparation_contract import (
     test_configuration_request as configuration_request_fixture,
@@ -27,6 +33,19 @@ def _artifact(role: str, path: Path) -> dict[str, object]:
         "digest": _sha256(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def _disclosure_decision(*, provider: bool) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": DISCLOSURE_SCHEMA_VERSION,
+        "render_execution_site": PROVIDER_GPU if provider else CONTROL_PLANE,
+        "source_appearance_bytes_to_provider": provider,
+        "decision_digest": "",
+    }
+    value["decision_digest"] = canonical_digest(
+        value, digest_field="decision_digest"
+    )
+    return value
 
 
 def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
@@ -65,6 +84,14 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
             "provider_disclosure": {
                 "raw_source_bytes_to_external_provider": False,
             },
+        },
+        "render_inputs_result": {
+            "status": "derived_method_inputs_materialized",
+            "raw_interiorgs_bytes_in_provider_packet": False,
+            "disclosure_decision": _disclosure_decision(provider=False),
+        },
+        "provider_disclosure_receipt": {
+            "raw_interiorgs_bytes_in_provider_bundle": False,
         },
     }
     output = tmp_path / "publication"
@@ -107,3 +134,75 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
         "s3://blueprint-production-inputs/"
     )
     assert result["provider_mutation_performed"] is False
+
+
+def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None:
+    request = configuration_request_fixture()
+    artifacts = tmp_path / "provider-artifacts"
+    artifacts.mkdir()
+    names = {
+        "configured_appearance_without_source_object": "appearance.usdc",
+        "appearance_removal_receipt": "appearance-receipt.json",
+        "configured_collision_without_source_object": "collision.usda",
+        "collision_excision_receipt": "collision-receipt.json",
+        "statically_qualified_replacement_asset": "static-replacement.usda",
+        "static_qualification_receipt": "static-receipt.json",
+        "native_qualified_replacement_asset": "replacement.usda",
+        "native_import_qualification_receipt": "native-receipt.json",
+        "configured_scene_bundle_candidate_manifest": "bundle-candidate.json",
+        "scene_assembly_receipt": "assembly-receipt.json",
+    }
+    rows = []
+    for role, name in names.items():
+        path = artifacts / name
+        path.write_bytes((role + "\n").encode())
+        rows.append(_artifact(role, path))
+    decision = _disclosure_decision(provider=True)
+    envelope = {
+        "run_id": request["run_id"],
+        "team_namespace": request["team_namespace"],
+        "expected_production_commit": request["expected_production_commit"],
+        "request": request,
+        "recipe": {
+            "scene_identity": request["scene"]["identity"],
+            "task_identity": request["task"]["identity"],
+            "subject_identity": request["task"]["subject"]["identity"],
+        },
+        "render_inputs_result": {
+            "status": "derived_method_inputs_pending_provider_render",
+            "raw_interiorgs_bytes_in_provider_packet": True,
+            "disclosure_decision": decision,
+        },
+        "provider_disclosure_receipt": {
+            "raw_interiorgs_bytes_in_provider_bundle": True,
+        },
+    }
+    output = tmp_path / "publication"
+    output.mkdir()
+    object_store = tmp_path / "object-store"
+    object_store.mkdir()
+
+    def publish(*, path: Path, object_name: str):
+        destination = object_store / object_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+        return {
+            "uri": f"s3://blueprint-production-inputs/{object_name}",
+            "digest": _sha256(path),
+            "size_bytes": path.stat().st_size,
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": _sha256(destination),
+            "readback_size_bytes": destination.stat().st_size,
+        }
+
+    result = publish_configured_scene_revision(
+        envelope=envelope,
+        stage_results=[{"output_artifacts": rows}],
+        output_root=output,
+        publisher=publish,
+    )
+    revision = validate_configured_scene_revision(
+        json.loads(Path(result["configured_scene_revision"]["path"]).read_text())
+    )
+
+    assert revision["source"]["raw_source_sent_to_external_provider"] is True

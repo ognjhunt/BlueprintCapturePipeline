@@ -37,8 +37,15 @@ from .task_evaluation_scene_configuration_bundle import (
     RESULT_FILENAME,
     load_scene_configuration_provider_bundle_receipt,
 )
+from .task_evaluation_configured_scene_object_store import (
+    configured_scene_object_store_publisher,
+)
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
+)
+from .task_evaluation_scene_configuration_publication import (
+    RESULT_SCHEMA_VERSION as PUBLICATION_RESULT_SCHEMA_VERSION,
+    publish_configured_scene_revision,
 )
 from .task_evaluation_supervisor.openai_cost_authority import (
     OpenAICostAuthorityError,
@@ -513,6 +520,125 @@ def _extract_provider_output(
     return result, sorted(set(blockers))
 
 
+def _portable_construction_envelope(
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    bundle = Path(str(receipt.get("bundle_path") or ""))
+    try:
+        with zipfile.ZipFile(bundle) as archive:
+            value = json.loads(
+                archive.read(
+                    "provider_runtime/input/portable_construction_envelope.v1.json"
+                ).decode("utf-8")
+            )
+    except (
+        KeyError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+    ) as exc:
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_publication_envelope_unavailable"
+        ) from exc
+    envelope = dict(value) if isinstance(value, Mapping) else {}
+    if (
+        envelope.get("schema_version")
+        != "task_evaluation_scene_construction_envelope.v1"
+        or envelope.get("envelope_digest")
+        != canonical_digest(envelope, digest_field="envelope_digest")
+        or envelope.get("envelope_digest")
+        != receipt.get("portable_construction_envelope_digest")
+        or envelope.get("expected_production_commit")
+        != receipt.get("source_commit")
+        or envelope.get("run_id") != receipt.get("run_id")
+    ):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_publication_envelope_invalid"
+        )
+    return envelope
+
+
+def _publication_stage_results(
+    execution: Mapping[str, Any], *, extraction_root: Path
+) -> list[dict[str, Any]]:
+    root = extraction_root.resolve()
+    chain = execution.get("stage_chain")
+    stage_results = chain.get("stage_results") if isinstance(chain, Mapping) else None
+    if not isinstance(stage_results, list) or len(stage_results) != 6:
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_publication_stage_results_invalid"
+        )
+    hydrated = json.loads(json.dumps(stage_results))
+    for result in hydrated:
+        artifacts = result.get("output_artifacts") if isinstance(result, Mapping) else None
+        if not isinstance(artifacts, list):
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_provider_artifact_portability_invalid"
+            )
+        for artifact in artifacts:
+            relative = str(
+                artifact.get("provider_output_relative_path")
+                if isinstance(artifact, Mapping)
+                else ""
+            )
+            relative_path = Path(relative)
+            if (
+                not relative
+                or relative_path.is_absolute()
+                or ".." in relative_path.parts
+            ):
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_provider_artifact_portability_invalid"
+                )
+            target = root / relative_path
+            if target.is_symlink():
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_provider_artifact_portability_invalid"
+                )
+            target = target.resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_provider_artifact_portability_invalid"
+                ) from exc
+            if (
+                not target.is_file()
+                or target.stat().st_size != artifact.get("size_bytes")
+                or _sha256(target) != artifact.get("digest")
+            ):
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_provider_artifact_portability_invalid"
+                )
+            artifact["path"] = str(target)
+    return hydrated
+
+
+def _publish_completed_configuration(
+    *,
+    receipt: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    extraction_root: Path,
+    output_root: Path,
+) -> dict[str, Any]:
+    output_root.mkdir(mode=0o750)
+    publication = publish_configured_scene_revision(
+        envelope=_portable_construction_envelope(receipt),
+        stage_results=_publication_stage_results(
+            execution, extraction_root=extraction_root
+        ),
+        output_root=output_root,
+        publisher=configured_scene_object_store_publisher(),
+    )
+    write_json(
+        output_root / f"{PUBLICATION_RESULT_SCHEMA_VERSION}.json",
+        publication,
+    )
+    return publication
+
+
 @contextmanager
 def _authority_environment():
     names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
@@ -827,22 +953,45 @@ def run_scene_configuration_vast(
     }:
         blockers.append("independent_watchdog_not_closed")
 
+    publication: dict[str, Any] = {}
+    publication_root = job / "configured_scene_publication"
+    if not blockers:
+        try:
+            publication = _publish_completed_configuration(
+                receipt=receipt,
+                execution=execution,
+                extraction_root=job / "immutable_execution",
+                output_root=publication_root,
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve terminal evidence
+            blockers.append(
+                "scene_configuration_configured_revision_publication_failed:"
+                + redacted_failure_detail(exc)
+            )
+    if publication.get("status") != "configured_scene_published":
+        blockers.append("scene_configuration_configured_revision_not_published")
+
     artifact_manifest_path = job / "artifact_manifest.json"
+    artifact_roots = {
+        "provider_runtime_evidence": job / "immutable_execution",
+        "allocator_adapter_result": provider_run
+        / "vast_provider_adapter_result.json",
+        "teardown_manifest": teardown_path,
+        "provider_run_diagnostics": provider_run,
+    }
+    required_roles = [
+        "provider_runtime_evidence",
+        "allocator_adapter_result",
+        "teardown_manifest",
+    ]
+    if publication.get("status") == "configured_scene_published":
+        artifact_roots["configured_scene_publication"] = publication_root
+        required_roles.append("configured_scene_publication")
     try:
         artifact_manifest = build_task_evaluation_artifact_manifest(
             attempt_root=job,
-            artifact_roots={
-                "provider_runtime_evidence": job / "immutable_execution",
-                "allocator_adapter_result": provider_run
-                / "vast_provider_adapter_result.json",
-                "teardown_manifest": teardown_path,
-                "provider_run_diagnostics": provider_run,
-            },
-            required_roles=(
-                "provider_runtime_evidence",
-                "allocator_adapter_result",
-                "teardown_manifest",
-            ),
+            artifact_roots=artifact_roots,
+            required_roles=tuple(required_roles),
             binding={
                 "allocator_lane": PROVIDER_BUNDLE_KIND,
                 "source_commit": receipt["source_commit"],
@@ -891,6 +1040,34 @@ def run_scene_configuration_vast(
             "result_digest"
         ),
         "configuration_completed": execution.get("status") == "completed",
+        "configured_scene_published": (
+            publication.get("status") == "configured_scene_published"
+        ),
+        "configured_scene_revision_path": (
+            (publication.get("configured_scene_revision") or {}).get("path")
+        ),
+        "configured_scene_revision_reference": publication.get(
+            "configured_scene_revision_reference"
+        ),
+        "configured_scene_revision_digest": publication.get(
+            "configured_scene_revision_digest"
+        ),
+        "configured_scene_bundle_reference": publication.get(
+            "configured_scene_bundle_reference"
+        ),
+        "publication_result_path": (
+            str(
+                publication_root
+                / f"{PUBLICATION_RESULT_SCHEMA_VERSION}.json"
+            )
+            if publication
+            else None
+        ),
+        "publication_result_digest": publication.get("result_digest"),
+        "full_byte_service_account_readback_passed": publication.get(
+            "full_byte_service_account_readback_passed"
+        )
+        is True,
         "evaluation_episode_executed": False,
         "candidate_policy_queried": False,
         "provider_mutations_performed": len(instance_ids),

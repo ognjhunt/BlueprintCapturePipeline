@@ -130,7 +130,11 @@ SPEC = LaneLiveProfileSpec(
     claim_ceiling="development_only",
     extra_path_names=("attempt_authority",),
     one_use_standing_authority_required=True,
-    additional_terminal_path_fields=("execution_result_path",),
+    additional_terminal_path_fields=(
+        "execution_result_path",
+        "configured_scene_revision_path",
+        "publication_result_path",
+    ),
 )
 
 

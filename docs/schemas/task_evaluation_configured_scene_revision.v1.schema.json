@@ -56,8 +56,37 @@
             {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
           ]
         },
-        "raw_source_sent_to_external_provider": {"const": false}
-      }
+        "raw_source_sent_to_external_provider": {"type": "boolean"},
+        "provider_disclosure_decision": {
+          "type": "object",
+          "required": ["schema_version", "render_execution_site", "source_appearance_bytes_to_provider", "decision_digest"],
+          "properties": {
+            "schema_version": {"const": "task_evaluation_scene_configuration_disclosure_decision.v1"},
+            "render_execution_site": {"enum": ["control_plane", "provider_gpu"]},
+            "source_appearance_bytes_to_provider": {"type": "boolean"},
+            "decision_digest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"raw_source_sent_to_external_provider": {"const": true}},
+            "required": ["raw_source_sent_to_external_provider"]
+          },
+          "then": {
+            "required": ["provider_disclosure_decision"],
+            "properties": {
+              "provider_disclosure_decision": {
+                "properties": {
+                  "render_execution_site": {"const": "provider_gpu"},
+                  "source_appearance_bytes_to_provider": {"const": true}
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "appearance": {
       "type": "object",
