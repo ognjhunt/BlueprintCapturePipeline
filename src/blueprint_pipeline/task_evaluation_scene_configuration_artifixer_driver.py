@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import subprocess  # nosec B404 - package and entrypoint are digest-bound
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from typing import Any
 
 from PIL import Image
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .fresh_scene_semantic_teacher_image_edit import (
     PROMPT_POLICY,
@@ -460,6 +462,56 @@ def _semantic_rights_and_request(
     return packet_root
 
 
+ARTIFIXER_RUNTIME_ACCEPTED_STATUS = (
+    "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+)
+
+
+def _emit_artifixer_runtime_diagnostics(
+    *, completed: Any, runtime_result_path: Path
+) -> None:
+    """Print the runtime's streams to stderr when its outcome is a failure.
+
+    They are captured here, in this process, and nothing else ever sees them:
+    run ...-f1e07c7f-...-171647Z failed the acceptance check and its receipts
+    carried only "scene_configuration_artifixer_runtime_failed" -- the $0.74
+    GPU run produced no way to learn why. stage_producer.log is the one
+    artifact proven to survive into the exported zip, and it is fed from this
+    process's streams, so the tails go there before any decision is made.
+    """
+
+    runtime_status: Any = None
+    if runtime_result_path.is_file():
+        try:
+            runtime_status = json.loads(
+                runtime_result_path.read_text(encoding="utf-8")
+            ).get("status")
+        except (OSError, UnicodeError, ValueError):
+            runtime_status = "<unreadable>"
+    if completed.returncode == 0 and runtime_status == (
+        ARTIFIXER_RUNTIME_ACCEPTED_STATUS
+    ):
+        return
+    print(
+        "scene_configuration_artifixer_runtime_diagnostics "
+        + json.dumps(
+            {
+                "returncode": completed.returncode,
+                "runtime_result_present": runtime_result_path.is_file(),
+                "runtime_status": runtime_status,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    for stream_name in ("stdout", "stderr"):
+        text = redacted_failure_text(getattr(completed, stream_name, "") or "")
+        print(
+            f"--- artifixer runtime {stream_name} tail ---\n{text[-20_000:]}",
+            file=sys.stderr,
+        )
+
+
 def _semantic_runtime_request(
     *,
     packet_root: Path,
@@ -769,8 +821,21 @@ def execute_artifixer_component(
         check=False,
         timeout=7_000,
     )
+    # The runtime's own streams and result must outlive a failure. They are
+    # captured here, in this process, and nothing else ever sees them: run
+    # ...-f1e07c7f-...-171647Z failed this exact check and its receipts carried
+    # only "scene_configuration_artifixer_runtime_failed" -- the $0.74 GPU run
+    # produced no way to learn why. stage_producer.log is the one artifact
+    # proven to survive into the exported zip, and it is fed from this
+    # process's streams, so print the tails there before deciding anything.
+    runtime_result_path = (
+        artifixer_output / "public_scene_artifixer3d_runtime_result.json"
+    )
+    _emit_artifixer_runtime_diagnostics(
+        completed=completed, runtime_result_path=runtime_result_path
+    )
     runtime_result = _read(
-        artifixer_output / "public_scene_artifixer3d_runtime_result.json",
+        runtime_result_path,
         code="scene_configuration_artifixer_runtime_result_missing",
     )
     if completed.returncode != 0 or runtime_result.get("status") != (
