@@ -1906,10 +1906,32 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     assert vpa._provider_expected_video_count(
         "task_evaluation_scene_configuration"
     ) == 0
+    stage_results = []
+    for index in range(6):
+        stage = {
+            "schema_version": "task_evaluation_scene_configuration_stage_result.v1",
+            "status": "completed",
+            "stage_id": f"stage-{index}",
+            "canonical_allocator": None,
+            "provider_mutations_performed": 0,
+            "paid_execution_requested": False,
+            "executed_inside_parent_configuration_run": True,
+            "raw_secret_values_recorded": False,
+            "output_artifacts": [],
+            "stage_result_digest": "",
+        }
+        stage["stage_result_digest"] = canonical_digest(
+            stage, digest_field="stage_result_digest"
+        )
+        stage_results.append(stage)
     chain = {
         "schema_version": "task_evaluation_scene_configuration_provider_stage_chain.v1",
         "status": "completed",
-        "stage_results": [{"stage_id": f"stage-{index}"} for index in range(6)],
+        "run_id": "run-1",
+        "stage_results": stage_results,
+        "stage_result_digests": [
+            stage["stage_result_digest"] for stage in stage_results
+        ],
         "stage_count": 6,
         "executed_inside_one_parent_provider_run": True,
         "nested_provider_mutations_performed": 0,
@@ -1922,6 +1944,7 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     result = {
         "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
         "status": "completed",
+        "run_id": "run-1",
         "source_commit": "a" * 40,
         "construction_envelope_digest": "sha256:" + "b" * 64,
         "stage_chain": chain,
@@ -1952,6 +1975,24 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     )
     assert blockers == []
     assert observed["stage_chain"]["stage_count"] == 6
+
+    result["stage_chain"]["stage_results"][0]["status"] = "blocked"
+    result["stage_chain"]["result_digest"] = canonical_digest(
+        result["stage_chain"], digest_field="result_digest"
+    )
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    invalid_archive = tmp_path / "invalid-stage-output.zip"
+    with zipfile.ZipFile(invalid_archive, "w") as output:
+        output.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(result),
+        )
+    _observed, blockers = scene_vast._extract_provider_output(
+        invalid_archive,
+        tmp_path / "invalid-stage-output",
+        maximum_archive_bytes=invalid_archive.stat().st_size,
+    )
+    assert "scene_configuration_stage_chain_invalid" in blockers
 
 
 def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
@@ -2589,17 +2630,33 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             )
         stages = [
             {
+                "schema_version": (
+                    "task_evaluation_scene_configuration_stage_result.v1"
+                ),
+                "status": "completed",
                 "stage_id": f"stage-{index + 1}",
+                "canonical_allocator": None,
+                "provider_mutations_performed": 0,
+                "paid_execution_requested": False,
+                "executed_inside_parent_configuration_run": True,
+                "raw_secret_values_recorded": False,
                 "output_artifacts": rows if index == 0 else [],
-                "stage_result_digest": "sha256:" + f"{index + 1:064x}",
+                "stage_result_digest": "",
             }
             for index in range(6)
         ]
+        for stage in stages:
+            stage["stage_result_digest"] = canonical_digest(
+                stage, digest_field="stage_result_digest"
+            )
         chain = {
             "schema_version": "task_evaluation_scene_configuration_provider_stage_chain.v1",
             "status": "completed",
             "run_id": receipt["run_id"],
             "stage_results": stages,
+            "stage_result_digests": [
+                stage["stage_result_digest"] for stage in stages
+            ],
             "stage_count": 6,
             "executed_inside_one_parent_provider_run": True,
             "nested_provider_mutations_performed": 0,
