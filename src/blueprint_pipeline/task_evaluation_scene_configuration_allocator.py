@@ -46,6 +46,9 @@ def run_scene_configuration_allocator_probe(
 ) -> int:
     """Admit and optionally execute one Website-bound scene configuration."""
 
+    diagnostic_only = bool(
+        getattr(args, "scene_configuration_diagnostic_only", False)
+    )
     missing = [
         name
         for name in (
@@ -74,6 +77,7 @@ def run_scene_configuration_allocator_probe(
             prepared_bundle = load_scene_configuration_provider_bundle_receipt(
                 receipt_path,
                 expected_source_commit=expected_source_commit or None,
+                diagnostic_only=diagnostic_only,
             )
         except (
             HostResidentInputError,
@@ -135,6 +139,17 @@ def run_scene_configuration_allocator_probe(
         ),
         "allowed_active_vast_instance_ids": [],
         "retry_cap": 0,
+        "diagnostic_only": diagnostic_only,
+        "source_diagnostic_checkpoint_digest": (
+            prepared_bundle.get("source_diagnostic_checkpoint_digest")
+            if prepared_bundle
+            else None
+        ),
+        "carried_completed_stage_count": (
+            prepared_bundle.get("carried_completed_stage_count")
+            if prepared_bundle
+            else None
+        ),
     }
     admission = build_paid_lane_admission(
         resource_class="vast_provider_adapter",
@@ -150,6 +165,11 @@ def run_scene_configuration_allocator_probe(
             "derived_rendered_views_only": True,
             "evaluation_episode_authorized": False,
             "single_parent_allocation": True,
+            "diagnostic_only": diagnostic_only,
+            "qualification_eligible": not diagnostic_only,
+            "configured_revision_publication_permitted": not diagnostic_only,
+            "offering_publication_permitted": not diagnostic_only,
+            "terminal_e2e_completion_permitted": not diagnostic_only,
             "retry_cap": 0,
             "allocation_binding": allocation_binding,
             "allocation_binding_digest": canonical_digest(allocation_binding),
@@ -194,12 +214,22 @@ def run_scene_configuration_allocator_probe(
             paid_attempt_authority_path=authority_path,
             paid_resource_admission_grant=grant,
             execute=args.execute,
-            scene_construction_queue_root=os.getenv(
-                "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
+            diagnostic_only=diagnostic_only,
+            scene_construction_queue_root=(
+                None
+                if diagnostic_only
+                else os.getenv(
+                    "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
+                )
             ),
         )
     write_json(Path(args.adapter_output), result)
-    success = result.get("status") in {"dry_run_ready", "completed"}
+    success = result.get("status") in {
+        "dry_run_ready",
+        "completed",
+        "dry_run_ready_diagnostic_only",
+        "completed_diagnostic_only",
+    }
     print(json.dumps({"success": success}, sort_keys=True))
     return 0 if success else 2
 

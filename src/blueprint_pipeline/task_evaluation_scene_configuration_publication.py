@@ -187,6 +187,18 @@ def publish_configured_scene_revision(
 ) -> dict[str, Any]:
     """Publish every reusable scene byte, read it back, and seal the revision."""
 
+    if any(
+        result.get("diagnostic_only") is True
+        or result.get("qualification_eligible") is False
+        or result.get("executed_inside_one_parent_provider_run") is False
+        or result.get("configured_revision_publication_permitted") is False
+        or result.get("offering_publication_permitted") is False
+        for result in stage_results
+    ):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_diagnostic_result_publication_forbidden"
+        )
+
     request = envelope.get("request")
     recipe = envelope.get("recipe")
     render_inputs = envelope.get("render_inputs_result")

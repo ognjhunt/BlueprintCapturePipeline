@@ -100,6 +100,24 @@ def _registry(observed: list[str], *, nested_mutation: bool = False):
     return SceneConfigurationAdapterRegistry(handlers)
 
 
+def _diagnostic_registry(observed: list[str]):
+    registry = _registry(observed)
+    original = registry.execute
+
+    def execute(**kwargs):
+        result = dict(original(**kwargs))
+        result["diagnostic_only"] = True
+        result["qualification_eligible"] = False
+        result["executed_inside_one_parent_provider_run"] = False
+        result["stage_result_digest"] = canonical_digest(
+            result, digest_field="stage_result_digest"
+        )
+        return result
+
+    registry.execute = execute
+    return registry
+
+
 def _producers():
     handlers = {}
     for identity in ADMITTED_PRODUCER_IDENTITIES:
@@ -171,6 +189,24 @@ def test_rejects_any_stage_that_claims_a_nested_provider_mutation(
             configurations=configurations,
             output_root=outputs,
             registry=_registry([], nested_mutation=True),
+            producer_registry=_producers(),
+        )
+
+
+def test_production_runtime_refuses_diagnostic_stage_results(tmp_path: Path) -> None:
+    envelope, configurations = _inputs(tmp_path)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationProviderRuntimeError,
+        match="scene_configuration_provider_stage_result_invalid:stage-1",
+    ):
+        execute_scene_configuration_stage_chain(
+            envelope=envelope,
+            configurations=configurations,
+            output_root=outputs,
+            registry=_diagnostic_registry([]),
             producer_registry=_producers(),
         )
 

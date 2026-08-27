@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import json
+import hashlib
+import zipfile
+from pathlib import Path
+
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import task_evaluation_scene_configuration_vast as vast
+
+
+CHECKPOINT_BODY = b'{}\n'
+CHECKPOINT_DIGEST = "sha256:" + "a" * 64
+
+
+def _diagnostic_provider_result() -> dict:
+    stage_results = []
+    for index in range(1, 7):
+        stage = {
+            "schema_version": "task_evaluation_scene_configuration_stage_result.v1",
+            "status": "completed",
+            "stage_id": f"stage-{index}",
+            "diagnostic_only": True,
+            "qualification_eligible": False,
+            "executed_inside_one_parent_provider_run": False,
+            "configured_revision_publication_permitted": False,
+            "offering_publication_permitted": False,
+            "terminal_e2e_completion_permitted": False,
+            "stage_result_digest": "",
+        }
+        stage["stage_result_digest"] = canonical_digest(
+            stage, digest_field="stage_result_digest"
+        )
+        stage_results.append(stage)
+    chain = {
+        "schema_version": (
+            "task_evaluation_scene_configuration_diagnostic_stage_chain.v1"
+        ),
+        "status": "completed_diagnostic_only_not_qualification_eligible",
+        "stage_count": 6,
+        "stage_results": stage_results,
+        "executed_inside_one_parent_provider_run": False,
+        "nested_provider_mutations_performed": 0,
+        "nested_paid_execution_requested": False,
+        "evaluation_episode_executed": False,
+        "retry_cap": 0,
+        "result_digest": "",
+    }
+    chain["result_digest"] = canonical_digest(chain, digest_field="result_digest")
+    result = {
+        "schema_version": (
+            "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
+        ),
+        "status": "completed_diagnostic_only_not_qualification_eligible",
+        "diagnostic_stage_chain": chain,
+        "diagnostic_only": True,
+        "qualification_eligible": False,
+        "executed_inside_one_parent_provider_run": False,
+        "configured_revision_publication_permitted": False,
+        "offering_publication_permitted": False,
+        "terminal_e2e_completion_permitted": False,
+        "provider_zero_required_after_return": True,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+        "advanced_checkpoint": {
+            "provider_output_relative_root": "diagnostic_checkpoints/after-stage-6",
+            "manifest_relative_path": (
+                "diagnostic_checkpoints/after-stage-6/"
+                "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json"
+            ),
+            "manifest_sha256": "sha256:"
+            + hashlib.sha256(CHECKPOINT_BODY).hexdigest(),
+            "checkpoint_digest": CHECKPOINT_DIGEST,
+            "completed_stage_prefix_count": 6,
+            "file_count": 1,
+            "total_bytes": len(CHECKPOINT_BODY),
+        },
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
+def test_diagnostic_provider_output_is_accepted_only_by_diagnostic_extractor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vast,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        lambda **_kwargs: {
+            "checkpoint_digest": CHECKPOINT_DIGEST,
+            "completed_stage_prefix_count": 6,
+        },
+    )
+    archive = tmp_path / "output.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(_diagnostic_provider_result(), sort_keys=True),
+        )
+        bundle.writestr(
+            "diagnostic_checkpoints/after-stage-6/"
+            "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json",
+            CHECKPOINT_BODY,
+        )
+
+    result, blockers = vast._extract_provider_output(
+        archive,
+        tmp_path / "diagnostic",
+        maximum_archive_bytes=1_000_000,
+        diagnostic_only=True,
+    )
+    assert blockers == []
+    assert result["diagnostic_only"] is True
+
+    _result, production_blockers = vast._extract_provider_output(
+        archive,
+        tmp_path / "production",
+        maximum_archive_bytes=1_000_000,
+    )
+    assert "scene_configuration_provider_result_contract_invalid" in (
+        production_blockers
+    )
+
+
+def test_diagnostic_provider_output_refuses_any_publication_permission(
+    tmp_path: Path,
+) -> None:
+    result = _diagnostic_provider_result()
+    result["offering_publication_permitted"] = True
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    archive = tmp_path / "output.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(result, sort_keys=True),
+        )
+
+    _value, blockers = vast._extract_provider_output(
+        archive,
+        tmp_path / "diagnostic",
+        maximum_archive_bytes=1_000_000,
+        diagnostic_only=True,
+    )
+    assert "scene_configuration_diagnostic_claim_boundary_invalid" in blockers

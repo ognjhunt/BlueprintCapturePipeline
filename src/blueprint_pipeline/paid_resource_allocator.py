@@ -1881,6 +1881,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--scene-configuration-bundle-receipt")
     gpu.add_argument("--scene-configuration-attempt-authority")
     gpu.add_argument("--scene-configuration-job-dir")
+    gpu.add_argument(
+        "--scene-configuration-diagnostic-only",
+        action="store_true",
+        help=(
+            "Resume an immutable scene-configuration checkpoint for blocker "
+            "diagnosis only; never qualify or publish the result."
+        ),
+    )
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-aura-exact-residual-bundle-receipt")

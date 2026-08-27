@@ -26,6 +26,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver imp
 from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
     _target_camera_ring,
 )
+from tests.test_task_evaluation_scene_configuration_diagnostic_checkpoint import (
+    _materialize as _materialize_diagnostic_checkpoint,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -160,6 +163,109 @@ def test_invalid_production_tuning_fails_closed_before_paid_semantic_edits(
         RuntimeError, match="scene_configuration_artifixer_tuning_invalid"
     ):
         _artifixer_tuning(configuration)
+
+
+def test_diagnostic_driver_hydrates_render_and_semantic_without_paid_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_root, _checkpoint, fixture = _materialize_diagnostic_checkpoint(
+        tmp_path
+    )
+    stage_input = json.loads(Path(fixture["stage_path"]).read_text(encoding="utf-8"))
+    stage_input["stage"] = {
+        "stage_id": "stage-1",
+        "adapter": {"id": "artifixer3d_observed_object_removal"},
+    }
+    stage_input["construction_envelope"]["render_inputs_result"] = fixture[
+        "render_result"
+    ]
+    stage_path = tmp_path / "driver-stage-input.json"
+    stage_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    dependencies_path = tmp_path / "dependencies.json"
+    dependencies_path.write_text("[]\n", encoding="utf-8")
+    output_root = tmp_path / "driver-output"
+    output_root.mkdir()
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    semantic_request = json.loads(
+        Path(fixture["request_path"]).read_text(encoding="utf-8")
+    )
+
+    monkeypatch.setattr(
+        driver,
+        "complete_provider_render_inputs",
+        lambda **_kwargs: pytest.fail("diagnostic retry rerendered frames"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "execute_semantic_teacher_image_edits",
+        lambda **_kwargs: pytest.fail("diagnostic retry called semantic provider"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_stage_openai_token",
+        lambda *_args, **_kwargs: pytest.fail("diagnostic retry read semantic key"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_write_execution_authority",
+        lambda **_kwargs: ({}, tmp_path / "rights.json", "839873"),
+    )
+    monkeypatch.setattr(driver, "materialize_provider_render_handoff", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        driver,
+        "_materialize_preflight",
+        lambda **_kwargs: ({}, "remove-source-object-104"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "materialize_artifixer3d_candidate_inputs",
+        lambda **_kwargs: {"receipt_digest": "sha256:" + "2" * 64},
+    )
+    monkeypatch.setattr(
+        driver,
+        "_semantic_rights_and_request",
+        lambda **_kwargs: tmp_path / "packet",
+    )
+
+    def write_request(**_kwargs):
+        packet = tmp_path / "packet"
+        packet.mkdir(exist_ok=True)
+        path = packet / "semantic_teacher_image_edit_runtime_request.v1.json"
+        path.write_text(json.dumps(semantic_request), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(driver, "_semantic_runtime_request", write_request)
+
+    class Hydrated(Exception):
+        pass
+
+    def stop_after_hydration(**kwargs):
+        frames = Path(kwargs["semantic_teacher_frames_root"])
+        assert len(list(frames.glob("*.png"))) == 8
+        raise Hydrated
+
+    monkeypatch.setattr(
+        driver, "materialize_whole_frame_semantic_teacher_receipt", stop_after_hydration
+    )
+
+    with pytest.raises(Hydrated):
+        driver.execute_artifixer_component(
+            environment={
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_path),
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(
+                    dependencies_path
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
+                "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(
+                    output_root / "result.json"
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package_root),
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT": str(
+                    checkpoint_root
+                ),
+            }
+        )
 
 
 def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path) -> None:

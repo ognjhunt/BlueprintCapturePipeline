@@ -40,6 +40,7 @@ def _args(tmp_path: Path, *, execute: bool) -> Namespace:
         admission_out=str(tmp_path / "admission.json"),
         adapter_output=str(tmp_path / "result.json"),
         execute=execute,
+        scene_configuration_diagnostic_only=False,
     )
 
 
@@ -111,6 +112,7 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
                 "paid_resource_admission_grant"
             ],
             "execute": True,
+            "diagnostic_only": False,
             "scene_construction_queue_root": str(tmp_path / "scene-queue"),
         }
     ]
@@ -133,7 +135,69 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
         "hard_ttl_seconds": 3600,
         "allowed_active_vast_instance_ids": [],
         "retry_cap": 0,
+        "diagnostic_only": False,
+        "source_diagnostic_checkpoint_digest": None,
+        "carried_completed_stage_count": None,
     }
+
+
+def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    args.scene_configuration_diagnostic_only = True
+    checkpoint_digest = "sha256:" + "1" * 64
+    prepared = {
+        **_prepared_bundle(),
+        "diagnostic_only": True,
+        "source_diagnostic_checkpoint_digest": checkpoint_digest,
+        "carried_completed_stage_count": 3,
+    }
+    monkeypatch.setattr(
+        lane,
+        "resolve_host_resident_bundle_receipt",
+        lambda _path: {"blockers": []},
+    )
+    monkeypatch.setattr(
+        lane,
+        "load_scene_configuration_provider_bundle_receipt",
+        lambda _path, **kwargs: prepared
+        if kwargs.get("diagnostic_only") is True
+        else pytest.fail("diagnostic bundle opened as production"),
+    )
+    monkeypatch.setattr(
+        lane,
+        "validate_scene_configuration_paid_authority",
+        lambda *_args, **_kwargs: None,
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        lane,
+        "run_scene_configuration_vast",
+        lambda **kwargs: calls.append(kwargs)
+        or {"status": "completed_diagnostic_only"},
+    )
+
+    assert (
+        lane.run_scene_configuration_allocator_probe(
+            args,
+            control_plane_identity_probe=_identity,
+            expected_source_commit_probe=_expected_source,
+        )
+        == 0
+    )
+    assert calls[0]["diagnostic_only"] is True
+    assert calls[0]["scene_construction_queue_root"] is None
+    admission = json.loads(Path(args.admission_out).read_text(encoding="utf-8"))
+    assert admission["diagnostic_only"] is True
+    assert admission["qualification_eligible"] is False
+    assert admission["configured_revision_publication_permitted"] is False
+    assert admission["offering_publication_permitted"] is False
+    assert admission["terminal_e2e_completion_permitted"] is False
+    assert admission["allocation_binding"][
+        "source_diagnostic_checkpoint_digest"
+    ] == checkpoint_digest
+    assert admission["allocation_binding"]["carried_completed_stage_count"] == 3
 
 
 def test_scene_allocator_refuses_before_adapter_when_admission_is_blocked(

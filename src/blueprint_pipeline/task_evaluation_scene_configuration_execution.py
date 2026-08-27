@@ -57,6 +57,10 @@ def _validate_parent_launch(
         or stage_chain.get("run_id") != envelope["run_id"]
         or stage_chain.get("stage_count") != 6
         or stage_chain.get("executed_inside_one_parent_provider_run") is not True
+        or stage_chain.get("diagnostic_only") is True
+        or stage_chain.get("qualification_eligible") is False
+        or stage_chain.get("configured_revision_publication_permitted") is False
+        or stage_chain.get("offering_publication_permitted") is False
         or stage_chain.get("nested_provider_mutations_performed") != 0
         or stage_chain.get("evaluation_episode_executed") is not False
         or stage_chain.get("result_digest")

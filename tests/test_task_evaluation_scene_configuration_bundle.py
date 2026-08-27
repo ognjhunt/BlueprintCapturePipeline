@@ -175,6 +175,7 @@ def _repo(root: Path) -> Path:
     for name in (
         "run_task_evaluation_scene_configuration_provider.sh",
         "task_evaluation_scene_configuration_provider_runner.py",
+        "task_evaluation_scene_configuration_diagnostic_provider_runner.py",
     ):
         (scripts / name).write_bytes((source_root / "scripts" / name).read_bytes())
     for relative in (
@@ -598,6 +599,195 @@ def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
         in missing_renderer_preflight["blockers"]
     )
     assert required_renderer in missing_renderer_preflight["missing_zip_entries"]
+
+
+def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    source = tmp_path / "diagnostic-source"
+    source.mkdir()
+    envelope_path = _provider_render_envelope(source, commit)
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    render = envelope["render_inputs_result"]
+    toolchain = _toolchain(tmp_path / "diagnostic-toolchain", commit)
+    repo = _repo(tmp_path / "diagnostic-repo")
+    runtime, identity = _provider_runtime(
+        tmp_path / "diagnostic-runtime", repo=repo, commit=commit
+    )
+    monkeypatch.setattr(
+        bundle_module, "validate_splat_render_runtime", lambda **_kwargs: identity
+    )
+    checkpoint_root = tmp_path / "diagnostic-checkpoint"
+    checkpoint_root.mkdir()
+    inventory = []
+
+    def add(role: str, relative: str, payload: bytes) -> dict[str, object]:
+        path = checkpoint_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        row = {
+            "role": role,
+            "relative_path": relative,
+            "digest": _sha256(path),
+            "size_bytes": path.stat().st_size,
+            "mode": 0o644,
+        }
+        inventory.append(row)
+        return {
+            "checkpoint_role": role,
+            "digest": row["digest"],
+            "size_bytes": row["size_bytes"],
+        }
+
+    calibration = add("camera_calibration", "render/calibration.json", b"[]\n")
+    render_manifest = add("render_manifest", "render/manifest.json", b"{}\n")
+    retained = add(
+        "retained_scene_without_source_object", "render/retained.ply", b"retained"
+    )
+    frames = []
+    for index in range(8):
+        camera_id = f"camera-{index}"
+        frame = add(
+            f"raw_frame:{camera_id}",
+            f"render/frames/{index}.png",
+            f"frame-{index}".encode(),
+        )
+        frame["camera_id"] = camera_id
+        frame["source_object_mask"] = add(
+            f"source_object_mask:{camera_id}",
+            f"render/masks/{index}.png",
+            f"mask-{index}".encode(),
+        )
+        add(
+            f"semantic_teacher_frame:{camera_id}",
+            f"semantic/frames/{index}.png",
+            f"semantic-{index}".encode(),
+        )
+        frames.append(frame)
+    add("semantic_runtime_request", "semantic/request.json", b"{}\n")
+    add("semantic_runtime_result", "semantic/result.json", b"{}\n")
+    add("semantic_teacher_receipt", "semantic/receipt.json", b"{}\n")
+    checkpoint = {
+        "checkpoint_digest": "sha256:" + "c" * 64,
+        "scientific_bindings": {"binding_digest": "sha256:" + "d" * 64},
+        "completed_stage_prefix_count": 0,
+        "inventory": inventory,
+        "render_inputs_template": {
+            **render,
+            "status": "derived_method_inputs_materialized",
+            "source_appearance": {
+                "digest": render["source_appearance"]["digest"],
+                "size_bytes": render["source_appearance"]["size_bytes"],
+                "checkpoint_role": None,
+            },
+            "renderer_runtime": identity["identity"],
+            "camera_calibration": calibration,
+            "render_manifest": render_manifest,
+            "derived_frames": frames,
+            "derived_frame_count": 8,
+            "derived_gaussian_cutout": {
+                "retained_scene_without_source_object": retained,
+            },
+            "render_completed_on_provider": True,
+            "result_digest": "sha256:" + "e" * 64,
+        },
+    }
+    (checkpoint_root / "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        lambda **_kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        bundle_module,
+        "diagnostic_checkpoint_scientific_binding_digest",
+        lambda **_kwargs: checkpoint["scientific_bindings"]["binding_digest"],
+    )
+    checkpoint_files = [path for path in checkpoint_root.rglob("*") if path.is_file()]
+    checkpoint_manifest = (
+        checkpoint_root
+        / "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json"
+    )
+    advanced_reference = {
+        "schema_version": (
+            "task_evaluation_scene_configuration_advanced_checkpoint_reference.v1"
+        ),
+        "status": "validated_diagnostic_checkpoint_ready_for_next_retry",
+        "checkpoint_root": str(checkpoint_root),
+        "manifest_path": str(checkpoint_manifest),
+        "manifest_sha256": _sha256(checkpoint_manifest),
+        "checkpoint_digest": checkpoint["checkpoint_digest"],
+        "completed_stage_prefix_count": 0,
+        "file_count": len(checkpoint_files),
+        "total_bytes": sum(path.stat().st_size for path in checkpoint_files),
+        "diagnostic_only": True,
+        "qualification_eligible": False,
+        "source_provider_result_digest": "sha256:" + "f" * 64,
+        "reference_digest": "",
+    }
+    advanced_reference["reference_digest"] = canonical_digest(
+        advanced_reference, digest_field="reference_digest"
+    )
+    advanced_reference_path = tmp_path / "advanced-checkpoint-reference.json"
+    advanced_reference_path.write_text(json.dumps(advanced_reference), encoding="utf-8")
+
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope_path,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        diagnostic_checkpoint_reference_path=advanced_reference_path,
+        output_root=tmp_path / "diagnostic-bundle",
+        expected_source_commit=commit,
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        portable = json.loads(
+            archive.read(
+                "provider_runtime/input/portable_construction_envelope.v1.json"
+            )
+        )
+    assert receipt["diagnostic_only"] is True
+    assert receipt["raw_interiorgs_bytes_in_provider_bundle"] is False
+    assert not any(name.startswith("provider_runtime/renderer/") for name in names)
+    assert not any("browser/chrome" in name for name in names)
+    assert not any("node_modules/" in name for name in names)
+    assert not any("input/render/source_appearance" in name for name in names)
+    assert all(
+        row["path"].startswith("input/diagnostic_checkpoint/")
+        for row in portable["render_inputs_result"]["derived_frames"]
+    )
+    assert "path" not in portable["render_inputs_result"]["source_appearance"]
+    assert load_scene_configuration_provider_bundle_receipt(
+        tmp_path
+        / "diagnostic-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json",
+        diagnostic_only=True,
+    )["bundle_sha256"] == receipt["bundle_sha256"]
+
+    unsafe = dict(advanced_reference)
+    unsafe["manifest_path"] = str(tmp_path / "outside.json")
+    unsafe["reference_digest"] = canonical_digest(
+        unsafe, digest_field="reference_digest"
+    )
+    unsafe_path = tmp_path / "unsafe-reference.json"
+    unsafe_path.write_text(json.dumps(unsafe), encoding="utf-8")
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationBundleError,
+        match="scene_configuration_bundle_diagnostic_checkpoint_reference_invalid",
+    ):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope_path,
+            toolchain_root=toolchain,
+            repository_root=repo,
+            splat_render_runtime_root=runtime,
+            diagnostic_checkpoint_reference_path=unsafe_path,
+            output_root=tmp_path / "unsafe-diagnostic-bundle",
+            expected_source_commit=commit,
+        )
 
 
 def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) -> None:

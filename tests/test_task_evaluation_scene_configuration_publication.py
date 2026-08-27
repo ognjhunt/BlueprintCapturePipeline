@@ -117,6 +117,27 @@ def test_thumbnail_size_ceiling_matches_private_website_delivery(
         )
 
 
+def test_publication_refuses_diagnostic_stage_results(tmp_path: Path) -> None:
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationPublicationError,
+        match="scene_configuration_diagnostic_result_publication_forbidden",
+    ):
+        publish_configured_scene_revision(
+            envelope={},
+            stage_results=[
+                {
+                    "diagnostic_only": True,
+                    "qualification_eligible": False,
+                    "executed_inside_one_parent_provider_run": False,
+                    "configured_revision_publication_permitted": False,
+                    "offering_publication_permitted": False,
+                }
+            ],
+            output_root=tmp_path,
+            publisher=lambda **_kwargs: {},
+        )
+
+
 def _disclosure_decision(*, provider: bool) -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": DISCLOSURE_SCHEMA_VERSION,

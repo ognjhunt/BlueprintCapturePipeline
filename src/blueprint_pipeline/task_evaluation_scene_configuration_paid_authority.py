@@ -28,8 +28,8 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
     MIN_CONTENT_AGENTS_SPEND_USD,
-    MIN_EXTERNAL_SERVICE_SPEND_USD,
     REQUIRED_PARENT_TTL_SECONDS,
+    diagnostic_parent_runtime_budget_blockers,
 )
 
 
@@ -179,8 +179,14 @@ def materialize_scene_configuration_paid_authority(
     """Seal one fresh project-spend-derived authority; retries are impossible."""
 
     receipt_path = Path(bundle_receipt_path).expanduser().resolve()
+    receipt_value = _read(
+        receipt_path, code="scene_configuration_bundle_receipt_invalid"
+    )
+    diagnostic_only = receipt_value.get("diagnostic_only") is True
     receipt = load_scene_configuration_provider_bundle_receipt(
-        receipt_path, expected_source_commit=source_commit
+        receipt_path,
+        expected_source_commit=source_commit,
+        diagnostic_only=diagnostic_only,
     )
     project_path = Path(project_spend_reconciliation_path).expanduser().resolve()
     project, project_record = validate_project_spend_reconciliation(project_path)
@@ -208,17 +214,55 @@ def materialize_scene_configuration_paid_authority(
         ),
         "content_agents": float(openai_content_agents_max_cost_usd),
     }
+    carried_stage_count = int(receipt.get("carried_completed_stage_count") or 0)
+    required_stage_minima = {
+        "artifixer_semantic_teacher": (
+            0.0 if diagnostic_only else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+        ),
+        "artifixer_visual_review": (
+            0.0
+            if diagnostic_only and carried_stage_count >= 1
+            else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+        ),
+        "content_agents": (
+            0.0
+            if diagnostic_only and carried_stage_count >= 3
+            else MIN_CONTENT_AGENTS_SPEND_USD
+        ),
+    }
+    minimum_external_cap = sum(required_stage_minima.values())
+    diagnostic_budget_blockers = (
+        diagnostic_parent_runtime_budget_blockers(
+            completed_stage_prefix_count=carried_stage_count,
+            ttl_seconds=hard_ttl_seconds,
+            maximum_hourly_rate_usd=max_hourly_rate_usd,
+            provider_compute_spend_cap_usd=compute_cap,
+        )
+        if diagnostic_only
+        else []
+    )
     external_contract_valid = (
         math.isfinite(external_cap)
-        and MIN_EXTERNAL_SERVICE_SPEND_USD
-        <= external_cap
-        <= MAX_EXTERNAL_SERVICE_SPEND_USD
+        and minimum_external_cap <= external_cap <= MAX_EXTERNAL_SERVICE_SPEND_USD
         and all(math.isfinite(value) and value >= 0 for value in stage_caps.values())
-        and stage_caps["artifixer_semantic_teacher"]
-        >= MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
-        and stage_caps["artifixer_visual_review"]
-        >= MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
-        and stage_caps["content_agents"] >= MIN_CONTENT_AGENTS_SPEND_USD
+        and all(
+            stage_caps[name] >= required_minimum
+            for name, required_minimum in required_stage_minima.items()
+        )
+        and (
+            not diagnostic_only
+            or stage_caps["artifixer_semantic_teacher"] == 0
+        )
+        and (
+            not diagnostic_only
+            or carried_stage_count < 1
+            or stage_caps["artifixer_visual_review"] == 0
+        )
+        and (
+            not diagnostic_only
+            or carried_stage_count < 3
+            or stage_caps["content_agents"] == 0
+        )
         and sum(stage_caps.values()) <= external_cap + 1e-9
         and isinstance(openai_max_requests, int)
         and not isinstance(openai_max_requests, bool)
@@ -226,8 +270,24 @@ def materialize_scene_configuration_paid_authority(
             (external_cap == 0 and openai_max_requests == 0)
             or (external_cap > 0 and 1 <= openai_max_requests <= 100)
         )
-        and abs(compute_cap - MAX_PROVIDER_COMPUTE_SPEND_USD) <= 1e-9
-        and abs(float(hard_cap_usd) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+        and (
+            (diagnostic_only and 0 < compute_cap <= MAX_PROVIDER_COMPUTE_SPEND_USD)
+            or (
+                not diagnostic_only
+                and abs(compute_cap - MAX_PROVIDER_COMPUTE_SPEND_USD) <= 1e-9
+            )
+        )
+        and (
+            (
+                diagnostic_only
+                and abs(float(hard_cap_usd) - (compute_cap + external_cap))
+                <= 1e-9
+            )
+            or (
+                not diagnostic_only
+                and abs(float(hard_cap_usd) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+            )
+        )
         and compute_cap + external_cap <= float(hard_cap_usd) + 1e-9
     )
     raw_source_authorized = (
@@ -254,6 +314,7 @@ def materialize_scene_configuration_paid_authority(
         or not _budget_valid(
             rate=max_hourly_rate_usd, cap=compute_cap, ttl=hard_ttl_seconds
         )
+        or diagnostic_budget_blockers
         or not external_contract_valid
         or zero_time > authorized_time
         or (authorized_time - zero_time).total_seconds()
@@ -268,7 +329,11 @@ def materialize_scene_configuration_paid_authority(
         "authority_reference": authorization_reference.strip(),
         "authorized_by": authorized_by.strip(),
         "authorized_on": authorized_time.isoformat().replace("+00:00", "Z"),
-        "purpose": "one_shot_task_evaluation_scene_configuration",
+        "purpose": (
+            "one_shot_task_evaluation_scene_configuration_diagnostic_resume"
+            if diagnostic_only
+            else "one_shot_task_evaluation_scene_configuration"
+        ),
         "provider": "vast",
         "paid_compute_authorized": True,
         "maximum_paid_attempts": 1,
@@ -313,6 +378,20 @@ def materialize_scene_configuration_paid_authority(
         "evaluation_episode_authorized": False,
         "authority_digest": "",
     }
+    if diagnostic_only:
+        authority.update(
+            {
+                "diagnostic_only": True,
+                "qualification_eligible": False,
+                "configured_revision_publication_permitted": False,
+                "offering_publication_permitted": False,
+                "terminal_e2e_completion_permitted": False,
+                "source_diagnostic_checkpoint_digest": receipt[
+                    "source_diagnostic_checkpoint_digest"
+                ],
+                "carried_completed_stage_count": carried_stage_count,
+            }
+        )
     authority["authority_digest"] = canonical_digest(
         authority, digest_field="authority_digest"
     )
@@ -334,6 +413,36 @@ def validate_scene_configuration_paid_authority(
     external_cost = external.get("maximum_cost_usd") if isinstance(external, Mapping) else None
     external_requests = external.get("maximum_requests") if isinstance(external, Mapping) else None
     stage_caps = external.get("stage_max_cost_usd") if isinstance(external, Mapping) else None
+    diagnostic_only = bundle_receipt.get("diagnostic_only") is True
+    carried_stage_count = int(
+        bundle_receipt.get("carried_completed_stage_count") or 0
+    )
+    required_stage_minima = {
+        "artifixer_semantic_teacher": (
+            0.0 if diagnostic_only else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+        ),
+        "artifixer_visual_review": (
+            0.0
+            if diagnostic_only and carried_stage_count >= 1
+            else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+        ),
+        "content_agents": (
+            0.0
+            if diagnostic_only and carried_stage_count >= 3
+            else MIN_CONTENT_AGENTS_SPEND_USD
+        ),
+    }
+    minimum_external_cap = sum(required_stage_minima.values())
+    diagnostic_budget_blockers = (
+        diagnostic_parent_runtime_budget_blockers(
+            completed_stage_prefix_count=carried_stage_count,
+            ttl_seconds=authority.get("maximum_single_resource_ttl_seconds"),
+            maximum_hourly_rate_usd=authority.get("maximum_hourly_rate_usd"),
+            provider_compute_spend_cap_usd=compute_cap,
+        )
+        if diagnostic_only
+        else []
+    )
     external_contract_valid = (
         isinstance(compute_cap, (int, float))
         and not isinstance(compute_cap, bool)
@@ -343,7 +452,7 @@ def validate_scene_configuration_paid_authority(
         and isinstance(external_cost, (int, float))
         and not isinstance(external_cost, bool)
         and math.isfinite(float(external_cost))
-        and MIN_EXTERNAL_SERVICE_SPEND_USD
+        and minimum_external_cap
         <= float(external_cost)
         <= MAX_EXTERNAL_SERVICE_SPEND_USD
         and isinstance(external_requests, int)
@@ -366,16 +475,48 @@ def validate_scene_configuration_paid_authority(
             and float(value) >= 0
             for value in stage_caps.values()
         )
-        and float(stage_caps["artifixer_semantic_teacher"])
-        >= MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
-        and float(stage_caps["artifixer_visual_review"])
-        >= MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
-        and float(stage_caps["content_agents"])
-        >= MIN_CONTENT_AGENTS_SPEND_USD
+        and all(
+            float(stage_caps[name]) >= required_minimum
+            for name, required_minimum in required_stage_minima.items()
+        )
+        and (
+            not diagnostic_only
+            or float(stage_caps["artifixer_semantic_teacher"]) == 0
+        )
+        and (
+            not diagnostic_only
+            or carried_stage_count < 1
+            or float(stage_caps["artifixer_visual_review"]) == 0
+        )
+        and (
+            not diagnostic_only
+            or carried_stage_count < 3
+            or float(stage_caps["content_agents"]) == 0
+        )
         and sum(float(value) for value in stage_caps.values())
         <= float(external_cost) + 1e-9
-        and abs(float(compute_cap) - MAX_PROVIDER_COMPUTE_SPEND_USD) <= 1e-9
-        and abs(float(total_cap) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+        and (
+            (
+                diagnostic_only
+                and 0 < float(compute_cap) <= MAX_PROVIDER_COMPUTE_SPEND_USD
+            )
+            or (
+                not diagnostic_only
+                and abs(float(compute_cap) - MAX_PROVIDER_COMPUTE_SPEND_USD)
+                <= 1e-9
+            )
+        )
+        and (
+            (
+                diagnostic_only
+                and abs(float(total_cap) - (float(compute_cap) + float(external_cost)))
+                <= 1e-9
+            )
+            or (
+                not diagnostic_only
+                and abs(float(total_cap) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+            )
+        )
         and float(compute_cap) + float(external_cost)
         <= float(total_cap) + 1e-9
         and external.get("credentials_via_ephemeral_private_file_only") is True
@@ -394,7 +535,11 @@ def validate_scene_configuration_paid_authority(
         or authority.get("authority_kind")
         != "explicit_user_direction_in_current_goal"
         or authority.get("purpose")
-        != "one_shot_task_evaluation_scene_configuration"
+        != (
+            "one_shot_task_evaluation_scene_configuration_diagnostic_resume"
+            if diagnostic_only
+            else "one_shot_task_evaluation_scene_configuration"
+        )
         or authority.get("provider") != "vast"
         or authority.get("paid_compute_authorized") is not True
         or authority.get("maximum_paid_attempts") != 1
@@ -416,6 +561,7 @@ def validate_scene_configuration_paid_authority(
             ttl=authority.get("maximum_single_resource_ttl_seconds"),
         )
         or not external_contract_valid
+        or diagnostic_budget_blockers
         or authority.get("raw_interiorgs_bytes_authorized_for_provider")
         is not expected_raw_source_authorized
         or authority.get("provider_disclosure_decision_digest")
@@ -425,6 +571,21 @@ def validate_scene_configuration_paid_authority(
             and not renders_on_provider(disclosure_decision or {})
         )
         or authority.get("evaluation_episode_authorized") is not False
+        or (
+            diagnostic_only
+            and (
+                authority.get("diagnostic_only") is not True
+                or authority.get("qualification_eligible") is not False
+                or authority.get("configured_revision_publication_permitted")
+                is not False
+                or authority.get("offering_publication_permitted") is not False
+                or authority.get("terminal_e2e_completion_permitted") is not False
+                or authority.get("source_diagnostic_checkpoint_digest")
+                != bundle_receipt.get("source_diagnostic_checkpoint_digest")
+                or authority.get("carried_completed_stage_count")
+                != carried_stage_count
+            )
+        )
         or authority.get("active_instance_allowlist")
         != {"external_provider_owned": [], "same_goal_concurrent": []}
         or authority.get("authority_digest")
