@@ -41,6 +41,7 @@ def _args(tmp_path: Path, *, execute: bool) -> Namespace:
         adapter_output=str(tmp_path / "result.json"),
         execute=execute,
         scene_configuration_diagnostic_only=False,
+        release_evidence=None,
     )
 
 
@@ -146,6 +147,25 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
 ) -> None:
     args = _args(tmp_path, execute=True)
     args.scene_configuration_diagnostic_only = True
+    args.release_evidence = str(
+        tmp_path / "diagnostic-release.json"
+    )
+    diagnostic_release_digest = "sha256:" + "2" * 64
+    monkeypatch.setattr(
+        lane,
+        "validate_scene_configuration_diagnostic_release_receipt",
+        lambda path, **kwargs: {
+            "receipt_digest": diagnostic_release_digest,
+            "remote_ref": "refs/heads/codex/scene-fix",
+            "remote_ref_tip_commit": SOURCE_COMMIT,
+        }
+        if path == Path(args.release_evidence)
+        and kwargs == {
+            "expected_source_commit": SOURCE_COMMIT,
+            "expected_release_path": lane.ROOT,
+        }
+        else pytest.fail("diagnostic release validated against wrong identity"),
+    )
     checkpoint_digest = "sha256:" + "1" * 64
     prepared = {
         **_prepared_bundle(),
@@ -198,6 +218,65 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
         "source_diagnostic_checkpoint_digest"
     ] == checkpoint_digest
     assert admission["allocation_binding"]["carried_completed_stage_count"] == 3
+    assert admission["allocation_binding"][
+        "diagnostic_release_receipt_digest"
+    ] == diagnostic_release_digest
+    assert admission["allocation_binding"]["diagnostic_remote_ref"] == (
+        "refs/heads/codex/scene-fix"
+    )
+    assert admission["allocation_binding"][
+        "diagnostic_remote_ref_tip_commit"
+    ] == SOURCE_COMMIT
+
+
+def test_diagnostic_allocator_refuses_arbitrary_detached_checkout_without_release_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    args.scene_configuration_diagnostic_only = True
+    monkeypatch.setattr(
+        lane,
+        "resolve_host_resident_bundle_receipt",
+        lambda _path: {"blockers": []},
+    )
+    monkeypatch.setattr(
+        lane,
+        "load_scene_configuration_provider_bundle_receipt",
+        lambda _path, **_kwargs: {
+            **_prepared_bundle(),
+            "diagnostic_only": True,
+        },
+    )
+    monkeypatch.setattr(
+        lane,
+        "validate_scene_configuration_paid_authority",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        lane,
+        "run_scene_configuration_vast",
+        lambda **_kwargs: pytest.fail("provider reached without pushed release receipt"),
+    )
+
+    assert (
+        lane.run_scene_configuration_allocator_probe(
+            args,
+            control_plane_identity_probe=_identity,
+            expected_source_commit_probe=_expected_source,
+        )
+        == 2
+    )
+    admission = json.loads(Path(args.admission_out).read_text(encoding="utf-8"))
+    result = json.loads(Path(args.adapter_output).read_text(encoding="utf-8"))
+    assert admission["blockers"] == [
+        "scene_configuration_diagnostic_release_receipt_missing"
+    ]
+    assert result["provider_mutations_performed"] == 0
+    assert result["diagnostic_only"] is True
+    assert result["qualification_eligible"] is False
+    assert result["configured_revision_publication_permitted"] is False
+    assert result["offering_publication_permitted"] is False
+    assert result["terminal_e2e_completion_permitted"] is False
 
 
 def test_scene_allocator_refuses_before_adapter_when_admission_is_blocked(
