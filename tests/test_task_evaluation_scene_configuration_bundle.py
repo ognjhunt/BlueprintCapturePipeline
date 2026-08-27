@@ -2329,11 +2329,16 @@ def test_stage_one_disclosure_is_checked_against_the_decision() -> None:
 def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     tmp_path: Path,
 ) -> None:
-    """The declared download ceiling must be measured, not guessed.
+    """The declared ceiling must cover the bundle and pinned stage bootstrap.
 
     Vast prices inbound and outbound bytes per GB outside the hourly rate, so
     the byte ceiling is what lets ``_offer_fits_total_cost_bound`` price an
-    offer's bandwidth against the attempt's compute cap at all.
+    offer's bandwidth against the attempt's compute cap at all. The production
+    non-VIBE ArtiFixer branch still installs CUDA Torch; the Torch wheel and
+    only five of its mandatory Linux wheels total 2,209,255,046 bytes before
+    CUDA Toolkit components, Triton, torchvision, the rest of the Python
+    closure, apt packages, and source fetches. The allowance must therefore be
+    a conservative ceiling above that observed floor, not the old 2 GB value.
     """
 
     receipt = _build(tmp_path, "bundle")
@@ -2343,10 +2348,19 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         0,
     )
     assert receipt["bundle_size_bytes"] > 0
-    # Large enough to cover the onstart toolchain and venv provisioning, and
-    # small enough that bandwidth does not price out otherwise admissible
-    # offers against the attempt's compute cap.
-    assert 1_000_000_000 <= scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES <= 3_000_000_000
+    observed_pinned_wheel_floor = 2_209_255_046
+    assert scene_vast.ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES == (
+        observed_pinned_wheel_floor
+    )
+    assert scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES >= (
+        4 * observed_pinned_wheel_floor
+    )
+    runtime_script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "run_public_scene_artifixer3d.sh"
+    ).read_text(encoding="utf-8")
+    assert "torch==2.11.0 torchvision==0.26.0" in runtime_script
 
     for broken in ({}, {"bundle_size_bytes": 0}, {"bundle_size_bytes": True}):
         with pytest.raises(
