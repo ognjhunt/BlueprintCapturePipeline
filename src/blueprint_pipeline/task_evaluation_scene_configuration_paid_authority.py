@@ -22,7 +22,6 @@ from .task_evaluation_scene_configuration_bundle import (
 
 
 AUTHORITY_SCHEMA_VERSION = "task_evaluation_scene_configuration_paid_authority.v1"
-AGGREGATE_GOAL_SPEND_CAP_USD = 50.0
 MAX_ATTEMPT_SPEND_USD = 5.0
 MAX_PROVIDER_COMPUTE_SPEND_USD = 1.0
 MAX_HOURLY_RATE_USD = 0.80
@@ -227,7 +226,6 @@ def materialize_scene_configuration_paid_authority(
         or zero_time > authorized_time
         or (authorized_time - zero_time).total_seconds()
         > MAX_PROVIDER_ZERO_AGE_SECONDS
-        or project_total + hard_cap_usd > AGGREGATE_GOAL_SPEND_CAP_USD
     ):
         raise TaskEvaluationSceneConfigurationAuthorityError(
             "scene_configuration_authority_configuration_invalid"
@@ -269,7 +267,6 @@ def materialize_scene_configuration_paid_authority(
         "maximum_hourly_rate_usd": max_hourly_rate_usd,
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
         "aggregate_goal_spend_before_attempt_usd": project_total,
-        "aggregate_goal_spend_cap_usd": AGGREGATE_GOAL_SPEND_CAP_USD,
         "project_spend_reconciliation": project_record,
         "initial_provider_zero": {
             **_record(zero_path),
@@ -403,9 +400,6 @@ def validate_scene_configuration_paid_authority(
         if (
             observed > authorized
             or (authorized - observed).total_seconds() > MAX_PROVIDER_ZERO_AGE_SECONDS
-            or float(project["total_cost_usd"])
-            + float(authority.get("hard_attempt_spend_cap_usd") or 0)
-            > AGGREGATE_GOAL_SPEND_CAP_USD
         ):
             raise ValueError("budget or age mismatch")
     except (OSError, TypeError, ValueError):

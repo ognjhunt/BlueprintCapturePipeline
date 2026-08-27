@@ -723,7 +723,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         authority_module,
         "validate_project_spend_reconciliation",
         lambda path, **_kwargs: (
-            {"total_cost_usd": 40.0},
+            {"total_cost_usd": 500.0},
             record(Path(path).resolve()),
         ),
     )
@@ -731,7 +731,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         live_profile_module,
         "validate_project_spend_reconciliation",
         lambda path, **_kwargs: (
-            {"total_cost_usd": 40.0},
+            {"total_cost_usd": 500.0},
             record(Path(path).resolve()),
         ),
     )
@@ -774,8 +774,15 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     )
 
     assert authority["retry_cap"] == 0
+    # Prior spend remains reconciled and receipt-bound, but it no longer
+    # creates an unrelated lifetime ceiling for an explicitly authorized,
+    # tightly bounded one-shot attempt.
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 500.0
+    assert "aggregate_goal_spend_cap_usd" not in authority
+    assert authority["hard_attempt_spend_cap_usd"] == 2.25
+    assert authority["provider_compute_spend_cap_usd"] == 0.75
     assert authority["maximum_provider_allocations"] == 1
-    assert authority["aggregate_goal_spend_before_attempt_usd"] == 40.0
+    assert authority["maximum_automatic_retries"] == 0
     assert authority["external_service_spend_caps"]["openai"][
         "maximum_cost_usd"
     ] == 1.5
