@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -255,10 +256,18 @@ def test_scene_configuration_can_bind_its_visual_review_cost_scope(
             openai_api_key_id="key-scene-review",
             cost_lane_id=scope,
             paid_resource_class=scope,
+            require_zero_baseline=False,
         )
 
     assert observed["lane_id"] == scope
     assert observed["paid_resource_class"] == scope
+    assert observed["require_zero_baseline"] is False
+    assert (
+        inspect.signature(module.run_artifixer_ai_visual_review)
+        .parameters["require_zero_baseline"]
+        .default
+        is True
+    )
 
 
 def test_paired_target_review_binds_source_mask_and_generated_frame(

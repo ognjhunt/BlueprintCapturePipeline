@@ -777,6 +777,11 @@ def execute_artifixer_component(
             max_cost_usd=visual_review_cap,
             cost_lane_id=_VISUAL_REVIEW_COST_SCOPE,
             paid_resource_class=_VISUAL_REVIEW_COST_SCOPE,
+            # The scene lane binds the call to its pre-call official-cost
+            # snapshot and settles only the attributable delta.  Keeping the
+            # generic reviewer's zero-baseline default would make this stage
+            # usable only once per UTC day after its first successful call.
+            require_zero_baseline=False,
         )
     if review.get("decision") != "accepted" or not review.get("review_receipt"):
         raise TaskEvaluationSceneConfigurationArtifixerError(

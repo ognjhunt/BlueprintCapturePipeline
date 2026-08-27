@@ -247,3 +247,4 @@ def test_visual_review_uses_the_scene_lanes_exclusive_cost_scope() -> None:
     )
     assert "cost_lane_id=_VISUAL_REVIEW_COST_SCOPE" in source
     assert "paid_resource_class=_VISUAL_REVIEW_COST_SCOPE" in source
+    assert "require_zero_baseline=False" in source
