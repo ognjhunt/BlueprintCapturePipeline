@@ -15,6 +15,12 @@ GEMINI_EVALUATOR_PAID_SURFACES = {
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
 }
+SCENE_CONFIGURATION_ALLOCATOR = (
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py"
+)
+CONFIGURED_SCENE_OBJECT_STORE = (
+    "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py"
+)
 
 
 def test_request_dict_runpod_create_is_discovered_and_unclassified() -> None:
@@ -123,6 +129,38 @@ def test_gemini_evaluator_paid_paths_are_registered_as_canonical_surfaces() -> N
             "require_paid_resource_admission",
             "require_paid_resource_admission_grant",
         } <= set(surfaces[path]["required_markers"])
+
+
+def test_scene_configuration_paid_surfaces_are_exactly_classified() -> None:
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
+    issuer_allowlist = manifest["issuer_allowlist"]
+    assert SCENE_CONFIGURATION_ALLOCATOR in verifier.APPROVED_ADMISSION_ISSUERS
+    assert SCENE_CONFIGURATION_ALLOCATOR in verifier.APPROVED_LANE_ADMISSION_BUILDERS
+    assert SCENE_CONFIGURATION_ALLOCATOR in issuer_allowlist[
+        "require_paid_resource_admission"
+    ]
+    assert SCENE_CONFIGURATION_ALLOCATOR in issuer_allowlist[
+        "build_paid_lane_admission"
+    ]
+    surfaces = {row["path"]: row for row in manifest["surfaces"]}
+    assert surfaces[SCENE_CONFIGURATION_ALLOCATOR] == {
+        "path": SCENE_CONFIGURATION_ALLOCATOR,
+        "classification": "canonical_adapter",
+        "required_markers": [
+            "build_paid_lane_admission",
+            "require_paid_resource_admission",
+            "run_scene_configuration_vast",
+        ],
+    }
+    assert surfaces[CONFIGURED_SCENE_OBJECT_STORE] == {
+        "path": CONFIGURED_SCENE_OBJECT_STORE,
+        "classification": "metered_object_storage_data_plane",
+        "required_markers": [
+            "upload_file",
+            "get_object",
+            "full_byte_service_account_readback_passed",
+        ],
+    }
 
 
 def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
