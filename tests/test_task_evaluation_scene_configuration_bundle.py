@@ -2003,8 +2003,8 @@ def test_scene_configuration_boundary_requires_only_what_it_installs() -> None:
         assert package in script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
 
 
-def test_provider_entrypoint_never_discards_the_image_pythonpath() -> None:
-    """Assigning PYTHONPATH bare removes the Isaac runtime, USD included.
+def test_provider_entrypoint_preserves_distinct_standalone_and_isaac_paths() -> None:
+    """The pre-Kit and Kit-started processes require distinct USD bindings.
 
     Run ``adp-new-scene-simple-relocation-839873-80fd006f-r2-web-20260827T024309Z``
     rented an RTX GPU, cleared the toolchain gate, built the stage Python
@@ -2013,19 +2013,23 @@ def test_provider_entrypoint_never_discards_the_image_pythonpath() -> None:
     ``scene_configuration_provider_stage_import_closure_invalid``, exit 86,
     ``first_stage_started: false``.
 
-    ``pxr`` is genuinely in the eager import closure of the content-agents
-    stage driver, so the preflight was right to demand it. What removed it was
-    the line above: the entrypoint assigned ``PYTHONPATH`` a bare value, and
-    the Isaac Sim image publishes its own runtime through that variable in the
-    container environment. ``run_public_scene_artifixer3d.sh`` already gets
-    this right at both of its exports; this pins the same rule for every
-    export in the scene-configuration entrypoint.
+    Preserving the inherited path did not clear the same production blocker:
+    bare ``/isaac-sim/python.sh`` does not expose pxr until Kit starts. The
+    parent therefore needs the sealed standalone usd-core wheel, while the
+    native component must retain this original baseline so it can exclude the
+    standalone wheel before SimulationApp starts Kit.
     """
 
     repo = Path(__file__).resolve().parents[1]
     script = (
         repo / "scripts" / "run_task_evaluation_scene_configuration_provider.sh"
     ).read_text(encoding="utf-8")
+
+    baseline = (
+        'export BLUEPRINT_SCENE_CONFIGURATION_ISAAC_PYTHONPATH="${PYTHONPATH-}"'
+    )
+    assert baseline in script
+    assert script.index(baseline) < script.index("export PYTHONPATH=")
 
     exports = [
         line.strip()

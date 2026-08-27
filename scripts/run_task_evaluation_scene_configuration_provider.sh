@@ -11,10 +11,12 @@ if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN=$(command -v python3 || true)
 fi
 
-# Append, never replace. The Isaac Sim image puts its own runtime -- USD
-# (`pxr`) among it -- on PYTHONPATH through the container environment, so
-# assigning a bare value here silently removes it. `run_public_scene_artifixer3d.sh`
-# already preserves the inherited value at both of its exports.
+# Preserve the image's original import path for the native Isaac component.
+# The provider runtime below deliberately adds standalone usd-core so the bare
+# import preflight and Content Agents can use pxr before Kit starts; the native
+# component must restore this baseline before SimulationApp loads Kit's own USD.
+export BLUEPRINT_SCENE_CONFIGURATION_ISAAC_PYTHONPATH="${PYTHONPATH-}"
+# Append, never replace, so other image-provided Python packages stay reachable.
 export PYTHONPATH="$RUNTIME_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT="$RUNTIME_ROOT/toolchain"
 export BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT="$RESULT_PATH"
@@ -121,7 +123,7 @@ if [ "$python_runtime_rc" -ne 0 ]; then
 else
   export PYTHONPATH="$RUNTIME_ROOT:$PYTHON_RUNTIME${PYTHONPATH:+:$PYTHONPATH}"
   # Import the actual stage modules before starting the chain. This checks the
-  # complete eager closure (including pxr from Isaac and the bundled Agents
+  # complete eager closure (including the bundled standalone USD and Agents
   # SDK/Pydantic runtime) before the first expensive render or training step.
   if ! "$PYTHON_BIN" - \
     >"$OUTPUT_ROOT/provider_python_import_preflight.log" 2>&1 <<'PY'

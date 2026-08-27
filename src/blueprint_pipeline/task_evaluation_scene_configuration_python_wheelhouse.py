@@ -1,10 +1,12 @@
 """Build the locked Python runtime missing from the Isaac provider image.
 
-The exact Isaac Sim 6.0.1 image already supplies PIL, NumPy, SciPy, PyYAML,
-and USD.  The scene-configuration stages additionally need the OpenAI Agents
-SDK (and its Pydantic closure).  Resolve that closure from ``uv.lock`` before a
-GPU is rented, download only hash-bound wheels, and ship the resulting
-wheelhouse inside the immutable component package.
+The exact Isaac Sim 6.0.1 image supplies PIL, NumPy, SciPy, and PyYAML to its
+Python launcher, but its USD bindings are not importable until Kit starts.  The
+scene-configuration import preflight and Content Agents driver need standalone
+USD before that point, in addition to the OpenAI Agents SDK and its Pydantic
+closure.  Resolve both roots from ``uv.lock`` before a GPU is rented, download
+only hash-bound wheels, and ship the resulting wheelhouse inside the immutable
+component package.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ TARGET_PLATFORM_TAGS = (
     "manylinux_2_28_x86_64",
     "manylinux_2_35_x86_64",
 )
-ROOT_DISTRIBUTIONS = ("openai-agents",)
+ROOT_DISTRIBUTIONS = ("openai-agents", "usd-core")
 MANIFEST_NAME = f"{SCHEMA_VERSION}.json"
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_WHEEL_BYTES = 256 * 1024**2

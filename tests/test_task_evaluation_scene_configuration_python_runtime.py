@@ -22,11 +22,16 @@ from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse im
 )
 
 
-def _wheel(distribution: str, module: str) -> tuple[str, bytes]:
+def _wheel(
+    distribution: str,
+    module: str,
+    *,
+    module_body: str = "PROVIDER_RUNTIME_FIXTURE = True\n",
+) -> tuple[str, bytes]:
     filename = f"{distribution.replace('-', '_')}-1.0.0-py3-none-any.whl"
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
-        archive.writestr(f"{module}/__init__.py", "PROVIDER_RUNTIME_FIXTURE = True\n")
+        archive.writestr(f"{module}/__init__.py", module_body)
         archive.writestr(
             f"{distribution.replace('-', '_')}-1.0.0.dist-info/METADATA",
             f"Name: {distribution}\nVersion: 1.0.0\n",
@@ -37,7 +42,12 @@ def _wheel(distribution: str, module: str) -> tuple[str, bytes]:
 def _lock(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
     agents_name, agents = _wheel("openai-agents", "provider_agents_fixture")
     pydantic_name, pydantic = _wheel("pydantic", "provider_pydantic_fixture")
-    values = {agents_name: agents, pydantic_name: pydantic}
+    usd_name, usd = _wheel(
+        "usd-core",
+        "pxr",
+        module_body="class Usd:\n    pass\n",
+    )
+    values = {agents_name: agents, pydantic_name: pydantic, usd_name: usd}
 
     def row(name: str, filename: str, body: bytes, *, dependency: str = "") -> str:
         dependencies = f'dependencies = [{{ name = "{dependency}" }}]\n' if dependency else ""
@@ -57,7 +67,8 @@ def _lock(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
     lockfile.write_text(
         "version = 1\n"
         + row("openai-agents", agents_name, agents, dependency="pydantic")
-        + row("pydantic", pydantic_name, pydantic),
+        + row("pydantic", pydantic_name, pydantic)
+        + row("usd-core", usd_name, usd),
         encoding="utf-8",
     )
     return lockfile, values
@@ -87,6 +98,7 @@ def test_builds_and_materializes_exact_provider_dependency_closure(
     assert {row["name"] for row in manifest["requirements"]} == {
         "openai-agents",
         "pydantic",
+        "usd-core",
     }
     sys.path.insert(0, str(runtime))
     try:
@@ -98,18 +110,30 @@ def test_builds_and_materializes_exact_provider_dependency_closure(
             importlib.import_module("provider_pydantic_fixture").PROVIDER_RUNTIME_FIXTURE
             is True
         )
+        assert importlib.import_module("pxr").Usd
     finally:
         sys.path.remove(str(runtime))
         sys.modules.pop("provider_agents_fixture", None)
         sys.modules.pop("provider_pydantic_fixture", None)
+        sys.modules.pop("pxr", None)
 
 
-def test_real_lock_closes_agents_sdk_and_pydantic_for_python_312() -> None:
+def test_real_lock_closes_agents_sdk_pydantic_and_usd_for_python_312() -> None:
     lockfile = Path(__file__).resolve().parents[1] / "uv.lock"
     plan = plan_scene_configuration_python_wheelhouse(lockfile.read_bytes())
     names = {row["name"] for row in plan["requirements"]}
 
-    assert {"openai-agents", "openai", "pydantic", "pydantic-core"} <= names
+    assert {
+        "openai-agents",
+        "openai",
+        "pydantic",
+        "pydantic-core",
+        "usd-core",
+    } <= names
+    usd_wheel = next(
+        row for row in plan["wheels"] if row["distribution"] == "usd-core"
+    )
+    assert "cp312" in usd_wheel["filename"]
     assert plan["wheels"]
     assert all("cp311" not in row["filename"] for row in plan["wheels"])
 

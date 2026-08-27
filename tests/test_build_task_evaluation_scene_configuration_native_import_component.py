@@ -60,4 +60,10 @@ def test_native_import_component_is_release_bound_and_scene_neutral(
     assert built["source_identity"]["scene_specific_source"] is False
     assert built["network_policy"] == "disabled"
     assert (output / "run").stat().st_mode & 0o111
-
+    entrypoint = (output / "run").read_text(encoding="utf-8")
+    assert "BLUEPRINT_SCENE_CONFIGURATION_ISAAC_PYTHONPATH" in entrypoint
+    assert (
+        'export PYTHONPATH="$RUNTIME_ROOT${ISAAC_PYTHONPATH:+:$ISAAC_PYTHONPATH}"'
+        in entrypoint
+    )
+    assert "provider_python_runtime" not in entrypoint

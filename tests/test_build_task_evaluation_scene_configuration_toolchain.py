@@ -46,7 +46,9 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
             wheels = wheelhouse / "wheels"
             wheels.mkdir(parents=True)
             wheel = wheels / "openai_agents-1.0.0-py3-none-any.whl"
-            wheel.write_bytes(b"fixture-wheel")
+            usd_wheel = wheels / "usd_core-1.0.0-py3-none-any.whl"
+            wheel.write_bytes(b"fixture-agents-wheel")
+            usd_wheel.write_bytes(b"fixture-usd-wheel")
             python_manifest = {
                 "schema_version": (
                     "task_evaluation_scene_configuration_python_wheelhouse.v1"
@@ -57,9 +59,10 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
                 "platform": "linux-x86_64",
                 "platform_tags": ["manylinux_2_17_x86_64"],
                 "lockfile_sha256": "sha256:" + "1" * 64,
-                "root_distributions": ["openai-agents"],
+                "root_distributions": ["openai-agents", "usd-core"],
                 "requirements": [
-                    {"name": "openai-agents", "version": "1.0.0"}
+                    {"name": "openai-agents", "version": "1.0.0"},
+                    {"name": "usd-core", "version": "1.0.0"},
                 ],
                 "wheels": [
                     {
@@ -68,7 +71,14 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
                         "filename": wheel.name,
                         "sha256": _sha256(wheel),
                         "size_bytes": wheel.stat().st_size,
-                    }
+                    },
+                    {
+                        "distribution": "usd-core",
+                        "version": "1.0.0",
+                        "filename": usd_wheel.name,
+                        "sha256": _sha256(usd_wheel),
+                        "size_bytes": usd_wheel.stat().st_size,
+                    },
                 ],
                 "sdists_allowed": False,
                 "provider_network_install_required": False,
@@ -85,9 +95,10 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
             )
             python_manifest_path.chmod(0o444)
             wheel.chmod(0o444)
+            usd_wheel.chmod(0o444)
             wheels.chmod(0o555)
             wheelhouse.chmod(0o555)
-            for path in (python_manifest_path, wheel):
+            for path in (python_manifest_path, wheel, usd_wheel):
                 package_files.append(
                     {
                         "relative_path": path.relative_to(root).as_posix(),
@@ -164,7 +175,7 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
     assert receipt["full_byte_service_account_readback_passed"] is True
     assert receipt["provider_mutation_performed"] is False
     assert receipt["paid_resource_allocated"] is False
-    assert len(observed) == 3 * len(ADMITTED_PRODUCER_IDENTITIES) + 3
+    assert len(observed) == 3 * len(ADMITTED_PRODUCER_IDENTITIES) + 4
     assert not output.stat().st_mode & 0o222
     assert all(not path.stat().st_mode & 0o222 for path in output.rglob("*"))
     for identity in ADMITTED_PRODUCER_IDENTITIES:
