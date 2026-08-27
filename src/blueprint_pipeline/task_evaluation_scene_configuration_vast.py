@@ -45,6 +45,10 @@ from .task_evaluation_scene_configuration_bundle import (
     RESULT_FILENAME,
     load_scene_configuration_provider_bundle_receipt,
 )
+from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
+    SCHEMA_VERSION as DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION,
+    validate_scene_configuration_diagnostic_checkpoint,
+)
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
 )
@@ -60,6 +64,7 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     OUTPUT_CLOSURE_RESERVE_SECONDS_ENV,
     PARENT_DEADLINE_EPOCH_ENV,
     ceil_live_minutes,
+    diagnostic_parent_runtime_budget_blockers,
     parent_runtime_budget_blockers,
 )
 from .task_evaluation_scene_construction_queue import (
@@ -89,6 +94,9 @@ from .wam_provider_object_store import (
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
+DIAGNOSTIC_RESULT_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_diagnostic_vast_result.v1"
+)
 #: Provider-namespace label the independent watchdog reaps by. It is not the
 #: run's admission identity: the authority's ``resource_name`` names *which
 #: attempt* is authorized, while this names *whose instances* the watchdog may
@@ -474,11 +482,61 @@ def _consume_authority_once(
     }
 
 
+def _validated_advanced_checkpoint_reference(
+    *, extraction_root: Path, result: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    reference = result.get("advanced_checkpoint")
+    if not isinstance(reference, Mapping):
+        return None, "scene_configuration_diagnostic_advanced_checkpoint_missing"
+    relative_root = str(reference.get("provider_output_relative_root") or "")
+    relative_manifest = str(reference.get("manifest_relative_path") or "")
+    if (
+        not relative_root
+        or not relative_manifest
+        or Path(relative_root).is_absolute()
+        or Path(relative_manifest).is_absolute()
+        or ".." in Path(relative_root).parts
+        or ".." in Path(relative_manifest).parts
+    ):
+        return None, "scene_configuration_diagnostic_advanced_checkpoint_unsafe"
+    root = (extraction_root / relative_root).resolve()
+    manifest = (extraction_root / relative_manifest).resolve()
+    try:
+        root.relative_to(extraction_root)
+        manifest.relative_to(root)
+    except ValueError:
+        return None, "scene_configuration_diagnostic_advanced_checkpoint_unsafe"
+    if manifest != root / f"{DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION}.json":
+        return None, "scene_configuration_diagnostic_advanced_checkpoint_unsafe"
+    try:
+        checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=root
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None, "scene_configuration_diagnostic_advanced_checkpoint_invalid"
+    files = [path for path in root.rglob("*") if path.is_file()]
+    if (
+        _sha256(manifest) != reference.get("manifest_sha256")
+        or checkpoint.get("checkpoint_digest") != reference.get("checkpoint_digest")
+        or checkpoint.get("completed_stage_prefix_count")
+        != reference.get("completed_stage_prefix_count")
+        or len(files) != reference.get("file_count")
+        or sum(path.stat().st_size for path in files) != reference.get("total_bytes")
+    ):
+        return None, "scene_configuration_diagnostic_advanced_checkpoint_invalid"
+    return {
+        **dict(reference),
+        "checkpoint_root": str(root),
+        "manifest_path": str(manifest),
+    }, None
+
+
 def _extract_provider_output(
     archive_path: Path,
     destination: Path,
     *,
     maximum_archive_bytes: int,
+    diagnostic_only: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     blockers: list[str] = []
     if (
@@ -555,27 +613,53 @@ def _extract_provider_output(
             for item in provider_blockers
         )
     )
+    expected_provider_schema = (
+        "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
+        if diagnostic_only
+        else "task_evaluation_scene_configuration_provider_result.v1"
+    )
     if (
-        result.get("schema_version")
-        != "task_evaluation_scene_configuration_provider_result.v1"
+        result.get("schema_version") != expected_provider_schema
         or result.get("result_digest")
         != canonical_digest(result, digest_field="result_digest")
-        or result.get("evaluation_episode_executed") is not False
-        or result.get("candidate_policy_queried") is not False
         or result.get("provider_zero_required_after_return") is not True
         or not provider_blockers_valid
     ):
         blockers.append("scene_configuration_provider_result_contract_invalid")
-    if result.get("status") == "completed":
+    if diagnostic_only:
+        if (
+            result.get("diagnostic_only") is not True
+            or result.get("qualification_eligible") is not False
+            or result.get("executed_inside_one_parent_provider_run") is not False
+            or result.get("configured_revision_publication_permitted") is not False
+            or result.get("offering_publication_permitted") is not False
+            or result.get("terminal_e2e_completion_permitted") is not False
+            or result.get("raw_secret_values_recorded") is not False
+        ):
+            blockers.append("scene_configuration_diagnostic_claim_boundary_invalid")
+    elif (
+        result.get("evaluation_episode_executed") is not False
+        or result.get("candidate_policy_queried") is not False
+    ):
+        blockers.append("scene_configuration_provider_result_contract_invalid")
+    completed_status = (
+        "completed_diagnostic_only_not_qualification_eligible"
+        if diagnostic_only
+        else "completed"
+    )
+    if result.get("status") == completed_status:
         if provider_blockers != []:
             blockers.append("scene_configuration_provider_result_contract_invalid")
-        chain = result.get("stage_chain")
+        chain = result.get(
+            "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
+        )
         if (
             not isinstance(chain, Mapping)
-            or chain.get("status") != "completed"
+            or chain.get("status") != completed_status
             or chain.get("stage_count") != 6
             or len(chain.get("stage_results") or []) != 6
-            or chain.get("executed_inside_one_parent_provider_run") is not True
+            or chain.get("executed_inside_one_parent_provider_run")
+            is not (not diagnostic_only)
             or chain.get("nested_provider_mutations_performed") != 0
             or chain.get("nested_paid_execution_requested") is not False
             or chain.get("evaluation_episode_executed") is not False
@@ -584,7 +668,19 @@ def _extract_provider_output(
             != canonical_digest(chain, digest_field="result_digest")
         ):
             blockers.append("scene_configuration_stage_chain_invalid")
-    elif result.get("status") == "blocked":
+        if diagnostic_only and not blockers:
+            advanced_reference, advanced_blocker = (
+                _validated_advanced_checkpoint_reference(
+                    extraction_root=root, result=result
+                )
+            )
+            if advanced_blocker is not None:
+                blockers.append(advanced_blocker)
+            elif advanced_reference is not None:
+                result["_validated_advanced_checkpoint"] = advanced_reference
+    elif result.get("status") == (
+        "blocked_diagnostic_only" if diagnostic_only else "blocked"
+    ):
         if not provider_blockers_valid or not provider_blockers:
             blockers.append("scene_configuration_provider_result_contract_invalid")
         else:
@@ -828,6 +924,7 @@ def _extract_provider_output_with_capacity_guard(
     destination: Path,
     *,
     maximum_archive_bytes: int,
+    diagnostic_only: bool = False,
     disk_usage_provider: Callable[[Path], Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """Re-stat free bytes immediately before invoking the unchanged extractor."""
@@ -847,6 +944,7 @@ def _extract_provider_output_with_capacity_guard(
         archive_path,
         destination,
         maximum_archive_bytes=maximum_archive_bytes,
+        diagnostic_only=diagnostic_only,
     )
     return result, blockers, capacity
 
@@ -1020,6 +1118,7 @@ def run_scene_configuration_vast(
     paid_attempt_authority_path: str | Path,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    diagnostic_only: bool = False,
     scene_construction_queue_root: str | Path | None = None,
     disk_usage_provider: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
@@ -1027,7 +1126,27 @@ def run_scene_configuration_vast(
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
-    receipt = load_scene_configuration_provider_bundle_receipt(bundle_receipt_path)
+    receipt = load_scene_configuration_provider_bundle_receipt(
+        bundle_receipt_path, diagnostic_only=diagnostic_only
+    )
+    result_schema_version = (
+        DIAGNOSTIC_RESULT_SCHEMA_VERSION
+        if diagnostic_only
+        else RESULT_SCHEMA_VERSION
+    )
+    blocked_status = "blocked_diagnostic_only" if diagnostic_only else "blocked"
+    diagnostic_claim_boundary = (
+        {
+            "diagnostic_only": True,
+            "qualification_eligible": False,
+            "executed_inside_one_parent_provider_run": False,
+            "configured_revision_publication_permitted": False,
+            "offering_publication_permitted": False,
+            "terminal_e2e_completion_permitted": False,
+        }
+        if diagnostic_only
+        else {}
+    )
     authority_path = Path(paid_attempt_authority_path).expanduser().resolve()
     authority = validate_scene_configuration_paid_authority(
         _read(authority_path), bundle_receipt=receipt
@@ -1035,21 +1154,33 @@ def run_scene_configuration_vast(
     compute_cap = float(authority["provider_compute_spend_cap_usd"])
     rate = float(authority["maximum_hourly_rate_usd"])
     ttl = int(authority["maximum_single_resource_ttl_seconds"])
-    runtime_budget_blockers = parent_runtime_budget_blockers(
-        ttl_seconds=ttl,
-        maximum_hourly_rate_usd=rate,
-        provider_compute_spend_cap_usd=compute_cap,
+    runtime_budget_blockers = (
+        diagnostic_parent_runtime_budget_blockers(
+            completed_stage_prefix_count=int(
+                receipt.get("carried_completed_stage_count") or 0
+            ),
+            ttl_seconds=ttl,
+            maximum_hourly_rate_usd=rate,
+            provider_compute_spend_cap_usd=compute_cap,
+        )
+        if diagnostic_only
+        else parent_runtime_budget_blockers(
+            ttl_seconds=ttl,
+            maximum_hourly_rate_usd=rate,
+            provider_compute_spend_cap_usd=compute_cap,
+        )
     )
     if runtime_budget_blockers:
         blocked = {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked",
+            "schema_version": result_schema_version,
+            "status": blocked_status,
             "run_id": receipt["run_id"],
             "source_commit": receipt["source_commit"],
             "bundle_sha256": receipt["bundle_sha256"],
             "authority_digest": authority["authority_digest"],
             "provider_mutations_performed": 0,
             "retry_cap": 0,
+            **diagnostic_claim_boundary,
             "continuing_spend_from_this_run": False,
             "blockers": runtime_budget_blockers,
         }
@@ -1066,15 +1197,20 @@ def run_scene_configuration_vast(
         return _seal_terminal_result(
             job,
             {
-                "schema_version": RESULT_SCHEMA_VERSION,
+                "schema_version": result_schema_version,
                 "generated_at": utc_now_iso(),
-                "status": "dry_run_ready",
+                "status": (
+                    "dry_run_ready_diagnostic_only"
+                    if diagnostic_only
+                    else "dry_run_ready"
+                ),
                 "run_id": receipt["run_id"],
                 "source_commit": receipt["source_commit"],
                 "bundle_sha256": receipt["bundle_sha256"],
                 "authority_digest": authority["authority_digest"],
                 "provider_mutations_performed": 0,
                 "retry_cap": 0,
+                **diagnostic_claim_boundary,
                 "blockers": [],
             },
         )
@@ -1113,14 +1249,15 @@ def run_scene_configuration_vast(
         return _seal_live_terminal_result(
             job,
             {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked",
+                "schema_version": result_schema_version,
+                "status": blocked_status,
                 "run_id": receipt["run_id"],
                 "source_commit": receipt["source_commit"],
                 "bundle_sha256": receipt["bundle_sha256"],
                 "authority_digest": authority["authority_digest"],
                 "provider_mutations_performed": 0,
                 "retry_cap": 0,
+                **diagnostic_claim_boundary,
                 "continuing_spend_from_this_run": False,
                 "expected_provider_download_bytes": expected_download_bytes,
                 "expected_provider_upload_bytes": expected_upload_bytes,
@@ -1151,14 +1288,15 @@ def run_scene_configuration_vast(
         return _seal_live_terminal_result(
             job,
             {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked",
+                "schema_version": result_schema_version,
+                "status": blocked_status,
                 "run_id": receipt["run_id"],
                 "source_commit": receipt["source_commit"],
                 "bundle_sha256": receipt["bundle_sha256"],
                 "authority_digest": authority["authority_digest"],
                 "provider_mutations_performed": 0,
                 "retry_cap": 0,
+                **diagnostic_claim_boundary,
                 "object_store_cleanup": cleanup,
                 "continuing_spend_from_this_run": False,
                 "blockers": blockers,
@@ -1182,14 +1320,15 @@ def run_scene_configuration_vast(
         return _seal_live_terminal_result(
             job,
             {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked",
+                "schema_version": result_schema_version,
+                "status": blocked_status,
                 "run_id": receipt["run_id"],
                 "source_commit": receipt["source_commit"],
                 "bundle_sha256": receipt["bundle_sha256"],
                 "authority_digest": authority["authority_digest"],
                 "provider_mutations_performed": 0,
                 "retry_cap": 0,
+                **diagnostic_claim_boundary,
                 "all_staged_objects_absent": cleanup.get("all_objects_absent"),
                 "object_store_cleanup": cleanup,
                 "independent_watchdog": watchdog_handoff,
@@ -1230,14 +1369,15 @@ def run_scene_configuration_vast(
         return _seal_live_terminal_result(
             job,
             {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked",
+                "schema_version": result_schema_version,
+                "status": blocked_status,
                 "run_id": receipt["run_id"],
                 "source_commit": receipt["source_commit"],
                 "bundle_sha256": receipt["bundle_sha256"],
                 "authority_digest": authority["authority_digest"],
                 "provider_mutations_performed": 0,
                 "retry_cap": 0,
+                **diagnostic_claim_boundary,
                 "authorization_consumption": consumption,
                 "all_staged_objects_absent": cleanup.get("all_objects_absent"),
                 "object_store_cleanup": cleanup,
@@ -1363,6 +1503,7 @@ def run_scene_configuration_vast(
             output_zip,
             job / "immutable_execution",
             maximum_archive_bytes=expected_upload_bytes,
+            diagnostic_only=diagnostic_only,
             disk_usage_provider=disk_usage_provider,
         )
     )
@@ -1373,14 +1514,28 @@ def run_scene_configuration_vast(
     blockers.extend(
         str(item) for item in adapter.get("blockers") or [] if str(item)
     )
-    if execution.get("status") != "completed":
+    expected_execution_status = (
+        "completed_diagnostic_only_not_qualification_eligible"
+        if diagnostic_only
+        else "completed"
+    )
+    if execution.get("status") != expected_execution_status:
         blockers.append("scene_configuration_provider_not_completed")
-    if execution.get("source_commit") != receipt.get("source_commit"):
+    provider_source_commit = execution.get(
+        "diagnostic_source_commit" if diagnostic_only else "source_commit"
+    )
+    if provider_source_commit != receipt.get("source_commit"):
         blockers.append("scene_configuration_provider_source_commit_mismatch")
-    if execution.get("construction_envelope_digest") != receipt.get(
-        "portable_construction_envelope_digest"
+    if (
+        not diagnostic_only
+        and execution.get("construction_envelope_digest")
+        != receipt.get("portable_construction_envelope_digest")
     ):
         blockers.append("scene_configuration_provider_envelope_mismatch")
+    if diagnostic_only and execution.get(
+        "source_checkpoint_digest"
+    ) != receipt.get("source_diagnostic_checkpoint_digest"):
+        blockers.append("scene_configuration_diagnostic_checkpoint_mismatch")
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append("provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
@@ -1391,9 +1546,31 @@ def run_scene_configuration_vast(
     }:
         blockers.append("independent_watchdog_not_closed")
 
+    advanced_checkpoint_reference: dict[str, Any] = {}
+    advanced_checkpoint_reference_path = job / "advanced_checkpoint_reference.v1.json"
+    validated_advanced = execution.pop("_validated_advanced_checkpoint", None)
+    if diagnostic_only and isinstance(validated_advanced, Mapping):
+        advanced_checkpoint_reference = {
+            "schema_version": (
+                "task_evaluation_scene_configuration_advanced_checkpoint_reference.v1"
+            ),
+            "status": "validated_diagnostic_checkpoint_ready_for_next_retry",
+            **dict(validated_advanced),
+            "source_provider_result_digest": execution.get("result_digest"),
+            "diagnostic_only": True,
+            "qualification_eligible": False,
+            "reference_digest": "",
+        }
+        advanced_checkpoint_reference["reference_digest"] = canonical_digest(
+            advanced_checkpoint_reference, digest_field="reference_digest"
+        )
+        write_json(advanced_checkpoint_reference_path, advanced_checkpoint_reference)
+    elif diagnostic_only and not blockers:
+        blockers.append("scene_configuration_diagnostic_advanced_checkpoint_missing")
+
     publication: dict[str, Any] = {}
     publication_root = job / "configured_scene_publication"
-    if not blockers:
+    if not blockers and not diagnostic_only:
         try:
             publication = _publish_completed_configuration(
                 receipt=receipt,
@@ -1406,7 +1583,10 @@ def run_scene_configuration_vast(
                 "scene_configuration_configured_revision_publication_failed:"
                 + redacted_failure_detail(exc)
             )
-    if publication.get("status") != "configured_scene_published":
+    if (
+        not diagnostic_only
+        and publication.get("status") != "configured_scene_published"
+    ):
         blockers.append("scene_configuration_configured_revision_not_published")
 
     artifact_manifest_path = job / "artifact_manifest.json"
@@ -1435,7 +1615,11 @@ def run_scene_configuration_vast(
                 "source_commit": receipt["source_commit"],
                 "bundle_sha256": receipt["bundle_sha256"],
                 "provider": "vast",
-                "result_schema_version": RESULT_SCHEMA_VERSION,
+                "result_schema_version": (
+                    DIAGNOSTIC_RESULT_SCHEMA_VERSION
+                    if diagnostic_only
+                    else RESULT_SCHEMA_VERSION
+                ),
                 "retry_cap": 0,
             },
             output_path=artifact_manifest_path,
@@ -1446,9 +1630,21 @@ def run_scene_configuration_vast(
     if artifact_manifest.get("status") != "completed":
         blockers.extend(str(item) for item in artifact_manifest.get("blockers") or [])
     result: dict[str, Any] = {
-        "schema_version": RESULT_SCHEMA_VERSION,
+        "schema_version": (
+            DIAGNOSTIC_RESULT_SCHEMA_VERSION
+            if diagnostic_only
+            else RESULT_SCHEMA_VERSION
+        ),
         "generated_at": utc_now_iso(),
-        "status": "completed" if not blockers else "blocked",
+        "status": (
+            "completed_diagnostic_only"
+            if diagnostic_only and not blockers
+            else "completed"
+            if not blockers
+            else "blocked_diagnostic_only"
+            if diagnostic_only
+            else "blocked"
+        ),
         "run_id": receipt["run_id"],
         "source_commit": receipt["source_commit"],
         "bundle_sha256": receipt["bundle_sha256"],
@@ -1459,6 +1655,14 @@ def run_scene_configuration_vast(
         ),
         "execution_result_path": str(
             job / "immutable_execution" / RESULT_FILENAME
+        ),
+        "advanced_checkpoint_reference_path": (
+            str(advanced_checkpoint_reference_path)
+            if advanced_checkpoint_reference_path.is_file()
+            else None
+        ),
+        "advanced_checkpoint_reference_digest": advanced_checkpoint_reference.get(
+            "reference_digest"
         ),
         "artifact_manifest_path": (
             str(artifact_manifest_path) if artifact_manifest_path.is_file() else None
@@ -1479,12 +1683,21 @@ def run_scene_configuration_vast(
             "before_allocation_and_staging": preallocation_disk_capacity,
             "before_extraction": extraction_disk_capacity,
         },
-        "stage_chain_result_digest": (execution.get("stage_chain") or {}).get(
-            "result_digest"
+        "stage_chain_result_digest": (
+            execution.get(
+                "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
+            )
+            or {}
+        ).get("result_digest"),
+        "configuration_completed": (
+            False if diagnostic_only else execution.get("status") == "completed"
         ),
-        "configuration_completed": execution.get("status") == "completed",
+        "diagnostic_execution_completed": (
+            diagnostic_only and execution.get("status") == expected_execution_status
+        ),
         "configured_scene_published": (
-            publication.get("status") == "configured_scene_published"
+            not diagnostic_only
+            and publication.get("status") == "configured_scene_published"
         ),
         "configured_scene_revision_path": (
             (publication.get("configured_scene_revision") or {}).get("path")
@@ -1535,6 +1748,17 @@ def run_scene_configuration_vast(
         "blockers": sorted(set(blockers)),
         "result_digest": "",
     }
+    if diagnostic_only:
+        result.update(
+            {
+                "diagnostic_only": True,
+                "qualification_eligible": False,
+                "executed_inside_one_parent_provider_run": False,
+                "configured_revision_publication_permitted": False,
+                "offering_publication_permitted": False,
+                "terminal_e2e_completion_permitted": False,
+            }
+        )
     return _seal_live_terminal_result(
         job,
         result,

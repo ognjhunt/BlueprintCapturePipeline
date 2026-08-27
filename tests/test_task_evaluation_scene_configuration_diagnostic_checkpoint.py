@@ -316,6 +316,28 @@ def test_checkpoint_refuses_partial_semantic_prefix(tmp_path: Path) -> None:
         )
 
 
+def test_checkpoint_refuses_secret_material_in_retained_inputs(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    request_path = fixture["request_path"]
+    value = json.loads(request_path.read_text(encoding="utf-8"))
+    value["openai_api_key"] = "sk-secret-must-not-be-retained"
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    _write(request_path, value)
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+        match="scene_configuration_diagnostic_checkpoint_secret_material_forbidden",
+    ):
+        materialize_scene_configuration_diagnostic_checkpoint(
+            stage_production_input_path=fixture["stage_path"],
+            render_inputs_result_path=fixture["render_path"],
+            semantic_runtime_request_path=request_path,
+            semantic_runtime_result_path=fixture["result_path"],
+            semantic_teacher_receipt_path=fixture["receipt_path"],
+            output_root=tmp_path / "checkpoint",
+        )
+
+
 def test_checkpoint_reopen_refuses_changed_frame_bytes(tmp_path: Path) -> None:
     root, _result, _fixture_rows = _materialize(tmp_path)
     frame = root / "render/frames/00000.png"

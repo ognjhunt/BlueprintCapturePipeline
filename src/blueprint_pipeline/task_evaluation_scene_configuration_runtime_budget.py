@@ -85,6 +85,72 @@ def required_remaining_stage_seconds(
     return remaining
 
 
+def diagnostic_required_parent_ttl_seconds(completed_stage_prefix_count: int) -> int:
+    """Bound one diagnostic lease to only its first incomplete stage onward."""
+
+    if (
+        isinstance(completed_stage_prefix_count, bool)
+        or not isinstance(completed_stage_prefix_count, int)
+        or not 0 <= completed_stage_prefix_count <= 6
+    ):
+        raise ValueError("scene_configuration_diagnostic_runtime_budget_invalid")
+    # GPU stages occupy recipe indexes 0, 2, and 4. A carried stage result is
+    # already sealed and cannot consume its former allowance again.
+    remaining_gpu_seconds = sum(
+        timeout
+        for index, timeout in ((0, 7_800), (2, 7_800), (4, 1_800))
+        if index >= completed_stage_prefix_count
+    )
+    return (
+        remaining_gpu_seconds
+        + BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS
+        + OUTPUT_AND_CLOSURE_RESERVE_SECONDS
+    )
+
+
+def diagnostic_parent_runtime_budget_blockers(
+    *,
+    completed_stage_prefix_count: int,
+    ttl_seconds: Any,
+    maximum_hourly_rate_usd: Any,
+    provider_compute_spend_cap_usd: Any,
+) -> list[str]:
+    """Require a diagnostic authority to cover exactly its remaining prefix."""
+
+    try:
+        required_ttl = diagnostic_required_parent_ttl_seconds(
+            completed_stage_prefix_count
+        )
+    except ValueError:
+        return ["scene_configuration_diagnostic_runtime_budget_invalid"]
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, int)
+        or isinstance(maximum_hourly_rate_usd, bool)
+        or not isinstance(maximum_hourly_rate_usd, (int, float))
+        or isinstance(provider_compute_spend_cap_usd, bool)
+        or not isinstance(provider_compute_spend_cap_usd, (int, float))
+    ):
+        return ["scene_configuration_diagnostic_runtime_budget_invalid"]
+    rate = float(maximum_hourly_rate_usd)
+    compute_cap = float(provider_compute_spend_cap_usd)
+    if not math.isfinite(rate) or not math.isfinite(compute_cap):
+        return ["scene_configuration_diagnostic_runtime_budget_invalid"]
+    blockers: list[str] = []
+    if ttl_seconds < required_ttl:
+        blockers.append(
+            "scene_configuration_diagnostic_runtime_budget_insufficient:"
+            f"{required_ttl}:{ttl_seconds}"
+        )
+    required_compute = rate * ttl_seconds / 3600.0
+    if compute_cap + 1e-9 < required_compute:
+        blockers.append(
+            "scene_configuration_diagnostic_provider_compute_budget_insufficient:"
+            f"{required_compute:.6f}:{compute_cap:.6f}"
+        )
+    return blockers
+
+
 def parent_runtime_budget_blockers(
     *,
     ttl_seconds: Any,
@@ -138,6 +204,8 @@ __all__ = [
     "REQUIRED_PARENT_TTL_SECONDS",
     "SERIAL_GPU_STAGE_TIMEOUT_SECONDS",
     "ceil_live_minutes",
+    "diagnostic_parent_runtime_budget_blockers",
+    "diagnostic_required_parent_ttl_seconds",
     "parent_runtime_budget_blockers",
     "required_remaining_stage_seconds",
 ]

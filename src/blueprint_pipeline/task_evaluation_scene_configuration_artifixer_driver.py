@@ -44,6 +44,7 @@ from .public_scene_artifixer3d_dual_target_inputs import (
 )
 from .semantic_teacher_image_edit_worker import (
     RUNTIME_REQUEST_SCHEMA_VERSION as SEMANTIC_RUNTIME_REQUEST_SCHEMA_VERSION,
+    RUNTIME_RESULT_SCHEMA_VERSION as SEMANTIC_RUNTIME_RESULT_SCHEMA_VERSION,
     execute_semantic_teacher_image_edits,
 )
 from .task_evaluation_artifixer_ai_visual_review import (
@@ -56,6 +57,12 @@ from .task_evaluation_scene_configuration_component_package import (
 )
 from .task_evaluation_scene_configuration_disclosure import (
     PENDING_PROVIDER_RENDER_STATUS,
+)
+from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
+    diagnostic_checkpoint_scientific_binding_digest,
+    hydrate_scene_configuration_diagnostic_render_inputs,
+    hydrate_scene_configuration_diagnostic_semantic_outputs,
+    materialize_scene_configuration_diagnostic_checkpoint,
 )
 from .task_evaluation_scene_configuration_artifixer_failure_evidence import (
     ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
@@ -84,6 +91,9 @@ _DEPENDENCIES_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
 _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 _RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 _PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
+_DIAGNOSTIC_CHECKPOINT_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
+)
 _ADAPTER_ID = "artifixer3d_observed_object_removal"
 _VISUAL_REVIEW_COST_SCOPE = (
     "task_evaluation_scene_configuration_artifixer_visual_review"
@@ -633,8 +643,9 @@ def execute_artifixer_component(
     """Run the released production chain once inside its parent GPU."""
 
     values = dict(os.environ if environment is None else environment)
+    stage_input_path = _required_path(values, _INPUT_ENV)
     stage_input = _read(
-        _required_path(values, _INPUT_ENV),
+        stage_input_path,
         code="scene_configuration_artifixer_input_invalid",
     )
     dependencies = json.loads(_required_path(values, _DEPENDENCIES_ENV).read_text(encoding="utf-8"))
@@ -665,7 +676,27 @@ def execute_artifixer_component(
     # here, on the GPU this stage already occupies, before anything reads
     # the frames.
     render_inputs = envelope.get("render_inputs_result")
-    if (
+    checkpoint_root_value = str(values.get(_DIAGNOSTIC_CHECKPOINT_ENV) or "").strip()
+    checkpoint_root = (
+        Path(checkpoint_root_value).expanduser().resolve()
+        if checkpoint_root_value
+        else None
+    )
+    if checkpoint_root is not None:
+        expected_binding_digest = diagnostic_checkpoint_scientific_binding_digest(
+            stage_input=stage_input,
+            render_inputs=render_inputs,
+        )
+        envelope = {
+            **envelope,
+            "render_inputs_result": (
+                hydrate_scene_configuration_diagnostic_render_inputs(
+                    checkpoint_root=checkpoint_root,
+                    expected_scientific_binding_digest=expected_binding_digest,
+                )
+            ),
+        }
+    elif (
         isinstance(render_inputs, Mapping)
         and render_inputs.get("status") == PENDING_PROVIDER_RENDER_STATUS
     ):
@@ -720,7 +751,6 @@ def execute_artifixer_component(
         publisher_scene_id=publisher_scene_id,
         output_root=work,
     )
-    token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
     semantic_output = work / "semantic_teacher_output"
     semantic_cap_raw = values.get(
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"
@@ -742,33 +772,47 @@ def execute_artifixer_component(
         maximum_cost_usd=semantic_cap,
         expected_request_cost_usd=expected_frame_cost,
     )
-    semantic_cost_gate = scene_configuration_openai_stage_gate(
-        environment=values,
-        stage="artifixer_semantic_teacher",
-        run_id=f"{stage_input['run_id']}-artifixer-semantic-teacher",
-        request_digest=_sha256(semantic_request),
-        candidate_digest=str(candidate["receipt_digest"]),
-        output_root=work / "semantic_teacher_official_openai_cost",
-    )
-    semantic_cost_gate.reserve()
-    try:
-        semantic_result = execute_semantic_teacher_image_edits(
-            runtime_request_path=semantic_request,
+    token = ""
+    if checkpoint_root is not None:
+        semantic_result = hydrate_scene_configuration_diagnostic_semantic_outputs(
+            checkpoint_root=checkpoint_root,
+            current_semantic_runtime_request=_read(
+                semantic_request,
+                code="scene_configuration_artifixer_semantic_request_invalid",
+            ),
             output_root=semantic_output,
-            token=token,
         )
-    except Exception as exc:
+    else:
+        token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
+        semantic_cost_gate = scene_configuration_openai_stage_gate(
+            environment=values,
+            stage="artifixer_semantic_teacher",
+            run_id=f"{stage_input['run_id']}-artifixer-semantic-teacher",
+            request_digest=_sha256(semantic_request),
+            candidate_digest=str(candidate["receipt_digest"]),
+            output_root=work / "semantic_teacher_official_openai_cost",
+        )
+        semantic_cost_gate.reserve()
+        try:
+            semantic_result = execute_semantic_teacher_image_edits(
+                runtime_request_path=semantic_request,
+                output_root=semantic_output,
+                token=token,
+            )
+        except Exception as exc:
+            semantic_cost_gate.complete(
+                provider_call_performed=True,
+                runtime_result_digest=None,
+                runtime_exception_type=type(exc).__name__,
+            )
+            raise
         semantic_cost_gate.complete(
             provider_call_performed=True,
-            runtime_result_digest=None,
-            runtime_exception_type=type(exc).__name__,
+            runtime_result_digest=(
+                str(semantic_result.get("result_digest") or "") or None
+            ),
+            runtime_exception_type=None,
         )
-        raise
-    semantic_cost_gate.complete(
-        provider_call_performed=True,
-        runtime_result_digest=str(semantic_result.get("result_digest") or "") or None,
-        runtime_exception_type=None,
-    )
     if semantic_result.get("status") != "completed_unreviewed_semantic_teacher_candidates":
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_semantic_teacher_failed"
@@ -786,6 +830,23 @@ def execute_artifixer_component(
         prompt_policy=PROMPT_POLICY,
         output_path=teacher_receipt_path,
     )
+    if checkpoint_root is None:
+        render_inputs_result_path = work / "provider_render_inputs_result.v1.json"
+        render_inputs_result_path.write_text(
+            canonical_json(envelope["render_inputs_result"]) + "\n",
+            encoding="utf-8",
+        )
+        materialize_scene_configuration_diagnostic_checkpoint(
+            stage_production_input_path=stage_input_path,
+            render_inputs_result_path=render_inputs_result_path,
+            semantic_runtime_request_path=semantic_request,
+            semantic_runtime_result_path=(
+                semantic_output
+                / f"{SEMANTIC_RUNTIME_RESULT_SCHEMA_VERSION}.json"
+            ),
+            semantic_teacher_receipt_path=teacher_receipt_path,
+            output_root=output_root / "diagnostic_checkpoint",
+        )
     dual_root = work / "dual_target_inputs"
     materialize_dual_target_artifixer3d_inputs(
         source_candidate_inputs_receipt_path=candidate_path,

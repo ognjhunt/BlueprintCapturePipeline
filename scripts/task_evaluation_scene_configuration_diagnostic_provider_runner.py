@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
+import shutil
 from pathlib import Path
 
 from blueprint_pipeline.core.common import redacted_failure_detail
@@ -190,10 +190,30 @@ def _portable_stage_chain(chain: dict, *, output_root: Path) -> dict:
             source = Path(str(artifact.get("path") or "")).resolve()
             try:
                 relative = source.relative_to(root)
-            except ValueError as exc:
-                raise ValueError(
-                    "scene_configuration_diagnostic_provider_artifact_invalid"
-                ) from exc
+            except ValueError:
+                stage_id = str(result.get("stage_id") or "")
+                role = str(artifact.get("role") or "")
+                if not stage_id or not role or "/" in role or ".." in role:
+                    raise ValueError(
+                        "scene_configuration_diagnostic_provider_artifact_invalid"
+                    )
+                suffix = source.suffix if len(source.suffix) <= 12 else ""
+                destination = (
+                    root
+                    / "carried_stage_artifacts"
+                    / stage_id
+                    / f"{role}{suffix}"
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+                if destination.exists() or destination.is_symlink():
+                    raise ValueError(
+                        "scene_configuration_diagnostic_provider_artifact_invalid"
+                    )
+                shutil.copyfile(source, destination)
+                os.chmod(destination, int(artifact.get("mode") or 0o440))
+                source = destination.resolve()
+                relative = source.relative_to(root)
+                artifact["path"] = str(source)
             if (
                 source.is_symlink()
                 or not source.is_file()
@@ -262,9 +282,10 @@ def main() -> int:
             expected_source_commit=str(envelope["expected_production_commit"])
         )
         advanced: dict = checkpoint
+        advanced_root: Path | None = None
 
         def write_checkpoint(results) -> None:
-            nonlocal advanced
+            nonlocal advanced, advanced_root
             destination = output / "diagnostic_checkpoints" / f"after-stage-{len(results)}"
             advanced = advance_scene_configuration_diagnostic_checkpoint(
                 checkpoint_root=checkpoint_root,
@@ -273,6 +294,7 @@ def main() -> int:
                 configurations=configurations,
                 output_root=destination,
             )
+            advanced_root = destination
 
         def resume_stage_one(**kwargs):
             return producers.execute(**{key: value for key, value in kwargs.items() if key not in {"checkpoint", "checkpoint_root"}})
@@ -288,6 +310,15 @@ def main() -> int:
             stage_checkpoint_writer=write_checkpoint,
             parent_deadline_epoch=parent_deadline_epoch,
         )
+        if advanced_root is None:
+            advanced_root = output / "diagnostic_checkpoints" / "after-stage-6"
+            advanced = advance_scene_configuration_diagnostic_checkpoint(
+                checkpoint_root=checkpoint_root,
+                stage_results=chain["stage_results"],
+                stage_sequence=envelope["recipe"]["stage_sequence"],
+                configurations=configurations,
+                output_root=advanced_root,
+            )
         chain = _portable_stage_chain(chain, output_root=output)
         toolchain = _read(
             runtime / "toolchain" / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
@@ -297,6 +328,28 @@ def main() -> int:
             "status": STATUS,
             "source_checkpoint_digest": checkpoint["checkpoint_digest"],
             "advanced_checkpoint_digest": advanced["checkpoint_digest"],
+            "advanced_checkpoint": {
+                "provider_output_relative_root": advanced_root.relative_to(
+                    output
+                ).as_posix(),
+                "manifest_relative_path": (
+                    advanced_root
+                    / f"{CHECKPOINT_SCHEMA_VERSION}.json"
+                ).relative_to(output).as_posix(),
+                "manifest_sha256": _sha256(
+                    advanced_root / f"{CHECKPOINT_SCHEMA_VERSION}.json"
+                ),
+                "checkpoint_digest": advanced["checkpoint_digest"],
+                "completed_stage_prefix_count": advanced[
+                    "completed_stage_prefix_count"
+                ],
+                "file_count": 1 + len(advanced["inventory"]),
+                "total_bytes": sum(
+                    path.stat().st_size
+                    for path in advanced_root.rglob("*")
+                    if path.is_file()
+                ),
+            },
             "diagnostic_source_commit": envelope["expected_production_commit"],
             "diagnostic_toolchain_digest": toolchain["toolchain_digest"],
             "diagnostic_stage_chain": chain,

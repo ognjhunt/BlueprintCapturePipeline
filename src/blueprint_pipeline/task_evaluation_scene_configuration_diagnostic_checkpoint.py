@@ -9,6 +9,7 @@ claiming (or publishing) a completed configuration.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -33,6 +34,21 @@ _SEMANTIC_RESULT_SCHEMA = "semantic_teacher_image_edit_runtime_result.v1"
 _SEMANTIC_RECEIPT_SCHEMA = "public_scene_whole_frame_semantic_teacher_candidates.v1"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+_SECRET_FIELDS = frozenset(
+    {
+        "api_key",
+        "api_key_value",
+        "authorization_header",
+        "bearer_token",
+        "credential",
+        "credential_value",
+        "openai_api_key",
+        "password",
+        "secret",
+        "secret_value",
+        "token",
+    }
+)
 
 
 class TaskEvaluationSceneConfigurationDiagnosticCheckpointError(RuntimeError):
@@ -55,6 +71,18 @@ def _read(path: Path, *, code: str) -> dict[str, Any]:
     if path.is_symlink() or not isinstance(value, Mapping):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(code)
     return dict(value)
+
+
+def _contains_secret_material(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            str(key).lower() in _SECRET_FIELDS
+            or _contains_secret_material(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_secret_material(child) for child in value)
+    return isinstance(value, str) and value.startswith(("sk-", "Bearer "))
 
 
 def _bound_file(value: Any, *, code: str, digest_key: str = "digest") -> Path:
@@ -295,6 +323,19 @@ def materialize_scene_configuration_diagnostic_checkpoint(
     semantic_request = _read(request_path, code="scene_configuration_diagnostic_checkpoint_semantic_request_invalid")
     semantic_result = _read(result_path, code="scene_configuration_diagnostic_checkpoint_semantic_result_invalid")
     teacher_receipt = _read(receipt_path, code="scene_configuration_diagnostic_checkpoint_semantic_receipt_invalid")
+    if any(
+        _contains_secret_material(value)
+        for value in (
+            stage_input,
+            render_inputs,
+            semantic_request,
+            semantic_result,
+            teacher_receipt,
+        )
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_secret_material_forbidden"
+        )
     envelope = stage_input.get("construction_envelope")
     source_commit = str(stage_input.get("source_commit") or "")
     if (
@@ -576,6 +617,7 @@ def validate_scene_configuration_diagnostic_checkpoint(
         or value.get("offering_publication_permitted") is not False
         or value.get("terminal_e2e_completion_permitted") is not False
         or value.get("raw_secret_values_recorded") is not False
+        or _contains_secret_material(value)
         or value.get("checkpoint_digest")
         != canonical_digest(value, digest_field="checkpoint_digest")
         or not isinstance(bindings, Mapping)
@@ -1035,3 +1077,30 @@ __all__ = [
     "materialize_scene_configuration_diagnostic_checkpoint",
     "validate_scene_configuration_diagnostic_checkpoint",
 ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Seal a checkpoint post hoc from retained immutable provider outputs."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage-production-input", required=True)
+    parser.add_argument("--render-inputs-result", required=True)
+    parser.add_argument("--semantic-runtime-request", required=True)
+    parser.add_argument("--semantic-runtime-result", required=True)
+    parser.add_argument("--semantic-teacher-receipt", required=True)
+    parser.add_argument("--output-root", required=True)
+    args = parser.parse_args(argv)
+    result = materialize_scene_configuration_diagnostic_checkpoint(
+        stage_production_input_path=args.stage_production_input,
+        render_inputs_result_path=args.render_inputs_result,
+        semantic_runtime_request_path=args.semantic_runtime_request,
+        semantic_runtime_result_path=args.semantic_runtime_result,
+        semantic_teacher_receipt_path=args.semantic_teacher_receipt,
+        output_root=args.output_root,
+    )
+    print(canonical_json(result))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
