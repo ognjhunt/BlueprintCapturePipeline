@@ -148,6 +148,13 @@ def scene_configuration_openai_stage_gate(
         output_root=output_root,
         provider_id="openai",
         paid_resource_class=f"task_evaluation_scene_configuration_{stage}",
+        # This lane records the pre-call baseline and is charged the delta, so
+        # a stage key that already spent earlier in the UTC day can still be
+        # measured exactly. Requiring zero made each stage scope usable once
+        # per day: scene 839873's semantic teacher billed $0.877128 on
+        # 2026-08-27 and every later attempt that day was refused before it
+        # could reserve, with nothing to show for the money already spent.
+        require_zero_baseline=False,
     )
 
 
