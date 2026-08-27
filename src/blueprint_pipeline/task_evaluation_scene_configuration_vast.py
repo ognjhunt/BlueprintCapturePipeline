@@ -61,6 +61,7 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_provider_transfer_upload import EXPECTED_PROVIDER_UPLOAD_BYTES_ENV
 from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
@@ -682,6 +683,13 @@ ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES = 2_209_255_046
 #: skipped.
 PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 10_000_000_000
 
+#: The result ZIP is bounded before its signed PUT is used.  The floor leaves
+#: room for generated stage evidence even when a synthetic/test bundle is
+#: tiny; the receipt-relative term scales for production bundles containing
+#: the scene, renderer, browser, and native components.
+PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES = 1_000_000_000
+PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER = 2
+
 
 def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     """Persist every terminal return, including refusals before allocation."""
@@ -756,8 +764,10 @@ def _provider_transfer_byte_budget(
     ``_offer_fits_total_cost_bound`` entirely, so an offer whose bandwidth
     price alone could exceed the attempt's compute cap still passed
     admission, and the selection receipt recorded no projected total. The
-    download ceiling is the exact byte count the receipt already seals and
-    the staged object store already serves, so it is measured, not guessed.
+    bundle portion of the download ceiling is the exact byte count the receipt
+    seals. The upload ceiling is a receipt-relative contract enforced against
+    the completed ZIP before the signed PUT is used, so admission and mutation
+    are bound to the same maximum rather than an unenforced estimate.
     """
 
     bundle = receipt.get("bundle_size_bytes")
@@ -772,14 +782,18 @@ def _provider_transfer_byte_budget(
             "scene_configuration_provider_transfer_budget_underdeclared"
         )
     download = bundle + PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
-    # The upload side has no contract to price. On the provider-render path
-    # the frames are produced on the rented GPU, so the bundle manifest's
-    # ``derived_rendered_view_count`` is 0, and neither the manifest nor the
-    # signed output PUT declares a byte ceiling for what comes back. A
-    # fabricated estimate would be indistinguishable from a measured one in
-    # the selection receipt, so this stays 0 until an output contract
-    # actually declares a bound.
-    return download, 0
+    if (
+        PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES < 1_000_000_000
+        or PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER < 2
+    ):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_provider_transfer_budget_underdeclared"
+        )
+    upload = max(
+        PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER * bundle,
+        PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+    )
+    return download, upload
 
 
 def run_scene_configuration_vast(
@@ -832,6 +846,10 @@ def run_scene_configuration_vast(
     bundle_path = Path(str(receipt["bundle_path"])).resolve()
     expected_download_bytes, expected_upload_bytes = _provider_transfer_byte_budget(
         receipt
+    )
+    runtime_environment = dict(runtime_environment)
+    runtime_environment[EXPECTED_PROVIDER_UPLOAD_BYTES_ENV] = str(
+        expected_upload_bytes
     )
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
