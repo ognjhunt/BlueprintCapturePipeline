@@ -769,6 +769,13 @@ def execute_content_agents_component(
         **values,
         "BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR": str(runtime / "runtime_output"),
     }
+    # The parent provider intentionally adds its sealed standalone ``usd-core``
+    # tree to PYTHONPATH so the pre-Kit import gate can load pxr.  The released
+    # Content Agents runtime installs ``usd-exchange`` into its own isolated
+    # venv; inheriting the parent path makes that incompatible binding win
+    # before the venv's site-packages.  Let the nested runtime use exactly the
+    # dependency closure it provisions for itself.
+    child_environment.pop("PYTHONPATH", None)
     stage_scope = scene_configuration_openai_stage_scope(
         values, stage="content_agents"
     )
