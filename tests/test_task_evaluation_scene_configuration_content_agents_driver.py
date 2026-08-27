@@ -164,7 +164,16 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
 
     def run(command, *, env, **_kwargs):
         observed.append(command)
-        assert "PYTHONPATH" not in env
+        for name in (
+            "PYTHONPATH",
+            "LD_LIBRARY_PATH",
+            "PXR_PLUGINPATH_NAME",
+            "ISAAC_PATH",
+            "EXP_PATH",
+            "CARB_APP_PATH",
+        ):
+            assert name not in env
+        assert env["PATH"] == "/usr/bin"
         runtime_output = Path(env["BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR"])
         physics = runtime_output / "physics_workdir/physics_candidate.usda"
         physics.parent.mkdir(parents=True)
@@ -214,7 +223,13 @@ def test_reuses_released_content_agents_runner_and_seals_candidate(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output),
             "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(component_result),
             "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package),
+            "PATH": "/usr/bin",
             "PYTHONPATH": "/sealed/provider_python_runtime",
+            "LD_LIBRARY_PATH": "/isaac-sim/kit:/sealed/usd-core/lib",
+            "PXR_PLUGINPATH_NAME": "/isaac-sim/kit/plugins",
+            "ISAAC_PATH": "/isaac-sim",
+            "EXP_PATH": "/isaac-sim/apps",
+            "CARB_APP_PATH": "/isaac-sim/kit",
             "OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(stage_key),
             "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_content_agents",
             "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": str(
