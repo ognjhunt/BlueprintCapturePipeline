@@ -147,6 +147,15 @@ def sync_launch_receipt_to_webapp(
         for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
     ):
         return {**common, "status": "failed", "reason": "response_binding_mismatch"}
+    if response.get("schema_version") != (
+        "task_evaluation_launch_web_sync_receipt.v1"
+    ):
+        return {**common, "status": "failed", "reason": "response_schema_mismatch"}
+    if (
+        response.get("status") != payload.get("status")
+        or not isinstance(response.get("already_exists"), bool)
+    ):
+        return {**common, "status": "failed", "reason": "response_status_mismatch"}
     if "configured_scene_offering_digest" in common and any(
         response.get(field) != common[field]
         for field in (
