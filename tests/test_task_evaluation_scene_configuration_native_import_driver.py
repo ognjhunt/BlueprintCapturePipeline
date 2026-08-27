@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +13,8 @@ from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver
     ADAPTER_ID,
     RUNTIME_RESULT_SCHEMA_VERSION,
     TaskEvaluationSceneConfigurationNativeImportDriverError,
+    _one_native_settle,
+    _subscribe_body_contact_reports,
     execute_native_import_component,
 )
 
@@ -114,6 +118,57 @@ def _observed(*, mismatch: bool = False) -> dict:
         "runtime_identity": {"engine_version": "6.0.1"},
         "repeats": repeats,
     }
+
+
+def test_native_settle_uses_contact_callback_instead_of_unsafe_polling() -> None:
+    class Interface:
+        callback = None
+
+        def subscribe_contact_report_events(self, callback):
+            self.callback = callback
+            return object()
+
+        def get_contact_report(self):
+            raise AssertionError("contact reports must not be polled")
+
+    class OmniPhysx:
+        interface = Interface()
+
+        @classmethod
+        def get_physx_simulation_interface(cls):
+            return cls.interface
+
+    class PhysicsSchemaTools:
+        @staticmethod
+        def intToSdfPath(value: int) -> str:
+            return {
+                1: "/World/Placement/Replacement/Body/Collider",
+                2: "/World/Ground",
+                3: "/World/Other",
+            }.get(value, "")
+
+    event_count = [0]
+    subscription = _subscribe_body_contact_reports(
+        omni_physx=OmniPhysx,
+        physics_schema_tools=PhysicsSchemaTools,
+        body_path="/World/Placement/Replacement/Body",
+        event_count=event_count,
+    )
+    assert subscription is not None
+    assert OmniPhysx.interface.callback is not None
+    OmniPhysx.interface.callback(
+        [SimpleNamespace(actor0=1, actor1=2, collider0=0, collider1=0)],
+        [],
+    )
+    OmniPhysx.interface.callback(
+        [SimpleNamespace(actor0=3, actor1=2, collider0=0, collider1=0)],
+        [],
+    )
+    assert event_count == [1]
+
+    settle_source = inspect.getsource(_one_native_settle)
+    assert "_subscribe_body_contact_reports(" in settle_source
+    assert "_contact_count(" not in settle_source
 
 
 def test_native_driver_seals_only_three_matching_contact_settles(
