@@ -1505,6 +1505,7 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
         "evaluation_episode_executed": False,
         "candidate_policy_queried": False,
         "provider_zero_required_after_return": True,
+        "blockers": [],
         "result_digest": "",
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
@@ -1528,6 +1529,62 @@ def test_scene_configuration_provider_output_requires_complete_six_stage_chain(
     )
     assert blockers == []
     assert observed["stage_chain"]["stage_count"] == 6
+
+
+def test_blocked_provider_result_retains_its_redacted_failure_in_terminal_blockers(
+    tmp_path: Path,
+) -> None:
+    signed_detail = (
+        "scene_configuration_provider_failed:RuntimeError:"
+        "https://objects.example/output?X-Amz-Signature=do-not-retain"
+    )
+    result = {
+        "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+        "status": "blocked",
+        "source_commit": "a" * 40,
+        "construction_envelope_digest": "sha256:" + "b" * 64,
+        "evaluation_episode_executed": False,
+        "candidate_policy_queried": False,
+        "provider_zero_required_after_return": True,
+        "blockers": [signed_detail],
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    archive = tmp_path / "blocked-output.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(result),
+        )
+
+    observed, blockers = scene_vast._extract_provider_output(
+        archive,
+        tmp_path / "blocked-output",
+        maximum_archive_bytes=archive.stat().st_size,
+    )
+
+    assert observed["status"] == "blocked"
+    assert len(blockers) == 1
+    assert blockers[0].startswith(
+        "provider_result_blocker:scene_configuration_provider_failed:RuntimeError:"
+    )
+    assert "do-not-retain" not in blockers[0]
+    assert "<redacted>" in blockers[0]
+
+    result["blockers"] = []
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    contradictory = tmp_path / "contradictory-output.zip"
+    with zipfile.ZipFile(contradictory, "w") as output:
+        output.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(result),
+        )
+    _observed, blockers = scene_vast._extract_provider_output(
+        contradictory,
+        tmp_path / "contradictory-output",
+        maximum_archive_bytes=contradictory.stat().st_size,
+    )
+    assert "scene_configuration_provider_result_contract_invalid" in blockers
 
 
 def test_provider_output_extraction_seals_malformed_result_and_archive_expansion(
@@ -1902,6 +1959,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             "evaluation_episode_executed": False,
             "candidate_policy_queried": False,
             "provider_zero_required_after_return": True,
+            "blockers": [],
             "result_digest": "",
         }
         provider_result["result_digest"] = canonical_digest(
