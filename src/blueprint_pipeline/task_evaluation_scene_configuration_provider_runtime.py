@@ -150,6 +150,9 @@ def execute_scene_configuration_stage_chain(
             or result.get("provider_mutations_performed") != 0
             or result.get("paid_execution_requested") is not False
             or result.get("executed_inside_parent_configuration_run") is not True
+            or result.get("diagnostic_only") is True
+            or result.get("qualification_eligible") is False
+            or result.get("executed_inside_one_parent_provider_run") is False
             or result.get("stage_result_digest")
             != canonical_digest(result, digest_field="stage_result_digest")
         ):
