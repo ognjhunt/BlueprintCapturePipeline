@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from pathlib import Path
 
@@ -89,6 +90,48 @@ def test_one_canonical_parent_launch_publishes_one_reusable_revision(
         for role, name in names.items():
             path = provider_artifacts / name
             path.write_bytes((role + "\n").encode())
+            rows.append(
+                {
+                    "role": role,
+                    "path": str(path),
+                    "digest": _sha256(path),
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+        # Publication also binds the reviewed task thumbnail to the exact review
+        # frame it was chosen from, so the thumbnail digest has to be the one the
+        # receipt names.
+        thumbnail_path = provider_artifacts / "configured_task_thumbnail.png"
+        thumbnail_path.write_bytes(b"configured_task_thumbnail\n")
+        review_receipt = {
+            "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
+            "status": "accepted",
+            "review_frame_count": 8,
+            "task_thumbnail_is_exact_review_frame": True,
+            "reviewer": {
+                "kind": "ai",
+                "identity": "fixture-reviewer",
+                "runtime": "fixture-runtime",
+                "model": "fixture-model",
+            },
+            "task_thumbnail_selection": {
+                "camera_id": "camera_0",
+                "frame_sha256": _sha256(thumbnail_path),
+                "rationale": "fixture selection",
+            },
+            "receipt_digest": "",
+        }
+        review_receipt["receipt_digest"] = canonical_digest(
+            review_receipt, digest_field="receipt_digest"
+        )
+        review_path = provider_artifacts / "appearance_visual_review_receipt.v1.json"
+        review_path.write_text(
+            json.dumps(review_receipt, sort_keys=True), encoding="utf-8"
+        )
+        for role, path in (
+            ("appearance_visual_review_receipt", review_path),
+            ("configured_task_thumbnail", thumbnail_path),
+        ):
             rows.append(
                 {
                     "role": role,
