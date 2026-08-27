@@ -104,6 +104,10 @@ Environment=BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/pro
 Environment=BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url
 Environment=BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket
 Environment=BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region
+# A completed scene configuration must remain publishable to the canonical
+# Website offering surface after a clean host rebuild. EnvironmentFile can
+# override this deployment default for non-production installations.
+Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 # A runtime drop-in may set FORCE_DRY_RUN=true while the canonical environment
