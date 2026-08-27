@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .core.common import redacted_failure_text
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
@@ -40,6 +39,9 @@ from .task_evaluation_standing_launch_authorization import (
 from .task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
     STAGING_SCHEMA_VERSION,
+)
+from .task_evaluation_launch_terminal_evidence import (
+    terminal_evidence as _build_terminal_evidence,
 )
 
 
@@ -1202,157 +1204,17 @@ def _scoped_runtime_environment(values: Mapping[str, Any]):
                 os.environ[key] = value
 
 
-def _scene_configuration_terminal_projection(
-    result: Mapping[str, Any],
-) -> tuple[dict[str, Any] | None, list[str]]:
-    if (
-        result.get("schema_version")
-        != "task_evaluation_scene_configuration_vast_result.v1"
-    ):
-        return None, []
-
-    def valid_reference(value: Any) -> bool:
-        return (
-            isinstance(value, Mapping)
-            and str(value.get("uri") or "").startswith(_URI_SCHEMES)
-            and re.fullmatch(
-                r"sha256:[0-9a-f]{64}", str(value.get("digest") or "")
-            )
-            is not None
-            and isinstance(value.get("size_bytes"), int)
-            and not isinstance(value.get("size_bytes"), bool)
-            and value.get("size_bytes") > 0
-        )
-
-    revision_reference = result.get("configured_scene_revision_reference")
-    bundle_reference = result.get("configured_scene_bundle_reference")
-    queue_finalization = _mapping(
-        result.get("scene_construction_queue_finalization")
-    )
-    result_blockers: list[str] = []
-    for item in result.get("blockers") or []:
-        if not isinstance(item, str) or not item.strip():
-            continue
-        detail = " ".join(redacted_failure_text(item).split())
-        if detail:
-            result_blockers.append(
-                "scene_configuration_result:" + detail[:512]
-            )
-    valid = (
-        result.get("status") == "completed"
-        and result.get("configuration_completed") is True
-        and result.get("configured_scene_published") is True
-        and result.get("full_byte_service_account_readback_passed") is True
-        and queue_finalization.get("schema_version")
-        == "task_evaluation_scene_construction_finalization.v1"
-        and queue_finalization.get("status") == "completed"
-        and queue_finalization.get("queue_state") == "completed"
-        and queue_finalization.get("finalization_performed") is True
-        and queue_finalization.get("run_id") == result.get("run_id")
-        and queue_finalization.get("source_commit") == result.get("source_commit")
-        and queue_finalization.get("result_digest")
-        == canonical_digest(queue_finalization, digest_field="result_digest")
-        and valid_reference(revision_reference)
-        and valid_reference(bundle_reference)
-        and re.fullmatch(
-            r"sha256:[0-9a-f]{64}",
-            str(result.get("configured_scene_revision_digest") or ""),
-        )
-        is not None
-        and re.fullmatch(
-            r"sha256:[0-9a-f]{64}",
-            str(result.get("publication_result_digest") or ""),
-        )
-        is not None
-    )
-    if not valid:
-        return None, sorted(
-            set(
-                ["scene_configuration_terminal_publication_evidence_invalid"]
-                + result_blockers
-            )
-        )
-    return {
-        "schema_version": "task_evaluation_scene_configuration_terminal_evidence.v1",
-        "configuration_completed": True,
-        "configured_scene_published": True,
-        "configured_scene_revision_digest": result[
-            "configured_scene_revision_digest"
-        ],
-        "configured_scene_revision_reference": dict(revision_reference),
-        "configured_scene_bundle_reference": dict(bundle_reference),
-        "publication_result_digest": result["publication_result_digest"],
-        "scene_construction_queue_finalization_digest": queue_finalization[
-            "result_digest"
-        ],
-        "full_byte_service_account_readback_passed": True,
-    }, []
-
-
 def _terminal_evidence(
     profile: Mapping[str, Any], *, execute: bool, run_root: Path
 ) -> dict[str, Any]:
-    terminal = _mapping(profile.get("terminal_contract"))
-    result_path = Path(
-        _render_launch_path(str(terminal.get("result_path") or ""), run_root=run_root)
-    ).expanduser().resolve()
-    if not execute:
-        return {
-            "status": "not_required_for_dry_run",
-            "result": _artifact(result_path),
-            "blockers": [],
-        }
-    blockers: list[str] = []
-    result: dict[str, Any] = {}
-    if not result_path.is_file():
-        blockers.append("allocator_terminal_result_missing")
-    else:
-        try:
-            result = _read_json(result_path)
-        except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
-            blockers.append("allocator_terminal_result_invalid")
-    if result:
-        if result.get("status") not in terminal.get("success_statuses", []):
-            blockers.append("allocator_terminal_status_not_success")
-        for field, expected in _mapping(terminal.get("required_values")).items():
-            if result.get(field) != expected:
-                blockers.append(f"allocator_terminal_value_mismatch:{field}")
-        artifacts: dict[str, Any] = {}
-        for field in terminal.get("required_path_fields") or []:
-            raw = str(result.get(field) or "").strip()
-            if not raw:
-                # `Path("").resolve()` is the process working directory, so an
-                # unset field used to be recorded as a descriptor naming the
-                # release checkout -- evidence that a reader could mistake for
-                # a real artifact that had merely gone missing. A field the
-                # result never set has no path.
-                artifacts[str(field)] = {"path": None, "exists": False, "digest": None}
-                blockers.append(f"allocator_terminal_artifact_missing:{field}")
-                continue
-            artifact_path = Path(raw).expanduser().resolve()
-            artifacts[str(field)] = _artifact(artifact_path)
-            if not artifact_path.is_file():
-                blockers.append(f"allocator_terminal_artifact_missing:{field}")
-    else:
-        artifacts = {}
-    evidence = {
-        "status": "passed" if not blockers else "blocked",
-        "result": _artifact(result_path),
-        "artifacts": artifacts,
-        "blockers": sorted(set(blockers)),
-    }
-    visual_evidence = _mapping(result.get("visual_evidence"))
-    if visual_evidence:
-        evidence["visual_evidence"] = visual_evidence
-    scene_configuration, scene_configuration_blockers = (
-        _scene_configuration_terminal_projection(result)
+    return _build_terminal_evidence(
+        profile,
+        execute=execute,
+        run_root=run_root,
+        render_launch_path=_render_launch_path,
+        artifact=_artifact,
+        read_json=_read_json,
     )
-    blockers.extend(scene_configuration_blockers)
-    if scene_configuration is not None:
-        evidence["scene_configuration"] = scene_configuration
-    evidence["status"] = "passed" if not blockers else "blocked"
-    evidence["blockers"] = sorted(set(blockers))
-    return evidence
 
 
 def _allocator_boundary_artifact_evidence(

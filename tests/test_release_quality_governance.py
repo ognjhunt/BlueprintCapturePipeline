@@ -48,6 +48,25 @@ def test_policy_episode_module_stays_under_default_source_governance_budget() ->
     assert line_count <= policy["default_max_python_module_lines"]
 
 
+def test_launch_dispatcher_stays_under_its_source_governance_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    relative = "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py"
+    dispatcher_source = (root / relative).read_text(encoding="utf-8")
+    line_count = len(dispatcher_source.splitlines())
+    assert line_count <= policy["grandfathered_module_line_limits"][relative]
+    assert (
+        "from .task_evaluation_launch_terminal_evidence import ("
+        in dispatcher_source
+    )
+    assert (
+        root
+        / "src/blueprint_pipeline/task_evaluation_launch_terminal_evidence.py"
+    ).is_file()
+
+
 def _bandit_finding(root: Path, *, severity: str = "MEDIUM") -> dict[str, object]:
     source = root / "src" / "example.py"
     source.parent.mkdir(parents=True, exist_ok=True)
