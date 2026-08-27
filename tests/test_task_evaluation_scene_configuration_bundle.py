@@ -33,6 +33,7 @@ from blueprint_pipeline import task_evaluation_live_profile as live_profile_modu
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
+    ensure_scene_construction_queue_root,
 )
 from blueprint_pipeline import vast_provider_adapter as vpa
 from scripts.build_task_evaluation_scene_configuration_live_profile import (
@@ -268,8 +269,10 @@ def _envelope(root: Path, commit: str) -> Path:
         configurations.append(_bound(config, stage_id=stage_id))
     envelope = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
+        "orchestration_id": "prepare-scene-839873-v1",
         "run_id": "configure-scene-839873-v1",
         "expected_production_commit": commit,
+        "recipe_digest": "sha256:" + "9" * 64,
         "recipe": {"stage_sequence": stages},
         "materialized_references": [
             _bound(
@@ -350,6 +353,21 @@ def _build(tmp_path: Path, name: str) -> dict:
         output_root=tmp_path / name,
         expected_source_commit=commit,
     )
+
+
+def _construction_queue(tmp_path: Path) -> Path:
+    envelope_path = tmp_path / "source" / "envelope.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    root = ensure_scene_construction_queue_root(tmp_path / "construction-queue")
+    filename = (
+        f"{envelope['orchestration_id']}-"
+        f"{envelope['recipe_digest'].removeprefix('sha256:')}.json"
+    )
+    target = root / "pending" / filename
+    if not target.exists():
+        target.write_bytes(envelope_path.read_bytes())
+        target.chmod(0o440)
+    return root
 
 
 def _provider_runtime(
@@ -649,6 +667,7 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
         paid_attempt_authority_path=authority_path,
         paid_resource_admission_grant=object(),
         execute=True,
+        scene_construction_queue_root=_construction_queue(tmp_path),
     )
 
     result_path = job / f"{scene_vast.RESULT_SCHEMA_VERSION}.json"
@@ -657,8 +676,41 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
     assert result["blockers"] == ["fixture_object_store_staging_refusal"]
     assert result["continuing_spend_from_this_run"] is False
     assert result["object_store_cleanup"]["all_objects_absent"] is True
+    assert result["scene_construction_queue_finalization"]["queue_state"] == "blocked"
+    assert not list((tmp_path / "construction-queue" / "pending").glob("*.json"))
+    assert len(list((tmp_path / "construction-queue" / "blocked").glob("*.json"))) == 1
     assert result["result_digest"] == canonical_digest(
         result, digest_field="result_digest"
+    )
+
+
+def test_live_terminal_result_refuses_missing_construction_queue_root(
+    tmp_path: Path,
+) -> None:
+    result = scene_vast._seal_live_terminal_result(
+        tmp_path,
+        {
+            "schema_version": scene_vast.RESULT_SCHEMA_VERSION,
+            "status": "completed",
+            "run_id": "scene-run-1",
+            "source_commit": "a" * 40,
+            "configuration_completed": True,
+            "configured_scene_published": True,
+            "full_byte_service_account_readback_passed": True,
+            "continuing_spend_from_this_run": False,
+            "blockers": [],
+        },
+        receipt={},
+        scene_construction_queue_root=None,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["scene_construction_queue_finalization"][
+        "finalization_performed"
+    ] is False
+    assert any(
+        "scene_construction_queue_finalization_root_missing" in blocker
+        for blocker in result["blockers"]
     )
 
 
@@ -1637,10 +1689,16 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     request = configuration_request_fixture()
     request["run_id"] = receipt["run_id"]
     request["expected_production_commit"] = receipt["source_commit"]
+    source_envelope = json.loads(
+        (tmp_path / "source" / "envelope.json").read_text(encoding="utf-8")
+    )
     publication_envelope = {
+        "orchestration_id": source_envelope["orchestration_id"],
         "run_id": receipt["run_id"],
         "team_namespace": request["team_namespace"],
         "expected_production_commit": receipt["source_commit"],
+        "recipe_digest": source_envelope["recipe_digest"],
+        "control_plane_envelope_digest": source_envelope["envelope_digest"],
         "request": request,
         "recipe": {
             "scene_identity": request["scene"]["identity"],
@@ -1788,11 +1846,15 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         paid_attempt_authority_path=authority_path,
         paid_resource_admission_grant=object(),
         execute=True,
+        scene_construction_queue_root=_construction_queue(tmp_path),
     )
 
     assert result["status"] == "completed", result["blockers"]
     assert result["configured_scene_published"] is True
     assert result["full_byte_service_account_readback_passed"] is True
+    assert result["scene_construction_queue_finalization"]["queue_state"] == "completed"
+    assert not list((tmp_path / "construction-queue" / "pending").glob("*.json"))
+    assert len(list((tmp_path / "construction-queue" / "completed").glob("*.json"))) == 1
     assert Path(result["configured_scene_revision_path"]).is_file()
     assert Path(result["publication_result_path"]).is_file()
     assert result["configured_scene_revision_reference"]["uri"].startswith(
@@ -2376,6 +2438,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         paid_attempt_authority_path=authority_path,
         paid_resource_admission_grant=object(),
         execute=True,
+        scene_construction_queue_root=_construction_queue(tmp_path),
     )
 
     expected_download = (

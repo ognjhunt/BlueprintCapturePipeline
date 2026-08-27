@@ -47,6 +47,10 @@ from .task_evaluation_scene_configuration_publication import (
     RESULT_SCHEMA_VERSION as PUBLICATION_RESULT_SCHEMA_VERSION,
     publish_configured_scene_revision,
 )
+from .task_evaluation_scene_construction_queue import (
+    TaskEvaluationSceneConstructionQueueError,
+    finalize_scene_construction,
+)
 from .task_evaluation_supervisor.openai_cost_authority import (
     OpenAICostAuthorityError,
     OpenAIOrganizationCostsClient,
@@ -685,6 +689,56 @@ def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]
     return result
 
 
+def _seal_live_terminal_result(
+    job: Path,
+    value: Mapping[str, Any],
+    *,
+    receipt: Mapping[str, Any],
+    scene_construction_queue_root: str | Path | None,
+) -> dict[str, Any]:
+    """Finalize the originating queue item before exposing a live terminal result."""
+
+    result = dict(value)
+    blockers = [str(item) for item in result.get("blockers") or [] if str(item)]
+    try:
+        if scene_construction_queue_root is None or not str(
+            scene_construction_queue_root
+        ).strip():
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_queue_finalization_root_missing"
+            )
+        finalization = finalize_scene_construction(
+            queue_root=scene_construction_queue_root,
+            envelope=_portable_construction_envelope(receipt),
+            terminal_result=result,
+        )
+    except (OSError, ValueError) as exc:
+        blockers.append(
+            "scene_construction_queue_finalization_failed:"
+            + redacted_failure_detail(exc)
+        )
+        finalization = {
+            "schema_version": "task_evaluation_scene_construction_finalization.v1",
+            "status": "blocked",
+            "finalization_performed": False,
+            "blockers": [redacted_failure_detail(exc)],
+        }
+    result["scene_construction_queue_finalization"] = finalization
+    expected_queue_state = (
+        "completed"
+        if result.get("status") == "completed" and not blockers
+        else "blocked"
+    )
+    if (
+        finalization.get("finalization_performed") is not True
+        or finalization.get("queue_state") != expected_queue_state
+    ):
+        blockers.append("scene_construction_queue_finalization_not_completed")
+        result["status"] = "blocked"
+    result["blockers"] = sorted(set(blockers))
+    return _seal_terminal_result(job, result)
+
+
 def _provider_transfer_byte_budget(
     receipt: Mapping[str, Any],
 ) -> tuple[int, int]:
@@ -722,6 +776,7 @@ def run_scene_configuration_vast(
     paid_attempt_authority_path: str | Path,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    scene_construction_queue_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run exactly one configuration allocation and close every owned resource."""
 
@@ -734,18 +789,21 @@ def run_scene_configuration_vast(
     )
     runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
-        return _seal_terminal_result(job, {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "generated_at": utc_now_iso(),
-            "status": "dry_run_ready",
-            "run_id": receipt["run_id"],
-            "source_commit": receipt["source_commit"],
-            "bundle_sha256": receipt["bundle_sha256"],
-            "authority_digest": authority["authority_digest"],
-            "provider_mutations_performed": 0,
-            "retry_cap": 0,
-            "blockers": [],
-        })
+        return _seal_terminal_result(
+            job,
+            {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "generated_at": utc_now_iso(),
+                "status": "dry_run_ready",
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                "blockers": [],
+            },
+        )
     if paid_resource_admission_grant is None:
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_paid_admission_missing"
@@ -775,19 +833,24 @@ def run_scene_configuration_vast(
         if cleanup.get("all_objects_absent") is not True:
             blockers.append("object_store_provider_zero_not_proven")
         blockers = sorted(set(blockers))
-        return _seal_terminal_result(job, {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked",
-            "run_id": receipt["run_id"],
-            "source_commit": receipt["source_commit"],
-            "bundle_sha256": receipt["bundle_sha256"],
-            "authority_digest": authority["authority_digest"],
-            "provider_mutations_performed": 0,
-            "retry_cap": 0,
-            "object_store_cleanup": cleanup,
-            "continuing_spend_from_this_run": False,
-            "blockers": blockers,
-        })
+        return _seal_live_terminal_result(
+            job,
+            {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked",
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                "object_store_cleanup": cleanup,
+                "continuing_spend_from_this_run": False,
+                "blockers": blockers,
+            },
+            receipt=receipt,
+            scene_construction_queue_root=scene_construction_queue_root,
+        )
     watchdog_handoff, watchdog = arm_independent_vast_watchdog(
         job_dir=job,
         max_live_minutes=max(1, ttl // 60),
@@ -801,21 +864,26 @@ def run_scene_configuration_vast(
         if cleanup.get("all_objects_absent") is not True:
             blockers.append("object_store_provider_zero_not_proven")
         blockers = sorted(set(blockers))
-        return _seal_terminal_result(job, {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked",
-            "run_id": receipt["run_id"],
-            "source_commit": receipt["source_commit"],
-            "bundle_sha256": receipt["bundle_sha256"],
-            "authority_digest": authority["authority_digest"],
-            "provider_mutations_performed": 0,
-            "retry_cap": 0,
-            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
-            "object_store_cleanup": cleanup,
-            "independent_watchdog": watchdog_handoff,
-            "continuing_spend_from_this_run": False,
-            "blockers": blockers,
-        })
+        return _seal_live_terminal_result(
+            job,
+            {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked",
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+                "object_store_cleanup": cleanup,
+                "independent_watchdog": watchdog_handoff,
+                "continuing_spend_from_this_run": False,
+                "blockers": blockers,
+            },
+            receipt=receipt,
+            scene_construction_queue_root=scene_construction_queue_root,
+        )
     consumption = _consume_authority_once(
         authority, source_commit=str(receipt["source_commit"])
     )
@@ -837,22 +905,27 @@ def run_scene_configuration_vast(
         }:
             blockers.append("independent_watchdog_not_closed")
         blockers = sorted(set(blockers))
-        return _seal_terminal_result(job, {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked",
-            "run_id": receipt["run_id"],
-            "source_commit": receipt["source_commit"],
-            "bundle_sha256": receipt["bundle_sha256"],
-            "authority_digest": authority["authority_digest"],
-            "provider_mutations_performed": 0,
-            "retry_cap": 0,
-            "authorization_consumption": consumption,
-            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
-            "object_store_cleanup": cleanup,
-            "independent_watchdog": watchdog_close,
-            "continuing_spend_from_this_run": False,
-            "blockers": blockers,
-        })
+        return _seal_live_terminal_result(
+            job,
+            {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked",
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                "authorization_consumption": consumption,
+                "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+                "object_store_cleanup": cleanup,
+                "independent_watchdog": watchdog_close,
+                "continuing_spend_from_this_run": False,
+                "blockers": blockers,
+            },
+            receipt=receipt,
+            scene_construction_queue_root=scene_construction_queue_root,
+        )
 
     provider_run = job / PROVIDER_RUN_DIRNAME
     output_zip = provider_run / "vast_provider_runtime_output.zip"
@@ -1118,7 +1191,12 @@ def run_scene_configuration_vast(
         "blockers": sorted(set(blockers)),
         "result_digest": "",
     }
-    return _seal_terminal_result(job, result)
+    return _seal_live_terminal_result(
+        job,
+        result,
+        receipt=receipt,
+        scene_construction_queue_root=scene_construction_queue_root,
+    )
 
 
 __all__ = [

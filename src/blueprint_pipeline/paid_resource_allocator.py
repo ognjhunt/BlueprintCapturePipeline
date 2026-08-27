@@ -2566,6 +2566,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     paid_attempt_authority_path=authority_path,
                     paid_resource_admission_grant=grant,
                     execute=args.execute,
+                    scene_construction_queue_root=os.getenv(
+                        "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
+                    ),
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

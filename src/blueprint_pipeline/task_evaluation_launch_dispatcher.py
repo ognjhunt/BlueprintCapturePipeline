@@ -1226,6 +1226,9 @@ def _scene_configuration_terminal_projection(
 
     revision_reference = result.get("configured_scene_revision_reference")
     bundle_reference = result.get("configured_scene_bundle_reference")
+    queue_finalization = _mapping(
+        result.get("scene_construction_queue_finalization")
+    )
     result_blockers: list[str] = []
     for item in result.get("blockers") or []:
         if not isinstance(item, str) or not item.strip():
@@ -1240,6 +1243,15 @@ def _scene_configuration_terminal_projection(
         and result.get("configuration_completed") is True
         and result.get("configured_scene_published") is True
         and result.get("full_byte_service_account_readback_passed") is True
+        and queue_finalization.get("schema_version")
+        == "task_evaluation_scene_construction_finalization.v1"
+        and queue_finalization.get("status") == "completed"
+        and queue_finalization.get("queue_state") == "completed"
+        and queue_finalization.get("finalization_performed") is True
+        and queue_finalization.get("run_id") == result.get("run_id")
+        and queue_finalization.get("source_commit") == result.get("source_commit")
+        and queue_finalization.get("result_digest")
+        == canonical_digest(queue_finalization, digest_field="result_digest")
         and valid_reference(revision_reference)
         and valid_reference(bundle_reference)
         and re.fullmatch(
@@ -1270,6 +1282,9 @@ def _scene_configuration_terminal_projection(
         "configured_scene_revision_reference": dict(revision_reference),
         "configured_scene_bundle_reference": dict(bundle_reference),
         "publication_result_digest": result["publication_result_digest"],
+        "scene_construction_queue_finalization_digest": queue_finalization[
+            "result_digest"
+        ],
         "full_byte_service_account_readback_passed": True,
     }, []
 
