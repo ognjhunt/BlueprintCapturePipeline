@@ -402,7 +402,9 @@ def _semantic_rights_and_request(
     return packet_root
 
 
-def _semantic_runtime_request(*, packet_root: Path, source_commit: str) -> Path:
+def _semantic_runtime_request(
+    *, packet_root: Path, source_commit: str, maximum_cost_usd: float | None = None
+) -> Path:
     packet = _read(
         packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json",
         code="scene_configuration_artifixer_semantic_packet_invalid",
@@ -436,6 +438,12 @@ def _semantic_runtime_request(*, packet_root: Path, source_commit: str) -> Path:
         "prompt": packet["backend"]["prompt"],
         "tasks": tasks,
         "max_parallel_requests": 2,
+        # The stage's own cap, so the worker can stop issuing frame requests
+        # once the observed spend would carry past it. Without this the cap is
+        # only checked at settlement, two days after the money is gone: run
+        # ...4dfc5f8e-r3-web-20260827T050053Z billed $0.877128 against a $0.40
+        # reservation and nothing refused it.
+        "maximum_cost_usd": maximum_cost_usd,
         "retry_count": 0,
         "request_digest": "",
     }
@@ -574,9 +582,14 @@ def execute_artifixer_component(
     )
     token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
     semantic_output = work / "semantic_teacher_output"
+    semantic_cap_raw = values.get(
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"
+    )
+    semantic_cap = float(semantic_cap_raw) if semantic_cap_raw else None
     semantic_request = _semantic_runtime_request(
         packet_root=packet_root,
         source_commit=str(stage_input["source_commit"]),
+        maximum_cost_usd=semantic_cap,
     )
     semantic_cost_gate = scene_configuration_openai_stage_gate(
         environment=values,

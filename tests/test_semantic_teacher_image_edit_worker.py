@@ -16,6 +16,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.semantic_teacher_image_edit_worker import (
     MAX_PROVIDER_RESPONSE_BYTES,
     RUNTIME_REQUEST_SCHEMA_VERSION,
+    RUNTIME_RESULT_SCHEMA_VERSION,
     SemanticTeacherImageEditWorkerError,
     execute_semantic_teacher_image_edits,
     main,
@@ -1041,3 +1042,101 @@ def test_rejects_unsafe_task_ids_before_network(tmp_path: Path, task_id: str) ->
             opener=lambda *args, **kwargs: calls.append((args, kwargs)),
         )
     assert calls == []
+
+
+def _set_cost_ceiling(request_path: Path, *, maximum_cost_usd, rate: float) -> None:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["maximum_cost_usd"] = maximum_cost_usd
+    pricing = request["backend"]["execution"]["pricing_binding"]
+    pricing["usage_required"] = True
+    pricing["usd_per_million_tokens"] = {"input_image_tokens": rate}
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_cost_ceiling_stops_issuing_requests_and_fails_closed(tmp_path: Path) -> None:
+    """A stage must stop paying once observed spend would pass its own cap.
+
+    The cap used to be checked only at settlement, which runs two days after
+    the call: run adp-new-scene-simple-relocation-839873-4dfc5f8e-r3-web-
+    20260827T050053Z billed $0.877128 against a $0.40 reservation and nothing
+    refused it. The provider quotes no price before a call, so the guard is
+    "do not start another request that could carry us past the cap", using the
+    worst request seen so far as the estimate.
+    """
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=6)
+    _set_parallelism(request_path, 1)
+    # 1,000,000 input-image tokens at $1.00 per million == $1.00 per request.
+    _set_cost_ceiling(request_path, maximum_cost_usd=2.5, rate=1.0)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+    calls = []
+
+    def opener(request, *, timeout: int):
+        calls.append(request)
+        return _Response(
+            _inline_response(
+                generated,
+                usage={
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 0,
+                    "total_tokens": 1_000_000,
+                    "input_tokens_details": {
+                        "text_tokens": 0,
+                        "image_tokens": 1_000_000,
+                    },
+                    "output_tokens_details": {"text_tokens": 0, "image_tokens": 0},
+                },
+            )
+        )
+
+    with pytest.raises(SemanticTeacherImageEditWorkerError) as caught:
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=tmp_path / "output",
+            token="fixture-secret-token",
+            opener=opener,
+        )
+    assert "semantic_teacher_cost_ceiling_reached" in str(caught.value)
+
+    # $1.00 each: after the 2nd, spent 2.0 and one more could reach 3.0 > 2.5,
+    # so the 3rd is never issued. Without the guard all six would be.
+    assert len(calls) == 2, f"issued {len(calls)} requests, expected 2"
+
+    sealed = json.loads(
+        (tmp_path / "output" / f"{RUNTIME_RESULT_SCHEMA_VERSION}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sealed["status"] == "failed_with_retained_partial_inventory"
+    assert sealed["cost_ceiling_reached"] is True
+    assert sealed["maximum_cost_usd"] == 2.5
+    assert sealed["observed_cost_usd"] == 2.0
+    assert "semantic_teacher_cost_ceiling_reached" in sealed["blockers"]
+    # The frames already paid for are retained, not discarded.
+    assert len(sealed["partial_png_inventory"]) == 2
+
+
+def test_absent_cost_ceiling_keeps_the_previous_behaviour(tmp_path: Path) -> None:
+    """The field is optional so already-sealed requests keep their digests."""
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=3)
+    _set_parallelism(request_path, 1)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+    calls = []
+
+    def opener(request, *, timeout: int):
+        calls.append(request)
+        return _Response(_inline_response(generated))
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-secret-token",
+        opener=opener,
+    )
+
+    assert result["status"] == "completed_unreviewed_semantic_teacher_candidates"
+    assert len(calls) == 3
+    assert result["cost_ceiling_reached"] is False
+    assert result["maximum_cost_usd"] is None

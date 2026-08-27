@@ -507,6 +507,9 @@ def execute_semantic_teacher_image_edits(
     max_parallel_requests = request.get(
         "max_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
     )
+    # Optional, like max_parallel_requests above, so every already-sealed
+    # request keeps its digest. When absent the loop behaves exactly as before.
+    maximum_cost_usd = request.get("maximum_cost_usd")
     options_valid = _valid_default_options(default_options)
     pricing = execution.get("pricing_binding") if isinstance(execution, Mapping) else None
     rates = pricing.get("usd_per_million_tokens") if isinstance(pricing, Mapping) else None
@@ -557,6 +560,15 @@ def execute_semantic_teacher_image_edits(
         or isinstance(max_parallel_requests, bool)
         or not isinstance(max_parallel_requests, int)
         or not 1 <= max_parallel_requests <= MAX_PARALLEL_REQUESTS
+        or (
+            maximum_cost_usd is not None
+            and (
+                isinstance(maximum_cost_usd, bool)
+                or not isinstance(maximum_cost_usd, (int, float))
+                or not math.isfinite(float(maximum_cost_usd))
+                or float(maximum_cost_usd) <= 0
+            )
+        )
     ):
         raise SemanticTeacherImageEditWorkerError(
             "semantic_teacher_runtime_request_invalid"
@@ -674,6 +686,14 @@ def execute_semantic_teacher_image_edits(
     in_flight: dict[Future[dict[str, Any]], dict[str, Any]] = {}
     next_job_index = 0
     failure_observed = False
+    # Observed spend so far and the largest single request seen. The provider
+    # gives no price before a call, so the guard is "do not start another
+    # request that could carry us past the cap", using the worst request
+    # observed so far as the estimate. That bounds the overshoot to the
+    # requests already in flight instead of the whole frame set.
+    observed_cost_usd = 0.0
+    largest_request_cost_usd = 0.0
+    cost_ceiling_reached = False
     successful_terminal_count = 0
     failed_terminal_count = 0
     terminal_frame_count = 0
@@ -745,6 +765,22 @@ def execute_semantic_teacher_image_edits(
                     else:
                         outcome["destination"] = destination
                 outcomes[job["global_frame_index"]] = outcome
+                frame_usage = outcome.get("usage")
+                if isinstance(frame_usage, Mapping):
+                    try:
+                        frame_cost = _usage_cost(frame_usage, pricing)
+                    except (KeyError, TypeError, ValueError):
+                        frame_cost = None
+                    if frame_cost is not None:
+                        observed_cost_usd += frame_cost
+                        largest_request_cost_usd = max(
+                            largest_request_cost_usd, frame_cost
+                        )
+                if maximum_cost_usd is not None and (
+                    observed_cost_usd + largest_request_cost_usd
+                    > float(maximum_cost_usd)
+                ):
+                    cost_ceiling_reached = True
                 terminal_frame_count += 1
                 if outcome["succeeded"]:
                     successful_terminal_count += 1
@@ -770,6 +806,7 @@ def execute_semantic_teacher_image_edits(
                 )
             while (
                 not failure_observed
+                and not cost_ceiling_reached
                 and next_job_index < len(frame_jobs)
                 and len(in_flight) < max_parallel_requests
             ):
@@ -878,8 +915,20 @@ def execute_semantic_teacher_image_edits(
         for frame in task["frames"]
         if isinstance((record := frame.get("semantic_teacher_frame")), Mapping)
     ]
-    if failed_rows:
-        blockers = list(dict.fromkeys(row["failure_code"] for row in failed_rows))
+    # A ceiling stop leaves frames unattempted, and an unattempted frame carries
+    # no failure_code, so it never reaches failed_rows. Without this the success
+    # path below would report the partial set as a completed candidate set --
+    # request_count is len(submitted), not the frame count. Route it through the
+    # retained-partial-inventory path instead: it fails closed and still keeps
+    # the frames the run already paid for.
+    if failed_rows or cost_ceiling_reached:
+        blockers = list(
+            dict.fromkeys(
+                row["failure_code"] for row in failed_rows if row["failure_code"]
+            )
+        )
+        if cost_ceiling_reached:
+            blockers.insert(0, "semantic_teacher_cost_ceiling_reached")
         failed: dict[str, Any] = {
             "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
             "status": "failed_with_retained_partial_inventory",
@@ -894,9 +943,16 @@ def execute_semantic_teacher_image_edits(
             "successful_request_count": len(partial_frames),
             "failed_request_count": len(failed_rows),
             "maximum_parallel_requests": max_parallel_requests,
+            "maximum_cost_usd": (
+                None if maximum_cost_usd is None else float(maximum_cost_usd)
+            ),
+            "observed_cost_usd": round(observed_cost_usd, 9),
+            "cost_ceiling_reached": cost_ceiling_reached,
             "retry_count": 0,
             "blockers": blockers,
-            "terminal_provider_failure": failed_rows[0]["provider_failure"],
+            "terminal_provider_failure": (
+                failed_rows[0]["provider_failure"] if failed_rows else None
+            ),
             "tasks": task_rows,
             "partial_png_inventory": partial_frames,
             "provider_usage_totals": {
@@ -936,6 +992,11 @@ def execute_semantic_teacher_image_edits(
         "successful_request_count": request_count,
         "failed_request_count": 0,
         "maximum_parallel_requests": max_parallel_requests,
+        "maximum_cost_usd": (
+            None if maximum_cost_usd is None else float(maximum_cost_usd)
+        ),
+        "observed_cost_usd": round(observed_cost_usd, 9),
+        "cost_ceiling_reached": cost_ceiling_reached,
         "provider_usage_totals": {
             field: sum(row[field] for row in usage_rows) for field in USAGE_TOKEN_FIELDS
         },
