@@ -208,6 +208,41 @@ def configured_scene_object_store_publisher(
     return publish
 
 
+def validate_configured_scene_object_store_configuration(
+    *, key_prefix: str = DEFAULT_KEY_PREFIX
+) -> dict[str, Any]:
+    """Validate the local publication client without contacting object storage.
+
+    This proves that the deployed caller can read its file-backed credentials,
+    construct the configured S3 client, and resolve the exact safe namespace.
+    It deliberately does not claim remote bucket or IAM authority; those remain
+    proven only by the publisher's byte-for-byte upload/readback receipt.
+    """
+
+    _client, bucket = _object_store_client()
+    prefix = PurePosixPath(str(key_prefix).strip("/"))
+    if not prefix.parts or any(
+        _SAFE_KEY_COMPONENT.fullmatch(part) is None for part in prefix.parts
+    ):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_object_store_prefix_invalid"
+        )
+    if _SAFE_KEY_COMPONENT.fullmatch(bucket) is None:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_object_store_bucket_invalid"
+        )
+    return {
+        "schema_version": "task_evaluation_configured_scene_object_store_readiness.v1",
+        "status": "locally_configured",
+        "key_prefix": str(prefix),
+        "credential_files_validated": True,
+        "client_constructed": True,
+        "remote_bucket_authority_verified": False,
+        "provider_mutation_performed": False,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def read_configured_scene_object(
     *, reference: dict[str, Any], maximum_size_bytes: int = 16 * 1024 * 1024
 ) -> bytes:
@@ -260,4 +295,5 @@ __all__ = [
     "TaskEvaluationConfiguredSceneObjectStoreError",
     "configured_scene_object_store_publisher",
     "read_configured_scene_object",
+    "validate_configured_scene_object_store_configuration",
 ]

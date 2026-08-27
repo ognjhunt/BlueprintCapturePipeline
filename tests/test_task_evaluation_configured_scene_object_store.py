@@ -24,6 +24,31 @@ class _Client:
         return {"Body": io.BytesIO(payload)}
 
 
+def test_local_readiness_constructs_client_without_object_store_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client()
+    monkeypatch.setattr(
+        store, "_object_store_client", lambda: (client, "blueprint-inputs")
+    )
+
+    result = store.validate_configured_scene_object_store_configuration()
+
+    assert result == {
+        "schema_version": (
+            "task_evaluation_configured_scene_object_store_readiness.v1"
+        ),
+        "status": "locally_configured",
+        "key_prefix": store.DEFAULT_KEY_PREFIX,
+        "credential_files_validated": True,
+        "client_constructed": True,
+        "remote_bucket_authority_verified": False,
+        "provider_mutation_performed": False,
+        "raw_secret_values_recorded": False,
+    }
+    assert client.objects == {}
+
+
 def test_configured_scene_objects_are_content_addressed_and_read_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
