@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import shlex
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -464,3 +467,51 @@ def test_metric_envelope_refuses_wrong_size_candidate() -> None:
             envelope=envelope,
             observed_dimensions=[0.1, 0.25, 0.1],
         )
+
+
+def test_content_agents_runtime_uses_uv_from_its_installing_python(
+    tmp_path: Path,
+) -> None:
+    """The Isaac Python shim need not share PATH with its console scripts."""
+
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    entrypoint = runtime / "run_adp_content_agents_provider_runtime.sh"
+    entrypoint.write_bytes(
+        (ROOT / "scripts" / entrypoint.name).read_bytes()
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    python_shim = fake_bin / "python3"
+    python_shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then exit 0; fi\n'
+        'if [ "$1" = "-m" ] && [ "$2" = "uv" ]; then exit 23; fi\n'
+        'if [ "$1" != "-" ]; then exit 0; fi\n'
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+    output = tmp_path / "runtime_output"
+
+    completed = subprocess.run(
+        ["/bin/bash", str(entrypoint)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR": str(output),
+        },
+        timeout=10,
+    )
+
+    result_path = output / "adp_content_agents_vast_result.json"
+    assert completed.returncode == 23, (
+        f"stdout={completed.stdout}\nstderr={completed.stderr}"
+    )
+    assert result_path.is_file(), completed.stderr
+    assert json.loads(result_path.read_text(encoding="utf-8"))["blockers"] == [
+        "content_agents_python312_install_failed"
+    ]
