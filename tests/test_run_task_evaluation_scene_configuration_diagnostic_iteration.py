@@ -71,6 +71,10 @@ def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
         iteration_preparation_receipt=str(
             (tmp_path / "preparation.json").resolve()
         ),
+        retain_warm_session=False,
+        warm_session_authority=None,
+        warm_session_output_root=None,
+        maximum_warm_iterations=8,
         execute=execute,
     )
 
@@ -276,6 +280,104 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
         args, runner=runner, clock=lambda: next(times)
     )
     assert allocator_commands and allocator_commands[0][-1] == "--execute"
+
+
+def test_execute_can_retain_one_warm_session_through_canonical_allocator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    args.retain_warm_session = True
+    args.warm_session_authority = str((tmp_path / "warm-authority.json").resolve())
+    args.warm_session_output_root = str((tmp_path / "warm-session").resolve())
+    checkpoint_root = tmp_path / "checkpoint"
+    checkpoint_root.mkdir()
+    Path(args.diagnostic_checkpoint_reference).write_text(
+        json.dumps({"checkpoint_root": str(checkpoint_root.resolve())}),
+        encoding="utf-8",
+    )
+    release_path = Path(args.release_root) / SOURCE_COMMIT
+    release_path.mkdir(parents=True)
+    (release_path / "src").mkdir()
+    receipt = Path(args.state_root) / "receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        iteration,
+        "stage_scene_configuration_diagnostic_release",
+        lambda **_kwargs: {
+            "release_path": str(release_path),
+            "receipt_path": str(receipt),
+            "receipt_digest": "sha256:" + "1" * 64,
+            "remote_ref": "refs/heads/codex/scene-fix",
+            "reused_existing_checkout": False,
+        },
+    )
+    monkeypatch.setattr(
+        iteration,
+        "validate_scene_configuration_diagnostic_release_receipt",
+        lambda *_args, **_kwargs: {},
+    )
+    warm_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        iteration,
+        "materialize_scene_configuration_warm_session_authority",
+        lambda **kwargs: warm_calls.append(kwargs) or {},
+    )
+    allocator_commands: list[list[str]] = []
+
+    def runner(argv, **_kwargs):
+        command = list(argv)
+        module = command[command.index("-m") + 1]
+        if module.endswith("bundle"):
+            output = Path(command[command.index("--output-root") + 1])
+            output.mkdir(parents=True)
+            (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": iteration.BUNDLE_SCHEMA_VERSION,
+                        "source_commit": SOURCE_COMMIT,
+                        "diagnostic_only": True,
+                        "qualification_eligible": False,
+                        "configured_revision_publication_permitted": False,
+                        "offering_publication_permitted": False,
+                        "terminal_e2e_completion_permitted": False,
+                        "bundle_sha256": "sha256:" + "2" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        elif module.endswith("paid_authority"):
+            Path(command[command.index("--output") + 1]).write_text(
+                json.dumps(
+                    {
+                        "schema_version": iteration.AUTHORITY_SCHEMA_VERSION,
+                        "source_commit": SOURCE_COMMIT,
+                        "bundle_sha256": "sha256:" + "2" * 64,
+                        "diagnostic_only": True,
+                        "qualification_eligible": False,
+                        "configured_revision_publication_permitted": False,
+                        "offering_publication_permitted": False,
+                        "terminal_e2e_completion_permitted": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        else:
+            allocator_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    times = iter((0.0, 0.1, 0.2, 0.3, 0.4, 0.5))
+    result = iteration.run_scene_configuration_diagnostic_iteration(
+        args, runner=runner, clock=lambda: next(times)
+    )
+
+    assert len(warm_calls) == 1
+    assert warm_calls[0]["checkpoint_root"] == checkpoint_root.resolve()
+    command = allocator_commands[0]
+    assert "--scene-configuration-retain-warm-session" in command
+    assert command[command.index("--scene-configuration-warm-session-authority") + 1] == args.warm_session_authority
+    assert command[command.index("--scene-configuration-warm-session-output-root") + 1] == args.warm_session_output_root
+    assert result["warm_session_retention_requested"] is True
 
 
 def test_child_failure_is_redacted_and_does_not_print_child_output(

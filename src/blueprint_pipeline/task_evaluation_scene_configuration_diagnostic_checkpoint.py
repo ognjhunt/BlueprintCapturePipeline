@@ -194,17 +194,12 @@ def _portable_render_template(render_inputs: Mapping[str, Any]) -> dict[str, Any
     return value
 
 
-def _canonical_json_file_digest(value: Mapping[str, Any]) -> str:
-    return "sha256:" + hashlib.sha256(
-        (canonical_json(value) + "\n").encode("utf-8")
-    ).hexdigest()
-
-
 def _scientific_bindings(
     *, stage_input: Mapping[str, Any], render_inputs: Mapping[str, Any]
 ) -> dict[str, Any]:
     envelope = stage_input.get("construction_envelope")
     configuration = stage_input.get("configuration")
+    stage = stage_input.get("stage")
     renderer_runtime = render_inputs.get("renderer_runtime")
     disclosure = render_inputs.get("disclosure_decision")
     source_appearance = render_inputs.get("source_appearance")
@@ -218,13 +213,49 @@ def _scientific_bindings(
             disclosure,
             source_appearance,
             calibration,
+            stage,
         )
     ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_binding_invalid"
         )
-    configuration_digest = _canonical_json_file_digest(configuration)
-    if stage_input.get("configuration_sha256") != configuration_digest:
+    stage_id = str(stage.get("stage_id") or "")
+    configuration_rows = envelope.get("stage_configuration_references")
+    matching_configuration_rows = (
+        [
+            row
+            for row in configuration_rows
+            if isinstance(row, Mapping) and row.get("stage_id") == stage_id
+        ]
+        if isinstance(configuration_rows, list)
+        else []
+    )
+    if len(matching_configuration_rows) != 1:
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_configuration_mismatch"
+        )
+    configuration_row = matching_configuration_rows[0]
+    unresolved_configuration = Path(
+        str(
+            configuration_row.get("materialized_path")
+            or configuration_row.get("path")
+            or ""
+        )
+    ).expanduser()
+    configuration_path = unresolved_configuration.resolve()
+    materialized_configuration = _read(
+        configuration_path,
+        code="scene_configuration_diagnostic_checkpoint_configuration_mismatch",
+    )
+    configuration_digest = str(configuration_row.get("digest") or "")
+    if (
+        unresolved_configuration.is_symlink()
+        or not configuration_path.is_file()
+        or configuration_path.stat().st_size != configuration_row.get("size_bytes")
+        or _sha256(configuration_path) != configuration_digest
+        or stage_input.get("configuration_sha256") != configuration_digest
+        or materialized_configuration != dict(configuration)
+    ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_configuration_mismatch"
         )

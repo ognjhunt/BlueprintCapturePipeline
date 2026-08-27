@@ -13,6 +13,7 @@ import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import (
@@ -73,6 +74,8 @@ _PROVIDER_RENDERER_FILES = (
 _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE = Path(
     "components/artifixer3d_observed_object_removal/package/python_wheelhouse"
 )
+_COLLISION_REFERENCE_CONTRACT_PATH = "scene.geometry.collision"
+_OPENUSD_REFERENCE_SUFFIXES = frozenset({".usd", ".usda", ".usdc"})
 
 
 class TaskEvaluationSceneConfigurationBundleError(ValueError):
@@ -113,6 +116,32 @@ def _copy_file(source: Path, destination: Path) -> dict[str, Any]:
         "digest": _sha256(destination),
         "size_bytes": destination.stat().st_size,
     }
+
+
+def _provider_reference_suffix(row: Mapping[str, Any], *, source: Path) -> str:
+    """Preserve the declared OpenUSD format when CAS materialization hid it.
+
+    Prepared references are commonly materialized under a digest-only filename.
+    OpenUSD selects its crate/text file format from the filename extension, so
+    copying a valid collision layer with ``source.suffix == ""`` makes the exact
+    same bytes unreadable on the provider.  The immutable reference URI already
+    declares the publisher's format; use that bound declaration rather than
+    guessing from bytes or from a mutable local path.
+    """
+
+    if row.get("contract_path") != _COLLISION_REFERENCE_CONTRACT_PATH:
+        return source.suffix
+    try:
+        suffix = Path(urlsplit(str(row.get("uri") or "")).path).suffix.lower()
+    except ValueError as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_collision_reference_format_invalid"
+        ) from exc
+    if suffix not in _OPENUSD_REFERENCE_SUFFIXES:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_collision_reference_format_invalid"
+        )
+    return suffix
 
 
 def _copy_tree(source: Path, destination: Path) -> None:
@@ -605,7 +634,8 @@ def build_scene_configuration_provider_bundle(
             # Staged once under input/render when the decision admits it.
             continue
         source = _bound_file(row, code="scene_configuration_bundle_reference_invalid")
-        target = runtime / "input/references" / f"{index:04d}{source.suffix}"
+        suffix = _provider_reference_suffix(row, source=source)
+        target = runtime / "input/references" / f"{index:04d}{suffix}"
         _copy_file(source, target)
         copied = dict(row)
         copied.pop("materialized_path", None)

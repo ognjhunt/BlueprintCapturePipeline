@@ -161,6 +161,12 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "source_object": {"publisher_instance_id": "104"},
         "random_seed": 839873,
     }
+    # Production configuration files retain publisher formatting.  The exact
+    # byte digest therefore need not equal a digest of canonical reserialization.
+    configuration_path = source / "configuration.json"
+    configuration_path.write_text(
+        json.dumps(configuration, indent=2) + "\n", encoding="utf-8"
+    )
     recipe_digest = "sha256:" + "2" * 64
     envelope = {
         "run_id": "run-1",
@@ -169,20 +175,25 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "control_plane_envelope_digest": "sha256:" + "4" * 64,
         "recipe_digest": recipe_digest,
         "recipe": {"recipe_digest": recipe_digest},
+        "stage_configuration_references": [
+            {
+                "stage_id": "stage-1",
+                "materialized_path": str(configuration_path),
+                "digest": _sha256(configuration_path),
+                "size_bytes": configuration_path.stat().st_size,
+            }
+        ],
         "envelope_digest": "",
     }
     envelope["envelope_digest"] = canonical_digest(
         envelope, digest_field="envelope_digest"
     )
-    configuration_sha = "sha256:" + hashlib.sha256(
-        (canonical_json(configuration) + "\n").encode("utf-8")
-    ).hexdigest()
     stage_input = {
         "schema_version": "task_evaluation_scene_configuration_stage_production_input.v1",
         "run_id": "run-1",
         "stage": {"stage_id": "stage-1"},
         "configuration": configuration,
-        "configuration_sha256": configuration_sha,
+        "configuration_sha256": _sha256(configuration_path),
         "source_commit": "a" * 40,
         "toolchain_digest": "sha256:" + "5" * 64,
         "construction_envelope": envelope,
