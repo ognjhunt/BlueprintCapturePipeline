@@ -988,6 +988,39 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         bound_argv[bound_argv.index("--pod-name") + 1]
         == authority["resource_name"]
     )
+    binding_digest = hashlib.sha256(
+        authority["resource_name"].encode("utf-8")
+    ).hexdigest()[:12]
+    assert bound["profile_id"].endswith(f"-r1-binding-{binding_digest}")
+
+    # A retry may use the same source commit and human revision, but its paid
+    # authority names a new activation-scoped provider resource. The immutable
+    # profile therefore needs a distinct identity instead of conflicting with
+    # the first activation's already-published bytes.
+    retry_authority = dict(authority)
+    retry_authority["resource_name"] = f"{authority['resource_name']}-retry"
+    retry_authority["authority_digest"] = canonical_digest(
+        retry_authority, digest_field="authority_digest"
+    )
+    retry_authority_path = tmp_path / "authority-retry.json"
+    retry_authority_path.write_text(
+        json.dumps(retry_authority), encoding="utf-8"
+    )
+    retry_bound = build_scene_configuration_live_profile(
+        bundle_receipt_path=receipt_path,
+        attempt_authority_path=retry_authority_path,
+        source_commit="a" * 40,
+        raw_manifest_uri=str(publication_path),
+        revision="r1",
+        max_hourly_rate_usd=0.50,
+        hard_ttl_seconds=1_800,
+        max_spend_usd=2.25,
+        team_namespace="team-a",
+        scene_id="interiorgs-839873",
+        task_id="planar-mug-push",
+        pod_name=retry_authority["resource_name"],
+    )
+    assert retry_bound["profile_id"] != bound["profile_id"]
 
     tampered = dict(authority)
     tampered["maximum_hourly_rate_usd"] = 0.81

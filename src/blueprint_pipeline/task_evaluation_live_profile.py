@@ -488,6 +488,7 @@ def build_lane_live_profile(
     revision: str | None = None,
     max_spend_usd: float | None = None,
     pod_name: str | None = None,
+    profile_binding_identity: str | None = None,
     extra_paths: Mapping[str, str | Path] | None = None,
     extra_values: Mapping[str, Any] | None = None,
     runtime_environment: Mapping[str, str] | None = None,
@@ -530,7 +531,16 @@ def build_lane_live_profile(
         # collision surfaces as an immutable-input digest mismatch on the next
         # launch rather than at publish time.
         profile_id = f"{profile_id}-{revision}"
-
+    if profile_binding_identity:
+        if re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", profile_binding_identity
+        ) is None:
+            blockers.append("profile_binding_identity_invalid")
+        else:
+            binding_digest = hashlib.sha256(
+                profile_binding_identity.encode("utf-8")
+            ).hexdigest()[:12]
+            profile_id = f"{profile_id}-binding-{binding_digest}"
     worst_case = max_hourly_rate_usd * hard_ttl_seconds / 3600.0
     context = LaneLiveProfileContext(
         receipt_path=receipt_path,
