@@ -72,6 +72,25 @@ def validate_configured_scene_revision(
         raise TaskEvaluationConfiguredSceneRevisionError(
             "configured_scene_revision_digest_invalid"
         )
+    source = revision["source"]
+    disclosure = source.get("provider_disclosure_decision")
+    if disclosure is not None:
+        from .task_evaluation_scene_configuration_disclosure import (
+            SCHEMA_VERSION as DISCLOSURE_SCHEMA_VERSION,
+            renders_on_provider,
+        )
+
+        if (
+            not isinstance(disclosure, Mapping)
+            or disclosure.get("schema_version") != DISCLOSURE_SCHEMA_VERSION
+            or disclosure.get("decision_digest")
+            != canonical_digest(disclosure, digest_field="decision_digest")
+            or source["raw_source_sent_to_external_provider"]
+            is not renders_on_provider(disclosure)
+        ):
+            raise TaskEvaluationConfiguredSceneRevisionError(
+                "configured_scene_revision_disclosure_invalid"
+            )
     task = revision["task_template"]
     if task["identity"]["id"] == revision["scene_identity"]["id"]:
         raise TaskEvaluationConfiguredSceneRevisionError(

@@ -10,6 +10,10 @@ from blueprint_pipeline.task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+    PROVIDER_GPU,
+    SCHEMA_VERSION as DISCLOSURE_SCHEMA_VERSION,
+)
 
 
 def ref(index: int) -> dict[str, object]:
@@ -130,6 +134,32 @@ def revision() -> dict[str, object]:
 
 def test_accepts_terminal_configuration_artifact_for_later_evaluations() -> None:
     value = revision()
+    assert validate_configured_scene_revision(value) == value
+
+
+def test_accepts_provider_disclosure_only_with_its_digest_bound_decision() -> None:
+    value = revision()
+    decision: dict[str, object] = {
+        "schema_version": DISCLOSURE_SCHEMA_VERSION,
+        "render_execution_site": PROVIDER_GPU,
+        "source_appearance_bytes_to_provider": True,
+        "rights_admission_permits_upload": True,
+        "stage_configuration_requests_upload": True,
+        "human_authority_accepts_provider_terms": True,
+        "provider_training_authorized": False,
+        "public_redistribution_authorized": False,
+        "refusals": [],
+        "decision_digest": "",
+    }
+    decision["decision_digest"] = canonical_digest(
+        decision, digest_field="decision_digest"
+    )
+    value["source"]["raw_source_sent_to_external_provider"] = True
+    value["source"]["provider_disclosure_decision"] = decision
+    value["revision_digest"] = canonical_digest(
+        value, digest_field="revision_digest"
+    )
+
     assert validate_configured_scene_revision(value) == value
 
 

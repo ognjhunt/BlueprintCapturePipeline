@@ -324,6 +324,57 @@ def test_activation_builds_robot_neutral_scene_configuration_context(
     assert context["reference_bindings"][
         "raw_interiorgs_bytes_authorized_for_provider"
     ] is False
+    decision = {
+        "schema_version": "task_evaluation_scene_configuration_disclosure_decision.v1",
+        "render_execution_site": "provider_gpu",
+        "source_appearance_bytes_to_provider": True,
+        "decision_digest": "",
+    }
+    decision["decision_digest"] = canonical_digest(
+        decision, digest_field="decision_digest"
+    )
+    envelope.chmod(0o640)
+    envelope.write_text(
+        json.dumps(
+            {
+                "schema_version": "fixture.v1",
+                "render_inputs_result": {"disclosure_decision": decision},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    envelope.chmod(0o440)
+    provider_context = worker._build_scene_configuration_context(
+        activation_request=activation,
+        preparation_request=preparation,
+        construction_input={
+            "kind": "task_evaluation_scene_configuration",
+            "construction_envelope_path": str(envelope),
+            "construction_envelope_digest": "sha256:" + "e" * 64,
+            "recipe_digest": "sha256:" + "f" * 64,
+            "source_commit": preparation["expected_production_commit"],
+        },
+        activation_materialized={
+            "lineage.project_spend_reconciliation": project,
+            "lineage.initial_provider_zero": provider_zero,
+        },
+        activation_root=tmp_path / "provider-activation",
+        repository_root=tmp_path,
+        toolchain_root=toolchain,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        profile_dir=tmp_path / "profiles",
+        webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "authorizations",
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+    )
+    assert provider_context["reference_bindings"][
+        "raw_interiorgs_bytes_authorized_for_provider"
+    ] is True
+    assert provider_context["reference_bindings"][
+        "provider_disclosure_decision_digest"
+    ] == decision["decision_digest"]
 
 
 def _bytes_digest(payload: bytes) -> str:

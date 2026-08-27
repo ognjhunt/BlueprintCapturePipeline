@@ -854,6 +854,93 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     assert live["agent_operator_used"] is False
 
 
+def test_scene_configuration_terminal_evidence_carries_published_revision(
+    tmp_path: Path,
+) -> None:
+    result_path = tmp_path / "allocator-result.json"
+    teardown = tmp_path / "teardown.json"
+    artifact_manifest = tmp_path / "artifact-manifest.json"
+    provider_result = tmp_path / "provider-result.json"
+    revision = tmp_path / "configured-scene-revision.json"
+    publication = tmp_path / "publication-result.json"
+    for path in (teardown, artifact_manifest, provider_result, revision, publication):
+        _write(path, {"artifact": path.name})
+    result = {
+        "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+        "status": "completed",
+        "continuing_spend_from_this_run": False,
+        "retry_cap": 0,
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "full_byte_service_account_readback_passed": True,
+        "teardown_manifest_path": str(teardown),
+        "artifact_manifest_path": str(artifact_manifest),
+        "execution_result_path": str(provider_result),
+        "configured_scene_revision_path": str(revision),
+        "publication_result_path": str(publication),
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "configured_scene_revision_reference": {
+            "uri": "s3://blueprint/configured/revision.json",
+            "digest": "sha256:" + "c" * 64,
+            "size_bytes": 100,
+        },
+        "configured_scene_bundle_reference": {
+            "uri": "s3://blueprint/configured/bundle.zip",
+            "digest": "sha256:" + "d" * 64,
+            "size_bytes": 200,
+        },
+    }
+    _write(result_path, result)
+    profile = {
+        "terminal_contract": {
+            "result_path": str(result_path),
+            "success_statuses": ["completed"],
+            "required_values": {
+                "continuing_spend_from_this_run": False,
+                "retry_cap": 0,
+            },
+            "required_path_fields": [
+                "teardown_manifest_path",
+                "artifact_manifest_path",
+                "execution_result_path",
+                "configured_scene_revision_path",
+                "publication_result_path",
+            ],
+        }
+    }
+
+    terminal = dispatcher_module._terminal_evidence(
+        profile, execute=True, run_root=tmp_path
+    )
+
+    assert terminal["status"] == "passed"
+    assert terminal["scene_configuration"] == {
+        "schema_version": "task_evaluation_scene_configuration_terminal_evidence.v1",
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "configured_scene_revision_reference": result[
+            "configured_scene_revision_reference"
+        ],
+        "configured_scene_bundle_reference": result[
+            "configured_scene_bundle_reference"
+        ],
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "full_byte_service_account_readback_passed": True,
+    }
+
+    result["configured_scene_bundle_reference"] = None
+    _write(result_path, result)
+    refused = dispatcher_module._terminal_evidence(
+        profile, execute=True, run_root=tmp_path
+    )
+    assert refused["status"] == "blocked"
+    assert "scene_configuration_terminal_publication_evidence_invalid" in refused[
+        "blockers"
+    ]
+
+
 def test_dispatch_renders_all_output_paths_inside_the_launch_run_root(
     tmp_path: Path,
 ) -> None:

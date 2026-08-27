@@ -67,6 +67,7 @@ from .task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION as SCENE_CONSTRUCTION_ENVELOPE_SCHEMA_VERSION,
     QUEUE_STATES as SCENE_CONSTRUCTION_QUEUE_STATES,
 )
+from .task_evaluation_scene_configuration_disclosure import renders_on_provider
 
 
 QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
@@ -774,13 +775,25 @@ def _build_scene_configuration_context(
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_scene_configuration_context_invalid"
         )
-    construction_envelope = Path(
+    unresolved_construction_envelope = Path(
         str(construction_input.get("construction_envelope_path") or "")
-    ).resolve()
+    )
     source_commit = str(activation_request["expected_production_commit"])
+    if unresolved_construction_envelope.is_symlink():
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_scene_configuration_context_invalid"
+        )
+    construction_envelope = unresolved_construction_envelope.resolve()
+    construction_value = _read_json(
+        construction_envelope,
+        blocker="launch_activation_scene_configuration_envelope_invalid",
+    )
+    disclosure_decision = (
+        construction_value.get("render_inputs_result") or {}
+    ).get("disclosure_decision")
+    raw_source_authorized = renders_on_provider(disclosure_decision or {})
     if (
-        construction_envelope.is_symlink()
-        or not construction_envelope.is_file()
+        not construction_envelope.is_file()
         or construction_input.get("source_commit") != source_commit
     ):
         raise TaskEvaluationLaunchActivationWorkerError(
@@ -881,7 +894,12 @@ def _build_scene_configuration_context(
             ],
             "recipe_digest": construction_input["recipe_digest"],
             "toolchain_digest": toolchain_manifest["toolchain_digest"],
-            "raw_interiorgs_bytes_authorized_for_provider": False,
+            "raw_interiorgs_bytes_authorized_for_provider": raw_source_authorized,
+            "provider_disclosure_decision_digest": (
+                disclosure_decision.get("decision_digest")
+                if isinstance(disclosure_decision, Mapping)
+                else None
+            ),
             "evaluation_episode_authorized": False,
         },
         "operations": operations,

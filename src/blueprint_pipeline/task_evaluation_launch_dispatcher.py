@@ -1201,6 +1201,64 @@ def _scoped_runtime_environment(values: Mapping[str, Any]):
                 os.environ[key] = value
 
 
+def _scene_configuration_terminal_projection(
+    result: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    if (
+        result.get("schema_version")
+        != "task_evaluation_scene_configuration_vast_result.v1"
+    ):
+        return None, []
+
+    def valid_reference(value: Any) -> bool:
+        return (
+            isinstance(value, Mapping)
+            and str(value.get("uri") or "").startswith(_URI_SCHEMES)
+            and re.fullmatch(
+                r"sha256:[0-9a-f]{64}", str(value.get("digest") or "")
+            )
+            is not None
+            and isinstance(value.get("size_bytes"), int)
+            and not isinstance(value.get("size_bytes"), bool)
+            and value.get("size_bytes") > 0
+        )
+
+    revision_reference = result.get("configured_scene_revision_reference")
+    bundle_reference = result.get("configured_scene_bundle_reference")
+    valid = (
+        result.get("status") == "completed"
+        and result.get("configuration_completed") is True
+        and result.get("configured_scene_published") is True
+        and result.get("full_byte_service_account_readback_passed") is True
+        and valid_reference(revision_reference)
+        and valid_reference(bundle_reference)
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(result.get("configured_scene_revision_digest") or ""),
+        )
+        is not None
+        and re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(result.get("publication_result_digest") or ""),
+        )
+        is not None
+    )
+    if not valid:
+        return None, ["scene_configuration_terminal_publication_evidence_invalid"]
+    return {
+        "schema_version": "task_evaluation_scene_configuration_terminal_evidence.v1",
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": result[
+            "configured_scene_revision_digest"
+        ],
+        "configured_scene_revision_reference": dict(revision_reference),
+        "configured_scene_bundle_reference": dict(bundle_reference),
+        "publication_result_digest": result["publication_result_digest"],
+        "full_byte_service_account_readback_passed": True,
+    }, []
+
+
 def _terminal_evidence(
     profile: Mapping[str, Any], *, execute: bool, run_root: Path
 ) -> dict[str, Any]:
@@ -1256,6 +1314,14 @@ def _terminal_evidence(
     visual_evidence = _mapping(result.get("visual_evidence"))
     if visual_evidence:
         evidence["visual_evidence"] = visual_evidence
+    scene_configuration, scene_configuration_blockers = (
+        _scene_configuration_terminal_projection(result)
+    )
+    blockers.extend(scene_configuration_blockers)
+    if scene_configuration is not None:
+        evidence["scene_configuration"] = scene_configuration
+    evidence["status"] = "passed" if not blockers else "blocked"
+    evidence["blockers"] = sorted(set(blockers))
     return evidence
 
 
