@@ -40,7 +40,7 @@ from .paid_repair_spend_chain import (
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .public_scene_artifixer3d_bundle import (
     CHECKPOINT_REUSE_SCHEMA_VERSION,
-    DIRECT_EDITOR_BACKENDS,
+    direct_editor_backends,
     DEFAULT_IMAGE,
     DUAL_TARGET_PIPELINE_MODE,
     DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
@@ -598,7 +598,7 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         and request.get("repair_target")
         == "plausible_object_free_background_inside_exact_support_only"
         and request.get("direct_editor_backend")
-        in DIRECT_EDITOR_BACKENDS
+        in direct_editor_backends()
     )
     dual_target_request_valid = (
         pipeline_mode == DUAL_TARGET_PIPELINE_MODE

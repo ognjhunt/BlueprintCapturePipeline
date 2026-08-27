@@ -561,3 +561,64 @@ def test_renderer_launches_the_browser_with_that_home(monkeypatch, tmp_path: Pat
     source = inspect.getsource(scr.render_splat_at_exact_cameras)
     assert "_browser_process_environment" in source
     assert "env=" in source
+
+
+def test_render_harness_failure_retains_its_page_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The harness already names the cause; classification must not eat it.
+
+    A control-plane reproduction of scene 839873's stage 1 returned exactly
+    ``render_blocker:render_harness_exception; render_harness_failed`` while
+    the harness's own stdout carried
+    ``THREE.WebGLRenderer: Error creating WebGL context`` and the GPU vendor
+    id that explained it. None of the classifier's substrings matched, so the
+    only readable answer was discarded on the way to the caller.
+    """
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    module._emit_render_harness_diagnostics(
+        returncode=1,
+        stderr="",
+        stdout='{"status": "blocked"}',
+        harness_output={
+            "status": "blocked",
+            "graphics_backend": "egl",
+            "blockers": ["render_harness_exception"],
+            "page_errors": [
+                "console.error: THREE.WebGLRenderer: A WebGL context could not be"
+                " created. Reason: VENDOR = 0x1af4, DEVICE = 0x1050",
+            ],
+            "error": "page.evaluate: Error: THREE.WebGLRenderer: Error creating"
+            " WebGL context.\n    at setupRenderer (render_entry.mjs:25:20)",
+        },
+    )
+
+    captured = capsys.readouterr().err
+    assert "render_harness_failed" in captured
+    assert "graphics_backend='egl'" in captured
+    assert "VENDOR = 0x1af4" in captured
+    assert "setupRenderer" in captured
+
+
+def test_render_harness_diagnostics_redact_and_bound_their_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Credentials must not travel, and one stream must not bury the log."""
+
+    from blueprint_pipeline import sealed_camera_render as module
+
+    noise = "y" * (module._RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES * 3)
+    module._emit_render_harness_diagnostics(
+        returncode=1,
+        stderr=noise + "\nLAST LINE\n",
+        stdout="signed url https://objects.example.test/o?X-Amz-Signature=deadbeefcafe",
+        harness_output={"status": "blocked"},
+    )
+
+    captured = capsys.readouterr().err
+    assert "LAST LINE" in captured
+    assert "earlier bytes dropped" in captured
+    assert "deadbeefcafe" not in captured
+    assert len(captured) < module._RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES * 2

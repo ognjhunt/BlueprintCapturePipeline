@@ -16,10 +16,12 @@ import json
 import os
 import re
 import subprocess  # nosec B404 - command is toolchain-manifest-bound
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_ROOT_ENV,
@@ -210,6 +212,56 @@ def _validate_component_result(
     return artifacts
 
 
+#: Retained tail per captured stream. Enough to carry a traceback and the
+#: lines above it; small enough that a component looping on output cannot
+#: bury the stage producer log that has to survive the run.
+_COMPONENT_FAILURE_STREAM_TAIL_BYTES = 20_000
+
+
+def _failure_stream_tail(value: Any) -> str:
+    """Redact one captured stream and keep its tail, saying what was dropped."""
+
+    text = redacted_failure_text("" if value is None else value)
+    if len(text) <= _COMPONENT_FAILURE_STREAM_TAIL_BYTES:
+        return text
+    dropped = len(text) - _COMPONENT_FAILURE_STREAM_TAIL_BYTES
+    tail = text[-_COMPONENT_FAILURE_STREAM_TAIL_BYTES:]
+    return f"<{dropped} earlier bytes dropped>\n{tail}"
+
+
+def _emit_component_failure_diagnostics(
+    *,
+    adapter_id: str,
+    completed: Any,
+    component_result_written: bool,
+) -> None:
+    """Print the component's own redacted output before refusing.
+
+    ``capture_output=True`` pulls the component's stdout and stderr into this
+    process, and the refusal carried only its exit code. So a stage that died
+    on a rented GPU left ``scene_configuration_component_failed:<id>:1`` and
+    nothing else: the component's traceback existed, was captured, and was
+    dropped on the floor. The only way to learn why was to rent the GPU and
+    run the whole parent allocation again.
+
+    The stage producer retains this process's stderr, so writing the redacted
+    tail here is what makes a paid failure diagnosable from the run that paid
+    for it. Redaction is the same one every other failure path uses, and the
+    exception message is unchanged so no contract keyed on it moves.
+    """
+
+    lines = [
+        f"scene_configuration_component_failed:{adapter_id}",
+        f"returncode={getattr(completed, 'returncode', None)}",
+        f"component_result_written={component_result_written}",
+    ]
+    for name in ("stdout", "stderr"):
+        tail = _failure_stream_tail(getattr(completed, name, None))
+        lines.append(f"--- component {name} ---")
+        lines.append(tail if tail.strip() else "<empty>")
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
 def execute_stage_tool(
     *,
     adapter_id: str,
@@ -282,6 +334,11 @@ def execute_stage_tool(
         timeout=7_200,
     )
     if completed.returncode != 0 or not component_result_path.is_file():
+        _emit_component_failure_diagnostics(
+            adapter_id=adapter_id,
+            completed=completed,
+            component_result_written=component_result_path.is_file(),
+        )
         raise TaskEvaluationSceneConfigurationStageToolError(
             f"scene_configuration_component_failed:{adapter_id}:"
             f"{completed.returncode}"

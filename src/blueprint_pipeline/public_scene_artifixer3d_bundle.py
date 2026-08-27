@@ -82,7 +82,35 @@ VIBE_SOURCE_LICENSE_SHA256 = (
 # release. The registry records each backend's terms alongside its name, so the
 # seam stays open for the next model without opening it for a model nobody
 # checked the license on. See `image_editor_backend_registry`.
-DIRECT_EDITOR_BACKENDS = registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
+# Resolved on first use, not at import. The registry lives in the repository's
+# ``docs/`` tree, which the scene-configuration provider bundle does not carry:
+# it copies this package to ``provider_runtime/blueprint_pipeline`` on a rented
+# GPU, so the registry's ``parents[2]`` default resolves to a path that has
+# never existed there. Evaluating this at module scope therefore killed the
+# ArtiFixer stage on *import*, before its first instruction, with
+# ``image_editor_registry_unreadable``. Every reader below is repo-layout code,
+# so deferring costs nothing and the registry still fails closed when one of
+# them actually asks.
+_DIRECT_EDITOR_BACKENDS: frozenset[str] | None = None
+
+
+def direct_editor_backends() -> frozenset[str]:
+    """Admitted direct image-editor backends, read once from the registry."""
+
+    global _DIRECT_EDITOR_BACKENDS
+    if _DIRECT_EDITOR_BACKENDS is None:
+        _DIRECT_EDITOR_BACKENDS = registered_backend_ids(
+            capability=ARTIFIXER_DIRECT_CAPABILITY
+        )
+    return _DIRECT_EDITOR_BACKENDS
+
+
+def __getattr__(name: str) -> Any:
+    """Keep ``DIRECT_EDITOR_BACKENDS`` readable without importing the registry."""
+
+    if name == "DIRECT_EDITOR_BACKENDS":
+        return direct_editor_backends()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 NO_DIRECT_EDITOR = REGISTRY_NO_DIRECT_EDITOR
 
 
@@ -858,7 +886,7 @@ def build_artifixer3d_bundle(
         }
         or (
             pipeline_mode == FULL_PIPELINE_MODE
-            and direct_editor_backend not in DIRECT_EDITOR_BACKENDS
+            and direct_editor_backend not in direct_editor_backends()
         )
         or (
             pipeline_mode in {DUAL_TARGET_PIPELINE_MODE, DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE}
@@ -1314,7 +1342,10 @@ __all__ = [
     "DUAL_TARGET_PIPELINE_MODE",
     "DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE",
     "CHECKPOINT_REUSE_SCHEMA_VERSION",
-    "DIRECT_EDITOR_BACKENDS",
+    # Served by the module __getattr__ above so importing this module does not
+    # read the registry; ruff cannot see PEP 562 names.
+    "DIRECT_EDITOR_BACKENDS",  # noqa: F822
+    "direct_editor_backends",
     "FULL_PIPELINE_MODE",
     "NO_DIRECT_EDITOR",
     "SCHEMA_VERSION",
@@ -1368,7 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pipeline-mode")
     parser.add_argument(
         "--direct-editor-backend",
-        choices=sorted(DIRECT_EDITOR_BACKENDS | {NO_DIRECT_EDITOR}),
+        choices=sorted(direct_editor_backends() | {NO_DIRECT_EDITOR}),
         help="Defaults to whatever the candidate input schema implies.",
     )
     parser.add_argument(
