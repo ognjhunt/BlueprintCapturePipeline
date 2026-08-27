@@ -406,6 +406,39 @@ def _authority_environment():
                 os.environ[name] = value
 
 
+def _provider_transfer_byte_budget(
+    receipt: Mapping[str, Any],
+) -> tuple[int, int]:
+    """Declare the transfer ceilings the hard-cap projection must price.
+
+    Vast prices inbound and outbound bytes per GB *outside* the hourly rate.
+    Leaving these at zero did not merely lose a number: it switched off
+    ``_offer_fits_total_cost_bound`` entirely, so an offer whose bandwidth
+    price alone could exceed the attempt's compute cap still passed
+    admission, and the selection receipt recorded no projected total. The
+    download ceiling is the exact byte count the receipt already seals and
+    the staged object store already serves, so it is measured, not guessed.
+    """
+
+    download = receipt.get("bundle_size_bytes")
+    if (
+        not isinstance(download, int)
+        or isinstance(download, bool)
+        or download <= 0
+    ):
+        raise TaskEvaluationSceneConfigurationVastError(
+            "scene_configuration_provider_transfer_budget_inputs_invalid"
+        )
+    # The upload side has no contract to price. On the provider-render path
+    # the frames are produced on the rented GPU, so the bundle manifest's
+    # ``derived_rendered_view_count`` is 0, and neither the manifest nor the
+    # signed output PUT declares a byte ceiling for what comes back. A
+    # fabricated estimate would be indistinguishable from a measured one in
+    # the selection receipt, so this stays 0 until an output contract
+    # actually declares a bound.
+    return download, 0
+
+
 def run_scene_configuration_vast(
     *,
     job_dir: str | Path,
@@ -456,6 +489,9 @@ def run_scene_configuration_vast(
     rate = float(authority["maximum_hourly_rate_usd"])
     ttl = int(authority["maximum_single_resource_ttl_seconds"])
     bundle_path = Path(str(receipt["bundle_path"])).resolve()
+    expected_download_bytes, expected_upload_bytes = _provider_transfer_byte_budget(
+        receipt
+    )
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
@@ -558,6 +594,8 @@ def run_scene_configuration_vast(
                     staging_dir / "provider_output_get_url.txt"
                 ).read_text(encoding="utf-8").strip(),
                 provider_runtime_output_zip=output_zip,
+                expected_provider_download_bytes=expected_download_bytes,
+                expected_provider_upload_bytes=expected_upload_bytes,
                 enable_isaac_smoke=True,
                 enable_blueprint_bundle=True,
                 provider_bundle_kind=PROVIDER_BUNDLE_KIND,
@@ -710,6 +748,8 @@ def run_scene_configuration_vast(
         "provider_runtime_output_zip_sha256": (
             _sha256(output_zip) if output_zip.is_file() else None
         ),
+        "expected_provider_download_bytes": expected_download_bytes,
+        "expected_provider_upload_bytes": expected_upload_bytes,
         "stage_chain_result_digest": (execution.get("stage_chain") or {}).get(
             "result_digest"
         ),
