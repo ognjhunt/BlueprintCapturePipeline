@@ -92,19 +92,19 @@ if [ "${uv_rc}" -ne 0 ]; then
   write_missing_result "content_agents_uv_install_failed"
   exit "${uv_rc}"
 fi
-UV_BIN="$(command -v uv)"
+UV_COMMAND=(python3 -m uv)
 # The Vast Isaac image trusts the provider CA through the system TLS store, while
 # uv's bundled roots can reject the same PyPI connection with UnknownIssuer.
 # Use the host-native trust store for every subsequent uv download.
 export UV_NATIVE_TLS=true
-"${UV_BIN}" python install 3.12
+"${UV_COMMAND[@]}" python install 3.12
 python_rc=$?
 if [ "${python_rc}" -ne 0 ]; then
   write_missing_result "content_agents_python312_install_failed"
   exit "${python_rc}"
 fi
 progress "runtime_python_ready"
-"${UV_BIN}" venv "${SOURCE_DIR}/.venv" --python 3.12
+"${UV_COMMAND[@]}" venv "${SOURCE_DIR}/.venv" --python 3.12
 venv_rc=$?
 if [ "${venv_rc}" -ne 0 ]; then
   write_missing_result "content_agents_python_venv_failed"
@@ -112,7 +112,7 @@ if [ "${venv_rc}" -ne 0 ]; then
 fi
 
 progress "content_agents_install_started"
-"${UV_BIN}" pip install \
+"${UV_COMMAND[@]}" pip install \
   --python "${SOURCE_DIR}/.venv/bin/python" \
   -e "${SOURCE_DIR}" \
   -e "${SOURCE_DIR}/apps/material_agent" \
@@ -129,8 +129,8 @@ progress "content_agents_install_completed"
 export WU_OVRTX_VENV_DIR="${SOURCE_DIR}/.ovrtx_venv"
 export WU_OVRTX_AUTO_PROVISION=0
 progress "ovrtx_runtime_install_started"
-"${UV_BIN}" venv "${WU_OVRTX_VENV_DIR}" --python "${SOURCE_DIR}/.venv/bin/python"
-"${UV_BIN}" pip install \
+"${UV_COMMAND[@]}" venv "${WU_OVRTX_VENV_DIR}" --python "${SOURCE_DIR}/.venv/bin/python"
+"${UV_COMMAND[@]}" pip install \
   --python "${WU_OVRTX_VENV_DIR}/bin/python" \
   -r "${SOURCE_DIR}/world_understanding/functions/graphics/pylock.ovrtx-runtime.toml" \
   --require-hashes --no-deps --no-config --no-sources
@@ -152,13 +152,13 @@ progress "ovrtx_runtime_ready"
 if [ -d "${SCRIPT_DIR}/native" ]; then
   progress "native_ovrtx_install_started"
   NATIVE_OVRTX_ENV="${SOURCE_DIR}/.ovrtx_native_venv"
-  "${UV_BIN}" venv "${NATIVE_OVRTX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
+  "${UV_COMMAND[@]}" venv "${NATIVE_OVRTX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
   native_ovrtx_venv_rc=$?
   if [ "${native_ovrtx_venv_rc}" -ne 0 ]; then
     write_missing_result "content_agents_native_ovrtx_venv_failed"
     exit "${native_ovrtx_venv_rc}"
   fi
-  "${UV_BIN}" pip install \
+  "${UV_COMMAND[@]}" pip install \
     --python "${NATIVE_OVRTX_ENV}/bin/python" \
     --extra-index-url https://pypi.nvidia.com \
     "ovrtx==0.4.0.346409" \
@@ -182,13 +182,13 @@ if [ -d "${SCRIPT_DIR}/native" ]; then
 
   OVPX_ENV="${SOURCE_DIR}/.ovphysx_venv"
   progress "native_ovphysx_install_started"
-  "${UV_BIN}" venv "${OVPX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
+  "${UV_COMMAND[@]}" venv "${OVPX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
   ovphysx_venv_rc=$?
   if [ "${ovphysx_venv_rc}" -ne 0 ]; then
     write_missing_result "content_agents_ovphysx_venv_failed"
     exit "${ovphysx_venv_rc}"
   fi
-  "${UV_BIN}" pip install \
+  "${UV_COMMAND[@]}" pip install \
     --python "${OVPX_ENV}/bin/python" \
     "ovphysx==0.4.13" \
     "numpy>=1.26,<3" \
