@@ -255,6 +255,21 @@ def _global_inventory_contains_only_allowed(
     return len(observed) == count
 
 
+def _inventory_is_confirmed_zero(
+    value: Mapping[str, Any], *, name_prefix: str
+) -> bool:
+    """Accept only one internally consistent, API-confirmed Vast zero row."""
+
+    return bool(
+        value.get("status") == "observed"
+        and value.get("provider") == "vast"
+        and value.get("name_prefix") == name_prefix
+        and value.get("api_confirmed") is True
+        and value.get("live_resource_count") == 0
+        and value.get("resources") == []
+    )
+
+
 def _safe_suffix(value: str) -> str:
     suffix = re.sub(r"[^0-9A-Za-z]+", "", value)
     return (suffix or str(int(time.time())))[:24].lower()
@@ -670,6 +685,13 @@ def close_independent_vast_watchdog(
     """Ask the watchdog to close only after owner teardown, or leave it armed."""
 
     if not instance_ids:
+        if handle.started_instance_id_path.exists():
+            result = _retained_watchdog_result(
+                handle=handle,
+                reason="provider_allocation_identity_present",
+            )
+            write_json(job_dir / HANDOFF_NAME, result)
+            return result
         if not provider_allocation_impossible:
             result = _retained_watchdog_result(
                 handle=handle,
@@ -812,8 +834,13 @@ def close_independent_vast_watchdog_without_allocation(
         )
     else:
         zero = all(
-            row.get("api_confirmed") is True and row.get("live_resource_count") == 0
-            for row in (first_lane, second_lane, first_global, second_global)
+            _inventory_is_confirmed_zero(row, name_prefix=expected_prefix)
+            for row, expected_prefix in (
+                (first_lane, handle.pod_name_prefix),
+                (second_lane, handle.pod_name_prefix),
+                (first_global, ""),
+                (second_global, ""),
+            )
         )
         if zero:
             handle.process.terminate()
