@@ -1904,6 +1904,32 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "libopengl0": (),
     "libvulkan1": (),
     "xvfb": ("Xvfb",),
+    # Shared libraries the bundled Chromium links against. The renderer ships
+    # its own browser binary, not its loader dependencies, so the Isaac image
+    # has to supply these -- and it does not. Run
+    # adp-new-scene-simple-relocation-839873-679542d9-r2-web-20260827T034953Z
+    # reached stage 1 on a rented GPU and the browser died before its first
+    # frame with: `chrome: error while loading shared libraries: libnspr4.so:
+    # cannot open shared object file`, exitCode=127. This is Playwright's
+    # published Chromium dependency set for Debian/Ubuntu; none of them
+    # provides a command, so the boundary check below cannot verify them by
+    # name and the renderer's own launch is what proves them.
+    "libnspr4": (),
+    "libnss3": (),
+    "libatk1.0-0t64": (),
+    "libatk-bridge2.0-0t64": (),
+    "libatspi2.0-0t64": (),
+    "libcups2t64": (),
+    "libdrm2": (),
+    "libxcomposite1": (),
+    "libxdamage1": (),
+    "libxfixes3": (),
+    "libxrandr2": (),
+    "libxkbcommon0": (),
+    "libgbm1": (),
+    "libpango-1.0-0": (),
+    "libcairo2": (),
+    "libasound2t64": (),
 }
 #: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
 #: not by apt, so it is named separately rather than assumed.

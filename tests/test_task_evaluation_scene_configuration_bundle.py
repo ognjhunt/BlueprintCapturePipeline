@@ -2042,3 +2042,60 @@ def test_provider_entrypoint_preserves_distinct_standalone_and_isaac_paths() -> 
         "these exports replace the image's PYTHONPATH instead of appending to "
         f"it, which removes Isaac's own runtime: {discarding}"
     )
+
+
+def test_scene_configuration_onstart_provisions_the_bundled_browser_libraries() -> None:
+    """The renderer ships a browser binary, not its loader dependencies.
+
+    Run ``adp-new-scene-simple-relocation-839873-679542d9-r2-web-20260827T034953Z``
+    rented a GPU, cleared the import preflight, started stage 1, and the
+    bundled Chromium died before its first frame:
+
+        chrome: error while loading shared libraries: libnspr4.so:
+        cannot open shared object file: No such file or directory
+        <process did exit: exitCode=127>
+
+    The provider bundle carries the browser and its Node runtime; the shared
+    libraries it links against come from the image, and the Isaac image does
+    not have them. These are Playwright's published Chromium dependencies for
+    Ubuntu 24.04, which is what the container reports in its own apt sources.
+    None provides a command, so the onstart's command check cannot verify them
+    -- the renderer's own launch is the proof, and this pins that they are at
+    least requested.
+    """
+
+    required_browser_packages = {
+        "libnspr4",
+        "libnss3",
+        "libatk1.0-0t64",
+        "libatk-bridge2.0-0t64",
+        "libatspi2.0-0t64",
+        "libcups2t64",
+        "libdrm2",
+        "libxcomposite1",
+        "libxdamage1",
+        "libxfixes3",
+        "libxrandr2",
+        "libxkbcommon0",
+        "libgbm1",
+        "libpango-1.0-0",
+        "libcairo2",
+        "libasound2t64",
+    }
+    provisioned = set(vpa.SCENE_CONFIGURATION_PROVISIONED_COMMANDS)
+    missing = sorted(required_browser_packages - provisioned)
+    assert not missing, (
+        "the onstart does not install these Chromium runtime libraries, so the "
+        f"bundled browser cannot load: {missing}"
+    )
+
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example.test",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+    installed = set(
+        script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
+    )
+    assert required_browser_packages <= installed
