@@ -131,6 +131,7 @@ from .vast_retained_instance import (
 )
 from .vast_provider_validation import final_validation as _final_validation
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
+from .vast_args_payload_transport import args_mode_command
 
 
 VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
@@ -4348,7 +4349,7 @@ def _create_payload(
             "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_DONE\n"
             'exit "$script_rc"'
         )
-        payload["args_str"] = "bash -lc " + shlex.quote(wrapped_script)
+        payload["args_str"] = args_mode_command(wrapped_script)
     else:
         payload["onstart"] = probe_script
         if launch_mode == "jupyter_direct":
