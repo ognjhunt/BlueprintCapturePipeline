@@ -867,6 +867,18 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         / f"{BUNDLE_SCHEMA_VERSION}.receipt.json",
         diagnostic_only=True,
     )["bundle_sha256"] == receipt["bundle_sha256"]
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "diagnostic-preflight",
+        generated_at="2026-08-26T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/diagnostic.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
 
     unsafe = dict(advanced_reference)
     unsafe["manifest_path"] = str(tmp_path / "outside.json")
@@ -1423,7 +1435,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         authorized_by="project-owner",
         authorized_on="2026-08-25T12:05:00Z",
         source_commit="a" * 40,
-        container_image="nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+        container_image=authority_module.SCENE_CONFIGURATION_PROVIDER_IMAGE,
         resource_name=(
             "adp-new-scene-simple-relocation-839873-aaaaaaaaaaaa-20260825t120500z"
         ),
@@ -1441,6 +1453,17 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     authority = authority_module.materialize_scene_configuration_paid_authority(
         **authority_arguments
     )
+    with pytest.raises(
+        authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+        match="scene_configuration_authority_container_image_invalid",
+    ):
+        authority_module.materialize_scene_configuration_paid_authority(
+            **{
+                **authority_arguments,
+                "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+                "output_path": tmp_path / "authority-wrong-image.json",
+            }
+        )
 
     for suffix, overrides in (
         (
@@ -1516,6 +1539,21 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     assert authority_module.validate_scene_configuration_paid_authority(
         authority, bundle_receipt=receipt
     ) == authority
+    wrong_image = {
+        **authority,
+        "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+        "authority_digest": "",
+    }
+    wrong_image["authority_digest"] = canonical_digest(
+        wrong_image, digest_field="authority_digest"
+    )
+    with pytest.raises(
+        authority_module.TaskEvaluationSceneConfigurationAuthorityError,
+        match="authority_contract_invalid",
+    ):
+        authority_module.validate_scene_configuration_paid_authority(
+            wrong_image, bundle_receipt=receipt
+        )
     for aggregate_cost, stage_overrides in (
         (
             2.8,

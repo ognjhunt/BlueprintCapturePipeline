@@ -15,6 +15,9 @@ from typing import Any
 
 from .adp_task_evaluation_abstention import valid_vast_provider_zero_api_call
 from .decision_evidence_contracts import canonical_digest
+from .native_task_isaaclab_launch import (
+    NATIVE_TASK_ARENA_IMAGE as SCENE_CONFIGURATION_PROVIDER_IMAGE,
+)
 from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
@@ -37,7 +40,6 @@ AUTHORITY_SCHEMA_VERSION = "task_evaluation_scene_configuration_paid_authority.v
 MAX_TTL_SECONDS = REQUIRED_PARENT_TTL_SECONDS
 MIN_TTL_SECONDS = 600
 MAX_PROVIDER_ZERO_AGE_SECONDS = 900
-_OCI_DIGEST = re.compile(r"[^\s]+@sha256:[0-9a-f]{64}")
 _RESOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{15,127}")
 
 
@@ -305,11 +307,14 @@ def materialize_scene_configuration_paid_authority(
         raise TaskEvaluationSceneConfigurationAuthorityError(
             "scene_configuration_authority_provider_disclosure_invalid"
         )
+    if container_image != SCENE_CONFIGURATION_PROVIDER_IMAGE:
+        raise TaskEvaluationSceneConfigurationAuthorityError(
+            "scene_configuration_authority_container_image_invalid"
+        )
     if (
         not authorization_reference.strip()
         or not authorized_by.strip()
         or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
-        or _OCI_DIGEST.fullmatch(container_image) is None
         or _RESOURCE_NAME.fullmatch(resource_name) is None
         or not _budget_valid(
             rate=max_hourly_rate_usd, cap=compute_cap, ttl=hard_ttl_seconds
@@ -553,7 +558,7 @@ def validate_scene_configuration_paid_authority(
         or authority.get("portable_construction_envelope_digest")
         != bundle_receipt.get("portable_construction_envelope_digest")
         or authority.get("toolchain_digest") != bundle_receipt.get("toolchain_digest")
-        or _OCI_DIGEST.fullmatch(str(authority.get("container_image") or "")) is None
+        or authority.get("container_image") != SCENE_CONFIGURATION_PROVIDER_IMAGE
         or _RESOURCE_NAME.fullmatch(str(authority.get("resource_name") or "")) is None
         or not _budget_valid(
             rate=authority.get("maximum_hourly_rate_usd"),
@@ -634,6 +639,7 @@ def validate_scene_configuration_paid_authority(
 __all__ = [
     "AUTHORITY_SCHEMA_VERSION",
     "MAX_PROVIDER_COMPUTE_SPEND_USD",
+    "SCENE_CONFIGURATION_PROVIDER_IMAGE",
     "TaskEvaluationSceneConfigurationAuthorityError",
     "materialize_scene_configuration_paid_authority",
     "validate_scene_configuration_paid_authority",

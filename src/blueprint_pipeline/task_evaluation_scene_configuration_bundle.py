@@ -371,6 +371,11 @@ def _diagnostic_portable_render_inputs(
             cutout.pop("source_object_candidate", None)
     render["diagnostic_checkpoint_reused"] = True
     render["provider_render_skipped"] = True
+    # This field describes bytes in the *current* provider packet, not the
+    # historical checkpoint's original render site. Diagnostic retries carry
+    # only digest-bound derived frames, so retaining True would make the slim
+    # envelope contradict its own inventory and fail the disclosure gate.
+    render["raw_interiorgs_bytes_in_provider_packet"] = False
     render["result_digest"] = canonical_digest(
         render, digest_field="result_digest"
     )
