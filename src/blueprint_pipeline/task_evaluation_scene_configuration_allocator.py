@@ -26,6 +26,10 @@ from .task_evaluation_scene_configuration_bundle import (
     PROBE_KIND,
     load_scene_configuration_provider_bundle_receipt,
 )
+from .task_evaluation_scene_configuration_diagnostic_release import (
+    SceneConfigurationDiagnosticReleaseError,
+    validate_scene_configuration_diagnostic_release_receipt,
+)
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
 )
@@ -36,6 +40,7 @@ ControlPlaneIdentityProbe = Callable[[], tuple[list[str], dict[str, object]]]
 ExpectedSourceCommitProbe = Callable[
     [str, Mapping[str, object]], tuple[list[str], str]
 ]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def run_scene_configuration_allocator_probe(
@@ -63,6 +68,24 @@ def run_scene_configuration_allocator_probe(
         args.expected_source_commit or "", control_identity
     )
     blockers = [*missing, *control_blockers, *source_blockers]
+    diagnostic_release: dict[str, Any] | None = None
+    if diagnostic_only:
+        diagnostic_release_path = str(
+            getattr(args, "release_evidence", "") or ""
+        ).strip()
+        if not diagnostic_release_path:
+            blockers.append("scene_configuration_diagnostic_release_receipt_missing")
+        else:
+            try:
+                diagnostic_release = (
+                    validate_scene_configuration_diagnostic_release_receipt(
+                        Path(diagnostic_release_path).expanduser(),
+                        expected_source_commit=expected_source_commit,
+                        expected_release_path=ROOT,
+                    )
+                )
+            except (OSError, SceneConfigurationDiagnosticReleaseError):
+                blockers.append("scene_configuration_diagnostic_release_receipt_invalid")
     if args.provider != "vast":
         blockers.append("scene_configuration_provider_must_be_vast")
     receipt_path: Path | None = None
@@ -151,6 +174,26 @@ def run_scene_configuration_allocator_probe(
             else None
         ),
     }
+    if diagnostic_only:
+        allocation_binding.update(
+            {
+                "diagnostic_release_receipt_digest": (
+                    diagnostic_release.get("receipt_digest")
+                    if diagnostic_release
+                    else None
+                ),
+                "diagnostic_remote_ref": (
+                    diagnostic_release.get("remote_ref")
+                    if diagnostic_release
+                    else None
+                ),
+                "diagnostic_remote_ref_tip_commit": (
+                    diagnostic_release.get("remote_ref_tip_commit")
+                    if diagnostic_release
+                    else None
+                ),
+            }
+        )
     admission = build_paid_lane_admission(
         resource_class="vast_provider_adapter",
         blockers=sorted(set(blockers)),
@@ -191,6 +234,16 @@ def run_scene_configuration_allocator_probe(
                 "provider_mutations_performed": 0,
                 "retry_cap": 0,
             }
+            if diagnostic_only:
+                result.update(
+                    {
+                        "diagnostic_only": True,
+                        "qualification_eligible": False,
+                        "configured_revision_publication_permitted": False,
+                        "offering_publication_permitted": False,
+                        "terminal_e2e_completion_permitted": False,
+                    }
+                )
             write_json(Path(args.adapter_output), result)
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
@@ -207,6 +260,16 @@ def run_scene_configuration_allocator_probe(
             "provider_mutations_performed": 0,
             "retry_cap": 0,
         }
+        if diagnostic_only:
+            result.update(
+                {
+                    "diagnostic_only": True,
+                    "qualification_eligible": False,
+                    "configured_revision_publication_permitted": False,
+                    "offering_publication_permitted": False,
+                    "terminal_e2e_completion_permitted": False,
+                }
+            )
     else:
         result = run_scene_configuration_vast(
             job_dir=args.scene_configuration_job_dir,
