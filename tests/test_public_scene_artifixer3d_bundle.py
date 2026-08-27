@@ -620,3 +620,51 @@ def test_rejects_tampered_candidate_or_dirty_source(
             output_root=tmp_path / "bundle-b",
             repository_root=_repository(tmp_path / "other"),
         )
+
+
+def test_bundle_archive_keeps_the_entrypoint_executable(tmp_path: Path) -> None:
+    """The bundle's own entrypoint has to survive extraction runnable.
+
+    Every member was stored 0o644, so the entrypoint the driver execs came
+    back non-executable. Run
+    ``adp-new-scene-simple-relocation-839873-4dfc5f8e-r3-web-20260827T050053Z``
+    hit that on a rented GPU *after* stage 1 had rendered its frames, cut the
+    source object, built its masks and written the semantic-teacher packet:
+
+        PermissionError: [Errno 13] Permission denied:
+        .../artifixer_execution/provider_runtime/run_public_scene_artifixer3d.sh
+
+    The mode is derived from the source's executable bit, not copied from its
+    mode, so the archive stays byte-reproducible -- the same rule the
+    scene-configuration builder's ``_zip_tree`` already applies.
+    """
+
+    import stat as stat_module
+    import zipfile as zipfile_module
+
+    from blueprint_pipeline.public_scene_artifixer3d_bundle import _zip_tree
+
+    source = tmp_path / "tree"
+    (source / "provider_runtime").mkdir(parents=True)
+    entrypoint = source / "provider_runtime" / "run_public_scene_artifixer3d.sh"
+    entrypoint.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    entrypoint.chmod(0o755)
+    payload = source / "provider_runtime" / "manifest.json"
+    payload.write_text("{}\n", encoding="utf-8")
+    payload.chmod(0o644)
+
+    archive_path = tmp_path / "bundle.zip"
+    _zip_tree(source, archive_path)
+
+    with zipfile_module.ZipFile(archive_path) as archive:
+        modes = {
+            info.filename: stat_module.S_IMODE(info.external_attr >> 16)
+            for info in archive.infolist()
+        }
+
+    assert modes["provider_runtime/run_public_scene_artifixer3d.sh"] & 0o111, (
+        "the entrypoint extracts non-executable, so the stage cannot run it"
+    )
+    assert not modes["provider_runtime/manifest.json"] & 0o111, (
+        "a data member must not gain an executable bit"
+    )

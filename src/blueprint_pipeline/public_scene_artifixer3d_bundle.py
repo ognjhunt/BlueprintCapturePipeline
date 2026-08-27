@@ -610,7 +610,21 @@ def _zip_tree(source: Path, destination: Path) -> None:
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
-            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            # Carry the executable bit. Every member was stored 0o644, so the
+            # bundle's own entrypoint extracted non-executable and the stage
+            # died the moment it tried to run it:
+            # `PermissionError: [Errno 13] Permission denied:
+            # .../artifixer_execution/provider_runtime/run_public_scene_artifixer3d.sh`
+            # (run ...4dfc5f8e-r3-web-20260827T050053Z, after the render, the
+            # cutout, the masks and the semantic-teacher packet had all been
+            # produced on a rented GPU). Derived from the source bit rather
+            # than the source mode, so the archive stays byte-reproducible --
+            # this is what the scene-configuration builder's own _zip_tree
+            # already does.
+            executable = bool(item.stat().st_mode & 0o111)
+            info.external_attr = (
+                stat.S_IFREG | (0o755 if executable else 0o644)
+            ) << 16
             with item.open("rb") as input_stream, archive.open(info, "w") as output:
                 shutil.copyfileobj(input_stream, output, length=1024 * 1024)
 
