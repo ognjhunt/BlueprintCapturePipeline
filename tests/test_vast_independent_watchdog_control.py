@@ -502,6 +502,41 @@ def test_watchdog_without_allocation_retains_double_api_zero(
     assert result["provider_absence_confirmed"] is True
     assert result["final_global_inventory"]["live_resource_count"] == 0
     assert result["provider_mutations_performed"] == 0
+    assert handle.process.poll() == -15
+
+
+def test_watchdog_without_allocation_stays_live_when_zero_is_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+
+    class Provider:
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            del name_prefix
+            raise RuntimeError("provider inventory unavailable")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers.get_render_provider",
+        lambda _provider: Provider(),
+    )
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-task-evaluation-scene-config-",
+    )
+    assert handle is not None
+
+    result = control.close_independent_vast_watchdog_without_allocation(
+        job_dir=tmp_path,
+        handle=handle,
+    )
+
+    assert result["status"] == "retained_until_hard_ttl"
+    assert result["reason"] == "provider_zero_unverified_no_allocation"
+    assert result["provider_absence_confirmed"] is False
+    assert result["watchdog_retention_liveness_confirmed"] is True
+    assert handle.process.poll() is None
 
 
 def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
