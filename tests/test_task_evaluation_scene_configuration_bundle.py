@@ -1892,6 +1892,8 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     roles = {
         "configured_appearance_without_source_object": "appearance.usdc",
         "appearance_removal_receipt": "appearance-receipt.json",
+        "appearance_visual_review_receipt": "appearance-review.json",
+        "configured_task_thumbnail": "configured-task-thumbnail.png",
         "configured_collision_without_source_object": "collision.usda",
         "collision_excision_receipt": "collision-receipt.json",
         "statically_qualified_replacement_asset": "static.usda",
@@ -1900,6 +1902,35 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         "native_import_qualification_receipt": "native-receipt.json",
         "configured_scene_bundle_candidate_manifest": "candidate.json",
         "scene_assembly_receipt": "assembly-receipt.json",
+    }
+    thumbnail_payload = b"exact-reviewed-frame"
+    thumbnail_digest = "sha256:" + hashlib.sha256(thumbnail_payload).hexdigest()
+    appearance_review: dict[str, object] = {
+        "schema_version": "task_evaluation_artifixer_ai_visual_review.v1",
+        "status": "accepted",
+        "review_frame_count": 8,
+        "task_thumbnail_is_exact_review_frame": True,
+        "task_thumbnail_selection": {
+            "camera_id": "camera-3",
+            "frame_sha256": thumbnail_digest,
+            "rationale": "The task surface and configured scene are both clear.",
+        },
+        "reviewer": {
+            "kind": "ai",
+            "identity": "artifixer-independent-vision-reviewer-v1",
+            "runtime": "openai_agents_sdk",
+            "model": "gpt-5.6-terra",
+        },
+        "receipt_digest": "",
+    }
+    appearance_review["receipt_digest"] = canonical_digest(
+        appearance_review, digest_field="receipt_digest"
+    )
+    special_payloads = {
+        "appearance_visual_review_receipt": json.dumps(
+            appearance_review, separators=(",", ":")
+        ).encode(),
+        "configured_task_thumbnail": thumbnail_payload,
     }
 
     def adapter(**kwargs):
@@ -1922,7 +1953,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         archive_members: dict[str, bytes] = {}
         for role, name in roles.items():
             relative = f"stages/stage-1/adapter/{name}"
-            payload = (role + "\n").encode()
+            payload = special_payloads.get(role, (role + "\n").encode())
             archive_members[relative] = payload
             rows.append(
                 {

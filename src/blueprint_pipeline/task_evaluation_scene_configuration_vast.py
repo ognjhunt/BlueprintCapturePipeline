@@ -1264,6 +1264,18 @@ def run_scene_configuration_vast(
         "configured_scene_bundle_reference": publication.get(
             "configured_scene_bundle_reference"
         ),
+        "task_thumbnail_reference": publication.get(
+            "task_thumbnail_reference"
+        ),
+        "task_thumbnail_selection": publication.get(
+            "task_thumbnail_selection"
+        ),
+        "task_thumbnail_selection_receipt_reference": publication.get(
+            "task_thumbnail_selection_receipt_reference"
+        ),
+        "configured_scene_offering": publication.get(
+            "configured_scene_offering"
+        ),
         "publication_result_path": (
             str(
                 publication_root

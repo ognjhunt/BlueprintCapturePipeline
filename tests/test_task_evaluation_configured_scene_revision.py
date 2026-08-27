@@ -78,6 +78,25 @@ def revision() -> dict[str, object]:
             "success_criteria": ref(19),
             "execution": ref(20),
         },
+        "presentation": {
+            "task_thumbnail": ref(27),
+            "selection_receipt": ref(28),
+            "selection": {
+                "camera_id": "camera-03",
+                "frame_digest": ref(27)["digest"],
+                "rationale": "Upright wide view of the task surface.",
+                "reviewer": {
+                    "kind": "ai",
+                    "identity": "artifixer-independent-vision-reviewer-v1",
+                    "runtime": "openai_agents_sdk",
+                    "model": "gpt-5.4",
+                },
+            },
+            "selected_from_exact_reviewed_frame_count": 8,
+            "derived_appearance_evidence": True,
+            "capture_or_physical_evidence": False,
+            "image_bytes_modified_after_selection": False,
+        },
         "robot_team_interface": {
             "scene_construction_repeated_per_evaluation": False,
             "configuration_run_executed_episode": False,
@@ -200,6 +219,15 @@ def test_digest_binds_every_published_component() -> None:
         match="configured_scene_revision_digest_invalid",
     ):
         validate_configured_scene_revision(mutated)
+
+
+def test_accepts_legacy_v1_revision_without_presentation() -> None:
+    value = revision()
+    value.pop("presentation")
+    value["revision_digest"] = canonical_digest(
+        value, digest_field="revision_digest"
+    )
+    assert validate_configured_scene_revision(value) == value
 
 
 def test_rejects_revision_that_repeats_construction_for_each_evaluation() -> None:

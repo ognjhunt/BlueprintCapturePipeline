@@ -17,6 +17,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver imp
     _VISUAL_REVIEW_COST_SCOPE,
     _artifixer_tuning,
     _materialize_preflight,
+    _materialize_selected_task_thumbnail,
     _semantic_rights_and_request,
     _write_execution_authority,
 )
@@ -248,3 +249,51 @@ def test_visual_review_uses_the_scene_lanes_exclusive_cost_scope() -> None:
     assert "cost_lane_id=_VISUAL_REVIEW_COST_SCOPE" in source
     assert "paid_resource_class=_VISUAL_REVIEW_COST_SCOPE" in source
     assert "require_zero_baseline=False" in source
+
+
+def test_selected_task_thumbnail_is_an_exact_reviewed_frame_copy(
+    tmp_path: Path,
+) -> None:
+    frames: list[dict[str, object]] = []
+    for index in range(8):
+        path = tmp_path / f"camera-{index}.png"
+        path.write_bytes(f"frame-{index}".encode())
+        frames.append(
+            {
+                "camera_id": f"camera-{index}",
+                "final_frame": {
+                    "path": str(path),
+                    "sha256": _sha256(path),
+                },
+            }
+        )
+    selected = frames[5]
+    selected_frame = selected["final_frame"]
+    assert isinstance(selected_frame, dict)
+    receipt = {
+        "task_thumbnail_is_exact_review_frame": True,
+        "task_thumbnail_selection": {
+            "camera_id": selected["camera_id"],
+            "frame_sha256": selected_frame["sha256"],
+            "rationale": "The configured task surface is clearly visible.",
+        },
+        "reviewer": {
+            "kind": "ai",
+            "identity": "artifixer-independent-vision-reviewer-v1",
+            "runtime": "openai_agents_sdk",
+            "model": "gpt-5.6-terra",
+        },
+    }
+    destination = tmp_path / "configured_task_thumbnail.png"
+
+    selection = _materialize_selected_task_thumbnail(
+        review_receipt=receipt,
+        review_frames=frames,
+        destination=destination,
+    )
+
+    assert destination.read_bytes() == (tmp_path / "camera-5.png").read_bytes()
+    assert _sha256(destination) == selected_frame["sha256"]
+    assert selection["camera_id"] == "camera-5"
+    assert selection["derived_appearance_evidence"] is True
+    assert selection["capture_or_physical_evidence"] is False

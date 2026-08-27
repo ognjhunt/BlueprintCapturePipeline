@@ -9,6 +9,7 @@ import stat
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes"
@@ -207,8 +208,56 @@ def configured_scene_object_store_publisher(
     return publish
 
 
+def read_configured_scene_object(
+    *, reference: dict[str, Any], maximum_size_bytes: int = 16 * 1024 * 1024
+) -> bytes:
+    """Read one digest-bound configured-scene object from the canonical store."""
+
+    uri = str(reference.get("uri") or "")
+    parsed = urlsplit(uri)
+    expected_digest = str(reference.get("digest") or "")
+    expected_size = reference.get("size_bytes")
+    client, configured_bucket = _object_store_client()
+    key = parsed.path.lstrip("/")
+    prefix = DEFAULT_KEY_PREFIX.strip("/") + "/"
+    if (
+        parsed.scheme != "s3"
+        or parsed.netloc != configured_bucket
+        or not key.startswith(prefix)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
+        or f"/sha256/{expected_digest.removeprefix('sha256:')}/" not in key
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 1
+        or expected_size > maximum_size_bytes
+    ):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_object_store_read_reference_invalid"
+        )
+    try:
+        response = client.get_object(Bucket=configured_bucket, Key=key)
+        body = response["Body"]
+        try:
+            payload = body.read(maximum_size_bytes + 1)
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+    except Exception as exc:  # noqa: BLE001 - S3-compatible clients vary
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_object_store_readback_failed"
+        ) from exc
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    if len(payload) != expected_size or digest != expected_digest:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_object_store_readback_mismatch"
+        )
+    return payload
+
+
 __all__ = [
     "DEFAULT_KEY_PREFIX",
     "TaskEvaluationConfiguredSceneObjectStoreError",
     "configured_scene_object_store_publisher",
+    "read_configured_scene_object",
 ]

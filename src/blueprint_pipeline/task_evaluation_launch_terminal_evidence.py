@@ -48,6 +48,19 @@ def _scene_configuration_terminal_projection(
 
     revision_reference = result.get("configured_scene_revision_reference")
     bundle_reference = result.get("configured_scene_bundle_reference")
+    thumbnail_reference = result.get("task_thumbnail_reference")
+    selection_receipt_reference = result.get(
+        "task_thumbnail_selection_receipt_reference"
+    )
+    offering = result.get("configured_scene_offering")
+    offering_presentation = _mapping(
+        offering.get("presentation") if isinstance(offering, Mapping) else None
+    )
+    offering_binding = _mapping(
+        offering.get("evaluation_preparation_binding")
+        if isinstance(offering, Mapping)
+        else None
+    )
     queue_finalization = _mapping(
         result.get("scene_construction_queue_finalization")
     )
@@ -74,11 +87,30 @@ def _scene_configuration_terminal_projection(
         == canonical_digest(queue_finalization, digest_field="result_digest")
         and valid_reference(revision_reference)
         and valid_reference(bundle_reference)
+        and valid_reference(thumbnail_reference)
+        and valid_reference(selection_receipt_reference)
         and re.fullmatch(
             r"sha256:[0-9a-f]{64}",
             str(result.get("configured_scene_revision_digest") or ""),
         )
         is not None
+        and isinstance(offering, Mapping)
+        and offering.get("schema_version")
+        == "task_evaluation_configured_scene_offering.v1"
+        and offering.get("status") == "launch_ready"
+        and offering.get("configuration_run_id") == result.get("run_id")
+        and offering.get("catalog_visibility") == "team_only"
+        and offering.get("offering_digest")
+        == canonical_digest(offering, digest_field="offering_digest")
+        and offering_presentation.get("task_thumbnail")
+        == thumbnail_reference
+        and offering_presentation.get("selection_receipt")
+        == selection_receipt_reference
+        and offering_binding.get("configured_scene_revision")
+        == revision_reference
+        and offering_binding.get("configured_scene_revision_digest")
+        == result.get("configured_scene_revision_digest")
+        and offering_binding.get("configured_scene_bundle") == bundle_reference
         and re.fullmatch(
             r"sha256:[0-9a-f]{64}",
             str(result.get("publication_result_digest") or ""),
@@ -101,6 +133,11 @@ def _scene_configuration_terminal_projection(
         ],
         "configured_scene_revision_reference": dict(revision_reference),
         "configured_scene_bundle_reference": dict(bundle_reference),
+        "task_thumbnail_reference": dict(thumbnail_reference),
+        "task_thumbnail_selection_receipt_reference": dict(
+            selection_receipt_reference
+        ),
+        "configured_scene_offering": dict(offering),
         "publication_result_digest": result["publication_result_digest"],
         "scene_construction_queue_finalization_digest": queue_finalization[
             "result_digest"

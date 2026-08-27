@@ -100,6 +100,18 @@ def sync_launch_receipt_to_webapp(
         "request_digest": payload.get("request_digest"),
         "receipt_digest": payload.get("receipt_digest"),
     }
+    terminal = payload.get("terminal_evidence")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    scene_configuration = terminal.get("scene_configuration")
+    scene_configuration = (
+        scene_configuration if isinstance(scene_configuration, Mapping) else {}
+    )
+    offering = scene_configuration.get("configured_scene_offering")
+    if isinstance(offering, Mapping):
+        common["configured_scene_offering_digest"] = offering.get(
+            "offering_digest"
+        )
+        common["configured_scene_offering_status"] = "launch_ready"
     resolved_url = str(endpoint_url or os.getenv(LAUNCH_WEBAPP_URL_ENV) or "").strip()
     resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
     if not resolved_url or not resolved_token:
@@ -135,6 +147,18 @@ def sync_launch_receipt_to_webapp(
         for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
     ):
         return {**common, "status": "failed", "reason": "response_binding_mismatch"}
+    if "configured_scene_offering_digest" in common and any(
+        response.get(field) != common[field]
+        for field in (
+            "configured_scene_offering_digest",
+            "configured_scene_offering_status",
+        )
+    ):
+        return {
+            **common,
+            "status": "failed",
+            "reason": "configured_scene_offering_binding_mismatch",
+        }
     return {**common, "status": "succeeded", "response": dict(response)}
 
 

@@ -148,6 +148,53 @@
         "execution": {"$ref": "#/$defs/reference"}
       }
     },
+    "presentation": {
+      "type": "object",
+      "required": [
+        "task_thumbnail",
+        "selection_receipt",
+        "selection",
+        "selected_from_exact_reviewed_frame_count",
+        "derived_appearance_evidence",
+        "capture_or_physical_evidence",
+        "image_bytes_modified_after_selection"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "task_thumbnail": {
+          "allOf": [
+            {"$ref": "#/$defs/reference"},
+            {"properties": {"size_bytes": {"maximum": 16777216}}}
+          ]
+        },
+        "selection_receipt": {"$ref": "#/$defs/reference"},
+        "selection": {
+          "type": "object",
+          "required": ["camera_id", "frame_digest", "rationale", "reviewer"],
+          "additionalProperties": false,
+          "properties": {
+            "camera_id": {"$ref": "#/$defs/identifier"},
+            "frame_digest": {"$ref": "#/$defs/digest"},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "reviewer": {
+              "type": "object",
+              "required": ["kind", "identity", "runtime", "model"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {"const": "ai"},
+                "identity": {"type": "string", "minLength": 1, "maxLength": 200},
+                "runtime": {"type": "string", "minLength": 1, "maxLength": 200},
+                "model": {"type": "string", "minLength": 1, "maxLength": 200}
+              }
+            }
+          }
+        },
+        "selected_from_exact_reviewed_frame_count": {"const": 8},
+        "derived_appearance_evidence": {"const": true},
+        "capture_or_physical_evidence": {"const": false},
+        "image_bytes_modified_after_selection": {"const": false}
+      }
+    },
     "robot_team_interface": {
       "type": "object",
       "description": "Stable consumer boundary for every episode-evaluation run that reuses this configured scene.",

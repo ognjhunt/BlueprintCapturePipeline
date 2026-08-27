@@ -90,3 +90,39 @@ def test_configured_scene_publication_refuses_unsafe_object_names(
             path=source,
             object_name="../other-tenant/configured_scene.usda",
         )
+
+
+def test_reads_only_an_exact_digest_bound_object_from_the_configured_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"exact-private-thumbnail"
+    digest = hashlib.sha256(payload).hexdigest()
+    key = (
+        "blueprint/arm-decision-proof-v1/configured-scenes/team-a/thumbnail/"
+        f"sha256/{digest}/thumbnail.png"
+    )
+    client = _Client()
+    client.objects[("blueprint-inputs", key)] = payload
+    monkeypatch.setattr(
+        store, "_object_store_client", lambda: (client, "blueprint-inputs")
+    )
+
+    assert store.read_configured_scene_object(
+        reference={
+            "uri": f"s3://blueprint-inputs/{key}",
+            "digest": "sha256:" + digest,
+            "size_bytes": len(payload),
+        }
+    ) == payload
+
+    with pytest.raises(
+        store.TaskEvaluationConfiguredSceneObjectStoreError,
+        match="configured_scene_object_store_read_reference_invalid",
+    ):
+        store.read_configured_scene_object(
+            reference={
+                "uri": f"s3://other-team-bucket/{key}",
+                "digest": "sha256:" + digest,
+                "size_bytes": len(payload),
+            }
+        )

@@ -325,6 +325,9 @@ def execute_artifixer3d_observed_object_removal(
     review_record, review_path = _provider_runtime_artifact(
         provider_runtime_artifacts, role="appearance_visual_review_receipt"
     )
+    _thumbnail_record, thumbnail_path = _provider_runtime_artifact(
+        provider_runtime_artifacts, role="configured_task_thumbnail"
+    )
     render_reference_record, render_reference_path = _provider_runtime_artifact(
         provider_runtime_artifacts, role=PROVIDER_RENDER_REFERENCE_ROLE
     )
@@ -397,6 +400,10 @@ def execute_artifixer3d_observed_object_removal(
         or not str(review["reviewer"].get("model") or "")
         or review.get("receipt_digest")
         != canonical_digest(review, digest_field="receipt_digest")
+        or review.get("task_thumbnail_is_exact_review_frame") is not True
+        or not isinstance(review.get("task_thumbnail_selection"), Mapping)
+        or review["task_thumbnail_selection"].get("frame_sha256")
+        != _sha256_and_size(thumbnail_path)[0]
         or render_reference.get("control_plane_render_result_digest")
         != input_render.get("result_digest")
         or render_reference.get("render_completed_on_provider")
@@ -414,6 +421,9 @@ def execute_artifixer3d_observed_object_removal(
     copied_review = _copy_artifact(
         review_path, output_root / "appearance_visual_review_receipt.v1.json"
     )
+    copied_thumbnail = _copy_artifact(
+        thumbnail_path, output_root / "configured_task_thumbnail.png"
+    )
     return _stage_result(
         stage=stage,
         configuration_path=configuration_path,
@@ -424,6 +434,7 @@ def execute_artifixer3d_observed_object_removal(
             },
             {"role": "appearance_removal_receipt", **copied_receipt},
             {"role": "appearance_visual_review_receipt", **copied_review},
+            {"role": "configured_task_thumbnail", **copied_thumbnail},
             dict(render_reference_record),
         ],
     )

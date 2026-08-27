@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import zipfile
@@ -18,6 +19,9 @@ from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
 )
+
+
+MAX_TASK_THUMBNAIL_SIZE_BYTES = 16 * 1024 * 1024
 
 
 Publisher = Callable[..., Mapping[str, Any]]
@@ -62,6 +66,57 @@ def _artifact(
             f"scene_configuration_publication_artifact_invalid:{role}"
         )
     return row, path
+
+
+def _thumbnail_selection(
+    *, review_receipt_path: Path, thumbnail_path: Path
+) -> dict[str, Any]:
+    try:
+        receipt = json.loads(review_receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_thumbnail_selection_invalid"
+        ) from exc
+    if not isinstance(receipt, Mapping):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_thumbnail_selection_invalid"
+        )
+    selection = receipt.get("task_thumbnail_selection")
+    reviewer = receipt.get("reviewer")
+    thumbnail_digest, thumbnail_size = _sha256_and_size(thumbnail_path)
+    if (
+        receipt.get("schema_version")
+        != "task_evaluation_artifixer_ai_visual_review.v1"
+        or receipt.get("status") != "accepted"
+        or receipt.get("review_frame_count") != 8
+        or receipt.get("task_thumbnail_is_exact_review_frame") is not True
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+        or not isinstance(selection, Mapping)
+        or set(selection) != {"camera_id", "frame_sha256", "rationale"}
+        or not str(selection.get("camera_id") or "")
+        or selection.get("frame_sha256") != thumbnail_digest
+        or not str(selection.get("rationale") or "").strip()
+        or not isinstance(reviewer, Mapping)
+        or reviewer.get("kind") != "ai"
+        or not str(reviewer.get("identity") or "")
+        or not str(reviewer.get("runtime") or "")
+        or not str(reviewer.get("model") or "")
+        or thumbnail_size < 1
+        or thumbnail_size > MAX_TASK_THUMBNAIL_SIZE_BYTES
+    ):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_thumbnail_selection_invalid"
+        )
+    return {
+        "camera_id": selection["camera_id"],
+        "frame_digest": selection["frame_sha256"],
+        "rationale": str(selection["rationale"]).strip(),
+        "reviewer": {
+            key: reviewer[key]
+            for key in ("kind", "identity", "runtime", "model")
+        },
+    }
 
 
 def _publish(
@@ -181,8 +236,14 @@ def publish_configured_scene_revision(
         "native_import_qualification_receipt",
         "configured_scene_bundle_candidate_manifest",
         "scene_assembly_receipt",
+        "appearance_visual_review_receipt",
+        "configured_task_thumbnail",
     ):
         artifacts[role] = _artifact(stage_results, role=role)[1]
+    thumbnail_selection = _thumbnail_selection(
+        review_receipt_path=artifacts["appearance_visual_review_receipt"],
+        thumbnail_path=artifacts["configured_task_thumbnail"],
+    )
     bundle = root / "configured_scene_bundle.v1.zip"
     _deterministic_bundle(
         files=[
@@ -211,6 +272,10 @@ def publish_configured_scene_revision(
             "configured_scene_bundle_candidate_manifest"
         ],
         "configured_scene_bundle": bundle,
+        "task_thumbnail": artifacts["configured_task_thumbnail"],
+        "thumbnail_selection_receipt": artifacts[
+            "appearance_visual_review_receipt"
+        ],
     }
     published = {
         role: _publish(
@@ -336,6 +401,21 @@ def publish_configured_scene_revision(
             "success_criteria": dict(task["success_criteria"]),
             "execution": dict(task["execution"]),
         },
+        "presentation": {
+            "task_thumbnail": {
+                key: published["task_thumbnail"][key]
+                for key in ("uri", "digest", "size_bytes")
+            },
+            "selection_receipt": {
+                key: published["thumbnail_selection_receipt"][key]
+                for key in ("uri", "digest", "size_bytes")
+            },
+            "selection": thumbnail_selection,
+            "selected_from_exact_reviewed_frame_count": 8,
+            "derived_appearance_evidence": True,
+            "capture_or_physical_evidence": False,
+            "image_bytes_modified_after_selection": False,
+        },
         "robot_team_interface": {
             "scene_construction_repeated_per_evaluation": False,
             "configuration_run_executed_episode": False,
@@ -395,6 +475,46 @@ def publish_configured_scene_revision(
         path=revision_path,
         object_name=f"{namespace}/revision/{revision_path.name}",
     )
+    offering: dict[str, Any] = {
+        "schema_version": "task_evaluation_configured_scene_offering.v1",
+        "status": "launch_ready",
+        "configuration_run_id": envelope["run_id"],
+        "team_namespace": envelope["team_namespace"],
+        "catalog_visibility": "team_only",
+        "scene_identity": dict(revision["scene_identity"]),
+        "task": {
+            "identity": dict(revision["task_template"]["identity"]),
+            "kind": task["kind"],
+            "strategy": task["strategy"],
+            "subject_identity": dict(revision["replacement"]["identity"]),
+        },
+        "presentation": dict(revision["presentation"]),
+        "evaluation_preparation_binding": {
+            "scene_mode": "reuse_configured_revision",
+            "construction_mode": "reuse_configured_scene",
+            "task_binding_mode": "reuse_configured_template",
+            # Provenance of the configuration build.  A future evaluation run
+            # must bind its own currently deployed evaluator commit instead of
+            # treating this historical commit as executable release authority.
+            "configuration_source_commit": revision["source_commit"],
+            "configured_scene_revision": {
+                key: published_revision[key]
+                for key in ("uri", "digest", "size_bytes")
+            },
+            "configured_scene_revision_digest": revision["revision_digest"],
+            "configured_scene_bundle": dict(revision["configured_scene_bundle"]),
+        },
+        "proof_boundary": {
+            "thumbnail_is_derived_appearance_evidence": True,
+            "thumbnail_is_capture_or_physical_evidence": False,
+            "configuration_is_policy_evaluation": False,
+            "configuration_is_deployment_or_safety_approval": False,
+        },
+        "offering_digest": "",
+    }
+    offering["offering_digest"] = canonical_digest(
+        offering, digest_field="offering_digest"
+    )
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "configured_scene_published",
@@ -413,6 +533,12 @@ def publish_configured_scene_revision(
         "configured_scene_bundle_reference": revision[
             "configured_scene_bundle"
         ],
+        "task_thumbnail_reference": revision["presentation"]["task_thumbnail"],
+        "task_thumbnail_selection": revision["presentation"]["selection"],
+        "task_thumbnail_selection_receipt_reference": revision["presentation"][
+            "selection_receipt"
+        ],
+        "configured_scene_offering": offering,
         "publication_receipt_digest": publication_receipt["receipt_digest"],
         "full_byte_service_account_readback_passed": True,
         "provider_mutation_performed": False,

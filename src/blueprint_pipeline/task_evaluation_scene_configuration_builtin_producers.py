@@ -54,6 +54,7 @@ _EXPECTED_ARTIFACT_ROLES = {
             "configured_appearance_without_source_object",
             "appearance_removal_receipt",
             "appearance_visual_review_receipt",
+            "configured_task_thumbnail",
             "provider_render_reference_manifest",
         }
     ),
