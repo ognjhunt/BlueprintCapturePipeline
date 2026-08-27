@@ -19,13 +19,18 @@ SCHEMA_VERSION = "adp_content_agents_vast_result.v1"
 TIMEOUT_SECONDS = 2400
 SUBPROCESS_PROGRESS_INTERVAL_SECONDS = 60.0
 # Production CAD inputs can contain many independently planned mesh prims. Keep
-# each paid stage bounded, while giving the planning-heavy material and physics
-# agents enough time to finish before the live profile's 14,400-second ceiling.
+# each phase bounded; the total runner budget below arbitrates the sequential
+# phases inside the component driver's stricter deadline.
 AGENT_TIMEOUT_SECONDS = {
     "material": 3_600,
     "texture": 1_200,
     "physics": 3_600,
 }
+VALIDATION_TIMEOUT_SECONDS = 600
+# The component driver owns a 7,000-second subprocess deadline.  Keep one
+# explicit inner sequence deadline below it so the runner can write a typed
+# result instead of letting the caller kill a late valid phase without one.
+RUNNER_TOTAL_BUDGET_SECONDS = 6_000
 
 
 def _progress(stage: str) -> None:
@@ -48,6 +53,48 @@ def _redact(value: str, env: dict[str, str]) -> str:
         if secret and any(marker in name.upper() for marker in ("KEY", "TOKEN", "SECRET")):
             redacted = redacted.replace(secret, "REDACTED_SECRET")
     return redacted
+
+
+def _credential_values(env: dict[str, str]) -> tuple[str, ...]:
+    """Return exact credential and secret-file-path values passed to agents."""
+
+    values = []
+    for name, value in env.items():
+        upper = name.upper()
+        if (
+            value
+            and any(marker in upper for marker in ("KEY", "TOKEN", "SECRET"))
+            and not upper.endswith("_ID")
+        ):
+            values.append(value)
+    return tuple(dict.fromkeys(values))
+
+
+def _file_contains_any(path: Path, values: Sequence[str]) -> bool:
+    needles = tuple(value.encode("utf-8") for value in values if value)
+    if not needles:
+        return False
+    overlap = max(len(needle) for needle in needles) - 1
+    tail = b""
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            payload = tail + chunk
+            if any(needle in payload for needle in needles):
+                return True
+            tail = payload[-overlap:] if overlap > 0 else b""
+    return False
+
+
+def _assert_secret_free_tree(root: Path, *, env: dict[str, str]) -> None:
+    secrets = _credential_values(env)
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(secret in relative for secret in secrets) or _file_contains_any(
+            path, secrets
+        ):
+            raise ValueError("content_agents_output_secret_detected")
 
 
 def _run(
@@ -128,9 +175,10 @@ def _files(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _copy_evidence(source: Path, destination: Path) -> None:
+def _copy_evidence(source: Path, destination: Path, *, env: dict[str, str]) -> None:
     if not source.is_dir():
         return
+    _assert_secret_free_tree(source, env=env)
     for path in source.rglob("*"):
         if not path.is_file() or path.stat().st_size > 100_000_000:
             continue
@@ -367,6 +415,7 @@ def main() -> int:
     env["WU_OVRTX_AUTO_PROVISION"] = "0"
     env["WU_OVRTX_VENV_DIR"] = str(source_root / ".ovrtx_venv")
     env["NVIDIA_DRIVER_CAPABILITIES"] = "all"
+    runner_deadline = time.monotonic() + RUNNER_TOTAL_BUDGET_SECONDS
 
     input_usd, joint_agent_plan = _runtime_input_plan(runtime_root)
 
@@ -402,21 +451,42 @@ def main() -> int:
             }
             continue
         executable, config, work = agent_specs[name]
+        remaining_seconds = runner_deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            blockers.append(f"content_agents_runner_budget_exhausted_before:{name}")
+            agents[name] = {
+                f"{name}_agent_attempted": False,
+                f"{name}_agent_executed": False,
+                "reason": "runner_total_budget_exhausted",
+                "produced_artifacts": [],
+                "retry_count": 0,
+            }
+            continue
         command = [str(bin_dir / executable), "run", str(config)]
         if name in {"material", "physics"}:
             command.append("--clean")
         _progress(f"{name}_agent_started")
+        budget_limited = remaining_seconds < AGENT_TIMEOUT_SECONDS[name]
         execution = _run(
             command,
             log_path=output_root / f"{name}-agent.log",
             env=env,
-            timeout=AGENT_TIMEOUT_SECONDS[name],
+            timeout=min(AGENT_TIMEOUT_SECONDS[name], remaining_seconds),
         )
-        produced = _files(work)
+        try:
+            _copy_evidence(work, output_root / f"{name}_workdir", env=env)
+            produced = _files(work)
+        except ValueError as exc:
+            if str(exc) != "content_agents_output_secret_detected":
+                raise
+            shutil.rmtree(work, ignore_errors=True)
+            produced = []
+            blockers.append(str(exc))
         success = execution["returncode"] == 0 and bool(produced)
+        if execution["timed_out"] and budget_limited:
+            blockers.append(f"content_agents_runner_budget_exhausted_during:{name}")
         if not success:
             blockers.append(f"{name}_agent_full_execution_failed")
-        _copy_evidence(work, output_root / f"{name}_workdir")
         agents[name] = {
             f"{name}_agent_attempted": True,
             f"{name}_agent_executed": success,
@@ -439,6 +509,11 @@ def main() -> int:
         blockers.append("physics_agent_output_missing_for_validation")
     else:
         try:
+            remaining_seconds = runner_deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise TimeoutError(
+                    "content_agents_runner_budget_exhausted_before:validation"
+                )
             stage_path = output_root / "physics_agent_validation_stage.usda"
             _validation_stage(physics_output, stage_path)
             validation_dir = output_root / "validation_agent"
@@ -460,7 +535,7 @@ def main() -> int:
                 command,
                 log_path=output_root / "validation-agent.log",
                 env=env,
-                timeout=600,
+                timeout=min(VALIDATION_TIMEOUT_SECONDS, remaining_seconds),
             )
             validation_result_path = validation_dir / "validation_result.json"
             payload = (
@@ -489,7 +564,11 @@ def main() -> int:
                 "validation_agent_executed": False,
                 "error_type": type(exc).__name__,
             }
-            blockers.append("validation_agent_static_check_failed")
+            blockers.append(
+                str(exc)
+                if str(exc).startswith("content_agents_runner_budget_exhausted_before:")
+                else "validation_agent_static_check_failed"
+            )
     agents["validation"] = validation
     agents["joint"] = {
         **joint_agent_plan,
