@@ -30,7 +30,10 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_request,
     validate_public_launch_profile_descriptor,
 )
-from blueprint_pipeline.task_evaluation_launch_reconciler import reconcile_launches
+from blueprint_pipeline.task_evaluation_launch_reconciler import (
+    reconcile_launches,
+    validated_succeeded_webapp_sync_row,
+)
 from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -497,6 +500,9 @@ def _webapp_sync_succeeded(receipt: dict, *, attempt_number: int = 1) -> dict:
         "request_digest": receipt["request_digest"],
         "receipt_digest": receipt["receipt_digest"],
         "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": receipt["status"],
+            "already_exists": False,
             "launch_id": receipt["launch_id"],
             "run_id": receipt["run_id"],
             "request_digest": receipt["request_digest"],
@@ -510,6 +516,61 @@ def _webapp_sync_succeeded(receipt: dict, *, attempt_number: int = 1) -> dict:
         value, digest_field="sync_result_digest"
     )
     return value
+
+
+def test_durable_webapp_sync_proof_requires_the_configured_offering_ack() -> None:
+    offering_digest = "sha256:" + "9" * 64
+    receipt = {
+        "status": "completed",
+        "launch_id": "scene-launch-839873",
+        "run_id": "scene-run-839873",
+        "request_digest": "sha256:" + "a" * 64,
+        "receipt_digest": "sha256:" + "b" * 64,
+        "terminal_evidence": {
+            "scene_configuration": {
+                "configured_scene_offering": {
+                    "status": "launch_ready",
+                    "offering_digest": offering_digest,
+                }
+            }
+        },
+    }
+    attempt = _webapp_sync_succeeded(receipt)
+    attempt.update(
+        {
+            "configured_scene_offering_digest": offering_digest,
+            "configured_scene_offering_status": "launch_ready",
+        }
+    )
+    attempt["response"].update(
+        {
+            "configured_scene_offering_digest": offering_digest,
+            "configured_scene_offering_status": "launch_ready",
+        }
+    )
+    attempt["sync_result_digest"] = canonical_digest(
+        attempt, digest_field="sync_result_digest"
+    )
+
+    validated = validated_succeeded_webapp_sync_row(
+        receipt=receipt, attempt=attempt
+    )
+    assert validated["receipt"]["configured_scene_offering_digest"] == (
+        offering_digest
+    )
+    assert validated["receipt"]["configured_scene_offering_status"] == (
+        "launch_ready"
+    )
+
+    incomplete = json.loads(json.dumps(attempt))
+    incomplete["response"].pop("configured_scene_offering_digest")
+    incomplete["sync_result_digest"] = canonical_digest(
+        incomplete, digest_field="sync_result_digest"
+    )
+    with pytest.raises(
+        TaskEvaluationLaunchError, match="webapp_sync_succeeded_invalid"
+    ):
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=incomplete)
 
 
 def _zero_guard(*, generated_at: datetime, live_instance_count: int = 0) -> dict:
@@ -2133,6 +2194,9 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
             "request_digest": receipt["request_digest"],
             "receipt_digest": receipt["receipt_digest"],
             "response": {
+                "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+                "status": receipt["status"],
+                "already_exists": False,
                 "launch_id": receipt["launch_id"],
                 "run_id": receipt["run_id"],
                 "request_digest": receipt["request_digest"],
@@ -2168,6 +2232,9 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
             "run_id": request["run_id"],
             "request_digest": request["request_digest"],
             "receipt_digest": receipt["receipt_digest"],
+            "response_schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "terminal_status": receipt["status"],
+            "already_exists": False,
         },
     }]
     assert result["terminal_provider_zero"] == []

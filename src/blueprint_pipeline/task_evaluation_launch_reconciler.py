@@ -652,6 +652,23 @@ def validated_succeeded_webapp_sync_row(
 
     response = attempt.get("response")
     response = response if isinstance(response, Mapping) else {}
+    terminal = receipt.get("terminal_evidence")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    scene_configuration = terminal.get("scene_configuration")
+    scene_configuration = (
+        scene_configuration if isinstance(scene_configuration, Mapping) else {}
+    )
+    offering = scene_configuration.get("configured_scene_offering")
+    offering = offering if isinstance(offering, Mapping) else {}
+    offering_digest = offering.get("offering_digest")
+    offering_ack_invalid = bool(offering) and (
+        not _is_sha256_digest(offering_digest)
+        or offering.get("status") != "launch_ready"
+        or attempt.get("configured_scene_offering_digest") != offering_digest
+        or attempt.get("configured_scene_offering_status") != "launch_ready"
+        or response.get("configured_scene_offering_digest") != offering_digest
+        or response.get("configured_scene_offering_status") != "launch_ready"
+    )
     if (
         attempt.get("schema_version")
         != "task_evaluation_launch_webapp_sync_result.v1"
@@ -671,8 +688,30 @@ def validated_succeeded_webapp_sync_row(
             response.get(field) != receipt.get(field)
             for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
         )
+        or response.get("schema_version")
+        != "task_evaluation_launch_web_sync_receipt.v1"
+        or response.get("status") != receipt.get("status")
+        or not isinstance(response.get("already_exists"), bool)
+        or offering_ack_invalid
     ):
         raise TaskEvaluationLaunchError("webapp_sync_succeeded_invalid")
+    committed_receipt = {
+        "sync_result_digest": attempt.get("sync_result_digest"),
+        "launch_id": receipt.get("launch_id"),
+        "run_id": receipt.get("run_id"),
+        "request_digest": receipt.get("request_digest"),
+        "receipt_digest": receipt.get("receipt_digest"),
+        "response_schema_version": response.get("schema_version"),
+        "terminal_status": response.get("status"),
+        "already_exists": response.get("already_exists"),
+    }
+    if offering:
+        committed_receipt.update(
+            {
+                "configured_scene_offering_digest": offering_digest,
+                "configured_scene_offering_status": "launch_ready",
+            }
+        )
     return {
         "launch_id": receipt.get("launch_id"),
         "status": "webapp_sync_succeeded",
@@ -683,13 +722,7 @@ def validated_succeeded_webapp_sync_row(
         "provider_mutation_performed": False,
         "allocator_invoked": False,
         "automatic_retry_performed": False,
-        "receipt": {
-            "sync_result_digest": attempt.get("sync_result_digest"),
-            "launch_id": receipt.get("launch_id"),
-            "run_id": receipt.get("run_id"),
-            "request_digest": receipt.get("request_digest"),
-            "receipt_digest": receipt.get("receipt_digest"),
-        },
+        "receipt": committed_receipt,
     }
 
 
