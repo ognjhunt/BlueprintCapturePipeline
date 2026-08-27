@@ -602,6 +602,66 @@ def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) ->
     assert "provider_runtime/input/references/0001.usda" in names
 
 
+def test_preallocation_refusal_seals_canonical_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text("{}", encoding="utf-8")
+    authority = {
+        "authority_digest": "sha256:" + "e" * 64,
+        "provider_compute_spend_cap_usd": 0.75,
+        "maximum_hourly_rate_usd": 0.50,
+        "maximum_single_resource_ttl_seconds": 1_800,
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "validate_scene_configuration_paid_authority",
+        lambda _value, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "require_paid_resource_admission_grant",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "stage_wam_provider_bundle_object_store",
+        lambda **_kwargs: {
+            "status": "blocked",
+            "blockers": ["fixture_object_store_staging_refusal"],
+        },
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "cleanup_staged_wam_provider_objects",
+        lambda _root: {"status": "completed", "all_objects_absent": True},
+    )
+    job = tmp_path / "job"
+
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=job,
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=object(),
+        execute=True,
+    )
+
+    result_path = job / f"{scene_vast.RESULT_SCHEMA_VERSION}.json"
+    assert result_path.is_file()
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
+    assert result["blockers"] == ["fixture_object_store_staging_refusal"]
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["object_store_cleanup"]["all_objects_absent"] is True
+    assert result["result_digest"] == canonical_digest(
+        result, digest_field="result_digest"
+    )
+
+
 def test_bundle_refuses_old_toolchain_without_provider_python_runtime(
     tmp_path: Path,
 ) -> None:

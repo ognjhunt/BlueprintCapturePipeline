@@ -672,6 +672,19 @@ def _authority_environment():
 PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 2_000_000_000
 
 
+def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist every terminal return, including refusals before allocation."""
+
+    result = dict(value)
+    result.setdefault("generated_at", utc_now_iso())
+    result["result_digest"] = ""
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    write_json(job / f"{RESULT_SCHEMA_VERSION}.json", result)
+    return result
+
+
 def _provider_transfer_byte_budget(
     receipt: Mapping[str, Any],
 ) -> tuple[int, int]:
@@ -721,7 +734,7 @@ def run_scene_configuration_vast(
     )
     runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
-        result = {
+        return _seal_terminal_result(job, {
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": utc_now_iso(),
             "status": "dry_run_ready",
@@ -732,13 +745,7 @@ def run_scene_configuration_vast(
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "blockers": [],
-            "result_digest": "",
-        }
-        result["result_digest"] = canonical_digest(
-            result, digest_field="result_digest"
-        )
-        write_json(job / f"{RESULT_SCHEMA_VERSION}.json", result)
-        return result
+        })
     if paid_resource_admission_grant is None:
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_paid_admission_missing"
@@ -763,16 +770,24 @@ def run_scene_configuration_vast(
         expiration_seconds=ttl + 1_800,
     )
     if staging.get("status") != "completed":
-        return {
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        blockers = list(staging.get("blockers") or ["object_store_staging_blocked"])
+        if cleanup.get("all_objects_absent") is not True:
+            blockers.append("object_store_provider_zero_not_proven")
+        blockers = sorted(set(blockers))
+        return _seal_terminal_result(job, {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked",
             "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "bundle_sha256": receipt["bundle_sha256"],
+            "authority_digest": authority["authority_digest"],
             "provider_mutations_performed": 0,
             "retry_cap": 0,
-            "blockers": list(
-                staging.get("blockers") or ["object_store_staging_blocked"]
-            ),
-        }
+            "object_store_cleanup": cleanup,
+            "continuing_spend_from_this_run": False,
+            "blockers": blockers,
+        })
     watchdog_handoff, watchdog = arm_independent_vast_watchdog(
         job_dir=job,
         max_live_minutes=max(1, ttl // 60),
@@ -782,16 +797,25 @@ def run_scene_configuration_vast(
     )
     if watchdog is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
-        return {
+        blockers = ["independent_watchdog_not_armed"]
+        if cleanup.get("all_objects_absent") is not True:
+            blockers.append("object_store_provider_zero_not_proven")
+        blockers = sorted(set(blockers))
+        return _seal_terminal_result(job, {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked",
             "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "bundle_sha256": receipt["bundle_sha256"],
+            "authority_digest": authority["authority_digest"],
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "object_store_cleanup": cleanup,
             "independent_watchdog": watchdog_handoff,
-            "blockers": ["independent_watchdog_not_armed"],
-        }
+            "continuing_spend_from_this_run": False,
+            "blockers": blockers,
+        })
     consumption = _consume_authority_once(
         authority, source_commit=str(receipt["source_commit"])
     )
@@ -804,17 +828,31 @@ def run_scene_configuration_vast(
             provider_teardown_completed=False,
             provider_allocation_impossible=True,
         )
-        return {
+        blockers = list(consumption.get("blockers") or [])
+        if cleanup.get("all_objects_absent") is not True:
+            blockers.append("object_store_provider_zero_not_proven")
+        if watchdog_close.get("status") not in {
+            "provider_terminal",
+            "cancelled_no_allocation",
+        }:
+            blockers.append("independent_watchdog_not_closed")
+        blockers = sorted(set(blockers))
+        return _seal_terminal_result(job, {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked",
             "run_id": receipt["run_id"],
+            "source_commit": receipt["source_commit"],
+            "bundle_sha256": receipt["bundle_sha256"],
+            "authority_digest": authority["authority_digest"],
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "authorization_consumption": consumption,
             "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "object_store_cleanup": cleanup,
             "independent_watchdog": watchdog_close,
-            "blockers": list(consumption.get("blockers") or []),
-        }
+            "continuing_spend_from_this_run": False,
+            "blockers": blockers,
+        })
 
     provider_run = job / PROVIDER_RUN_DIRNAME
     output_zip = provider_run / "vast_provider_runtime_output.zip"
@@ -1080,11 +1118,7 @@ def run_scene_configuration_vast(
         "blockers": sorted(set(blockers)),
         "result_digest": "",
     }
-    result["result_digest"] = canonical_digest(
-        result, digest_field="result_digest"
-    )
-    write_json(job / f"{RESULT_SCHEMA_VERSION}.json", result)
-    return result
+    return _seal_terminal_result(job, result)
 
 
 __all__ = [

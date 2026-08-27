@@ -931,6 +931,9 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
     }
 
     result["configured_scene_bundle_reference"] = None
+    result["blockers"] = [
+        "fixture_provider_refusal:https://objects.example.test/result?X-Amz-Signature=secret"
+    ]
     _write(result_path, result)
     refused = dispatcher_module._terminal_evidence(
         profile, execute=True, run_root=tmp_path
@@ -939,6 +942,12 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
     assert "scene_configuration_terminal_publication_evidence_invalid" in refused[
         "blockers"
     ]
+    assert any(
+        blocker.startswith("scene_configuration_result:fixture_provider_refusal:")
+        and "<redacted>" in blocker
+        for blocker in refused["blockers"]
+    )
+    assert "X-Amz-Signature=secret" not in json.dumps(refused)
 
 
 def test_dispatch_renders_all_output_paths_inside_the_launch_run_root(
