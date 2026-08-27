@@ -101,6 +101,7 @@ def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
 ) -> None:
     offering_digest = "sha256:" + "e" * 64
     receipt = {
+        "status": "completed",
         "launch_id": "launch-1",
         "run_id": "run-1",
         "request_digest": "sha256:" + "a" * 64,
@@ -114,6 +115,9 @@ def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
         },
     }
     response = {
+        "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+        "status": "completed",
+        "already_exists": False,
         "launch_id": "launch-1",
         "run_id": "run-1",
         "request_digest": "sha256:" + "a" * 64,
@@ -136,6 +140,26 @@ def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
     assert result["status"] == "succeeded"
     assert result["configured_scene_offering_status"] == "launch_ready"
 
+    response["schema_version"] = "error.v1"
+    refused = sync_module.sync_launch_receipt_to_webapp(
+        receipt=receipt,
+        endpoint_url="https://webapp.test/api/internal/task-evaluation-launches",
+        token="test-token",
+    )
+    assert refused["status"] == "failed"
+    assert refused["reason"] == "response_schema_mismatch"
+
+    response["schema_version"] = "task_evaluation_launch_web_sync_receipt.v1"
+    response["status"] = "rejected"
+    refused = sync_module.sync_launch_receipt_to_webapp(
+        receipt=receipt,
+        endpoint_url="https://webapp.test/api/internal/task-evaluation-launches",
+        token="test-token",
+    )
+    assert refused["status"] == "failed"
+    assert refused["reason"] == "response_status_mismatch"
+
+    response["status"] = "completed"
     response.pop("configured_scene_offering_digest")
     refused = sync_module.sync_launch_receipt_to_webapp(
         receipt=receipt,
