@@ -816,6 +816,7 @@ def _scene_configuration_terminal_records(
         or result.get("provider_mutations_performed") != 1
         or not isinstance(blockers, list)
         or (result_status == "completed" and blockers != [])
+        or result.get("runtime_secret_cleanup_completed") is not True
         or adapter.get("schema_version") not in _SUPPORTED_ADAPTER_SCHEMAS
         or adapter.get("status") not in {"completed", "blocked"}
         or adapter.get("provider_bundle_kind")

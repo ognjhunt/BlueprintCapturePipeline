@@ -4,8 +4,13 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.vast_official_billing_extractor import _terminal_evidence
+from blueprint_pipeline.vast_official_billing_extractor import (
+    VastOfficialBillingExtractionError,
+    _terminal_evidence,
+)
 
 
 INSTANCE_ID = 48_901_234
@@ -27,7 +32,9 @@ def _identity(path: Path, value: dict, digest_field: str) -> Path:
     return _write(path, value)
 
 
-def _scene_configuration_terminal_fixture(tmp_path: Path) -> Path:
+def _scene_configuration_terminal_fixture(
+    tmp_path: Path, *, runtime_secret_cleanup_completed: bool = True
+) -> Path:
     run_root = tmp_path / "task-evaluation-launch-runs" / RUN_ID
     allocator = run_root / "allocator"
     job = allocator / "scene-configuration-job"
@@ -164,6 +171,7 @@ def _scene_configuration_terminal_fixture(tmp_path: Path) -> Path:
         "artifact_manifest_path": str(manifest_path),
         "provider_mutations_performed": 1,
         "retry_cap": 0,
+        "runtime_secret_cleanup_completed": runtime_secret_cleanup_completed,
         "continuing_spend_from_this_run": False,
         "independent_watchdog": watchdog,
         "object_store_cleanup": {
@@ -274,3 +282,20 @@ def test_blocked_scene_configuration_attempt_is_officially_reconcilable(
     assert evidence["provider_zero_verified"] is True
     assert evidence["artifact_manifest"]["status"] == "completed"
     assert evidence["webapp_terminal_binding"]["status"] == "succeeded"
+
+
+def test_scene_configuration_billing_refuses_unproven_runtime_secret_cleanup(
+    tmp_path: Path,
+) -> None:
+    result_path = _scene_configuration_terminal_fixture(
+        tmp_path, runtime_secret_cleanup_completed=False
+    )
+
+    with pytest.raises(
+        VastOfficialBillingExtractionError,
+        match="vast_official_scene_configuration_terminal_closure_invalid",
+    ):
+        _terminal_evidence(
+            instance_id=INSTANCE_ID,
+            terminal_result_path=result_path,
+        )
