@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .vast_create_failure_diagnosis import diagnose_empty_create_400
 from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
@@ -8829,101 +8830,39 @@ def run_vast_provider_adapter(
                 # Preserve the response for the outer fail-closed HTTP error
                 # receipt when this is not the documented stale-offer race.
                 exc.fp = io.BytesIO(error_text.encode("utf-8"))
-                selected_offer_absent_from_fresh_search = False
-                catalog_readback_http_status_code: int | None = None
-                catalog_readback_offer_count: int | None = None
-                catalog_readback_error: str | None = None
-                create_produced_no_instance = False
-                create_inventory_http_status_code: int | None = None
-                create_inventory_error: str | None = None
                 if int(exc.code or 0) == 400 and not error_text.strip():
-                    try:
-                        (
-                            catalog_readback_http_status_code,
-                            catalog_readback_response,
-                        ) = _api_json(
-                            method="POST",
-                            path="/bundles/",
-                            api_key=api_key,
-                            payload={
-                                **search_request,
-                                "limit": 1,
-                                "id": {
-                                    "eq": int(selected_offer["ask_contract_id"]),
-                                },
-                            },
-                            timeout_seconds=45,
-                        )
-                        catalog_readback_offers = _offers_from_response(
-                            catalog_readback_response
-                        )
-                        catalog_readback_offer_count = len(catalog_readback_offers)
-                        selected_offer_absent_from_fresh_search = bool(
-                            200 <= int(catalog_readback_http_status_code or 0) < 300
-                            and catalog_readback_offer_count == 0
-                        )
-                    except Exception as readback_exc:  # noqa: BLE001
-                        # A failed readback is not evidence that an offer vanished.
-                        # Preserve the original HTTP 400 and fail closed below.
-                        selected_offer_absent_from_fresh_search = False
-                        catalog_readback_error = type(readback_exc).__name__
-                    # Vast answers an unusable ask with an empty 400 and says
-                    # nothing about why. Selection and creation are separate
-                    # calls -- creation is PUT /asks/{id}/, so an offer can go
-                    # between them -- and this lane had 100 qualifying offers
-                    # but abandoned the run on the first one that failed.
-                    #
-                    # Ask the provider directly whether the create mutated
-                    # anything. Only an authenticated listing that succeeds and
-                    # contains no instance carrying the exact label we just
-                    # tried to create proves it did not, and only then is
-                    # moving to the next offer free of any double-allocation
-                    # risk. A failed listing proves nothing and still fails
-                    # closed.
-                    try:
-                        (
-                            create_inventory_http_status_code,
-                            create_inventory_payload,
-                        ) = _api_json(
-                            method="GET",
-                            path="/instances/",
-                            api_key=api_key,
-                            timeout_seconds=30,
-                        )
-                        attempted_label = _string(create_payload.get("label"))
-                        create_produced_no_instance = bool(
-                            attempted_label
-                            and 200
-                            <= int(create_inventory_http_status_code or 0)
-                            < 300
-                            and not any(
-                                _string(row.get("label")) == attempted_label
-                                for row in _active_instance_rows_from_payload(
-                                    create_inventory_payload
-                                )
-                            )
-                        )
-                    except Exception as inventory_exc:  # noqa: BLE001
-                        create_produced_no_instance = False
-                        create_inventory_error = type(inventory_exc).__name__
+                    empty_400_diagnosis = diagnose_empty_create_400(
+                        api_json=_api_json,
+                        api_key=api_key,
+                        search_request=search_request,
+                        offer_id=int(selected_offer["ask_contract_id"]),
+                        attempted_label=_string(create_payload.get("label")),
+                        offers_from_response=_offers_from_response,
+                        active_instance_rows=_active_instance_rows_from_payload,
+                        instance_label=lambda row: _string(row.get("label")),
+                    )
+                else:
+                    empty_400_diagnosis = {
+                        "selected_offer_absent_from_fresh_search": False,
+                        "catalog_readback_http_status_code": None,
+                        "catalog_readback_offer_count": None,
+                        "catalog_readback_error": None,
+                        "create_produced_no_instance": False,
+                        "create_inventory_http_status_code": None,
+                        "create_inventory_error": None,
+                    }
+                selected_offer_absent_from_fresh_search = bool(
+                    empty_400_diagnosis["selected_offer_absent_from_fresh_search"]
+                )
+                create_produced_no_instance = bool(
+                    empty_400_diagnosis["create_produced_no_instance"]
+                )
                 create_failure_diagnosis = {
+                    **empty_400_diagnosis,
                     "attempt": stale_offer_create_retry_count,
                     "http_status_code": exc.code,
                     "offer_id": selected_offer.get("ask_contract_id"),
                     "error_preview": _redact_text(error_text[:500], secret_values),
-                    "selected_offer_absent_from_fresh_search": (
-                        selected_offer_absent_from_fresh_search
-                    ),
-                    "catalog_readback_http_status_code": (
-                        catalog_readback_http_status_code
-                    ),
-                    "catalog_readback_offer_count": catalog_readback_offer_count,
-                    "catalog_readback_error": catalog_readback_error,
-                    "create_produced_no_instance": create_produced_no_instance,
-                    "create_inventory_http_status_code": (
-                        create_inventory_http_status_code
-                    ),
-                    "create_inventory_error": create_inventory_error,
                     "raw_secret_values_recorded": False,
                 }
                 base_result["create_failure_diagnosis"] = create_failure_diagnosis
