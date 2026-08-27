@@ -1,6 +1,7 @@
+import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -161,6 +162,81 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
         if "amazonaws.com" in url
     )
     assert all("-value" not in json.dumps(row) for row in source["sources"])
+
+
+def test_repeated_provider_responses_keep_distinct_paths_on_one_digest_inode(
+    tmp_path: Path,
+) -> None:
+    audit_root = tmp_path / "audit"
+    secrets = _secrets(tmp_path)
+    first = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=tmp_path / "guard" / "billing.json",
+        audit_root=audit_root,
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW,
+        transport=_Transport(),
+        **_aws_kwargs(secrets),
+    )
+    second = reconcile_provider_billing(
+        secrets_dir=secrets,
+        billing_export_path=tmp_path / "guard" / "billing.json",
+        audit_root=audit_root,
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW + timedelta(minutes=1),
+        transport=_Transport(),
+        **_aws_kwargs(secrets),
+    )
+
+    first_source = json.loads(Path(first["source_receipt_path"]).read_text())
+    second_source = json.loads(Path(second["source_receipt_path"]).read_text())
+    first_path = Path(first_source["sources"][0]["retained_path"])
+    second_path = Path(second_source["sources"][0]["retained_path"])
+
+    assert first_path != second_path
+    assert first_path.stat().st_ino == second_path.stat().st_ino
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert first_path.stat().st_mode & 0o777 == 0o600
+    assert first_source["sources"][0]["response_digest"] == second_source["sources"][0][
+        "response_digest"
+    ]
+
+
+def test_existing_digest_object_with_wrong_bytes_blocks_reconciliation(
+    tmp_path: Path,
+) -> None:
+    audit_root = tmp_path / "audit"
+    audit_root.mkdir(mode=0o700)
+    payload = json.dumps([{"amount": 3.25}]).encode()
+    hexadecimal = hashlib.sha256(payload).hexdigest()
+    object_parent = audit_root / "objects" / "sha256" / hexadecimal[:2]
+    object_parent.mkdir(parents=True, mode=0o700)
+    for path in (
+        audit_root / "objects",
+        audit_root / "objects" / "sha256",
+        object_parent,
+    ):
+        path.chmod(0o700)
+    object_path = object_parent / hexadecimal
+    object_path.write_bytes(b"not the bound response")
+    object_path.chmod(0o600)
+    secrets = _secrets(tmp_path)
+
+    with pytest.raises(
+        ProviderBillingReconciliationError,
+        match="provider_billing_audit_response_metadata_invalid|"
+        "provider_billing_audit_response_digest_mismatch",
+    ):
+        reconcile_provider_billing(
+            secrets_dir=secrets,
+            billing_export_path=tmp_path / "guard" / "billing.json",
+            audit_root=audit_root,
+            start_at="2026-01-01T00:00:00Z",
+            now=NOW,
+            transport=_Transport(),
+            **_aws_kwargs(secrets),
+        )
+    assert list(audit_root.glob("20*Z")) == []
 
 
 def test_atomic_service_owned_refresh_is_trusted_by_root_guard(

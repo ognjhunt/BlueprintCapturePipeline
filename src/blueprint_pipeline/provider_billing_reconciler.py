@@ -30,6 +30,12 @@ from botocore.awsrequest import AWSRequest
 from botocore.exceptions import BotoCoreError
 from defusedxml import ElementTree as ET
 
+from blueprint_pipeline.provider_billing_audit_retention import (
+    ProviderBillingAuditRetentionError,
+    audit_root_lock,
+    retain_billing_response,
+)
+
 
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
@@ -604,37 +610,78 @@ def reconcile_provider_billing(
     covered_provider_ids = sorted(totals)
     uncovered_provider_ids = sorted(set(PROVIDERS) - set(totals))
     generated_at = current.isoformat()
-    audit_directory = Path(audit_root).expanduser().resolve() / current.strftime(
-        "%Y%m%dT%H%M%S.%fZ"
-    )
-    source_rows: list[dict[str, Any]] = []
-    for index, row in enumerate(audit_rows, start=1):
-        response_path = audit_directory / f"response-{index:03d}-{row['provider']}.json"
-        _atomic_write(response_path, row["response_bytes"])
-        source_rows.append(
-            {key: value for key, value in row.items() if key != "response_bytes"}
-            | {"retained_path": str(response_path)}
-        )
-    source_receipt = {
-        "schema_version": BILLING_SOURCE_SCHEMA_VERSION,
-        "status": "reconciled",
-        "generated_at": generated_at,
-        "cohort_start_at": start.isoformat(),
-        "cohort_end_at": generated_at,
-        "provider_totals_usd": totals,
-        "required_provider_ids": sorted(required_provider_ids),
-        "covered_provider_ids": covered_provider_ids,
-        "uncovered_provider_ids": uncovered_provider_ids,
-        "optional_provider_failures": optional_provider_failures,
-        "sources": source_rows,
-        "provider_mutation_performed": False,
-        "raw_secret_values_recorded": False,
-    }
-    source_receipt["receipt_digest"] = _canonical_digest(
-        source_receipt, digest_field="receipt_digest"
-    )
-    source_path = audit_directory / "provider_billing_source_receipt.json"
-    _atomic_write(source_path, (_canonical_json(source_receipt) + "\n").encode("utf-8"))
+    audit_root_path = Path(audit_root).expanduser().resolve()
+    try:
+        with audit_root_lock(audit_root_path, create=True) as (
+            locked_audit_root,
+            root_info,
+        ):
+            audit_directory = locked_audit_root / current.strftime(
+                "%Y%m%dT%H%M%S.%fZ"
+            )
+            try:
+                audit_directory.mkdir(mode=0o700)
+            except FileExistsError as exc:
+                raise ProviderBillingAuditRetentionError(
+                    "provider_billing_audit_directory_exists"
+                ) from exc
+            source_rows: list[dict[str, Any]] = []
+            response_paths: list[Path] = []
+            try:
+                for index, row in enumerate(audit_rows, start=1):
+                    response_name = f"response-{index:03d}-{row['provider']}.json"
+                    response_path = retain_billing_response(
+                        audit_root=locked_audit_root,
+                        audit_directory=audit_directory,
+                        response_name=response_name,
+                        payload=row["response_bytes"],
+                        root_info=root_info,
+                    )
+                    response_paths.append(response_path)
+                    source_rows.append(
+                        {
+                            key: value
+                            for key, value in row.items()
+                            if key != "response_bytes"
+                        }
+                        | {"retained_path": str(response_path)}
+                    )
+                source_receipt = {
+                    "schema_version": BILLING_SOURCE_SCHEMA_VERSION,
+                    "status": "reconciled",
+                    "generated_at": generated_at,
+                    "cohort_start_at": start.isoformat(),
+                    "cohort_end_at": generated_at,
+                    "provider_totals_usd": totals,
+                    "required_provider_ids": sorted(required_provider_ids),
+                    "covered_provider_ids": covered_provider_ids,
+                    "uncovered_provider_ids": uncovered_provider_ids,
+                    "optional_provider_failures": optional_provider_failures,
+                    "sources": source_rows,
+                    "provider_mutation_performed": False,
+                    "raw_secret_values_recorded": False,
+                }
+                source_receipt["receipt_digest"] = _canonical_digest(
+                    source_receipt, digest_field="receipt_digest"
+                )
+                source_path = audit_directory / "provider_billing_source_receipt.json"
+                _atomic_write(
+                    source_path,
+                    (_canonical_json(source_receipt) + "\n").encode("utf-8"),
+                )
+            except BaseException:
+                for response_path in reversed(response_paths):
+                    if (
+                        response_path.parent == audit_directory
+                        and not response_path.is_symlink()
+                        and response_path.is_file()
+                    ):
+                        response_path.unlink()
+                if audit_directory.is_dir() and not any(audit_directory.iterdir()):
+                    audit_directory.rmdir()
+                raise
+    except ProviderBillingAuditRetentionError as exc:
+        raise ProviderBillingReconciliationError(str(exc)) from exc
     billing_export = {
         "schema_version": BILLING_EXPORT_SCHEMA_VERSION,
         "generated_at": generated_at,
