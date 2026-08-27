@@ -461,7 +461,11 @@ def _semantic_rights_and_request(
 
 
 def _semantic_runtime_request(
-    *, packet_root: Path, source_commit: str, maximum_cost_usd: float | None = None
+    *,
+    packet_root: Path,
+    source_commit: str,
+    maximum_cost_usd: float | None = None,
+    expected_request_cost_usd: float | None = None,
 ) -> Path:
     packet = _read(
         packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json",
@@ -502,6 +506,11 @@ def _semantic_runtime_request(
         # ...4dfc5f8e-r3-web-20260827T050053Z billed $0.877128 against a $0.40
         # reservation and nothing refused it.
         "maximum_cost_usd": maximum_cost_usd,
+        # Observed per-frame price of the pinned model, so the worker can prove
+        # the cap covers one complete pass before the first paid request. A
+        # partial pass feeds nothing: run ...-163900Z spent $1.10 on five of
+        # eight frames and the stage still failed.
+        "expected_request_cost_usd": expected_request_cost_usd,
         "retry_count": 0,
         "request_digest": "",
     }
@@ -644,10 +653,21 @@ def execute_artifixer_component(
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"
     )
     semantic_cap = float(semantic_cap_raw) if semantic_cap_raw else None
+    expected_frame_cost_raw = values.get(
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_EXPECTED_FRAME_COST_USD"
+    )
+    expected_frame_cost = (
+        float(expected_frame_cost_raw)
+        if expected_frame_cost_raw
+        # gpt-image-2-2026-04-21 billed a constant $0.219282 per 1024x1024
+        # edited frame across every observed request; keep a small margin.
+        else 0.22
+    )
     semantic_request = _semantic_runtime_request(
         packet_root=packet_root,
         source_commit=str(stage_input["source_commit"]),
         maximum_cost_usd=semantic_cap,
+        expected_request_cost_usd=expected_frame_cost,
     )
     semantic_cost_gate = scene_configuration_openai_stage_gate(
         environment=values,

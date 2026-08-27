@@ -510,6 +510,7 @@ def execute_semantic_teacher_image_edits(
     # Optional, like max_parallel_requests above, so every already-sealed
     # request keeps its digest. When absent the loop behaves exactly as before.
     maximum_cost_usd = request.get("maximum_cost_usd")
+    expected_request_cost_usd = request.get("expected_request_cost_usd")
     options_valid = _valid_default_options(default_options)
     pricing = execution.get("pricing_binding") if isinstance(execution, Mapping) else None
     rates = pricing.get("usd_per_million_tokens") if isinstance(pricing, Mapping) else None
@@ -567,6 +568,15 @@ def execute_semantic_teacher_image_edits(
                 or not isinstance(maximum_cost_usd, (int, float))
                 or not math.isfinite(float(maximum_cost_usd))
                 or float(maximum_cost_usd) <= 0
+            )
+        )
+        or (
+            expected_request_cost_usd is not None
+            and (
+                isinstance(expected_request_cost_usd, bool)
+                or not isinstance(expected_request_cost_usd, (int, float))
+                or not math.isfinite(float(expected_request_cost_usd))
+                or float(expected_request_cost_usd) <= 0
             )
         )
     ):
@@ -680,6 +690,21 @@ def execute_semantic_teacher_image_edits(
                     "expected_size": expected_size,
                 }
             )
+
+    # A partial pass is worth nothing: five of eight edited frames cannot feed
+    # the appearance path, so money spent up to a mid-pass ceiling is simply
+    # lost (run ...-163900Z burned $1.10 on five frames before its $1.00 cap
+    # fired). When the caller knows the expected per-request cost, a cap that
+    # cannot cover every frame refuses here, before the first paid request.
+    if (
+        maximum_cost_usd is not None
+        and expected_request_cost_usd is not None
+        and float(maximum_cost_usd)
+        < float(expected_request_cost_usd) * len(frame_jobs)
+    ):
+        raise SemanticTeacherImageEditWorkerError(
+            "semantic_teacher_cost_ceiling_below_projected_pass"
+        )
 
     outcomes: dict[int, dict[str, Any]] = {}
     submitted: set[int] = set()

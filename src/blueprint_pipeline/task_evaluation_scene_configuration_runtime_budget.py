@@ -34,7 +34,13 @@ REQUIRED_PARENT_TTL_SECONDS = (
 
 MAX_HOURLY_RATE_USD = 0.80
 MAX_PROVIDER_COMPUTE_SPEND_USD = 6.0
-MAX_EXTERNAL_SERVICE_SPEND_USD = 1.5
+# One full semantic-teacher pass is 8 frames at an observed $0.219282 each
+# ($1.754 total; run ...-163900Z measured it directly), and the visual-review
+# and Content Agents stages spend from the same external budget. $1.50 was
+# below the physical price of the work it authorized: the run spent $1.10 on
+# five frames and died mid-pass with nothing usable. The ceiling exists to
+# bound an attempt, not to starve it below one complete pass.
+MAX_EXTERNAL_SERVICE_SPEND_USD = 3.0
 MAX_ATTEMPT_SPEND_USD = 10.0
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"

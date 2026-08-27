@@ -27,7 +27,7 @@ def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> 
         MAX_HOURLY_RATE_USD * REQUIRED_PARENT_TTL_SECONDS / 3_600
     )
     assert MAX_PROVIDER_COMPUTE_SPEND_USD == 6.0
-    assert MAX_EXTERNAL_SERVICE_SPEND_USD == 1.5
+    assert MAX_EXTERNAL_SERVICE_SPEND_USD == 3.0
     assert MAX_ATTEMPT_SPEND_USD == 10.0
     assert (
         MAX_ATTEMPT_SPEND_USD

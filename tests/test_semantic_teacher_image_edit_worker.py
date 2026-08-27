@@ -1140,3 +1140,80 @@ def test_absent_cost_ceiling_keeps_the_previous_behaviour(tmp_path: Path) -> Non
     assert len(calls) == 3
     assert result["cost_ceiling_reached"] is False
     assert result["maximum_cost_usd"] is None
+
+
+def _set_expected_request_cost(request_path: Path, value) -> None:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["expected_request_cost_usd"] = value
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_cap_below_projected_pass_refuses_before_any_paid_request(
+    tmp_path: Path,
+) -> None:
+    """A partial pass is worth nothing, so a doomed pass must cost nothing.
+
+    Run ...-163900Z had a $1.00 cap against 8 frames at an observed $0.219282
+    each: the mid-flight ceiling fired after five frames, $1.10 was spent, and
+    the stage still failed. With the expected per-request cost declared, the
+    same shape now refuses upfront with zero requests issued.
+    """
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=6)
+    _set_cost_ceiling(request_path, maximum_cost_usd=1.0, rate=1.0)
+    _set_expected_request_cost(request_path, 0.22)
+    calls = []
+
+    with pytest.raises(SemanticTeacherImageEditWorkerError) as excinfo:
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=tmp_path / "output",
+            token="fixture-token",
+            opener=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+    assert "semantic_teacher_cost_ceiling_below_projected_pass" in str(excinfo.value)
+    assert calls == []
+
+
+def test_cap_covering_the_full_pass_proceeds(tmp_path: Path) -> None:
+    request_path, _sources = _runtime_request(tmp_path, frame_count=2)
+    _set_parallelism(request_path, 1)
+    _set_cost_ceiling(request_path, maximum_cost_usd=2.5, rate=1.0)
+    _set_expected_request_cost(request_path, 0.5)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+
+    def opener(request, *, timeout: int):
+        return _Response(_inline_response(generated))
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-token",
+        opener=opener,
+    )
+
+    assert result["successful_request_count"] == 2
+    assert result["cost_ceiling_reached"] is False
+
+
+def test_expected_request_cost_without_a_cap_is_accepted(tmp_path: Path) -> None:
+    """Projection needs a cap to compare against; alone it must not refuse."""
+
+    request_path, _sources = _runtime_request(tmp_path, frame_count=1)
+    _set_parallelism(request_path, 1)
+    _set_expected_request_cost(request_path, 0.22)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+
+    def opener(request, *, timeout: int):
+        return _Response(_inline_response(generated))
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-token",
+        opener=opener,
+    )
+
+    assert result["successful_request_count"] == 1
