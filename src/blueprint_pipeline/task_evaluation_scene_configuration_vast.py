@@ -734,6 +734,47 @@ def _portable_construction_envelope(
     return envelope
 
 
+def _provider_execution_binding_blockers(
+    execution: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    *,
+    diagnostic_only: bool,
+) -> list[str]:
+    blockers: list[str] = []
+    chain = execution.get(
+        "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
+    )
+    result_run_id = (
+        chain.get("run_id")
+        if diagnostic_only and isinstance(chain, Mapping)
+        else execution.get("run_id")
+    )
+    if result_run_id != receipt.get("run_id") or (
+        not diagnostic_only
+        and (
+            not isinstance(chain, Mapping)
+            or chain.get("run_id") != receipt.get("run_id")
+        )
+    ):
+        blockers.append("scene_configuration_provider_run_id_mismatch")
+    provider_source_commit = execution.get(
+        "diagnostic_source_commit" if diagnostic_only else "source_commit"
+    )
+    if provider_source_commit != receipt.get("source_commit"):
+        blockers.append("scene_configuration_provider_source_commit_mismatch")
+    if (
+        not diagnostic_only
+        and execution.get("construction_envelope_digest")
+        != receipt.get("portable_construction_envelope_digest")
+    ):
+        blockers.append("scene_configuration_provider_envelope_mismatch")
+    if diagnostic_only and execution.get(
+        "source_checkpoint_digest"
+    ) != receipt.get("source_diagnostic_checkpoint_digest"):
+        blockers.append("scene_configuration_diagnostic_checkpoint_mismatch")
+    return blockers
+
+
 def _publication_stage_results(
     execution: Mapping[str, Any], *, extraction_root: Path
 ) -> list[dict[str, Any]]:
@@ -1521,21 +1562,11 @@ def run_scene_configuration_vast(
     )
     if execution.get("status") != expected_execution_status:
         blockers.append("scene_configuration_provider_not_completed")
-    provider_source_commit = execution.get(
-        "diagnostic_source_commit" if diagnostic_only else "source_commit"
+    blockers.extend(
+        _provider_execution_binding_blockers(
+            execution, receipt, diagnostic_only=diagnostic_only
+        )
     )
-    if provider_source_commit != receipt.get("source_commit"):
-        blockers.append("scene_configuration_provider_source_commit_mismatch")
-    if (
-        not diagnostic_only
-        and execution.get("construction_envelope_digest")
-        != receipt.get("portable_construction_envelope_digest")
-    ):
-        blockers.append("scene_configuration_provider_envelope_mismatch")
-    if diagnostic_only and execution.get(
-        "source_checkpoint_digest"
-    ) != receipt.get("source_diagnostic_checkpoint_digest"):
-        blockers.append("scene_configuration_diagnostic_checkpoint_mismatch")
     if teardown.get("continuing_spend_from_this_run") is not False:
         blockers.append("provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
