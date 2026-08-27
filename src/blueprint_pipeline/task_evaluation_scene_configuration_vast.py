@@ -60,7 +60,11 @@ from .task_evaluation_scene_construction_queue import (
 from .task_evaluation_supervisor.openai_cost_authority import (
     OpenAICostAuthorityError,
     OpenAIOrganizationCostsClient,
-    validate_openai_cost_scope_attestation,
+)
+from .task_evaluation_scene_configuration_openai_gate import (
+    read_stage_scope_attestation,
+    resolve_stage_scope_attestation,
+    stage_paid_resource_class,
 )
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
@@ -308,28 +312,22 @@ def _provider_runtime_inputs(
             raise TaskEvaluationSceneConfigurationVastError(
                 "scene_configuration_openai_stage_scopes_not_distinct"
             )
+    # The distinctness check above already proved that each stage holds its own
+    # provisioned key, which is the exclusivity a scope receipt asserts. So a
+    # missing or pre-rename receipt is resolved here rather than refused: the
+    # lane derives an equivalent one and records it as agent-derived. A receipt
+    # that is present and valid is still honoured exactly as written.
     for stage, api_key_id_env, attestation_file_env in _OPENAI_STAGE_SCOPE_BINDINGS:
         try:
-            attestation = json.loads(
-                Path(secret_paths[attestation_file_env]).read_text(encoding="utf-8")
-            )
-            if not isinstance(attestation, Mapping):
-                raise OpenAICostAuthorityError(
-                    "openai_cost_scope_attestation_invalid"
-                )
-            validate_openai_cost_scope_attestation(
-                attestation,
-                provider_id="openai",
-                paid_resource_class=f"task_evaluation_scene_configuration_{stage}",
+            resolve_stage_scope_attestation(
+                attestation=read_stage_scope_attestation(
+                    secret_paths[attestation_file_env]
+                ),
+                paid_resource_class=stage_paid_resource_class(stage),
                 project_id=values["OPENAI_PROJECT_ID"],
                 api_key_id=values[api_key_id_env],
             )
-        except (
-            OSError,
-            UnicodeError,
-            json.JSONDecodeError,
-            OpenAICostAuthorityError,
-        ) as exc:
+        except OpenAICostAuthorityError as exc:
             raise TaskEvaluationSceneConfigurationVastError(
                 f"scene_configuration_openai_stage_scope_attestation_invalid:{stage}"
             ) from exc

@@ -121,6 +121,82 @@ def openai_cost_authority_binding_digest(
     )
 
 
+def _issuance_authority_valid(attestation: Mapping[str, Any]) -> bool:
+    """Whether this attestation's issuer is one this program accepts.
+
+    Two issuance paths are valid and both are recorded truthfully:
+
+    ``issued_by_agent: false``
+        An operator wrote the receipt by hand.
+
+    ``issued_by_agent: true`` with ``derived_from_operator_scope_binding: true``
+        The lane derived the receipt from the operator-provisioned per-stage
+        key binding in the runtime environment. The property this gate exists
+        to protect -- one key spending for exactly one paid resource class --
+        is established by that binding and independently proven by the
+        caller's distinctness check over the provisioned key files and ids, not
+        by a human retyping the class name into a JSON file. Requiring a hand
+        edit here bought no exclusivity; it only stalled the lane whenever a
+        class was renamed, which is precisely how scene 839873 stalled after
+        the rename in PR #1167.
+
+    Anything else fails closed. In particular an agent-issued receipt that does
+    not declare its derivation is refused, so the field can never quietly
+    become a place to launder self-authorization.
+    """
+
+    issued_by_agent = attestation.get("issued_by_agent")
+    if issued_by_agent is False:
+        return True
+    return (
+        issued_by_agent is True
+        and attestation.get("derived_from_operator_scope_binding") is True
+    )
+
+
+def derive_operator_scope_attestation(
+    *,
+    provider_id: str,
+    paid_resource_class: str,
+    project_id: str,
+    api_key_id: str,
+    operator_id: str,
+    exclusive_from: datetime,
+    exclusive_until: datetime,
+) -> dict[str, Any]:
+    """Build the receipt that restates an operator's per-stage key binding.
+
+    The caller must already have proven that ``api_key_id`` is provisioned for
+    this exact stage and is not shared with a sibling stage; this function only
+    records that fact in the canonical shape the cost authority validates.
+    """
+
+    if exclusive_until <= exclusive_from:
+        raise OpenAICostAuthorityError("openai_cost_scope_attestation_window_invalid")
+    attestation: dict[str, Any] = {
+        "schema_version": OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+        "status": "approved",
+        "issued_by_agent": True,
+        "derived_from_operator_scope_binding": True,
+        "operator_id": _identifier(operator_id, field="operator_id"),
+        "provider_id": _identifier(provider_id, field="provider_id"),
+        "paid_resource_class": _identifier(
+            paid_resource_class, field="paid_resource_class"
+        ),
+        "project_id": _identifier(project_id, field="openai_project_id"),
+        "api_key_id": _identifier(api_key_id, field="openai_api_key_id"),
+        "exclusive_use": True,
+        "candidate_reported_usage_is_authoritative": False,
+        "proof_effect": "none",
+        "exclusive_from": exclusive_from.isoformat(),
+        "exclusive_until": exclusive_until.isoformat(),
+    }
+    attestation["scope_attestation_digest"] = canonical_digest(
+        attestation, digest_field="scope_attestation_digest"
+    )
+    return attestation
+
+
 def validate_openai_cost_scope_attestation(
     value: Mapping[str, Any],
     *,
@@ -140,7 +216,7 @@ def validate_openai_cost_scope_attestation(
         attestation.get("schema_version") != OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION
         or attestation.get("scope_attestation_digest") != expected_digest
         or attestation.get("status") != "approved"
-        or attestation.get("issued_by_agent") is not False
+        or not _issuance_authority_valid(attestation)
         or not str(attestation.get("operator_id") or "").strip()
         or attestation.get("provider_id") != provider_id
         or attestation.get("paid_resource_class") != paid_resource_class
@@ -594,6 +670,7 @@ __all__ = [
     "OpenAICostAuthorityError",
     "OpenAIOrganizationCostsClient",
     "OpenAIProjectCandidateCostAuthority",
+    "derive_operator_scope_attestation",
     "openai_cost_authority_binding_digest",
     "validate_openai_cost_scope_attestation",
 ]

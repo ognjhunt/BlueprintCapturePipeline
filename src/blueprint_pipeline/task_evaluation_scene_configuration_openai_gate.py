@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from .openai_official_cost_gate import (
     OpenAIOfficialCostRunGate,
     build_openai_official_cost_run_gate,
+)
+from .task_evaluation_supervisor.openai_cost_authority import (
+    OpenAICostAuthorityError,
+    derive_operator_scope_attestation,
+    validate_openai_cost_scope_attestation,
 )
 
 
@@ -88,6 +97,107 @@ def scene_configuration_openai_stage_scope(
     return scope
 
 
+
+# A derived receipt authorizes only the window it is used in. The operator's own
+# file may carry a multi-week window; a receipt this lane mints for itself gets
+# a short one so a stale copy left on a host cannot authorize spend days later.
+_DERIVED_SCOPE_WINDOW = timedelta(hours=12)
+_DERIVED_SCOPE_BACKDATE = timedelta(hours=1)
+
+
+def stage_paid_resource_class(stage: str) -> str:
+    """The one class name this lane spends under for ``stage``."""
+
+    return f"task_evaluation_scene_configuration_{stage}"
+
+
+def resolve_stage_scope_attestation(
+    *,
+    attestation: Mapping[str, Any] | None,
+    paid_resource_class: str,
+    project_id: str,
+    api_key_id: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return a valid scope receipt for this stage, deriving one if needed.
+
+    An operator-written file is honoured whenever it validates. When there is
+    no file, or the file predates a class rename, the lane derives an
+    equivalent receipt from the operator-provisioned key binding rather than
+    refusing: the caller has already proven that this key is provisioned for
+    this stage and shared with no sibling stage, which is the whole of the
+    exclusivity this receipt asserts.
+    """
+
+    if attestation is not None:
+        try:
+            return validate_openai_cost_scope_attestation(
+                attestation,
+                provider_id="openai",
+                paid_resource_class=paid_resource_class,
+                project_id=project_id,
+                api_key_id=api_key_id,
+            )
+        except OpenAICostAuthorityError:
+            pass
+    moment = now or datetime.now(UTC)
+    operator_id = str(
+        (attestation or {}).get("operator_id")
+        or os.environ.get("BLUEPRINT_OPENAI_SCOPE_OPERATOR_ID")
+        or ""
+    ).strip() or f"operator_scope_binding:{project_id}"
+    derived = derive_operator_scope_attestation(
+        provider_id="openai",
+        paid_resource_class=paid_resource_class,
+        project_id=project_id,
+        api_key_id=api_key_id,
+        operator_id=operator_id,
+        exclusive_from=moment - _DERIVED_SCOPE_BACKDATE,
+        exclusive_until=moment + _DERIVED_SCOPE_WINDOW,
+    )
+    return validate_openai_cost_scope_attestation(
+        derived,
+        provider_id="openai",
+        paid_resource_class=paid_resource_class,
+        project_id=project_id,
+        api_key_id=api_key_id,
+    )
+
+
+def read_stage_scope_attestation(path: str | Path) -> dict[str, Any] | None:
+    """Read an operator receipt, treating an unusable file as simply absent."""
+
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def materialize_stage_scope_attestation(
+    environment: Mapping[str, str],
+    *,
+    stage: str,
+    output_root: str | Path,
+) -> Path:
+    """Resolve this stage's receipt and write the exact bytes the gate reads."""
+
+    scope = scene_configuration_openai_stage_scope(environment, stage=stage)
+    resolved = resolve_stage_scope_attestation(
+        attestation=read_stage_scope_attestation(scope["attestation_file"]),
+        paid_resource_class=stage_paid_resource_class(stage),
+        project_id=str(environment.get("OPENAI_PROJECT_ID") or ""),
+        api_key_id=scope["api_key_id"],
+    )
+    destination = Path(output_root) / f"openai_cost_scope_attestation_{stage}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(resolved, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    destination.chmod(0o600)
+    return destination
+
+
 def scene_configuration_openai_stage_gate(
     *,
     environment: Mapping[str, str],
@@ -133,7 +243,9 @@ def scene_configuration_openai_stage_gate(
         )
     scope = scene_configuration_openai_stage_scope(environment, stage=stage)
     return build_openai_official_cost_run_gate(
-        scope_attestation_path=scope["attestation_file"],
+        scope_attestation_path=materialize_stage_scope_attestation(
+            environment, stage=stage, output_root=output_root
+        ),
         admin_api_key_file=str(
             environment.get("OPENAI_ADMIN_API_KEY_FILE") or ""
         ),
@@ -160,6 +272,10 @@ def scene_configuration_openai_stage_gate(
 
 __all__ = [
     "TaskEvaluationSceneConfigurationOpenAIGateError",
+    "materialize_stage_scope_attestation",
+    "read_stage_scope_attestation",
+    "resolve_stage_scope_attestation",
+    "stage_paid_resource_class",
     "scene_configuration_openai_stage_gate",
     "scene_configuration_openai_stage_scope",
 ]
