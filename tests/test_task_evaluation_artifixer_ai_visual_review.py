@@ -285,6 +285,7 @@ def test_scene_configuration_can_bind_its_visual_review_cost_scope(
             openai_admin_api_key_file=admin_key,
             openai_project_id="project-scene",
             openai_api_key_id="key-scene-review",
+            max_cost_usd=0.30,
             cost_lane_id=scope,
             paid_resource_class=scope,
             require_zero_baseline=False,
@@ -292,6 +293,7 @@ def test_scene_configuration_can_bind_its_visual_review_cost_scope(
 
     assert observed["lane_id"] == scope
     assert observed["paid_resource_class"] == scope
+    assert observed["max_cost_usd"] == 0.30
     assert observed["require_zero_baseline"] is False
     assert (
         inspect.signature(module.run_artifixer_ai_visual_review)
@@ -299,6 +301,29 @@ def test_scene_configuration_can_bind_its_visual_review_cost_scope(
         .default
         is True
     )
+
+
+@pytest.mark.parametrize("max_cost_usd", [0.0, -0.01, 0.750001, True])
+def test_visual_review_rejects_invalid_or_above_policy_cost_cap(
+    tmp_path: Path, max_cost_usd: float
+) -> None:
+    with pytest.raises(
+        TaskEvaluationArtifixerAIVisualReviewError,
+        match="artifixer_ai_review_fixed_model_or_cost_invalid",
+    ):
+        module.run_artifixer_ai_visual_review(
+            final_composite_receipt_path=tmp_path / "unreached-final.json",
+            rights_attestation_path=tmp_path / "unreached-rights.json",
+            configuration_run_id="configure-scene-839873-v1",
+            publisher_instance_id="104",
+            minimum_review_frames=8,
+            output_root=tmp_path / "unreached-output",
+            openai_cost_scope_attestation_path=tmp_path / "unreached-scope.json",
+            openai_admin_api_key_file=tmp_path / "unreached-admin-key",
+            openai_project_id="project-scene",
+            openai_api_key_id="key-scene-review",
+            max_cost_usd=max_cost_usd,
+        )
 
 
 def test_paired_target_review_binds_source_mask_and_generated_frame(

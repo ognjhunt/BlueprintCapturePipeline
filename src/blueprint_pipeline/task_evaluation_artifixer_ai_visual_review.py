@@ -494,7 +494,12 @@ def run_artifixer_ai_visual_review(
 ) -> dict[str, Any]:
     """Execute the fixed structured reviewer and seal an accepted decision."""
 
-    if model != AI_REVIEW_MODEL or max_cost_usd != AI_REVIEW_MAX_COST_USD:
+    if (
+        model != AI_REVIEW_MODEL
+        or isinstance(max_cost_usd, bool)
+        or not isinstance(max_cost_usd, (int, float))
+        or not 0 < float(max_cost_usd) <= AI_REVIEW_MAX_COST_USD
+    ):
         raise TaskEvaluationArtifixerAIVisualReviewError(
             "artifixer_ai_review_fixed_model_or_cost_invalid"
         )
