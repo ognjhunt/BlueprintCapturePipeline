@@ -1394,3 +1394,177 @@ def test_stage_one_disclosure_is_checked_against_the_decision() -> None:
     assert 'get(\n            "raw_interiorgs_bytes"\n        )\n        is not False' not in source
     assert "stage_requests_upload(configuration)" in source
     assert "renders_on_provider(" in source
+
+
+def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
+    tmp_path: Path,
+) -> None:
+    """The declared download ceiling must be measured, not guessed.
+
+    Vast prices inbound and outbound bytes per GB outside the hourly rate, so
+    the byte ceiling is what lets ``_offer_fits_total_cost_bound`` price an
+    offer's bandwidth against the attempt's compute cap at all.
+    """
+
+    receipt = _build(tmp_path, "bundle")
+
+    assert scene_vast._provider_transfer_byte_budget(receipt) == (
+        receipt["bundle_size_bytes"],
+        0,
+    )
+    assert receipt["bundle_size_bytes"] > 0
+
+    for broken in ({}, {"bundle_size_bytes": 0}, {"bundle_size_bytes": True}):
+        with pytest.raises(
+            scene_vast.TaskEvaluationSceneConfigurationVastError,
+            match="scene_configuration_provider_transfer_budget_inputs_invalid",
+        ):
+            scene_vast._provider_transfer_byte_budget(broken)
+
+
+def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The paid allocator must receive the bytes this lane will actually move.
+
+    ``run_vast_provider_adapter`` treats a zero byte ceiling as "do not price
+    transfer": ``_offer_fits_total_cost_bound`` returns ``True`` before it
+    looks at anything, and the selection receipt records no projected total.
+    The lane therefore admitted offers whose bandwidth price alone could
+    exceed the compute cap, and left no evidence that it had not. Passing the
+    receipt's own byte count is what re-arms that projection, so this asserts
+    on the kwargs the allocator is actually called with -- reverting the
+    caller hunk turns this red at the two assertions below.
+    """
+
+    import types
+
+    receipt = _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text("{}", encoding="utf-8")
+    authority = {
+        "authority_digest": "sha256:" + "e" * 64,
+        "provider_compute_spend_cap_usd": 0.75,
+        "maximum_hourly_rate_usd": 0.50,
+        "maximum_single_resource_ttl_seconds": 1_800,
+        "container_image": "nvcr.io/nvidia/isaac-sim@sha256:" + "b" * 64,
+        "external_service_spend_caps": {
+            "openai": {"maximum_cost_usd": 0.0, "maximum_requests": 0}
+        },
+    }
+    monkeypatch.setattr(
+        scene_vast,
+        "validate_scene_configuration_paid_authority",
+        lambda _value, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
+    )
+
+    def _stage(*, job_dir, bundle_path, key_prefix, expiration_seconds):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text(
+                f"https://objects.example.test/{name}", encoding="utf-8"
+            )
+        return {"status": "completed"}
+
+    monkeypatch.setattr(
+        scene_vast, "stage_wam_provider_bundle_object_store", _stage
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "arm_independent_vast_watchdog",
+        lambda **kwargs: (
+            {"status": "armed"},
+            types.SimpleNamespace(
+                pod_name_prefix=kwargs["pod_name_prefix"] + "abc-",
+                started_instance_id_path=Path(kwargs["job_dir"]) / "started.json",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "close_independent_vast_watchdog",
+        lambda **_kwargs: {"status": "cancelled_no_allocation"},
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "cleanup_staged_wam_provider_objects",
+        lambda _root: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "_consume_authority_once",
+        lambda _authority, **_kwargs: {"status": "consumed"},
+    )
+    monkeypatch.setattr(
+        scene_vast,
+        "_stage_owner_only_runtime_secrets",
+        lambda **_kwargs: ({}, None),
+    )
+    captured: dict[str, object] = {}
+
+    def _adapter(**kwargs):
+        captured.update(kwargs)
+        return {"status": "blocked", "blockers": ["stubbed_no_allocation"]}
+
+    monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", _adapter)
+
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "job",
+        bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=object(),
+        execute=True,
+    )
+
+    assert captured["expected_provider_download_bytes"] == receipt["bundle_size_bytes"]
+    assert captured["expected_provider_upload_bytes"] == 0
+    # The cap the caller hands the allocator is still the authority's own,
+    # unwidened by the transfer accounting.
+    assert captured["hard_cap_usd"] == authority["provider_compute_spend_cap_usd"]
+    assert captured["target_spend_usd"] == authority["provider_compute_spend_cap_usd"]
+    assert result["expected_provider_download_bytes"] == receipt["bundle_size_bytes"]
+    assert result["expected_provider_upload_bytes"] == 0
+
+
+def test_scene_configuration_bundle_bytes_can_price_an_offer_out_of_the_cap(
+    tmp_path: Path,
+) -> None:
+    """Proves the wired budget has a live admission consequence.
+
+    With a zero ceiling the bound short-circuits to ``True`` for the very
+    offer whose bandwidth alone blows the cap; with the bundle's real byte
+    count the same offer is refused.
+    """
+
+    receipt = _build(tmp_path, "bundle")
+    download_bytes, upload_bytes = scene_vast._provider_transfer_byte_budget(receipt)
+    gb = download_bytes / 1_000_000_000.0
+    offer = {
+        "hourly_rate_usd": 0.40,
+        "provider_download_cost_per_gb_usd": 1.0 / gb,
+        "provider_upload_cost_per_gb_usd": 0.0,
+    }
+
+    assert vpa._offer_fits_total_cost_bound(
+        offer,
+        hard_cap_usd=0.75,
+        max_live_minutes=30,
+        expected_provider_download_bytes=0,
+        expected_provider_upload_bytes=0,
+    )
+    assert not vpa._offer_fits_total_cost_bound(
+        offer,
+        hard_cap_usd=0.75,
+        max_live_minutes=30,
+        expected_provider_download_bytes=download_bytes,
+        expected_provider_upload_bytes=upload_bytes,
+    )
