@@ -1568,3 +1568,143 @@ def test_scene_configuration_bundle_bytes_can_price_an_offer_out_of_the_cap(
         expected_provider_download_bytes=download_bytes,
         expected_provider_upload_bytes=upload_bytes,
     )
+
+
+#: Third-party packages the Isaac Sim provider image is *observed* to supply.
+#: Both are in the import closure that ran to completion on instance 48833365
+#: (2026-08-27T00:30Z) before the runner died further down the same chain, so
+#: this is measured availability rather than an assumption about the image.
+PROVIDER_RUNTIME_AVAILABLE_THIRD_PARTY = frozenset({"PIL", "numpy"})
+
+
+def _provider_runner_module_scope_third_party(repo: Path) -> dict[str, set[str]]:
+    """Third-party packages the provider runner needs at *import* time.
+
+    Walks only imports that execute when a module is imported -- module body,
+    including ``try``/``if`` blocks, and excluding function bodies -- because
+    those are the ones that can kill the runner before its first stage. A name
+    that resolves to a file in ``src/blueprint_pipeline`` is first-party under
+    either the package or the flat provider-bundle layout.
+    """
+
+    import ast
+    import sys
+
+    package_root = repo / "src" / "blueprint_pipeline"
+    stdlib = set(sys.stdlib_module_names)
+
+    def is_first_party(name: str) -> bool:
+        return (package_root / f"{name}.py").is_file() or (
+            package_root / name / "__init__.py"
+        ).is_file()
+
+    def module_scope_imports(tree: ast.Module) -> list[ast.stmt]:
+        found: list[ast.stmt] = []
+
+        def walk(body: list[ast.stmt]) -> None:
+            for node in body:
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    found.append(node)
+                elif isinstance(node, (ast.Try, ast.If)):
+                    walk(node.body)
+                    for handler in getattr(node, "handlers", []):
+                        walk(handler.body)
+                    walk(node.orelse)
+                    walk(getattr(node, "finalbody", []))
+
+        walk(tree.body)
+        return found
+
+    def imported_names(node: ast.stmt) -> list[str]:
+        if isinstance(node, ast.Import):
+            return [alias.name.split(".")[0] for alias in node.names]
+        assert isinstance(node, ast.ImportFrom)
+        if node.level:
+            if node.module:
+                return [node.module.split(".")[0]]
+            return [alias.name for alias in node.names]
+        if not node.module:
+            return []
+        top = node.module.split(".")[0]
+        if top == "blueprint_pipeline" and "." in node.module:
+            return [node.module.split(".")[1]]
+        return [top]
+
+    third_party: dict[str, set[str]] = {}
+    pending = ["__runner__"]
+    seen: set[str] = set()
+    while pending:
+        module = pending.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        if module == "__runner__":
+            path = repo / "scripts" / "task_evaluation_scene_configuration_provider_runner.py"
+        else:
+            path = package_root / f"{module}.py"
+            if not path.is_file():
+                path = package_root / module / "__init__.py"
+                if not path.is_file():
+                    continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in module_scope_imports(tree):
+            for name in imported_names(node):
+                if name == "blueprint_pipeline":
+                    continue
+                if is_first_party(name):
+                    pending.append(name)
+                elif name not in stdlib:
+                    third_party.setdefault(name, set()).add(module)
+    return third_party
+
+
+def test_provider_runner_imports_nothing_the_provider_image_lacks() -> None:
+    """The runner must not need a package the rented GPU does not have.
+
+    Run ``adp-new-scene-simple-relocation-839873-a099de6a-r2-web-20260827T002140Z``
+    rented an RTX 4090, downloaded the bundle, started the entrypoint, and died
+    at ``provider_runtime/blueprint_pipeline/task_evaluation_configured_scene_revision.py``
+    line 11 with ``ModuleNotFoundError: No module named 'jsonschema'`` --
+    ``first_stage_started: false``, one provider mutation, one consumed
+    attempt authority, and nothing configured.
+
+    The provider never validates anything against a JSON Schema. It reached
+    that module only because the stage adapters import the orchestrator for
+    one string constant, ``STAGE_RESULT_SCHEMA_VERSION``. So the fix is to
+    keep ``jsonschema`` out of import time, and the contract is this: whatever
+    the runner needs before its first stage must be a package the provider
+    image is observed to supply.
+    """
+
+    repo = Path(__file__).resolve().parents[1]
+    third_party = _provider_runner_module_scope_third_party(repo)
+    unavailable = {
+        name: sorted(via)
+        for name, via in third_party.items()
+        if name not in PROVIDER_RUNTIME_AVAILABLE_THIRD_PARTY
+    }
+
+    assert unavailable == {}, (
+        "provider runner import closure needs packages the Isaac Sim image is "
+        f"not observed to supply: {unavailable}"
+    )
+    # The closure must still reach the modules that pull the two available
+    # packages, or the assertion above would pass by walking nothing.
+    assert PROVIDER_RUNTIME_AVAILABLE_THIRD_PARTY <= set(third_party)
+
+
+def test_scene_configuration_validators_still_enforce_their_schemas() -> None:
+    """Deferring the import must not defer the refusal."""
+
+    from blueprint_pipeline import task_evaluation_configured_scene_revision as revision
+    from blueprint_pipeline import task_evaluation_scene_construction_recipe as recipe
+    from blueprint_pipeline import (
+        task_evaluation_launch_preparation_contract as preparation,
+    )
+
+    with pytest.raises(revision.TaskEvaluationConfiguredSceneRevisionError):
+        revision.validate_configured_scene_revision({"schema_version": "wrong"})
+    with pytest.raises(recipe.TaskEvaluationSceneConstructionRecipeError):
+        recipe.validate_scene_construction_recipe({"schema_version": "wrong"})
+    with pytest.raises(preparation.TaskEvaluationLaunchPreparationContractError):
+        preparation.validate_launch_preparation_request({"schema_version": "wrong"})
