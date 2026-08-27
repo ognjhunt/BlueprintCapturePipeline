@@ -2550,6 +2550,13 @@ def test_public_catalog_projects_exact_scene_configuration_team_binding(
     """A terminal offering must bind back to the team that configured the scene."""
 
     profile = _profile(tmp_path)
+    profile["allocator"]["argv"].extend(
+        ["--probe-kind", "task-evaluation-scene-configuration"]
+    )
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    assert "launch_profile_task_evaluation_run_missing" in validate_launch_profile(
+        profile
+    )
     context = {
         "run_mode": "scene_configuration",
         "team_namespace": "team-a",

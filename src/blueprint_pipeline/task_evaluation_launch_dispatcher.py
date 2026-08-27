@@ -472,6 +472,8 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
         probe_kind = (
             argv[probe_index + 1] if probe_index + 1 < len(argv) else None
         )
+        if probe_kind == "task-evaluation-scene-configuration" and "task_evaluation_run" not in profile:
+            blockers.append("launch_profile_task_evaluation_run_missing")
         if probe_kind == "adp-usd-joint-agent":
             lineage = profile.get("same_goal_spend_lineage")
             if not isinstance(lineage, Mapping):
