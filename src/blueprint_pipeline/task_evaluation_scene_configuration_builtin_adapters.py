@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -29,6 +28,10 @@ from .task_evaluation_scene_configuration_render_handoff import (
     ARTIFACT_ROLE as PROVIDER_RENDER_REFERENCE_ROLE,
     TaskEvaluationSceneConfigurationRenderHandoffError,
     validate_provider_render_handoff,
+)
+from .task_evaluation_scene_configuration_stage_configuration import (
+    native_import_checks_valid,
+    static_qualification_checks_valid,
 )
 from .task_evaluation_scene_configuration_static_qualification import (
     SCHEMA_VERSION as STATIC_QUALIFICATION_SCHEMA_VERSION,
@@ -138,78 +141,6 @@ def _copy_artifact(source: Path, destination: Path) -> dict[str, Any]:
         "digest": _sha256_and_size(destination)[0],
         "size_bytes": _sha256_and_size(destination)[1],
     }
-
-
-def _positive_finite(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-        and float(value) > 0.0
-    )
-
-
-def _native_import_checks_valid(value: Any) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {
-        "stage_import",
-        "rigid_body_enabled",
-        "collider_enabled",
-        "gravity_settle_seconds",
-        "maximum_settle_translation_m",
-        "maximum_settle_rotation_rad",
-        "support_contact_required",
-        "explosion_or_tunneling_forbidden",
-        "deterministic_reset_required",
-        "state_digest_repeat_count",
-    }:
-        return False
-    return (
-        value["stage_import"] is True
-        and value["rigid_body_enabled"] is True
-        and value["collider_enabled"] is True
-        and _positive_finite(value["gravity_settle_seconds"])
-        and _positive_finite(value["maximum_settle_translation_m"])
-        and _positive_finite(value["maximum_settle_rotation_rad"])
-        and value["support_contact_required"] is True
-        and value["explosion_or_tunneling_forbidden"] is True
-        and value["deterministic_reset_required"] is True
-        and value["state_digest_repeat_count"] == 3
-    )
-
-
-def _static_qualification_checks_valid(value: Any) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {
-        "usd_parses",
-        "meters_per_unit",
-        "up_axis",
-        "single_movable_rigid_root",
-        "collision_geometry_present",
-        "collision_geometry_nonempty_and_finite",
-        "mass_and_inertia_positive_finite",
-        "materials_within_preregistered_bounds",
-        "no_external_unpinned_dependencies",
-        "no_articulation",
-        "no_scripts_or_credentials",
-    }:
-        return False
-    return (
-        value["usd_parses"] is True
-        and value["meters_per_unit"] == 1.0
-        and value["up_axis"] == "Z"
-        and all(
-            value[name] is True
-            for name in (
-                "single_movable_rigid_root",
-                "collision_geometry_present",
-                "collision_geometry_nonempty_and_finite",
-                "mass_and_inertia_positive_finite",
-                "materials_within_preregistered_bounds",
-                "no_external_unpinned_dependencies",
-                "no_articulation",
-                "no_scripts_or_credentials",
-            )
-        )
-    )
 
 
 def _stage_result(
@@ -690,7 +621,7 @@ def execute_simready_static_rigid_qualification(
         != "replacement_static_qualification_configuration.v1"
         or not isinstance(identity, Mapping)
         or identity != envelope["recipe"]["subject_identity"]
-        or not _static_qualification_checks_valid(checks)
+        or not static_qualification_checks_valid(checks)
         or configuration.get("center_of_mass_must_lie_inside_collision_bounds")
         is not True
         or graph_spec.get("asset_id") != identity.get("id")
@@ -805,7 +736,7 @@ def execute_simready_native_import_qualification(
         configuration.get("schema_version")
         != "replacement_native_import_qualification_configuration.v1"
         or identity != envelope["recipe"]["subject_identity"]
-        or not _native_import_checks_valid(checks)
+        or not native_import_checks_valid(checks)
         or runtime.get("schema_version")
         != "task_evaluation_replacement_native_import_result.v1"
         or runtime.get("status") != "qualified"

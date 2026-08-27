@@ -29,6 +29,10 @@ from .task_evaluation_scene_configuration_python_wheelhouse import (
     MANIFEST_NAME as PYTHON_WHEELHOUSE_MANIFEST_NAME,
     validate_scene_configuration_python_wheelhouse,
 )
+from .task_evaluation_scene_configuration_stage_configuration import (
+    TaskEvaluationSceneConfigurationStageConfigurationError,
+    validate_immutable_stage_configurations,
+)
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -460,6 +464,27 @@ def build_scene_configuration_provider_bundle(
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_envelope_invalid"
         )
+    configuration_sources: dict[str, Path] = {}
+    configuration_values: dict[str, dict[str, Any]] = {}
+    for stage_row, row in zip(
+        envelope["recipe"]["stage_sequence"],
+        envelope["stage_configuration_references"],
+        strict=True,
+    ):
+        stage_id = str(stage_row["stage_id"])
+        source = _bound_file(
+            row, code="scene_configuration_bundle_configuration_invalid"
+        )
+        configuration_sources[stage_id] = source
+        configuration_values[stage_id] = _read(
+            source, code="scene_configuration_bundle_configuration_invalid"
+        )
+    try:
+        validate_immutable_stage_configurations(
+            envelope=envelope, configurations=configuration_values
+        )
+    except TaskEvaluationSceneConfigurationStageConfigurationError as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
     repo = Path(repository_root).resolve()
     toolchain = Path(toolchain_root).resolve()
     toolchain_manifest = validate_scene_configuration_toolchain(
@@ -486,15 +511,9 @@ def build_scene_configuration_provider_bundle(
     diagnostic_first_configuration: dict[str, Any] | None = None
     diagnostic_first_configuration_path: Path | None = None
     if diagnostic_checkpoint_root is not None:
-        first_configuration_row = envelope["stage_configuration_references"][0]
-        first_configuration_path = _bound_file(
-            first_configuration_row,
-            code="scene_configuration_bundle_diagnostic_configuration_invalid",
-        )
-        diagnostic_first_configuration = _read(
-            first_configuration_path,
-            code="scene_configuration_bundle_diagnostic_configuration_invalid",
-        )
+        first_stage_id = str(envelope["recipe"]["stage_sequence"][0]["stage_id"])
+        first_configuration_path = configuration_sources[first_stage_id]
+        diagnostic_first_configuration = configuration_values[first_stage_id]
         diagnostic_first_configuration_path = first_configuration_path
         diagnostic_checkpoint = validate_scene_configuration_diagnostic_checkpoint(
             checkpoint_root=diagnostic_checkpoint_root
@@ -585,8 +604,9 @@ def build_scene_configuration_provider_bundle(
         envelope["stage_configuration_references"],
         strict=True,
     ):
-        source = _bound_file(row, code="scene_configuration_bundle_configuration_invalid")
-        target = runtime / "input/configurations" / f"{stage_row['stage_id']}.json"
+        stage_id = str(stage_row["stage_id"])
+        source = configuration_sources[stage_id]
+        target = runtime / "input/configurations" / f"{stage_id}.json"
         _copy_file(source, target)
         portable_configs.append(
             {
