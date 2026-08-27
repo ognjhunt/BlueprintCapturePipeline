@@ -4,7 +4,6 @@ import hashlib
 import importlib.util
 import json
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 
@@ -292,11 +291,15 @@ def _provider_runtime(
         marker.write_text(package, encoding="utf-8")
     (source_renderer / "tools/splat_render/node_modules/three/empty.js").write_bytes(b"")
     browser = runtime / "browser/chrome"
+    node = runtime / "node/bin/node"
     browser.parent.mkdir(parents=True)
+    node.parent.mkdir(parents=True)
     browser.write_bytes(b"linux-chromium")
+    node.write_bytes(b"linux-node")
     browser.chmod(0o755)
+    node.chmod(0o755)
     identity = {
-        "node": "/usr/bin/node",
+        "node": str(node),
         "browser_executable": str(browser),
         "renderer_root": str(source_renderer),
         "identity": {
@@ -395,11 +398,18 @@ def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
             in names
         )
     assert "provider_runtime/renderer/browser/chrome" in names
+    assert "provider_runtime/renderer/node/bin/node" in names
+    node_row = next(
+        row for row in renderer_manifest["files"]
+        if row["relative_path"] == "node/bin/node"
+    )
     browser_row = next(
         row for row in renderer_manifest["files"]
         if row["relative_path"] == "browser/chrome"
     )
+    assert node_row["executable"] is True
     assert browser_row["executable"] is True
+    assert renderer_manifest["entrypoints"]["node"] == "node/bin/node"
     assert renderer_manifest["renderer_digest"] == receipt["provider_renderer_digest"]
 
     extracted = tmp_path / "provider-render-extracted"
@@ -407,10 +417,11 @@ def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
         archive.extractall(extracted)
     reopened = runtime_from_provider_bundle(
         provider_runtime_root=extracted / "provider_runtime",
-        node_executable=sys.executable,
     )
     assert reopened["identity"]["renderer_digest"] == receipt["provider_renderer_digest"]
     assert Path(reopened["browser_executable"]).stat().st_mode & 0o111
+    assert Path(reopened["node"]).read_bytes() == b"linux-node"
+    assert Path(reopened["node"]).stat().st_mode & 0o111
     assert Path(reopened["repository_root"]) == Path(reopened["renderer_root"])
     browser = Path(reopened["browser_executable"])
     browser.chmod(0o644)
@@ -421,7 +432,6 @@ def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
     ):
         runtime_from_provider_bundle(
             provider_runtime_root=extracted / "provider_runtime",
-            node_executable=sys.executable,
         )
     preflight = vpa._blueprint_bundle_preflight(
         job_dir=tmp_path / "provider-render-preflight",
