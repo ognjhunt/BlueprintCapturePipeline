@@ -47,6 +47,8 @@ AI_REVIEW_MAX_OUTPUT_TOKENS = 8_000
 AI_REVIEW_MAX_FRAMES = 32
 _PROMPT = (
     "Independently review every digest-identified final ArtiFixer frame. The "
+    "source anchor and generated candidate must both be right-side-up; reject "
+    "any upside-down or incorrectly rolled frame. The "
     "target source object must be absent, the locally generated replacement "
     "surface must be visually plausible, and all non-target content must remain "
     "unchanged. Then decide whether the set is mutually consistent across "
@@ -65,6 +67,7 @@ class ArtifixerFrameReviewDecision(BaseModel):
     task_id: str = Field(min_length=1, max_length=200)
     camera_id: str = Field(min_length=1, max_length=200)
     frame_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    orientation_is_upright: bool
     source_object_absent: bool
     repair_is_locally_plausible: bool
     preserves_non_target_content: bool
@@ -76,6 +79,7 @@ class ArtifixerAIVisualReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["accepted", "rejected"]
+    all_frames_upright: bool
     semantic_object_absence_review_passed: bool
     multiview_consistency_review_passed: bool
     summary: str = Field(min_length=1, max_length=4_000)
@@ -396,6 +400,7 @@ def _validate_decisions(
             or row.get("task_id") != task_id
             or not str(row.get("camera_id") or "")
             or not _SHA256.fullmatch(str(row.get("frame_sha256") or ""))
+            or row.get("orientation_is_upright") is not True
             or row.get("source_object_absent") is not True
             or row.get("repair_is_locally_plausible") is not True
             or row.get("preserves_non_target_content") is not True
@@ -540,10 +545,12 @@ def run_artifixer_ai_visual_review(
     )
     accepted = (
         output.decision == "accepted"
+        and output.all_frames_upright
         and output.semantic_object_absence_review_passed
         and output.multiview_consistency_review_passed
         and all(
             row.decision == "accepted"
+            and row.orientation_is_upright
             and row.source_object_absent
             and row.repair_is_locally_plausible
             and row.preserves_non_target_content
@@ -570,6 +577,7 @@ def run_artifixer_ai_visual_review(
         },
         "frames": structured["frames"],
         "summary": structured["summary"],
+        "all_frames_upright": accepted and output.all_frames_upright,
         "semantic_object_absence_review_passed": (
             accepted and output.semantic_object_absence_review_passed
         ),
@@ -666,6 +674,7 @@ def seal_artifixer_ai_visual_review(
         or execution.get("response_store") is not False
         or execution.get("tracing_disabled") is not True
         or execution.get("raw_secret_values_recorded") is not False
+        or execution.get("all_frames_upright") is not True
         or execution.get("semantic_object_absence_review_passed") is not True
         or execution.get("multiview_consistency_review_passed") is not True
         or not _SHA256.fullmatch(str(execution.get("rights_attestation_digest") or ""))
@@ -687,6 +696,7 @@ def seal_artifixer_ai_visual_review(
         "publisher_instance_id": publisher_instance_id,
         "task_id": task_id,
         "decision": "accepted",
+        "all_frames_upright": True,
         "semantic_object_absence_review_passed": True,
         "multiview_consistency_review_passed": True,
         "review_frame_count": len(inventory),
