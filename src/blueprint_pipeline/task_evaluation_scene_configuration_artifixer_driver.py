@@ -70,12 +70,23 @@ from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
     artifixer_post_training_binding_digest,
     hydrate_artifixer_post_training_checkpoint,
     materialize_artifixer_post_training_checkpoint,
+    validate_artifixer_post_training_checkpoint,
 )
 from .task_evaluation_scene_configuration_artifixer_failure_evidence import (
     ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
     ArtifixerRuntimeFailureEvidenceError,
     failure_evidence_secret_values,
     read_artifixer_runtime_result,
+)
+from .task_evaluation_scene_configuration_artifixer_selective_repair import (
+    STRICT_LOCALITY_PROMPT_POLICY,
+    TaskEvaluationArtifixerSelectiveRepairError,
+    materialize_selective_repair_request,
+    merge_selective_repair_outputs,
+)
+from .task_evaluation_scene_configuration_semantic_locality import (
+    SEMANTIC_LOCALITY_POLICY,
+    materialize_semantic_locality_seal,
 )
 from .task_evaluation_scene_configuration_render_inputs import (
     complete_provider_render_inputs,
@@ -128,6 +139,7 @@ def _post_training_bindings(
     stage_input: Mapping[str, Any],
     package_manifest: Mapping[str, Any],
     tuning: Mapping[str, Any],
+    semantic_teacher_receipt_digest: str,
 ) -> dict[str, Any]:
     """Bind the training inputs while permitting a diagnostic code overlay.
 
@@ -147,6 +159,7 @@ def _post_training_bindings(
         ),
         "component_package_digest": package_manifest.get("package_digest"),
         "artifixer_tuning": dict(tuning),
+        "semantic_teacher_receipt_digest": semantic_teacher_receipt_digest,
     }
 
 
@@ -712,6 +725,306 @@ def _read_artifixer_runtime_result(
         raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
 
 
+def _run_artifixer_training_round(
+    *,
+    round_root: Path,
+    teacher_receipt_path: Path,
+    candidate: Mapping[str, Any],
+    candidate_path: Path,
+    package_root: Path,
+    stage_input: Mapping[str, Any],
+    tuning: Mapping[str, int],
+    configuration: Mapping[str, Any],
+    environment: Mapping[str, str],
+    runner: Any,
+    semantic_token: str,
+    source_semantic_checkpoint: Mapping[str, Any],
+    post_training_checkpoint_root: Path | None,
+    post_training_checkpoint_output: Path | None,
+) -> dict[str, Any]:
+    """Train or hydrate one candidate and bind its exact eight review frames."""
+
+    round_root.mkdir(parents=True, mode=0o700)
+    dual_root = round_root / "dual_target_inputs"
+    materialize_dual_target_artifixer3d_inputs(
+        source_candidate_inputs_receipt_path=candidate_path,
+        semantic_teacher_receipt_paths=[teacher_receipt_path],
+        output_root=dual_root,
+        transition_radius_pixels=tuning["transition_radius_pixels"],
+    )
+    dual_path = dual_root / "public_scene_artifixer3d_dual_target_inputs.v1.json"
+    _read(
+        dual_path,
+        code="scene_configuration_artifixer_dual_target_inputs_invalid",
+    )
+    use_attestation_path = round_root / "artifixer3d_use_attestation.v1.json"
+    materialize_artifixer3d_use_attestation(
+        candidate_inputs_receipt_path=dual_path,
+        output_path=use_attestation_path,
+        authorized_by=_human_authority(configuration)["accepted_by"],
+    )
+    package_manifest = _read(
+        package_root / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json",
+        code="scene_configuration_artifixer_package_invalid",
+    )
+    blueprint_receipt = _read(
+        package_root / "blueprint_source_receipt.json",
+        code="scene_configuration_artifixer_package_invalid",
+    )
+    bundle_root = round_root / "artifixer_bundle"
+    bundle = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=dual_path,
+        use_attestation_path=use_attestation_path,
+        artifixer_source_directory=package_root / "artifixer_source",
+        artifixer_source_receipt_path=package_root / "artifixer_source_receipt.json",
+        output_root=bundle_root,
+        repository_root=package_root / "blueprint_runtime",
+        blueprint_source_identity={
+            "commit": stage_input["source_commit"],
+            "tree": blueprint_receipt["tree"],
+            "tracked_files_clean": True,
+            "full_byte_component_package_verified": True,
+            "component_package_digest": package_manifest["package_digest"],
+        },
+        pipeline_mode=DUAL_TARGET_PIPELINE_MODE,
+        artifixer3d_steps=tuning["artifixer3d_steps"],
+        random_seed=tuning["random_seed"],
+    )
+    bindings = _post_training_bindings(
+        stage_input=stage_input,
+        package_manifest=package_manifest,
+        tuning=tuning,
+        semantic_teacher_receipt_digest=str(
+            _read(
+                teacher_receipt_path,
+                code="scene_configuration_artifixer_semantic_receipt_invalid",
+            ).get("receipt_digest")
+            or ""
+        ),
+    )
+    post_training_binding_digest = artifixer_post_training_binding_digest(bindings)
+    source_task = candidate["tasks"][0]
+    runtime_result_path: Path | None = None
+    if post_training_checkpoint_root is not None:
+        validate_artifixer_post_training_checkpoint(
+            checkpoint_root=post_training_checkpoint_root,
+            expected_binding_digest=post_training_binding_digest,
+            expected_source_checkpoint_digest=str(
+                source_semantic_checkpoint.get("checkpoint_digest") or ""
+            ),
+        )
+        hydrated_post_training = hydrate_artifixer_post_training_checkpoint(
+            checkpoint_root=post_training_checkpoint_root,
+            expected_binding_digest=post_training_binding_digest,
+        )
+        runtime_result = hydrated_post_training["runtime_result"]
+        generated_by_camera = {
+            str(row["camera_id"]): row
+            for row in hydrated_post_training["review_frames"]
+        }
+        native_appearance_source = Path(
+            hydrated_post_training["native_appearance_path"]
+        )
+    else:
+        extracted = round_root / "artifixer_execution"
+        extract_provider_archive(Path(bundle["bundle"]["path"]), extracted)
+        artifixer_output = round_root / "artifixer_output"
+        completed = runner(
+            [str(extracted / "provider_runtime/run_public_scene_artifixer3d.sh")],
+            cwd=extracted,
+            env={
+                **environment,
+                "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(
+                    artifixer_output
+                ),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=7_000,
+        )
+        runtime_result_path = (
+            artifixer_output / "public_scene_artifixer3d_runtime_result.json"
+        )
+        failure_secrets = failure_evidence_secret_values(
+            environment, known_values=(semantic_token,)
+        )
+        _emit_artifixer_runtime_diagnostics(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            retained_root=round_root,
+            secret_values=failure_secrets,
+        )
+        runtime_result = _read_artifixer_runtime_result(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            evidence_path=round_root / "artifixer_runtime_failure_evidence.v1.json",
+            secret_values=failure_secrets,
+        )
+        runtime_task = runtime_result["tasks"][0]
+        generated_by_camera = {
+            str(row["camera_id"]): {
+                "frame_index": row.get("frame_index"),
+                "camera_id": row["camera_id"],
+                "final_frame": _record(Path(row["path"])),
+            }
+            for row in runtime_task["artifixer3d_review_frames"]
+        }
+        native_appearance_source = Path(
+            runtime_task["native_appearance"]["isaac_nurec_usdz"]["path"]
+        )
+    review_frames: list[dict[str, Any]] = []
+    for source_frame in source_task["frames"]:
+        camera_id = str(source_frame["camera_id"])
+        generated = generated_by_camera.get(camera_id)
+        if generated is None:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_warm_review_frame_set_invalid"
+            )
+        review_frames.append(
+            {
+                "frame_index": source_frame["frame_index"],
+                "camera_id": camera_id,
+                "source_frame": source_frame["input_retained_frame"],
+                "exact_repair_mask": source_frame["input_exact_repair_mask"],
+                "final_frame": generated["final_frame"],
+            }
+        )
+    if post_training_checkpoint_output is not None:
+        if runtime_result_path is None:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_warm_source_checkpoint_invalid"
+            )
+        materialize_artifixer_post_training_checkpoint(
+            source_diagnostic_checkpoint=source_semantic_checkpoint,
+            bindings=bindings,
+            runtime_result_path=runtime_result_path,
+            review_frames=review_frames,
+            native_appearance_path=native_appearance_source,
+            output_root=post_training_checkpoint_output,
+        )
+    return {
+        "review_frames": review_frames,
+        "native_appearance_source": native_appearance_source,
+        "post_training_binding_digest": post_training_binding_digest,
+        "runtime_result": runtime_result,
+    }
+
+
+def _run_artifixer_visual_review_round(
+    *,
+    review_round: int,
+    round_root: Path,
+    output_root: Path,
+    review_frames: list[Mapping[str, Any]],
+    publisher_scene_id: str,
+    task_id: str,
+    rights_path: Path,
+    configuration: Mapping[str, Any],
+    stage_input: Mapping[str, Any],
+    environment: Mapping[str, str],
+    post_training_binding_digest: str,
+    max_cost_usd: float,
+) -> dict[str, Any]:
+    """Call the unchanged independent gate for one exact candidate inventory."""
+
+    review_input: dict[str, Any] = {
+        "schema_version": DUAL_TARGET_REVIEW_SCHEMA_VERSION,
+        "status": "paired_target_frames_pending_independent_visual_review",
+        "publisher_scene_id": publisher_scene_id,
+        "review_scope": "source_anchor_exact_mask_and_generated_full_frame_comparison",
+        "tasks": [
+            {
+                "task_id": task_id,
+                "physical_camera_count": len(review_frames),
+                "frames": review_frames,
+            }
+        ],
+        "outside_support_invariance_proven": False,
+        "outside_support_invariance_claimed": False,
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "appearance_repair_qualified": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "receipt_digest": "",
+    }
+    review_input["receipt_digest"] = canonical_digest(
+        review_input, digest_field="receipt_digest"
+    )
+    review_input_path = round_root / f"{DUAL_TARGET_REVIEW_SCHEMA_VERSION}.json"
+    review_input_path.write_text(
+        canonical_json(review_input) + "\n", encoding="utf-8"
+    )
+    rights_digest = _sha256(rights_path)
+    review_rights_path = round_root / "artifixer_ai_visual_review_rights.v1.json"
+    human = _human_authority(configuration)
+    materialize_artifixer_ai_visual_review_rights(
+        configuration_run_id=str(stage_input["run_id"]),
+        source_scene_rights_admission_digest=rights_digest,
+        accepted_by=human["accepted_by"],
+        accepted_on=human["accepted_on"],
+        human_authority_reference=human["authority_reference"],
+        output_path=review_rights_path,
+    )
+    review_scope = scene_configuration_openai_stage_scope(
+        environment, stage="artifixer_visual_review"
+    )
+    review_attestation_path = materialize_stage_scope_attestation(
+        environment,
+        stage="artifixer_visual_review",
+        output_root=round_root / "artifixer_visual_review_scope",
+    )
+    review_token = _stage_openai_token(
+        environment, stage="artifixer_visual_review"
+    )
+    marker_name = (
+        "artifixer_visual_review_provider_call_started.v1.json"
+        if review_round == 0
+        else f"artifixer_visual_review_provider_call_started_round_{review_round}.v1.json"
+    )
+    visual_review_call_marker = output_root / marker_name
+    visual_review_call = {
+        "schema_version": "artifixer_visual_review_provider_call_started.v1",
+        "review_round": review_round,
+        "post_training_binding_digest": post_training_binding_digest,
+        "review_input_digest": review_input["receipt_digest"],
+        "provider_call_may_have_occurred": True,
+        "marker_digest": "",
+    }
+    visual_review_call["marker_digest"] = canonical_digest(
+        visual_review_call, digest_field="marker_digest"
+    )
+    visual_review_call_marker.write_text(
+        canonical_json(visual_review_call) + "\n", encoding="utf-8"
+    )
+    with _temporary_openai_key(review_token):
+        review = run_artifixer_ai_visual_review(
+            final_composite_receipt_path=review_input_path,
+            rights_attestation_path=review_rights_path,
+            configuration_run_id=str(stage_input["run_id"]),
+            publisher_instance_id=str(
+                configuration["source_object"]["publisher_instance_id"]
+            ),
+            minimum_review_frames=int(configuration["required_views"]["minimum"]),
+            output_root=round_root / "independent_visual_review",
+            openai_cost_scope_attestation_path=review_attestation_path,
+            openai_admin_api_key_file=_required_path(
+                environment, "OPENAI_ADMIN_API_KEY_FILE"
+            ),
+            openai_project_id=str(environment.get("OPENAI_PROJECT_ID") or ""),
+            openai_api_key_id=review_scope["api_key_id"],
+            max_cost_usd=max_cost_usd,
+            cost_lane_id=_VISUAL_REVIEW_COST_SCOPE,
+            paid_resource_class=_VISUAL_REVIEW_COST_SCOPE,
+            require_zero_baseline=False,
+        )
+    return {
+        "review": review,
+        "review_input": review_input,
+        "review_input_path": review_input_path,
+    }
+
+
 def execute_artifixer_component(
     *,
     environment: Mapping[str, str] | None = None,
@@ -906,17 +1219,26 @@ def execute_artifixer_component(
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_semantic_teacher_failed"
         )
+    locality_seal = materialize_semantic_locality_seal(
+        semantic_runtime_request_path=semantic_request,
+        semantic_runtime_result=semantic_result,
+        semantic_output_root=semantic_output,
+        output_root=work / "semantic_teacher_exact_support_locality_seal",
+    )
     teacher_receipt_path = work / "whole_frame_semantic_teacher.v1.json"
     materialize_whole_frame_semantic_teacher_receipt(
         source_candidate_inputs_receipt_path=candidate_path,
         task_id=task_id,
-        semantic_teacher_frames_root=semantic_output / "tasks" / task_id,
+        semantic_teacher_frames_root=locality_seal["semantic_teacher_frames_root"],
         editor_identity={
             "backend_id": semantic_result["backend_id"],
             "model_snapshot": semantic_result["model_snapshot"],
             "result_digest": semantic_result["result_digest"],
+            "semantic_locality_seal_receipt_digest": locality_seal["receipt"][
+                "receipt_digest"
+            ],
         },
-        prompt_policy=PROMPT_POLICY,
+        prompt_policy=f"{PROMPT_POLICY}+{SEMANTIC_LOCALITY_POLICY}",
         output_path=teacher_receipt_path,
     )
     if checkpoint_root is None:
@@ -937,235 +1259,235 @@ def execute_artifixer_component(
             semantic_teacher_receipt_path=teacher_receipt_path,
             output_root=checkpoint_root,
         )
-    dual_root = work / "dual_target_inputs"
-    materialize_dual_target_artifixer3d_inputs(
-        source_candidate_inputs_receipt_path=candidate_path,
-        semantic_teacher_receipt_paths=[teacher_receipt_path],
-        output_root=dual_root,
-        transition_radius_pixels=tuning["transition_radius_pixels"],
+    if semantic_checkpoint is None or checkpoint_root is None:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_warm_source_checkpoint_invalid"
+        )
+    visual_review_cap = float(
+        values.get(
+            "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD"
+        )
+        or 0
     )
-    dual_path = dual_root / "public_scene_artifixer3d_dual_target_inputs.v1.json"
-    _read(
-        dual_path,
-        code="scene_configuration_artifixer_dual_target_inputs_invalid",
-    )
-    use_attestation_path = work / "artifixer3d_use_attestation.v1.json"
-    materialize_artifixer3d_use_attestation(
-        candidate_inputs_receipt_path=dual_path,
-        output_path=use_attestation_path,
-        authorized_by=_human_authority(configuration)["accepted_by"],
-    )
-    package_manifest = _read(
-        package_root / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json",
-        code="scene_configuration_artifixer_package_invalid",
-    )
-    blueprint_receipt = _read(
-        package_root / "blueprint_source_receipt.json",
-        code="scene_configuration_artifixer_package_invalid",
-    )
-    bundle_root = work / "artifixer_bundle"
-    bundle = build_artifixer3d_bundle(
-        candidate_inputs_receipt_path=dual_path,
-        use_attestation_path=use_attestation_path,
-        artifixer_source_directory=package_root / "artifixer_source",
-        artifixer_source_receipt_path=package_root / "artifixer_source_receipt.json",
-        output_root=bundle_root,
-        repository_root=package_root / "blueprint_runtime",
-        blueprint_source_identity={
-            "commit": stage_input["source_commit"],
-            "tree": blueprint_receipt["tree"],
-            "tracked_files_clean": True,
-            "full_byte_component_package_verified": True,
-            "component_package_digest": package_manifest["package_digest"],
-        },
-        pipeline_mode=DUAL_TARGET_PIPELINE_MODE,
-        artifixer3d_steps=tuning["artifixer3d_steps"],
-        random_seed=tuning["random_seed"],
-    )
-    bindings = _post_training_bindings(
+    first_round_root = work / "artifixer_candidate_round_0"
+    training = _run_artifixer_training_round(
+        round_root=first_round_root,
+        teacher_receipt_path=teacher_receipt_path,
+        candidate=candidate,
+        candidate_path=candidate_path,
+        package_root=package_root,
         stage_input=stage_input,
-        package_manifest=package_manifest,
         tuning=tuning,
+        configuration=configuration,
+        environment=values,
+        runner=runner,
+        semantic_token=token,
+        source_semantic_checkpoint=semantic_checkpoint,
+        post_training_checkpoint_root=post_training_checkpoint_root,
+        post_training_checkpoint_output=(
+            output_root / "artifixer_post_training_checkpoint"
+            if post_training_checkpoint_root is None
+            else None
+        ),
     )
-    post_training_binding_digest = artifixer_post_training_binding_digest(bindings)
-    source_task = candidate["tasks"][0]
-    if post_training_checkpoint_root is not None:
-        hydrated_post_training = hydrate_artifixer_post_training_checkpoint(
-            checkpoint_root=post_training_checkpoint_root,
-            expected_binding_digest=post_training_binding_digest,
-        )
-        runtime_result = hydrated_post_training["runtime_result"]
-        generated_by_camera = {
-            str(row["camera_id"]): row
-            for row in hydrated_post_training["review_frames"]
-        }
-        native_appearance_source = Path(
-            hydrated_post_training["native_appearance_path"]
-        )
-    else:
-        extracted = work / "artifixer_execution"
-        extract_provider_archive(Path(bundle["bundle"]["path"]), extracted)
-        artifixer_output = work / "artifixer_output"
-        completed = runner(
-            [str(extracted / "provider_runtime/run_public_scene_artifixer3d.sh")],
-            cwd=extracted,
-            env={
-                **values,
-                "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(artifixer_output),
-            },
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=7_000,
-        )
-        # The runtime's own streams and result must outlive a failure. They are
-        # captured here, in this process, and nothing else ever sees them.
-        runtime_result_path = (
-            artifixer_output / "public_scene_artifixer3d_runtime_result.json"
-        )
-        failure_secrets = failure_evidence_secret_values(
-            values, known_values=(token,)
-        )
-        _emit_artifixer_runtime_diagnostics(
-            completed=completed,
-            runtime_result_path=runtime_result_path,
-            retained_root=work,
-            secret_values=failure_secrets,
-        )
-        runtime_result = _read_artifixer_runtime_result(
-            completed=completed,
-            runtime_result_path=runtime_result_path,
-            evidence_path=work / "artifixer_runtime_failure_evidence.v1.json",
-            secret_values=failure_secrets,
-        )
-        runtime_task = runtime_result["tasks"][0]
-        generated_by_camera = {
-            str(row["camera_id"]): {
-                "frame_index": row.get("frame_index"),
-                "camera_id": row["camera_id"],
-                "final_frame": _record(Path(row["path"])),
-            }
-            for row in runtime_task["artifixer3d_review_frames"]
-        }
-        native_appearance_source = Path(
-            runtime_task["native_appearance"]["isaac_nurec_usdz"]["path"]
-        )
-    review_frames = []
-    for source_frame in source_task["frames"]:
-        camera_id = str(source_frame["camera_id"])
-        generated = generated_by_camera.get(camera_id)
-        if generated is None:
-            raise TaskEvaluationSceneConfigurationArtifixerError(
-                "scene_configuration_artifixer_warm_review_frame_set_invalid"
+    reviewed = _run_artifixer_visual_review_round(
+        review_round=0,
+        round_root=first_round_root,
+        output_root=output_root,
+        review_frames=training["review_frames"],
+        publisher_scene_id=publisher_scene_id,
+        task_id=task_id,
+        rights_path=rights_path,
+        configuration=configuration,
+        stage_input=stage_input,
+        environment=values,
+        post_training_binding_digest=training["post_training_binding_digest"],
+        max_cost_usd=visual_review_cap,
+    )
+    review = reviewed["review"]
+    review_frames = training["review_frames"]
+    native_appearance_source = training["native_appearance_source"]
+    if review.get("decision") != "accepted" or not review.get("review_receipt"):
+        try:
+            initial_execution = _read(
+                Path(review["execution_receipt"]["path"]),
+                code="scene_configuration_artifixer_selective_repair_review_invalid",
             )
-        review_frames.append(
-            {
-                "frame_index": source_frame["frame_index"],
-                "camera_id": camera_id,
-                "source_frame": source_frame["input_retained_frame"],
-                "exact_repair_mask": source_frame["input_exact_repair_mask"],
-                "final_frame": generated["final_frame"],
-            }
-        )
-    review_input: dict[str, Any] = {
-        "schema_version": DUAL_TARGET_REVIEW_SCHEMA_VERSION,
-        "status": "paired_target_frames_pending_independent_visual_review",
-        "publisher_scene_id": publisher_scene_id,
-        "review_scope": "source_anchor_exact_mask_and_generated_full_frame_comparison",
-        "tasks": [
-            {
-                "task_id": task_id,
-                "physical_camera_count": len(review_frames),
-                "frames": review_frames,
-            }
-        ],
-        "outside_support_invariance_proven": False,
-        "outside_support_invariance_claimed": False,
-        "semantic_object_absence_review_passed": False,
-        "multiview_consistency_review_passed": False,
-        "appearance_repair_qualified": False,
-        "generated_output_is_capture_or_physical_evidence": False,
-        "receipt_digest": "",
-    }
-    review_input["receipt_digest"] = canonical_digest(review_input, digest_field="receipt_digest")
-    review_input_path = work / f"{DUAL_TARGET_REVIEW_SCHEMA_VERSION}.json"
-    review_input_path.write_text(canonical_json(review_input) + "\n", encoding="utf-8")
-    if post_training_checkpoint_root is None:
-        if semantic_checkpoint is None or checkpoint_root is None:
-            raise TaskEvaluationSceneConfigurationArtifixerError(
-                "scene_configuration_artifixer_warm_source_checkpoint_invalid"
+            initial_projected_review_cost = float(
+                (initial_execution.get("usage") or {}).get(
+                    "projected_max_cost_usd"
+                )
             )
-        materialize_artifixer_post_training_checkpoint(
-            source_diagnostic_checkpoint=semantic_checkpoint,
-            bindings=bindings,
-            runtime_result_path=runtime_result_path,
-            review_frames=review_frames,
-            native_appearance_path=native_appearance_source,
-            output_root=output_root / "artifixer_post_training_checkpoint",
-        )
-    rights_digest = _sha256(rights_path)
-    review_rights_path = work / "artifixer_ai_visual_review_rights.v1.json"
-    human = _human_authority(configuration)
-    materialize_artifixer_ai_visual_review_rights(
-        configuration_run_id=str(stage_input["run_id"]),
-        source_scene_rights_admission_digest=rights_digest,
-        accepted_by=human["accepted_by"],
-        accepted_on=human["accepted_on"],
-        human_authority_reference=human["authority_reference"],
-        output_path=review_rights_path,
-    )
-    review_scope = scene_configuration_openai_stage_scope(
-        values, stage="artifixer_visual_review"
-    )
-    review_attestation_path = materialize_stage_scope_attestation(
-        values,
-        stage="artifixer_visual_review",
-        output_root=work / "artifixer_visual_review_scope",
-    )
-    review_token = _stage_openai_token(values, stage="artifixer_visual_review")
-    visual_review_call_marker = (
-        output_root / "artifixer_visual_review_provider_call_started.v1.json"
-    )
-    visual_review_call = {
-        "schema_version": "artifixer_visual_review_provider_call_started.v1",
-        "post_training_binding_digest": post_training_binding_digest,
-        "review_input_digest": review_input["receipt_digest"],
-        "provider_call_may_have_occurred": True,
-        "marker_digest": "",
-    }
-    visual_review_call["marker_digest"] = canonical_digest(
-        visual_review_call, digest_field="marker_digest"
-    )
-    visual_review_call_marker.write_text(
-        canonical_json(visual_review_call) + "\n", encoding="utf-8"
-    )
-    with _temporary_openai_key(review_token):
-        visual_review_cap = float(
-            values.get(
-                "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD"
+            remaining_visual_review_cost = (
+                visual_review_cap - initial_projected_review_cost
             )
-            or 0
-        )
-        review = run_artifixer_ai_visual_review(
-            final_composite_receipt_path=review_input_path,
-            rights_attestation_path=review_rights_path,
-            configuration_run_id=str(stage_input["run_id"]),
-            publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
-            minimum_review_frames=int(configuration["required_views"]["minimum"]),
-            output_root=work / "independent_visual_review",
-            openai_cost_scope_attestation_path=review_attestation_path,
-            openai_admin_api_key_file=_required_path(values, "OPENAI_ADMIN_API_KEY_FILE"),
-            openai_project_id=str(values.get("OPENAI_PROJECT_ID") or ""),
-            openai_api_key_id=review_scope["api_key_id"],
-            max_cost_usd=visual_review_cap,
-            cost_lane_id=_VISUAL_REVIEW_COST_SCOPE,
-            paid_resource_class=_VISUAL_REVIEW_COST_SCOPE,
-            # The scene lane binds the call to its pre-call official-cost
-            # snapshot and settles only the attributable delta.  Keeping the
-            # generic reviewer's zero-baseline default would make this stage
-            # usable only once per UTC day after its first successful call.
-            require_zero_baseline=False,
-        )
+            if remaining_visual_review_cost <= 0:
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_review_cost_insufficient"
+                )
+            staged_repair = materialize_selective_repair_request(
+                review_input_path=reviewed["review_input_path"],
+                review_execution_path=review["execution_receipt"]["path"],
+                semantic_runtime_request_path=semantic_request,
+                semantic_runtime_result=semantic_result,
+                semantic_locality_receipt_path=locality_seal["receipt_path"],
+                expected_request_cost_usd=expected_frame_cost,
+                maximum_stage_cost_usd=float(semantic_cap or 0),
+                output_root=work / "selective_semantic_repair_request",
+            )
+            selected_frame_count = int(
+                staged_repair["plan"]["selected_frame_count"]
+            )
+            try:
+                maximum_openai_requests = int(
+                    values.get("BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS")
+                    or 0
+                )
+            except (TypeError, ValueError) as exc:
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_request_cap_invalid"
+                ) from exc
+            base_request_count = int(semantic_result.get("request_count") or 0)
+            if maximum_openai_requests < base_request_count + selected_frame_count + 2:
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_request_cap_insufficient"
+                )
+            if not token:
+                token = _stage_openai_token(
+                    values, stage="artifixer_semantic_teacher"
+                )
+            repair_request_path = Path(staged_repair["repair_request_path"])
+            repair_output = work / "selective_semantic_repair_output"
+            repair_cost_gate = scene_configuration_openai_stage_gate(
+                environment=values,
+                stage="artifixer_semantic_teacher",
+                run_id=(
+                    f"{stage_input['run_id']}-artifixer-semantic-teacher-selective-repair-1"
+                ),
+                request_digest=_sha256(repair_request_path),
+                candidate_digest=staged_repair["plan"]["plan_digest"],
+                output_root=work / "selective_semantic_repair_official_openai_cost",
+                max_cost_usd=staged_repair["plan"]["remaining_stage_cost_usd"],
+            )
+            repair_cost_gate.reserve()
+            try:
+                repair_result = execute_semantic_teacher_image_edits(
+                    runtime_request_path=repair_request_path,
+                    output_root=repair_output,
+                    token=token,
+                )
+            except Exception as exc:
+                repair_cost_gate.complete(
+                    provider_call_performed=True,
+                    runtime_result_digest=None,
+                    runtime_exception_type=type(exc).__name__,
+                )
+                raise
+            repair_cost_gate.complete(
+                provider_call_performed=True,
+                runtime_result_digest=str(repair_result.get("result_digest") or "")
+                or None,
+                runtime_exception_type=None,
+            )
+            merged = merge_selective_repair_outputs(
+                plan_path=staged_repair["plan_path"],
+                semantic_runtime_request_path=semantic_request,
+                semantic_locality_receipt_path=locality_seal["receipt_path"],
+                source_semantic_output_root=Path(
+                    locality_seal["semantic_teacher_frames_root"]
+                ).parents[1],
+                source_semantic_result=semantic_result,
+                repair_output_root=repair_output,
+                output_root=work / "selective_semantic_repair_merged",
+            )
+            repaired_teacher_receipt_path = (
+                work / "whole_frame_semantic_teacher_selective_repair_1.v1.json"
+            )
+            materialize_whole_frame_semantic_teacher_receipt(
+                source_candidate_inputs_receipt_path=candidate_path,
+                task_id=task_id,
+                semantic_teacher_frames_root=merged[
+                    "semantic_teacher_frames_root"
+                ],
+                editor_identity={
+                    "backend_id": repair_result["backend_id"],
+                    "model_snapshot": repair_result["model_snapshot"],
+                    "result_digest": merged["receipt"]["merge_digest"],
+                    "source_semantic_result_digest": semantic_result[
+                        "result_digest"
+                    ],
+                    "selective_repair_result_digest": repair_result[
+                        "result_digest"
+                    ],
+                    "selective_repair_plan_digest": staged_repair["plan"][
+                        "plan_digest"
+                    ],
+                },
+                prompt_policy=STRICT_LOCALITY_PROMPT_POLICY,
+                output_path=repaired_teacher_receipt_path,
+            )
+            repair_round_root = work / "artifixer_candidate_round_1"
+            training = _run_artifixer_training_round(
+                round_root=repair_round_root,
+                teacher_receipt_path=repaired_teacher_receipt_path,
+                candidate=candidate,
+                candidate_path=candidate_path,
+                package_root=package_root,
+                stage_input=stage_input,
+                tuning=tuning,
+                configuration=configuration,
+                environment=values,
+                runner=runner,
+                semantic_token=token,
+                source_semantic_checkpoint=semantic_checkpoint,
+                post_training_checkpoint_root=None,
+                post_training_checkpoint_output=(
+                    output_root / "artifixer_post_training_checkpoint_repair_1"
+                ),
+            )
+            reviewed = _run_artifixer_visual_review_round(
+                review_round=1,
+                round_root=repair_round_root,
+                output_root=output_root,
+                review_frames=training["review_frames"],
+                publisher_scene_id=publisher_scene_id,
+                task_id=task_id,
+                rights_path=rights_path,
+                configuration=configuration,
+                stage_input=stage_input,
+                environment=values,
+                post_training_binding_digest=training[
+                    "post_training_binding_digest"
+                ],
+                max_cost_usd=remaining_visual_review_cost,
+            )
+            review = reviewed["review"]
+            review_frames = training["review_frames"]
+            native_appearance_source = training["native_appearance_source"]
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            TaskEvaluationArtifixerSelectiveRepairError,
+        ) as exc:
+            refusal: dict[str, Any] = {
+                "schema_version": "task_evaluation_artifixer_selective_repair_refusal.v1",
+                "status": "selective_repair_not_admitted",
+                "failure_code": str(exc),
+                "initial_review_execution_digest": str(
+                    review.get("execution_receipt", {}).get("execution_digest")
+                    or ""
+                ),
+                "provider_mutation_performed_by_refusal": False,
+                "second_repair_round_permitted": False,
+                "refusal_digest": "",
+            }
+            refusal["refusal_digest"] = canonical_digest(
+                refusal, digest_field="refusal_digest"
+            )
+            (output_root / "artifixer_selective_repair_refusal.v1.json").write_text(
+                canonical_json(refusal) + "\n", encoding="utf-8"
+            )
     if review.get("decision") != "accepted" or not review.get("review_receipt"):
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_visual_review_rejected"

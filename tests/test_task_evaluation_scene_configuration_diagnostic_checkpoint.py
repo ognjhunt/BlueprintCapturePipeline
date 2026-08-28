@@ -232,6 +232,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "request_count": 8,
         "successful_request_count": 8,
         "failed_request_count": 0,
+        "computed_editor_cost_usd": 1.754256,
         "tasks": [{"task_id": "remove-source-object-104", "frames": result_frames}],
         "raw_secret_values_recorded": False,
         "result_digest": "",

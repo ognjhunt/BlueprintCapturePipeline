@@ -160,6 +160,7 @@ def test_post_training_binding_survives_a_diagnostic_code_overlay() -> None:
     }
     inputs = {
         "package_manifest": {"package_digest": "sha256:" + "5" * 64},
+        "semantic_teacher_receipt_digest": "sha256:" + "6" * 64,
         "tuning": {
             "transition_radius_pixels": 3,
             "artifixer3d_steps": 30_000,
@@ -169,6 +170,15 @@ def test_post_training_binding_survives_a_diagnostic_code_overlay() -> None:
 
     assert driver._post_training_bindings(stage_input=base, **inputs) == (
         driver._post_training_bindings(stage_input=overlay, **inputs)
+    )
+    assert driver._post_training_bindings(stage_input=base, **inputs) != (
+        driver._post_training_bindings(
+            stage_input=base,
+            **{
+                **inputs,
+                "semantic_teacher_receipt_digest": "sha256:" + "7" * 64,
+            },
+        )
     )
 
 
@@ -219,6 +229,17 @@ def test_diagnostic_driver_hydrates_render_and_semantic_without_paid_calls(
     package_root.mkdir()
     semantic_request = json.loads(
         Path(fixture["request_path"]).read_text(encoding="utf-8")
+    )
+    locality_receipt = tmp_path / "locality-receipt.json"
+    locality_receipt.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        driver,
+        "materialize_semantic_locality_seal",
+        lambda **kwargs: {
+            "receipt": {"receipt_digest": "sha256:" + "1" * 64},
+            "receipt_path": str(locality_receipt),
+            "semantic_teacher_frames_root": str(kwargs["semantic_output_root"] / "tasks" / "remove-source-object-104"),
+        },
     )
 
     monkeypatch.setattr(
@@ -296,6 +317,261 @@ def test_diagnostic_driver_hydrates_render_and_semantic_without_paid_calls(
                 ),
             }
         )
+
+
+def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retained render/semantic checkpoint feeds one bounded repair loop."""
+
+    checkpoint_root, _checkpoint, fixture = _materialize_diagnostic_checkpoint(
+        tmp_path
+    )
+    stage_input = json.loads(Path(fixture["stage_path"]).read_text(encoding="utf-8"))
+    stage_input["stage"] = {
+        "stage_id": "stage-1",
+        "adapter": {"id": "artifixer3d_observed_object_removal"},
+    }
+    stage_input["construction_envelope"]["render_inputs_result"] = fixture[
+        "render_result"
+    ]
+    stage_path = tmp_path / "driver-stage-input.json"
+    stage_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    dependencies_path = tmp_path / "dependencies.json"
+    dependencies_path.write_text("[]\n", encoding="utf-8")
+    output_root = tmp_path / "driver-output"
+    output_root.mkdir()
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    semantic_request = json.loads(
+        Path(fixture["request_path"]).read_text(encoding="utf-8")
+    )
+    locality_receipt = tmp_path / "locality-receipt.json"
+    locality_receipt.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        driver,
+        "materialize_semantic_locality_seal",
+        lambda **kwargs: {
+            "receipt": {"receipt_digest": "sha256:" + "1" * 64},
+            "receipt_path": str(locality_receipt),
+            "semantic_teacher_frames_root": str(kwargs["semantic_output_root"] / "tasks" / "remove-source-object-104"),
+        },
+    )
+    monkeypatch.setattr(
+        driver,
+        "complete_provider_render_inputs",
+        lambda **_kwargs: pytest.fail("diagnostic retry rerendered frames"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_write_execution_authority",
+        lambda **_kwargs: ({}, tmp_path / "rights.json", "839873"),
+    )
+    monkeypatch.setattr(driver, "materialize_provider_render_handoff", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        driver,
+        "_materialize_preflight",
+        lambda **_kwargs: ({}, "remove-source-object-104"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "materialize_artifixer3d_candidate_inputs",
+        lambda **_kwargs: {
+            "receipt_digest": "sha256:" + "2" * 64,
+            "tasks": [{"task_id": "remove-source-object-104", "frames": []}],
+        },
+    )
+    monkeypatch.setattr(
+        driver,
+        "_semantic_rights_and_request",
+        lambda **_kwargs: tmp_path / "packet",
+    )
+
+    def write_request(**_kwargs):
+        packet = tmp_path / "packet"
+        packet.mkdir(exist_ok=True)
+        path = packet / "semantic_teacher_image_edit_runtime_request.v1.json"
+        path.write_text(json.dumps(semantic_request), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(driver, "_semantic_runtime_request", write_request)
+    teacher_calls: list[dict[str, object]] = []
+
+    def write_teacher(**kwargs):
+        teacher_calls.append(kwargs)
+        Path(kwargs["output_path"]).write_text("{}\n", encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(
+        driver, "materialize_whole_frame_semantic_teacher_receipt", write_teacher
+    )
+    native = tmp_path / "configured.usdz"
+    native.write_bytes(b"configured")
+    review_frames = []
+    for index in range(8):
+        frame = tmp_path / f"trained-{index}.png"
+        frame.write_bytes(f"trained-{index}".encode())
+        review_frames.append(
+            {
+                "frame_index": index,
+                "camera_id": f"camera-{index}",
+                "final_frame": {
+                    "path": str(frame),
+                    "sha256": _sha256(frame),
+                },
+            }
+        )
+    training_calls: list[dict[str, object]] = []
+
+    def train(**kwargs):
+        training_calls.append(kwargs)
+        return {
+            "review_frames": review_frames,
+            "native_appearance_source": native,
+            "post_training_binding_digest": "sha256:" + "3" * 64,
+            "runtime_result": {},
+        }
+
+    monkeypatch.setattr(driver, "_run_artifixer_training_round", train)
+    review_execution = tmp_path / "review-execution.json"
+    review_execution.write_text(
+        json.dumps({"usage": {"projected_max_cost_usd": 0.1}}),
+        encoding="utf-8",
+    )
+    review_receipt = tmp_path / "accepted-review.json"
+    review_receipt.write_text("{}\n", encoding="utf-8")
+    review_calls: list[dict[str, object]] = []
+
+    def review_round(**kwargs):
+        review_calls.append(kwargs)
+        if len(review_calls) == 1:
+            return {
+                "review": {
+                    "decision": "rejected",
+                    "review_receipt": None,
+                    "execution_receipt": {
+                        "path": str(review_execution),
+                        "execution_digest": "sha256:" + "4" * 64,
+                    },
+                },
+                "review_input_path": tmp_path / "initial-review-input.json",
+            }
+        return {
+            "review": {
+                "decision": "accepted",
+                "review_receipt": {
+                    "path": str(review_receipt),
+                    "receipt_digest": "sha256:" + "5" * 64,
+                },
+                "execution_receipt": {
+                    "path": str(review_execution),
+                    "execution_digest": "sha256:" + "6" * 64,
+                },
+            },
+            "review_input_path": tmp_path / "repaired-review-input.json",
+        }
+
+    monkeypatch.setattr(driver, "_run_artifixer_visual_review_round", review_round)
+    repair_request = tmp_path / "repair-request.json"
+    repair_request.write_text("{}\n", encoding="utf-8")
+    selective_calls: list[dict[str, object]] = []
+
+    def stage_selective(**kwargs):
+        selective_calls.append(kwargs)
+        return {
+            "plan": {
+                "selected_frame_count": 1,
+                "plan_digest": "sha256:" + "7" * 64,
+                "remaining_stage_cost_usd": 1.52,
+            },
+            "plan_path": str(tmp_path / "repair-plan.json"),
+            "repair_request_path": str(repair_request),
+        }
+
+    monkeypatch.setattr(driver, "materialize_selective_repair_request", stage_selective)
+
+    class Gate:
+        def reserve(self):
+            return {}
+
+        def complete(self, **_kwargs):
+            return {}
+
+    monkeypatch.setattr(
+        driver, "scene_configuration_openai_stage_gate", lambda **_kwargs: Gate()
+    )
+    paid_semantic_calls: list[dict[str, object]] = []
+
+    def execute_repair(**kwargs):
+        paid_semantic_calls.append(kwargs)
+        return {
+            "backend_id": "openai-gpt-image",
+            "model_snapshot": "gpt-image-2-2026-04-21",
+            "result_digest": "sha256:" + "8" * 64,
+        }
+
+    monkeypatch.setattr(driver, "execute_semantic_teacher_image_edits", execute_repair)
+    merged_frames = tmp_path / "merged-frames"
+    merged_frames.mkdir()
+    monkeypatch.setattr(
+        driver,
+        "merge_selective_repair_outputs",
+        lambda **_kwargs: {
+            "semantic_teacher_frames_root": str(merged_frames),
+            "receipt": {"merge_digest": "sha256:" + "9" * 64},
+        },
+    )
+    key_reads: list[str] = []
+
+    def read_key(_environment, *, stage):
+        key_reads.append(stage)
+        return "test-file-token"
+
+    monkeypatch.setattr(driver, "_stage_openai_token", read_key)
+
+    class SelectiveLoopCompleted(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        driver,
+        "_materialize_selected_task_thumbnail",
+        lambda **_kwargs: (_ for _ in ()).throw(SelectiveLoopCompleted()),
+    )
+    with pytest.raises(SelectiveLoopCompleted):
+        driver.execute_artifixer_component(
+            environment={
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_path),
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(
+                    dependencies_path
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
+                "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(
+                    output_root / "result.json"
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package_root),
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT": str(
+                    checkpoint_root
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD": "2.4",
+                "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD": "0.33",
+                "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS": "16",
+            }
+        )
+
+    assert len(training_calls) == 2
+    assert training_calls[0]["post_training_checkpoint_root"] is None
+    assert training_calls[1]["post_training_checkpoint_root"] is None
+    assert len(review_calls) == 2
+    assert [call["review_round"] for call in review_calls] == [0, 1]
+    assert review_calls[1]["max_cost_usd"] == pytest.approx(0.23)
+    assert len(selective_calls) == 1
+    assert selective_calls[0]["semantic_runtime_result"]["request_count"] == 8
+    assert len(paid_semantic_calls) == 1
+    assert key_reads == ["artifixer_semantic_teacher"]
+    assert len(teacher_calls) == 2
+    assert teacher_calls[1]["prompt_policy"] == (
+        driver.STRICT_LOCALITY_PROMPT_POLICY
+    )
 
 
 def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path) -> None:
