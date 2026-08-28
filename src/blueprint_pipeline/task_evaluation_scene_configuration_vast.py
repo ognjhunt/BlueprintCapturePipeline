@@ -662,6 +662,12 @@ def _extract_provider_output(
                     )
             if not blockers:
                 archive.extractall(root)
+                for member in members:
+                    mode = stat.S_IMODE(member.external_attr >> 16)
+                    if not mode or member.is_dir():
+                        continue
+                    target = (root / member.filename).resolve()
+                    os.chmod(target, mode)
     except (
         EOFError,
         NotImplementedError,
