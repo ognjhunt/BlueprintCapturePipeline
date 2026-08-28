@@ -15,7 +15,9 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess  # nosec B404 - fixed Python module commands only
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -26,6 +28,8 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
     PROBE_KIND,
+    TaskEvaluationSceneConfigurationBundleError,
+    load_scene_configuration_provider_bundle_receipt,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_release import (
     SceneConfigurationDiagnosticReleaseError,
@@ -52,6 +56,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic impo
 PREPARATION_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_diagnostic_iteration_preparation.v1"
 )
+CLEANUP_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_diagnostic_bundle_staging_cleanup.v1"
+)
+CLEANUP_COMMAND = "cleanup-sealed-bundle-staging"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 _OPENAI_RUNTIME_FILE_ENV_NAMES = (
@@ -182,22 +190,205 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         os.close(descriptor)
 
 
-def _discard_sealed_bundle_staging_tree(bundle_output: Path) -> bool:
-    """Remove only the builder's self-created expanded tree after sealing."""
+def _discard_sealed_bundle_staging_tree_with_evidence(
+    bundle_output: Path,
+) -> dict[str, Any]:
+    """Remove only a contained, self-created expanded tree after sealing."""
 
+    invalid_code = "scene_configuration_diagnostic_iteration_bundle_staging_invalid"
+    cleanup_code = (
+        "scene_configuration_diagnostic_iteration_bundle_staging_cleanup_failed"
+    )
     staging = bundle_output / "stage"
-    if not staging.exists() and not staging.is_symlink():
-        return False
-    if staging.is_symlink() or not staging.is_dir():
-        raise SceneConfigurationDiagnosticIterationError(
-            "scene_configuration_diagnostic_iteration_bundle_staging_invalid"
-        )
-    shutil.rmtree(staging)
+    try:
+        bundle_stat = bundle_output.lstat()
+        bundle_resolved = bundle_output.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(invalid_code) from exc
+    if stat.S_ISLNK(bundle_stat.st_mode) or not stat.S_ISDIR(bundle_stat.st_mode):
+        raise SceneConfigurationDiagnosticIterationError(invalid_code)
+    try:
+        staging_stat = staging.lstat()
+    except FileNotFoundError:
+        return {
+            "removed": False,
+            "staging_path": str(staging),
+            "directory_count": 0,
+            "file_count": 0,
+            "file_bytes": 0,
+            "allocated_bytes": 0,
+            "root_stat": None,
+            "post_cleanup_absent": True,
+        }
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(invalid_code) from exc
+    if stat.S_ISLNK(staging_stat.st_mode) or not stat.S_ISDIR(staging_stat.st_mode):
+        raise SceneConfigurationDiagnosticIterationError(invalid_code)
+    try:
+        staging_resolved = staging.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(invalid_code) from exc
+    if staging_resolved.parent != bundle_resolved:
+        raise SceneConfigurationDiagnosticIterationError(invalid_code)
+
+    directories: list[tuple[Path, os.stat_result]] = []
+    file_count = 0
+    file_bytes = 0
+    allocated_bytes = 0
+    pending = [staging]
+    try:
+        while pending:
+            directory = pending.pop()
+            directory_stat = directory.lstat()
+            if (
+                stat.S_ISLNK(directory_stat.st_mode)
+                or not stat.S_ISDIR(directory_stat.st_mode)
+                or not directory.resolve(strict=True).is_relative_to(staging_resolved)
+                or directory_stat.st_dev != staging_stat.st_dev
+                or directory_stat.st_uid != os.geteuid()
+            ):
+                raise SceneConfigurationDiagnosticIterationError(invalid_code)
+            directories.append((directory, directory_stat))
+            allocated_bytes += directory_stat.st_blocks * 512
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    entry_path = directory / entry.name
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(entry_stat.st_mode):
+                        raise SceneConfigurationDiagnosticIterationError(invalid_code)
+                    if stat.S_ISDIR(entry_stat.st_mode):
+                        pending.append(entry_path)
+                    elif stat.S_ISREG(entry_stat.st_mode):
+                        file_count += 1
+                        file_bytes += entry_stat.st_size
+                        allocated_bytes += entry_stat.st_blocks * 512
+                    else:
+                        raise SceneConfigurationDiagnosticIterationError(invalid_code)
+    except SceneConfigurationDiagnosticIterationError:
+        raise
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(invalid_code) from exc
+
+    try:
+        for directory, before in directories:
+            mode = stat.S_IMODE(before.st_mode)
+            if mode & stat.S_IWUSR:
+                continue
+            os.chmod(directory, mode | stat.S_IWUSR, follow_symlinks=False)
+            after = directory.lstat()
+            if (
+                stat.S_ISLNK(after.st_mode)
+                or not stat.S_ISDIR(after.st_mode)
+                or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+                or not stat.S_IMODE(after.st_mode) & stat.S_IWUSR
+            ):
+                raise SceneConfigurationDiagnosticIterationError(cleanup_code)
+        shutil.rmtree(staging)
+    except SceneConfigurationDiagnosticIterationError:
+        raise
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(cleanup_code) from exc
     if staging.exists() or staging.is_symlink():
+        raise SceneConfigurationDiagnosticIterationError(cleanup_code)
+    return {
+        "removed": True,
+        "staging_path": str(staging),
+        "directory_count": len(directories),
+        "file_count": file_count,
+        "file_bytes": file_bytes,
+        "allocated_bytes": allocated_bytes,
+        "root_stat": {
+            "device": staging_stat.st_dev,
+            "inode": staging_stat.st_ino,
+            "uid": staging_stat.st_uid,
+            "gid": staging_stat.st_gid,
+            "mode": stat.S_IMODE(staging_stat.st_mode),
+        },
+        "post_cleanup_absent": True,
+    }
+
+
+def _discard_sealed_bundle_staging_tree(bundle_output: Path) -> bool:
+    """Remove the builder staging tree and preserve the boolean run contract."""
+
+    return bool(
+        _discard_sealed_bundle_staging_tree_with_evidence(bundle_output)["removed"]
+    )
+
+
+def reconcile_sealed_bundle_staging_tree(
+    *, bundle_output_root: str | Path, cleanup_receipt: str | Path
+) -> dict[str, Any]:
+    """Validate a sealed diagnostic bundle, reclaim staging, and receipt it."""
+
+    bundle_output = _input_directory(
+        bundle_output_root, field="cleanup_bundle_output_root"
+    )
+    receipt_path = bundle_output / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    expected_bundle = (
+        bundle_output / "task_evaluation_scene_configuration_provider_bundle.zip"
+    )
+    if receipt_path.is_symlink():
         raise SceneConfigurationDiagnosticIterationError(
-            "scene_configuration_diagnostic_iteration_bundle_staging_cleanup_failed"
+            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
         )
-    return True
+    try:
+        bundle_receipt = load_scene_configuration_provider_bundle_receipt(
+            receipt_path,
+            diagnostic_only=True,
+        )
+    except (OSError, TaskEvaluationSceneConfigurationBundleError) as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
+        ) from exc
+    received_bundle = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser()
+    try:
+        expected_bundle_resolved = expected_bundle.resolve(strict=True)
+        received_bundle_resolved = received_bundle.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
+        ) from exc
+    if (
+        expected_bundle.is_symlink()
+        or received_bundle.is_symlink()
+        or not received_bundle.is_absolute()
+        or expected_bundle_resolved != received_bundle_resolved
+        or expected_bundle_resolved.parent != bundle_output
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
+        )
+    cleanup_receipt_path = _output_path(
+        cleanup_receipt, field="cleanup_receipt"
+    )
+    try:
+        cleanup_receipt_parent = cleanup_receipt_path.parent.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_cleanup_receipt_parent_invalid"
+        ) from exc
+    if cleanup_receipt_parent != bundle_output:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_cleanup_receipt_parent_invalid"
+        )
+    cleanup = _discard_sealed_bundle_staging_tree_with_evidence(bundle_output)
+    result = {
+        "schema_version": CLEANUP_SCHEMA_VERSION,
+        "status": "completed",
+        "bundle_output_root": str(bundle_output),
+        "bundle_receipt_path": str(receipt_path),
+        "bundle_receipt_digest": bundle_receipt["receipt_digest"],
+        "bundle_path": str(expected_bundle_resolved),
+        "bundle_sha256": bundle_receipt["bundle_sha256"],
+        **cleanup,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    _write_exclusive(cleanup_receipt_path, result)
+    return result
 
 
 def _run_fixed(
@@ -741,8 +932,59 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cleanup_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate a sealed diagnostic provider bundle and reclaim only its "
+            "self-created expanded staging tree."
+        )
+    )
+    parser.add_argument("--bundle-output-root", required=True)
+    parser.add_argument("--cleanup-receipt", required=True)
+    return parser
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == [CLEANUP_COMMAND]:
+        cleanup_args = _cleanup_parser().parse_args(arguments[1:])
+        try:
+            result = reconcile_sealed_bundle_staging_tree(
+                bundle_output_root=cleanup_args.bundle_output_root,
+                cleanup_receipt=cleanup_args.cleanup_receipt,
+            )
+        except (OSError, SceneConfigurationDiagnosticIterationError) as exc:
+            print(
+                json.dumps(
+                    {
+                        "schema_version": CLEANUP_SCHEMA_VERSION,
+                        "status": "blocked",
+                        "blockers": [str(exc)],
+                        "provider_mutations_performed": 0,
+                        "raw_secret_values_recorded": False,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 2
+        print(
+            json.dumps(
+                {
+                    "schema_version": CLEANUP_SCHEMA_VERSION,
+                    "status": "completed",
+                    "cleanup_receipt": str(cleanup_args.cleanup_receipt),
+                    "receipt_digest": result["receipt_digest"],
+                    "removed": result["removed"],
+                    "file_bytes": result["file_bytes"],
+                    "provider_mutations_performed": 0,
+                    "raw_secret_values_recorded": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    args = _parser().parse_args(arguments)
     try:
         result = run_scene_configuration_diagnostic_iteration(args)
     except (

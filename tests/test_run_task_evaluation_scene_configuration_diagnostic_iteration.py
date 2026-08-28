@@ -219,6 +219,219 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
     ) == 0o440
 
 
+def test_discard_sealed_bundle_staging_makes_only_directories_owner_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_output = tmp_path / "bundle"
+    staging = bundle_output / "stage"
+    nested = staging / "provider_runtime" / "toolchain"
+    nested.mkdir(parents=True)
+    payload = nested / "task_evaluation_scene_configuration_toolchain.v1.json"
+    payload.write_bytes(b"sealed-regenerable-staging")
+    payload.chmod(0o444)
+    for directory in (nested, nested.parent, staging):
+        directory.chmod(0o555)
+
+    real_rmtree = iteration.shutil.rmtree
+    observed: dict[str, int] = {}
+
+    def checked_rmtree(path: Path) -> None:
+        observed["stage_mode"] = stat.S_IMODE(staging.stat().st_mode)
+        observed["nested_mode"] = stat.S_IMODE(nested.stat().st_mode)
+        observed["payload_mode"] = stat.S_IMODE(payload.stat().st_mode)
+        real_rmtree(path)
+
+    monkeypatch.setattr(iteration.shutil, "rmtree", checked_rmtree)
+
+    evidence = iteration._discard_sealed_bundle_staging_tree_with_evidence(
+        bundle_output
+    )
+
+    assert evidence["removed"] is True
+    assert evidence["post_cleanup_absent"] is True
+    assert evidence["directory_count"] == 3
+    assert evidence["file_count"] == 1
+    assert evidence["file_bytes"] == len(b"sealed-regenerable-staging")
+    assert evidence["root_stat"]["mode"] == 0o555
+    assert observed == {
+        "stage_mode": 0o755,
+        "nested_mode": 0o755,
+        "payload_mode": 0o444,
+    }
+    assert not staging.exists()
+
+
+def test_discard_sealed_bundle_staging_refuses_symlink_escape(
+    tmp_path: Path,
+) -> None:
+    bundle_output = tmp_path / "bundle"
+    staging = bundle_output / "stage"
+    staging.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(b"must-survive")
+    escape = staging / "escape"
+    escape.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match="scene_configuration_diagnostic_iteration_bundle_staging_invalid",
+    ):
+        iteration._discard_sealed_bundle_staging_tree(bundle_output)
+
+    assert sentinel.read_bytes() == b"must-survive"
+    assert escape.is_symlink()
+
+
+def test_discard_sealed_bundle_staging_refuses_non_directory_root(
+    tmp_path: Path,
+) -> None:
+    bundle_output = tmp_path / "bundle"
+    bundle_output.mkdir()
+    staging = bundle_output / "stage"
+    staging.write_bytes(b"not-a-directory")
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match="scene_configuration_diagnostic_iteration_bundle_staging_invalid",
+    ):
+        iteration._discard_sealed_bundle_staging_tree(bundle_output)
+
+    assert staging.read_bytes() == b"not-a-directory"
+
+
+def test_reconcile_staging_validates_sealed_bundle_and_writes_exclusive_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_output = (tmp_path / "bundle").resolve()
+    staging = bundle_output / "stage"
+    nested = staging / "provider_runtime"
+    nested.mkdir(parents=True)
+    (nested / "payload").write_bytes(b"regenerable")
+    nested.chmod(0o555)
+    staging.chmod(0o555)
+    bundle = bundle_output / "task_evaluation_scene_configuration_provider_bundle.zip"
+    bundle.write_bytes(b"sealed-bundle")
+    bundle_receipt = bundle_output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json"
+    bundle_receipt.write_text("{}\n", encoding="utf-8")
+    cleanup_receipt = bundle_output / "cleanup-receipt.json"
+    validated: list[tuple[Path, bool]] = []
+
+    def load_receipt(path: Path, *, diagnostic_only: bool):
+        validated.append((path, diagnostic_only))
+        return {
+            "bundle_path": str(bundle),
+            "bundle_sha256": "sha256:" + "a" * 64,
+            "receipt_digest": "sha256:" + "b" * 64,
+        }
+
+    monkeypatch.setattr(
+        iteration,
+        "load_scene_configuration_provider_bundle_receipt",
+        load_receipt,
+    )
+
+    result = iteration.reconcile_sealed_bundle_staging_tree(
+        bundle_output_root=bundle_output,
+        cleanup_receipt=cleanup_receipt,
+    )
+
+    assert validated == [(bundle_receipt, True)]
+    assert result["removed"] is True
+    assert result["post_cleanup_absent"] is True
+    assert result["provider_mutations_performed"] == 0
+    assert result["receipt_digest"] == iteration.canonical_digest(
+        result, digest_field="receipt_digest"
+    )
+    assert not staging.exists()
+    assert json.loads(cleanup_receipt.read_text(encoding="utf-8")) == result
+    assert stat.S_IMODE(cleanup_receipt.stat().st_mode) == 0o440
+
+
+def test_reconcile_staging_refuses_receipt_bound_to_another_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_output = (tmp_path / "bundle").resolve()
+    staging = bundle_output / "stage"
+    staging.mkdir(parents=True)
+    bundle = bundle_output / "task_evaluation_scene_configuration_provider_bundle.zip"
+    bundle.write_bytes(b"sealed-bundle")
+    (bundle_output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    other_bundle = tmp_path / "other.zip"
+    other_bundle.write_bytes(b"other")
+    monkeypatch.setattr(
+        iteration,
+        "load_scene_configuration_provider_bundle_receipt",
+        lambda *_args, **_kwargs: {
+            "bundle_path": str(other_bundle),
+            "bundle_sha256": "sha256:" + "a" * 64,
+            "receipt_digest": "sha256:" + "b" * 64,
+        },
+    )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match="scene_configuration_diagnostic_iteration_cleanup_bundle_invalid",
+    ):
+        iteration.reconcile_sealed_bundle_staging_tree(
+            bundle_output_root=bundle_output,
+            cleanup_receipt=bundle_output / "cleanup-receipt.json",
+        )
+
+    assert staging.is_dir()
+
+
+def test_cleanup_command_uses_receipted_no_provider_mutation_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bundle_output = (tmp_path / "bundle").resolve()
+    bundle_output.mkdir()
+    cleanup_receipt = bundle_output / "cleanup-receipt.json"
+    calls: list[dict[str, object]] = []
+
+    def reconcile(**kwargs):
+        calls.append(kwargs)
+        return {
+            "receipt_digest": "sha256:" + "c" * 64,
+            "removed": True,
+            "file_bytes": 123,
+        }
+
+    monkeypatch.setattr(
+        iteration, "reconcile_sealed_bundle_staging_tree", reconcile
+    )
+
+    assert (
+        iteration.main(
+            [
+                iteration.CLEANUP_COMMAND,
+                "--bundle-output-root",
+                str(bundle_output),
+                "--cleanup-receipt",
+                str(cleanup_receipt),
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        {
+            "bundle_output_root": str(bundle_output),
+            "cleanup_receipt": str(cleanup_receipt),
+        }
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "completed"
+    assert output["removed"] is True
+    assert output["file_bytes"] == 123
+    assert output["provider_mutations_performed"] == 0
+
+
 def test_execute_only_adds_canonical_allocator_execute_switch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
