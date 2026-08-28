@@ -488,6 +488,9 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_camera_mismatch"
         )
+    teacher_by_camera = {
+        str(row["camera_id"]): row for row in teacher_frames if isinstance(row, Mapping)
+    }
 
     root = Path(output_root).expanduser().resolve()
     if root.is_symlink() or root.exists():
@@ -532,9 +535,8 @@ def materialize_scene_configuration_diagnostic_checkpoint(
             )
         )
         checkpoint_frames: list[dict[str, Any]] = []
-        for index, (camera, frame, teacher) in enumerate(
-            zip(cameras, frames, teacher_frames, strict=True)
-        ):
+        for index, (camera, frame) in enumerate(zip(cameras, frames, strict=True)):
+            teacher = teacher_by_camera[str(camera["camera_id"])]
             raw = _bound_file(
                 frame,
                 code="scene_configuration_diagnostic_checkpoint_frame_invalid",
@@ -1092,15 +1094,75 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         )
     task_id = str(tasks[0].get("task_id") or "")
     request_frames = tasks[0].get("frames")
-    camera_ids = [row["camera_id"] for row in checkpoint["cameras"]]
+    checkpoint_camera_ids = [row["camera_id"] for row in checkpoint["cameras"]]
+    request_camera_ids = (
+        [str(row.get("camera_id") or "") for row in request_frames]
+        if isinstance(request_frames, list)
+        and all(isinstance(row, Mapping) for row in request_frames)
+        else []
+    )
     if (
         not task_id
         or not isinstance(request_frames, list)
-        or [str(row.get("camera_id") or "") for row in request_frames]
-        != camera_ids
+        or len(request_camera_ids) != len(set(request_camera_ids))
+        or sorted(request_camera_ids) != sorted(checkpoint_camera_ids)
     ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_request_mismatch"
+        )
+    teacher_receipt_path = source_by_role.get("semantic_teacher_receipt")
+    try:
+        teacher_receipt = json.loads(
+            teacher_receipt_path.read_text(encoding="utf-8")
+            if teacher_receipt_path is not None
+            else ""
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_frame_binding_invalid"
+        ) from exc
+    teacher_frames = teacher_receipt.get("frames")
+    if (
+        teacher_receipt.get("schema_version") != _SEMANTIC_RECEIPT_SCHEMA
+        or teacher_receipt.get("receipt_digest")
+        != canonical_digest(teacher_receipt, digest_field="receipt_digest")
+        or teacher_receipt.get("task_id") != task_id
+        or not isinstance(teacher_frames, list)
+        or len(teacher_frames) != len(request_camera_ids)
+        or any(not isinstance(row, Mapping) for row in teacher_frames)
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_frame_binding_invalid"
+        )
+    semantic_sources: dict[tuple[str, int], list[Path]] = {}
+    for row in checkpoint["inventory"]:
+        role = str(row.get("role") or "")
+        if not role.startswith("semantic_teacher_frame:"):
+            continue
+        key = (str(row.get("digest") or ""), int(row.get("size_bytes") or -1))
+        semantic_sources.setdefault(key, []).append(
+            root / str(row["relative_path"])
+        )
+    sources_by_camera: dict[str, tuple[Path, str, int]] = {}
+    for row in teacher_frames:
+        camera_id = str(row.get("camera_id") or "")
+        bound = row.get("whole_frame_semantic_teacher")
+        digest = str(bound.get("sha256") or "") if isinstance(bound, Mapping) else ""
+        size_bytes = (
+            int(bound.get("size_bytes") or -1) if isinstance(bound, Mapping) else -1
+        )
+        matches = semantic_sources.get((digest, size_bytes)) or []
+        if not camera_id or camera_id in sources_by_camera or not matches:
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_semantic_frame_binding_invalid"
+            )
+        sources_by_camera[camera_id] = (matches.pop(), digest, size_bytes)
+    if (
+        sorted(sources_by_camera) != sorted(checkpoint_camera_ids)
+        or any(matches for matches in semantic_sources.values())
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_frame_binding_invalid"
         )
     output = Path(output_root).expanduser().resolve()
     if output.is_symlink() or output.exists():
@@ -1109,13 +1171,14 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         )
     task_root = output / "tasks" / task_id
     task_root.mkdir(parents=True, mode=0o750)
-    for index, camera_id in enumerate(camera_ids):
-        source = source_by_role[f"semantic_teacher_frame:{camera_id}"]
+    for index, camera_id in enumerate(request_camera_ids):
+        source, expected_digest, expected_size = sources_by_camera[camera_id]
         destination = task_root / f"{index:05d}.png"
         shutil.copyfile(source, destination)
-        if destination.stat().st_size != source.stat().st_size or _sha256(
-            destination
-        ) != _sha256(source):
+        if (
+            destination.stat().st_size != expected_size
+            or _sha256(destination) != expected_digest
+        ):
             raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
                 "scene_configuration_diagnostic_checkpoint_semantic_copy_mismatch"
             )

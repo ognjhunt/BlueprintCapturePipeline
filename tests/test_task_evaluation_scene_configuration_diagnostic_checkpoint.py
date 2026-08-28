@@ -410,6 +410,92 @@ def test_hydration_reuses_exact_frames_and_skips_semantic_provider(
     assert len(list((tmp_path / "hydrated-semantic").rglob("*.png"))) == 8
 
 
+def test_semantic_checkpoint_reuse_binds_interleaved_frames_by_camera(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    interleaved = [0, 4, 5, 1, 6, 2, 7, 3]
+
+    request_path = fixture["request_path"]
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request_frames = request["tasks"][0]["frames"]
+    request["tasks"][0]["frames"] = [request_frames[index] for index in interleaved]
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    _write(request_path, request)
+
+    result_path = fixture["result_path"]
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result_frames = result["tasks"][0]["frames"]
+    result["tasks"][0]["frames"] = [result_frames[index] for index in interleaved]
+    result["source_runtime_request_digest"] = request["request_digest"]
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    _write(result_path, result)
+
+    receipt_path = fixture["receipt_path"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt_frames = receipt["frames"]
+    receipt["frames"] = [receipt_frames[index] for index in interleaved]
+    receipt["editor_identity"]["result_digest"] = result["result_digest"]
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write(receipt_path, receipt)
+
+    root = tmp_path / "checkpoint-interleaved"
+    checkpoint = materialize_scene_configuration_diagnostic_checkpoint(
+        stage_production_input_path=fixture["stage_path"],
+        render_inputs_result_path=fixture["render_path"],
+        semantic_runtime_request_path=request_path,
+        semantic_runtime_result_path=result_path,
+        semantic_teacher_receipt_path=receipt_path,
+        output_root=root,
+    )
+    receipt_by_camera = {row["camera_id"]: row for row in receipt["frames"]}
+    inventory_by_role = {row["role"]: row for row in checkpoint["inventory"]}
+    for camera_id, row in receipt_by_camera.items():
+        assert inventory_by_role[f"semantic_teacher_frame:{camera_id}"]["digest"] == row[
+            "whole_frame_semantic_teacher"
+        ]["sha256"]
+
+    # Reproduce the already-paid legacy checkpoint defect: its semantic bytes
+    # were complete and digest-bound, but seven role labels followed calibration
+    # order rather than the semantic packet's deliberately interleaved order.
+    manifest_path = root / f"{SCHEMA_VERSION}.json"
+    legacy = json.loads(manifest_path.read_text(encoding="utf-8"))
+    semantic_rows = sorted(
+        (
+            row
+            for row in legacy["inventory"]
+            if str(row["role"]).startswith("semantic_teacher_frame:")
+        ),
+        key=lambda row: row["relative_path"],
+    )
+    legacy_roles = [row["role"] for row in semantic_rows]
+    for row, role in zip(semantic_rows, reversed(legacy_roles), strict=True):
+        row["role"] = role
+    legacy["checkpoint_digest"] = canonical_digest(
+        legacy, digest_field="checkpoint_digest"
+    )
+    _write(manifest_path, legacy)
+
+    semantic = hydrate_scene_configuration_diagnostic_semantic_outputs(
+        checkpoint_root=root,
+        current_semantic_runtime_request=request,
+        output_root=tmp_path / "hydrated-semantic-interleaved",
+    )
+
+    assert semantic["provider_calls_performed"] == 0
+    for index, frame in enumerate(request["tasks"][0]["frames"]):
+        expected = receipt_by_camera[frame["camera_id"]][
+            "whole_frame_semantic_teacher"
+        ]["sha256"]
+        assert _sha256(
+            tmp_path
+            / "hydrated-semantic-interleaved"
+            / "tasks"
+            / request["tasks"][0]["task_id"]
+            / f"{index:05d}.png"
+        ) == expected
+
+
 def test_semantic_checkpoint_reuse_ignores_execution_budget_and_scheduling(
     tmp_path: Path,
 ) -> None:
