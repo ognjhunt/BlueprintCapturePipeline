@@ -170,8 +170,6 @@ def materialize_artifixer_post_training_checkpoint(
         runtime_result.get("schema_version")
         != "public_scene_artifixer3d_runtime_result.v1"
         or runtime_result.get("status") != ARTIFIXER_RUNTIME_ACCEPTED_STATUS
-        or runtime_result.get("result_digest")
-        != canonical_digest(runtime_result, digest_field="result_digest")
         or _contains_secret_material(runtime_result)
     ):
         raise ArtifixerPostTrainingCheckpointError(
@@ -253,7 +251,10 @@ def materialize_artifixer_post_training_checkpoint(
             "scientific_binding_digest": scientific_binding_digest,
             "bindings": dict(bindings),
             "binding_digest": binding_digest,
-            "runtime_result_digest": runtime_result["result_digest"],
+            # The canonical ArtiFixer runtime result is not self-digested. Its
+            # integrity boundary is the exact provider-output member bytes, so
+            # carry that same byte digest into the portable checkpoint.
+            "runtime_result_sha256": _sha256(runtime_path),
             "review_frames": portable_frames,
             "native_appearance_role": "native_appearance_usdz",
             "inventory": sorted(inventory, key=lambda row: row["relative_path"]),
@@ -326,6 +327,8 @@ def validate_artifixer_post_training_checkpoint(
         or checkpoint.get("terminal_e2e_completion_permitted") is not False
         or checkpoint.get("raw_secret_values_recorded") is not False
         or _contains_secret_material(checkpoint)
+        or _DIGEST.fullmatch(str(checkpoint.get("runtime_result_sha256") or ""))
+        is None
         or not isinstance(inventory, list)
         or len(inventory) != 10
         or not isinstance(frames, list)
@@ -406,7 +409,9 @@ def hydrate_artifixer_post_training_checkpoint(
         by_role["artifixer_runtime_result"],
         code="scene_configuration_artifixer_warm_runtime_result_invalid",
     )
-    if runtime_result.get("result_digest") != checkpoint["runtime_result_digest"]:
+    if _sha256(by_role["artifixer_runtime_result"]) != checkpoint[
+        "runtime_result_sha256"
+    ]:
         raise ArtifixerPostTrainingCheckpointError(
             "scene_configuration_artifixer_warm_runtime_result_invalid"
         )
