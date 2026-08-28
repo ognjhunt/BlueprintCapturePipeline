@@ -186,6 +186,25 @@ def validate_same_goal_spend_reconciliation(
             source_value = _read_json(
                 source_path, code="same_goal_spend_source_invalid"
             )
+            if (
+                entry.get("lane")
+                == "task_evaluation_scene_configuration_diagnostic"
+                and role == "terminal_result"
+            ):
+                from .task_evaluation_scene_configuration_diagnostic_spend import (  # noqa: PLC0415
+                    validate_scene_configuration_diagnostic_terminal_evidence,
+                )
+
+                try:
+                    reopened_terminal, _terminal_record = (
+                        validate_scene_configuration_diagnostic_terminal_evidence(
+                            source_path
+                        )
+                    )
+                except ValueError as exc:
+                    raise ValueError("same_goal_spend_source_invalid") from exc
+                if reopened_terminal != source_value:
+                    raise ValueError("same_goal_spend_source_invalid")
             digest_field = source_record.get("digest_field")
             if (
                 not role
@@ -353,13 +372,18 @@ def bind_lane_prior_spend(
     }
     for result_path in result_paths:
         result = _read_json(result_path, code="prior_terminal_attempt_invalid")
+        accepted_statuses = {
+            "completed",
+            "blocked",
+            "sealed_completed_attempt",
+            "sealed_blocked_attempt",
+        }
+        if lane == "task_evaluation_scene_configuration_diagnostic":
+            accepted_statuses.add(
+                "diagnostic_attempt_terminal_and_vast_provider_zero"
+            )
         if (
-            result.get("status") not in {
-                "completed",
-                "blocked",
-                "sealed_completed_attempt",
-                "sealed_blocked_attempt",
-            }
+            result.get("status") not in accepted_statuses
             or result.get("continuing_spend_from_this_run", result.get("continuing_spend"))
             is not False
         ):
@@ -471,12 +495,16 @@ def bind_lane_prior_spend(
                 )
             )
             or (not no_allocation and instance_id not in teardown_instance_ids)
-            or zero.get(
-                "provider_zero_verified",
+            or (
                 zero.get(
-                    "provider_zero_confirmed",
-                    zero.get("provider_zero_api_confirmed"),
-                ),
+                    "provider_zero_verified",
+                    zero.get(
+                        "provider_zero_confirmed",
+                        zero.get("provider_zero_api_confirmed"),
+                    ),
+                )
+                if lane != "task_evaluation_scene_configuration_diagnostic"
+                else zero.get("provider_zero")
             )
             is not True
             or zero.get("continuing_spend_from_this_run", False) is not False
