@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from pathlib import Path
 
 from scripts import provision_task_evaluation_scene_configuration_release as subject
@@ -31,6 +32,88 @@ def test_materializes_digest_bound_vgg16_once_without_provider_download(
     assert first == second
     assert first.read_bytes() == body
     assert calls == [(subject.VGG16_WEIGHTS_SOURCE_URL, 1800)]
+
+
+def test_reconciles_validated_legacy_vgg16_copies_to_canonical_inode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    body = b"pinned-vgg16-fixture"
+    monkeypatch.setattr(subject, "VGG16_WEIGHTS_SIZE_BYTES", len(body))
+    monkeypatch.setattr(
+        subject,
+        "VGG16_WEIGHTS_SHA256",
+        "sha256:" + hashlib.sha256(body).hexdigest(),
+    )
+    root = tmp_path / "system-runtimes"
+    canonical = root / "public-model-cache/vgg16-397923af.pth"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(body)
+    canonical.chmod(0o444)
+    candidates = []
+    for commit in ("a" * 40, "b" * 40):
+        candidate = (
+            root
+            / "scene-configuration"
+            / commit
+            / "components/artifixer3d_observed_object_removal/package/"
+            "blueprint_runtime/torch_home/hub/checkpoints/vgg16-397923af.pth"
+        )
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(body)
+        candidate.chmod(0o444)
+        candidates.append(candidate)
+
+    result = subject.reconcile_legacy_vgg16_runtime_storage(runtime_root=root)
+
+    assert result["status"] == "reconciled"
+    assert result["validated_candidate_count"] == 2
+    assert result["reconciled_candidate_count"] == 2
+    assert result["estimated_reclaimed_bytes"] > 0
+    for candidate in candidates:
+        assert os.path.samestat(canonical.stat(), candidate.stat())
+        assert candidate.read_bytes() == body
+        assert candidate.stat().st_mode & 0o777 == 0o444
+
+
+def test_reconciliation_validates_every_candidate_before_mutating(
+    tmp_path: Path, monkeypatch
+) -> None:
+    body = b"pinned-vgg16-fixture"
+    monkeypatch.setattr(subject, "VGG16_WEIGHTS_SIZE_BYTES", len(body))
+    monkeypatch.setattr(
+        subject,
+        "VGG16_WEIGHTS_SHA256",
+        "sha256:" + hashlib.sha256(body).hexdigest(),
+    )
+    root = tmp_path / "system-runtimes"
+    canonical = root / "public-model-cache/vgg16-397923af.pth"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(body)
+    canonical.chmod(0o444)
+    candidates = []
+    for commit, contents in (("a" * 40, body), ("b" * 40, b"wrong bytes")):
+        candidate = (
+            root
+            / "scene-configuration"
+            / commit
+            / "components/artifixer3d_observed_object_removal/package/"
+            "blueprint_runtime/torch_home/hub/checkpoints/vgg16-397923af.pth"
+        )
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(contents)
+        candidate.chmod(0o444)
+        candidates.append(candidate)
+    original_inode = candidates[0].stat().st_ino
+
+    try:
+        subject.reconcile_legacy_vgg16_runtime_storage(runtime_root=root)
+    except ValueError as exc:
+        assert str(exc) == "scene_configuration_legacy_vgg16_runtime_invalid"
+    else:
+        raise AssertionError("invalid legacy runtime must fail closed")
+
+    assert candidates[0].stat().st_ino == original_inode
+    assert not os.path.samestat(canonical.stat(), candidates[0].stat())
 
 
 def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
