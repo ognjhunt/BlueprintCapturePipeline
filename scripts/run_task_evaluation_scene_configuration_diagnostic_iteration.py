@@ -431,13 +431,22 @@ def run_scene_configuration_diagnostic_iteration(
         bundle_command.extend(
             ["--diagnostic-checkpoint-reference", str(checkpoint_reference)]
         )
-    _run_fixed(
-        bundle_command,
-        cwd=release_path,
-        environment=environment,
-        runner=runner,
-        code="scene_configuration_diagnostic_iteration_bundle_failed",
-    )
+    try:
+        _run_fixed(
+            bundle_command,
+            cwd=release_path,
+            environment=environment,
+            runner=runner,
+            code="scene_configuration_diagnostic_iteration_bundle_failed",
+        )
+    except SceneConfigurationDiagnosticIterationError:
+        # The builder creates ``stage`` itself after first proving that the
+        # output root is empty. A validation failure may leave that expanded,
+        # unsealed tree behind; remove only that known self-created directory
+        # so a corrected no-spend retry does not strand itself. Any unexpected
+        # sibling remains and the existing non-empty gate still fails closed.
+        _discard_sealed_bundle_staging_tree(bundle_output)
+        raise
     bundle_elapsed_ms = int((clock() - bundle_started) * 1000)
     bundle_receipt_path = (
         bundle_output / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"

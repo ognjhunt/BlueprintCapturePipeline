@@ -467,6 +467,11 @@ def test_child_failure_is_redacted_and_does_not_print_child_output(
     secret_text = "sk-test-secret-must-not-escape"
 
     def failed(argv, **_kwargs):
+        output = Path(args.bundle_output_root)
+        (output / "stage" / "provider_runtime").mkdir(parents=True)
+        (output / "stage" / "provider_runtime" / "partial.bin").write_bytes(
+            b"unsealed-regenerable-partial"
+        )
         return subprocess.CompletedProcess(
             list(argv), 2, stdout=secret_text, stderr=secret_text
         )
@@ -477,6 +482,7 @@ def test_child_failure_is_redacted_and_does_not_print_child_output(
     ) as exc:
         iteration.run_scene_configuration_diagnostic_iteration(args, runner=failed)
     assert secret_text not in str(exc.value)
+    assert not (Path(args.bundle_output_root) / "stage").exists()
 
 
 def _install_paid_runtime_environment(
