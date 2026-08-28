@@ -17,6 +17,9 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+    MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+    MIN_CONTENT_AGENTS_SPEND_USD,
     REQUIRED_PARENT_TTL_SECONDS,
 )
 from .task_evaluation_configured_scene_public_projection import (
@@ -169,6 +172,13 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         stage_caps = openai["stage_max_cost_usd"]
         openai_cap = float(openai["maximum_cost_usd"])
         request_count = int(openai["maximum_requests"])
+        minimum_stage_caps = {
+            "artifixer_semantic_teacher": (
+                MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+            ),
+            "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+            "content_agents": MIN_CONTENT_AGENTS_SPEND_USD,
+        }
         if spend["hard_ttl_seconds"] != REQUIRED_PARENT_TTL_SECONDS:
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_scene_configuration_parent_runtime_budget_invalid"
@@ -183,6 +193,10 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             or openai_cap > MAX_EXTERNAL_SERVICE_SPEND_USD
             or sum(float(value) for value in stage_caps.values())
             > openai_cap + 1e-9
+            or any(
+                float(stage_caps[stage]) + 1e-9 < minimum
+                for stage, minimum in minimum_stage_caps.items()
+            )
             or (openai_cap == 0) != (request_count == 0)
         ):
             raise TaskEvaluationLaunchPreparationContractError(
