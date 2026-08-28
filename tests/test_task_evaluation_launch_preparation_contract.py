@@ -12,6 +12,9 @@ from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+    MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+    MIN_CONTENT_AGENTS_SPEND_USD,
 )
 
 
@@ -33,12 +36,16 @@ def configuration_spend() -> dict[str, object]:
         "provider_compute_spend_cap_usd": 6.0,
         "external_service_caps": {
             "openai": {
-                "maximum_cost_usd": 1.5,
+                "maximum_cost_usd": 3.0,
                 "maximum_requests": 32,
                 "stage_max_cost_usd": {
-                    "artifixer_semantic_teacher": 0.4,
-                    "artifixer_visual_review": 0.75,
-                    "content_agents": 0.35,
+                    "artifixer_semantic_teacher": (
+                        MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                    ),
+                    "artifixer_visual_review": (
+                        MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+                    ),
+                    "content_agents": MIN_CONTENT_AGENTS_SPEND_USD,
                 },
             }
         },
@@ -211,6 +218,16 @@ def test_configuration_run_cannot_claim_an_episode_or_bind_a_controller() -> Non
 def test_configuration_external_service_caps_fit_total_authority() -> None:
     value = test_configuration_request()
     value["spend"]["hard_cap_usd"] = 7.0
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_scene_configuration_external_spend_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+    value = test_configuration_request()
+    value["spend"]["external_service_caps"]["openai"][
+        "stage_max_cost_usd"
+    ]["artifixer_visual_review"] = MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD - 0.01
     with pytest.raises(
         TaskEvaluationLaunchPreparationContractError,
         match="launch_preparation_scene_configuration_external_spend_invalid",
