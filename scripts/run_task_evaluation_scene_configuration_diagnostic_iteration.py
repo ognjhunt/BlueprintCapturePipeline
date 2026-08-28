@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline.core.common import redacted_failure_text
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
@@ -47,6 +48,23 @@ PREPARATION_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_diagnostic_iteration_preparation.v1"
 )
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+_OPENAI_RUNTIME_FILE_ENV_NAMES = (
+    "OPENAI_ADMIN_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
+)
+_OPENAI_RUNTIME_VALUE_ENV_NAMES = (
+    "OPENAI_PROJECT_ID",
+    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+    "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+)
+_CHILD_FAILURE_DETAIL_MAX_CHARS = 300
 
 
 class SceneConfigurationDiagnosticIterationError(ValueError):
@@ -179,9 +197,52 @@ def _run_fixed(
     except (OSError, subprocess.SubprocessError) as exc:
         raise SceneConfigurationDiagnosticIterationError(code) from exc
     if completed.returncode != 0:
-        # Child output may mention local paths or provider diagnostics.  It is
-        # intentionally not copied into this operator-facing exception.
-        raise SceneConfigurationDiagnosticIterationError(code)
+        # Keep the typed child refusal so the operator does not need to rerun a
+        # paid path just to learn its cause.  Credential-shaped text and signed
+        # URL query values are removed before the bounded detail is surfaced.
+        detail = redacted_failure_text(completed.stderr or completed.stdout)
+        detail = " ".join(detail.split())
+        if len(detail) > _CHILD_FAILURE_DETAIL_MAX_CHARS:
+            detail = detail[:_CHILD_FAILURE_DETAIL_MAX_CHARS] + "..."
+        suffix = f":{detail}" if detail else f":exit_{completed.returncode}"
+        raise SceneConfigurationDiagnosticIterationError(code + suffix)
+
+
+def _preflight_paid_runtime_environment(
+    environment: Mapping[str, str],
+    *,
+    execute: bool,
+    openai_max_cost_usd: float,
+) -> None:
+    """Reject a malformed paid launch before bundle work or provider mutation."""
+
+    if not execute or openai_max_cost_usd <= 0:
+        return
+    missing = [
+        name
+        for name in (*_OPENAI_RUNTIME_FILE_ENV_NAMES, *_OPENAI_RUNTIME_VALUE_ENV_NAMES)
+        if not str(environment.get(name) or "").strip()
+    ]
+    if missing:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_openai_runtime_environment_missing:"
+            + ",".join(missing)
+        )
+    invalid_files: list[str] = []
+    for name in _OPENAI_RUNTIME_FILE_ENV_NAMES:
+        path = Path(str(environment[name])).expanduser()
+        if (
+            not path.is_absolute()
+            or path.is_symlink()
+            or not path.is_file()
+            or not os.access(path, os.R_OK)
+        ):
+            invalid_files.append(name)
+    if invalid_files:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_openai_runtime_file_invalid:"
+            + ",".join(invalid_files)
+        )
 
 
 def run_scene_configuration_diagnostic_iteration(
@@ -191,6 +252,12 @@ def run_scene_configuration_diagnostic_iteration(
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Prepare the source overlay and invoke the fixed diagnostic chain."""
+
+    _preflight_paid_runtime_environment(
+        os.environ,
+        execute=bool(args.execute),
+        openai_max_cost_usd=float(args.openai_max_cost_usd),
+    )
 
     source_repo = _input_directory(args.source_repo, field="source_repo")
     release_root = _output_directory(

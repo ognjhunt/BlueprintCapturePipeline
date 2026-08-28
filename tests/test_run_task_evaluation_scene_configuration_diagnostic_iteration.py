@@ -217,6 +217,7 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     args = _args(tmp_path, execute=True)
+    _install_paid_runtime_environment(tmp_path, monkeypatch)
     release_path = Path(args.release_root) / SOURCE_COMMIT
     release_path.mkdir(parents=True)
     (release_path / "src").mkdir()
@@ -304,6 +305,7 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
     fresh_bootstrap: bool,
 ) -> None:
     args = _args(tmp_path, execute=True)
+    _install_paid_runtime_environment(tmp_path, monkeypatch)
     args.retain_warm_session = True
     args.warm_session_authority = str((tmp_path / "warm-authority.json").resolve())
     args.warm_session_output_root = str((tmp_path / "warm-session").resolve())
@@ -461,6 +463,79 @@ def test_child_failure_is_redacted_and_does_not_print_child_output(
     ) as exc:
         iteration.run_scene_configuration_diagnostic_iteration(args, runner=failed)
     assert secret_text not in str(exc.value)
+
+
+def _install_paid_runtime_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in iteration._OPENAI_RUNTIME_FILE_ENV_NAMES:
+        value = tmp_path / name.lower()
+        value.write_text("fixture\n", encoding="utf-8")
+        monkeypatch.setenv(name, str(value.resolve()))
+    for name in iteration._OPENAI_RUNTIME_VALUE_ENV_NAMES:
+        monkeypatch.setenv(name, "fixture-identity")
+
+
+def test_execute_preflights_openai_environment_before_staging_or_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    stage_called = False
+
+    def stage(**_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        pytest.fail("release staging must not run after environment preflight refusal")
+
+    monkeypatch.setattr(
+        iteration, "stage_scene_configuration_diagnostic_release", stage
+    )
+    for name in (
+        *iteration._OPENAI_RUNTIME_FILE_ENV_NAMES,
+        *iteration._OPENAI_RUNTIME_VALUE_ENV_NAMES,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match=(
+            "scene_configuration_diagnostic_iteration_openai_runtime_environment_missing:"
+            "OPENAI_ADMIN_API_KEY_FILE"
+        ),
+    ):
+        iteration.run_scene_configuration_diagnostic_iteration(args)
+
+    assert stage_called is False
+
+
+def test_child_failure_surfaces_typed_detail_but_redacts_credentials() -> None:
+    def failed(argv, **_kwargs):
+        return subprocess.CompletedProcess(
+            list(argv),
+            2,
+            stdout="",
+            stderr=(
+                "scene_configuration_openai_runtime_secret_configuration_missing "
+                "sk-fixturesecret12345678"
+            ),
+        )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match=(
+            "diagnostic_iteration_allocator_failed:"
+            "scene_configuration_openai_runtime_secret_configuration_missing"
+        ),
+    ) as exc:
+        iteration._run_fixed(
+            ["python", "-m", "blueprint_pipeline.paid_resource_allocator"],
+            cwd=Path("/"),
+            environment={},
+            runner=failed,
+            code="scene_configuration_diagnostic_iteration_allocator_failed",
+        )
+    assert "fixturesecret" not in str(exc.value)
+    assert "<redacted>" in str(exc.value)
 
 
 def test_paths_are_explicit_absolute_and_no_arbitrary_command_option_exists(
