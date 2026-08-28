@@ -19,7 +19,6 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-from .adp_task_evaluation_abstention import valid_vast_provider_zero_api_call
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
@@ -28,13 +27,14 @@ from .task_evaluation_scene_configuration_paid_authority import (
     AUTHORITY_SCHEMA_VERSION,
     validate_scene_configuration_paid_authority,
 )
-from .task_evaluation_scene_configuration_vast import (
-    DIAGNOSTIC_RESULT_SCHEMA_VERSION,
-)
-from .vast_provider_adapter import (
+from .vast_evidence_contracts import (
+    SCENE_CONFIGURATION_DIAGNOSTIC_RESULT_SCHEMA_VERSION,
     VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION,
     VAST_TEARDOWN_SCHEMA_VERSION,
+    valid_vast_provider_zero_api_call,
 )
+
+DIAGNOSTIC_RESULT_SCHEMA_VERSION = SCENE_CONFIGURATION_DIAGNOSTIC_RESULT_SCHEMA_VERSION
 
 
 SCHEMA_VERSION = "task_evaluation_scene_configuration_diagnostic_terminal_evidence.v1"

@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .adp_task_evaluation_abstention import valid_vast_provider_zero_api_call
 from .decision_evidence_contracts import canonical_digest
+from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 from .native_task_arena_construction_bundle import (
     load_verified_native_task_arena_construction_bundle,
 )

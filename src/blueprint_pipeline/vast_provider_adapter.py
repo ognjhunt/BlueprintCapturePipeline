@@ -133,11 +133,18 @@ from .vast_retained_instance import (
     retention_decision as _retention_decision,
 )
 from .vast_provider_validation import final_validation as _final_validation
+from .vast_evidence_contracts import (
+    VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION,
+    VAST_TEARDOWN_SCHEMA_VERSION,
+)
+from .vast_scene_configuration_warm_readiness import (
+    observed_scene_configuration_warm_readiness,
+    scene_configuration_warm_validation_fields,
+)
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script
 
 
-VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
 VAST_RUNTIME_DISCOVERY_SCHEMA_VERSION = "vast_runtime_discovery.v1"
 VAST_PROVIDER_PLAN_SCHEMA_VERSION = "vast_provider_plan.v1"
 VAST_OFFER_SELECTION_SCHEMA_VERSION = "vast_offer_selection_manifest.v1"
@@ -151,7 +158,6 @@ VAST_VIDEO_SMOKE_SCHEMA_VERSION = "vast_video_smoke_result.v1"
 VAST_BLUEPRINT_BUNDLE_PREFLIGHT_SCHEMA_VERSION = "vast_blueprint_bundle_preflight.v1"
 VAST_ISAAC_IMAGE_STARTUP_PREFLIGHT_SCHEMA_VERSION = "vast_isaac_image_startup_preflight.v1"
 VAST_TEMPLATE_DISCOVERY_SCHEMA_VERSION = "vast_template_discovery.v1"
-VAST_TEARDOWN_SCHEMA_VERSION = "vast_teardown_manifest.v1"
 VAST_FINAL_VALIDATION_SCHEMA_VERSION = "vast_final_validation.v1"
 
 VAST_API_BASE = "https://console.vast.ai/api/v0"
@@ -9389,13 +9395,11 @@ def run_vast_provider_adapter(
                 "BLUEPRINT_VAST_SCENE_CONFIGURATION_RUNTIME_SECRETS_SCRUBBED"
                 in heartbeat_text
             )
-            scene_warm_runtime_ready = (
-                "BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_READY"
-                in heartbeat_text
-            )
-            scene_artifixer_warm_runtime_ready = (
-                "BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_READY"
-                in heartbeat_text
+            (
+                scene_warm_runtime_ready,
+                scene_artifixer_warm_runtime_ready,
+            ) = observed_scene_configuration_warm_readiness(
+                heartbeat_text
             )
             scene_bundle_sha256_verified = (
                 "BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED"
@@ -9855,28 +9859,7 @@ def run_vast_provider_adapter(
                 == "task_evaluation_scene_configuration"
                 and provider_command.get("provider_entrypoint_started") is True
             ),
-            "scene_configuration_runtime_root_ready": (
-                provider_command.get("provider_bundle_kind")
-                == "task_evaluation_scene_configuration"
-                and provider_command.get("provider_bundle_downloaded") is True
-                and provider_command.get("provider_entrypoint_started") is True
-                and (
-                    provider_command.get("scene_configuration_warm_runtime_ready")
-                    is True
-                    or provider_command.get(
-                        "scene_configuration_artifixer_warm_runtime_ready"
-                    )
-                    is True
-                )
-            ),
-            "scene_configuration_artifixer_warm_runtime_ready": (
-                provider_command.get("provider_bundle_kind")
-                == "task_evaluation_scene_configuration"
-                and provider_command.get(
-                    "scene_configuration_artifixer_warm_runtime_ready"
-                )
-                is True
-            ),
+            **scene_configuration_warm_validation_fields(provider_command),
             "scene_configuration_runtime_secrets_scrubbed": (
                 provider_command.get(
                     "scene_configuration_runtime_secrets_scrubbed"
