@@ -154,6 +154,41 @@ def test_fresh_bundle_switches_to_checkpoint_resume_inside_warm_iteration() -> N
     ) == "checkpoint_resume"
 
 
+def test_diagnostic_producer_registry_binds_bundle_toolchain_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, str] = {}
+    sentinel = object()
+
+    def build_registry(*, expected_source_commit: str):
+        observed["expected_source_commit"] = expected_source_commit
+        return sentinel
+
+    monkeypatch.setattr(
+        provider_runner,
+        "builtin_scene_configuration_stage_producer_registry",
+        build_registry,
+    )
+    registry = provider_runner._diagnostic_stage_producer_registry(
+        bundle_manifest={
+            "source_commit": "b" * 40,
+            "toolchain_source_commit": "b" * 40,
+        }
+    )
+
+    assert registry is sentinel
+    assert observed == {"expected_source_commit": "b" * 40}
+    with pytest.raises(
+        ValueError, match="scene_configuration_diagnostic_toolchain_identity_invalid"
+    ):
+        provider_runner._diagnostic_stage_producer_registry(
+            bundle_manifest={
+                "source_commit": "b" * 40,
+                "toolchain_source_commit": "a" * 40,
+            }
+        )
+
+
 def test_fresh_ssh_probe_and_child_entrypoint_never_inherit_secret_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

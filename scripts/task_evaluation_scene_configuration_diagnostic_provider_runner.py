@@ -96,6 +96,26 @@ def _effective_diagnostic_bootstrap_mode(
     )
 
 
+def _diagnostic_stage_producer_registry(*, bundle_manifest: dict):
+    """Bind executable producers to the bundle toolchain, not construction."""
+
+    source_commit = str(bundle_manifest.get("source_commit") or "")
+    toolchain_source_commit = str(
+        bundle_manifest.get("toolchain_source_commit") or ""
+    )
+    if (
+        _COMMIT.fullmatch(source_commit) is None
+        or _COMMIT.fullmatch(toolchain_source_commit) is None
+        or toolchain_source_commit != source_commit
+    ):
+        raise ValueError(
+            "scene_configuration_diagnostic_toolchain_identity_invalid"
+        )
+    return builtin_scene_configuration_stage_producer_registry(
+        expected_source_commit=toolchain_source_commit
+    )
+
+
 def _diagnostic_implementation_identity(
     *, runtime: Path, checkpoint: dict, base_source_commit: str
 ) -> tuple[str, dict]:
@@ -552,8 +572,8 @@ def main() -> int:
             os.environ.pop(
                 "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT", None
             )
-        producers = builtin_scene_configuration_stage_producer_registry(
-            expected_source_commit=str(envelope["expected_production_commit"])
+        producers = _diagnostic_stage_producer_registry(
+            bundle_manifest=bundle_manifest
         )
         advanced = checkpoint
 
