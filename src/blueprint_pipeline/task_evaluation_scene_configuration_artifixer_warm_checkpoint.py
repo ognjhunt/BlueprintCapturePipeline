@@ -393,6 +393,153 @@ def validate_artifixer_post_training_checkpoint(
     return checkpoint
 
 
+def _restore_inventory_modes_after_zip_extraction(*, checkpoint_root: Path) -> None:
+    """Restore authenticated immutable modes that ``zipfile`` does not preserve."""
+
+    root = checkpoint_root.resolve()
+    manifest = root / f"{SCHEMA_VERSION}.json"
+    checkpoint = _read(
+        manifest, code="scene_configuration_artifixer_warm_checkpoint_invalid"
+    )
+    inventory = checkpoint.get("inventory")
+    if (
+        checkpoint_root.is_symlink()
+        or not root.is_dir()
+        or checkpoint.get("schema_version") != SCHEMA_VERSION
+        or checkpoint.get("checkpoint_digest")
+        != canonical_digest(checkpoint, digest_field="checkpoint_digest")
+        or not isinstance(inventory, list)
+        or len(inventory) != 10
+        or any(path.is_symlink() for path in root.rglob("*"))
+    ):
+        raise ArtifixerPostTrainingCheckpointError(
+            "scene_configuration_artifixer_warm_checkpoint_inventory_invalid"
+        )
+    descriptors: list[tuple[int, int]] = []
+    expected_paths: set[str] = set()
+    try:
+        for row in inventory:
+            relative = (
+                str(row.get("relative_path") or "")
+                if isinstance(row, Mapping)
+                else ""
+            )
+            mode = row.get("mode") if isinstance(row, Mapping) else None
+            posix = PurePosixPath(relative)
+            path = root.joinpath(*posix.parts).resolve()
+            try:
+                path.relative_to(root)
+            except ValueError as exc:
+                raise ArtifixerPostTrainingCheckpointError(
+                    "scene_configuration_artifixer_warm_checkpoint_inventory_invalid"
+                ) from exc
+            if (
+                not relative
+                or relative in expected_paths
+                or posix.is_absolute()
+                or ".." in posix.parts
+                or isinstance(mode, bool)
+                or mode != 0o440
+            ):
+                raise ArtifixerPostTrainingCheckpointError(
+                    "scene_configuration_artifixer_warm_checkpoint_inventory_invalid"
+                )
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                metadata = os.fstat(descriptor)
+                digest = hashlib.sha256()
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    digest.update(chunk)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_size != row.get("size_bytes")
+                    or "sha256:" + digest.hexdigest() != row.get("sha256")
+                ):
+                    raise ArtifixerPostTrainingCheckpointError(
+                        "scene_configuration_artifixer_warm_checkpoint_inventory_invalid"
+                    )
+            except Exception:
+                os.close(descriptor)
+                raise
+            descriptors.append((descriptor, mode))
+            expected_paths.add(relative)
+        observed_paths = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file() and path != manifest
+        }
+        if observed_paths != expected_paths:
+            raise ArtifixerPostTrainingCheckpointError(
+                "scene_configuration_artifixer_warm_checkpoint_inventory_invalid"
+            )
+        for descriptor, mode in descriptors:
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+                os.fchmod(descriptor, mode)
+    finally:
+        for descriptor, _mode in descriptors:
+            os.close(descriptor)
+
+
+def validated_artifixer_post_training_checkpoint_reference(
+    *, extraction_root: Path, result: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate and reopen a portable post-training checkpoint from provider output."""
+
+    reference = result.get("artifixer_post_training_checkpoint")
+    if not isinstance(reference, Mapping):
+        return None, "scene_configuration_artifixer_warm_checkpoint_missing"
+    relative_root = Path(str(reference.get("provider_output_relative_root") or ""))
+    relative_manifest = Path(str(reference.get("manifest_relative_path") or ""))
+    if (
+        relative_root.is_absolute()
+        or relative_manifest.is_absolute()
+        or not relative_root.parts
+        or not relative_manifest.parts
+        or ".." in relative_root.parts
+        or ".." in relative_manifest.parts
+    ):
+        return None, "scene_configuration_artifixer_warm_checkpoint_unsafe"
+    root = (extraction_root / relative_root).resolve()
+    manifest = (extraction_root / relative_manifest).resolve()
+    try:
+        root.relative_to(extraction_root)
+        manifest.relative_to(root)
+    except ValueError:
+        return None, "scene_configuration_artifixer_warm_checkpoint_unsafe"
+    if (
+        manifest != root / f"{SCHEMA_VERSION}.json"
+        or manifest.is_symlink()
+        or not manifest.is_file()
+        or _sha256(manifest) != reference.get("manifest_sha256")
+    ):
+        return None, "scene_configuration_artifixer_warm_checkpoint_invalid"
+    try:
+        _restore_inventory_modes_after_zip_extraction(checkpoint_root=root)
+        checkpoint = validate_artifixer_post_training_checkpoint(checkpoint_root=root)
+    except (OSError, RuntimeError, ValueError):
+        return None, "scene_configuration_artifixer_warm_checkpoint_invalid"
+    files = [path for path in root.rglob("*") if path.is_file()]
+    if (
+        checkpoint.get("checkpoint_digest") != reference.get("checkpoint_digest")
+        or checkpoint.get("source_diagnostic_checkpoint_digest")
+        != reference.get("source_diagnostic_checkpoint_digest")
+        or checkpoint.get("binding_digest") != reference.get("binding_digest")
+        or len(files) != reference.get("file_count")
+        or sum(path.stat().st_size for path in files) != reference.get("total_bytes")
+    ):
+        return None, "scene_configuration_artifixer_warm_checkpoint_invalid"
+    return {
+        **dict(reference),
+        "checkpoint_root": str(root),
+        "manifest_path": str(manifest),
+    }, None
+
+
 def hydrate_artifixer_post_training_checkpoint(
     *, checkpoint_root: str | Path, expected_binding_digest: str
 ) -> dict[str, Any]:
@@ -442,5 +589,6 @@ __all__ = [
     "artifixer_post_training_binding_digest",
     "hydrate_artifixer_post_training_checkpoint",
     "materialize_artifixer_post_training_checkpoint",
+    "validated_artifixer_post_training_checkpoint_reference",
     "validate_artifixer_post_training_checkpoint",
 ]
