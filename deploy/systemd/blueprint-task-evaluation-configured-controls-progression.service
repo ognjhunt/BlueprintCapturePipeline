@@ -1,0 +1,49 @@
+[Unit]
+Description=Advance configured scenes into canonical Franka controls
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target blueprint-task-evaluation-launch-reconciler.service
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/blueprint/task-evaluation-configured-controls-plans /etc/blueprint/provider-secrets
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+LimitNOFILE=4096
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=5min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT=/etc/blueprint/task-evaluation-configured-controls-plans
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/task_evaluation_launch_webapp_hmac
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL=https://tryblueprint.io/api/internal/task-evaluation-launch-submissions
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_configured_controls_progression_worker --plan-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT}" --launch-state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --progression-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT}" --preparation-queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT}" --activation-queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT}" --repo-root "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" --webapp-secret-file "$${BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE}" --webapp-endpoint "$${BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL}"'
