@@ -194,6 +194,19 @@ def _patch_authority_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _rewrite_adapter(path: Path, **updates: object) -> None:
+    adapter = json.loads(path.read_text(encoding="utf-8"))
+    for key, value in updates.items():
+        if value is _MISSING:
+            adapter.pop(key, None)
+        else:
+            adapter[key] = value
+    path.write_text(json.dumps(adapter), encoding="utf-8")
+
+
+_MISSING = object()
+
+
 def test_direct_diagnostic_enters_authoritative_project_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -287,6 +300,79 @@ def test_diagnostic_terminal_evidence_reopens_exact_attempt_bytes(
         match="scene_configuration_diagnostic_spend_adapter_record_invalid",
     ):
         spend.validate_scene_configuration_diagnostic_terminal_evidence(terminal_path)
+
+
+@pytest.mark.parametrize(
+    "aggregate_value",
+    [False, _MISSING],
+    ids=["current-explicit-false", "legacy-v1-omission"],
+)
+def test_adapter_secret_proof_accepts_current_and_legacy_v1_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aggregate_value: object,
+) -> None:
+    _patch_authority_validation(monkeypatch)
+    source = _sources(tmp_path)
+    _rewrite_adapter(
+        source["adapter"], raw_secret_values_recorded=aggregate_value
+    )
+
+    terminal = spend.materialize_scene_configuration_diagnostic_terminal_evidence(
+        attempt_authority_path=source["authority"],
+        terminal_result_path=source["result"],
+        provider_adapter_result_path=source["adapter"],
+        teardown_manifest_path=source["teardown"],
+        post_teardown_provider_zero_path=source["zero"],
+        output_path=tmp_path / "terminal.json",
+    )
+
+    assert terminal["raw_secret_values_recorded"] is False
+
+
+@pytest.mark.parametrize(
+    ("updates", "case"),
+    [
+        ({"raw_secret_values_recorded": None}, "explicit-null"),
+        ({"raw_secret_values_recorded": True}, "explicit-true"),
+        (
+            {
+                "raw_secret_values_recorded": _MISSING,
+                "raw_api_key_stored": True,
+            },
+            "legacy-raw-key-not-proven",
+        ),
+        (
+            {
+                "raw_secret_values_recorded": _MISSING,
+                "secret_values_in_artifact": True,
+            },
+            "legacy-artifact-secret-not-proven",
+        ),
+    ],
+)
+def test_adapter_secret_proof_rejects_contradictory_or_unproven_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    updates: dict[str, object],
+    case: str,
+) -> None:
+    _patch_authority_validation(monkeypatch)
+    source = _sources(tmp_path)
+    _rewrite_adapter(source["adapter"], **updates)
+
+    with pytest.raises(
+        spend.SceneConfigurationDiagnosticSpendError,
+        match="scene_configuration_diagnostic_spend_terminal_binding_invalid",
+    ):
+        spend.materialize_scene_configuration_diagnostic_terminal_evidence(
+            attempt_authority_path=source["authority"],
+            terminal_result_path=source["result"],
+            provider_adapter_result_path=source["adapter"],
+            teardown_manifest_path=source["teardown"],
+            post_teardown_provider_zero_path=source["zero"],
+            output_path=tmp_path / f"terminal-{case}.json",
+        )
 
 
 def test_diagnostic_terminal_evidence_rejects_non_vast_global_zero(
