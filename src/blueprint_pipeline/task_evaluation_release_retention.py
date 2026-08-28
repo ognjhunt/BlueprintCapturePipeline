@@ -93,6 +93,11 @@ DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _COMMIT_SEARCH_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 _PUBLICATION_RECEIPT_RE = re.compile(r"([0-9a-f]{40})\.publication\.v1\.json")
+_STANDING_AUTHORIZATION_STEP_LOG_RE = re.compile(
+    r"(?P<authority_name>.+\.json)\.standing_authorization\."
+    r"(?P<stream>stdout|stderr)\.log"
+)
+_MAX_STANDING_AUTHORIZATION_STEP_LOG_BYTES = 1024 * 1024
 _PROFILE_ID_KEYS = frozenset({"profile_id", "launch_profile_id"})
 _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
     {
@@ -471,8 +476,47 @@ def _standing_authorization_protections(
     documents: list[dict[str, Any]] = []
     terminal_orphans: list[dict[str, Any]] = []
     known_authorization_files = {f"{profile_id}.json" for profile_id in profiles}
+    authority_files = {
+        child.name
+        for child in directory.iterdir()
+        if child.suffix == ".json" and not child.is_symlink() and child.is_file()
+    }
     for child in sorted(directory.iterdir(), key=lambda item: item.name):
         if child.name == "consumed" and child.is_dir() and not child.is_symlink():
+            continue
+        step_log_match = _STANDING_AUTHORIZATION_STEP_LOG_RE.fullmatch(child.name)
+        if step_log_match is not None:
+            authority_name = step_log_match.group("authority_name")
+            if child.is_symlink() or not child.is_file():
+                raise ReleaseRetentionError(
+                    f"release_retention_standing_authorization_step_log_invalid:{child.name}"
+                )
+            try:
+                metadata = child.stat()
+                payload = child.read_bytes()
+                payload.decode("utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ReleaseRetentionError(
+                    f"release_retention_standing_authorization_step_log_invalid:{child.name}"
+                ) from exc
+            if (
+                authority_name not in authority_files
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or len(payload) > _MAX_STANDING_AUTHORIZATION_STEP_LOG_BYTES
+            ):
+                raise ReleaseRetentionError(
+                    f"release_retention_standing_authorization_step_log_invalid:{child.name}"
+                )
+            documents.append(
+                {
+                    "path": str(child),
+                    "sha256": _sha256_bytes(payload),
+                    "size_bytes": len(payload),
+                    "mode": "0600",
+                    "paired_authorization_path": str(directory / authority_name),
+                    "credential_redaction_required_by_producer": True,
+                }
+            )
             continue
         if child.is_symlink() or not child.is_file():
             raise ReleaseRetentionError(

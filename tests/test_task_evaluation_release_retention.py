@@ -381,6 +381,105 @@ def test_unexpired_or_malformed_orphan_standing_authorization_still_blocks(
         )
 
 
+def test_standing_authorization_step_logs_are_digest_bound_reference_documents(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    standing = state["standing_authorization_dir"]
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    assert isinstance(standing, Path)
+    profile = _profile(tmp_path, profile_id="logged-authority", commit=active)
+    _write_json(profile_dir / "logged-authority.json", profile)
+    _rewrite_catalog(profile_dir, catalog)
+    authority = standing / "logged-authority.json"
+    _write_json(
+        authority,
+        {
+            "schema_version": "task_evaluation_standing_launch_authorization.v1",
+            "profile_id": profile["profile_id"],
+            "profile_digest": profile["profile_digest"],
+            "max_launches": 1,
+            "max_total_spend_usd": 2.0,
+            "expires_at": (NOW + timedelta(days=1)).isoformat(),
+        },
+    )
+    logs = []
+    for stream, payload in (("stdout", "published\n"), ("stderr", "")):
+        path = standing / (
+            f"{authority.name}.standing_authorization.{stream}.log"
+        )
+        path.write_text(payload, encoding="utf-8")
+        path.chmod(0o600)
+        logs.append(path)
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    log_documents = [
+        row for row in plan["reference_documents"] if row["path"] in map(str, logs)
+    ]
+    assert {row["path"] for row in log_documents} == {str(path) for path in logs}
+    assert all(row["mode"] == "0600" for row in log_documents)
+    assert all(
+        row["paired_authorization_path"] == str(authority)
+        for row in log_documents
+    )
+
+
+@pytest.mark.parametrize("corruption", ("wrong_mode", "orphaned_log", "symlink"))
+def test_standing_authorization_step_log_ambiguity_blocks_retention(
+    tmp_path: Path, corruption: str
+) -> None:
+    active = "a" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    standing = state["standing_authorization_dir"]
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    assert isinstance(standing, Path)
+    profile = _profile(tmp_path, profile_id="logged-authority", commit=active)
+    _write_json(profile_dir / "logged-authority.json", profile)
+    _rewrite_catalog(profile_dir, catalog)
+    authority = standing / "logged-authority.json"
+    _write_json(
+        authority,
+        {
+            "schema_version": "task_evaluation_standing_launch_authorization.v1",
+            "profile_id": profile["profile_id"],
+            "profile_digest": profile["profile_digest"],
+            "max_launches": 1,
+            "max_total_spend_usd": 2.0,
+            "expires_at": (NOW + timedelta(days=1)).isoformat(),
+        },
+    )
+    log = standing / (
+        f"{authority.name}.standing_authorization.stderr.log"
+    )
+    if corruption == "symlink":
+        outside = tmp_path / "outside.log"
+        outside.write_text("outside", encoding="utf-8")
+        log.symlink_to(outside)
+    else:
+        log.write_text("diagnostic", encoding="utf-8")
+        log.chmod(0o600 if corruption == "orphaned_log" else 0o644)
+        if corruption == "orphaned_log":
+            authority.unlink()
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match="release_retention_standing_authorization_step_log_invalid",
+    ):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active  # type: ignore[arg-type]
+        )
+
+
 def test_catalog_disabled_unavailable_profile_does_not_block_safe_retention(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
