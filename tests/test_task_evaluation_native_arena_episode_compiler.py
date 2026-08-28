@@ -87,10 +87,6 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     value["scene"]["identity"] = configured["scene_identity"]
     value["task"]["identity"] = configured["task_template"]["identity"]
     value["task"]["subject"]["identity"] = configured["replacement"]["identity"]
-    value["task"]["configured_scene_revision_digest"] = configured[
-        "revision_digest"
-    ]
-    revision_path = _write_json(inputs, "revision.json", configured)
     bundle_path = inputs / "configured-scene.zip"
     _configured_bundle(bundle_path)
     robot_identity = value["robot"]["identity"]
@@ -135,26 +131,80 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             "cameras": [{"role": "external"}],
         },
         "scene.configured_revision.task_template.definition": {
-            "schema_version": "task_evaluation_native_task_definition.v1",
-            "identity": task_identity,
-            "task_spec": {"task_kind": "rigid_pick_place"},
-            "task_object_pose_world": {
-                "position_world_m": [2.9, -6.7, 0.82],
-                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "schema_version": "task_evaluation_rigid_relocation_template.v1",
+            "status": "preregistered_candidate_pending_configured_scene_revision",
+            "task_identity": task_identity,
+            "object_identity": configured["replacement"]["identity"],
+            "strategy": "planar_push",
+            "start_center_xyz_m": [2.9742285, -6.7605156, 0.818319],
+            "target_center_xyz_m": [3.0942285, -6.7605156, 0.818319],
+            "control_frequency_hz": 20,
+            "maximum_episode_seconds": 12.0,
+            "maximum_step_count": 240,
+            "resolved_seed": 839873104,
+            "controls_order": ["zero_action", "deterministic_scripted"],
+            "failure_metrics": ["insufficient_displacement", "timeout"],
+            "preregistration_rule": "Any task change creates a new version.",
+            "success": {
+                "authority": "deterministic_simulator_state",
+                "forbidden_collision_allowed": False,
+                "joint_limit_violation_allowed": False,
+                "maximum_final_planar_target_error_m": 0.05,
+                "minimum_planar_displacement_m": 0.1,
+                "object_must_remain_on_registered_support": True,
             },
         },
         "scene.configured_revision.task_template.success_criteria": {
-            "schema_version": "task_evaluation_native_success_criteria.v1",
-            "identity": task_identity,
-            "criteria": {"minimum_displacement_m": 0.1},
+            "schema_version": "task_evaluation_rigid_relocation_success_criteria.v1",
+            "status": "preregistered_before_any_episode",
+            "authority": "deterministic_simulator_state",
+            "forbidden_collision_allowed": False,
+            "joint_limit_violation_allowed": False,
+            "maximum_final_planar_target_error_m": 0.05,
+            "minimum_planar_displacement_m": 0.1,
+            "object_must_remain_on_registered_support": True,
+            "target_center_xyz_m": [3.0942285, -6.7605156, 0.818319],
         },
         "scene.configured_revision.task_template.execution": {
-            "schema_version": "task_evaluation_native_episode_execution.v1",
-            "identity": task_identity,
-            "physics_frequency_hz": 120,
-            "scenario": {"cell_id": "canonical.seed_17"},
+            "schema_version": "task_evaluation_rigid_relocation_execution_spec.v1",
+            "status": "preregistered_before_any_episode",
+            "strategy": "planar_push",
+            "start_center_xyz_m": [2.9742285, -6.7605156, 0.818319],
+            "target_center_xyz_m": [3.0942285, -6.7605156, 0.818319],
+            "control_frequency_hz": 20,
+            "maximum_episode_seconds": 12.0,
+            "maximum_step_count": 240,
+            "resolved_seed": 839873104,
+            "action_bounds_m_per_step": {"minimum": -0.02, "maximum": 0.02},
+            "collision_exclusions": [
+                "robot_self_collision_pairs_declared_by_robot_configuration"
+            ],
+            "termination": ["success", "timeout"],
         },
     }
+    document_paths = {
+        contract_path: _write_json(inputs, f"input-{index}.json", document)
+        for index, (contract_path, document) in enumerate(docs.items())
+    }
+    for contract_path, revision_field in (
+        ("scene.configured_revision.task_template.definition", "definition"),
+        (
+            "scene.configured_revision.task_template.success_criteria",
+            "success_criteria",
+        ),
+        ("scene.configured_revision.task_template.execution", "execution"),
+    ):
+        record = _record(document_paths[contract_path], contract_path)
+        configured["task_template"][revision_field] = {
+            key: record[key] for key in ("uri", "digest", "size_bytes")
+        }
+    configured["revision_digest"] = canonical_digest(
+        configured, digest_field="revision_digest"
+    )
+    value["task"]["configured_scene_revision_digest"] = configured[
+        "revision_digest"
+    ]
+    revision_path = _write_json(inputs, "revision.json", configured)
     references = {
         "scene.configured_revision": _record(
             revision_path, "scene.configured_revision"
@@ -168,8 +218,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     references["execution_adapter.runtime_source_bundle"] = _record(
         runtime_bundle, "execution_adapter.runtime_source_bundle"
     )
-    for index, (contract_path, document) in enumerate(docs.items()):
-        path = _write_json(inputs, f"input-{index}.json", document)
+    for contract_path, path in document_paths.items():
         references[contract_path] = _record(path, contract_path)
 
     observed = {}
@@ -240,6 +289,28 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     )
     assert observed["packet_request"]["task_spec"]["manipulation_strategy"] == (
         "planar_push"
+    )
+    assert observed["packet_request"]["task_spec"]["task_kind"] == (
+        "rigid_pick_place"
+    )
+    assert observed["packet_request"]["task_spec"]["start_pose_world"][:3] == [
+        2.9742285,
+        -6.7605156,
+        0.818319,
+    ]
+    assert observed["packet_request"]["task_spec"][
+        "configured_success_criteria"
+    ]["maximum_final_planar_target_error_m"] == 0.05
+    assert observed["packet_request"]["physics_frequency_hz"] == 120
+    assert observed["packet_request"]["scenario"]["seed"] == 839873104
+    assert observed["packet_request"]["scenario"]["cell_id"] == (
+        "configured_scene_canonical.seed_839873104"
+    )
+    assert observed["packet_request"]["configured_task_template_adapter"][
+        "manipulation_strategy"
+    ] == "planar_push"
+    assert result["configured_task_template_adapter"]["source_documents_digest"].startswith(
+        "sha256:"
     )
     replacement = next(
         row

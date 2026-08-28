@@ -26,6 +26,9 @@ from .task_evaluation_native_arena_preparation_adapter import (
     build_task_evaluation_adapter_bundle,
     materialize_native_arena_adapter,
 )
+from .task_evaluation_rigid_relocation_native_adapter import (
+    adapt_rigid_relocation_task_template,
+)
 
 
 OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
@@ -249,21 +252,14 @@ def compile_native_arena_episode(
         "sensors.configuration",
         "task_evaluation_native_sensor_configuration.v1",
     )
-    task_definition = _json_reference(
-        materialized_references,
-        "scene.configured_revision.task_template.definition",
-        "task_evaluation_native_task_definition.v1",
+    task_adapter = adapt_rigid_relocation_task_template(
+        request=request,
+        configured_revision=revision,
+        materialized_references=materialized_references,
     )
-    success = _json_reference(
-        materialized_references,
-        "scene.configured_revision.task_template.success_criteria",
-        "task_evaluation_native_success_criteria.v1",
-    )
-    execution = _json_reference(
-        materialized_references,
-        "scene.configured_revision.task_template.execution",
-        "task_evaluation_native_episode_execution.v1",
-    )
+    task_definition = task_adapter["native_task_definition"]
+    success = task_adapter["native_success_criteria"]
+    execution = task_adapter["native_episode_execution"]
     for label, value in (
         ("robot.configuration", robot),
         ("robot.kinematics", kinematics),
@@ -345,6 +341,7 @@ def compile_native_arena_episode(
         "cameras": sensors.get("cameras"),
         "scenario": execution.get("scenario"),
         "physics_frequency_hz": execution.get("physics_frequency_hz"),
+        "configured_task_template_adapter": task_adapter,
         "request_digest": "",
     }
     packet_request["request_digest"] = canonical_digest(
@@ -384,6 +381,14 @@ def compile_native_arena_episode(
         "status": "completed",
         "run_id": envelope["run_id"],
         "configured_scene_revision_digest": revision["revision_digest"],
+        "configured_task_template_adapter": {
+            "schema_version": task_adapter["schema_version"],
+            "adapter_digest": task_adapter["adapter_digest"],
+            "source_documents_digest": task_adapter["source_documents"][
+                "source_documents_digest"
+            ],
+            "manipulation_strategy": task_adapter["manipulation_strategy"],
+        },
         "compiled_episode_packet": {
             "format": "native_task_arena_bundle_zip",
             "path": str(packet_zip),
