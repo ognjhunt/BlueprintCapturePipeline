@@ -336,11 +336,21 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
             encoding="utf-8"
         )
     )
+    runtime_request_path = driver._semantic_runtime_request(
+        packet_root=packet_root,
+        source_commit="a" * 40,
+        maximum_cost_usd=2.4,
+        expected_request_cost_usd=0.22,
+    )
+    runtime_request = json.loads(runtime_request_path.read_text(encoding="utf-8"))
 
     assert packet["task_count"] == 1
     assert packet["request_count"] == 1
     assert packet["backend"]["registry_entry"]["backend_id"].startswith("openai_gpt_image_2")
     assert packet["raw_nonredistributable_source_bytes_included"] is False
+    assert runtime_request["max_parallel_requests"] == 4
+    assert runtime_request["maximum_cost_usd"] == 2.4
+    assert runtime_request["expected_request_cost_usd"] == 0.22
 
 
 def test_visual_review_uses_the_scene_lanes_exclusive_cost_scope() -> None:
