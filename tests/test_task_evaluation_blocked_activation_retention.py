@@ -82,7 +82,27 @@ def _fixture(tmp_path: Path) -> dict:
     (activation / "activation-context.json").write_text(
         '{"context":"preserved"}\n', encoding="utf-8"
     )
-    (bundle_root / "provider-bundle.stdout.log").write_text("preserved log\n", encoding="utf-8")
+    launch_set = activation / "launch-set"
+    log_rows = []
+    for step_id, produces in (
+        ("provider_bundle", receipt_path),
+        ("immutable_manifest", launch_set / "manifest_publication_receipt.v1.json"),
+    ):
+        stdout = produces.with_name(f"{produces.name}.{step_id}.stdout.log")
+        stderr = produces.with_name(f"{produces.name}.{step_id}.stderr.log")
+        stdout.parent.mkdir(parents=True, exist_ok=True)
+        stdout.write_text(f"{step_id} preserved stdout\n", encoding="utf-8")
+        stderr.write_text(f"{step_id} preserved stderr\n", encoding="utf-8")
+        log_rows.append(
+            {
+                "step_id": step_id,
+                "stdout_path": str(stdout),
+                "stdout_sha256": _sha256(stdout),
+                "stderr_path": str(stderr),
+                "stderr_sha256": _sha256(stderr),
+                "credential_redaction_applied": True,
+            }
+        )
     preparation_path = activation / "paid_lane_launch_preparation.v1.json"
     preparation_path.write_text(
         json.dumps(
@@ -97,6 +117,7 @@ def _fixture(tmp_path: Path) -> dict:
                         "artifact_sha256": _sha256(receipt_path),
                     }
                 ],
+                "step_logs": log_rows,
                 "blockers": ["immutable_manifest:exit_2"],
                 "provider_allocation_performed": False,
                 "paid_inference_performed": False,
@@ -160,6 +181,43 @@ def _fixture(tmp_path: Path) -> dict:
     }
 
 
+def _complete_immutable_manifest(fixture: dict) -> Path:
+    launch_set = fixture["activation_root"] / "launch-set"
+    manifest = launch_set / "manifest_publication_receipt.v1.json"
+    manifest.write_text(
+        '{"schema_version":"immutable_manifest_publication.v1","status":"published"}\n',
+        encoding="utf-8",
+    )
+    preparation = json.loads(fixture["preparation"].read_text(encoding="utf-8"))
+    preparation["completed_steps"].append(
+        {
+            "step_id": "immutable_manifest",
+            "artifact_path": str(manifest),
+            "artifact_sha256": _sha256(manifest),
+        }
+    )
+    authority = launch_set / "task_evaluation_scene_configuration_paid_authority.v1.json"
+    stdout = authority.with_name(f"{authority.name}.paid_authority.stdout.log")
+    stderr = authority.with_name(f"{authority.name}.paid_authority.stderr.log")
+    stdout.write_text("paid authority preserved redacted stdout\n", encoding="utf-8")
+    stderr.write_text("paid authority preserved redacted stderr\n", encoding="utf-8")
+    preparation["step_logs"].append(
+        {
+            "step_id": "paid_authority",
+            "stdout_path": str(stdout),
+            "stdout_sha256": _sha256(stdout),
+            "stderr_path": str(stderr),
+            "stderr_sha256": _sha256(stderr),
+            "credential_redaction_applied": True,
+        }
+    )
+    preparation["blockers"] = ["paid_authority:exit_1"]
+    fixture["preparation"].write_text(
+        json.dumps(preparation, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return manifest
+
+
 def test_plan_apply_removes_only_exact_rebuildables_and_preserves_evidence(
     tmp_path: Path,
 ) -> None:
@@ -200,8 +258,55 @@ def test_plan_apply_removes_only_exact_rebuildables_and_preserves_evidence(
     for key in ("receipt", "preparation", "envelope", "result"):
         assert fixture[key].is_file()
     assert (fixture["activation_root"] / "references/release-window.json").is_file()
-    assert (fixture["activation_root"] / "launch-set/bundle/provider-bundle.stdout.log").is_file()
+    assert (
+        fixture["activation_root"]
+        / "launch-set/bundle/task_evaluation_scene_configuration_provider_bundle.v1.receipt.json.provider_bundle.stdout.log"
+    ).is_file()
     assert applied["evidence_artifacts_removed"] is False
+
+
+def test_two_step_pre_authority_prefix_and_failed_authority_logs_are_preserved(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    manifest = _complete_immutable_manifest(fixture)
+    keys = (
+        "activation_root",
+        "activation_base_root",
+        "state_root",
+        "activation_queue_root",
+        "profile_dir",
+        "public_catalog",
+        "standing_authorization_dir",
+        "live_reference_roots",
+        "bundle_validator",
+    )
+    plan = build_blocked_activation_retention_plan(**{key: fixture[key] for key in keys})
+
+    assert plan["completed_preparation_steps"] == [
+        "provider_bundle",
+        "immutable_manifest",
+    ]
+    assert plan["immutable_manifest"]["sha256"] == _sha256(manifest)
+    assert [row["step_id"] for row in plan["step_logs"]] == [
+        "provider_bundle",
+        "immutable_manifest",
+        "paid_authority",
+    ]
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan, sort_keys=True) + "\n", encoding="utf-8")
+    applied = apply_blocked_activation_retention_plan(
+        dry_run_plan_path=plan_path,
+        acknowledgement=APPLY_ACKNOWLEDGEMENT,
+        receipt_out=tmp_path / "apply.json",
+        bundle_validator=fixture["bundle_validator"],
+    )
+
+    assert applied["status"] == "applied"
+    assert manifest.is_file()
+    for record in plan["step_logs"]:
+        assert Path(record["stdout"]["path"]).is_file()
+        assert Path(record["stderr"]["path"]).is_file()
 
 
 def test_plan_refuses_provider_mutation_claim(tmp_path: Path) -> None:
