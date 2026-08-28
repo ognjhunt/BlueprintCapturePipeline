@@ -45,12 +45,16 @@ MAX_ATTEMPT_SPEND_USD = 10.0
 # Scene configuration sends eight immutable review frames through the selected
 # semantic-teacher backend.  Its registry binds a fail-closed maximum of $0.30
 # per request, so an authority below $2.40 cannot fund the admitted frame set.
-# The additional $0.50 reserve covers the two later OpenAI-backed stages without
+# The additional reserve covers the two later OpenAI-backed stages without
 # changing the independent semantic-teacher or evaluation-episode policies.
 MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 2.4
-MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.3
+# The fixed visual reviewer declares an 80k-token multimodal input ceiling and
+# an 8k-token output ceiling.  The canonical Agents SDK reservation rates are
+# $2.50/M input and $15/M output, so the caller must authorize at least $0.32;
+# $0.30 deterministically refuses before the provider call.
+MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.32
 MIN_CONTENT_AGENTS_SPEND_USD = 0.2
-MIN_EXTERNAL_SERVICE_SPEND_USD = 2.9
+MIN_EXTERNAL_SERVICE_SPEND_USD = 2.92
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
 OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (

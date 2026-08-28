@@ -36,6 +36,8 @@ from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget impor
     MAX_ATTEMPT_SPEND_USD,
     MAX_HOURLY_RATE_USD,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
+    MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+    MIN_EXTERNAL_SERVICE_SPEND_USD,
     OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
     PARENT_DEADLINE_EPOCH_ENV,
     REQUIRED_PARENT_TTL_SECONDS,
@@ -1136,7 +1138,7 @@ def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
         carried_stage_count=0,
     ) == {
         "artifixer_semantic_teacher": 2.4,
-        "artifixer_visual_review": 0.3,
+        "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
         "content_agents": 0.2,
     }
     assert authority_module._required_external_stage_minima(
@@ -1795,10 +1797,12 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
         output_path=authority_path,
         provider_compute_spend_cap_usd=MAX_PROVIDER_COMPUTE_SPEND_USD,
-        openai_max_cost_usd=2.9,
+        openai_max_cost_usd=MIN_EXTERNAL_SERVICE_SPEND_USD,
         openai_max_requests=32,
         openai_artifixer_semantic_teacher_max_cost_usd=2.4,
-        openai_artifixer_visual_review_max_cost_usd=0.3,
+        openai_artifixer_visual_review_max_cost_usd=(
+            MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+        ),
         openai_content_agents_max_cost_usd=0.2,
     )
     authority = authority_module.materialize_scene_configuration_paid_authority(
@@ -1836,14 +1840,14 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         (
             "visual-review-underfunded",
             {
-                "openai_artifixer_visual_review_max_cost_usd": 0.29,
+                "openai_artifixer_visual_review_max_cost_usd": 0.31,
                 "openai_content_agents_max_cost_usd": 0.21,
             },
         ),
         (
             "content-agents-underfunded",
             {
-                "openai_artifixer_visual_review_max_cost_usd": 0.31,
+                "openai_artifixer_visual_review_max_cost_usd": 0.33,
                 "openai_content_agents_max_cost_usd": 0.19,
             },
         ),
@@ -1886,7 +1890,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     assert authority["maximum_automatic_retries"] == 0
     assert authority["external_service_spend_caps"]["openai"][
         "maximum_cost_usd"
-    ] == 2.9
+    ] == MIN_EXTERNAL_SERVICE_SPEND_USD
     assert authority_module.validate_scene_configuration_paid_authority(
         authority, bundle_receipt=receipt
     ) == authority

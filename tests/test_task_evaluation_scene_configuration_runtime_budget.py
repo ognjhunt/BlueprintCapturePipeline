@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from blueprint_pipeline.task_evaluation_artifixer_ai_visual_review import (
+    AI_REVIEW_MAX_INPUT_TOKENS,
+    AI_REVIEW_MAX_OUTPUT_TOKENS,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS,
     GPU_STAGE_TIMEOUT_SECONDS,
@@ -20,6 +24,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget impor
     parent_runtime_budget_blockers,
     required_remaining_stage_seconds,
 )
+from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
+    OpenAIAgentsSDKConfig,
+)
 
 
 def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> None:
@@ -34,9 +41,16 @@ def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> 
     )
     assert MAX_PROVIDER_COMPUTE_SPEND_USD == 6.0
     assert MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD == 2.4
-    assert MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD == 0.3
+    reviewer_costs = OpenAIAgentsSDKConfig()
+    fixed_reviewer_reservation = (
+        AI_REVIEW_MAX_INPUT_TOKENS
+        * reviewer_costs.input_cost_per_million_tokens_usd
+        + AI_REVIEW_MAX_OUTPUT_TOKENS
+        * reviewer_costs.output_cost_per_million_tokens_usd
+    ) / 1_000_000
+    assert MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD == fixed_reviewer_reservation == 0.32
     assert MIN_CONTENT_AGENTS_SPEND_USD == 0.2
-    assert MIN_EXTERNAL_SERVICE_SPEND_USD == 2.9
+    assert MIN_EXTERNAL_SERVICE_SPEND_USD == 2.92
     assert MAX_EXTERNAL_SERVICE_SPEND_USD == 3.0
     assert MAX_ATTEMPT_SPEND_USD == 10.0
     assert (
