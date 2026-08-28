@@ -10,6 +10,7 @@ checkpoint.  No interface accepts an arbitrary command.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -25,7 +26,7 @@ from typing import Any, Iterator
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .retained_gpu_session_lifecycle import record_retained_gpu_state
-from .gpu_render_providers import VastRenderProvider
+from .gpu_render_providers import VastRenderProvider, enroll_vast_ssh_host_key
 from .native_task_arena_warm_vast import (
     _dispatch_warm_script_over_ssh,
     _run_pinned_ssh,
@@ -39,6 +40,9 @@ from .task_evaluation_scene_configuration_bundle import (
 )
 from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     validate_scene_configuration_diagnostic_checkpoint,
+)
+from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
+    validate_artifixer_post_training_checkpoint,
 )
 from .task_evaluation_scene_configuration_diagnostic_mode import (
     CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
@@ -67,6 +71,11 @@ from .task_evaluation_scene_configuration_warm_overlay import (
 )
 from .task_evaluation_scene_configuration_warm_remote_protocol import (
     _remote_iteration_script,
+    artifixer_warm_secret_envelope,
+    artifixer_warm_secret_install_remote_argv,
+)
+from .vast_scene_warm_secret_probe import (
+    probe_fresh_ssh_secret_environment_absent,
 )
 from .task_evaluation_scene_configuration_warm_execution_contract import (
     warm_execution_binding_blockers as _warm_execution_binding_blockers,
@@ -126,10 +135,87 @@ WARM_CARRIED_PAID_MODEL_STAGES = (
     "artifixer_visual_review",
     "content_agents",
 )
+ARTIFIXER_POST_TRAINING_CONTINUATION_KIND = (
+    "artifixer_post_training_visual_review_and_remaining_chain"
+)
+ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES = (
+    "artifixer_visual_review",
+    "content_agents",
+)
+ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES = (
+    "OPENAI_ADMIN_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
+)
+ARTIFIXER_WARM_PUBLIC_ENV_NAMES = (
+    "OPENAI_PROJECT_ID",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+    "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+    "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST",
+)
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ITERATION_ID = re.compile(r"i[0-9]{3}-[0-9a-f]{12}\Z")
 _HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _artifixer_warm_environment_authority(
+    *, stage_caps: Mapping[str, Any], maximum_requests: int
+) -> dict[str, Any]:
+    public = {
+        name: str(os.environ.get(name) or "").strip()
+        for name in ARTIFIXER_WARM_PUBLIC_ENV_NAMES
+    }
+    file_paths = {
+        name: Path(str(os.environ.get(name) or "")).expanduser()
+        for name in ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES
+    }
+    files_valid = True
+    attestation_digests: dict[str, str] = {}
+    for name, path in file_paths.items():
+        try:
+            valid = (
+                path.is_absolute()
+                and not path.is_symlink()
+                and path.is_file()
+                and path.stat().st_size > 0
+                and path.stat().st_size <= 65_536
+                and path.stat().st_mode & 0o077 == 0
+            )
+        except OSError:
+            valid = False
+        files_valid = files_valid and valid
+        if valid and "COST_SCOPE_ATTESTATION" in name:
+            attestation_digests[name] = _sha256_file(path)
+    authorized = bool(
+        files_valid
+        and all(public.values())
+        and _DIGEST.fullmatch(public["BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST"])
+        is not None
+        and maximum_requests > 0
+        and all(float(stage_caps.get(stage) or 0) > 0 for stage in ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES)
+        and len(attestation_digests) == 2
+    )
+    return {
+        "authorized": authorized,
+        "public_environment": public if authorized else {},
+        "cost_scope_attestation_digests": (
+            attestation_digests if authorized else {}
+        ),
+        "required_secret_file_environment_names": list(
+            ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES
+        ),
+    }
 
 def materialize_scene_configuration_warm_session_authority(
     *,
@@ -285,6 +371,41 @@ def materialize_scene_configuration_warm_session_authority(
         "raw_secret_values_recorded": False,
         "authority_digest": "",
     }
+    external = (paid.get("external_service_spend_caps") or {}).get("openai") or {}
+    stage_caps = external.get("stage_max_cost_usd") or {}
+    warm_environment = _artifixer_warm_environment_authority(
+        stage_caps=stage_caps,
+        maximum_requests=int(external.get("maximum_requests") or 0),
+    )
+    authority["artifixer_post_training_continuation"] = {
+        "authorized": bool(
+            fresh_diagnostic_bootstrap
+            and float(stage_caps.get("artifixer_visual_review") or 0) > 0
+            and float(stage_caps.get("content_agents") or 0) > 0
+            and warm_environment["authorized"] is True
+        ),
+        "continuation_kind": ARTIFIXER_POST_TRAINING_CONTINUATION_KIND,
+        "maximum_remote_continuations": 1,
+        "maximum_provider_allocations": 0,
+        "visual_review_provider_call_must_be_proven_absent": True,
+        "rerun_paid_model_stages": list(
+            ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES
+        ),
+        "stage_max_cost_usd": {
+            stage: float(stage_caps.get(stage) or 0)
+            for stage in ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES
+        },
+        "maximum_openai_requests": int(external.get("maximum_requests") or 0),
+        "public_environment": warm_environment["public_environment"],
+        "cost_scope_attestation_digests": warm_environment[
+            "cost_scope_attestation_digests"
+        ],
+        "required_secret_file_environment_names": warm_environment[
+            "required_secret_file_environment_names"
+        ],
+        "credentials_via_pinned_ssh_stdin_private_files_only": True,
+        "secret_values_in_authority_or_object_store": False,
+    }
     authority["authority_digest"] = canonical_digest(
         authority, digest_field="authority_digest"
     )
@@ -312,6 +433,7 @@ def validate_scene_configuration_warm_session_authority(
     _validate_claim_boundary(
         authority, code="scene_configuration_warm_session_authority_invalid"
     )
+    artifixer_continuation = authority.get("artifixer_post_training_continuation")
     if (
         authority.get("schema_version") != SESSION_AUTHORITY_SCHEMA_VERSION
         or authority.get("status") != "authorized"
@@ -359,6 +481,59 @@ def validate_scene_configuration_warm_session_authority(
         is not True
         or authority.get("required_carried_paid_model_stages_for_retention")
         != list(WARM_CARRIED_PAID_MODEL_STAGES)
+        or not isinstance(artifixer_continuation, Mapping)
+        or artifixer_continuation.get("continuation_kind")
+        != ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+        or artifixer_continuation.get("maximum_remote_continuations") != 1
+        or artifixer_continuation.get("maximum_provider_allocations") != 0
+        or artifixer_continuation.get(
+            "visual_review_provider_call_must_be_proven_absent"
+        )
+        is not True
+        or artifixer_continuation.get("rerun_paid_model_stages")
+        != list(ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES)
+        or artifixer_continuation.get("required_secret_file_environment_names")
+        != list(ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES)
+        or not isinstance(artifixer_continuation.get("authorized"), bool)
+        or not isinstance(
+            artifixer_continuation.get("public_environment"), Mapping
+        )
+        or not isinstance(
+            artifixer_continuation.get("cost_scope_attestation_digests"), Mapping
+        )
+        or (
+            artifixer_continuation.get("authorized") is True
+            and (
+                set(artifixer_continuation["public_environment"])
+                != set(ARTIFIXER_WARM_PUBLIC_ENV_NAMES)
+                or not all(artifixer_continuation["public_environment"].values())
+                or set(artifixer_continuation["cost_scope_attestation_digests"])
+                != {
+                    name
+                    for name in ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES
+                    if "COST_SCOPE_ATTESTATION" in name
+                }
+                or any(
+                    _DIGEST.fullmatch(str(value or "")) is None
+                    for value in artifixer_continuation[
+                        "cost_scope_attestation_digests"
+                    ].values()
+                )
+            )
+        )
+        or (
+            artifixer_continuation.get("authorized") is False
+            and (
+                artifixer_continuation.get("public_environment") != {}
+                or artifixer_continuation.get("cost_scope_attestation_digests") != {}
+            )
+        )
+        or artifixer_continuation.get(
+            "credentials_via_pinned_ssh_stdin_private_files_only"
+        )
+        is not True
+        or artifixer_continuation.get("secret_values_in_authority_or_object_store")
+        is not False
         or authority.get("maximum_provider_allocations") != 1
         or authority.get("maximum_automatic_retries") != 0
         or not 1
@@ -446,8 +621,9 @@ def materialize_scene_configuration_warm_session(
     adapter_result_path: str | Path,
     watchdog_handoff_path: str | Path,
     output_root: str | Path,
-    advanced_checkpoint: Mapping[str, Any],
+    advanced_checkpoint: Mapping[str, Any] | None,
     bootstrap_allocation_binding_digest: str,
+    artifixer_post_training_checkpoint: Mapping[str, Any] | None = None,
     observed_now_epoch: float | None = None,
 ) -> dict[str, Any]:
     """Seal a retained adapter result as the sole owned warm session."""
@@ -465,20 +641,45 @@ def materialize_scene_configuration_warm_session(
     decision = adapter.get("retention_decision")
     instance_ids = adapter.get("vast_instance_ids")
     now = time.time() if observed_now_epoch is None else float(observed_now_epoch)
-    try:
-        advanced_local = validate_scene_configuration_diagnostic_checkpoint(
-            checkpoint_root=str(advanced_checkpoint.get("checkpoint_root") or "")
+    general_checkpoint = isinstance(advanced_checkpoint, Mapping)
+    artifixer_checkpoint = isinstance(artifixer_post_training_checkpoint, Mapping)
+    if general_checkpoint == artifixer_checkpoint:
+        raise SceneConfigurationWarmDiagnosticError(
+            "scene_configuration_warm_checkpoint_kind_invalid"
         )
+    try:
+        if general_checkpoint:
+            assert isinstance(advanced_checkpoint, Mapping)
+            carried_local = validate_scene_configuration_diagnostic_checkpoint(
+                checkpoint_root=str(advanced_checkpoint.get("checkpoint_root") or "")
+            )
+            remote_relative = PurePosixPath(
+                str(advanced_checkpoint.get("provider_output_relative_root") or "")
+            )
+            remote_checkpoint_root = PurePosixPath(BASE_OUTPUT_ROOT).joinpath(
+                *remote_relative.parts
+            )
+            remote_artifixer_checkpoint_root: str | None = None
+            continuation_kind = "stage_three_plus_no_openai"
+        else:
+            assert isinstance(artifixer_post_training_checkpoint, Mapping)
+            carried_local = validate_artifixer_post_training_checkpoint(
+                checkpoint_root=str(
+                    artifixer_post_training_checkpoint.get("checkpoint_root") or ""
+                )
+            )
+            remote_relative = PurePosixPath("input/artifixer_post_training_checkpoint")
+            remote_checkpoint_root = PurePosixPath(
+                BASE_RUNTIME_ROOT, "input/diagnostic_checkpoint"
+            )
+            remote_artifixer_checkpoint_root = PurePosixPath(
+                BASE_RUNTIME_ROOT, "input/artifixer_post_training_checkpoint"
+            ).as_posix()
+            continuation_kind = ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
     except (OSError, RuntimeError, ValueError) as exc:
         raise SceneConfigurationWarmDiagnosticError(
             "scene_configuration_warm_advanced_checkpoint_invalid"
         ) from exc
-    remote_relative = PurePosixPath(
-        str(advanced_checkpoint.get("provider_output_relative_root") or "")
-    )
-    remote_checkpoint_root = PurePosixPath(BASE_OUTPUT_ROOT).joinpath(
-        *remote_relative.parts
-    )
     started_id_path = Path(str(watchdog.get("started_instance_id_path") or ""))
     try:
         started_id = started_id_path.read_text(encoding="utf-8").strip()
@@ -522,19 +723,37 @@ def materialize_scene_configuration_warm_session(
         or watchdog.get("started_instance_id_path")
         != decision.get("watchdog_started_instance_id_path")
         or started_id != str(instance_ids[0])
-        or remote_relative.is_absolute()
-        or not remote_relative.parts
-        or ".." in remote_relative.parts
-        or int(advanced_checkpoint.get("completed_stage_prefix_count") or 0) < 3
-        or advanced_local.get("checkpoint_digest")
-        != advanced_checkpoint.get("checkpoint_digest")
-        or (advanced_local.get("scientific_bindings") or {}).get(
-            "binding_digest"
+        or (
+            general_checkpoint
+            and (
+                remote_relative.is_absolute()
+                or not remote_relative.parts
+                or ".." in remote_relative.parts
+                or int((advanced_checkpoint or {}).get("completed_stage_prefix_count") or 0)
+                < 3
+                or carried_local.get("checkpoint_digest")
+                != (advanced_checkpoint or {}).get("checkpoint_digest")
+                or (carried_local.get("scientific_bindings") or {}).get(
+                    "binding_digest"
+                )
+                != authority.get("scientific_binding_digest")
+            )
         )
-        != authority.get("scientific_binding_digest")
-        or _DIGEST.fullmatch(
-            str(advanced_checkpoint.get("checkpoint_digest") or "")
+        or (
+            artifixer_checkpoint
+            and (
+                authority.get("artifixer_post_training_continuation", {}).get(
+                    "authorized"
+                )
+                is not True
+                or carried_local.get("checkpoint_digest")
+                != (artifixer_post_training_checkpoint or {}).get("checkpoint_digest")
+                or carried_local.get("scientific_binding_digest")
+                != authority.get("scientific_binding_digest")
+                or carried_local.get("visual_review_provider_call_started") is not False
+            )
         )
+        or _DIGEST.fullmatch(str(carried_local.get("checkpoint_digest") or ""))
         is None
         or _DIGEST.fullmatch(bootstrap_allocation_binding_digest) is None
         or float(watchdog.get("watchdog_deadline_epoch") or 0) - now
@@ -570,22 +789,48 @@ def materialize_scene_configuration_warm_session(
         "bootstrap_source_checkpoint_digest": authority[
             "source_checkpoint_digest"
         ],
-        "source_checkpoint_digest": advanced_checkpoint["checkpoint_digest"],
-        "carried_completed_stage_prefix_count": advanced_checkpoint[
-            "completed_stage_prefix_count"
-        ],
-        "carried_completed_stage_ids": [
-            str(row.get("stage_id") or "")
-            for row in advanced_local.get("completed_stage_results") or []
-        ],
+        "source_checkpoint_digest": (
+            carried_local["checkpoint_digest"]
+            if general_checkpoint
+            else carried_local["source_diagnostic_checkpoint_digest"]
+        ),
+        "continuation_kind": continuation_kind,
+        "artifixer_post_training_checkpoint_digest": (
+            carried_local["checkpoint_digest"] if artifixer_checkpoint else None
+        ),
+        "artifixer_post_training_binding_digest": (
+            carried_local["binding_digest"] if artifixer_checkpoint else None
+        ),
+        "carried_completed_stage_prefix_count": (
+            carried_local["completed_stage_prefix_count"] if general_checkpoint else 0
+        ),
+        "carried_completed_stage_ids": (
+            [
+                str(row.get("stage_id") or "")
+                for row in carried_local.get("completed_stage_results") or []
+            ]
+            if general_checkpoint
+            else []
+        ),
         "diagnostic_stage_sequence_ids": list(
             authority["diagnostic_stage_sequence_ids"]
         ),
-        "carried_paid_model_stages": list(
-            authority["required_carried_paid_model_stages_for_retention"]
+        "carried_paid_model_stages": (
+            list(authority["required_carried_paid_model_stages_for_retention"])
+            if general_checkpoint
+            else ["artifixer_semantic_teacher"]
         ),
-        "rerun_paid_model_stages": [],
-        "warm_openai_external_service_spend_permitted": False,
+        "rerun_paid_model_stages": (
+            []
+            if general_checkpoint
+            else list(ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES)
+        ),
+        "warm_openai_external_service_spend_permitted": artifixer_checkpoint,
+        "artifixer_post_training_continuation_authority": (
+            dict(authority["artifixer_post_training_continuation"])
+            if artifixer_checkpoint
+            else None
+        ),
         "scientific_binding_digest": authority["scientific_binding_digest"],
         "session_authority_digest": authority["authority_digest"],
         "bootstrap_allocation_binding_digest": (
@@ -608,6 +853,9 @@ def materialize_scene_configuration_warm_session(
         "base_runtime_root": BASE_RUNTIME_ROOT,
         "base_output_root": BASE_OUTPUT_ROOT,
         "current_remote_checkpoint_root": remote_checkpoint_root.as_posix(),
+        "current_remote_artifixer_post_training_checkpoint_root": (
+            remote_artifixer_checkpoint_root
+        ),
         "remote_warm_root": REMOTE_ROOT,
         "continuing_spend": True,
         "diagnostic_only": True,
@@ -634,8 +882,14 @@ def materialize_scene_configuration_warm_session(
         "last_iteration_authority_digest": None,
         "last_iteration_result_digest": None,
         "current_checkpoint_digest": session["source_checkpoint_digest"],
+        "current_artifixer_post_training_checkpoint_digest": session[
+            "artifixer_post_training_checkpoint_digest"
+        ],
         "current_remote_checkpoint_root": session[
             "current_remote_checkpoint_root"
+        ],
+        "current_remote_artifixer_post_training_checkpoint_root": session[
+            "current_remote_artifixer_post_training_checkpoint_root"
         ],
         "current_completed_stage_prefix_count": session[
             "carried_completed_stage_prefix_count"
@@ -708,6 +962,27 @@ def validate_scene_configuration_warm_session(
         session, code="scene_configuration_warm_session_invalid"
     )
     now = time.time() if observed_now_epoch is None else float(observed_now_epoch)
+    artifixer_session = (
+        session.get("continuation_kind")
+        == ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+    )
+    artifixer_continuation = bool(
+        artifixer_session
+        and state.get("current_completed_stage_prefix_count") == 0
+    )
+    general_continuation = bool(
+        session.get("continuation_kind") == "stage_three_plus_no_openai"
+        or (
+            session.get("continuation_kind") is None
+            and isinstance(state.get("current_completed_stage_prefix_count"), int)
+            and int(state["current_completed_stage_prefix_count"]) >= 3
+        )
+        or (
+            artifixer_session
+            and isinstance(state.get("current_completed_stage_prefix_count"), int)
+            and int(state["current_completed_stage_prefix_count"]) >= 3
+        )
+    )
     if (
         session.get("schema_version") != SESSION_SCHEMA_VERSION
         or session.get("status") != "ready"
@@ -739,12 +1014,66 @@ def validate_scene_configuration_warm_session(
         or not isinstance(
             state.get("consumed_openai_cost_scope_attestation_digests"), list
         )
-        or not 3 <= int(state.get("current_completed_stage_prefix_count") or 0) <= 6
+        or not (general_continuation or artifixer_continuation)
+        or (
+            general_continuation
+            and (
+                not 3
+                <= int(state.get("current_completed_stage_prefix_count") or 0)
+                <= 6
+                or state.get("current_carried_paid_model_stages")
+                != list(WARM_CARRIED_PAID_MODEL_STAGES)
+                or (
+                    not artifixer_session
+                    and (
+                        (session.get("rerun_paid_model_stages") or []) != []
+                        or session.get(
+                            "warm_openai_external_service_spend_permitted", False
+                        )
+                        is not False
+                    )
+                )
+            )
+        )
+        or (
+            artifixer_continuation
+            and (
+                state.get("current_completed_stage_prefix_count") != 0
+                or state.get("current_completed_stage_ids") != []
+                or state.get("current_carried_paid_model_stages")
+                != ["artifixer_semantic_teacher"]
+                or session.get("rerun_paid_model_stages")
+                != list(ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES)
+                or session.get("warm_openai_external_service_spend_permitted")
+                is not True
+                or not isinstance(
+                    session.get("artifixer_post_training_continuation_authority"),
+                    Mapping,
+                )
+                or session[
+                    "artifixer_post_training_continuation_authority"
+                ].get("authorized")
+                is not True
+                or _DIGEST.fullmatch(
+                    str(
+                        state.get(
+                            "current_artifixer_post_training_checkpoint_digest"
+                        )
+                        or ""
+                    )
+                )
+                is None
+                or not str(
+                    state.get(
+                        "current_remote_artifixer_post_training_checkpoint_root"
+                    )
+                    or ""
+                ).startswith(BASE_RUNTIME_ROOT + "/input/")
+            )
+        )
         or not isinstance(state.get("current_completed_stage_ids"), list)
         or len(state.get("current_completed_stage_ids") or [])
         != int(state.get("current_completed_stage_prefix_count") or 0)
-        or state.get("current_carried_paid_model_stages")
-        != list(WARM_CARRIED_PAID_MODEL_STAGES)
         or (
             require_iteration_window
             and float(session.get("watchdog_deadline_epoch") or 0) - now
@@ -872,6 +1201,32 @@ def _remote_checkpoint_root(value: object) -> str:
     return text
 
 
+def _remote_artifixer_checkpoint_root(value: object) -> str:
+    text = str(value or "")
+    path = PurePosixPath(text)
+    base = PurePosixPath(
+        BASE_RUNTIME_ROOT
+    ) / "input/artifixer_post_training_checkpoint"
+    iterations = PurePosixPath(REMOTE_ROOT) / "iterations"
+    if path == base:
+        return text
+    try:
+        relative = path.relative_to(iterations)
+    except ValueError as exc:
+        raise SceneConfigurationWarmDiagnosticError(
+            "scene_configuration_artifixer_warm_remote_checkpoint_invalid"
+        ) from exc
+    if (
+        path.is_absolute() is not True
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise SceneConfigurationWarmDiagnosticError(
+            "scene_configuration_artifixer_warm_remote_checkpoint_invalid"
+        )
+    return text
+
+
 
 
 def materialize_scene_configuration_warm_iteration_authority(
@@ -936,6 +1291,31 @@ def materialize_scene_configuration_warm_iteration_authority(
             state.get("current_remote_checkpoint_root")
             or f"{BASE_RUNTIME_ROOT}/input/diagnostic_checkpoint"
         )
+        artifixer_continuation = bool(
+            session.get("continuation_kind")
+            == ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+            and state.get("current_completed_stage_prefix_count") == 0
+        )
+        artifixer_authority = (
+            dict(session.get("artifixer_post_training_continuation_authority") or {})
+            if artifixer_continuation
+            else {}
+        )
+        if artifixer_continuation and attempted >= int(
+            artifixer_authority.get("maximum_remote_continuations") or 0
+        ):
+            raise SceneConfigurationWarmDiagnosticError(
+                "scene_configuration_artifixer_warm_continuation_limit_exhausted"
+            )
+        remote_artifixer_checkpoint_root = (
+            _remote_artifixer_checkpoint_root(
+                state.get(
+                    "current_remote_artifixer_post_training_checkpoint_root"
+                )
+            )
+            if artifixer_continuation
+            else None
+        )
         authority: dict[str, Any] = {
             "schema_version": ITERATION_AUTHORITY_SCHEMA_VERSION,
             "status": "authorized",
@@ -959,6 +1339,17 @@ def materialize_scene_configuration_warm_iteration_authority(
             "source_checkpoint_digest": overlay["source_checkpoint_digest"],
             "scientific_binding_digest": overlay["scientific_binding_digest"],
             "remote_checkpoint_root": remote_checkpoint_root,
+            "continuation_kind": (
+                ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+                if artifixer_continuation
+                else "stage_three_plus_no_openai"
+            ),
+            "source_artifixer_post_training_checkpoint_digest": state.get(
+                "current_artifixer_post_training_checkpoint_digest"
+            ),
+            "remote_artifixer_post_training_checkpoint_root": (
+                remote_artifixer_checkpoint_root
+            ),
             "carried_completed_stage_prefix_count": state[
                 "current_completed_stage_prefix_count"
             ],
@@ -968,9 +1359,32 @@ def materialize_scene_configuration_warm_iteration_authority(
             "carried_paid_model_stages": list(
                 state["current_carried_paid_model_stages"]
             ),
-            "rerun_paid_model_stages": [],
-            "fresh_openai_cost_scope_attestation_digests": {},
-            "warm_openai_external_service_spend_permitted": False,
+            "rerun_paid_model_stages": (
+                list(ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES)
+                if artifixer_continuation
+                else []
+            ),
+            "fresh_openai_cost_scope_attestation_digests": (
+                dict(artifixer_authority.get("cost_scope_attestation_digests") or {})
+                if artifixer_continuation
+                else {}
+            ),
+            "warm_openai_external_service_spend_permitted": artifixer_continuation,
+            "openai_public_environment": (
+                dict(artifixer_authority.get("public_environment") or {})
+                if artifixer_continuation
+                else {}
+            ),
+            "openai_stage_max_cost_usd": (
+                dict(artifixer_authority.get("stage_max_cost_usd") or {})
+                if artifixer_continuation
+                else {}
+            ),
+            "openai_maximum_requests": (
+                int(artifixer_authority.get("maximum_openai_requests") or 0)
+                if artifixer_continuation
+                else 0
+            ),
             "watchdog_deadline_epoch": session["watchdog_deadline_epoch"],
             "aggregate_provider_compute_spend_cap_usd": session[
                 "aggregate_provider_compute_spend_cap_usd"
@@ -1032,6 +1446,14 @@ def validate_scene_configuration_warm_iteration_authority(
         expected_checkpoint_digest=str(state["current_checkpoint_digest"]),
     )
     expected_index = int(state["attempted_iteration_count"]) + 1
+    artifixer_continuation = bool(
+        session.get("continuation_kind")
+        == ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+        and state.get("current_completed_stage_prefix_count") == 0
+    )
+    artifixer_session_authority = dict(
+        session.get("artifixer_post_training_continuation_authority") or {}
+    )
     if (
         authority.get("schema_version") != ITERATION_AUTHORITY_SCHEMA_VERSION
         or authority.get("status") != "authorized"
@@ -1065,9 +1487,53 @@ def validate_scene_configuration_warm_iteration_authority(
         != state.get("current_completed_stage_ids")
         or authority.get("carried_paid_model_stages")
         != state.get("current_carried_paid_model_stages")
-        or authority.get("rerun_paid_model_stages") != []
-        or authority.get("fresh_openai_cost_scope_attestation_digests") != {}
-        or authority.get("warm_openai_external_service_spend_permitted") is not False
+        or authority.get("continuation_kind")
+        != (
+            ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+            if artifixer_continuation
+            else "stage_three_plus_no_openai"
+        )
+        or (
+            not artifixer_continuation
+            and (
+                authority.get("rerun_paid_model_stages") != []
+                or authority.get("fresh_openai_cost_scope_attestation_digests") != {}
+                or authority.get("warm_openai_external_service_spend_permitted")
+                is not False
+                or authority.get("source_artifixer_post_training_checkpoint_digest")
+                is not None
+                or authority.get("remote_artifixer_post_training_checkpoint_root")
+                is not None
+                or authority.get("openai_public_environment") != {}
+                or authority.get("openai_stage_max_cost_usd") != {}
+                or authority.get("openai_maximum_requests") != 0
+            )
+        )
+        or (
+            artifixer_continuation
+            and (
+                authority.get("rerun_paid_model_stages")
+                != list(ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES)
+                or authority.get("fresh_openai_cost_scope_attestation_digests")
+                != artifixer_session_authority.get(
+                    "cost_scope_attestation_digests"
+                )
+                or authority.get("warm_openai_external_service_spend_permitted")
+                is not True
+                or authority.get("source_artifixer_post_training_checkpoint_digest")
+                != state.get("current_artifixer_post_training_checkpoint_digest")
+                or _remote_artifixer_checkpoint_root(
+                    authority.get("remote_artifixer_post_training_checkpoint_root")
+                )
+                != authority.get("remote_artifixer_post_training_checkpoint_root")
+                or authority.get("openai_public_environment")
+                != artifixer_session_authority.get("public_environment")
+                or authority.get("openai_stage_max_cost_usd")
+                != artifixer_session_authority.get("stage_max_cost_usd")
+                or authority.get("openai_maximum_requests")
+                != artifixer_session_authority.get("maximum_openai_requests")
+            )
+        )
         or _remote_checkpoint_root(authority.get("remote_checkpoint_root"))
         != authority.get("remote_checkpoint_root")
         or authority.get("watchdog_deadline_epoch")
@@ -1139,6 +1605,159 @@ def _consume_iteration_authority(
         },
     )
     return payload
+
+
+def _install_artifixer_warm_secret_files(
+    *, session: Mapping[str, Any], authority: Mapping[str, Any], job: Path
+) -> dict[str, Any]:
+    expected_digests = authority.get("fresh_openai_cost_scope_attestation_digests")
+    if (
+        authority.get("continuation_kind")
+        != ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+        or not isinstance(expected_digests, Mapping)
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["scene_configuration_artifixer_warm_secret_scope_invalid"],
+            "raw_secret_values_recorded": False,
+        }
+    values: dict[str, str] = {}
+    for name in ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES:
+        path = Path(str(os.environ.get(name) or "")).expanduser()
+        try:
+            valid = (
+                path.is_absolute()
+                and not path.is_symlink()
+                and path.is_file()
+                and path.stat().st_size > 0
+                and path.stat().st_size <= 65_536
+                and path.stat().st_mode & 0o077 == 0
+            )
+            value = path.read_text(encoding="utf-8") if valid else ""
+        except (OSError, UnicodeError):
+            value = ""
+            valid = False
+        if (
+            not valid
+            or not value.strip()
+            or "\x00" in value
+            or (
+                "COST_SCOPE_ATTESTATION" in name
+                and _sha256_file(path) != expected_digests.get(name)
+            )
+        ):
+            return {
+                "status": "blocked",
+                "blockers": [
+                    "scene_configuration_artifixer_warm_secret_scope_invalid"
+                ],
+                "raw_secret_values_recorded": False,
+            }
+        values[name] = value
+    enrollment = enroll_vast_ssh_host_key(
+        session, attempt_dir=job / "artifixer_warm_ssh_trust", timeout_seconds=15
+    )
+    if enrollment.get("status") != "enrolled":
+        return {
+            "status": "blocked",
+            "blockers": list(enrollment.get("blockers") or [])
+            or ["scene_configuration_artifixer_warm_secret_install_failed"],
+            "raw_secret_values_recorded": False,
+        }
+    try:
+        try:
+            envelope = artifixer_warm_secret_envelope(
+                iteration_id=str(authority["iteration_id"]), secret_values=values
+            )
+            installed = _run_pinned_ssh(
+                session=session,
+                known_hosts_file=str(enrollment["known_hosts_file"]),
+                remote_argv=artifixer_warm_secret_install_remote_argv(
+                    iteration_id=str(authority["iteration_id"])
+                ),
+                stdin=envelope,
+                timeout_seconds=30,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            installed = {
+                "status": "blocked",
+                "blockers": [
+                    "scene_configuration_artifixer_warm_secret_install_failed"
+                ],
+                "raw_secret_values_recorded": False,
+            }
+    finally:
+        values.clear()
+    if (
+        installed.get("status") != "completed"
+        or installed.get("stdout")
+        != "BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_READY\n"
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["scene_configuration_artifixer_warm_secret_install_failed"],
+            "host_key_enrollment": enrollment,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "status": "completed",
+        "blockers": [],
+        "host_key_enrollment": enrollment,
+        "secret_file_count": len(ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES),
+        "transport": "strict_pinned_ssh_stdin_private_files.v1",
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _scrub_artifixer_warm_secret_files(
+    *, session: Mapping[str, Any], authority: Mapping[str, Any], install: Mapping[str, Any]
+) -> dict[str, Any]:
+    enrollment = install.get("host_key_enrollment")
+    iteration_id = str(authority.get("iteration_id") or "")
+    if not isinstance(enrollment, Mapping) or _ITERATION_ID.fullmatch(iteration_id) is None:
+        return {
+            "status": "blocked",
+            "secret_files_absent": False,
+            "blockers": ["scene_configuration_artifixer_warm_secret_scrub_unproven"],
+            "raw_secret_values_recorded": False,
+        }
+    pending = f"{REMOTE_ROOT}/pending-secrets/{iteration_id}"
+    installed = f"{REMOTE_ROOT}/iterations/{iteration_id}/.runtime-secrets"
+    command = (
+        "set -euo pipefail; "
+        f"rm -rf -- {shlex.quote(pending)} {shlex.quote(installed)}; "
+        f"test ! -e {shlex.quote(pending)}; "
+        f"test ! -e {shlex.quote(installed)}; "
+        "printf 'BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_ABSENT\\n'"
+    )
+    try:
+        result = _run_pinned_ssh(
+            session=session,
+            known_hosts_file=str(enrollment.get("known_hosts_file") or ""),
+            remote_argv=["/bin/bash", "-c", command],
+            timeout_seconds=30,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        result = {
+            "status": "blocked",
+            "blockers": [
+                "scene_configuration_artifixer_warm_secret_scrub_unproven"
+            ],
+            "raw_secret_values_recorded": False,
+        }
+    absent = bool(
+        result.get("status") == "completed"
+        and result.get("stdout")
+        == "BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_ABSENT\n"
+    )
+    return {
+        "status": "completed" if absent else "blocked",
+        "secret_files_absent": absent,
+        "blockers": []
+        if absent
+        else ["scene_configuration_artifixer_warm_secret_scrub_unproven"],
+        "raw_secret_values_recorded": False,
+    }
 
 
 def _wait_for_remote_output_or_exit(
@@ -1442,6 +2061,13 @@ def run_scene_configuration_warm_iteration(
         remote_quiescence: dict[str, Any] = {}
         remote_writer_absent = False
         remote_setup_to_entrypoint_seconds: float | None = None
+        secret_install: dict[str, Any] = {}
+        secret_scrub: dict[str, Any] = {}
+        fresh_secret_probe: dict[str, Any] = {}
+        artifixer_continuation = (
+            authority.get("continuation_kind")
+            == ARTIFIXER_POST_TRAINING_CONTINUATION_KIND
+        )
         try:
             observation = retained_provider.inspect(str(session["provider_instance_id"]))
             if (
@@ -1500,19 +2126,35 @@ def run_scene_configuration_warm_iteration(
                     output_put_url=staging_urls["output_put_url"],
                 )
                 attempt_key = str(authority["authority_digest"])[7:23]
+                if artifixer_continuation:
+                    secret_install = _install_artifixer_warm_secret_files(
+                        session=session, authority=authority, job=job
+                    )
+                    if secret_install.get("status") != "completed":
+                        blockers.extend(
+                            secret_install.get("blockers")
+                            or [
+                                "scene_configuration_artifixer_warm_secret_install_failed"
+                            ]
+                        )
+                        remote_writer_absent = True
                 dispatch_started = time.monotonic()
-                dispatch = _dispatch_warm_script_over_ssh(
-                    job=job,
-                    session=session,
-                    remote_script=remote_script,
-                    attempt_key=attempt_key,
-                    require_dedicated_session=True,
-                )
+                if not artifixer_continuation or secret_install.get("status") == "completed":
+                    dispatch = _dispatch_warm_script_over_ssh(
+                        job=job,
+                        session=session,
+                        remote_script=remote_script,
+                        attempt_key=attempt_key,
+                        require_dedicated_session=True,
+                    )
                 dispatch_start_latency_seconds = max(
                     0.0, time.monotonic() - dispatch_started
                 )
-                if dispatch.get("status") != "completed":
+                if not dispatch and artifixer_continuation:
+                    pass
+                elif dispatch.get("status") != "completed":
                     blockers.extend(dispatch.get("blockers") or ["scene_configuration_warm_dispatch_blocked"])
+                    remote_writer_absent = True
                 else:
                     remote_dispatches = 1
                     output_zip = job / "vast_provider_runtime_output.zip"
@@ -1599,6 +2241,32 @@ def run_scene_configuration_warm_iteration(
                 + redacted_failure_detail(exc)
             )
         finally:
+            if artifixer_continuation and secret_install:
+                secret_scrub = _scrub_artifixer_warm_secret_files(
+                    session=session,
+                    authority=authority,
+                    install=secret_install,
+                )
+                if secret_scrub.get("secret_files_absent") is not True:
+                    blockers.append(
+                        "scene_configuration_artifixer_warm_secret_scrub_unproven"
+                    )
+                fresh_secret_probe = probe_fresh_ssh_secret_environment_absent(
+                    {
+                        "ssh_host": session["ssh_host"],
+                        "ssh_port": session["ssh_port"],
+                    },
+                    attempt_dir=job / "artifixer_warm_fresh_ssh_secret_probe",
+                )
+                if (
+                    fresh_secret_probe.get(
+                        "fresh_ssh_runtime_secret_environment_absent"
+                    )
+                    is not True
+                ):
+                    blockers.append(
+                        "scene_configuration_artifixer_warm_secret_scrub_unproven"
+                    )
             if (job / "object_store_staging").is_dir() and remote_writer_absent:
                 cleanup = cleanup_staged_wam_provider_objects(
                     job / "object_store_staging"
@@ -1701,9 +2369,19 @@ def run_scene_configuration_warm_iteration(
             "carried_completed_stage_prefix_count": authority["carried_completed_stage_prefix_count"],
             "carried_completed_stage_ids": authority["carried_completed_stage_ids"],
             "carried_paid_model_stages": authority["carried_paid_model_stages"],
-            "rerun_paid_model_stages": [],
-            "fresh_openai_cost_scope_attestation_digests": {},
-            "warm_openai_external_service_spend_permitted": False,
+            "rerun_paid_model_stages": list(
+                authority.get("rerun_paid_model_stages") or []
+            ),
+            "fresh_openai_cost_scope_attestation_digests": dict(
+                authority.get("fresh_openai_cost_scope_attestation_digests") or {}
+            ),
+            "warm_openai_external_service_spend_permitted": (
+                authority.get("warm_openai_external_service_spend_permitted")
+                is True
+            ),
+            "artifixer_warm_secret_install": secret_install,
+            "artifixer_warm_secret_scrub": secret_scrub,
+            "artifixer_warm_fresh_ssh_secret_probe": fresh_secret_probe,
             "continuing_spend_from_this_run": True,
             "watchdog_deadline_epoch": session["watchdog_deadline_epoch"],
             "dispatch": dispatch,
@@ -1730,7 +2408,15 @@ def run_scene_configuration_warm_iteration(
                 if not blockers
                 else (
                     "teardown_required"
-                    if not remote_writer_absent
+                    if (
+                        not remote_writer_absent
+                        or "scene_configuration_artifixer_warm_secret_scrub_unproven"
+                        in blockers
+                        or (
+                            artifixer_continuation
+                            and not safe_checkpoint_advanced
+                        )
+                    )
                     else "iteration_failed"
                 )
             ),

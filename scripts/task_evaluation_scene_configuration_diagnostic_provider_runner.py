@@ -39,6 +39,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode impo
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     PARENT_DEADLINE_EPOCH_ENV,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
+    SCHEMA_VERSION as ARTIFIXER_POST_TRAINING_CHECKPOINT_SCHEMA_VERSION,
+    validate_artifixer_post_training_checkpoint,
+)
 
 
 RESULT_SCHEMA_VERSION = (
@@ -50,6 +54,10 @@ WARM_READINESS_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_warm_readiness.v1"
 )
 WARM_READINESS_FILENAME = WARM_READINESS_SCHEMA_VERSION + ".json"
+ARTIFIXER_WARM_READINESS_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_artifixer_warm_readiness.v1"
+)
+ARTIFIXER_WARM_READINESS_FILENAME = ARTIFIXER_WARM_READINESS_SCHEMA_VERSION + ".json"
 WARM_SOURCE_COMMIT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_COMMIT"
 WARM_OVERLAY_MANIFEST_ENV = (
     "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_SOURCE_OVERLAY_MANIFEST"
@@ -385,6 +393,106 @@ def _advanced_checkpoint_reference(
     }
 
 
+def _artifixer_post_training_checkpoint_reference(
+    *, output: Path, checkpoint_root: Path, checkpoint: dict
+) -> dict:
+    manifest = (
+        checkpoint_root / f"{ARTIFIXER_POST_TRAINING_CHECKPOINT_SCHEMA_VERSION}.json"
+    )
+    return {
+        "provider_output_relative_root": checkpoint_root.relative_to(output).as_posix(),
+        "manifest_relative_path": manifest.relative_to(output).as_posix(),
+        "manifest_sha256": _sha256(manifest),
+        "checkpoint_digest": checkpoint["checkpoint_digest"],
+        "source_diagnostic_checkpoint_digest": checkpoint[
+            "source_diagnostic_checkpoint_digest"
+        ],
+        "binding_digest": checkpoint["binding_digest"],
+        "file_count": 1 + len(checkpoint["inventory"]),
+        "total_bytes": sum(
+            path.stat().st_size for path in checkpoint_root.rglob("*") if path.is_file()
+        ),
+    }
+
+
+def _install_artifixer_warm_ready_checkpoint_after_failure(
+    *, runtime: Path, output: Path, expected_scientific_binding_digest: str
+) -> tuple[dict, dict] | None:
+    """Retain Stage-1 training only when visual-review provider entry was absent."""
+
+    candidates = list(
+        (output / "stages").glob(
+            "*/producer/artifixer_post_training_checkpoint/"
+            f"{ARTIFIXER_POST_TRAINING_CHECKPOINT_SCHEMA_VERSION}.json"
+        )
+    )
+    if len(candidates) != 1:
+        return None
+    source_root = candidates[0].parent
+    producer_root = source_root.parent
+    if (producer_root / "artifixer_visual_review_provider_call_started.v1.json").exists():
+        return None
+    checkpoint = validate_artifixer_post_training_checkpoint(
+        checkpoint_root=source_root
+    )
+    if checkpoint.get("scientific_binding_digest") != expected_scientific_binding_digest:
+        raise ValueError("scene_configuration_artifixer_warm_checkpoint_invalid")
+    semantic_root = producer_root / "diagnostic_checkpoint"
+    semantic = validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=semantic_root,
+        expected_scientific_binding_digest=expected_scientific_binding_digest,
+    )
+    if (
+        semantic.get("checkpoint_digest")
+        != checkpoint.get("source_diagnostic_checkpoint_digest")
+    ):
+        raise ValueError("scene_configuration_artifixer_warm_checkpoint_invalid")
+    targets = (
+        (semantic_root, runtime / "input/diagnostic_checkpoint"),
+        (source_root, runtime / "input/artifixer_post_training_checkpoint"),
+    )
+    for source, target in targets:
+        staging = target.parent / ("." + target.name + ".next")
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.copytree(source, staging, copy_function=shutil.copy2, symlinks=False)
+        shutil.rmtree(target, ignore_errors=True)
+        os.replace(staging, target)
+    validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=runtime / "input/diagnostic_checkpoint",
+        expected_scientific_binding_digest=expected_scientific_binding_digest,
+    )
+    validate_artifixer_post_training_checkpoint(
+        checkpoint_root=runtime / "input/artifixer_post_training_checkpoint",
+        expected_source_checkpoint_digest=semantic["checkpoint_digest"],
+    )
+    readiness = {
+        "schema_version": ARTIFIXER_WARM_READINESS_SCHEMA_VERSION,
+        "status": "ready_after_artifixer_training_before_visual_review",
+        "source_diagnostic_checkpoint_digest": semantic["checkpoint_digest"],
+        "post_training_checkpoint_digest": checkpoint["checkpoint_digest"],
+        "post_training_binding_digest": checkpoint["binding_digest"],
+        "scientific_binding_digest": expected_scientific_binding_digest,
+        "visual_review_provider_call_started": False,
+        "general_stage_three_warm_gate_satisfied": False,
+        "diagnostic_only": True,
+        "qualification_eligible": False,
+        "raw_secret_values_recorded": False,
+        "readiness_digest": "",
+    }
+    readiness["readiness_digest"] = canonical_digest(
+        readiness, digest_field="readiness_digest"
+    )
+    (runtime / ARTIFIXER_WARM_READINESS_FILENAME).write_text(
+        canonical_json(readiness) + "\n", encoding="utf-8"
+    )
+    return (
+        _artifixer_post_training_checkpoint_reference(
+            output=output, checkpoint_root=source_root, checkpoint=checkpoint
+        ),
+        readiness,
+    )
+
+
 def _retained_checkpoint_after_failure(
     *,
     output: Path,
@@ -519,6 +627,7 @@ def main() -> int:
     active_checkpoint_root: Path | None = None
     source_checkpoint_digest: str | None = None
     diagnostic_bootstrap_mode: str | None = None
+    bundle_manifest: dict | None = None
     try:
         parent_deadline_epoch = float(os.environ[PARENT_DEADLINE_EPOCH_ENV])
         bundle_manifest = _read(runtime / f"{BUNDLE_SCHEMA_VERSION}.json")
@@ -529,7 +638,9 @@ def main() -> int:
             warm_source_commit=str(os.environ.get(WARM_SOURCE_COMMIT_ENV) or ""),
         )
         if diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE:
-            if checkpoint_root.exists():
+            if checkpoint_root.exists() or (
+                runtime / "input/artifixer_post_training_checkpoint"
+            ).exists():
                 raise ValueError(
                     "scene_configuration_fresh_diagnostic_checkpoint_unexpected"
                 )
@@ -547,6 +658,22 @@ def main() -> int:
             )
             active_checkpoint_root = checkpoint_root
             source_checkpoint_digest = checkpoint["checkpoint_digest"]
+            post_training_checkpoint_root = (
+                runtime / "input/artifixer_post_training_checkpoint"
+            )
+            if post_training_checkpoint_root.is_dir():
+                validate_artifixer_post_training_checkpoint(
+                    checkpoint_root=post_training_checkpoint_root,
+                    expected_source_checkpoint_digest=source_checkpoint_digest,
+                )
+                os.environ[
+                    "BLUEPRINT_SCENE_CONFIGURATION_ARTIFIXER_POST_TRAINING_CHECKPOINT_ROOT"
+                ] = str(post_training_checkpoint_root)
+            else:
+                os.environ.pop(
+                    "BLUEPRINT_SCENE_CONFIGURATION_ARTIFIXER_POST_TRAINING_CHECKPOINT_ROOT",
+                    None,
+                )
         portable = _read(runtime / "input/portable_construction_envelope.v1.json")
         envelope = _hydrate_envelope(runtime, portable)
         diagnostic_run_id = str(envelope["run_id"])
@@ -690,6 +817,26 @@ def main() -> int:
             **warm_identity,
         }
     except Exception as exc:
+        artifixer_retained: tuple[dict, dict] | None = None
+        artifixer_retention_blockers: list[str] = []
+        if isinstance(bundle_manifest, dict):
+            try:
+                artifixer_retained = (
+                    _install_artifixer_warm_ready_checkpoint_after_failure(
+                        runtime=runtime,
+                        output=output,
+                        expected_scientific_binding_digest=str(
+                            bundle_manifest.get(
+                                "diagnostic_scientific_binding_digest"
+                            )
+                            or ""
+                        ),
+                    )
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                artifixer_retention_blockers.append(
+                    "scene_configuration_artifixer_warm_checkpoint_invalid"
+                )
         retained_checkpoint_reference = _retained_checkpoint_after_failure(
             output=output,
             checkpoint_root=(active_checkpoint_root or checkpoint_root),
@@ -711,7 +858,8 @@ def main() -> int:
             "blockers": [
                 "scene_configuration_diagnostic_provider_failed:"
                 + redacted_failure_detail(exc)
-            ],
+            ]
+            + artifixer_retention_blockers,
             "result_digest": "",
         }
         if (
@@ -724,6 +872,36 @@ def main() -> int:
                     "source_checkpoint_digest": source_checkpoint_digest,
                     "advanced_checkpoint_digest": advanced["checkpoint_digest"],
                     "advanced_checkpoint": retained_checkpoint_reference,
+                    "diagnostic_source_commit": diagnostic_source_commit,
+                    "diagnostic_run_id": diagnostic_run_id,
+                    "diagnostic_toolchain_digest": toolchain["toolchain_digest"],
+                    "diagnostic_construction_envelope_digest": portable[
+                        "envelope_digest"
+                    ],
+                    "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
+                    "diagnostic_scientific_binding_digest": bundle_manifest[
+                        "diagnostic_scientific_binding_digest"
+                    ],
+                    **warm_identity,
+                }
+            )
+        elif (
+            artifixer_retained is not None
+            and diagnostic_source_commit is not None
+            and diagnostic_run_id is not None
+            and isinstance(toolchain, dict)
+        ):
+            artifixer_reference, artifixer_readiness = artifixer_retained
+            result.update(
+                {
+                    "source_checkpoint_digest": artifixer_readiness[
+                        "source_diagnostic_checkpoint_digest"
+                    ],
+                    "artifixer_post_training_checkpoint_digest": (
+                        artifixer_readiness["post_training_checkpoint_digest"]
+                    ),
+                    "artifixer_post_training_checkpoint": artifixer_reference,
+                    "artifixer_warm_readiness": artifixer_readiness,
                     "diagnostic_source_commit": diagnostic_source_commit,
                     "diagnostic_run_id": diagnostic_run_id,
                     "diagnostic_toolchain_digest": toolchain["toolchain_digest"],

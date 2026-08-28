@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,10 +29,108 @@ _FIXED_FORBIDDEN_ENV_NAMES = (
     "HF_TOKEN",
     "HUGGING_FACE_HUB_TOKEN",
 )
+_ARTIFIXER_ALLOWED_SECRET_FILE_NAMES = (
+    "OPENAI_ADMIN_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
+)
+_ARTIFIXER_CONTINUATION_KIND = (
+    "artifixer_post_training_visual_review_and_remaining_chain"
+)
+
+
+def artifixer_warm_secret_install_remote_argv(*, iteration_id: str) -> list[str]:
+    """Return a fixed installer; secret bytes arrive only on encrypted stdin."""
+
+    program = r'''import json, os, pathlib, re, shutil, sys
+iteration = sys.argv[1]
+allowed = {
+    "OPENAI_ADMIN_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
+}
+if re.fullmatch(r"i[0-9]{3}-[0-9a-f]{12}", iteration) is None:
+    raise SystemExit(71)
+base = pathlib.Path("/workspace/task_evaluation_scene_configuration_warm/pending-secrets")
+root = base / iteration
+try:
+    value = json.load(sys.stdin)
+    files = value.get("files") if isinstance(value, dict) else None
+    if value.get("iteration_id") != iteration or not isinstance(files, dict) or set(files) != allowed:
+        raise ValueError("scope")
+    if root.exists() or root.is_symlink():
+        raise ValueError("replay")
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(base, 0o700)
+    root.mkdir(mode=0o700)
+    manifest = {}
+    for name in sorted(allowed):
+        payload = files[name]
+        if not isinstance(payload, str) or not payload or len(payload.encode()) > 65536 or "\x00" in payload:
+            raise ValueError("payload")
+        filename = name.lower()
+        path = root / filename
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        manifest[name] = filename
+    manifest_path = root / "manifest.json"
+    descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump({"names": manifest}, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    print("BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_READY")
+except Exception:
+    shutil.rmtree(root, ignore_errors=True)
+    raise SystemExit(72)
+'''
+    return ["python3", "-c", program, iteration_id]
+
+
+def artifixer_warm_secret_envelope(
+    *, iteration_id: str, secret_values: Mapping[str, str]
+) -> bytes:
+    if set(secret_values) != set(_ARTIFIXER_ALLOWED_SECRET_FILE_NAMES):
+        raise ValueError("scene_configuration_artifixer_warm_secret_scope_invalid")
+    payload = json.dumps(
+        {"iteration_id": iteration_id, "files": dict(secret_values)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(payload) > 330_000 or b"\x00" in payload:
+        raise ValueError("scene_configuration_artifixer_warm_secret_scope_invalid")
+    return payload
 
 
 def _warm_no_secret_shell_command(command: str) -> str:
     fixed = " \\\n".join(f"  -u {name}" for name in _FIXED_FORBIDDEN_ENV_NAMES)
+    return f"""SECRET_ENV_UNSETS=()
+while IFS= read -r secret_env_name; do
+  case "$secret_env_name" in
+    BLUEPRINT_VAST_RUNTIME_SECRET_B64_[A-Z0-9_]*)
+      SECRET_ENV_UNSETS+=( -u "$secret_env_name" ) ;;
+  esac
+done < <(compgen -e)
+env "${{SECRET_ENV_UNSETS[@]}}" \\
+{fixed} \\
+  {command}"""
+
+
+def _warm_artifixer_scoped_secret_shell_command(command: str) -> str:
+    forbidden = tuple(
+        name
+        for name in _FIXED_FORBIDDEN_ENV_NAMES
+        if name not in _ARTIFIXER_ALLOWED_SECRET_FILE_NAMES
+    )
+    fixed = " \\\n".join(f"  -u {name}" for name in forbidden)
     return f"""SECRET_ENV_UNSETS=()
 while IFS= read -r secret_env_name; do
   case "$secret_env_name" in
@@ -53,6 +152,9 @@ def _remote_iteration_script(
 ) -> str:
     """Return the only admitted remote operation for one warm iteration."""
 
+    artifixer_continuation = (
+        authority.get("continuation_kind") == _ARTIFIXER_CONTINUATION_KIND
+    )
     values = {
         "ITERATION_ID": str(authority["iteration_id"]),
         "OVERLAY_URL": overlay_url,
@@ -67,12 +169,122 @@ def _remote_iteration_script(
         "SOURCE_CHECKPOINT_ROOT": str(authority["remote_checkpoint_root"]),
         "WATCHDOG_DEADLINE": str(authority["watchdog_deadline_epoch"]),
         "OUTPUT_MAX_BYTES": str(authority["maximum_output_archive_bytes"]),
+        "CONTINUATION_KIND": str(authority.get("continuation_kind") or ""),
+        "ARTIFIXER_CHECKPOINT_ROOT": str(
+            authority.get("remote_artifixer_post_training_checkpoint_root") or ""
+        ),
     }
+    if artifixer_continuation:
+        public = authority.get("openai_public_environment") or {}
+        caps = authority.get("openai_stage_max_cost_usd") or {}
+        values.update(
+            {
+                "OPENAI_PROJECT_ID_VALUE": str(public["OPENAI_PROJECT_ID"]),
+                "OPENAI_REVIEW_KEY_ID_VALUE": str(
+                    public["OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID"]
+                ),
+                "OPENAI_CONTENT_KEY_ID_VALUE": str(
+                    public["OPENAI_CONTENT_AGENTS_API_KEY_ID"]
+                ),
+                "SCENE_AUTHORITY_DIGEST_VALUE": str(
+                    public["BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST"]
+                ),
+                "OPENAI_REVIEW_CAP_VALUE": str(
+                    caps["artifixer_visual_review"]
+                ),
+                "OPENAI_CONTENT_CAP_VALUE": str(caps["content_agents"]),
+                "OPENAI_TOTAL_CAP_VALUE": str(
+                    float(caps["artifixer_visual_review"])
+                    + float(caps["content_agents"])
+                ),
+                "OPENAI_MAX_REQUESTS_VALUE": str(
+                    authority["openai_maximum_requests"]
+                ),
+            }
+        )
     assignments = "\n".join(
         f"{name}={shlex.quote(value)}" for name, value in values.items()
     )
-    no_secret_entrypoint = _warm_no_secret_shell_command(
-        'bash "$ITERATION_ROOT/runtime/run_task_evaluation_scene_configuration_provider.sh"'
+    entrypoint_command = (
+        _warm_artifixer_scoped_secret_shell_command(
+            'bash "$ITERATION_ROOT/runtime/run_task_evaluation_scene_configuration_provider.sh"'
+        )
+        if artifixer_continuation
+        else _warm_no_secret_shell_command(
+            'bash "$ITERATION_ROOT/runtime/run_task_evaluation_scene_configuration_provider.sh"'
+        )
+    )
+    secret_setup = (
+        f'''PENDING_SECRET_ROOT={REMOTE_ROOT}/pending-secrets/$ITERATION_ID
+ARTIFIXER_SECRET_ROOT="$ITERATION_ROOT/.runtime-secrets"
+if [ ! -d "$PENDING_SECRET_ROOT" ] || [ -L "$PENDING_SECRET_ROOT" ]; then
+  echo BLUEPRINT_SCENE_WARM_BLOCKED:artifixer_secret_install_missing
+  exit 76
+fi
+export PENDING_SECRET_ROOT
+python3 - <<'PY'
+import json, os, pathlib, stat
+root = pathlib.Path(os.environ["PENDING_SECRET_ROOT"])
+manifest = json.loads((root / "manifest.json").read_text())
+expected = {sorted(_ARTIFIXER_ALLOWED_SECRET_FILE_NAMES)!r}
+names = manifest.get("names") if isinstance(manifest, dict) else None
+paths = list(root.iterdir())
+if (
+    root.stat().st_uid != 0
+    or stat.S_IMODE(root.stat().st_mode) != 0o700
+    or not isinstance(names, dict)
+    or sorted(names) != expected
+    or len(paths) != len(expected) + 1
+):
+    raise SystemExit(76)
+for name in expected:
+    path = root / names[name]
+    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600 or path.stat().st_uid != 0:
+        raise SystemExit(76)
+PY
+mv "$PENDING_SECRET_ROOT" "$ARTIFIXER_SECRET_ROOT"
+trap 'rm -rf -- "$ARTIFIXER_SECRET_ROOT" "$PENDING_SECRET_ROOT"' EXIT
+export OPENAI_ADMIN_API_KEY_FILE="$ARTIFIXER_SECRET_ROOT/openai_admin_api_key_file"
+export OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE="$ARTIFIXER_SECRET_ROOT/openai_artifixer_visual_review_api_key_file"
+export OPENAI_CONTENT_AGENTS_API_KEY_FILE="$ARTIFIXER_SECRET_ROOT/openai_content_agents_api_key_file"
+export BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE="$ARTIFIXER_SECRET_ROOT/blueprint_openai_artifixer_visual_review_cost_scope_attestation_file"
+export BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE="$ARTIFIXER_SECRET_ROOT/blueprint_openai_content_agents_cost_scope_attestation_file"
+export OPENAI_PROJECT_ID="$OPENAI_PROJECT_ID_VALUE"
+export OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID="$OPENAI_REVIEW_KEY_ID_VALUE"
+export OPENAI_CONTENT_AGENTS_API_KEY_ID="$OPENAI_CONTENT_KEY_ID_VALUE"
+export BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST="$SCENE_AUTHORITY_DIGEST_VALUE"
+export BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_VISUAL_REVIEW_MAX_COST_USD="$OPENAI_REVIEW_CAP_VALUE"
+export BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD="$OPENAI_CONTENT_CAP_VALUE"
+export BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD="$OPENAI_TOTAL_CAP_VALUE"
+export BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS="$OPENAI_MAX_REQUESTS_VALUE"
+echo BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_INSTALLED'''
+        if artifixer_continuation
+        else ""
+    )
+    post_checkpoint_copy = (
+        '''artifixer_checkpoint_target = runtime / "input/artifixer_post_training_checkpoint"
+if artifixer_checkpoint_target.exists():
+    shutil.rmtree(artifixer_checkpoint_target)
+shutil.copytree(Path(os.environ["BLUEPRINT_SCENE_WARM_ARTIFIXER_CHECKPOINT_ROOT"]), artifixer_checkpoint_target, copy_function=shutil.copy2, symlinks=False)'''
+        if artifixer_continuation
+        else ""
+    )
+    post_checkpoint_export = (
+        'export BLUEPRINT_SCENE_CONFIGURATION_ARTIFIXER_POST_TRAINING_CHECKPOINT_ROOT="$ITERATION_ROOT/runtime/input/artifixer_post_training_checkpoint"'
+        if artifixer_continuation
+        else ""
+    )
+    secret_scrub = (
+        '''rm -rf -- "$ARTIFIXER_SECRET_ROOT" "$PENDING_SECRET_ROOT"
+if [ -e "$ARTIFIXER_SECRET_ROOT" ] || [ -e "$PENDING_SECRET_ROOT" ]; then
+  echo BLUEPRINT_SCENE_WARM_BLOCKED:artifixer_secret_scrub_unproven
+  PROVIDER_RC=86
+else
+  echo BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_SCRUBBED
+fi
+trap - EXIT'''
+        if artifixer_continuation
+        else ""
     )
     upload_fragment = provider_output_upload_shell_fragment()
     return f"""#!/usr/bin/env bash
@@ -91,6 +303,7 @@ if [ -e "$ITERATION_ROOT" ]; then
   exit 74
 fi
 export SOURCE_CHECKPOINT_ROOT OUTPUT_MAX_BYTES
+export BLUEPRINT_SCENE_WARM_ARTIFIXER_CHECKPOINT_ROOT="$ARTIFIXER_CHECKPOINT_ROOT"
 if ! python3 - <<'PY'
 import re
 import shutil
@@ -282,6 +495,7 @@ checkpoint_target = runtime / "input/diagnostic_checkpoint"
 if checkpoint_target.exists():
     shutil.rmtree(checkpoint_target)
 shutil.copytree(checkpoint, checkpoint_target, copy_function=shutil.copy2, symlinks=False)
+{post_checkpoint_copy}
 PY
 echo BLUEPRINT_SCENE_WARM_OVERLAY_APPLIED
 echo BLUEPRINT_SCENE_WARM_OVERLAY_APPLIED_EPOCH_NS:$(date +%s%N)
@@ -296,13 +510,16 @@ export BLUEPRINT_SCENE_CONFIGURATION_WARM_SESSION_DIGEST={shlex.quote(str(sessio
 export BLUEPRINT_SCENE_CONFIGURATION_WARM_PROVIDER_INSTANCE_ID={shlex.quote(str(session["provider_instance_id"]))}
 export BLUEPRINT_SCENE_CONFIGURATION_WARM_BOOTSTRAP_ALLOCATION_BINDING_DIGEST={shlex.quote(str(session["bootstrap_allocation_binding_digest"]))}
 export BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH="$WATCHDOG_DEADLINE"
+{post_checkpoint_export}
+{secret_setup}
 echo BLUEPRINT_SCENE_WARM_ENTRYPOINT_STARTED
 echo BLUEPRINT_SCENE_WARM_ENTRYPOINT_STARTED_EPOCH_NS:$(date +%s%N)
 set +e
-{no_secret_entrypoint}
+{entrypoint_command}
 PROVIDER_RC=$?
 set -e
 echo BLUEPRINT_SCENE_WARM_ENTRYPOINT_EXIT_CODE:$PROVIDER_RC
+{secret_scrub}
 export OUTPUT_MAX_BYTES
 python3 - <<'PY'
 import os

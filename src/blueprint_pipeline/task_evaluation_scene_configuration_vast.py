@@ -49,6 +49,10 @@ from .task_evaluation_scene_configuration_bundle import (
 from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     validate_scene_configuration_diagnostic_checkpoint,
 )
+from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
+    SCHEMA_VERSION as ARTIFIXER_POST_TRAINING_CHECKPOINT_SCHEMA_VERSION,
+    validate_artifixer_post_training_checkpoint,
+)
 from .task_evaluation_scene_configuration_diagnostic_output import (
     validated_advanced_checkpoint_reference,
 )
@@ -466,6 +470,56 @@ def _validated_advanced_checkpoint_reference(
     )
 
 
+def _validated_artifixer_post_training_checkpoint_reference(
+    *, extraction_root: Path, result: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    reference = result.get("artifixer_post_training_checkpoint")
+    if not isinstance(reference, Mapping):
+        return None, "scene_configuration_artifixer_warm_checkpoint_missing"
+    relative_root = Path(str(reference.get("provider_output_relative_root") or ""))
+    relative_manifest = Path(str(reference.get("manifest_relative_path") or ""))
+    if (
+        relative_root.is_absolute()
+        or relative_manifest.is_absolute()
+        or not relative_root.parts
+        or not relative_manifest.parts
+        or ".." in relative_root.parts
+        or ".." in relative_manifest.parts
+    ):
+        return None, "scene_configuration_artifixer_warm_checkpoint_unsafe"
+    root = (extraction_root / relative_root).resolve()
+    manifest = (extraction_root / relative_manifest).resolve()
+    try:
+        root.relative_to(extraction_root)
+        manifest.relative_to(root)
+    except ValueError:
+        return None, "scene_configuration_artifixer_warm_checkpoint_unsafe"
+    if manifest != root / f"{ARTIFIXER_POST_TRAINING_CHECKPOINT_SCHEMA_VERSION}.json":
+        return None, "scene_configuration_artifixer_warm_checkpoint_unsafe"
+    try:
+        checkpoint = validate_artifixer_post_training_checkpoint(
+            checkpoint_root=root
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None, "scene_configuration_artifixer_warm_checkpoint_invalid"
+    files = [path for path in root.rglob("*") if path.is_file()]
+    if (
+        _sha256(manifest) != reference.get("manifest_sha256")
+        or checkpoint.get("checkpoint_digest") != reference.get("checkpoint_digest")
+        or checkpoint.get("source_diagnostic_checkpoint_digest")
+        != reference.get("source_diagnostic_checkpoint_digest")
+        or checkpoint.get("binding_digest") != reference.get("binding_digest")
+        or len(files) != reference.get("file_count")
+        or sum(path.stat().st_size for path in files) != reference.get("total_bytes")
+    ):
+        return None, "scene_configuration_artifixer_warm_checkpoint_invalid"
+    return {
+        **dict(reference),
+        "checkpoint_root": str(root),
+        "manifest_path": str(manifest),
+    }, None
+
+
 def _consume_authority_once(
     authority: Mapping[str, Any], *, source_commit: str
 ) -> dict[str, Any]:
@@ -765,6 +819,21 @@ def _extract_provider_output(
                 blockers.append(advanced_blocker)
             elif advanced_reference is not None:
                 result["_validated_advanced_checkpoint"] = advanced_reference
+        if (
+            diagnostic_only
+            and result.get("artifixer_post_training_checkpoint") is not None
+        ):
+            artifixer_reference, artifixer_blocker = (
+                _validated_artifixer_post_training_checkpoint_reference(
+                    extraction_root=root, result=result
+                )
+            )
+            if artifixer_blocker is not None:
+                blockers.append(artifixer_blocker)
+            elif artifixer_reference is not None:
+                result["_validated_artifixer_post_training_checkpoint"] = (
+                    artifixer_reference
+                )
     else:
         blockers.append("scene_configuration_provider_result_status_invalid")
     return result, sorted(set(blockers))
