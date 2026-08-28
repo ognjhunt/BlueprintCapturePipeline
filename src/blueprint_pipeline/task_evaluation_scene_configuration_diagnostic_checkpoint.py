@@ -221,20 +221,48 @@ def _scientific_bindings(
         )
     stage_id = str(stage.get("stage_id") or "")
     configuration_rows = envelope.get("stage_configuration_references")
-    matching_configuration_rows = (
-        [
-            row
-            for row in configuration_rows
+    stage_sequence = (envelope.get("recipe") or {}).get("stage_sequence")
+    if isinstance(stage_sequence, list):
+        matching_stage_indexes = [
+            index
+            for index, row in enumerate(stage_sequence)
             if isinstance(row, Mapping) and row.get("stage_id") == stage_id
         ]
-        if isinstance(configuration_rows, list)
-        else []
-    )
-    if len(matching_configuration_rows) != 1:
+        if (
+            not isinstance(configuration_rows, list)
+            or len(configuration_rows) != len(stage_sequence)
+            or len(matching_stage_indexes) != 1
+        ):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_configuration_mismatch"
+            )
+        stage_index = matching_stage_indexes[0]
+        configuration_row = configuration_rows[stage_index]
+        row_identity_valid = isinstance(configuration_row, Mapping) and (
+            configuration_row.get("stage_id") == stage_id
+            or configuration_row.get("contract_path")
+            == f"construction.recipe.stage_sequence.{stage_index}.configuration"
+        )
+    else:
+        matching_configuration_rows = (
+            [
+                row
+                for row in configuration_rows
+                if isinstance(row, Mapping) and row.get("stage_id") == stage_id
+            ]
+            if isinstance(configuration_rows, list)
+            else []
+        )
+        row_identity_valid = len(matching_configuration_rows) == 1
+        configuration_row = (
+            matching_configuration_rows[0]
+            if row_identity_valid
+            else {}
+        )
+    if not row_identity_valid:
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_configuration_mismatch"
         )
-    configuration_row = matching_configuration_rows[0]
     unresolved_configuration = Path(
         str(
             configuration_row.get("materialized_path")

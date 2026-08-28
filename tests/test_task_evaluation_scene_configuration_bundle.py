@@ -1040,6 +1040,16 @@ def test_fresh_diagnostic_separates_executable_and_construction_commits(
     source = tmp_path / "split-identity-source"
     source.mkdir()
     envelope = _provider_render_envelope(source, construction_commit)
+    envelope_value = json.loads(envelope.read_text(encoding="utf-8"))
+    for index, row in enumerate(envelope_value["stage_configuration_references"]):
+        row.pop("stage_id", None)
+        row["contract_path"] = (
+            f"construction.recipe.stage_sequence.{index}.configuration"
+        )
+    envelope_value["envelope_digest"] = canonical_digest(
+        envelope_value, digest_field="envelope_digest"
+    )
+    envelope.write_text(json.dumps(envelope_value), encoding="utf-8")
     toolchain = _toolchain(
         tmp_path / "split-identity-toolchain", construction_commit
     )
