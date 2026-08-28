@@ -576,6 +576,8 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         "status": "completed",
         "construction_gate_qualified": True,
         "blockers": [],
+        "candidate_policy_queried": False,
+        "packet_receipt_digest": "sha256:" + "e" * 64,
         "scene_plan_digest": scene["plan_digest"],
         "phase_results": [{"phase_id": "approach", "target_reached": True}],
         "camera_gates": {
@@ -646,6 +648,24 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
         "schema_version": "adp_task_control_pair.v1",
         "cell_id": scene["scenario"]["cell_id"],
         "task_spec_digest": canonical_digest(scene["task_spec"]),
+        "execution_order": [
+            "zero_action_negative",
+            "deterministic_scripted_positive",
+        ],
+        "controls": [
+            {
+                "control_id": "zero_action_negative",
+                "control_passed": True,
+                "observed_outcome": "task_did_not_succeed",
+                "receipt_digest": "sha256:" + "1" * 64,
+            },
+            {
+                "control_id": "deterministic_scripted_positive",
+                "control_passed": True,
+                "observed_outcome": "task_succeeded",
+                "receipt_digest": "sha256:" + "2" * 64,
+            },
+        ],
         "cell_admitted_for_policy_execution": True,
         "policy_execution_blockers": [],
         "candidate_policy_queried": False,
@@ -656,6 +676,10 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
         "schema_version": "native_task_arena_control_result.v1",
         "status": "completed",
         "controls_qualified": True,
+        "blockers": [],
+        "packet_receipt_digest": construction_result[
+            "packet_receipt_digest"
+        ],
         "scene_plan_digest": scene["plan_digest"],
         "construction_result_digest": construction_result["result_digest"],
         "control_pair": pair,

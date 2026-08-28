@@ -19,6 +19,9 @@ from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .task_evaluation_launch_progress import build_launch_progress
+from .task_evaluation_scene_evaluation_readiness import (
+    CONFIGURATION_COMPLETE_OFFERING_STATUSES,
+)
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
@@ -661,13 +664,14 @@ def validated_succeeded_webapp_sync_row(
     offering = scene_configuration.get("configured_scene_offering")
     offering = offering if isinstance(offering, Mapping) else {}
     offering_digest = offering.get("offering_digest")
+    offering_status = offering.get("status")
     offering_ack_invalid = bool(offering) and (
         not _is_sha256_digest(offering_digest)
-        or offering.get("status") != "launch_ready"
+        or offering_status not in CONFIGURATION_COMPLETE_OFFERING_STATUSES
         or attempt.get("configured_scene_offering_digest") != offering_digest
-        or attempt.get("configured_scene_offering_status") != "launch_ready"
+        or attempt.get("configured_scene_offering_status") != offering_status
         or response.get("configured_scene_offering_digest") != offering_digest
-        or response.get("configured_scene_offering_status") != "launch_ready"
+        or response.get("configured_scene_offering_status") != offering_status
     )
     if (
         attempt.get("schema_version")
@@ -709,7 +713,7 @@ def validated_succeeded_webapp_sync_row(
         committed_receipt.update(
             {
                 "configured_scene_offering_digest": offering_digest,
-                "configured_scene_offering_status": "launch_ready",
+                "configured_scene_offering_status": offering_status,
             }
         )
     return {
