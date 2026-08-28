@@ -12,6 +12,7 @@ that can reach paid allocation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -70,7 +71,13 @@ CLEANUP_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_diagnostic_bundle_staging_cleanup.v1"
 )
 CLEANUP_COMMAND = "cleanup-sealed-bundle-staging"
+CONTENT_ADDRESS_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_diagnostic_bundle_content_address.v1"
+)
+CONTENT_ADDRESS_COMMAND = "content-address-sealed-provider-bundle"
+CONTENT_ADDRESS_DIRECTORY = "provider-bundle-content-addressed"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+BundleContentAddresser = Callable[..., Mapping[str, Any]]
 
 _OPENAI_RUNTIME_FILE_ENV_NAMES = (
     "OPENAI_ADMIN_API_KEY_FILE",
@@ -249,6 +256,259 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         os.close(descriptor)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_unreadable"
+        ) from exc
+    return "sha256:" + digest.hexdigest()
+
+
+def _validated_diagnostic_bundle(
+    bundle_output_root: str | Path,
+) -> tuple[Path, Path, Path, dict[str, Any]]:
+    bundle_output = _input_directory(
+        bundle_output_root, field="sealed_bundle_output_root"
+    )
+    receipt_path = bundle_output / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    expected_bundle = (
+        bundle_output / "task_evaluation_scene_configuration_provider_bundle.zip"
+    )
+    if receipt_path.is_symlink():
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_sealed_bundle_invalid"
+        )
+    try:
+        bundle_receipt = load_scene_configuration_provider_bundle_receipt(
+            receipt_path,
+            diagnostic_only=True,
+        )
+    except (OSError, TaskEvaluationSceneConfigurationBundleError) as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_sealed_bundle_invalid"
+        ) from exc
+    received_bundle = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser()
+    try:
+        expected_bundle_resolved = expected_bundle.resolve(strict=True)
+        received_bundle_resolved = received_bundle.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_sealed_bundle_invalid"
+        ) from exc
+    if (
+        expected_bundle.is_symlink()
+        or received_bundle.is_symlink()
+        or not received_bundle.is_absolute()
+        or expected_bundle_resolved != received_bundle_resolved
+        or expected_bundle_resolved.parent != bundle_output
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_sealed_bundle_invalid"
+        )
+    return bundle_output, receipt_path, expected_bundle_resolved, bundle_receipt
+
+
+def _validate_content_addressed_bundle_file(
+    path: Path,
+    *,
+    expected_digest: str,
+    expected_size: int,
+    expected_device: int,
+    expected_uid: int,
+    expected_gid: int,
+    expected_mode: int,
+) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_object_invalid"
+        ) from exc
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_dev != expected_device
+        or info.st_uid != expected_uid
+        or info.st_gid != expected_gid
+        or stat.S_IMODE(info.st_mode) != expected_mode
+        or info.st_size != expected_size
+        or _sha256_file(path) != expected_digest
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_object_invalid"
+        )
+    return info
+
+
+def content_address_sealed_provider_bundle(
+    *, bundle_output_root: str | Path, content_address_root: str | Path
+) -> dict[str, Any]:
+    """Deduplicate one validated bundle ZIP while preserving its receipt path."""
+
+    bundle_output, receipt_path, bundle, receipt = _validated_diagnostic_bundle(
+        bundle_output_root
+    )
+    before = bundle.lstat()
+    mode = stat.S_IMODE(before.st_mode)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_source_invalid"
+        )
+    expected_digest = str(receipt["bundle_sha256"])
+    hexadecimal = expected_digest.removeprefix("sha256:")
+    if (
+        len(hexadecimal) != 64
+        or any(character not in "0123456789abcdef" for character in hexadecimal)
+        or before.st_size != receipt["bundle_size_bytes"]
+        or _sha256_file(bundle) != expected_digest
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_source_invalid"
+        )
+
+    root = _absolute(content_address_root, field="bundle_content_address_root")
+    try:
+        root_parent = root.parent.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_root_invalid"
+        ) from exc
+    unresolved_root = root_parent / root.name
+    if (
+        unresolved_root.is_relative_to(bundle_output)
+        or bundle_output.is_relative_to(unresolved_root)
+        or unresolved_root.is_symlink()
+        or (unresolved_root.exists() and not unresolved_root.is_dir())
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_root_invalid"
+        )
+    try:
+        unresolved_root.mkdir(mode=0o750, exist_ok=True)
+        root_info = unresolved_root.lstat()
+        root_resolved = unresolved_root.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_root_invalid"
+        ) from exc
+    root_mode = stat.S_IMODE(root_info.st_mode)
+    if (
+        stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_dev != before.st_dev
+        or root_info.st_uid != before.st_uid
+        or root_info.st_gid != before.st_gid
+        or root_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or root_mode & stat.S_IRWXU != stat.S_IRWXU
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_root_invalid"
+        )
+
+    object_path = root_resolved / f"{hexadecimal}.zip"
+    temporary = bundle.parent / f".{bundle.name}.content-address.tmp"
+    object_created = False
+    try:
+        try:
+            os.link(bundle, object_path, follow_symlinks=False)
+            object_created = True
+        except FileExistsError:
+            pass
+        object_info = _validate_content_addressed_bundle_file(
+            object_path,
+            expected_digest=expected_digest,
+            expected_size=before.st_size,
+            expected_device=before.st_dev,
+            expected_uid=before.st_uid,
+            expected_gid=before.st_gid,
+            expected_mode=mode,
+        )
+        reused = (before.st_dev, before.st_ino) != (
+            object_info.st_dev,
+            object_info.st_ino,
+        )
+        if reused:
+            if os.path.lexists(temporary):
+                raise SceneConfigurationDiagnosticIterationError(
+                    "scene_configuration_diagnostic_iteration_bundle_content_temporary_exists"
+                )
+            os.link(object_path, temporary, follow_symlinks=False)
+            linked = temporary.lstat()
+            if (linked.st_dev, linked.st_ino) != (
+                object_info.st_dev,
+                object_info.st_ino,
+            ):
+                raise SceneConfigurationDiagnosticIterationError(
+                    "scene_configuration_diagnostic_iteration_bundle_content_link_invalid"
+                )
+            os.replace(temporary, bundle)
+    except SceneConfigurationDiagnosticIterationError:
+        raise
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_link_failed"
+        ) from exc
+    finally:
+        if temporary.exists() and not temporary.is_symlink():
+            temporary.unlink()
+
+    after = _validate_content_addressed_bundle_file(
+        bundle,
+        expected_digest=expected_digest,
+        expected_size=before.st_size,
+        expected_device=before.st_dev,
+        expected_uid=before.st_uid,
+        expected_gid=before.st_gid,
+        expected_mode=mode,
+    )
+    if (after.st_dev, after.st_ino) != (object_info.st_dev, object_info.st_ino):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_link_invalid"
+        )
+    _, reopened_receipt_path, reopened_bundle, reopened = (
+        _validated_diagnostic_bundle(bundle_output)
+    )
+    if (
+        reopened_receipt_path != receipt_path
+        or reopened_bundle != bundle
+        or reopened.get("receipt_digest") != receipt.get("receipt_digest")
+        or reopened.get("bundle_sha256") != expected_digest
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_readback_invalid"
+        )
+    return {
+        "bundle_path": str(bundle),
+        "bundle_sha256": expected_digest,
+        "bundle_size_bytes": before.st_size,
+        "bundle_mode": mode,
+        "bundle_uid": before.st_uid,
+        "bundle_gid": before.st_gid,
+        "content_object_path": str(object_path),
+        "content_object_created": object_created,
+        "existing_content_object_reused": reused,
+        "path_preserved": True,
+        "bytes_preserved": True,
+        "mode_preserved": stat.S_IMODE(after.st_mode) == mode,
+        "before_inode": before.st_ino,
+        "after_inode": after.st_ino,
+        "content_object_inode": object_info.st_ino,
+        "allocated_bytes_reclaimed": (
+            before.st_blocks * 512 if reused and before.st_nlink == 1 else 0
+        ),
+        "provider_mutations_performed": 0,
+    }
+
+
 def _discard_sealed_bundle_staging_tree_with_evidence(
     bundle_output: Path,
 ) -> dict[str, Any]:
@@ -380,44 +640,14 @@ def reconcile_sealed_bundle_staging_tree(
 ) -> dict[str, Any]:
     """Validate a sealed diagnostic bundle, reclaim staging, and receipt it."""
 
-    bundle_output = _input_directory(
-        bundle_output_root, field="cleanup_bundle_output_root"
-    )
-    receipt_path = bundle_output / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
-    expected_bundle = (
-        bundle_output / "task_evaluation_scene_configuration_provider_bundle.zip"
-    )
-    if receipt_path.is_symlink():
-        raise SceneConfigurationDiagnosticIterationError(
-            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
-        )
     try:
-        bundle_receipt = load_scene_configuration_provider_bundle_receipt(
-            receipt_path,
-            diagnostic_only=True,
+        bundle_output, receipt_path, expected_bundle, bundle_receipt = (
+            _validated_diagnostic_bundle(bundle_output_root)
         )
-    except (OSError, TaskEvaluationSceneConfigurationBundleError) as exc:
+    except SceneConfigurationDiagnosticIterationError as exc:
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
         ) from exc
-    received_bundle = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser()
-    try:
-        expected_bundle_resolved = expected_bundle.resolve(strict=True)
-        received_bundle_resolved = received_bundle.resolve(strict=True)
-    except OSError as exc:
-        raise SceneConfigurationDiagnosticIterationError(
-            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
-        ) from exc
-    if (
-        expected_bundle.is_symlink()
-        or received_bundle.is_symlink()
-        or not received_bundle.is_absolute()
-        or expected_bundle_resolved != received_bundle_resolved
-        or expected_bundle_resolved.parent != bundle_output
-    ):
-        raise SceneConfigurationDiagnosticIterationError(
-            "scene_configuration_diagnostic_iteration_cleanup_bundle_invalid"
-        )
     cleanup_receipt_path = _output_path(
         cleanup_receipt, field="cleanup_receipt"
     )
@@ -438,7 +668,7 @@ def reconcile_sealed_bundle_staging_tree(
         "bundle_output_root": str(bundle_output),
         "bundle_receipt_path": str(receipt_path),
         "bundle_receipt_digest": bundle_receipt["receipt_digest"],
-        "bundle_path": str(expected_bundle_resolved),
+        "bundle_path": str(expected_bundle),
         "bundle_sha256": bundle_receipt["bundle_sha256"],
         **cleanup,
         "provider_mutations_performed": 0,
@@ -447,6 +677,47 @@ def reconcile_sealed_bundle_staging_tree(
     }
     result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     _write_exclusive(cleanup_receipt_path, result)
+    return result
+
+
+def reconcile_content_addressed_provider_bundle(
+    *,
+    bundle_output_root: str | Path,
+    content_address_root: str | Path,
+    deduplication_receipt: str | Path,
+) -> dict[str, Any]:
+    """Apply path-preserving bundle deduplication and write its evidence."""
+
+    bundle_output = _input_directory(
+        bundle_output_root, field="content_address_bundle_output_root"
+    )
+    receipt_path = _output_path(
+        deduplication_receipt, field="bundle_content_address_receipt"
+    )
+    try:
+        receipt_parent = receipt_path.parent.resolve(strict=True)
+    except OSError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_receipt_parent_invalid"
+        ) from exc
+    if receipt_parent != bundle_output or os.path.lexists(receipt_path):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_receipt_invalid"
+        )
+    storage = content_address_sealed_provider_bundle(
+        bundle_output_root=bundle_output,
+        content_address_root=content_address_root,
+    )
+    result = {
+        "schema_version": CONTENT_ADDRESS_SCHEMA_VERSION,
+        "status": "completed",
+        "bundle_output_root": str(bundle_output),
+        **storage,
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    _write_exclusive(receipt_path, result)
     return result
 
 
@@ -537,6 +808,9 @@ def run_scene_configuration_diagnostic_iteration(
     *,
     runner: CommandRunner = subprocess.run,
     clock: Callable[[], float] = time.monotonic,
+    bundle_content_addresser: BundleContentAddresser = (
+        content_address_sealed_provider_bundle
+    ),
 ) -> dict[str, Any]:
     """Prepare the source overlay and invoke the fixed diagnostic chain."""
 
@@ -553,6 +827,15 @@ def run_scene_configuration_diagnostic_iteration(
         args.release_root, field="release_root", empty=False
     )
     state_root = _output_directory(args.state_root, field="state_root", empty=False)
+    configured_content_root = getattr(args, "bundle_content_address_root", None)
+    bundle_content_address_root = (
+        _absolute(
+            configured_content_root,
+            field="bundle_content_address_root",
+        )
+        if configured_content_root
+        else state_root.parent / CONTENT_ADDRESS_DIRECTORY
+    )
     python = _python_executable(args.python_executable)
     construction_envelope = _input_file(
         args.construction_envelope, field="construction_envelope"
@@ -728,6 +1011,28 @@ def run_scene_configuration_diagnostic_iteration(
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_bundle_receipt_invalid"
         )
+    bundle_storage = dict(
+        bundle_content_addresser(
+            bundle_output_root=bundle_output,
+            content_address_root=bundle_content_address_root,
+        )
+    )
+    if (
+        bundle_storage.get("bundle_path")
+        != str(
+            bundle_output
+            / "task_evaluation_scene_configuration_provider_bundle.zip"
+        )
+        or bundle_storage.get("bundle_sha256")
+        != bundle_receipt.get("bundle_sha256")
+        or bundle_storage.get("path_preserved") is not True
+        or bundle_storage.get("bytes_preserved") is not True
+        or bundle_storage.get("mode_preserved") is not True
+        or bundle_storage.get("provider_mutations_performed") != 0
+    ):
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_content_address_invalid"
+        )
     bundle_staging_tree_removed = _discard_sealed_bundle_staging_tree(bundle_output)
     authority_started = clock()
     authority_command = [
@@ -854,6 +1159,7 @@ def run_scene_configuration_diagnostic_iteration(
         "total_preparation_elapsed_ms": total_preparation_elapsed_ms,
         "total_preparation_seconds_claimed": False,
         "bundle_build_elapsed_ms": bundle_elapsed_ms,
+        "bundle_content_address_storage": bundle_storage,
         "bundle_staging_tree_removed_after_seal": bundle_staging_tree_removed,
         "authority_build_elapsed_ms": authority_elapsed_ms,
         "bundle_receipt_digest": bundle_receipt.get("receipt_digest"),
@@ -864,10 +1170,11 @@ def run_scene_configuration_diagnostic_iteration(
             "diagnostic_bundle_rebuilt_for_exact_source_commit": True,
             "toolchain_tree_copied_and_provider_zip_rebuilt": True,
             "unsafe_hardlink_optimization_used": False,
+            "sealed_bundle_zip_content_addressed": True,
             "reason": (
                 "the existing bundle builder seals modes and byte inventories; "
-                "hardlinking its mutable staging tree to shared inputs would let "
-                "chmod or later corruption change the shared runtime"
+                "the mutable staging tree stays private, while only a fully "
+                "validated immutable ZIP may share a digest-bound inode"
             ),
         },
         "active_release_link_updated": False,
@@ -968,6 +1275,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--diagnostic-checkpoint-reference")
     parser.add_argument("--fresh-diagnostic-bootstrap", action="store_true")
     parser.add_argument("--bundle-output-root", required=True)
+    parser.add_argument("--bundle-content-address-root")
     parser.add_argument("--project-spend-reconciliation", required=True)
     parser.add_argument("--initial-provider-zero", required=True)
     parser.add_argument("--authorization-reference", required=True)
@@ -1013,8 +1321,66 @@ def _cleanup_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _content_address_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate one sealed diagnostic provider bundle and replace only "
+            "its ZIP inode with a digest-addressed hardlink when bytes and "
+            "metadata match exactly."
+        )
+    )
+    parser.add_argument("--bundle-output-root", required=True)
+    parser.add_argument("--content-address-root", required=True)
+    parser.add_argument("--deduplication-receipt", required=True)
+    return parser
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == [CONTENT_ADDRESS_COMMAND]:
+        content_args = _content_address_parser().parse_args(arguments[1:])
+        try:
+            result = reconcile_content_addressed_provider_bundle(
+                bundle_output_root=content_args.bundle_output_root,
+                content_address_root=content_args.content_address_root,
+                deduplication_receipt=content_args.deduplication_receipt,
+            )
+        except (OSError, SceneConfigurationDiagnosticIterationError) as exc:
+            print(
+                json.dumps(
+                    {
+                        "schema_version": CONTENT_ADDRESS_SCHEMA_VERSION,
+                        "status": "blocked",
+                        "blockers": [str(exc)],
+                        "provider_mutations_performed": 0,
+                        "raw_secret_values_recorded": False,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 2
+        print(
+            json.dumps(
+                {
+                    "schema_version": CONTENT_ADDRESS_SCHEMA_VERSION,
+                    "status": "completed",
+                    "deduplication_receipt": str(
+                        content_args.deduplication_receipt
+                    ),
+                    "receipt_digest": result["receipt_digest"],
+                    "existing_content_object_reused": result[
+                        "existing_content_object_reused"
+                    ],
+                    "allocated_bytes_reclaimed": result[
+                        "allocated_bytes_reclaimed"
+                    ],
+                    "provider_mutations_performed": 0,
+                    "raw_secret_values_recorded": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     if arguments[:1] == [CLEANUP_COMMAND]:
         cleanup_args = _cleanup_parser().parse_args(arguments[1:])
         try:
