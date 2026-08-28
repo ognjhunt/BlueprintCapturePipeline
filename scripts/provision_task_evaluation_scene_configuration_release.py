@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import urllib.request
@@ -106,6 +108,92 @@ def materialize_vgg16_weights(*, cache_root: str | Path) -> Path:
             temporary.unlink()
         raise
     return destination
+
+
+def reconcile_legacy_vgg16_runtime_storage(
+    *,
+    runtime_root: str | Path,
+) -> dict[str, Any]:
+    """Deduplicate validated legacy toolchain weights against the sealed cache.
+
+    Older releases copied the immutable VGG16 object into every toolchain.  The
+    current publisher hardlinks it, but that does not repair already-published
+    releases.  Validate the complete candidate set before replacing any inode;
+    then atomically install hardlinks to the exact digest-bound cache object.
+    """
+
+    root = Path(runtime_root).expanduser().absolute()
+    canonical = root / "public-model-cache" / VGG16_WEIGHTS_FILENAME
+    if (
+        canonical.is_symlink()
+        or not canonical.is_file()
+        or canonical.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+        or stat.S_IMODE(canonical.stat().st_mode) != 0o444
+        or _sha256(canonical) != VGG16_WEIGHTS_SHA256
+    ):
+        raise ValueError("scene_configuration_vgg16_cache_invalid")
+    candidates = sorted(
+        (root / "scene-configuration").glob(
+            "*/components/artifixer3d_observed_object_removal/package/"
+            "blueprint_runtime/torch_home/hub/checkpoints/"
+            f"{VGG16_WEIGHTS_FILENAME}"
+        )
+    )
+    validated: list[tuple[Path, os.stat_result]] = []
+    for candidate in candidates:
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ValueError("scene_configuration_legacy_vgg16_runtime_invalid")
+        metadata = candidate.stat()
+        if (
+            metadata.st_size != VGG16_WEIGHTS_SIZE_BYTES
+            or stat.S_IMODE(metadata.st_mode) != 0o444
+            or _sha256(candidate) != VGG16_WEIGHTS_SHA256
+        ):
+            raise ValueError("scene_configuration_legacy_vgg16_runtime_invalid")
+        validated.append((candidate, metadata))
+
+    canonical_metadata = canonical.stat()
+    reconciled: list[str] = []
+    estimated_reclaimed_bytes = 0
+    for candidate, previous_metadata in validated:
+        if (
+            previous_metadata.st_dev == canonical_metadata.st_dev
+            and previous_metadata.st_ino == canonical_metadata.st_ino
+        ):
+            continue
+        temporary = candidate.with_name(f".{candidate.name}.content-address-migration")
+        if temporary.exists() or temporary.is_symlink():
+            raise ValueError("scene_configuration_vgg16_migration_temporary_exists")
+        try:
+            os.link(canonical, temporary, follow_symlinks=False)
+            os.replace(temporary, candidate)
+        except Exception:
+            if temporary.is_file() and not temporary.is_symlink():
+                temporary.unlink()
+            raise
+        installed = candidate.stat()
+        if (
+            installed.st_dev != canonical_metadata.st_dev
+            or installed.st_ino != canonical_metadata.st_ino
+            or stat.S_IMODE(installed.st_mode) != 0o444
+            or _sha256(candidate) != VGG16_WEIGHTS_SHA256
+        ):
+            raise ValueError("scene_configuration_vgg16_migration_readback_failed")
+        reconciled.append(str(candidate))
+        if previous_metadata.st_nlink == 1:
+            estimated_reclaimed_bytes += previous_metadata.st_blocks * 512
+
+    return {
+        "schema_version": "task_evaluation_scene_configuration_vgg16_storage_reconciliation.v1",
+        "status": "reconciled",
+        "canonical_path": str(canonical),
+        "validated_candidate_count": len(validated),
+        "reconciled_candidate_count": len(reconciled),
+        "reconciled_paths": reconciled,
+        "estimated_reclaimed_bytes": estimated_reclaimed_bytes,
+        "digest": VGG16_WEIGHTS_SHA256,
+        "mode": "0444",
+    }
 
 
 def _remove_tree(root: Path) -> None:
