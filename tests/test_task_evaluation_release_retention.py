@@ -138,6 +138,38 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
+def _runtime_publication_receipt(path: Path, *, commit: str, component: str) -> Path:
+    if component == "splat-render":
+        schema_version = "task_evaluation_splat_render_runtime_publication.v1"
+        root_field = "runtime_root"
+        identity_field = "runtime_digest"
+    else:
+        schema_version = (
+            "task_evaluation_scene_configuration_toolchain_publication.v1"
+        )
+        root_field = "toolchain_root"
+        identity_field = "toolchain_digest"
+    receipt = {
+        "schema_version": schema_version,
+        "status": "published_and_read_back",
+        "source_commit": commit,
+        root_field: str(path),
+        identity_field: "sha256:" + "d" * 64,
+        "file_count": 1,
+        "readback_actor": "service-account:blueprint",
+        "full_byte_service_account_readback_passed": True,
+        "provider_mutation_performed": False,
+        "paid_resource_allocated": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = path.parent / f"{commit}.publication.v1.json"
+    _write_json(receipt_path, receipt)
+    return receipt_path
+
+
 def _managed_artifacts(root: Path, commits: list[str]) -> tuple[Path, Path]:
     release_root = root / "releases"
     runtime_root = root / "system-runtimes"
@@ -151,6 +183,11 @@ def _managed_artifacts(root: Path, commits: list[str]) -> tuple[Path, Path]:
             (path / "payload.bin").write_bytes(commit.encode("ascii"))
             old = (NOW - timedelta(days=3)).timestamp()
             os.utime(path, (old, old))
+            if path.parent.name in {"splat-render", "scene-configuration"}:
+                receipt_path = _runtime_publication_receipt(
+                    path, commit=commit, component=path.parent.name
+                )
+                os.utime(receipt_path, (old, old))
     return release_root, runtime_root
 
 
@@ -267,7 +304,9 @@ def test_plan_protects_every_live_binding_across_all_three_managed_roots(
     assert {item["kind"] for item in stale_artifacts} == {
         "control_plane_release",
         "runtime_splat_render",
+        "runtime_splat_render_publication_receipt",
         "runtime_scene_configuration",
+        "runtime_scene_configuration_publication_receipt",
     }
     assert plan["predicted_removed_bytes"] == sum(
         item["size_bytes"] for item in stale_artifacts
@@ -371,6 +410,34 @@ def test_any_ambiguous_managed_or_live_state_blocks_the_whole_plan(
     assert (release_root / stale).is_dir()
 
 
+@pytest.mark.parametrize("corruption", ("tampered_receipt", "orphaned_receipt"))
+def test_runtime_publication_receipt_must_remain_digest_bound_to_its_tree(
+    tmp_path: Path, corruption: str
+) -> None:
+    active = "a" * 40
+    stale = "c" * 40
+    state = _base_state(tmp_path, commits=[active, stale], active_commit=active)
+    runtime_root = state["runtime_root"]
+    assert isinstance(runtime_root, Path)
+    receipt = (
+        runtime_root / "splat-render" / f"{stale}.publication.v1.json"
+    )
+    if corruption == "tampered_receipt":
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["runtime_digest"] = "sha256:" + "0" * 64
+        _write_json(receipt, value)
+    else:
+        shutil.rmtree(runtime_root / "splat-render" / stale)
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match="release_retention_publication_receipt_(invalid|pair_invalid)",
+    ):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active  # type: ignore[arg-type]
+        )
+
+
 def test_live_reference_to_missing_release_blocks_the_whole_plan(
     tmp_path: Path,
 ) -> None:
@@ -424,6 +491,9 @@ def test_apply_requires_exact_reviewed_plan_and_removes_only_eligible_sha(
             path = runtime_root / component / commit
             path.mkdir(parents=True, exist_ok=True)
             (path / "payload").write_text(commit, encoding="ascii")
+            _runtime_publication_receipt(
+                path, commit=commit, component=component
+            )
     active_link = tmp_path / "active"
     active_link.symlink_to(release_root / active)
     profile_dir = tmp_path / "profiles"
@@ -467,7 +537,15 @@ def test_apply_requires_exact_reviewed_plan_and_removes_only_eligible_sha(
     assert receipt["removed_bytes"] == plan["predicted_removed_bytes"]
     assert not (release_root / stale).exists()
     assert not (runtime_root / "splat-render" / stale).exists()
+    assert not (
+        runtime_root / "splat-render" / f"{stale}.publication.v1.json"
+    ).exists()
     assert not (runtime_root / "scene-configuration" / stale).exists()
+    assert not (
+        runtime_root
+        / "scene-configuration"
+        / f"{stale}.publication.v1.json"
+    ).exists()
     assert (release_root / active).is_dir()
     assert (runtime_root / "splat-render" / active).is_dir()
     assert active_link.resolve() == (release_root / active).resolve()
@@ -534,11 +612,15 @@ def test_apply_holds_exclusive_reference_lock_through_every_delete(
     def remove(path: Path, **_kwargs: object) -> None:
         assert lock_active is True
         removed_paths.append(path)
-        shutil.rmtree(path)
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
     monkeypatch.setattr(retention, "release_reference_lock", observed_lock)
     monkeypatch.setattr(retention, "_remove_git_worktree", remove)
     monkeypatch.setattr(retention, "_remove_runtime_tree", remove)
+    monkeypatch.setattr(retention, "_remove_publication_receipt", remove)
 
     apply_release_retention_plan(
         dry_run_plan_path=plan_path,
@@ -547,7 +629,7 @@ def test_apply_holds_exclusive_reference_lock_through_every_delete(
     )
 
     assert lock_active is False
-    assert len(removed_paths) == 3
+    assert len(removed_paths) == 5
 
 
 def test_expired_or_consumed_authorization_does_not_pin_runtime_forever(
