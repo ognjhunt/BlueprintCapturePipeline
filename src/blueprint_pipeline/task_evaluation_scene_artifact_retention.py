@@ -130,6 +130,68 @@ def seal_scene_artifact_lease(
     return lease
 
 
+def seal_scene_artifact_remote_index(
+    *,
+    destination: str | Path,
+    run_id: str,
+    source_commit: str,
+    bundle_digest: str,
+    artifact_references: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Seal the small local manifest that makes remote evidence reopenable."""
+
+    if (
+        not run_id.strip()
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", bundle_digest) is None
+        or not artifact_references
+        or not all(_valid_remote_reference(item) for item in artifact_references)
+    ):
+        raise TaskEvaluationSceneArtifactRetentionError(
+            "scene_artifact_remote_index_invalid"
+        )
+    references = [dict(item) for item in artifact_references]
+    index: dict[str, Any] = {
+        "schema_version": "task_evaluation_scene_artifact_remote_index.v1",
+        "status": "completed",
+        "run_id": run_id,
+        "source_commit": source_commit,
+        "bundle_digest": bundle_digest,
+        "artifact_references": references,
+        "artifact_count": len(references),
+        "total_size_bytes": sum(int(item["size_bytes"]) for item in references),
+        "all_artifacts_content_addressed": all(
+            item.get("content_addressed_key") is True for item in references
+        ),
+        "all_artifacts_remote_verified": True,
+        "raw_secret_values_recorded": False,
+        "index_digest": "",
+    }
+    if not index["all_artifacts_content_addressed"]:
+        raise TaskEvaluationSceneArtifactRetentionError(
+            "scene_artifact_remote_index_invalid"
+        )
+    index["index_digest"] = canonical_digest(index, digest_field="index_digest")
+    target = Path(destination).expanduser().absolute()
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    encoded = (canonical_json(index) + "\n").encode()
+    descriptor = os.open(
+        target,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o440,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    target.chmod(0o440)
+    if target.read_bytes() != encoded:
+        raise TaskEvaluationSceneArtifactRetentionError(
+            "scene_artifact_remote_index_readback_failed"
+        )
+    return index
+
+
 def _lease_is_active(lease: Mapping[str, Any], *, now: datetime) -> bool:
     if lease.get("schema_version") != "task_evaluation_scene_artifact_lease.v1":
         raise TaskEvaluationSceneArtifactRetentionError(
@@ -273,5 +335,6 @@ __all__ = [
     "TaskEvaluationSceneArtifactRetentionError",
     "apply_scene_artifact_retention",
     "plan_scene_artifact_retention",
+    "seal_scene_artifact_remote_index",
     "seal_scene_artifact_lease",
 ]

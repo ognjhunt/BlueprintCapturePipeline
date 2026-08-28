@@ -60,6 +60,10 @@ from .task_evaluation_scene_configuration_execution_binding import (
 )
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
+    publish_configured_scene_artifact,
+)
+from .task_evaluation_scene_artifact_retention import (
+    seal_scene_artifact_remote_index,
 )
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
@@ -912,6 +916,28 @@ def _publish_completed_configuration(
     return publication
 
 
+def _publish_provider_output_archive(
+    *,
+    output_zip: Path,
+    job: Path,
+    receipt: Mapping[str, Any],
+    publisher: Callable[..., dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    """Make the exact provider ZIP durable before local retention may reap it."""
+
+    publish = publisher or publish_configured_scene_artifact
+    reference = publish(path=output_zip, artifact_kind="provider-output")
+    index_path = job / "scene_artifact_remote_index.v1.json"
+    index = seal_scene_artifact_remote_index(
+        destination=index_path,
+        run_id=str(receipt["run_id"]),
+        source_commit=str(receipt["source_commit"]),
+        bundle_digest=str(receipt["bundle_sha256"]),
+        artifact_references=[reference],
+    )
+    return reference, index, index_path
+
+
 @contextmanager
 def _authority_environment():
     names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
@@ -1743,6 +1769,25 @@ def run_scene_configuration_vast(
             disk_usage_provider=disk_usage_provider,
         )
     )
+    provider_output_reference: dict[str, Any] = {}
+    provider_output_remote_index: dict[str, Any] = {}
+    provider_output_remote_index_path = job / "scene_artifact_remote_index.v1.json"
+    if execution and output_zip.is_file():
+        try:
+            (
+                provider_output_reference,
+                provider_output_remote_index,
+                provider_output_remote_index_path,
+            ) = _publish_provider_output_archive(
+                output_zip=output_zip,
+                job=job,
+                receipt=receipt,
+            )
+        except Exception as exc:  # noqa: BLE001 - object-store clients vary
+            blockers.append(
+                "scene_configuration_provider_output_durable_publication_failed:"
+                + redacted_failure_detail(exc)
+            )
     # The adapter's own refusal is the only record of *why* nothing was
     # allocated. Without it the result carries only the downstream
     # consequences -- provider result missing, output zip invalid -- which
@@ -1832,6 +1877,9 @@ def run_scene_configuration_vast(
     if publication.get("status") == "configured_scene_published":
         artifact_roots["configured_scene_publication"] = publication_root
         required_roles.append("configured_scene_publication")
+    if provider_output_remote_index.get("status") == "completed":
+        artifact_roots["durable_provider_output"] = provider_output_remote_index_path
+        required_roles.append("durable_provider_output")
     try:
         artifact_manifest = build_task_evaluation_artifact_manifest(
             attempt_root=job,
@@ -1902,6 +1950,17 @@ def run_scene_configuration_vast(
         ),
         "provider_runtime_output_zip_sha256": (
             _sha256(output_zip) if output_zip.is_file() else None
+        ),
+        "provider_runtime_output_remote_reference": (
+            provider_output_reference or None
+        ),
+        "provider_runtime_output_remote_index_path": (
+            str(provider_output_remote_index_path)
+            if provider_output_remote_index_path.is_file()
+            else None
+        ),
+        "provider_runtime_output_remote_index_digest": (
+            provider_output_remote_index.get("index_digest")
         ),
         "runtime_secret_cleanup_completed": not runtime_secret_cleanup_blockers,
         "expected_provider_download_bytes": expected_download_bytes,

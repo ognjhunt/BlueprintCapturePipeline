@@ -3282,6 +3282,32 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         scene_vast, "configured_scene_object_store_publisher", publisher_factory
     )
 
+    def durable_publisher(*, path: Path, artifact_kind: str):
+        digest = _sha256(path)
+        destination = object_store / "artifacts" / digest.removeprefix("sha256:")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+        return {
+            "schema_version": "task_evaluation_scene_artifact_reference.v1",
+            "status": "remote_verified",
+            "artifact_kind": artifact_kind,
+            "uri": f"s3://blueprint-inputs/artifacts/{destination.name}",
+            "digest": digest,
+            "size_bytes": path.stat().st_size,
+            "cache_hit": False,
+            "upload_performed": True,
+            "content_addressed_key": True,
+            "remote_identity_verified": True,
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": _sha256(destination),
+            "readback_size_bytes": destination.stat().st_size,
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(
+        scene_vast, "publish_configured_scene_artifact", durable_publisher
+    )
+
     result = scene_vast.run_scene_configuration_vast(
         job_dir=tmp_path / "job",
         bundle_receipt_path=receipt_path,
@@ -3302,8 +3328,13 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     assert result["configured_scene_revision_reference"]["uri"].startswith(
         "s3://blueprint-inputs/"
     )
+    assert result["provider_runtime_output_remote_reference"][
+        "remote_identity_verified"
+    ] is True
+    assert Path(result["provider_runtime_output_remote_index_path"]).is_file()
     manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
     assert "configured_scene_publication" in manifest["observed_roles"]
+    assert "durable_provider_output" in manifest["observed_roles"]
 
 
 def test_scene_configuration_watchdog_prefix_is_in_the_blueprint_namespace() -> None:
@@ -3329,6 +3360,55 @@ def test_scene_configuration_watchdog_prefix_is_in_the_blueprint_namespace() -> 
     assert re.fullmatch(
         r"blueprint-[a-z0-9-]{1,100}-", WATCHDOG_POD_NAME_PREFIX
     ), WATCHDOG_POD_NAME_PREFIX
+
+
+def test_provider_output_archive_is_remote_verified_and_indexed(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "vast_provider_runtime_output.zip"
+    output_zip.write_bytes(b"exact provider output")
+    observed: list[tuple[Path, str]] = []
+
+    def publisher(*, path: Path, artifact_kind: str):
+        observed.append((path, artifact_kind))
+        digest = _sha256(path)
+        return {
+            "schema_version": "task_evaluation_scene_artifact_reference.v1",
+            "status": "remote_verified",
+            "artifact_kind": artifact_kind,
+            "uri": (
+                "s3://blueprint-inputs/artifacts/provider-output/sha256/"
+                f"{digest.removeprefix('sha256:')}/{path.name}"
+            ),
+            "digest": digest,
+            "size_bytes": path.stat().st_size,
+            "cache_hit": False,
+            "upload_performed": True,
+            "content_addressed_key": True,
+            "remote_identity_verified": True,
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": digest,
+            "readback_size_bytes": path.stat().st_size,
+            "raw_secret_values_recorded": False,
+        }
+
+    reference, index, index_path = scene_vast._publish_provider_output_archive(
+        output_zip=output_zip,
+        job=tmp_path,
+        receipt={
+            "run_id": "scene-839873-run-1",
+            "source_commit": "a" * 40,
+            "bundle_sha256": "sha256:" + "b" * 64,
+        },
+        publisher=publisher,
+    )
+
+    assert observed == [(output_zip, "provider-output")]
+    assert reference["remote_identity_verified"] is True
+    assert index["artifact_references"] == [reference]
+    assert index["all_artifacts_remote_verified"] is True
+    assert index_path.stat().st_mode & 0o777 == 0o440
+    assert json.loads(index_path.read_text(encoding="utf-8")) == index
 
 
 def test_scene_configuration_arms_the_watchdog_with_that_exact_prefix() -> None:
