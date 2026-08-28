@@ -8404,6 +8404,34 @@ def test_instance_liveness_retains_the_provider_ssh_endpoint() -> None:
     assert liveness["ssh_port"] == 41234
 
 
+def test_instance_liveness_prefers_reachable_direct_ssh_mapping_over_relay() -> None:
+    """Warm proof must not strand a reachable pod behind a broken Vast relay."""
+
+    payload = {
+        "instances": [
+            {
+                "id": 49042956,
+                "actual_status": "running",
+                "ssh_host": "ssh1.vast.ai",
+                "ssh_port": 12956,
+                "public_ipaddr": "50.175.95.210",
+                "ports": {
+                    "22/tcp": [
+                        {"HostIp": "0.0.0.0", "HostPort": "53055"},
+                        {"HostIp": "::", "HostPort": "53055"},
+                    ]
+                },
+            }
+        ]
+    }
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=49042956)
+
+    assert liveness["status"] == "running"
+    assert liveness["ssh_host"] == "50.175.95.210"
+    assert liveness["ssh_port"] == 53055
+
+
 def test_instance_liveness_endpoint_is_absent_not_invented() -> None:
     """A provider row without an endpoint must not fabricate one."""
     payload = {"instances": [{"id": 1, "actual_status": "running"}]}

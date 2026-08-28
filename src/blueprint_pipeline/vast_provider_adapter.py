@@ -42,7 +42,7 @@ from .isaac_driver_support import (
     driver_sort_rank as _driver_sort_rank,
     isaac_driver_support_status as _isaac_driver_support_status,
 )
-from . import vast_compute_capability as vcc
+from . import gpu_render_providers, vast_compute_capability as vcc
 from .gpu_selection_policy import (
     _is_disallowed_for_isaac,
     _is_isaac_rt_candidate,
@@ -5753,7 +5753,7 @@ def _instance_liveness_from_payload(
         # endpoint identity then binds this row to ``instance_id``.
         if row_instance_id is None or row_instance_id == float(int(instance_id)):
             status = _instance_status(row).lower()
-            ssh_port = _number(row.get("ssh_port"))
+            connection = gpu_render_providers._vast_ssh_connection_metadata(row)
             result = {
                 "observed": True,
                 "status": status,
@@ -5761,8 +5761,8 @@ def _instance_liveness_from_payload(
                 "probe_error": None,
                 # Absent rather than invented: a fabricated endpoint would send
                 # a human to a host that is not there.
-                "ssh_host": _string(row.get("ssh_host")) or None,
-                "ssh_port": int(ssh_port) if ssh_port is not None else None,
+                "ssh_host": connection["ssh_host"],
+                "ssh_port": connection["ssh_port"],
             }
             terminal_startup_error = _terminal_startup_error(row)
             if terminal_startup_error:
