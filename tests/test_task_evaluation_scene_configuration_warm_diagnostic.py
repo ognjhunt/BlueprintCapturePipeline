@@ -1086,7 +1086,7 @@ def test_warm_readiness_is_installed_only_from_validated_stage_three_prefix(
     ).exists()
 
 
-def test_blocked_stage_retains_only_a_prefix_with_all_paid_stages(tmp_path: Path) -> None:
+def test_blocked_stage_retains_any_completed_prefix_for_cold_retry(tmp_path: Path) -> None:
     source_root = tmp_path / "source-checkpoint"
     source_root.mkdir()
     manifest_name = (
@@ -1111,13 +1111,16 @@ def test_blocked_stage_retains_only_a_prefix_with_all_paid_stages(tmp_path: Path
     assert "carried-source-prefix-3" in carried["provider_output_relative_root"]
 
     prefix_two = {**prefix_three, "completed_stage_prefix_count": 2}
-    assert provider_runner._retained_checkpoint_after_failure(
-        output=tmp_path / "output-refused",
+    cold_retry = provider_runner._retained_checkpoint_after_failure(
+        output=tmp_path / "output-prefix-two",
         checkpoint_root=source_root,
         checkpoint=prefix_two,
         advanced=prefix_two,
         advanced_root=None,
-    ) is None
+    )
+    assert cold_retry is not None
+    assert cold_retry["completed_stage_prefix_count"] == 2
+    assert "carried-source-prefix-2" in cold_retry["provider_output_relative_root"]
 
     advanced_root = tmp_path / "output-advanced/diagnostic_checkpoints/after-stage-3"
     advanced_root.mkdir(parents=True)

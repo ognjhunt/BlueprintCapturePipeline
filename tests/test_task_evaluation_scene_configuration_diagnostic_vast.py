@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import stat
 import zipfile
 from pathlib import Path
 
@@ -184,6 +185,46 @@ def test_diagnostic_provider_output_is_accepted_only_by_diagnostic_extractor(
     assert "scene_configuration_provider_result_contract_invalid" in (
         production_blockers
     )
+
+
+def test_diagnostic_provider_output_restores_digest_bound_file_modes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vast,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        lambda **_kwargs: {
+            "checkpoint_digest": CHECKPOINT_DIGEST,
+            "completed_stage_prefix_count": 6,
+        },
+    )
+    archive = tmp_path / "output.zip"
+    mode_sensitive = zipfile.ZipInfo("evidence/mode-sensitive.bin")
+    mode_sensitive.create_system = 3
+    mode_sensitive.external_attr = (stat.S_IFREG | 0o664) << 16
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "task_evaluation_scene_configuration_provider_result.v1.json",
+            json.dumps(_diagnostic_provider_result(), sort_keys=True),
+        )
+        bundle.writestr(
+            "diagnostic_checkpoints/after-stage-6/"
+            "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json",
+            CHECKPOINT_BODY,
+        )
+        bundle.writestr(mode_sensitive, b"digest-bound evidence")
+
+    _result, blockers = vast._extract_provider_output(
+        archive,
+        tmp_path / "diagnostic",
+        maximum_archive_bytes=1_000_000,
+        diagnostic_only=True,
+    )
+
+    assert blockers == []
+    extracted = tmp_path / "diagnostic/evidence/mode-sensitive.bin"
+    assert stat.S_IMODE(extracted.stat().st_mode) == 0o664
 
 
 def test_diagnostic_provider_output_refuses_any_publication_permission(

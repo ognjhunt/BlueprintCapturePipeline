@@ -501,12 +501,18 @@ def _retained_checkpoint_after_failure(
     advanced: dict | None,
     advanced_root: Path | None,
 ) -> dict | None:
-    """Retain only a validated prefix that already carries every paid stage."""
+    """Retain any validated completed prefix for a cold diagnostic retry.
+
+    Warm-session readiness remains independently gated at prefix three by
+    ``_install_warm_ready_checkpoint``.  A validated prefix-one or prefix-two
+    checkpoint is still useful after teardown because it prevents deterministic
+    completed stages from being repeated on the next diagnostic allocation.
+    """
 
     if (
         not isinstance(checkpoint, dict)
         or not isinstance(advanced, dict)
-        or int(advanced.get("completed_stage_prefix_count") or 0) < 3
+        or int(advanced.get("completed_stage_prefix_count") or 0) < 1
     ):
         return None
     retained_root = advanced_root
