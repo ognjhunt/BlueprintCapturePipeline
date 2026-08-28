@@ -166,6 +166,33 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     render_inputs["result_digest"] = canonical_digest(
         render_inputs, digest_field="result_digest"
     )
+    control_plane_result_digest = render_inputs["result_digest"]
+    disclosure_decision = {
+        "schema_version": "task_evaluation_scene_configuration_disclosure_decision.v1",
+        "render_execution_site": "provider_gpu",
+        "source_appearance_bytes_to_provider": True,
+        "rights_admission_permits_upload": True,
+        "stage_configuration_requests_upload": True,
+        "human_authority_accepts_provider_terms": True,
+        "refusals": [],
+        "provider_training_authorized": False,
+        "public_redistribution_authorized": False,
+        "decision_digest": "",
+    }
+    disclosure_decision["decision_digest"] = canonical_digest(
+        disclosure_decision, digest_field="decision_digest"
+    )
+    render_inputs.update(
+        {
+            "control_plane_result_digest": control_plane_result_digest,
+            "disclosure_decision": disclosure_decision,
+            "render_completed_on_provider": True,
+        }
+    )
+    render_inputs["result_digest"] = canonical_digest(
+        render_inputs, digest_field="result_digest"
+    )
+    assert render_inputs["result_digest"] != control_plane_result_digest
     render_handoff = materialize_provider_render_handoff(
         render_inputs=render_inputs,
         output_root=runtime,
@@ -224,7 +251,11 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "source_object": {"publisher_instance_id": "104"},
         "production_render_required": True,
         "required_views": {"minimum": 8},
-        "provider_disclosure": {"raw_interiorgs_bytes": False},
+        "provider_disclosure": {
+            "raw_interiorgs_bytes": True,
+            "provider_training": False,
+            "public_redistribution": False,
+        },
         "output_requirements": {"generated_pixels_labeled": True},
     }
     configuration_path = tmp_path / "appearance-configuration.json"

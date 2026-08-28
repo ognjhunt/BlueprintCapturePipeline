@@ -336,7 +336,11 @@ def execute_artifixer3d_observed_object_removal(
         or review["task_thumbnail_selection"].get("frame_sha256")
         != _sha256_and_size(thumbnail_path)[0]
         or render_reference.get("control_plane_render_result_digest")
-        != input_render.get("result_digest")
+        != (
+            input_render.get("control_plane_result_digest")
+            if renders_on_provider(input_render.get("disclosure_decision") or {})
+            else input_render.get("result_digest")
+        )
         or render_reference.get("render_completed_on_provider")
         is not renders_on_provider(input_render.get("disclosure_decision") or {})
     ):
