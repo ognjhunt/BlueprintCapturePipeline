@@ -19,6 +19,10 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD,
     REQUIRED_PARENT_TTL_SECONDS,
 )
+from .task_evaluation_configured_scene_public_projection import (
+    ConfiguredScenePublicProjectionError,
+    validate_public_display_authorization,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_launch_preparation_request.v1"
@@ -94,6 +98,13 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_scene_disclosure_conflicts_with_rights"
         )
+    if isinstance(scene_rights, Mapping):
+        try:
+            validate_public_display_authorization(request)
+        except ConfiguredScenePublicProjectionError as exc:
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_public_display_authorization_invalid"
+            ) from exc
     if request["runtime"]["requirements"]["gpu_count"] < 1:
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_gpu_requirement_missing"

@@ -72,6 +72,56 @@ def _thumbnail_artifacts(root: Path) -> list[dict[str, object]]:
     ]
 
 
+def _authorize_public_display(request: dict[str, object]) -> None:
+    scene = request["scene"]
+    task = request["task"]
+    rights = scene["rights"]
+    human_authority = next(
+        row["artifact"]
+        for row in rights["evidence"]
+        if row["role"] == "human_authority_record"
+    )
+    authority = {
+        "schema_version": (
+            "task_evaluation_configured_scene_public_display_authorization.v1"
+        ),
+        "status": "authorized",
+        "scope": "configured_scene_derived_listing",
+        "scene_identity": dict(scene["identity"]),
+        "task_identity": dict(task["identity"]),
+        "subject_identity": dict(task["subject"]["identity"]),
+        "rights_admission_digest": rights["admission"]["digest"],
+        "human_authority_record_digest": human_authority["digest"],
+        "public_slug": "interiorgs-841007-planar-mug-push",
+        "title": "Planar Mug Push",
+        "summary": "A robot-neutral configured scene for a planar mug push.",
+        "category": "Rigid relocation",
+        "allowed_fields": [
+            "status",
+            "scene_identity",
+            "task_identity",
+            "task_kind",
+            "task_strategy",
+            "public_title",
+            "public_summary",
+            "public_category",
+            "thumbnail",
+            "proof_boundary",
+        ],
+        "thumbnail_publication_authorized": True,
+        "derived_metadata_publication_authorized": True,
+        "private_artifact_uri_publication_authorized": False,
+        "raw_media_publication_authorized": False,
+        "authority_reference": "owner-public-display-authorization-20260828",
+        "authorized_by": "blueprint-owner",
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    rights["public_display_authorization"] = authority
+
+
 def test_thumbnail_size_ceiling_matches_private_website_delivery(
     tmp_path: Path,
 ) -> None:
@@ -155,6 +205,7 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     tmp_path: Path,
 ) -> None:
     request = configuration_request_fixture()
+    _authorize_public_display(request)
     artifacts = tmp_path / "provider-artifacts"
     artifacts.mkdir()
     roles = {
@@ -242,7 +293,35 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     )
     assert revision["presentation"]["selection"]["camera_id"] == "camera-3"
     assert revision["presentation"]["selected_from_exact_reviewed_frame_count"] == 8
-    assert result["configured_scene_offering"]["status"] == "launch_ready"
+    offering = result["configured_scene_offering"]
+    assert offering["status"] == "configured_controls_pending"
+    assert offering["evaluation_admission"] == {
+        "zero_action_required": True,
+        "scripted_positive_required": True,
+        "learned_policy_evaluation_admitted": False,
+    }
+    public_display = offering["public_display"]
+    assert public_display["status"] == "authorized"
+    assert public_display["configured_scene_revision_digest"] == revision[
+        "revision_digest"
+    ]
+    assert public_display["task_thumbnail_digest"] == _sha256(
+        artifacts / "configured-task-thumbnail.png"
+    )
+    assert public_display["projection_digest"] == canonical_digest(
+        public_display, digest_field="projection_digest"
+    )
+    private_source = dict(offering)
+    private_source.pop("public_display")
+    assert public_display["source_offering_digest"] == canonical_digest(
+        private_source, digest_field="offering_digest"
+    )
+    serialized_public = json.dumps(public_display).lower()
+    assert request["team_namespace"].lower() not in serialized_public
+    assert not any(
+        marker in serialized_public
+        for marker in ("s3://", "gs://", "/var/", "/private/", "api_key")
+    )
     assert result["configured_scene_offering"]["evaluation_preparation_binding"][
         "configuration_source_commit"
     ] == revision["source_commit"]
@@ -326,3 +405,4 @@ def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None
     )
 
     assert revision["source"]["raw_source_sent_to_external_provider"] is True
+    assert "public_display" not in result["configured_scene_offering"]

@@ -95,7 +95,10 @@
                   ]
                 },
                 "source_bytes_redistributable": {"type": "boolean"},
-                "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]}
+                "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]},
+                "public_display_authorization": {
+                  "$ref": "#/$defs/configuredScenePublicDisplayAuthorization"
+                }
               }
             }
           }
@@ -484,6 +487,85 @@
       "properties": {
         "id": {"$ref": "#/$defs/identifier"},
         "version": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "configuredScenePublicDisplayAuthorization": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "scope",
+        "scene_identity",
+        "task_identity",
+        "subject_identity",
+        "rights_admission_digest",
+        "human_authority_record_digest",
+        "public_slug",
+        "title",
+        "summary",
+        "category",
+        "allowed_fields",
+        "thumbnail_publication_authorized",
+        "derived_metadata_publication_authorized",
+        "private_artifact_uri_publication_authorized",
+        "raw_media_publication_authorized",
+        "authority_reference",
+        "authorized_by",
+        "authorization_digest"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "task_evaluation_configured_scene_public_display_authorization.v1"
+        },
+        "status": {"const": "authorized"},
+        "scope": {"const": "configured_scene_derived_listing"},
+        "scene_identity": {"$ref": "#/$defs/versionedIdentity"},
+        "task_identity": {"$ref": "#/$defs/versionedIdentity"},
+        "subject_identity": {"$ref": "#/$defs/versionedIdentity"},
+        "rights_admission_digest": {"$ref": "#/$defs/digest"},
+        "human_authority_record_digest": {"$ref": "#/$defs/digest"},
+        "public_slug": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,95}$"
+        },
+        "title": {"type": "string", "minLength": 1, "maxLength": 120},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+        "category": {"type": "string", "minLength": 1, "maxLength": 80},
+        "allowed_fields": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "prefixItems": [
+            {"const": "status"},
+            {"const": "scene_identity"},
+            {"const": "task_identity"},
+            {"const": "task_kind"},
+            {"const": "task_strategy"},
+            {"const": "public_title"},
+            {"const": "public_summary"},
+            {"const": "public_category"},
+            {"const": "thumbnail"},
+            {"const": "proof_boundary"}
+          ]
+        },
+        "thumbnail_publication_authorized": {"const": true},
+        "derived_metadata_publication_authorized": {"const": true},
+        "private_artifact_uri_publication_authorized": {"const": false},
+        "raw_media_publication_authorized": {"const": false},
+        "authority_reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "authorized_by": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "authorization_digest": {"$ref": "#/$defs/digest"}
       }
     }
   }

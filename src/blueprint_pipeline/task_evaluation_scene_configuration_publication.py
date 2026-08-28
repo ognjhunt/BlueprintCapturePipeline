@@ -15,6 +15,10 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
+from .task_evaluation_configured_scene_public_projection import (
+    ConfiguredScenePublicProjectionError,
+    build_public_display_projection,
+)
 from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
@@ -489,7 +493,7 @@ def publish_configured_scene_revision(
     )
     offering: dict[str, Any] = {
         "schema_version": "task_evaluation_configured_scene_offering.v1",
-        "status": "launch_ready",
+        "status": "configured_controls_pending",
         "configuration_run_id": envelope["run_id"],
         "team_namespace": envelope["team_namespace"],
         "catalog_visibility": "team_only",
@@ -522,8 +526,31 @@ def publish_configured_scene_revision(
             "configuration_is_policy_evaluation": False,
             "configuration_is_deployment_or_safety_approval": False,
         },
+        "evaluation_admission": {
+            "zero_action_required": True,
+            "scripted_positive_required": True,
+            "learned_policy_evaluation_admitted": False,
+        },
         "offering_digest": "",
     }
+    source_offering_digest = canonical_digest(
+        offering, digest_field="offering_digest"
+    )
+    try:
+        public_display = build_public_display_projection(
+            request=request,
+            revision=revision,
+            offering=offering,
+            source_offering_digest=source_offering_digest,
+            diagnostic_only=any(
+                result.get("diagnostic_only") is True
+                for result in stage_results
+            ),
+        )
+    except ConfiguredScenePublicProjectionError as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(str(exc)) from exc
+    if public_display is not None:
+        offering["public_display"] = public_display
     offering["offering_digest"] = canonical_digest(
         offering, digest_field="offering_digest"
     )
