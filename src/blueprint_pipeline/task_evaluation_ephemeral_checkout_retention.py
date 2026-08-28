@@ -15,7 +15,6 @@ from .task_evaluation_release_retention import (
     _artifact_snapshot,
     _assert_snapshot_current,
     _canonical_digest,
-    _remove_git_worktree,
     _valid_commit,
     _write_exclusive,
 )
@@ -29,7 +28,7 @@ APPLY_ACKNOWLEDGEMENT = "reap-restageable-task-evaluation-checkouts"
 def _git(path: Path, *args: str) -> str:
     try:
         completed = subprocess.run(  # nosec B603
-            ["git", "-C", str(path), *args],
+            ["git", "-c", f"safe.directory={path}", "-C", str(path), *args],
             check=False,
             capture_output=True,
             text=True,
@@ -45,6 +44,47 @@ def _git(path: Path, *args: str) -> str:
             + path.name
         )
     return completed.stdout.strip()
+
+
+def _remove_checkout(path: Path, *, commit: str) -> None:
+    git_marker = path / ".git"
+    if git_marker.is_symlink() or not git_marker.is_file():
+        raise ReleaseRetentionError(
+            f"ephemeral_checkout_retention_not_git_worktree:{commit}"
+        )
+    if _git(path, "rev-parse", "--verify", "HEAD^{commit}").lower() != commit:
+        raise ReleaseRetentionError(
+            f"ephemeral_checkout_retention_head_mismatch:{commit}"
+        )
+    if _git(path, "status", "--porcelain", "--untracked-files=all"):
+        raise ReleaseRetentionError(
+            f"ephemeral_checkout_retention_checkout_dirty:{commit}"
+        )
+    try:
+        completed = subprocess.run(  # nosec B603
+            [
+                "git",
+                "-c",
+                f"safe.directory={path}",
+                "-C",
+                str(path),
+                "worktree",
+                "remove",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except OSError as exc:
+        raise ReleaseRetentionError(
+            f"ephemeral_checkout_retention_remove_failed:{commit}"
+        ) from exc
+    if completed.returncode != 0 or path.exists():
+        raise ReleaseRetentionError(
+            f"ephemeral_checkout_retention_remove_failed:{commit}"
+        )
 
 
 def _checkout_snapshot(path: Path, *, root: Path) -> dict[str, Any]:
@@ -215,7 +255,7 @@ def apply_ephemeral_checkout_retention_plan(
     for artifact, path in targets:
         commit = str(artifact["source_commit"])
         _checkout_snapshot(path, root=path.parent)
-        _remove_git_worktree(path, commit=commit)
+        _remove_checkout(path, commit=commit)
         removed.append(
             {
                 "source_commit": commit,

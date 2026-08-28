@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import blueprint_pipeline.task_evaluation_ephemeral_checkout_retention as retention
 
 from blueprint_pipeline.task_evaluation_ephemeral_checkout_retention import (
     APPLY_ACKNOWLEDGEMENT,
@@ -103,3 +106,30 @@ def test_dirty_or_not_remotely_restageable_checkout_blocks(
         match="ephemeral_checkout_retention_checkout_dirty",
     ):
         build_ephemeral_checkout_retention_plan(checkout_roots=(root,))
+
+
+def test_git_probe_binds_the_exact_validated_safe_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(retention.subprocess, "run", run)
+    checkout = Path("/validated/exact-checkout")
+
+    retention._git(checkout, "status", "--porcelain")
+
+    assert calls == [
+        [
+            "git",
+            "-c",
+            "safe.directory=/validated/exact-checkout",
+            "-C",
+            "/validated/exact-checkout",
+            "status",
+            "--porcelain",
+        ]
+    ]
