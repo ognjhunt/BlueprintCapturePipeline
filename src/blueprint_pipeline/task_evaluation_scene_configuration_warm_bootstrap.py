@@ -40,6 +40,10 @@ def validate_warm_bootstrap_request(
         != paid_authority.get("authority_digest")
         or authority.get("source_checkpoint_digest")
         != bundle_receipt.get("source_diagnostic_checkpoint_digest")
+        or authority.get("diagnostic_bootstrap_mode")
+        != bundle_receipt.get("diagnostic_bootstrap_mode")
+        or authority.get("scientific_binding_digest")
+        != bundle_receipt.get("diagnostic_scientific_binding_digest")
     ):
         raise error_factory("scene_configuration_warm_session_authority_binding_mismatch")
     return authority

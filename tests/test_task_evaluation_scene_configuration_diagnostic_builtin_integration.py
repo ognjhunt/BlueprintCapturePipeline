@@ -408,6 +408,7 @@ def test_real_builtin_chain_accepts_checkpoint_hydration_and_skips_paid_prefix(
     outputs = tmp_path / "outputs"
     outputs.mkdir()
     result = execute_scene_configuration_diagnostic_stage_chain(
+        diagnostic_bootstrap_mode="checkpoint_resume",
         checkpoint_root=checkpoint_root,
         envelope=envelope,
         configurations=configurations,

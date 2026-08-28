@@ -43,6 +43,7 @@ from .public_scene_artifixer3d_dual_target_inputs import (
     materialize_whole_frame_semantic_teacher_receipt,
 )
 from .semantic_teacher_image_edit_worker import (
+    PRODUCTION_MAX_PARALLEL_REQUESTS,
     RUNTIME_REQUEST_SCHEMA_VERSION as SEMANTIC_RUNTIME_REQUEST_SCHEMA_VERSION,
     RUNTIME_RESULT_SCHEMA_VERSION as SEMANTIC_RUNTIME_RESULT_SCHEMA_VERSION,
     execute_semantic_teacher_image_edits,
@@ -602,7 +603,7 @@ def _semantic_runtime_request(
         "prompt_policy": packet["backend"]["prompt_policy"],
         "prompt": packet["backend"]["prompt"],
         "tasks": tasks,
-        "max_parallel_requests": 2,
+        "max_parallel_requests": PRODUCTION_MAX_PARALLEL_REQUESTS,
         # The stage's own cap, so the worker can stop issuing frame requests
         # once the observed spend would carry past it. Without this the cap is
         # only checked at settlement, two days after the money is gone: run

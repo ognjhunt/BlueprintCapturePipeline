@@ -23,6 +23,9 @@ from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
 )
 from .task_evaluation_scene_configuration_disclosure import renders_on_provider
+from .task_evaluation_scene_configuration_diagnostic_mode import (
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+)
 from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_ATTEMPT_SPEND_USD,
     MAX_EXTERNAL_SERVICE_SPEND_USD,
@@ -45,6 +48,35 @@ _RESOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{15,127}")
 
 class TaskEvaluationSceneConfigurationAuthorityError(ValueError):
     """A configuration authority was incomplete, stale, or not single-use."""
+
+
+def _required_external_stage_minima(
+    *,
+    diagnostic_only: bool,
+    diagnostic_bootstrap_mode: object,
+    carried_stage_count: int,
+) -> dict[str, float]:
+    fresh_diagnostic_bootstrap = (
+        diagnostic_only
+        and diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+    )
+    return {
+        "artifixer_semantic_teacher": (
+            0.0
+            if diagnostic_only and not fresh_diagnostic_bootstrap
+            else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+        ),
+        "artifixer_visual_review": (
+            0.0
+            if diagnostic_only and carried_stage_count >= 1
+            else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+        ),
+        "content_agents": (
+            0.0
+            if diagnostic_only and carried_stage_count >= 3
+            else MIN_CONTENT_AGENTS_SPEND_USD
+        ),
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -217,21 +249,16 @@ def materialize_scene_configuration_paid_authority(
         "content_agents": float(openai_content_agents_max_cost_usd),
     }
     carried_stage_count = int(receipt.get("carried_completed_stage_count") or 0)
-    required_stage_minima = {
-        "artifixer_semantic_teacher": (
-            0.0 if diagnostic_only else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
-        ),
-        "artifixer_visual_review": (
-            0.0
-            if diagnostic_only and carried_stage_count >= 1
-            else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
-        ),
-        "content_agents": (
-            0.0
-            if diagnostic_only and carried_stage_count >= 3
-            else MIN_CONTENT_AGENTS_SPEND_USD
-        ),
-    }
+    diagnostic_bootstrap_mode = receipt.get("diagnostic_bootstrap_mode")
+    fresh_diagnostic_bootstrap = (
+        diagnostic_only
+        and diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+    )
+    required_stage_minima = _required_external_stage_minima(
+        diagnostic_only=diagnostic_only,
+        diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
+        carried_stage_count=carried_stage_count,
+    )
     minimum_external_cap = sum(required_stage_minima.values())
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
@@ -253,6 +280,7 @@ def materialize_scene_configuration_paid_authority(
         )
         and (
             not diagnostic_only
+            or fresh_diagnostic_bootstrap
             or stage_caps["artifixer_semantic_teacher"] == 0
         )
         and (
@@ -335,7 +363,11 @@ def materialize_scene_configuration_paid_authority(
         "authorized_by": authorized_by.strip(),
         "authorized_on": authorized_time.isoformat().replace("+00:00", "Z"),
         "purpose": (
-            "one_shot_task_evaluation_scene_configuration_diagnostic_resume"
+            (
+                "one_shot_task_evaluation_scene_configuration_diagnostic_fresh_bootstrap"
+                if fresh_diagnostic_bootstrap
+                else "one_shot_task_evaluation_scene_configuration_diagnostic_resume"
+            )
             if diagnostic_only
             else "one_shot_task_evaluation_scene_configuration"
         ),
@@ -391,10 +423,17 @@ def materialize_scene_configuration_paid_authority(
                 "configured_revision_publication_permitted": False,
                 "offering_publication_permitted": False,
                 "terminal_e2e_completion_permitted": False,
-                "source_diagnostic_checkpoint_digest": receipt[
+                "source_diagnostic_checkpoint_digest": receipt.get(
                     "source_diagnostic_checkpoint_digest"
-                ],
+                ),
                 "carried_completed_stage_count": carried_stage_count,
+                "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
+                "diagnostic_scientific_binding_digest": receipt.get(
+                    "diagnostic_scientific_binding_digest"
+                ),
+                "diagnostic_stage_sequence_ids": list(
+                    receipt.get("diagnostic_stage_sequence_ids") or []
+                ),
             }
         )
     authority["authority_digest"] = canonical_digest(
@@ -419,24 +458,19 @@ def validate_scene_configuration_paid_authority(
     external_requests = external.get("maximum_requests") if isinstance(external, Mapping) else None
     stage_caps = external.get("stage_max_cost_usd") if isinstance(external, Mapping) else None
     diagnostic_only = bundle_receipt.get("diagnostic_only") is True
+    diagnostic_bootstrap_mode = bundle_receipt.get("diagnostic_bootstrap_mode")
+    fresh_diagnostic_bootstrap = (
+        diagnostic_only
+        and diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+    )
     carried_stage_count = int(
         bundle_receipt.get("carried_completed_stage_count") or 0
     )
-    required_stage_minima = {
-        "artifixer_semantic_teacher": (
-            0.0 if diagnostic_only else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
-        ),
-        "artifixer_visual_review": (
-            0.0
-            if diagnostic_only and carried_stage_count >= 1
-            else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
-        ),
-        "content_agents": (
-            0.0
-            if diagnostic_only and carried_stage_count >= 3
-            else MIN_CONTENT_AGENTS_SPEND_USD
-        ),
-    }
+    required_stage_minima = _required_external_stage_minima(
+        diagnostic_only=diagnostic_only,
+        diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
+        carried_stage_count=carried_stage_count,
+    )
     minimum_external_cap = sum(required_stage_minima.values())
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
@@ -486,6 +520,7 @@ def validate_scene_configuration_paid_authority(
         )
         and (
             not diagnostic_only
+            or fresh_diagnostic_bootstrap
             or float(stage_caps["artifixer_semantic_teacher"]) == 0
         )
         and (
@@ -541,7 +576,11 @@ def validate_scene_configuration_paid_authority(
         != "explicit_user_direction_in_current_goal"
         or authority.get("purpose")
         != (
-            "one_shot_task_evaluation_scene_configuration_diagnostic_resume"
+            (
+                "one_shot_task_evaluation_scene_configuration_diagnostic_fresh_bootstrap"
+                if fresh_diagnostic_bootstrap
+                else "one_shot_task_evaluation_scene_configuration_diagnostic_resume"
+            )
             if diagnostic_only
             else "one_shot_task_evaluation_scene_configuration"
         )
@@ -589,6 +628,12 @@ def validate_scene_configuration_paid_authority(
                 != bundle_receipt.get("source_diagnostic_checkpoint_digest")
                 or authority.get("carried_completed_stage_count")
                 != carried_stage_count
+                or authority.get("diagnostic_bootstrap_mode")
+                != diagnostic_bootstrap_mode
+                or authority.get("diagnostic_scientific_binding_digest")
+                != bundle_receipt.get("diagnostic_scientific_binding_digest")
+                or authority.get("diagnostic_stage_sequence_ids")
+                != bundle_receipt.get("diagnostic_stage_sequence_ids")
             )
         )
         or authority.get("active_instance_allowlist")

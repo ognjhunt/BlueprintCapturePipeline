@@ -1917,6 +1917,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "watchdog for immutable checkpoint-resume source overlays."
         ),
     )
+    gpu.add_argument(
+        "--scene-configuration-allowed-vast-machine-id",
+        action="append",
+        type=int,
+        default=[],
+        help=(
+            "Restrict a diagnostic scene-configuration allocation to a "
+            "receipt-bound set of previously proven Vast machines. Repeat the "
+            "option for multiple machines. Production qualification rejects it."
+        ),
+    )
     gpu.add_argument("--scene-configuration-warm-session-authority")
     gpu.add_argument("--scene-configuration-warm-session-output-root")
     gpu.add_argument(

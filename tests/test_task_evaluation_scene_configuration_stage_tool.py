@@ -156,6 +156,52 @@ def test_rejects_scene_selected_adapter_or_artifact_path(tmp_path: Path) -> None
         )
 
 
+def test_diagnostic_toolchain_commit_is_distinct_from_construction_commit(
+    tmp_path: Path,
+) -> None:
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result_path = _environment(tmp_path, adapter_id=adapter_id)
+    input_path = Path(
+        environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"]
+    )
+    stage_input = json.loads(input_path.read_text(encoding="utf-8"))
+    construction_commit = "b" * 40
+    stage_input["construction_source_commit"] = construction_commit
+    stage_input["execution_mode"] = "diagnostic_only"
+    stage_input["construction_envelope"][
+        "expected_production_commit"
+    ] = construction_commit
+    stage_input["construction_envelope"]["envelope_digest"] = canonical_digest(
+        stage_input["construction_envelope"], digest_field="envelope_digest"
+    )
+    input_path.write_text(json.dumps(stage_input), encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationStageToolError,
+        match="scene_configuration_stage_tool_input_invalid",
+    ):
+        execute_stage_tool(
+            adapter_id=adapter_id,
+            environment=environment,
+            runner=lambda *_args, **_kwargs: None,
+        )
+
+    environment["BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY"] = "1"
+
+    def fail_after_validation(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 1, stdout="", stderr="expected")
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationStageToolError,
+        match=f"scene_configuration_component_failed:{adapter_id}:1",
+    ):
+        execute_stage_tool(
+            adapter_id=adapter_id,
+            environment=environment,
+            runner=fail_after_validation,
+        )
+
+
 def test_component_failure_retains_its_redacted_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

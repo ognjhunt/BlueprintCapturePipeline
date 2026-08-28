@@ -13,6 +13,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     SCHEMA_VERSION,
     TaskEvaluationSplatRenderRuntimeError,
+    validate_diagnostic_splat_render_runtime,
     validate_splat_render_runtime,
 )
 
@@ -142,6 +143,28 @@ def test_repository_identity_probe_admits_exact_release_worktree(monkeypatch: py
         "check": False,
         "timeout": 30,
     }
+
+
+def test_diagnostic_runtime_binds_retained_commit_without_relabeling_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    def unexpected_repository_probe(_repo: Path) -> str:
+        raise AssertionError("diagnostic resolver must use the explicit runtime commit")
+
+    monkeypatch.setattr(
+        runtime_module, "_repository_commit", unexpected_repository_probe
+    )
+    result = validate_diagnostic_splat_render_runtime(
+        runtime_root=runtime,
+        repo_root=ROOT,
+        expected_runtime_source_commit=_commit(),
+        allowed_roots=[tmp_path / "allowed"],
+    )
+
+    assert result["identity"]["source_commit"] == _commit()
+    assert result["identity"]["full_byte_service_account_readback_passed"] is True
 
 
 def test_rejects_byte_tamper_even_when_path_still_exists(tmp_path: Path) -> None:

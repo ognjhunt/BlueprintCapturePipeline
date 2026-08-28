@@ -46,6 +46,7 @@ def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
         toolchain_root=str(toolchain.resolve()),
         splat_render_runtime_root=str(runtime.resolve()),
         diagnostic_checkpoint_reference=str(checkpoint.resolve()),
+        fresh_diagnostic_bootstrap=False,
         bundle_output_root=str((tmp_path / "bundle-output").resolve()),
         project_spend_reconciliation=str(project_spend.resolve()),
         initial_provider_zero=str(provider_zero.resolve()),
@@ -72,6 +73,7 @@ def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
             (tmp_path / "preparation.json").resolve()
         ),
         retain_warm_session=False,
+        allowed_vast_machine_id=[],
         warm_session_authority=None,
         warm_session_output_root=None,
         maximum_warm_iterations=8,
@@ -121,6 +123,9 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
             events.append("bundle")
             output = Path(command[command.index("--output-root") + 1])
             output.mkdir(parents=True)
+            staging = output / "stage"
+            staging.mkdir()
+            (staging / "expanded-runtime.bin").write_bytes(b"regenerable")
             (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
                 json.dumps(
                     {
@@ -133,11 +138,17 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
                         "terminal_e2e_completion_permitted": False,
                         "bundle_sha256": "sha256:" + "2" * 64,
                         "receipt_digest": "sha256:" + "3" * 64,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
+                        "source_diagnostic_checkpoint_digest": (
+                            "sha256:" + "5" * 64
+                        ),
+                        "carried_completed_stage_count": 3,
                     }
                 ),
                 encoding="utf-8",
             )
         elif module.endswith("task_evaluation_scene_configuration_paid_authority"):
+            assert not (Path(args.bundle_output_root) / "stage").exists()
             events.append("authority")
             output = Path(command[command.index("--output") + 1])
             output.write_text(
@@ -152,6 +163,7 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
                         "authority_digest": "sha256:" + "4" * 64,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
                     }
                 ),
                 encoding="utf-8",
@@ -185,6 +197,7 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
     assert result["source_materialization_target_met"] is True
     assert result["total_preparation_elapsed_ms"] == 620
     assert result["total_preparation_seconds_claimed"] is False
+    assert result["bundle_staging_tree_removed_after_seal"] is True
     assert result["splat_runtime_reused_by_reference"] is True
     assert result["splat_runtime_copied"] is False
     assert result["remaining_preparation_bottleneck"][
@@ -210,6 +223,7 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     args = _args(tmp_path, execute=True)
+    _install_paid_runtime_environment(tmp_path, monkeypatch)
     release_path = Path(args.release_root) / SOURCE_COMMIT
     release_path.mkdir(parents=True)
     (release_path / "src").mkdir()
@@ -233,11 +247,13 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
         lambda *_args, **_kwargs: {},
     )
     allocator_commands: list[list[str]] = []
+    bundle_commands: list[list[str]] = []
 
     def runner(argv, **_kwargs):
         command = list(argv)
         module = command[command.index("-m") + 1]
         if module.endswith("bundle"):
+            bundle_commands.append(command)
             output = Path(command[command.index("--output-root") + 1])
             output.mkdir(parents=True)
             (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
@@ -251,6 +267,11 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
                         "bundle_sha256": "sha256:" + "2" * 64,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
+                        "source_diagnostic_checkpoint_digest": (
+                            "sha256:" + "3" * 64
+                        ),
+                        "carried_completed_stage_count": 3,
                     }
                 ),
                 encoding="utf-8",
@@ -267,6 +288,7 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
                         "configured_revision_publication_permitted": False,
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
+                        "diagnostic_bootstrap_mode": "checkpoint_resume",
                     }
                 ),
                 encoding="utf-8",
@@ -282,19 +304,28 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
     assert allocator_commands and allocator_commands[0][-1] == "--execute"
 
 
+@pytest.mark.parametrize("fresh_bootstrap", [False, True])
 def test_execute_can_retain_one_warm_session_through_canonical_allocator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fresh_bootstrap: bool,
 ) -> None:
     args = _args(tmp_path, execute=True)
+    _install_paid_runtime_environment(tmp_path, monkeypatch)
     args.retain_warm_session = True
+    args.allowed_vast_machine_id = [44762, 21899, 44762]
     args.warm_session_authority = str((tmp_path / "warm-authority.json").resolve())
     args.warm_session_output_root = str((tmp_path / "warm-session").resolve())
     checkpoint_root = tmp_path / "checkpoint"
     checkpoint_root.mkdir()
-    Path(args.diagnostic_checkpoint_reference).write_text(
-        json.dumps({"checkpoint_root": str(checkpoint_root.resolve())}),
-        encoding="utf-8",
-    )
+    if fresh_bootstrap:
+        args.fresh_diagnostic_bootstrap = True
+        args.diagnostic_checkpoint_reference = None
+    else:
+        Path(args.diagnostic_checkpoint_reference).write_text(
+            json.dumps({"checkpoint_root": str(checkpoint_root.resolve())}),
+            encoding="utf-8",
+        )
     release_path = Path(args.release_root) / SOURCE_COMMIT
     release_path.mkdir(parents=True)
     (release_path / "src").mkdir()
@@ -324,11 +355,13 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
         lambda **kwargs: warm_calls.append(kwargs) or {},
     )
     allocator_commands: list[list[str]] = []
+    bundle_commands: list[list[str]] = []
 
     def runner(argv, **_kwargs):
         command = list(argv)
         module = command[command.index("-m") + 1]
         if module.endswith("bundle"):
+            bundle_commands.append(command)
             output = Path(command[command.index("--output-root") + 1])
             output.mkdir(parents=True)
             (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
@@ -342,6 +375,15 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
                         "bundle_sha256": "sha256:" + "2" * 64,
+                        "diagnostic_bootstrap_mode": (
+                            "fresh" if fresh_bootstrap else "checkpoint_resume"
+                        ),
+                        "source_diagnostic_checkpoint_digest": (
+                            None if fresh_bootstrap else "sha256:" + "3" * 64
+                        ),
+                        "carried_completed_stage_count": (
+                            0 if fresh_bootstrap else 3
+                        ),
                     }
                 ),
                 encoding="utf-8",
@@ -358,6 +400,9 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
                         "configured_revision_publication_permitted": False,
                         "offering_publication_permitted": False,
                         "terminal_e2e_completion_permitted": False,
+                        "diagnostic_bootstrap_mode": (
+                            "fresh" if fresh_bootstrap else "checkpoint_resume"
+                        ),
                     }
                 ),
                 encoding="utf-8",
@@ -372,12 +417,30 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
     )
 
     assert len(warm_calls) == 1
-    assert warm_calls[0]["checkpoint_root"] == checkpoint_root.resolve()
+    assert warm_calls[0]["checkpoint_root"] == (
+        None if fresh_bootstrap else checkpoint_root.resolve()
+    )
+    assert ("--fresh-diagnostic-bootstrap" in bundle_commands[0]) is (
+        fresh_bootstrap
+    )
+    assert ("--diagnostic-checkpoint-reference" in bundle_commands[0]) is (
+        not fresh_bootstrap
+    )
     command = allocator_commands[0]
     assert "--scene-configuration-retain-warm-session" in command
     assert command[command.index("--scene-configuration-warm-session-authority") + 1] == args.warm_session_authority
     assert command[command.index("--scene-configuration-warm-session-output-root") + 1] == args.warm_session_output_root
+    machine_flag = "--scene-configuration-allowed-vast-machine-id"
+    assert [
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == machine_flag
+    ] == ["21899", "44762"]
     assert result["warm_session_retention_requested"] is True
+    assert result["allowed_vast_machine_ids"] == [21899, 44762]
+    assert result["diagnostic_bootstrap_mode"] == (
+        "fresh" if fresh_bootstrap else "checkpoint_resume"
+    )
 
 
 def test_child_failure_is_redacted_and_does_not_print_child_output(
@@ -404,6 +467,11 @@ def test_child_failure_is_redacted_and_does_not_print_child_output(
     secret_text = "sk-test-secret-must-not-escape"
 
     def failed(argv, **_kwargs):
+        output = Path(args.bundle_output_root)
+        (output / "stage" / "provider_runtime").mkdir(parents=True)
+        (output / "stage" / "provider_runtime" / "partial.bin").write_bytes(
+            b"unsealed-regenerable-partial"
+        )
         return subprocess.CompletedProcess(
             list(argv), 2, stdout=secret_text, stderr=secret_text
         )
@@ -414,6 +482,118 @@ def test_child_failure_is_redacted_and_does_not_print_child_output(
     ) as exc:
         iteration.run_scene_configuration_diagnostic_iteration(args, runner=failed)
     assert secret_text not in str(exc.value)
+    assert not (Path(args.bundle_output_root) / "stage").exists()
+
+
+def _install_paid_runtime_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in iteration._OPENAI_RUNTIME_FILE_ENV_NAMES:
+        value = tmp_path / name.lower()
+        value.write_text("fixture\n", encoding="utf-8")
+        monkeypatch.setenv(name, str(value.resolve()))
+    for name in iteration._OPENAI_RUNTIME_VALUE_ENV_NAMES:
+        monkeypatch.setenv(name, "fixture-identity")
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "spend"))
+
+
+def test_execute_preflights_openai_environment_before_staging_or_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    stage_called = False
+
+    def stage(**_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        pytest.fail("release staging must not run after environment preflight refusal")
+
+    monkeypatch.setattr(
+        iteration, "stage_scene_configuration_diagnostic_release", stage
+    )
+    for name in (
+        *iteration._OPENAI_RUNTIME_FILE_ENV_NAMES,
+        *iteration._OPENAI_RUNTIME_VALUE_ENV_NAMES,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match=(
+            "scene_configuration_diagnostic_iteration_openai_runtime_environment_missing:"
+            "OPENAI_ADMIN_API_KEY_FILE"
+        ),
+    ):
+        iteration.run_scene_configuration_diagnostic_iteration(args)
+
+    assert stage_called is False
+
+
+def test_execute_preflights_spend_identity_before_bundle_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    _install_paid_runtime_environment(tmp_path, monkeypatch)
+    stage_called = False
+
+    def stage(**_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        pytest.fail("release staging must not run after spend-identity refusal")
+
+    monkeypatch.setattr(
+        iteration, "stage_scene_configuration_diagnostic_release", stage
+    )
+    monkeypatch.setattr(
+        iteration,
+        "prepare_consumption_root",
+        lambda: (_ for _ in ()).throw(
+            iteration.SpendAuthorityRootError(
+                "spend_authority_consumption_root_not_owned"
+            )
+        ),
+    )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match=(
+            "scene_configuration_diagnostic_iteration_spend_identity_invalid:"
+            "spend_authority_consumption_root_not_owned"
+        ),
+    ):
+        iteration.run_scene_configuration_diagnostic_iteration(args)
+
+    assert stage_called is False
+
+
+def test_child_failure_surfaces_typed_detail_but_redacts_credentials() -> None:
+    def failed(argv, **_kwargs):
+        return subprocess.CompletedProcess(
+            list(argv),
+            2,
+            stdout="",
+            stderr=(
+                "scene_configuration_openai_runtime_secret_configuration_missing "
+                "sk-fixturesecret12345678"
+            ),
+        )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match=(
+            "diagnostic_iteration_allocator_failed:"
+            "scene_configuration_openai_runtime_secret_configuration_missing"
+        ),
+    ) as exc:
+        iteration._run_fixed(
+            ["python", "-m", "blueprint_pipeline.paid_resource_allocator"],
+            cwd=Path("/"),
+            environment={},
+            runner=failed,
+            code="scene_configuration_diagnostic_iteration_allocator_failed",
+        )
+    assert "fixturesecret" not in str(exc.value)
+    assert "<redacted>" in str(exc.value)
 
 
 def test_paths_are_explicit_absolute_and_no_arbitrary_command_option_exists(
@@ -437,7 +617,7 @@ def test_paths_are_explicit_absolute_and_no_arbitrary_command_option_exists(
     assert "--shell" not in option_names
 
 
-def test_normal_venv_python_symlink_is_resolved_to_its_executable_target(
+def test_normal_venv_python_symlink_preserves_venv_entrypoint(
     tmp_path: Path,
 ) -> None:
     executable = tmp_path / "python-target"
@@ -446,4 +626,4 @@ def test_normal_venv_python_symlink_is_resolved_to_its_executable_target(
     venv_python = tmp_path / "venv-python"
     venv_python.symlink_to(executable)
 
-    assert iteration._python_executable(venv_python) == executable
+    assert iteration._python_executable(venv_python) == venv_python

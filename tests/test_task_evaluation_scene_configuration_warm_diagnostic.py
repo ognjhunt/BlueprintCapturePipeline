@@ -117,7 +117,6 @@ def test_scene_warm_retention_requires_runtime_and_direct_access() -> None:
     )
     assert refused["status"] == "teardown_required"
     assert "retention_scene_configuration_runtime_root_not_ready" in refused["blockers"]
-
     decision["warm_worker_evidence"]["scene_configuration_runtime_root_ready"] = True
     decision["warm_worker_evidence"][
         "fresh_ssh_runtime_secret_environment_absent"
@@ -146,6 +145,54 @@ def test_scene_warm_retention_requires_runtime_and_direct_access() -> None:
     )
 
 
+def test_fresh_bundle_switches_to_checkpoint_resume_inside_warm_iteration() -> None:
+    assert provider_runner._effective_diagnostic_bootstrap_mode(
+        bundle_bootstrap_mode="fresh", warm_source_commit=""
+    ) == "fresh"
+    assert provider_runner._effective_diagnostic_bootstrap_mode(
+        bundle_bootstrap_mode="fresh", warm_source_commit="a" * 40
+    ) == "checkpoint_resume"
+
+
+def test_diagnostic_producer_registry_binds_bundle_toolchain_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, str | bool] = {}
+    sentinel = object()
+
+    def build_registry(*, expected_source_commit: str, diagnostic_only: bool):
+        observed["expected_source_commit"] = expected_source_commit
+        observed["diagnostic_only"] = diagnostic_only
+        return sentinel
+
+    monkeypatch.setattr(
+        provider_runner,
+        "builtin_scene_configuration_stage_producer_registry",
+        build_registry,
+    )
+    registry = provider_runner._diagnostic_stage_producer_registry(
+        bundle_manifest={
+            "source_commit": "b" * 40,
+            "toolchain_source_commit": "b" * 40,
+        }
+    )
+
+    assert registry is sentinel
+    assert observed == {
+        "expected_source_commit": "b" * 40,
+        "diagnostic_only": True,
+    }
+    with pytest.raises(
+        ValueError, match="scene_configuration_diagnostic_toolchain_identity_invalid"
+    ):
+        provider_runner._diagnostic_stage_producer_registry(
+            bundle_manifest={
+                "source_commit": "b" * 40,
+                "toolchain_source_commit": "a" * 40,
+            }
+        )
+
+
 def test_fresh_ssh_probe_and_child_entrypoint_never_inherit_secret_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,6 +209,9 @@ def test_fresh_ssh_probe_and_child_entrypoint_never_inherit_secret_environment(
         command = str(kwargs["remote_argv"][-1])
         assert "compgen -e" in command
         assert "BLUEPRINT_VAST_RUNTIME_SECRET_B64_*" in command
+        assert "BLUEPRINT_EVAL_MANIFEST_URI" in command
+        assert "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL" in command
+        assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in command
         return {
             "status": "completed",
             "stdout": "RUNTIME_SECRET_ENVIRONMENT:absent\n",
@@ -331,7 +381,14 @@ def test_bootstrap_execution_cross_binds_base_scientific_identity() -> None:
         "toolchain_digest": "sha256:" + "1" * 64,
         "portable_construction_envelope_digest": "sha256:" + "2" * 64,
     }
-    authority = {"source_checkpoint_digest": "sha256:" + "3" * 64}
+    authority = {
+        "source_checkpoint_digest": "sha256:" + "3" * 64,
+        "diagnostic_bootstrap_mode": "checkpoint_resume",
+        "scientific_binding_digest": "sha256:" + "5" * 64,
+        "diagnostic_stage_sequence_ids": [
+            f"stage-{index + 1}" for index in range(6)
+        ],
+    }
     execution = {
         "diagnostic_source_commit": receipt["source_commit"],
         "diagnostic_run_id": receipt["run_id"],
@@ -340,12 +397,37 @@ def test_bootstrap_execution_cross_binds_base_scientific_identity() -> None:
             "portable_construction_envelope_digest"
         ],
         "source_checkpoint_digest": authority["source_checkpoint_digest"],
+        "diagnostic_bootstrap_mode": authority["diagnostic_bootstrap_mode"],
+        "diagnostic_scientific_binding_digest": authority[
+            "scientific_binding_digest"
+        ],
+        "diagnostic_stage_chain": {
+            "diagnostic_bootstrap_mode": authority[
+                "diagnostic_bootstrap_mode"
+            ],
+            "scientific_binding_digest": authority[
+                "scientific_binding_digest"
+            ],
+            "stage_results": [
+                {"stage_id": f"stage-{index + 1}"} for index in range(3)
+            ],
+        },
+    }
+    advanced_checkpoint = {
+        "checkpoint_digest": "sha256:" + "4" * 64,
+        "completed_stage_prefix_count": 3,
+        "completed_stage_results": [
+            {"stage_id": f"stage-{index + 1}"} for index in range(3)
+        ],
+        "scientific_bindings": {
+            "binding_digest": authority["scientific_binding_digest"]
+        },
     }
     assert warm_contract.warm_bootstrap_execution_binding_blockers(
         execution=execution,
         bundle_receipt=receipt,
         session_authority=authority,
-        advanced_checkpoint={"checkpoint_digest": "sha256:" + "4" * 64},
+        advanced_checkpoint=advanced_checkpoint,
     ) == []
 
     execution["diagnostic_run_id"] = "stale-run"
@@ -353,9 +435,53 @@ def test_bootstrap_execution_cross_binds_base_scientific_identity() -> None:
         execution=execution,
         bundle_receipt=receipt,
         session_authority=authority,
-        advanced_checkpoint={"checkpoint_digest": "sha256:" + "4" * 64},
+        advanced_checkpoint=advanced_checkpoint,
     )
     assert "scene_configuration_warm_bootstrap_execution_run_id_mismatch" in blockers
+
+
+def test_blocked_fresh_bootstrap_can_retain_validated_stage_three_prefix() -> None:
+    scientific = "sha256:" + "5" * 64
+    stage_ids = [f"stage-{index + 1}" for index in range(6)]
+    receipt = {
+        "source_commit": "a" * 40,
+        "run_id": "run-1",
+        "toolchain_digest": "sha256:" + "1" * 64,
+        "portable_construction_envelope_digest": "sha256:" + "2" * 64,
+    }
+    authority = {
+        "source_checkpoint_digest": None,
+        "diagnostic_bootstrap_mode": "fresh",
+        "scientific_binding_digest": scientific,
+        "diagnostic_stage_sequence_ids": stage_ids,
+    }
+    execution = {
+        "status": "blocked_diagnostic_only",
+        "diagnostic_source_commit": receipt["source_commit"],
+        "diagnostic_run_id": receipt["run_id"],
+        "diagnostic_toolchain_digest": receipt["toolchain_digest"],
+        "diagnostic_construction_envelope_digest": receipt[
+            "portable_construction_envelope_digest"
+        ],
+        "source_checkpoint_digest": None,
+        "diagnostic_bootstrap_mode": "fresh",
+        "diagnostic_scientific_binding_digest": scientific,
+    }
+    advanced = {
+        "checkpoint_digest": "sha256:" + "4" * 64,
+        "completed_stage_prefix_count": 3,
+        "completed_stage_results": [
+            {"stage_id": stage_id} for stage_id in stage_ids[:3]
+        ],
+        "scientific_bindings": {"binding_digest": scientific},
+    }
+
+    assert warm_contract.warm_bootstrap_execution_binding_blockers(
+        execution=execution,
+        bundle_receipt=receipt,
+        session_authority=authority,
+        advanced_checkpoint=advanced,
+    ) == []
 
 
 def test_warm_output_get_retries_only_transient_and_refuses_redirects(
@@ -665,6 +791,73 @@ def test_scene_base_bundle_is_hashed_before_unzip_and_warm_readiness() -> None:
     unzip = script.index("-m zipfile -e")
     assert expected in script
     assert digest_check < verified < unzip
+    assert "task_evaluation_scene_configuration_warm_readiness.v1.json" in script
+
+
+def test_warm_readiness_is_installed_only_from_validated_stage_three_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    (runtime / "input").mkdir(parents=True)
+    source = tmp_path / "source-checkpoint"
+    source.mkdir()
+    manifest_name = (
+        "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json"
+    )
+    (source / manifest_name).write_text("{}\n")
+    scientific = "sha256:" + "2" * 64
+    checkpoint = {
+        "checkpoint_digest": "sha256:" + "1" * 64,
+        "scientific_bindings": {"binding_digest": scientific},
+        "completed_stage_prefix_count": 3,
+        "completed_stage_results": [
+            {"stage_id": f"stage-{index + 1}"} for index in range(3)
+        ],
+    }
+    monkeypatch.setattr(
+        provider_runner,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        lambda **_kwargs: checkpoint,
+    )
+
+    readiness = provider_runner._install_warm_ready_checkpoint(
+        runtime=runtime,
+        checkpoint_root=source,
+        checkpoint=checkpoint,
+        diagnostic_bootstrap_mode="fresh",
+        expected_scientific_binding_digest=scientific,
+    )
+
+    assert readiness["completed_stage_prefix_count"] == 3
+    assert readiness["readiness_digest"] == canonical_digest(
+        readiness, digest_field="readiness_digest"
+    )
+    assert (runtime / "input/diagnostic_checkpoint" / manifest_name).is_file()
+    assert (
+        runtime
+        / "task_evaluation_scene_configuration_warm_readiness.v1.json"
+    ).is_file()
+
+    refused_runtime = tmp_path / "refused-runtime"
+    (refused_runtime / "input").mkdir(parents=True)
+    with pytest.raises(ValueError, match="warm_checkpoint_prefix_invalid"):
+        provider_runner._install_warm_ready_checkpoint(
+            runtime=refused_runtime,
+            checkpoint_root=source,
+            checkpoint={
+                **checkpoint,
+                "completed_stage_prefix_count": 2,
+                "completed_stage_results": checkpoint[
+                    "completed_stage_results"
+                ][:2],
+            },
+            diagnostic_bootstrap_mode="fresh",
+            expected_scientific_binding_digest=scientific,
+        )
+    assert not (
+        refused_runtime
+        / "task_evaluation_scene_configuration_warm_readiness.v1.json"
+    ).exists()
 
 
 def test_blocked_stage_retains_only_a_prefix_with_all_paid_stages(tmp_path: Path) -> None:

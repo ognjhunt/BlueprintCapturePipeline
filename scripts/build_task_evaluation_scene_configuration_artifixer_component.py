@@ -17,6 +17,10 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ARTIFIXER_REPOSITORY,
     ARTIFIXER_TREE,
     COMPONENT_SOURCE_SCHEMA_VERSION,
+    RUNTIME_BLUEPRINT_MODULES,
+    RUNTIME_VGG16_WEIGHTS,
+    VGG16_WEIGHTS_SHA256,
+    VGG16_WEIGHTS_SIZE_BYTES,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
     build_scene_configuration_python_wheelhouse,
@@ -62,18 +66,24 @@ def build_artifixer_scene_configuration_component(
     repository_root: str | Path,
     expected_blueprint_commit: str,
     artifixer_root: str | Path,
+    vgg16_weights_path: str | Path,
     output_root: str | Path,
 ) -> dict:
     """Seal exact released source plus the existing Blueprint runtime adapter."""
 
     repository = Path(repository_root).expanduser().resolve()
     upstream = Path(artifixer_root).expanduser().resolve()
+    vgg16_weights = Path(vgg16_weights_path).expanduser().resolve()
     if (
         _git(repository, "rev-parse", "HEAD") != expected_blueprint_commit
         or _git(repository, "status", "--porcelain=v1")
         or _git(upstream, "rev-parse", "HEAD") != ARTIFIXER_COMMIT
         or _git(upstream, "rev-parse", "HEAD^{tree}") != ARTIFIXER_TREE
         or _git(upstream, "status", "--porcelain=v1")
+        or vgg16_weights.is_symlink()
+        or not vgg16_weights.is_file()
+        or vgg16_weights.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+        or _sha256(vgg16_weights) != VGG16_WEIGHTS_SHA256
     ):
         raise ValueError("scene_configuration_artifixer_source_invalid")
     staging = Path(tempfile.mkdtemp(prefix="artifixer-scene-configuration-"))
@@ -131,17 +141,19 @@ def build_artifixer_scene_configuration_component(
             "scripts/public_scene_artifixer3d_runner.py": (
                 "blueprint_runtime/scripts/public_scene_artifixer3d_runner.py"
             ),
-            "src/blueprint_pipeline/__init__.py": (
-                "blueprint_runtime/src/blueprint_pipeline/__init__.py"
-            ),
-            "src/blueprint_pipeline/image_editor_backend_registry.py": (
-                "blueprint_runtime/src/blueprint_pipeline/image_editor_backend_registry.py"
-            ),
             "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json": (
                 "blueprint_runtime/docs/arm_decision_proof_v1/manifests/"
                 "image_editor_backends.v1.json"
             ),
         }
+        copies.update(
+            {
+                f"src/blueprint_pipeline/{name}": (
+                    f"blueprint_runtime/src/blueprint_pipeline/{name}"
+                )
+                for name in RUNTIME_BLUEPRINT_MODULES
+            }
+        )
         for source_name, destination_name in copies.items():
             source = repository / source_name
             _copy(
@@ -149,6 +161,7 @@ def build_artifixer_scene_configuration_component(
                 staging / destination_name,
                 executable=(destination_name == "run" or bool(source.stat().st_mode & 0o111)),
             )
+        _copy(vgg16_weights, staging / "blueprint_runtime" / RUNTIME_VGG16_WEIGHTS)
         # The Isaac image supplies the scientific stack, but not the OpenAI
         # Agents SDK/Pydantic closure used by the independent visual review.
         # Materialize exact lockfile wheels while still on the control plane;
@@ -176,12 +189,14 @@ def main() -> int:
     parser.add_argument("--repository-root", required=True)
     parser.add_argument("--expected-blueprint-commit", required=True)
     parser.add_argument("--artifixer-root", required=True)
+    parser.add_argument("--vgg16-weights-path", required=True)
     parser.add_argument("--output-root", required=True)
     args = parser.parse_args()
     value = build_artifixer_scene_configuration_component(
         repository_root=args.repository_root,
         expected_blueprint_commit=args.expected_blueprint_commit,
         artifixer_root=args.artifixer_root,
+        vgg16_weights_path=args.vgg16_weights_path,
         output_root=args.output_root,
     )
     print(json.dumps(value, sort_keys=True))

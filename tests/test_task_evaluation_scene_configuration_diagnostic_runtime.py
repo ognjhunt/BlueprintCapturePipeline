@@ -86,6 +86,7 @@ def test_diagnostic_chain_resumes_stage_one_after_semantic_and_never_qualifies(
 
     now = 1000.0
     result = execute_scene_configuration_diagnostic_stage_chain(
+        diagnostic_bootstrap_mode="checkpoint_resume",
         checkpoint_root=tmp_path / "checkpoint",
         envelope=envelope,
         configurations=configurations,
@@ -112,6 +113,91 @@ def test_diagnostic_chain_resumes_stage_one_after_semantic_and_never_qualifies(
     assert result["configured_revision_publication_permitted"] is False
     assert result["offering_publication_permitted"] is False
     assert result["terminal_e2e_completion_permitted"] is False
+    assert all(row["diagnostic_only"] is True for row in result["stage_results"])
+
+
+def test_fresh_diagnostic_bootstrap_materializes_checkpoint_before_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envelope, configurations = _diagnostic_inputs(tmp_path)
+    checkpoint = {
+        "checkpoint_digest": "sha256:" + "c" * 64,
+        "diagnostic_only": True,
+        "qualification_eligible": False,
+    }
+    monkeypatch.setattr(
+        runtime_module,
+        "diagnostic_checkpoint_scientific_binding_digest",
+        lambda **_kwargs: "sha256:" + "b" * 64,
+    )
+    validated_roots: list[Path] = []
+
+    def validate(*, checkpoint_root, **_kwargs):
+        validated_roots.append(Path(checkpoint_root))
+        return checkpoint
+
+    monkeypatch.setattr(
+        runtime_module,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        validate,
+    )
+    producers = _producers()
+    original_produce = producers.execute
+
+    def produce(**kwargs):
+        result = original_produce(**kwargs)
+        if kwargs["stage"]["stage_id"] == "stage-1":
+            (Path(kwargs["output_root"]) / "diagnostic_checkpoint").mkdir()
+        return result
+
+    producers.execute = produce
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    checkpoints: list[tuple[int, Path, Path]] = []
+    observed: list[str] = []
+    now = 1_000.0
+
+    def write_checkpoint(rows, source_root: Path) -> Path:
+        destination = outputs / "diagnostic_checkpoints" / f"after-stage-{len(rows)}"
+        destination.mkdir(parents=True)
+        checkpoints.append((len(rows), source_root, destination))
+        if source_root.is_relative_to(outputs):
+            source_root.rmdir()
+        return destination
+
+    result = execute_scene_configuration_diagnostic_stage_chain(
+        diagnostic_bootstrap_mode="fresh",
+        checkpoint_root=None,
+        envelope=envelope,
+        configurations=configurations,
+        output_root=outputs,
+        registry=_registry(observed),
+        producer_registry=producers,
+        stage_one_resume_producer=lambda **_kwargs: pytest.fail(
+            "fresh bootstrap must not call the resume producer"
+        ),
+        stage_checkpoint_writer=write_checkpoint,
+        parent_deadline_epoch=now + 100_000,
+        clock=lambda: now,
+    )
+
+    expected_root = outputs / "stage-1/producer/diagnostic_checkpoint"
+    assert validated_roots == [expected_root]
+    assert checkpoints == [
+        (
+            index,
+            expected_root
+            if index == 1
+            else outputs / "diagnostic_checkpoints" / f"after-stage-{index - 1}",
+            outputs / "diagnostic_checkpoints" / f"after-stage-{index}",
+        )
+        for index in range(1, 7)
+    ]
+    assert not expected_root.exists()
+    assert not (outputs / "diagnostic_checkpoints/after-stage-5").exists()
+    assert (outputs / "diagnostic_checkpoints/after-stage-6").is_dir()
+    assert result["diagnostic_bootstrap_mode"] == "fresh"
+    assert result["carried_completed_stage_count"] == 0
     assert all(row["diagnostic_only"] is True for row in result["stage_results"])
 
 
@@ -145,6 +231,7 @@ def test_diagnostic_chain_refuses_before_resume_when_remaining_budget_is_short(
         match="scene_configuration_diagnostic_runtime_budget_insufficient:stage-1",
     ):
         execute_scene_configuration_diagnostic_stage_chain(
+            diagnostic_bootstrap_mode="checkpoint_resume",
             checkpoint_root=tmp_path / "checkpoint",
             envelope=envelope,
             configurations=configurations,
@@ -190,6 +277,7 @@ def test_progressive_diagnostic_chain_starts_at_first_incomplete_stage(
     now = 1_000.0
 
     result = execute_scene_configuration_diagnostic_stage_chain(
+        diagnostic_bootstrap_mode="checkpoint_resume",
         checkpoint_root=tmp_path / "checkpoint",
         envelope=envelope,
         configurations=configurations,

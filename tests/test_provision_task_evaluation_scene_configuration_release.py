@@ -1,8 +1,36 @@
 from __future__ import annotations
 
+import hashlib
+import io
 from pathlib import Path
 
 from scripts import provision_task_evaluation_scene_configuration_release as subject
+
+
+def test_materializes_digest_bound_vgg16_once_without_provider_download(
+    tmp_path: Path, monkeypatch
+) -> None:
+    body = b"pinned-vgg16-fixture"
+    monkeypatch.setattr(subject, "VGG16_WEIGHTS_SIZE_BYTES", len(body))
+    monkeypatch.setattr(
+        subject,
+        "VGG16_WEIGHTS_SHA256",
+        "sha256:" + hashlib.sha256(body).hexdigest(),
+    )
+    calls = []
+
+    def open_fixture(request, *, timeout):
+        calls.append((request.full_url, timeout))
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(subject.urllib.request, "urlopen", open_fixture)
+    cache = tmp_path / "cache"
+    first = subject.materialize_vgg16_weights(cache_root=cache)
+    second = subject.materialize_vgg16_weights(cache_root=cache)
+
+    assert first == second
+    assert first.read_bytes() == body
+    assert calls == [(subject.VGG16_WEIGHTS_SOURCE_URL, 1800)]
 
 
 def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
@@ -35,6 +63,13 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
     monkeypatch.setattr(
         subject, "build_published_scene_configuration_toolchain", record("toolchain")
     )
+    vgg16_weights = tmp_path / "vgg16-397923af.pth"
+    vgg16_weights.write_bytes(b"fixture")
+    monkeypatch.setattr(
+        subject,
+        "materialize_vgg16_weights",
+        lambda **_kwargs: vgg16_weights,
+    )
 
     result = subject.provision_scene_configuration_release(
         repository_root=tmp_path / "release",
@@ -57,6 +92,7 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         "native_import",
         "toolchain",
     ]
+    assert calls[1][1]["vgg16_weights_path"] == vgg16_weights
     assert result["status"] == "ready"
     assert result["scene_specific_artifacts_built"] is False
     assert result["provider_mutation_performed"] is False

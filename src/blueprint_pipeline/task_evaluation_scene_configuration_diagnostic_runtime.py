@@ -24,6 +24,11 @@ from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     hydrate_scene_configuration_diagnostic_completed_stages,
     validate_scene_configuration_diagnostic_checkpoint,
 )
+from .task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+    validate_diagnostic_bootstrap_mode,
+)
 from .task_evaluation_scene_configuration_orchestrator import (
     STAGE_RESULT_SCHEMA_VERSION,
 )
@@ -41,7 +46,9 @@ RESULT_SCHEMA_VERSION = (
 )
 STATUS = "completed_diagnostic_only_not_qualification_eligible"
 StageOneResumeProducer = Callable[..., Sequence[Mapping[str, Any]]]
-StageCheckpointWriter = Callable[[tuple[Mapping[str, Any], ...]], None]
+StageCheckpointWriter = Callable[
+    [tuple[Mapping[str, Any], ...], Path], Path
+]
 
 
 class TaskEvaluationSceneConfigurationDiagnosticRuntimeError(RuntimeError):
@@ -94,7 +101,8 @@ def _validate_diagnostic_stage_result(
 
 def execute_scene_configuration_diagnostic_stage_chain(
     *,
-    checkpoint_root: str | Path,
+    diagnostic_bootstrap_mode: str,
+    checkpoint_root: str | Path | None,
     envelope: Mapping[str, Any],
     configurations: Mapping[str, tuple[Mapping[str, Any], Path]],
     output_root: str | Path,
@@ -128,7 +136,26 @@ def execute_scene_configuration_diagnostic_stage_chain(
         )
     first_stage_id = str(stages[0].get("stage_id") or "")
     first_configuration, first_configuration_path = configurations[first_stage_id]
+    try:
+        bootstrap_mode = validate_diagnostic_bootstrap_mode(
+            diagnostic_bootstrap_mode
+        )
+    except ValueError as exc:
+        raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
+            str(exc)
+        ) from exc
+    if (
+        bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+        and checkpoint_root is not None
+    ) or (
+        bootstrap_mode == CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
+        and checkpoint_root is None
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
+            "scene_configuration_diagnostic_bootstrap_source_invalid"
+        )
     stage_input = {
+        "stage": dict(stages[0]),
         "configuration": dict(first_configuration),
         "configuration_sha256": "sha256:"
         + hashlib.sha256(first_configuration_path.read_bytes()).hexdigest(),
@@ -138,19 +165,32 @@ def execute_scene_configuration_diagnostic_stage_chain(
         stage_input=stage_input,
         render_inputs=render_inputs,
     )
-    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
-        checkpoint_root=checkpoint_root,
-        expected_scientific_binding_digest=expected_binding,
+    fresh_diagnostic_bootstrap = (
+        bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
     )
+    checkpoint: dict[str, Any] | None = None
+    source_checkpoint_digest: str | None = None
+    active_checkpoint_root: Path | None = None
+    if checkpoint_root is not None:
+        active_checkpoint_root = Path(checkpoint_root).expanduser().resolve()
+        checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=active_checkpoint_root,
+            expected_scientific_binding_digest=expected_binding,
+        )
+        source_checkpoint_digest = checkpoint["checkpoint_digest"]
     root = Path(output_root).expanduser().resolve()
     if root.is_symlink() or not root.is_dir():
         raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
             "scene_configuration_diagnostic_output_root_invalid"
         )
-    results = hydrate_scene_configuration_diagnostic_completed_stages(
-        checkpoint_root=checkpoint_root,
-        stage_sequence=stages,
-        configurations=configurations,
+    results = (
+        hydrate_scene_configuration_diagnostic_completed_stages(
+            checkpoint_root=active_checkpoint_root,
+            stage_sequence=stages,
+            configurations=configurations,
+        )
+        if active_checkpoint_root is not None
+        else []
     )
     resumed_from_stage_index = len(results)
     for index in range(resumed_from_stage_index, len(stages)):
@@ -180,10 +220,8 @@ def execute_scene_configuration_diagnostic_stage_chain(
             producer_output = stage_output / "producer"
             producer_output.mkdir(mode=0o750)
             if index == 0:
-                produced_artifacts = tuple(
-                    stage_one_resume_producer(
-                        checkpoint=checkpoint,
-                        checkpoint_root=Path(checkpoint_root).expanduser().resolve(),
+                if fresh_diagnostic_bootstrap:
+                    produced_artifacts = producer_registry.execute(
                         stage=stage,
                         envelope=envelope,
                         configuration=configuration,
@@ -191,7 +229,26 @@ def execute_scene_configuration_diagnostic_stage_chain(
                         dependency_results=(),
                         output_root=producer_output,
                     )
-                )
+                    active_checkpoint_root = (
+                        producer_output / "diagnostic_checkpoint"
+                    ).resolve()
+                    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+                        checkpoint_root=active_checkpoint_root,
+                        expected_scientific_binding_digest=expected_binding,
+                    )
+                else:
+                    produced_artifacts = tuple(
+                        stage_one_resume_producer(
+                            checkpoint=checkpoint,
+                            checkpoint_root=active_checkpoint_root,
+                            stage=stage,
+                            envelope=envelope,
+                            configuration=configuration,
+                            configuration_path=configuration_path,
+                            dependency_results=(),
+                            output_root=producer_output,
+                        )
+                    )
             else:
                 produced_artifacts = producer_registry.execute(
                     stage=stage,
@@ -224,7 +281,13 @@ def execute_scene_configuration_diagnostic_stage_chain(
             )
         )
         if stage_checkpoint_writer is not None:
-            stage_checkpoint_writer(tuple(results))
+            if active_checkpoint_root is None:
+                raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
+                    "scene_configuration_diagnostic_checkpoint_missing_after_stage"
+                )
+            active_checkpoint_root = Path(
+                stage_checkpoint_writer(tuple(results), active_checkpoint_root)
+            ).resolve()
     if parent_deadline_epoch - clock() < OUTPUT_AND_CLOSURE_RESERVE_SECONDS:
         raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
             "scene_configuration_diagnostic_runtime_budget_insufficient:"
@@ -235,7 +298,7 @@ def execute_scene_configuration_diagnostic_stage_chain(
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": STATUS,
         "run_id": envelope["run_id"],
-        "source_checkpoint_digest": checkpoint["checkpoint_digest"],
+        "source_checkpoint_digest": source_checkpoint_digest,
         "stage_result_digests": [row["stage_result_digest"] for row in results],
         "stage_results": results,
         "stage_count": 6,
@@ -244,6 +307,8 @@ def execute_scene_configuration_diagnostic_stage_chain(
         ),
         "carried_completed_stage_count": resumed_from_stage_index,
         "resumed_from_stage_index": resumed_from_stage_index,
+        "diagnostic_bootstrap_mode": bootstrap_mode,
+        "scientific_binding_digest": expected_binding,
         "diagnostic_only": True,
         "qualification_eligible": False,
         "executed_inside_one_parent_provider_run": False,

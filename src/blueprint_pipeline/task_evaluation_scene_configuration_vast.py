@@ -21,6 +21,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
 from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
@@ -50,6 +51,9 @@ from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
 )
 from .task_evaluation_scene_configuration_diagnostic_output import (
     validated_advanced_checkpoint_reference,
+)
+from .task_evaluation_scene_configuration_execution_binding import (
+    provider_execution_binding_blockers as _provider_execution_binding_blockers,
 )
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
@@ -403,6 +407,11 @@ def _provider_runtime_inputs(
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,
+        # Reaching this mapping proves the paid scene authority, three distinct
+        # stage identities, their cost-scope attestations, and official cost
+        # baselines above. The generic Agents SDK keeps its own opt-in gate;
+        # the admitted scene caller must explicitly satisfy it on the provider.
+        LIVE_AGENTS_SDK_ENV: "true",
         "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": str(
             authority["authority_digest"]
         ),
@@ -801,47 +810,6 @@ def _portable_construction_envelope(
     return envelope
 
 
-def _provider_execution_binding_blockers(
-    execution: Mapping[str, Any],
-    receipt: Mapping[str, Any],
-    *,
-    diagnostic_only: bool,
-) -> list[str]:
-    blockers: list[str] = []
-    chain = execution.get(
-        "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
-    )
-    result_run_id = (
-        chain.get("run_id")
-        if diagnostic_only and isinstance(chain, Mapping)
-        else execution.get("run_id")
-    )
-    if result_run_id != receipt.get("run_id") or (
-        not diagnostic_only
-        and (
-            not isinstance(chain, Mapping)
-            or chain.get("run_id") != receipt.get("run_id")
-        )
-    ):
-        blockers.append("scene_configuration_provider_run_id_mismatch")
-    provider_source_commit = execution.get(
-        "diagnostic_source_commit" if diagnostic_only else "source_commit"
-    )
-    if provider_source_commit != receipt.get("source_commit"):
-        blockers.append("scene_configuration_provider_source_commit_mismatch")
-    if (
-        not diagnostic_only
-        and execution.get("construction_envelope_digest")
-        != receipt.get("portable_construction_envelope_digest")
-    ):
-        blockers.append("scene_configuration_provider_envelope_mismatch")
-    if diagnostic_only and execution.get(
-        "source_checkpoint_digest"
-    ) != receipt.get("source_diagnostic_checkpoint_digest"):
-        blockers.append("scene_configuration_diagnostic_checkpoint_mismatch")
-    return blockers
-
-
 def _publication_stage_results(
     execution: Mapping[str, Any], *, extraction_root: Path
 ) -> list[dict[str, Any]]:
@@ -1077,10 +1045,13 @@ def _seal_live_terminal_result(
     *,
     receipt: Mapping[str, Any],
     scene_construction_queue_root: str | Path | None,
+    diagnostic_only: bool = False,
 ) -> dict[str, Any]:
     """Finalize the originating queue item before exposing a live terminal result."""
 
     result = dict(value)
+    if diagnostic_only:
+        return _seal_terminal_result(job, result)
     blockers = [str(item) for item in result.get("blockers") or [] if str(item)]
     try:
         if scene_construction_queue_root is None or not str(
@@ -1260,6 +1231,7 @@ def run_scene_configuration_vast(
     execute: bool,
     diagnostic_only: bool = False,
     retain_warm_session: bool = False,
+    allowed_machine_ids: tuple[int, ...] = (),
     warm_session_authority_path: str | Path | None = None,
     warm_session_output_root: str | Path | None = None,
     scene_construction_queue_root: str | Path | None = None,
@@ -1346,6 +1318,7 @@ def run_scene_configuration_vast(
                 blocked,
                 receipt=receipt,
                 scene_construction_queue_root=scene_construction_queue_root,
+                diagnostic_only=diagnostic_only,
             )
         return _seal_terminal_result(job, blocked)
     if execute and not diagnostic_only:
@@ -1382,6 +1355,7 @@ def run_scene_configuration_vast(
                 blocked,
                 receipt=receipt,
                 scene_construction_queue_root=scene_construction_queue_root,
+                diagnostic_only=diagnostic_only,
             )
     runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
@@ -1458,6 +1432,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
     runtime_environment = dict(runtime_environment)
     runtime_environment[EXPECTED_PROVIDER_UPLOAD_BYTES_ENV] = str(
@@ -1494,6 +1469,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
     watchdog_handoff, watchdog = arm_independent_vast_watchdog(
         job_dir=job,
@@ -1528,6 +1504,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
     runtime_environment = dict(runtime_environment)
     runtime_environment[PARENT_DEADLINE_EPOCH_ENV] = str(
@@ -1578,6 +1555,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
 
     output_zip = provider_run / "vast_provider_runtime_output.zip"
@@ -1648,6 +1626,7 @@ def run_scene_configuration_vast(
                 require_known_supported_isaac_driver=True,
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
                 prefer_isaac_rt=True,
+                allowed_machine_ids=allowed_machine_ids,
                 allowed_active_instance_ids=(),
                 vast_launch_lock_file=job.parent
                 / "scene_configuration_paid_launch.lock",
@@ -1990,6 +1969,7 @@ def run_scene_configuration_vast(
         result,
         receipt=receipt,
         scene_construction_queue_root=scene_construction_queue_root,
+        diagnostic_only=diagnostic_only,
     )
 
 

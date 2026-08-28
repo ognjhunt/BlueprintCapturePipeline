@@ -6,6 +6,9 @@ from pathlib import Path
 import subprocess
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.public_scene_artifixer3d_bundle import (
+    RUNTIME_BLUEPRINT_MODULES,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     validate_scene_configuration_component_package,
 )
@@ -39,9 +42,8 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
         "scripts/run_task_evaluation_scene_configuration_artifixer_component.sh",
         "scripts/run_public_scene_artifixer3d.sh",
         "scripts/public_scene_artifixer3d_runner.py",
-        "src/blueprint_pipeline/__init__.py",
-        "src/blueprint_pipeline/image_editor_backend_registry.py",
         "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json",
+        *(f"src/blueprint_pipeline/{name}" for name in RUNTIME_BLUEPRINT_MODULES),
     ]
     for name in names:
         source = source_repo / name
@@ -61,6 +63,10 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
 
     monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", artifixer_commit)
     monkeypatch.setattr(subject, "ARTIFIXER_TREE", artifixer_tree)
+    vgg16_weights = tmp_path / "vgg16-397923af.pth"
+    vgg16_weights.write_bytes(b"vgg16 fixture")
+    monkeypatch.setattr(subject, "VGG16_WEIGHTS_SIZE_BYTES", vgg16_weights.stat().st_size)
+    monkeypatch.setattr(subject, "VGG16_WEIGHTS_SHA256", subject._sha256(vgg16_weights))
 
     def build_python_runtime(*, lockfile_path, output_root):
         assert lockfile_path == repository / "uv.lock"
@@ -127,6 +133,7 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
         repository_root=repository,
         expected_blueprint_commit=blueprint_commit,
         artifixer_root=artifixer,
+        vgg16_weights_path=vgg16_weights,
         output_root=output,
     )
 
@@ -142,6 +149,14 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
     assert source_receipt["tree"] == artifixer_tree
     assert source_receipt["files"]
     assert (output / "run").stat().st_mode & 0o111
+    assert all(
+        (output / "blueprint_runtime/src/blueprint_pipeline" / name).is_file()
+        for name in RUNTIME_BLUEPRINT_MODULES
+    )
+    assert (
+        output
+        / "blueprint_runtime/torch_home/hub/checkpoints/vgg16-397923af.pth"
+    ).read_bytes() == b"vgg16 fixture"
     assert (
         output
         / "python_wheelhouse"

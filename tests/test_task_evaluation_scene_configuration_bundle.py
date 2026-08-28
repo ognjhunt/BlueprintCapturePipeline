@@ -524,8 +524,13 @@ def _provider_runtime(
         "browser_executable": str(browser),
         "renderer_root": str(source_renderer),
         "identity": {
+            "mode": "immutable_host_runtime",
+            "schema_version": "task_evaluation_splat_render_runtime.v1",
             "runtime_digest": "sha256:" + "9" * 64,
             "source_commit": commit,
+            "platform": "linux-x86_64",
+            "file_count": 17,
+            "full_byte_service_account_readback_passed": True,
         },
     }
     return runtime, identity
@@ -769,6 +774,18 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     monkeypatch.setattr(
         bundle_module, "validate_splat_render_runtime", lambda **_kwargs: identity
     )
+    checkpoint_renderer_identity = {
+        "mode": "digest_bound_provider_bundle_renderer",
+        "schema_version": PROVIDER_RENDERER_SCHEMA_VERSION,
+        "renderer_digest": "sha256:" + "9" * 64,
+        "source_runtime_digest": identity["identity"]["runtime_digest"],
+        "source_commit": commit,
+        "platform": identity["identity"]["platform"],
+        # Provider packaging intentionally inventories only the staged renderer
+        # subset, not every browser/runtime file in the host runtime receipt.
+        "file_count": 11,
+        "provider_full_byte_inventory_reopened": True,
+    }
     checkpoint_root = tmp_path / "diagnostic-checkpoint"
     checkpoint_root.mkdir()
     inventory = []
@@ -832,7 +849,11 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
                 "size_bytes": render["source_appearance"]["size_bytes"],
                 "checkpoint_role": None,
             },
-            "renderer_runtime": identity["identity"],
+            # A checkpoint records the renderer after the provider has reopened
+            # the staged renderer inventory.  A retry validates the same bytes
+            # from the retained host runtime, whose receipt uses a different
+            # schema and mode.
+            "renderer_runtime": checkpoint_renderer_identity,
             "camera_calibration": calibration,
             "render_manifest": render_manifest,
             "derived_frames": frames,
@@ -852,10 +873,19 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         "validate_scene_configuration_diagnostic_checkpoint",
         lambda **_kwargs: checkpoint,
     )
+    def scientific_binding(**kwargs):
+        assert kwargs["stage_input"]["stage"] == envelope["recipe"][
+            "stage_sequence"
+        ][0]
+        assert kwargs["render_inputs"]["renderer_runtime"] == (
+            checkpoint_renderer_identity
+        )
+        return checkpoint["scientific_bindings"]["binding_digest"]
+
     monkeypatch.setattr(
         bundle_module,
         "diagnostic_checkpoint_scientific_binding_digest",
-        lambda **_kwargs: checkpoint["scientific_bindings"]["binding_digest"],
+        scientific_binding,
     )
     checkpoint_files = [path for path in checkpoint_root.rglob("*") if path.is_file()]
     checkpoint_manifest = (
@@ -951,6 +981,173 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
             output_root=tmp_path / "unsafe-diagnostic-bundle",
             expected_source_commit=commit,
         )
+
+
+def test_fresh_diagnostic_bootstrap_ships_renderer_and_no_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    source = tmp_path / "fresh-diagnostic-source"
+    source.mkdir()
+    envelope = _provider_render_envelope(source, commit)
+    toolchain = _toolchain(tmp_path / "fresh-diagnostic-toolchain", commit)
+    repo = _repo(tmp_path / "fresh-diagnostic-repo")
+    runtime, identity = _provider_runtime(tmp_path, repo=repo, commit=commit)
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
+
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        output_root=tmp_path / "fresh-diagnostic-bundle",
+        expected_source_commit=commit,
+        fresh_diagnostic_bootstrap=True,
+    )
+
+    assert receipt["diagnostic_only"] is True
+    assert receipt["qualification_eligible"] is False
+    assert receipt["diagnostic_bootstrap_mode"] == "fresh"
+    assert receipt["source_diagnostic_checkpoint_digest"] is None
+    assert receipt["carried_completed_stage_count"] == 0
+    assert receipt["diagnostic_scientific_binding_digest"].startswith(
+        "sha256:"
+    )
+    assert receipt["raw_interiorgs_bytes_in_provider_bundle"] is True
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        runner = archive.read(
+            "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
+        )
+    assert any(name.startswith("provider_runtime/renderer/") for name in names)
+    assert any(
+        name.startswith("provider_runtime/input/render/source_appearance")
+        for name in names
+    )
+    assert not any(
+        name.startswith("provider_runtime/input/diagnostic_checkpoint/")
+        for name in names
+    )
+    assert runner == (
+        repo / "scripts/task_evaluation_scene_configuration_diagnostic_provider_runner.py"
+    ).read_bytes()
+    reopened = load_scene_configuration_provider_bundle_receipt(
+        tmp_path
+        / "fresh-diagnostic-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json",
+        diagnostic_only=True,
+    )
+    assert reopened["bundle_sha256"] == receipt["bundle_sha256"]
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "fresh-diagnostic-preflight",
+        generated_at="2026-08-27T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/fresh-diagnostic.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
+
+
+def test_fresh_diagnostic_separates_executable_and_construction_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    construction_commit = "a" * 40
+    diagnostic_commit = "b" * 40
+    source = tmp_path / "split-identity-source"
+    source.mkdir()
+    envelope = _provider_render_envelope(source, construction_commit)
+    envelope_value = json.loads(envelope.read_text(encoding="utf-8"))
+    for index, row in enumerate(envelope_value["stage_configuration_references"]):
+        row.pop("stage_id", None)
+        row["contract_path"] = (
+            f"construction.recipe.stage_sequence.{index}.configuration"
+        )
+    envelope_value["envelope_digest"] = canonical_digest(
+        envelope_value, digest_field="envelope_digest"
+    )
+    envelope.write_text(json.dumps(envelope_value), encoding="utf-8")
+    toolchain = _toolchain(
+        tmp_path / "split-identity-toolchain", diagnostic_commit
+    )
+    repo = _repo(tmp_path / "split-identity-repo")
+    runtime, identity = _provider_runtime(
+        tmp_path, repo=repo, commit=construction_commit
+    )
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_diagnostic_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
+
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope,
+        toolchain_root=toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        output_root=tmp_path / "split-identity-bundle",
+        expected_source_commit=diagnostic_commit,
+        fresh_diagnostic_bootstrap=True,
+    )
+
+    assert receipt["source_commit"] == diagnostic_commit
+    assert receipt["construction_source_commit"] == construction_commit
+    assert receipt["toolchain_source_commit"] == diagnostic_commit
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        portable = json.loads(
+            archive.read(
+                "provider_runtime/input/portable_construction_envelope.v1.json"
+            )
+        )
+    assert portable["expected_production_commit"] == construction_commit
+    reopened = load_scene_configuration_provider_bundle_receipt(
+        tmp_path
+        / "split-identity-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json",
+        expected_source_commit=diagnostic_commit,
+        diagnostic_only=True,
+    )
+    assert reopened["construction_source_commit"] == construction_commit
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "split-identity-preflight",
+        generated_at="2026-08-27T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/split-identity.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
+
+
+def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
+    assert authority_module._required_external_stage_minima(
+        diagnostic_only=True,
+        diagnostic_bootstrap_mode="fresh",
+        carried_stage_count=0,
+    ) == {
+        "artifixer_semantic_teacher": 2.4,
+        "artifixer_visual_review": 0.3,
+        "content_agents": 0.2,
+    }
+    assert authority_module._required_external_stage_minima(
+        diagnostic_only=True,
+        diagnostic_bootstrap_mode="checkpoint_resume",
+        carried_stage_count=3,
+    ) == {
+        "artifixer_semantic_teacher": 0.0,
+        "artifixer_visual_review": 0.0,
+        "content_agents": 0.0,
+    }
 
 
 def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) -> None:
@@ -1440,6 +1637,11 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     assert "task_evaluation_scene_configuration_provider_output.zip" in script
     assert "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" in script
     assert "scene_configuration_runtime_toolchain_missing" in script
+    assert "BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_NOT_READY" in script
+    assert (
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:"
+        "scene_configuration_warm_runtime_not_ready"
+    ) not in script
     assert "timeout 300 apt-get" in script
     assert script.index(
         f" install -y {vpa.SCENE_CONFIGURATION_APT_PACKAGES}"
@@ -2136,6 +2338,7 @@ def test_scene_configuration_accepts_nonzero_scope_for_incremental_cost_metering
     _secret_paths, runtime_environment = scene_vast._provider_runtime_inputs(authority)
 
     assert observed == ["key_semantic", "key_review", "key_content_agents"]
+    assert runtime_environment["BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS"] == "true"
     assert (
         runtime_environment[
             "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"
@@ -2286,6 +2489,7 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
     receipt = {
         "run_id": "scene-839873-run",
         "source_commit": "a" * 40,
+        "construction_envelope_source_digest": "sha256:" + "c" * 64,
         "portable_construction_envelope_digest": "sha256:" + "b" * 64,
     }
     execution = {
@@ -2294,12 +2498,45 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
         "construction_envelope_digest": receipt[
             "portable_construction_envelope_digest"
         ],
+        "source_construction_envelope_digest": receipt[
+            "construction_envelope_source_digest"
+        ],
         "stage_chain": {"run_id": receipt["run_id"]},
     }
 
     assert scene_vast._provider_execution_binding_blockers(
         execution, receipt, diagnostic_only=False
     ) == []
+
+    diagnostic_receipt = {
+        **receipt,
+        "source_diagnostic_checkpoint_digest": "sha256:" + "e" * 64,
+        "diagnostic_bootstrap_mode": "fresh",
+        "diagnostic_scientific_binding_digest": "sha256:" + "f" * 64,
+    }
+    minimal_diagnostic_failure = {
+        "status": "blocked_diagnostic_only",
+        "blockers": ["scene_configuration_diagnostic_provider_failed:fixture"],
+    }
+    assert scene_vast._provider_execution_binding_blockers(
+        minimal_diagnostic_failure,
+        diagnostic_receipt,
+        diagnostic_only=True,
+    ) == []
+    minimal_diagnostic_failure["diagnostic_run_id"] = "different-run"
+    assert scene_vast._provider_execution_binding_blockers(
+        minimal_diagnostic_failure,
+        diagnostic_receipt,
+        diagnostic_only=True,
+    ) == ["scene_configuration_provider_run_id_mismatch"]
+
+    execution["source_construction_envelope_digest"] = "sha256:" + "d" * 64
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == ["scene_configuration_provider_source_envelope_mismatch"]
+    execution["source_construction_envelope_digest"] = receipt[
+        "construction_envelope_source_digest"
+    ]
 
     execution["run_id"] = "different-run"
     assert scene_vast._provider_execution_binding_blockers(
@@ -2311,6 +2548,12 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
     assert scene_vast._provider_execution_binding_blockers(
         execution, receipt, diagnostic_only=False
     ) == ["scene_configuration_provider_run_id_mismatch"]
+
+    execution["stage_chain"] = None
+    execution["status"] = "blocked"
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == []
 
 
 def test_blocked_provider_result_retains_its_redacted_failure_in_terminal_blockers(
@@ -2960,6 +3203,9 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             "status": "completed",
             "run_id": receipt["run_id"],
             "source_commit": receipt["source_commit"],
+            "source_construction_envelope_digest": receipt[
+                "construction_envelope_source_digest"
+            ],
             "construction_envelope_digest": receipt[
                 "portable_construction_envelope_digest"
             ],
@@ -3562,6 +3808,15 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         / "run_public_scene_artifixer3d.sh"
     ).read_text(encoding="utf-8")
     assert "torch==2.11.0 torchvision==0.26.0" in runtime_script
+    assert "export CUDA_HOME=/usr/local/cuda" not in runtime_script
+    assert 'nvcc_path="$(command -v nvcc)"' in runtime_script
+    assert 'export CUDA_HOME="$(cd "$(dirname "${nvcc_path}")/.." && pwd)"' in runtime_script
+    assert 'grep -Fq "release 12.8"' in runtime_script
+    assert "artifixer_cuda_package_paths.py" in runtime_script
+    assert 'export CPATH="${cuda_package_paths[0]}' in runtime_script
+    assert 'export CPLUS_INCLUDE_PATH="${cuda_package_paths[0]}' in runtime_script
+    assert 'export LIBRARY_PATH="${cuda_package_paths[1]}' in runtime_script
+    assert 'export LD_LIBRARY_PATH="${cuda_package_paths[1]}' in runtime_script
 
     for broken in ({}, {"bundle_size_bytes": 0}, {"bundle_size_bytes": True}):
         with pytest.raises(
@@ -3708,6 +3963,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         paid_attempt_authority_path=authority_path,
         paid_resource_admission_grant=object(),
         execute=True,
+        allowed_machine_ids=(21899, 44762),
         scene_construction_queue_root=_construction_queue(tmp_path),
         disk_usage_provider=lambda _path: types.SimpleNamespace(free=required_free),
     )
@@ -3727,6 +3983,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     assert captured["target_spend_usd"] == provider_all_in_cap
     assert captured["max_live_minutes"] == 420
     assert captured["session_max_live_minutes"] == 420
+    assert captured["allowed_machine_ids"] == (21899, 44762)
     assert result["expected_provider_download_bytes"] == expected_download
     assert result["expected_provider_upload_bytes"] == expected_upload
 

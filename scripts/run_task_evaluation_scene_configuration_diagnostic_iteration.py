@@ -14,12 +14,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess  # nosec B404 - fixed Python module commands only
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline.core.common import redacted_failure_text
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
@@ -30,9 +32,17 @@ from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_release i
     stage_scene_configuration_diagnostic_release,
     validate_scene_configuration_diagnostic_release_receipt,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (
     AUTHORITY_SCHEMA_VERSION,
     SCENE_CONFIGURATION_PROVIDER_IMAGE,
+)
+from blueprint_pipeline.spend_authority_consumption_root import (
+    SpendAuthorityRootError,
+    prepare_consumption_root,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic import (
     materialize_scene_configuration_warm_session_authority,
@@ -43,6 +53,23 @@ PREPARATION_SCHEMA_VERSION = (
     "task_evaluation_scene_configuration_diagnostic_iteration_preparation.v1"
 )
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+_OPENAI_RUNTIME_FILE_ENV_NAMES = (
+    "OPENAI_ADMIN_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
+)
+_OPENAI_RUNTIME_VALUE_ENV_NAMES = (
+    "OPENAI_PROJECT_ID",
+    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
+    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
+    "OPENAI_CONTENT_AGENTS_API_KEY_ID",
+)
+_CHILD_FAILURE_DETAIL_MAX_CHARS = 300
 
 
 class SceneConfigurationDiagnosticIterationError(ValueError):
@@ -77,7 +104,7 @@ def _input_directory(value: str | Path, *, field: str) -> Path:
 
 
 def _python_executable(value: str | Path) -> Path:
-    """Resolve the normal venv symlink once and execute only its file target."""
+    """Validate a Python entrypoint without discarding its venv identity."""
 
     path = _absolute(value, field="python_executable")
     try:
@@ -86,11 +113,11 @@ def _python_executable(value: str | Path) -> Path:
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_python_executable_invalid"
         ) from exc
-    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+    if not resolved.is_file() or not os.access(path, os.X_OK):
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_python_executable_invalid"
         )
-    return resolved
+    return path
 
 
 def _output_path(value: str | Path, *, field: str) -> Path:
@@ -155,6 +182,24 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         os.close(descriptor)
 
 
+def _discard_sealed_bundle_staging_tree(bundle_output: Path) -> bool:
+    """Remove only the builder's self-created expanded tree after sealing."""
+
+    staging = bundle_output / "stage"
+    if not staging.exists() and not staging.is_symlink():
+        return False
+    if staging.is_symlink() or not staging.is_dir():
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_staging_invalid"
+        )
+    shutil.rmtree(staging)
+    if staging.exists() or staging.is_symlink():
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_staging_cleanup_failed"
+        )
+    return True
+
+
 def _run_fixed(
     argv: Sequence[str],
     *,
@@ -175,9 +220,66 @@ def _run_fixed(
     except (OSError, subprocess.SubprocessError) as exc:
         raise SceneConfigurationDiagnosticIterationError(code) from exc
     if completed.returncode != 0:
-        # Child output may mention local paths or provider diagnostics.  It is
-        # intentionally not copied into this operator-facing exception.
-        raise SceneConfigurationDiagnosticIterationError(code)
+        # Keep the typed child refusal so the operator does not need to rerun a
+        # paid path just to learn its cause.  Credential-shaped text and signed
+        # URL query values are removed before the bounded detail is surfaced.
+        detail = redacted_failure_text(completed.stderr or completed.stdout)
+        detail = " ".join(detail.split())
+        if len(detail) > _CHILD_FAILURE_DETAIL_MAX_CHARS:
+            detail = detail[:_CHILD_FAILURE_DETAIL_MAX_CHARS] + "..."
+        suffix = f":{detail}" if detail else f":exit_{completed.returncode}"
+        raise SceneConfigurationDiagnosticIterationError(code + suffix)
+
+
+def _preflight_paid_runtime_environment(
+    environment: Mapping[str, str],
+    *,
+    execute: bool,
+    openai_max_cost_usd: float,
+) -> None:
+    """Reject a malformed paid launch before bundle work or provider mutation."""
+
+    if not execute or openai_max_cost_usd <= 0:
+        return
+    missing = [
+        name
+        for name in (*_OPENAI_RUNTIME_FILE_ENV_NAMES, *_OPENAI_RUNTIME_VALUE_ENV_NAMES)
+        if not str(environment.get(name) or "").strip()
+    ]
+    if missing:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_openai_runtime_environment_missing:"
+            + ",".join(missing)
+        )
+    invalid_files: list[str] = []
+    for name in _OPENAI_RUNTIME_FILE_ENV_NAMES:
+        path = Path(str(environment[name])).expanduser()
+        if (
+            not path.is_absolute()
+            or path.is_symlink()
+            or not path.is_file()
+            or not os.access(path, os.R_OK)
+        ):
+            invalid_files.append(name)
+    if invalid_files:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_openai_runtime_file_invalid:"
+            + ",".join(invalid_files)
+        )
+
+
+def _preflight_paid_service_identity(*, execute: bool) -> None:
+    """Reach the canonical single-use-ledger gate before expensive bundle work."""
+
+    if not execute:
+        return
+    try:
+        prepare_consumption_root()
+    except SpendAuthorityRootError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_spend_identity_invalid:"
+            + str(exc)
+        ) from exc
 
 
 def run_scene_configuration_diagnostic_iteration(
@@ -187,6 +289,13 @@ def run_scene_configuration_diagnostic_iteration(
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Prepare the source overlay and invoke the fixed diagnostic chain."""
+
+    _preflight_paid_runtime_environment(
+        os.environ,
+        execute=bool(args.execute),
+        openai_max_cost_usd=float(args.openai_max_cost_usd),
+    )
+    _preflight_paid_service_identity(execute=bool(args.execute))
 
     source_repo = _input_directory(args.source_repo, field="source_repo")
     release_root = _output_directory(
@@ -201,10 +310,23 @@ def run_scene_configuration_diagnostic_iteration(
     splat_runtime = _input_directory(
         args.splat_render_runtime_root, field="splat_render_runtime_root"
     )
-    checkpoint_reference = _input_file(
-        args.diagnostic_checkpoint_reference,
-        field="diagnostic_checkpoint_reference",
+    fresh_diagnostic_bootstrap = bool(args.fresh_diagnostic_bootstrap)
+    diagnostic_bootstrap_mode = (
+        FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+        if fresh_diagnostic_bootstrap
+        else CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
     )
+    if fresh_diagnostic_bootstrap:
+        if args.diagnostic_checkpoint_reference:
+            raise SceneConfigurationDiagnosticIterationError(
+                "scene_configuration_diagnostic_iteration_checkpoint_source_ambiguous"
+            )
+        checkpoint_reference = None
+    else:
+        checkpoint_reference = _input_file(
+            args.diagnostic_checkpoint_reference,
+            field="diagnostic_checkpoint_reference",
+        )
     project_spend = _input_file(
         args.project_spend_reconciliation,
         field="project_spend_reconciliation",
@@ -231,6 +353,19 @@ def run_scene_configuration_diagnostic_iteration(
         field="iteration_preparation_receipt",
     )
     retain_warm_session = bool(getattr(args, "retain_warm_session", False))
+    allowed_machine_values = getattr(args, "allowed_vast_machine_id", ()) or ()
+    try:
+        if any(isinstance(value, bool) for value in allowed_machine_values):
+            raise ValueError("boolean machine id")
+        allowed_machine_ids = tuple(
+            sorted({int(value) for value in allowed_machine_values})
+        )
+        if any(value <= 0 for value in allowed_machine_ids):
+            raise ValueError("non-positive machine id")
+    except (TypeError, ValueError) as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_allowed_vast_machine_ids_invalid"
+        ) from exc
     if retain_warm_session and not args.execute:
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_warm_retention_requires_execute"
@@ -289,16 +424,29 @@ def run_scene_configuration_diagnostic_iteration(
         str(bundle_output),
         "--expected-source-commit",
         args.source_commit,
-        "--diagnostic-checkpoint-reference",
-        str(checkpoint_reference),
     ]
-    _run_fixed(
-        bundle_command,
-        cwd=release_path,
-        environment=environment,
-        runner=runner,
-        code="scene_configuration_diagnostic_iteration_bundle_failed",
-    )
+    if fresh_diagnostic_bootstrap:
+        bundle_command.append("--fresh-diagnostic-bootstrap")
+    else:
+        bundle_command.extend(
+            ["--diagnostic-checkpoint-reference", str(checkpoint_reference)]
+        )
+    try:
+        _run_fixed(
+            bundle_command,
+            cwd=release_path,
+            environment=environment,
+            runner=runner,
+            code="scene_configuration_diagnostic_iteration_bundle_failed",
+        )
+    except SceneConfigurationDiagnosticIterationError:
+        # The builder creates ``stage`` itself after first proving that the
+        # output root is empty. A validation failure may leave that expanded,
+        # unsealed tree behind; remove only that known self-created directory
+        # so a corrected no-spend retry does not strand itself. Any unexpected
+        # sibling remains and the existing non-empty gate still fails closed.
+        _discard_sealed_bundle_staging_tree(bundle_output)
+        raise
     bundle_elapsed_ms = int((clock() - bundle_started) * 1000)
     bundle_receipt_path = (
         bundle_output / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
@@ -315,11 +463,21 @@ def run_scene_configuration_diagnostic_iteration(
         or bundle_receipt.get("configured_revision_publication_permitted") is not False
         or bundle_receipt.get("offering_publication_permitted") is not False
         or bundle_receipt.get("terminal_e2e_completion_permitted") is not False
+        or bundle_receipt.get("diagnostic_bootstrap_mode")
+        != diagnostic_bootstrap_mode
+        or (
+            fresh_diagnostic_bootstrap
+            and (
+                bundle_receipt.get("source_diagnostic_checkpoint_digest")
+                is not None
+                or bundle_receipt.get("carried_completed_stage_count") != 0
+            )
+        )
     ):
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_bundle_receipt_invalid"
         )
-
+    bundle_staging_tree_removed = _discard_sealed_bundle_staging_tree(bundle_output)
     authority_started = clock()
     authority_command = [
         str(python),
@@ -389,23 +547,32 @@ def run_scene_configuration_diagnostic_iteration(
         or authority.get("configured_revision_publication_permitted") is not False
         or authority.get("offering_publication_permitted") is not False
         or authority.get("terminal_e2e_completion_permitted") is not False
+        or authority.get("diagnostic_bootstrap_mode")
+        != diagnostic_bootstrap_mode
     ):
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_authority_invalid"
         )
     if retain_warm_session:
-        try:
-            checkpoint_reference_value = json.loads(
-                checkpoint_reference.read_text(encoding="utf-8")
-            )
-            checkpoint_root = _input_directory(
-                str(checkpoint_reference_value.get("checkpoint_root") or ""),
-                field="diagnostic_checkpoint_root",
-            )
-        except (AttributeError, json.JSONDecodeError, OSError, UnicodeError) as exc:
-            raise SceneConfigurationDiagnosticIterationError(
-                "scene_configuration_diagnostic_iteration_checkpoint_reference_invalid"
-            ) from exc
+        checkpoint_root: Path | None = None
+        if not fresh_diagnostic_bootstrap:
+            try:
+                checkpoint_reference_value = json.loads(
+                    checkpoint_reference.read_text(encoding="utf-8")
+                )
+                checkpoint_root = _input_directory(
+                    str(checkpoint_reference_value.get("checkpoint_root") or ""),
+                    field="diagnostic_checkpoint_root",
+                )
+            except (
+                AttributeError,
+                json.JSONDecodeError,
+                OSError,
+                UnicodeError,
+            ) as exc:
+                raise SceneConfigurationDiagnosticIterationError(
+                    "scene_configuration_diagnostic_iteration_checkpoint_reference_invalid"
+                ) from exc
         materialize_scene_configuration_warm_session_authority(
             bundle_receipt_path=bundle_receipt_path,
             paid_attempt_authority_path=authority_output,
@@ -436,6 +603,7 @@ def run_scene_configuration_diagnostic_iteration(
         "total_preparation_elapsed_ms": total_preparation_elapsed_ms,
         "total_preparation_seconds_claimed": False,
         "bundle_build_elapsed_ms": bundle_elapsed_ms,
+        "bundle_staging_tree_removed_after_seal": bundle_staging_tree_removed,
         "authority_build_elapsed_ms": authority_elapsed_ms,
         "bundle_receipt_digest": bundle_receipt.get("receipt_digest"),
         "authority_digest": authority.get("authority_digest"),
@@ -462,6 +630,8 @@ def run_scene_configuration_diagnostic_iteration(
         "terminal_e2e_completion_permitted": False,
         "paid_execution_requested": bool(args.execute),
         "warm_session_retention_requested": retain_warm_session,
+        "allowed_vast_machine_ids": list(allowed_machine_ids),
+        "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
         "provider_mutation_performed_during_preparation": False,
         "raw_secret_values_recorded": False,
         "preparation_digest": "",
@@ -509,6 +679,10 @@ def run_scene_configuration_diagnostic_iteration(
     ]
     if args.execute:
         allocator_command.append("--execute")
+    for machine_id in allowed_machine_ids:
+        allocator_command.extend(
+            ["--scene-configuration-allowed-vast-machine-id", str(machine_id)]
+        )
     if retain_warm_session:
         allocator_command.extend(
             [
@@ -540,7 +714,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--construction-envelope", required=True)
     parser.add_argument("--toolchain-root", required=True)
     parser.add_argument("--splat-render-runtime-root", required=True)
-    parser.add_argument("--diagnostic-checkpoint-reference", required=True)
+    parser.add_argument("--diagnostic-checkpoint-reference")
+    parser.add_argument("--fresh-diagnostic-bootstrap", action="store_true")
     parser.add_argument("--bundle-output-root", required=True)
     parser.add_argument("--project-spend-reconciliation", required=True)
     parser.add_argument("--initial-provider-zero", required=True)
@@ -567,6 +742,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--adapter-output", required=True)
     parser.add_argument("--iteration-preparation-receipt", required=True)
     parser.add_argument("--retain-warm-session", action="store_true")
+    parser.add_argument("--allowed-vast-machine-id", action="append", type=int, default=[])
     parser.add_argument("--warm-session-authority")
     parser.add_argument("--warm-session-output-root")
     parser.add_argument("--maximum-warm-iterations", type=int, default=8)

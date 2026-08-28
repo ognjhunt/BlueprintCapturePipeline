@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import (
+    PENDING_PROVIDER_RENDER_STATUS,
     RENDER_INPUT_STATUSES,
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
@@ -25,6 +26,10 @@ from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     SCHEMA_VERSION as DIAGNOSTIC_CHECKPOINT_SCHEMA_VERSION,
     diagnostic_checkpoint_scientific_binding_digest,
     validate_scene_configuration_diagnostic_checkpoint,
+)
+from .task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
 )
 from .task_evaluation_scene_configuration_python_wheelhouse import (
     MANIFEST_NAME as PYTHON_WHEELHOUSE_MANIFEST_NAME,
@@ -48,6 +53,7 @@ from .task_evaluation_splat_render_runtime import (
     PROVIDER_RENDERER_REQUIRED_PACKAGES,
     PROVIDER_RENDERER_SCHEMA_VERSION,
     TaskEvaluationSplatRenderRuntimeError,
+    validate_diagnostic_splat_render_runtime,
     validate_splat_render_runtime,
 )
 
@@ -62,6 +68,7 @@ DIAGNOSTIC_RUNNER = (
     "scripts/task_evaluation_scene_configuration_diagnostic_provider_runner.py"
 )
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MAX_MEMBER_BYTES = 2 * 1024**3
 _MAX_TOTAL_BYTES = 8 * 1024**3
 _PROVIDER_RENDERER_FILES = (
@@ -467,15 +474,28 @@ def build_scene_configuration_provider_bundle(
     expected_source_commit: str,
     diagnostic_checkpoint_root: str | Path | None = None,
     diagnostic_checkpoint_reference_path: str | Path | None = None,
+    fresh_diagnostic_bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
+    diagnostic_mode_requested = bool(
+        fresh_diagnostic_bootstrap
+        or diagnostic_checkpoint_root is not None
+        or diagnostic_checkpoint_reference_path is not None
+    )
     if (
         diagnostic_checkpoint_root is not None
         and diagnostic_checkpoint_reference_path is not None
     ):
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_diagnostic_checkpoint_source_ambiguous"
+        )
+    if fresh_diagnostic_bootstrap and (
+        diagnostic_checkpoint_root is not None
+        or diagnostic_checkpoint_reference_path is not None
+    ):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_diagnostic_bootstrap_source_ambiguous"
         )
     if diagnostic_checkpoint_reference_path is not None:
         diagnostic_checkpoint_root = _resolve_diagnostic_checkpoint_reference(
@@ -488,9 +508,16 @@ def build_scene_configuration_provider_bundle(
     envelope_path = Path(construction_envelope_path).resolve()
     envelope = _read(envelope_path, code="scene_configuration_bundle_envelope_invalid")
     render_inputs = envelope.get("render_inputs_result")
+    construction_source_commit = str(
+        envelope.get("expected_production_commit") or ""
+    )
     if (
         envelope.get("schema_version") != ENVELOPE_SCHEMA_VERSION
-        or envelope.get("expected_production_commit") != expected_source_commit
+        or _COMMIT.fullmatch(construction_source_commit) is None
+        or (
+            not diagnostic_mode_requested
+            and construction_source_commit != expected_source_commit
+        )
         or envelope.get("envelope_digest")
         != canonical_digest(envelope, digest_field="envelope_digest")
         or not isinstance(render_inputs, Mapping)
@@ -531,8 +558,13 @@ def build_scene_configuration_provider_bundle(
         raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
     repo = Path(repository_root).resolve()
     toolchain = Path(toolchain_root).resolve()
+    toolchain_source_commit = (
+        expected_source_commit
+        if diagnostic_mode_requested
+        else construction_source_commit
+    )
     toolchain_manifest = validate_scene_configuration_toolchain(
-        root=toolchain, expected_source_commit=expected_source_commit
+        root=toolchain, expected_source_commit=toolchain_source_commit
     )
     try:
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
@@ -562,6 +594,16 @@ def build_scene_configuration_provider_bundle(
         diagnostic_checkpoint = validate_scene_configuration_diagnostic_checkpoint(
             checkpoint_root=diagnostic_checkpoint_root
         )
+    diagnostic_mode = diagnostic_checkpoint is not None or fresh_diagnostic_bootstrap
+    diagnostic_bootstrap_mode = (
+        FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+        if fresh_diagnostic_bootstrap
+        else (
+            CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
+            if diagnostic_checkpoint is not None
+            else None
+        )
+    )
     # The render-inputs result carries the digest-bound decision that says
     # whether source appearance bytes may cross to the provider. The bundle
     # honours that decision rather than making a second, divergent one.
@@ -579,14 +621,26 @@ def build_scene_configuration_provider_bundle(
             )
         provider_render_runtime_source = Path(unresolved_runtime).expanduser()
         try:
-            provider_render_runtime = validate_splat_render_runtime(
-                runtime_root=provider_render_runtime_source,
-                repo_root=repo,
-            )
+            if diagnostic_mode_requested and (
+                construction_source_commit != expected_source_commit
+            ):
+                provider_render_runtime = (
+                    validate_diagnostic_splat_render_runtime(
+                        runtime_root=provider_render_runtime_source,
+                        repo_root=repo,
+                        expected_runtime_source_commit=construction_source_commit,
+                    )
+                )
+            else:
+                provider_render_runtime = validate_splat_render_runtime(
+                    runtime_root=provider_render_runtime_source,
+                    repo_root=repo,
+                )
         except (OSError, TaskEvaluationSplatRenderRuntimeError) as exc:
             raise TaskEvaluationSceneConfigurationBundleError(
                 "scene_configuration_bundle_provider_render_runtime_invalid"
             ) from exc
+    diagnostic_scientific_binding_digest: str | None = None
     if diagnostic_checkpoint is not None:
         if (
             provider_render_runtime is None
@@ -606,11 +660,41 @@ def build_scene_configuration_provider_bundle(
             "disclosure_decision",
         ):
             current_binding_render[key] = json.loads(json.dumps(render_inputs[key]))
-        current_binding_render["renderer_runtime"] = dict(
-            provider_render_runtime["identity"]
-        )
+        checkpoint_renderer = current_binding_render.get("renderer_runtime")
+        retained_host_runtime = provider_render_runtime.get("identity")
+        if (
+            not isinstance(checkpoint_renderer, Mapping)
+            or not isinstance(retained_host_runtime, Mapping)
+            or checkpoint_renderer.get("mode")
+            != "digest_bound_provider_bundle_renderer"
+            or checkpoint_renderer.get("schema_version")
+            != PROVIDER_RENDERER_SCHEMA_VERSION
+            or checkpoint_renderer.get("provider_full_byte_inventory_reopened")
+            is not True
+            or checkpoint_renderer.get("source_runtime_digest")
+            != retained_host_runtime.get("runtime_digest")
+            or checkpoint_renderer.get("platform")
+            != retained_host_runtime.get("platform")
+            or not isinstance(checkpoint_renderer.get("file_count"), int)
+            or isinstance(checkpoint_renderer.get("file_count"), bool)
+            or checkpoint_renderer.get("file_count", 0) <= 0
+            or not isinstance(retained_host_runtime.get("file_count"), int)
+            or isinstance(retained_host_runtime.get("file_count"), bool)
+            or retained_host_runtime.get("file_count", 0) <= 0
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_diagnostic_checkpoint_binding_mismatch"
+            )
+        # The checkpoint binds the provider-reopened renderer receipt, while a
+        # retry can only reopen its immutable host source runtime.  The runtime
+        # digest, platform, valid scoped inventories, and the validator's
+        # full-byte comparison
+        # prove those are the same renderer.  Preserve the checkpoint receipt
+        # here so an executable-only source commit does not rewrite scientific
+        # history into a different receipt schema.
         expected_binding = diagnostic_checkpoint_scientific_binding_digest(
             stage_input={
+                "stage": dict(envelope["recipe"]["stage_sequence"][0]),
                 "configuration": diagnostic_first_configuration,
                 "configuration_sha256": _sha256(
                     diagnostic_first_configuration_path
@@ -625,6 +709,34 @@ def build_scene_configuration_provider_bundle(
             raise TaskEvaluationSceneConfigurationBundleError(
                 "scene_configuration_bundle_diagnostic_checkpoint_binding_mismatch"
             )
+        diagnostic_scientific_binding_digest = expected_binding
+    if fresh_diagnostic_bootstrap:
+        if (
+            provider_render_runtime is None
+            or not envelope["recipe"]["stage_sequence"]
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_fresh_diagnostic_identity_missing"
+            )
+        first_stage = dict(envelope["recipe"]["stage_sequence"][0])
+        first_stage_id = str(first_stage["stage_id"])
+        current_binding_render = json.loads(json.dumps(render_inputs))
+        current_binding_render["renderer_runtime"] = dict(
+            provider_render_runtime["identity"]
+        )
+        diagnostic_scientific_binding_digest = (
+            diagnostic_checkpoint_scientific_binding_digest(
+                stage_input={
+                    "stage": first_stage,
+                    "configuration": configuration_values[first_stage_id],
+                    "configuration_sha256": _sha256(
+                        configuration_sources[first_stage_id]
+                    ),
+                    "construction_envelope": envelope,
+                },
+                render_inputs=current_binding_render,
+            )
+        )
     portable = json.loads(json.dumps(envelope))
     portable["control_plane_envelope_digest"] = envelope["envelope_digest"]
     portable_refs = []
@@ -714,7 +826,7 @@ def build_scene_configuration_provider_bundle(
     portable_toolchain = runtime / "toolchain"
     _copy_tree(toolchain, portable_toolchain)
     copied_toolchain_manifest = validate_scene_configuration_toolchain(
-        root=portable_toolchain, expected_source_commit=expected_source_commit
+        root=portable_toolchain, expected_source_commit=toolchain_source_commit
     )
     if copied_toolchain_manifest["toolchain_digest"] != toolchain_manifest["toolchain_digest"]:
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -741,7 +853,7 @@ def build_scene_configuration_provider_bundle(
         )
     _copy_tree(repo / "src/blueprint_pipeline", runtime / "blueprint_pipeline")
     _copy_file(repo / "scripts/run_task_evaluation_scene_configuration_provider.sh", stage / ENTRYPOINT)
-    if diagnostic_checkpoint is not None:
+    if diagnostic_mode:
         runner_source = repo / DIAGNOSTIC_RUNNER
     else:
         runner_source = (
@@ -759,6 +871,7 @@ def build_scene_configuration_provider_bundle(
         "construction_envelope_source_digest": envelope["envelope_digest"],
         "portable_construction_envelope_digest": portable["envelope_digest"],
         "toolchain_schema_version": TOOLCHAIN_SCHEMA_VERSION,
+        "toolchain_source_commit": toolchain_source_commit,
         "toolchain_digest": toolchain_manifest["toolchain_digest"],
         "provider_python_runtime_required": True,
         "provider_python_runtime_manifest": (
@@ -793,14 +906,27 @@ def build_scene_configuration_provider_bundle(
         "expected_result_filename": RESULT_FILENAME,
         "manifest_digest": "",
     }
-    if diagnostic_checkpoint is not None:
+    if diagnostic_mode:
         manifest.update(
             {
-                "source_diagnostic_checkpoint_digest": diagnostic_checkpoint[
-                    "checkpoint_digest"
-                ],
-                "carried_completed_stage_count": diagnostic_checkpoint[
-                    "completed_stage_prefix_count"
+                "construction_source_commit": construction_source_commit,
+                "source_diagnostic_checkpoint_digest": (
+                    diagnostic_checkpoint["checkpoint_digest"]
+                    if diagnostic_checkpoint is not None
+                    else None
+                ),
+                "carried_completed_stage_count": (
+                    diagnostic_checkpoint["completed_stage_prefix_count"]
+                    if diagnostic_checkpoint is not None
+                    else 0
+                ),
+                "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
+                "diagnostic_scientific_binding_digest": (
+                    diagnostic_scientific_binding_digest
+                ),
+                "diagnostic_stage_sequence_ids": [
+                    str(row["stage_id"])
+                    for row in envelope["recipe"]["stage_sequence"]
                 ],
                 "normal_production_lane_used": False,
                 "diagnostic_only": True,
@@ -996,6 +1122,54 @@ def load_scene_configuration_provider_bundle_receipt(
                 or receipt.get("configured_revision_publication_permitted") is not False
                 or receipt.get("offering_publication_permitted") is not False
                 or receipt.get("terminal_e2e_completion_permitted") is not False
+                or _COMMIT.fullmatch(
+                    str(receipt.get("construction_source_commit") or "")
+                )
+                is None
+                or _DIGEST.fullmatch(
+                    str(
+                        receipt.get("diagnostic_scientific_binding_digest")
+                        or ""
+                    )
+                )
+                is None
+                or not isinstance(
+                    receipt.get("diagnostic_stage_sequence_ids"), list
+                )
+                or len(receipt.get("diagnostic_stage_sequence_ids") or []) != 6
+                or len(set(receipt.get("diagnostic_stage_sequence_ids") or []))
+                != 6
+                or any(
+                    not isinstance(stage_id, str) or not stage_id
+                    for stage_id in receipt.get("diagnostic_stage_sequence_ids")
+                    or []
+                )
+                or (
+                    receipt.get("diagnostic_bootstrap_mode")
+                    == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+                    and (
+                        receipt.get("source_diagnostic_checkpoint_digest")
+                        is not None
+                        or receipt.get("carried_completed_stage_count") != 0
+                    )
+                )
+                or (
+                    receipt.get("diagnostic_bootstrap_mode")
+                    != FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+                    and (
+                        receipt.get("diagnostic_bootstrap_mode")
+                        != CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
+                        or _DIGEST.fullmatch(
+                            str(
+                                receipt.get(
+                                    "source_diagnostic_checkpoint_digest"
+                                )
+                                or ""
+                            )
+                        )
+                        is None
+                    )
+                )
             )
         )
         or (
@@ -1008,6 +1182,10 @@ def load_scene_configuration_provider_bundle_receipt(
                     "configured_revision_publication_permitted",
                     "offering_publication_permitted",
                     "terminal_e2e_completion_permitted",
+                    "diagnostic_bootstrap_mode",
+                    "diagnostic_scientific_binding_digest",
+                    "diagnostic_stage_sequence_ids",
+                    "construction_source_commit",
                 )
             )
         )
@@ -1060,34 +1238,70 @@ def load_scene_configuration_provider_bundle_receipt(
                         if isinstance(diagnostic_render, Mapping)
                         else None
                     )
-                    diagnostic_archive_valid = (
-                        isinstance(diagnostic_render, Mapping)
-                        and diagnostic_render.get("diagnostic_checkpoint_reused")
-                        is True
-                        and diagnostic_render.get("provider_render_skipped") is True
-                        and isinstance(source_appearance, Mapping)
-                        and "path" not in source_appearance
-                        and not any(
-                            name.startswith("provider_runtime/renderer/")
-                            or name.startswith(
-                                "provider_runtime/input/render/source_appearance"
+                    if (
+                        receipt.get("diagnostic_bootstrap_mode")
+                        == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+                    ):
+                        diagnostic_archive_valid = (
+                            isinstance(diagnostic_render, Mapping)
+                            and diagnostic_render.get("status")
+                            == PENDING_PROVIDER_RENDER_STATUS
+                            and diagnostic_render.get("provider_render_required")
+                            is True
+                            and isinstance(source_appearance, Mapping)
+                            and str(source_appearance.get("path") or "").startswith(
+                                "input/render/"
                             )
-                            for name in names
-                        )
-                        and any(
-                            name.startswith(
-                                "provider_runtime/input/diagnostic_checkpoint/semantic/"
+                            and any(
+                                name.startswith("provider_runtime/renderer/")
+                                for name in names
                             )
-                            for name in names
-                        )
-                        and all(
-                            str(row.get("path") or "").startswith(
-                                "input/diagnostic_checkpoint/"
+                            and any(
+                                name.startswith(
+                                    "provider_runtime/input/render/source_appearance"
+                                )
+                                for name in names
                             )
-                            for row in diagnostic_render.get("derived_frames") or []
-                            if isinstance(row, Mapping)
+                            and not any(
+                                name.startswith(
+                                    "provider_runtime/input/diagnostic_checkpoint/"
+                                )
+                                for name in names
+                            )
                         )
-                    )
+                    else:
+                        diagnostic_archive_valid = (
+                            isinstance(diagnostic_render, Mapping)
+                            and diagnostic_render.get(
+                                "diagnostic_checkpoint_reused"
+                            )
+                            is True
+                            and diagnostic_render.get("provider_render_skipped")
+                            is True
+                            and isinstance(source_appearance, Mapping)
+                            and "path" not in source_appearance
+                            and not any(
+                                name.startswith("provider_runtime/renderer/")
+                                or name.startswith(
+                                    "provider_runtime/input/render/source_appearance"
+                                )
+                                for name in names
+                            )
+                            and any(
+                                name.startswith(
+                                    "provider_runtime/input/diagnostic_checkpoint/semantic/"
+                                )
+                                for name in names
+                            )
+                            and all(
+                                str(row.get("path") or "").startswith(
+                                    "input/diagnostic_checkpoint/"
+                                )
+                                for row in diagnostic_render.get("derived_frames")
+                                or []
+                                if isinstance(row, Mapping)
+                            )
+                        )
                     if not diagnostic_archive_valid:
                         errors.append("bundle_diagnostic_archive_invalid")
             internal = (
@@ -1133,8 +1347,12 @@ def load_scene_configuration_provider_bundle_receipt(
     )
     if diagnostic_only:
         compared_fields += (
+            "construction_source_commit",
             "source_diagnostic_checkpoint_digest",
             "carried_completed_stage_count",
+            "diagnostic_bootstrap_mode",
+            "diagnostic_scientific_binding_digest",
+            "diagnostic_stage_sequence_ids",
             "normal_production_lane_used",
             "diagnostic_only",
             "qualification_eligible",
@@ -1189,6 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-source-commit", required=True)
     parser.add_argument("--diagnostic-checkpoint-root")
     parser.add_argument("--diagnostic-checkpoint-reference")
+    parser.add_argument("--fresh-diagnostic-bootstrap", action="store_true")
     args = parser.parse_args(argv)
     receipt = build_scene_configuration_provider_bundle(
         construction_envelope_path=args.construction_envelope,
@@ -1199,6 +1418,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_source_commit=args.expected_source_commit,
         diagnostic_checkpoint_root=args.diagnostic_checkpoint_root,
         diagnostic_checkpoint_reference_path=args.diagnostic_checkpoint_reference,
+        fresh_diagnostic_bootstrap=args.fresh_diagnostic_bootstrap,
     )
     print(canonical_json(receipt))
     return 0

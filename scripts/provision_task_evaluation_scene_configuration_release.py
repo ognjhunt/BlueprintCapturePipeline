@@ -10,16 +10,24 @@ by the Website preparation and activation workers.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     validate_scene_configuration_toolchain,
+)
+from blueprint_pipeline.public_scene_artifixer3d_bundle import (
+    VGG16_WEIGHTS_FILENAME,
+    VGG16_WEIGHTS_SHA256,
+    VGG16_WEIGHTS_SIZE_BYTES,
+    VGG16_WEIGHTS_SOURCE_URL,
 )
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
@@ -50,6 +58,54 @@ DEFAULT_ACTIVATION_DESTINATION_PREFIX = (
     "s3://blueprint/task-evaluation/production-inputs/task-evaluation-activations"
 )
 Readback = Callable[[Path], bytes]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def materialize_vgg16_weights(*, cache_root: str | Path) -> Path:
+    """Cache the exact public LPIPS backbone before building an immutable release."""
+
+    root = Path(cache_root).expanduser().absolute()
+    destination = root / VGG16_WEIGHTS_FILENAME
+    if destination.exists() or destination.is_symlink():
+        if (
+            destination.is_symlink()
+            or not destination.is_file()
+            or destination.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+            or _sha256(destination) != VGG16_WEIGHTS_SHA256
+        ):
+            raise ValueError("scene_configuration_vgg16_cache_invalid")
+        return destination
+    root.mkdir(parents=True, exist_ok=True)
+    temporary = root / f".{VGG16_WEIGHTS_FILENAME}.download"
+    if temporary.exists() or temporary.is_symlink():
+        raise ValueError("scene_configuration_vgg16_cache_invalid")
+    request = urllib.request.Request(
+        VGG16_WEIGHTS_SOURCE_URL,
+        headers={"User-Agent": "BlueprintCapturePipeline/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1800) as response:  # nosec B310
+            with temporary.open("xb") as output:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+        if (
+            temporary.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+            or _sha256(temporary) != VGG16_WEIGHTS_SHA256
+        ):
+            raise ValueError("scene_configuration_vgg16_download_mismatch")
+        temporary.chmod(0o444)
+        temporary.replace(destination)
+    except Exception:
+        if temporary.is_file() and not temporary.is_symlink():
+            temporary.unlink()
+        raise
+    return destination
 
 
 def _remove_tree(root: Path) -> None:
@@ -115,6 +171,9 @@ def provision_scene_configuration_release(
             "toolchain_digest": toolchain["toolchain_digest"],
         }
     else:
+        vgg16_weights = materialize_vgg16_weights(
+            cache_root=runtimes / "public-model-cache"
+        )
         component_parent = Path(
             tempfile.mkdtemp(prefix="scene-configuration-components-")
         )
@@ -128,6 +187,7 @@ def provision_scene_configuration_release(
                 repository_root=repository,
                 expected_blueprint_commit=source_commit,
                 artifixer_root=artifixer_root,
+                vgg16_weights_path=vgg16_weights,
                 output_root=component_packages[
                     "artifixer3d_observed_object_removal"
                 ],

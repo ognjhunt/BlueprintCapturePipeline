@@ -32,6 +32,31 @@ def test_terminal_result_explicitly_records_that_no_raw_secrets_were_retained(
     )
 
 
+def test_live_diagnostic_terminal_result_does_not_finalize_production_queue(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def unexpected_finalization(**_kwargs):
+        raise AssertionError("diagnostic must not mutate the production queue")
+
+    monkeypatch.setattr(vast, "finalize_scene_construction", unexpected_finalization)
+
+    result = vast._seal_live_terminal_result(
+        tmp_path,
+        {
+            "schema_version": vast.DIAGNOSTIC_RESULT_SCHEMA_VERSION,
+            "status": "blocked_diagnostic_only",
+            "blockers": ["diagnostic_refusal"],
+        },
+        receipt={},
+        scene_construction_queue_root=None,
+        diagnostic_only=True,
+    )
+
+    assert result["status"] == "blocked_diagnostic_only"
+    assert result["blockers"] == ["diagnostic_refusal"]
+    assert "scene_construction_queue_finalization" not in result
+
+
 def _diagnostic_provider_result() -> dict:
     stage_results = []
     for index in range(1, 7):

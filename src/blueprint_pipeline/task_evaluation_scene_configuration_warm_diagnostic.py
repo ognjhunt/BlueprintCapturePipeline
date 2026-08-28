@@ -40,6 +40,11 @@ from .task_evaluation_scene_configuration_bundle import (
 from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     validate_scene_configuration_diagnostic_checkpoint,
 )
+from .task_evaluation_scene_configuration_diagnostic_mode import (
+    CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
+    validate_diagnostic_bootstrap_mode,
+)
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
 )
@@ -65,6 +70,11 @@ from .task_evaluation_scene_configuration_warm_remote_protocol import (
 )
 from .task_evaluation_scene_configuration_warm_execution_contract import (
     warm_execution_binding_blockers as _warm_execution_binding_blockers,
+)
+from .task_evaluation_scene_configuration_warm_allocation import (
+    scene_configuration_warm_closeout_allocation_binding,
+    scene_configuration_warm_iteration_allocation_binding,
+    validate_warm_claim_boundary as _validate_claim_boundary,
 )
 from .task_evaluation_scene_configuration_warm_transport import (
     SIGNED_URL_RETRIEVAL_RESERVE_SECONDS,
@@ -121,61 +131,12 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ITERATION_ID = re.compile(r"i[0-9]{3}-[0-9a-f]{12}\Z")
 _HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
 
-def scene_configuration_warm_iteration_allocation_binding(
-    *, session: Mapping[str, Any], authority: Mapping[str, Any]
-) -> dict[str, Any]:
-    return {
-        "program_id": "arm-decision-proof-v1",
-        "probe_kind": "task-evaluation-scene-configuration",
-        "action": "warm_iteration",
-        "provider": "vast",
-        "session_digest": session.get("session_digest"),
-        "provider_instance_id": session.get("provider_instance_id"),
-        "iteration_authority_digest": authority.get("authority_digest"),
-        "watchdog_deadline_epoch": session.get("watchdog_deadline_epoch"),
-        "maximum_provider_allocations": 0,
-        "maximum_instance_lifecycle_mutations": 0,
-        "maximum_remote_workload_dispatches": 1,
-    }
-
-
-def scene_configuration_warm_closeout_allocation_binding(
-    *, session: Mapping[str, Any]
-) -> dict[str, Any]:
-    return {
-        "program_id": "arm-decision-proof-v1",
-        "probe_kind": "task-evaluation-scene-configuration",
-        "action": "warm_closeout",
-        "provider": "vast",
-        "session_digest": session.get("session_digest"),
-        "provider_instance_id": session.get("provider_instance_id"),
-        "watchdog_deadline_epoch": session.get("watchdog_deadline_epoch"),
-        "maximum_provider_allocations": 0,
-        "maximum_instance_lifecycle_mutations": 1,
-        "maximum_remote_workload_dispatches": 0,
-    }
-
-
-def _validate_claim_boundary(value: Mapping[str, Any], *, code: str) -> None:
-    if (
-        value.get("diagnostic_only") is not True
-        or value.get("development_only") is not True
-        or value.get("qualification_eligible") is not False
-        or value.get("configured_revision_publication_permitted") is not False
-        or value.get("offering_publication_permitted") is not False
-        or value.get("terminal_e2e_completion_permitted") is not False
-        or value.get("arbitrary_command_permitted") is not False
-        or value.get("raw_secret_values_recorded") is not False
-    ):
-        raise SceneConfigurationWarmDiagnosticError(code)
-
-
 def materialize_scene_configuration_warm_session_authority(
     *,
     bundle_receipt_path: str | Path,
     paid_attempt_authority_path: str | Path,
     diagnostic_release_receipt_path: str | Path,
-    checkpoint_root: str | Path,
+    checkpoint_root: str | Path | None,
     maximum_warm_iterations: int,
     output_path: str | Path,
 ) -> dict[str, Any]:
@@ -194,13 +155,33 @@ def materialize_scene_configuration_warm_session_authority(
     release = _validated_release_receipt(
         release_path, source_commit=str(bundle["source_commit"])
     )
-    checkpoint_path = _absolute_directory(
-        checkpoint_root,
-        code="scene_configuration_warm_session_checkpoint_invalid",
+    try:
+        diagnostic_bootstrap_mode = validate_diagnostic_bootstrap_mode(
+            bundle.get("diagnostic_bootstrap_mode")
+        )
+    except ValueError as exc:
+        raise SceneConfigurationWarmDiagnosticError(str(exc)) from exc
+    fresh_diagnostic_bootstrap = (
+        diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
     )
-    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
-        checkpoint_root=checkpoint_path
-    )
+    checkpoint: dict[str, Any] | None = None
+    if fresh_diagnostic_bootstrap:
+        if checkpoint_root is not None:
+            raise SceneConfigurationWarmDiagnosticError(
+                "scene_configuration_warm_session_checkpoint_invalid"
+            )
+    else:
+        if checkpoint_root is None:
+            raise SceneConfigurationWarmDiagnosticError(
+                "scene_configuration_warm_session_checkpoint_invalid"
+            )
+        checkpoint_path = _absolute_directory(
+            checkpoint_root,
+            code="scene_configuration_warm_session_checkpoint_invalid",
+        )
+        checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=checkpoint_path
+        )
     _warm_download_ceiling, warm_output_ceiling = _provider_transfer_byte_budget(
         bundle
     )
@@ -210,8 +191,29 @@ def materialize_scene_configuration_warm_session_authority(
         or paid.get("maximum_paid_attempts") != 1
         or paid.get("maximum_provider_allocations") != 1
         or bundle.get("diagnostic_only") is not True
-        or bundle.get("source_diagnostic_checkpoint_digest")
-        != checkpoint.get("checkpoint_digest")
+        or (
+            checkpoint is not None
+            and bundle.get("source_diagnostic_checkpoint_digest")
+            != checkpoint.get("checkpoint_digest")
+        )
+        or (
+            checkpoint is not None
+            and bundle.get("diagnostic_scientific_binding_digest")
+            != (checkpoint.get("scientific_bindings") or {}).get(
+                "binding_digest"
+            )
+        )
+        or (
+            fresh_diagnostic_bootstrap
+            and (
+                bundle.get("source_diagnostic_checkpoint_digest") is not None
+                or bundle.get("carried_completed_stage_count") != 0
+                or _DIGEST.fullmatch(
+                    str(bundle.get("diagnostic_scientific_binding_digest") or "")
+                )
+                is None
+            )
+        )
         or release.get("source_commit") != bundle.get("source_commit")
     ):
         raise SceneConfigurationWarmDiagnosticError(
@@ -235,20 +237,30 @@ def materialize_scene_configuration_warm_session_authority(
         "construction_envelope_digest": bundle[
             "portable_construction_envelope_digest"
         ],
-        "source_checkpoint_digest": checkpoint["checkpoint_digest"],
+        "source_checkpoint_digest": (
+            checkpoint["checkpoint_digest"] if checkpoint is not None else None
+        ),
+        "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
         "bootstrap_carried_completed_stage_prefix_count": checkpoint[
             "completed_stage_prefix_count"
-        ],
+        ] if checkpoint is not None else 0,
         "bootstrap_carried_completed_stage_ids": [
             str(row["stage_id"])
             for row in checkpoint["completed_stage_results"]
-        ],
+        ] if checkpoint is not None else [],
         "bootstrap_uses_one_shot_paid_authority": True,
         "warm_iterations_require_all_paid_model_stages_carried": True,
-        "carried_paid_model_stages": list(WARM_CARRIED_PAID_MODEL_STAGES),
-        "scientific_binding_digest": checkpoint["scientific_bindings"][
-            "binding_digest"
-        ],
+        "required_carried_paid_model_stages_for_retention": list(
+            WARM_CARRIED_PAID_MODEL_STAGES
+        ),
+        "scientific_binding_digest": (
+            checkpoint["scientific_bindings"]["binding_digest"]
+            if checkpoint is not None
+            else bundle["diagnostic_scientific_binding_digest"]
+        ),
+        "diagnostic_stage_sequence_ids": list(
+            bundle["diagnostic_stage_sequence_ids"]
+        ),
         "paid_attempt_authority": _record(paid_path),
         "paid_attempt_authority_digest": paid["authority_digest"],
         "maximum_provider_allocations": 1,
@@ -316,10 +328,25 @@ def validate_scene_configuration_warm_session_authority(
             str(authority.get("construction_envelope_digest") or "")
         )
         is None
-        or _DIGEST.fullmatch(
-            str(authority.get("source_checkpoint_digest") or "")
+        or not isinstance(authority.get("diagnostic_stage_sequence_ids"), list)
+        or len(authority.get("diagnostic_stage_sequence_ids") or []) != 6
+        or (
+            authority.get("diagnostic_bootstrap_mode")
+            == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+            and authority.get("source_checkpoint_digest") is not None
         )
-        is None
+        or (
+            authority.get("diagnostic_bootstrap_mode")
+            != FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+            and (
+                authority.get("diagnostic_bootstrap_mode")
+                != CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE
+                or _DIGEST.fullmatch(
+                    str(authority.get("source_checkpoint_digest") or "")
+                )
+                is None
+            )
+        )
         or _DIGEST.fullmatch(
             str(authority.get("scientific_binding_digest") or "")
         )
@@ -330,7 +357,7 @@ def validate_scene_configuration_warm_session_authority(
         or authority.get("bootstrap_uses_one_shot_paid_authority") is not True
         or authority.get("warm_iterations_require_all_paid_model_stages_carried")
         is not True
-        or authority.get("carried_paid_model_stages")
+        or authority.get("required_carried_paid_model_stages_for_retention")
         != list(WARM_CARRIED_PAID_MODEL_STAGES)
         or authority.get("maximum_provider_allocations") != 1
         or authority.get("maximum_automatic_retries") != 0
@@ -391,6 +418,17 @@ def validate_scene_configuration_warm_session_authority(
         or bundle.get("toolchain_digest") != authority.get("toolchain_digest")
         or bundle.get("portable_construction_envelope_digest")
         != authority.get("construction_envelope_digest")
+        or bundle.get("diagnostic_bootstrap_mode")
+        != authority.get("diagnostic_bootstrap_mode")
+        or bundle.get("diagnostic_scientific_binding_digest")
+        != authority.get("scientific_binding_digest")
+        or bundle.get("diagnostic_stage_sequence_ids")
+        != authority.get("diagnostic_stage_sequence_ids")
+        or (
+            authority.get("diagnostic_bootstrap_mode")
+            == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+            and authority.get("source_checkpoint_digest") is not None
+        )
         or paid.get("authority_digest")
         != authority.get("paid_attempt_authority_digest")
         or release.get("remote_ref") != authority.get("remote_ref")
@@ -540,7 +578,12 @@ def materialize_scene_configuration_warm_session(
             str(row.get("stage_id") or "")
             for row in advanced_local.get("completed_stage_results") or []
         ],
-        "carried_paid_model_stages": list(authority["carried_paid_model_stages"]),
+        "diagnostic_stage_sequence_ids": list(
+            authority["diagnostic_stage_sequence_ids"]
+        ),
+        "carried_paid_model_stages": list(
+            authority["required_carried_paid_model_stages_for_retention"]
+        ),
         "rerun_paid_model_stages": [],
         "warm_openai_external_service_spend_permitted": False,
         "scientific_binding_digest": authority["scientific_binding_digest"],

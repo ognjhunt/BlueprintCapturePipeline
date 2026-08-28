@@ -110,11 +110,12 @@ def _repository_commit(repo: Path) -> str:
     return value
 
 
-def validate_splat_render_runtime(
+def _validate_splat_render_runtime(
     *,
     runtime_root: str | Path,
     repo_root: str | Path,
     allowed_roots: Sequence[str | Path] = DEFAULT_ALLOWED_ROOTS,
+    expected_runtime_source_commit: str | None,
 ) -> dict[str, Any]:
     """Full-byte validate one immutable runtime and return execution paths."""
 
@@ -140,6 +141,11 @@ def validate_splat_render_runtime(
         )
     manifest = _read_json(manifest_path)
     supplied_digest = manifest.get("runtime_digest")
+    required_runtime_commit = (
+        _repository_commit(repo)
+        if expected_runtime_source_commit is None
+        else expected_runtime_source_commit
+    )
     if (
         manifest.get("schema_version") != SCHEMA_VERSION
         or manifest.get("status") != "qualified_for_production_method_input"
@@ -149,7 +155,8 @@ def validate_splat_render_runtime(
         or _DIGEST.fullmatch(str(supplied_digest or "")) is None
         or supplied_digest
         != canonical_digest(manifest, digest_field="runtime_digest")
-        or manifest.get("source_commit") != _repository_commit(repo)
+        or _COMMIT.fullmatch(required_runtime_commit) is None
+        or manifest.get("source_commit") != required_runtime_commit
     ):
         raise TaskEvaluationSplatRenderRuntimeError(
             "splat_render_runtime_manifest_invalid"
@@ -272,6 +279,45 @@ def validate_splat_render_runtime(
             "full_byte_service_account_readback_passed": True,
         },
     }
+
+
+def validate_splat_render_runtime(
+    *,
+    runtime_root: str | Path,
+    repo_root: str | Path,
+    allowed_roots: Sequence[str | Path] = DEFAULT_ALLOWED_ROOTS,
+) -> dict[str, Any]:
+    """Validate the production runtime against the exact repository commit."""
+
+    return _validate_splat_render_runtime(
+        runtime_root=runtime_root,
+        repo_root=repo_root,
+        allowed_roots=allowed_roots,
+        expected_runtime_source_commit=None,
+    )
+
+
+def validate_diagnostic_splat_render_runtime(
+    *,
+    runtime_root: str | Path,
+    repo_root: str | Path,
+    expected_runtime_source_commit: str,
+    allowed_roots: Sequence[str | Path] = DEFAULT_ALLOWED_ROOTS,
+) -> dict[str, Any]:
+    """Validate retained runtime bytes against their construction release.
+
+    A diagnostic source checkout may be newer than the immutable runtime. The
+    runtime commit remains explicit while the ordinary byte comparisons below
+    prove that every renderer source consumed from the diagnostic checkout is
+    identical to the retained runtime copy.
+    """
+
+    return _validate_splat_render_runtime(
+        runtime_root=runtime_root,
+        repo_root=repo_root,
+        allowed_roots=allowed_roots,
+        expected_runtime_source_commit=expected_runtime_source_commit,
+    )
 
 
 def validate_provider_bundle_splat_renderer(
