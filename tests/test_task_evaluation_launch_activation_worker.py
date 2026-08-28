@@ -793,12 +793,18 @@ def _release_window(request: dict[str, object], now: datetime) -> bytes:
     return json.dumps(value, sort_keys=True).encode()
 
 
-def test_worker_cross_binds_preparation_window_and_no_execution_publication(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "lane",
+    ["native_task_arena_construction", "native_task_arena_controls"],
+)
+def test_worker_cross_binds_preparation_window_and_no_execution_publication(
+    tmp_path: Path, lane: str
+) -> None:
     preparation, preparation_result, payloads, preparation_queue, input_root = (
         _stage_verified_preparation(tmp_path)
     )
-    request = activation_request()
-    request["activation_id"] = "activation-scene-841007-construction"
+    request = activation_request(lane=lane)
+    request["activation_id"] = f"activation-scene-841007-{lane}"
     request["preparation"] = {
         "preparation_id": preparation["preparation_id"],
         "request_digest": launch_preparation_request_digest(preparation),
@@ -853,6 +859,8 @@ def test_worker_cross_binds_preparation_window_and_no_execution_publication(tmp_
             json.dumps({
                 "profile_id": profile["profile_id"],
                 "profile_digest": profile["profile_digest"],
+                "max_launches": 1,
+                "max_total_spend_usd": preparation["spend"]["hard_cap_usd"],
                 "provider_mutation_performed": False,
             }),
             encoding="utf-8",
@@ -904,8 +912,29 @@ def test_worker_cross_binds_preparation_window_and_no_execution_publication(tmp_
     assert run["results"][0]["status"] == "profile_authority_materialized_no_execution", json.dumps(run, sort_keys=True)
     assert run["results"][0]["provider_mutation_performed"] is False
     assert run["results"][0]["paid_execution_requested"] is False
-    assert observed_context["lane"] == "native_task_arena_construction"
+    assert observed_context["lane"] == lane
+    if lane == "native_task_arena_controls":
+        assert request["lineage"]["kind"] == "predecessor"
+        for name in (
+            "prior_authority",
+            "prior_result",
+            "prior_launch_receipt",
+            "prior_webapp_sync",
+            "prior_provider_zero",
+            "prior_spend_reconciliation",
+            "construction_result",
+        ):
+            assert Path(observed_context["operations"][name]).is_file()
     assert observed_context["operations"]["provider"] == "vast"
+    assert observed_context["operations"]["maximum_hourly_rate_usd"] == (
+        preparation["spend"]["maximum_hourly_rate_usd"]
+    )
+    assert observed_context["operations"]["hard_total_spend_cap_usd"] == (
+        preparation["spend"]["hard_cap_usd"]
+    )
+    assert observed_context["operations"]["hard_ttl_seconds"] == (
+        preparation["spend"]["hard_ttl_seconds"]
+    )
     assert observed_context["references"]["scene"]["scene_id"] == (
         preparation["scene"]["identity"]["id"]
     )
@@ -916,6 +945,13 @@ def test_worker_cross_binds_preparation_window_and_no_execution_publication(tmp_
     assert status["profile_id"] == "scene-841007-construction-r1"
     assert status["provider_mutation_performed_by_worker"] is False
     assert status["paid_execution_requested"] is False
+    authorization = json.loads(
+        next(authorization_dir.glob("*.json")).read_text(encoding="utf-8")
+    )
+    assert authorization["max_launches"] == 1
+    assert authorization["max_total_spend_usd"] == preparation["spend"][
+        "hard_cap_usd"
+    ]
 
 
 def test_worker_blocks_wrong_window_before_preparer(tmp_path) -> None:

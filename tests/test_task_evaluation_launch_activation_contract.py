@@ -78,6 +78,7 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
     [
         "native_task_arena_construction",
         "task_evaluation_scene_configuration",
+        "native_task_arena_controls",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive",
     ],
