@@ -630,6 +630,11 @@ def _validated_production_recipe(
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_construction_recipe_invalid"
         ) from exc
+    # ``revision.source_commit`` identifies the historical configuration
+    # release and is already protected by the revision digest.  The current
+    # evaluator release is independently bound by the preparation request and
+    # worker source-commit check; requiring those two identities to be equal
+    # would make every immutable configured scene expire when main advances.
     expected = {
         "team_namespace": request["team_namespace"],
         "scene_identity": request["scene"]["identity"],
@@ -664,7 +669,6 @@ def _validated_configured_scene_revision(
     expected = {
         "team_namespace": request["team_namespace"],
         "scene_identity": request["scene"]["identity"],
-        "source_commit": request["expected_production_commit"],
         "revision_digest": request["task"][
             "configured_scene_revision_digest"
         ],

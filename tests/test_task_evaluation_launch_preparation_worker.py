@@ -40,6 +40,8 @@ SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
 
 def request_with_fetchable_bytes(
     value: dict[str, object] | None = None,
+    *,
+    configured_scene_source_commit: str | None = None,
 ) -> tuple[dict[str, object], dict[str, bytes]]:
     value = value or request()
     payloads: dict[str, bytes] = {}
@@ -86,7 +88,10 @@ def request_with_fetchable_bytes(
             "configuration_run_id": "scene-configuration-v1",
             "team_namespace": value["team_namespace"],
             "scene_identity": value["scene"]["identity"],
-            "source_commit": value["expected_production_commit"],
+            "source_commit": (
+                configured_scene_source_commit
+                or value["expected_production_commit"]
+            ),
             "source": {
                 "manifest": configured_ref(1),
                 "rights_admission": configured_ref(2),
@@ -525,6 +530,32 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
     ]
     assert compilation["production_compiler_owns_episode_packet"] is True
     assert compilation["customer_supplied_prebuilt_episode_packet"] is False
+
+
+def test_episode_evaluation_reuses_revision_built_by_older_release(tmp_path) -> None:
+    value, payloads = request_with_fetchable_bytes(
+        configured_scene_source_commit="b" * 40
+    )
+    assert value["expected_production_commit"] == "a" * 40
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    run = process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads),
+        adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+    )
+
+    assert run["results"][0]["status"] == (
+        "queued_for_production_episode_compilation"
+    )
 
 
 def test_episode_evaluation_blocks_configured_scene_bundle_readback_mismatch(
