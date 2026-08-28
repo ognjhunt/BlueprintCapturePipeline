@@ -66,6 +66,26 @@ def test_existing_destination_is_untouched(tmp_path: Path) -> None:
     assert set(path.name for path in destination.iterdir()) == {"sentinel"}
 
 
+def test_publication_preserves_immutable_file_inode_without_staging_tree(
+    tmp_path: Path,
+) -> None:
+    staging = _staging(tmp_path, "content-addressed")
+    payload_inode = (staging / "payload.bin").stat().st_ino
+    manifest_inode = (staging / "manifest.json").stat().st_ino
+    destination = tmp_path / "published"
+
+    publish_staged_immutable_directory(
+        staging=staging,
+        destination=destination,
+        manifest_name="manifest.json",
+        output_exists_code="immutable_output_exists",
+    )
+
+    assert not staging.exists()
+    assert (destination / "payload.bin").stat().st_ino == payload_inode
+    assert (destination / "manifest.json").stat().st_ino == manifest_inode
+
+
 def test_dangling_destination_symlink_is_not_followed(tmp_path: Path) -> None:
     destination = tmp_path / "published"
     escaped = tmp_path / "escaped"

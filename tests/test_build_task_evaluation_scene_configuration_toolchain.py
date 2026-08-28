@@ -149,6 +149,7 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
     commit = "a" * 40
     output = tmp_path / "runtime" / commit
     observed: list[Path] = []
+    component_packages = _component_packages(tmp_path)
 
     def readback(path: Path) -> bytes:
         publication_root = next(
@@ -164,7 +165,7 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
         output_root=output,
         readback=readback,
         readback_actor="service-account:test-runner",
-        component_packages=_component_packages(tmp_path),
+        component_packages=component_packages,
     )
 
     manifest = validate_scene_configuration_toolchain(
@@ -186,6 +187,8 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
             in executable.read_text(encoding="utf-8")
         )
         component = output / "components" / identity.adapter_id / "package" / "run"
+        source_component = component_packages[identity.adapter_id] / "run"
+        assert component.stat().st_ino == source_component.stat().st_ino
         assert component.stat().st_mode & 0o111
         assert component.read_text(encoding="utf-8") == "#!/bin/sh\nexit 99\n"
 

@@ -10,6 +10,7 @@ tree becomes eligible for a Website-started configuration run.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -41,6 +42,16 @@ from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers impo
 RECEIPT_SCHEMA_VERSION = "task_evaluation_scene_configuration_toolchain_publication.v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 Readback = Callable[[Path], bytes]
+
+
+def _link_or_copy_immutable(source: str, destination: str) -> str:
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copy2(source, destination, follow_symlinks=False)
+    return destination
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -123,7 +134,12 @@ def build_published_scene_configuration_toolchain(
             ]
             package_relative = Path("components") / identity.adapter_id / "package"
             package_destination = staging / package_relative
-            shutil.copytree(package_source, package_destination, symlinks=False)
+            shutil.copytree(
+                package_source,
+                package_destination,
+                symlinks=False,
+                copy_function=_link_or_copy_immutable,
+            )
             for component_file in sorted(
                 path for path in package_destination.rglob("*") if path.is_file()
             ):
@@ -232,7 +248,8 @@ def build_published_scene_configuration_toolchain(
         owned = destination if installed else staging
         if owned.exists() and not owned.is_symlink():
             for path in sorted(owned.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-                path.chmod(0o700 if path.is_dir() else 0o600)
+                if path.is_dir():
+                    path.chmod(0o700)
             owned.chmod(0o700)
             shutil.rmtree(owned)
         raise

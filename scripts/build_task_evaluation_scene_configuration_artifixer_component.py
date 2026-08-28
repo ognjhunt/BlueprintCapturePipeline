@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -53,12 +56,28 @@ def _git(root: Path, *args: str) -> str:
         raise ValueError("scene_configuration_artifixer_source_invalid") from exc
 
 
-def _copy(source: Path, destination: Path, *, executable: bool = False) -> None:
+def _copy(
+    source: Path,
+    destination: Path,
+    *,
+    executable: bool = False,
+    immutable: bool = False,
+) -> None:
     if source.is_symlink() or not source.is_file():
         raise ValueError("scene_configuration_artifixer_source_invalid")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    destination.chmod(0o755 if executable else 0o644)
+    destination_mode = 0o755 if executable else (0o444 if immutable else 0o644)
+    linked = False
+    if immutable and stat.S_IMODE(source.stat().st_mode) == destination_mode:
+        try:
+            os.link(source, destination, follow_symlinks=False)
+            linked = True
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+    if not linked:
+        shutil.copyfile(source, destination)
+        destination.chmod(destination_mode)
 
 
 def build_artifixer_scene_configuration_component(
@@ -161,7 +180,11 @@ def build_artifixer_scene_configuration_component(
                 staging / destination_name,
                 executable=(destination_name == "run" or bool(source.stat().st_mode & 0o111)),
             )
-        _copy(vgg16_weights, staging / "blueprint_runtime" / RUNTIME_VGG16_WEIGHTS)
+        _copy(
+            vgg16_weights,
+            staging / "blueprint_runtime" / RUNTIME_VGG16_WEIGHTS,
+            immutable=True,
+        )
         # The Isaac image supplies the scientific stack, but not the OpenAI
         # Agents SDK/Pydantic closure used by the independent visual review.
         # Materialize exact lockfile wheels while still on the control plane;

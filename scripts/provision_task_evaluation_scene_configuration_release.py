@@ -112,7 +112,8 @@ def _remove_tree(root: Path) -> None:
     if not root.exists() or root.is_symlink():
         return
     for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        path.chmod(0o700 if path.is_dir() else 0o600)
+        if path.is_dir():
+            path.chmod(0o700)
     root.chmod(0o700)
     shutil.rmtree(root)
 
