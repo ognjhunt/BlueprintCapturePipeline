@@ -95,6 +95,9 @@ def handle_retained_scene_configuration_bootstrap(
         advanced_checkpoint = bootstrap_execution.pop(
             "_validated_advanced_checkpoint", None
         )
+        artifixer_post_training_checkpoint = bootstrap_execution.pop(
+            "_validated_artifixer_post_training_checkpoint", None
+        )
         from .task_evaluation_scene_configuration_warm_execution_contract import (  # noqa: PLC0415
             warm_bootstrap_execution_binding_blockers,
         )
@@ -105,6 +108,9 @@ def handle_retained_scene_configuration_bootstrap(
                 bundle_receipt=receipt,
                 session_authority=warm_session_authority or {},
                 advanced_checkpoint=advanced_checkpoint,
+                artifixer_post_training_checkpoint=(
+                    artifixer_post_training_checkpoint
+                ),
             )
         )
         bootstrap_stage_blockers = [
@@ -117,11 +123,18 @@ def handle_retained_scene_configuration_bootstrap(
             for item in retained_blockers
             if not str(item).startswith("provider_result_blocker:")
         ]
-        if unsafe_retention_blockers or not isinstance(advanced_checkpoint, Mapping):
+        checkpoint_kinds = sum(
+            isinstance(candidate, Mapping)
+            for candidate in (
+                advanced_checkpoint,
+                artifixer_post_training_checkpoint,
+            )
+        )
+        if unsafe_retention_blockers or checkpoint_kinds != 1:
             raise ValueError(
                 unsafe_retention_blockers[0]
                 if unsafe_retention_blockers
-                else "scene_configuration_warm_advanced_checkpoint_missing"
+                else "scene_configuration_warm_checkpoint_kind_invalid"
             )
 
         warm_session = materialize_scene_configuration_warm_session(
@@ -134,6 +147,9 @@ def handle_retained_scene_configuration_bootstrap(
             ),
             output_root=warm_session_output_root,
             advanced_checkpoint=advanced_checkpoint,
+            artifixer_post_training_checkpoint=(
+                artifixer_post_training_checkpoint
+            ),
             bootstrap_allocation_binding_digest=str(
                 paid_resource_admission_grant.allocation_binding_digest
                 if paid_resource_admission_grant is not None

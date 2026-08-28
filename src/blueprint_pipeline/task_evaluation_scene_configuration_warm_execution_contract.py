@@ -7,6 +7,7 @@ from typing import Any
 
 from .task_evaluation_scene_configuration_diagnostic_mode import (
     CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
+    FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
 )
 
 
@@ -78,8 +79,78 @@ def warm_bootstrap_execution_binding_blockers(
     bundle_receipt: Mapping[str, Any],
     session_authority: Mapping[str, Any],
     advanced_checkpoint: Mapping[str, Any] | None,
+    artifixer_post_training_checkpoint: Mapping[str, Any] | None = None,
 ) -> list[str]:
     blockers: list[str] = []
+    if isinstance(artifixer_post_training_checkpoint, Mapping):
+        pairs = (
+            ("diagnostic_source_commit", bundle_receipt, "source_commit", "source_commit"),
+            ("diagnostic_run_id", bundle_receipt, "run_id", "run_id"),
+            ("diagnostic_toolchain_digest", bundle_receipt, "toolchain_digest", "toolchain"),
+            (
+                "diagnostic_construction_envelope_digest",
+                bundle_receipt,
+                "portable_construction_envelope_digest",
+                "construction_envelope",
+            ),
+        )
+        for observed, expected_record, expected, suffix in pairs:
+            if execution.get(observed) != expected_record.get(expected):
+                blockers.append(
+                    f"scene_configuration_artifixer_warm_bootstrap_execution_{suffix}_mismatch"
+                )
+        continuation = session_authority.get("artifixer_post_training_continuation")
+        if (
+            not isinstance(continuation, Mapping)
+            or continuation.get("authorized") is not True
+            or execution.get("diagnostic_bootstrap_mode")
+            != FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
+            or execution.get("diagnostic_scientific_binding_digest")
+            != session_authority.get("scientific_binding_digest")
+            or artifixer_post_training_checkpoint.get("scientific_binding_digest")
+            != session_authority.get("scientific_binding_digest")
+            or artifixer_post_training_checkpoint.get(
+                "visual_review_provider_call_started"
+            )
+            is not False
+            or execution.get("source_checkpoint_digest")
+            != artifixer_post_training_checkpoint.get(
+                "source_diagnostic_checkpoint_digest"
+            )
+            or execution.get("artifixer_post_training_checkpoint_digest")
+            != artifixer_post_training_checkpoint.get("checkpoint_digest")
+            or not isinstance(execution.get("artifixer_warm_readiness"), Mapping)
+            or execution["artifixer_warm_readiness"].get(
+                "source_diagnostic_checkpoint_digest"
+            )
+            != artifixer_post_training_checkpoint.get(
+                "source_diagnostic_checkpoint_digest"
+            )
+            or execution["artifixer_warm_readiness"].get(
+                "post_training_checkpoint_digest"
+            )
+            != artifixer_post_training_checkpoint.get("checkpoint_digest")
+            or execution["artifixer_warm_readiness"].get(
+                "scientific_binding_digest"
+            )
+            != session_authority.get("scientific_binding_digest")
+            or execution["artifixer_warm_readiness"].get(
+                "visual_review_provider_call_started"
+            )
+            is not False
+            or execution["artifixer_warm_readiness"].get(
+                "general_stage_three_warm_gate_satisfied"
+            )
+            is not False
+        ):
+            blockers.append(
+                "scene_configuration_artifixer_warm_bootstrap_identity_mismatch"
+            )
+        if advanced_checkpoint is not None:
+            blockers.append(
+                "scene_configuration_artifixer_warm_bootstrap_checkpoint_kind_invalid"
+            )
+        return blockers
     pairs = (
         ("diagnostic_source_commit", bundle_receipt, "source_commit", "source_commit"),
         ("diagnostic_run_id", bundle_receipt, "run_id", "run_id"),

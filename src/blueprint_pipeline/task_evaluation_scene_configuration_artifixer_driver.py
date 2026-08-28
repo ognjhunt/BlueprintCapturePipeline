@@ -64,6 +64,12 @@ from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     hydrate_scene_configuration_diagnostic_render_inputs,
     hydrate_scene_configuration_diagnostic_semantic_outputs,
     materialize_scene_configuration_diagnostic_checkpoint,
+    validate_scene_configuration_diagnostic_checkpoint,
+)
+from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
+    artifixer_post_training_binding_digest,
+    hydrate_artifixer_post_training_checkpoint,
+    materialize_artifixer_post_training_checkpoint,
 )
 from .task_evaluation_scene_configuration_artifixer_failure_evidence import (
     ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
@@ -95,6 +101,9 @@ _PACKAGE_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
 _DIAGNOSTIC_CHECKPOINT_ENV = (
     "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
 )
+_ARTIFIXER_POST_TRAINING_CHECKPOINT_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_ARTIFIXER_POST_TRAINING_CHECKPOINT_ROOT"
+)
 _ADAPTER_ID = "artifixer3d_observed_object_removal"
 _VISUAL_REVIEW_COST_SCOPE = (
     "task_evaluation_scene_configuration_artifixer_visual_review"
@@ -112,6 +121,33 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _post_training_bindings(
+    *,
+    stage_input: Mapping[str, Any],
+    package_manifest: Mapping[str, Any],
+    tuning: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the training inputs while permitting a diagnostic code overlay.
+
+    The source diagnostic checkpoint separately binds the exact render and
+    semantic-teacher bytes.  Release commit, run paths, candidate receipts and
+    the generated bundle digest are intentionally excluded: each is rebuilt
+    under the warm iteration root and therefore changes even when the exact
+    scientific inputs and the retained component package do not.
+    """
+
+    envelope = stage_input.get("construction_envelope") or {}
+    return {
+        "configuration_sha256": stage_input.get("configuration_sha256"),
+        "construction_envelope_digest": (
+            envelope.get("control_plane_envelope_digest")
+            or envelope.get("envelope_digest")
+        ),
+        "component_package_digest": package_manifest.get("package_digest"),
+        "artifixer_tuning": dict(tuning),
+    }
 
 
 def _read(path: Path, *, code: str) -> dict[str, Any]:
@@ -723,7 +759,19 @@ def execute_artifixer_component(
         if checkpoint_root_value
         else None
     )
+    post_training_checkpoint_value = str(
+        values.get(_ARTIFIXER_POST_TRAINING_CHECKPOINT_ENV) or ""
+    ).strip()
+    post_training_checkpoint_root = (
+        Path(post_training_checkpoint_value).expanduser().resolve()
+        if post_training_checkpoint_value
+        else None
+    )
+    semantic_checkpoint: dict[str, Any] | None = None
     if checkpoint_root is not None:
+        semantic_checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=checkpoint_root
+        )
         expected_binding_digest = diagnostic_checkpoint_scientific_binding_digest(
             stage_input=stage_input,
             render_inputs=render_inputs,
@@ -877,7 +925,8 @@ def execute_artifixer_component(
             canonical_json(envelope["render_inputs_result"]) + "\n",
             encoding="utf-8",
         )
-        materialize_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root = output_root / "diagnostic_checkpoint"
+        semantic_checkpoint = materialize_scene_configuration_diagnostic_checkpoint(
             stage_production_input_path=stage_input_path,
             render_inputs_result_path=render_inputs_result_path,
             semantic_runtime_request_path=semantic_request,
@@ -886,7 +935,7 @@ def execute_artifixer_component(
                 / f"{SEMANTIC_RUNTIME_RESULT_SCHEMA_VERSION}.json"
             ),
             semantic_teacher_receipt_path=teacher_receipt_path,
-            output_root=output_root / "diagnostic_checkpoint",
+            output_root=checkpoint_root,
         )
     dual_root = work / "dual_target_inputs"
     materialize_dual_target_artifixer3d_inputs(
@@ -896,6 +945,10 @@ def execute_artifixer_component(
         transition_radius_pixels=tuning["transition_radius_pixels"],
     )
     dual_path = dual_root / "public_scene_artifixer3d_dual_target_inputs.v1.json"
+    _read(
+        dual_path,
+        code="scene_configuration_artifixer_dual_target_inputs_invalid",
+    )
     use_attestation_path = work / "artifixer3d_use_attestation.v1.json"
     materialize_artifixer3d_use_attestation(
         candidate_inputs_receipt_path=dual_path,
@@ -929,59 +982,89 @@ def execute_artifixer_component(
         artifixer3d_steps=tuning["artifixer3d_steps"],
         random_seed=tuning["random_seed"],
     )
-    extracted = work / "artifixer_execution"
-    extract_provider_archive(Path(bundle["bundle"]["path"]), extracted)
-    artifixer_output = work / "artifixer_output"
-    completed = runner(
-        [str(extracted / "provider_runtime/run_public_scene_artifixer3d.sh")],
-        cwd=extracted,
-        env={
-            **values,
-            "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(artifixer_output),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=7_000,
+    bindings = _post_training_bindings(
+        stage_input=stage_input,
+        package_manifest=package_manifest,
+        tuning=tuning,
     )
-    # The runtime's own streams and result must outlive a failure. They are
-    # captured here, in this process, and nothing else ever sees them: run
-    # ...-f1e07c7f-...-171647Z failed this exact check and its receipts carried
-    # only "scene_configuration_artifixer_runtime_failed" -- the $0.74 GPU run
-    # produced no way to learn why. stage_producer.log is the one artifact
-    # proven to survive into the exported zip, and it is fed from this
-    # process's streams, so print the tails there before deciding anything.
-    runtime_result_path = (
-        artifixer_output / "public_scene_artifixer3d_runtime_result.json"
-    )
-    failure_secrets = failure_evidence_secret_values(
-        values, known_values=(token,)
-    )
-    _emit_artifixer_runtime_diagnostics(
-        completed=completed,
-        runtime_result_path=runtime_result_path,
-        retained_root=work,
-        secret_values=failure_secrets,
-    )
-    runtime_result = _read_artifixer_runtime_result(
-        completed=completed,
-        runtime_result_path=runtime_result_path,
-        evidence_path=work / "artifixer_runtime_failure_evidence.v1.json",
-        secret_values=failure_secrets,
-    )
-    runtime_task = runtime_result["tasks"][0]
+    post_training_binding_digest = artifixer_post_training_binding_digest(bindings)
     source_task = candidate["tasks"][0]
+    if post_training_checkpoint_root is not None:
+        hydrated_post_training = hydrate_artifixer_post_training_checkpoint(
+            checkpoint_root=post_training_checkpoint_root,
+            expected_binding_digest=post_training_binding_digest,
+        )
+        runtime_result = hydrated_post_training["runtime_result"]
+        generated_by_camera = {
+            str(row["camera_id"]): row
+            for row in hydrated_post_training["review_frames"]
+        }
+        native_appearance_source = Path(
+            hydrated_post_training["native_appearance_path"]
+        )
+    else:
+        extracted = work / "artifixer_execution"
+        extract_provider_archive(Path(bundle["bundle"]["path"]), extracted)
+        artifixer_output = work / "artifixer_output"
+        completed = runner(
+            [str(extracted / "provider_runtime/run_public_scene_artifixer3d.sh")],
+            cwd=extracted,
+            env={
+                **values,
+                "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR": str(artifixer_output),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=7_000,
+        )
+        # The runtime's own streams and result must outlive a failure. They are
+        # captured here, in this process, and nothing else ever sees them.
+        runtime_result_path = (
+            artifixer_output / "public_scene_artifixer3d_runtime_result.json"
+        )
+        failure_secrets = failure_evidence_secret_values(
+            values, known_values=(token,)
+        )
+        _emit_artifixer_runtime_diagnostics(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            retained_root=work,
+            secret_values=failure_secrets,
+        )
+        runtime_result = _read_artifixer_runtime_result(
+            completed=completed,
+            runtime_result_path=runtime_result_path,
+            evidence_path=work / "artifixer_runtime_failure_evidence.v1.json",
+            secret_values=failure_secrets,
+        )
+        runtime_task = runtime_result["tasks"][0]
+        generated_by_camera = {
+            str(row["camera_id"]): {
+                "frame_index": row.get("frame_index"),
+                "camera_id": row["camera_id"],
+                "final_frame": _record(Path(row["path"])),
+            }
+            for row in runtime_task["artifixer3d_review_frames"]
+        }
+        native_appearance_source = Path(
+            runtime_task["native_appearance"]["isaac_nurec_usdz"]["path"]
+        )
     review_frames = []
-    for source_frame, generated in zip(
-        source_task["frames"], runtime_task["artifixer3d_review_frames"], strict=True
-    ):
+    for source_frame in source_task["frames"]:
+        camera_id = str(source_frame["camera_id"])
+        generated = generated_by_camera.get(camera_id)
+        if generated is None:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_warm_review_frame_set_invalid"
+            )
         review_frames.append(
             {
                 "frame_index": source_frame["frame_index"],
-                "camera_id": source_frame["camera_id"],
+                "camera_id": camera_id,
                 "source_frame": source_frame["input_retained_frame"],
                 "exact_repair_mask": source_frame["input_exact_repair_mask"],
-                "final_frame": _record(Path(generated["path"])),
+                "final_frame": generated["final_frame"],
             }
         )
     review_input: dict[str, Any] = {
@@ -1007,6 +1090,19 @@ def execute_artifixer_component(
     review_input["receipt_digest"] = canonical_digest(review_input, digest_field="receipt_digest")
     review_input_path = work / f"{DUAL_TARGET_REVIEW_SCHEMA_VERSION}.json"
     review_input_path.write_text(canonical_json(review_input) + "\n", encoding="utf-8")
+    if post_training_checkpoint_root is None:
+        if semantic_checkpoint is None or checkpoint_root is None:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_warm_source_checkpoint_invalid"
+            )
+        materialize_artifixer_post_training_checkpoint(
+            source_diagnostic_checkpoint=semantic_checkpoint,
+            bindings=bindings,
+            runtime_result_path=runtime_result_path,
+            review_frames=review_frames,
+            native_appearance_path=native_appearance_source,
+            output_root=output_root / "artifixer_post_training_checkpoint",
+        )
     rights_digest = _sha256(rights_path)
     review_rights_path = work / "artifixer_ai_visual_review_rights.v1.json"
     human = _human_authority(configuration)
@@ -1027,6 +1123,22 @@ def execute_artifixer_component(
         output_root=work / "artifixer_visual_review_scope",
     )
     review_token = _stage_openai_token(values, stage="artifixer_visual_review")
+    visual_review_call_marker = (
+        output_root / "artifixer_visual_review_provider_call_started.v1.json"
+    )
+    visual_review_call = {
+        "schema_version": "artifixer_visual_review_provider_call_started.v1",
+        "post_training_binding_digest": post_training_binding_digest,
+        "review_input_digest": review_input["receipt_digest"],
+        "provider_call_may_have_occurred": True,
+        "marker_digest": "",
+    }
+    visual_review_call["marker_digest"] = canonical_digest(
+        visual_review_call, digest_field="marker_digest"
+    )
+    visual_review_call_marker.write_text(
+        canonical_json(visual_review_call) + "\n", encoding="utf-8"
+    )
     with _temporary_openai_key(review_token):
         visual_review_cap = float(
             values.get(
@@ -1069,10 +1181,8 @@ def execute_artifixer_component(
         review_frames=review_frames,
         destination=thumbnail,
     )
-    native = runtime_task["native_appearance"]
-    appearance_source = Path(native["isaac_nurec_usdz"]["path"])
     appearance = output_root / "configured_appearance_without_source_object.usdz"
-    shutil.copyfile(appearance_source, appearance)
+    shutil.copyfile(native_appearance_source, appearance)
     copied_review = output_root / "appearance_visual_review_receipt.v1.json"
     shutil.copyfile(review_receipt_path, copied_review)
     removal: dict[str, Any] = {

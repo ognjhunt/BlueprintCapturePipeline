@@ -4626,6 +4626,7 @@ def _probe_shell_script(
                 'rm -rf "$WORK_DIR/.blueprint-runtime-secrets" "$WORK_DIR/blueprint_runtime_secret_exports.sh"; secret_scrub_rc=$?; '
                 'if [ $secret_scrub_rc -eq 0 ] && [ ! -e "$WORK_DIR/.blueprint-runtime-secrets" ] && [ ! -e "$WORK_DIR/blueprint_runtime_secret_exports.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_RUNTIME_SECRETS_SCRUBBED; else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_runtime_secret_scrub_failed; fi; '
                 'if [ $secret_scrub_rc -eq 0 ] && [ -d "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/diagnostic_checkpoint/task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_warm_readiness.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_READY; else echo BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_NOT_READY; fi; '
+                'if [ $secret_scrub_rc -eq 0 ] && [ -d "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/diagnostic_checkpoint/task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/input/artifixer_post_training_checkpoint/task_evaluation_scene_configuration_artifixer_post_training_checkpoint.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_artifixer_warm_readiness.v1.json" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py" ] && [ -f "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh" ]; then echo BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_READY; else echo BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_NOT_READY; fi; '
                 "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"
                 "import os\n"
@@ -9448,6 +9449,10 @@ def run_vast_provider_adapter(
                 "BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_READY"
                 in heartbeat_text
             )
+            scene_artifixer_warm_runtime_ready = (
+                "BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_READY"
+                in heartbeat_text
+            )
             scene_bundle_sha256_verified = (
                 "BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED"
                 in heartbeat_text
@@ -9652,6 +9657,9 @@ def run_vast_provider_adapter(
                     ),
                     "scene_configuration_warm_runtime_ready": (
                         scene_warm_runtime_ready
+                    ),
+                    "scene_configuration_artifixer_warm_runtime_ready": (
+                        scene_artifixer_warm_runtime_ready
                     ),
                     "scene_configuration_bundle_sha256_verified": (
                         scene_bundle_sha256_verified
@@ -9908,7 +9916,21 @@ def run_vast_provider_adapter(
                 == "task_evaluation_scene_configuration"
                 and provider_command.get("provider_bundle_downloaded") is True
                 and provider_command.get("provider_entrypoint_started") is True
-                and provider_command.get("scene_configuration_warm_runtime_ready")
+                and (
+                    provider_command.get("scene_configuration_warm_runtime_ready")
+                    is True
+                    or provider_command.get(
+                        "scene_configuration_artifixer_warm_runtime_ready"
+                    )
+                    is True
+                )
+            ),
+            "scene_configuration_artifixer_warm_runtime_ready": (
+                provider_command.get("provider_bundle_kind")
+                == "task_evaluation_scene_configuration"
+                and provider_command.get(
+                    "scene_configuration_artifixer_warm_runtime_ready"
+                )
                 is True
             ),
             "scene_configuration_runtime_secrets_scrubbed": (
