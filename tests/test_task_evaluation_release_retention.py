@@ -620,6 +620,124 @@ def test_live_reference_to_missing_release_blocks_the_whole_plan(
         )
 
 
+def test_catalog_disabled_scene_handoff_with_missing_release_is_inventory_only(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    missing = "d" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    scene_queue = tmp_path / "task-evaluation-scene-constructions"
+    pending = scene_queue / "pending"
+    processing = scene_queue / "processing"
+    pending.mkdir(parents=True)
+    processing.mkdir()
+    state["live_reference_roots"] = (pending, processing)
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    assert isinstance(pending, Path)
+    profile = _profile(
+        tmp_path, profile_id="unreachable-scene-profile", commit=missing
+    )
+    _write_json(profile_dir / "unreachable-scene-profile.json", profile)
+    Path(profile["immutable_inputs"][0]["path"]).unlink()
+    _rewrite_catalog(profile_dir, catalog)
+    handoff = pending / "unreachable-scene.json"
+    _write_json(
+        handoff,
+        {
+            "schema_version": "task_evaluation_scene_construction_envelope.v1",
+            "expected_production_commit": missing,
+            "paid_execution_requested": False,
+            "provider_mutation_performed": False,
+        },
+    )
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert plan["catalog_disabled_unreachable_scene_references"] == [
+        {
+            "source_commit": missing,
+            "reference_paths": [str(handoff)],
+            "profile_ids": ["unreachable-scene-profile"],
+            "catalog_live_enabled": False,
+            "paid_execution_requested": False,
+            "provider_mutation_performed": False,
+            "source_release_already_missing": True,
+            "paid_launch_reachable": False,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsafe_change",
+    ("available_profile", "paid_handoff", "generic_queue", "other_live_reason"),
+)
+def test_missing_release_scene_handoff_requires_all_fail_closed_proofs(
+    tmp_path: Path, unsafe_change: str
+) -> None:
+    active = "a" * 40
+    missing = "d" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    scene_queue = tmp_path / "task-evaluation-scene-constructions"
+    pending = scene_queue / "pending"
+    processing = scene_queue / "processing"
+    pending.mkdir(parents=True)
+    processing.mkdir()
+    state["live_reference_roots"] = (pending, processing)
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    assert isinstance(pending, Path)
+    profile = _profile(
+        tmp_path, profile_id="unreachable-scene-profile", commit=missing
+    )
+    _write_json(profile_dir / "unreachable-scene-profile.json", profile)
+    if unsafe_change != "available_profile":
+        Path(profile["immutable_inputs"][0]["path"]).unlink()
+    _rewrite_catalog(profile_dir, catalog)
+    handoff = {
+        "schema_version": "task_evaluation_scene_construction_envelope.v1",
+        "expected_production_commit": missing,
+        "paid_execution_requested": unsafe_change == "paid_handoff",
+        "provider_mutation_performed": False,
+    }
+    _write_json(pending / "unreachable-scene.json", handoff)
+    if unsafe_change == "generic_queue":
+        generic = tmp_path / "generic" / "pending"
+        generic.mkdir(parents=True)
+        _write_json(generic / "reference.json", {"source_commit": missing})
+        state["live_reference_roots"] = (
+            *state["live_reference_roots"],  # type: ignore[index]
+            generic,
+        )
+    elif unsafe_change == "other_live_reason":
+        evidence = state["evidence_binding_root"]
+        assert isinstance(evidence, Path)
+        evidence.mkdir()
+        _write_json(
+            evidence / "qualification.json",
+            {
+                "schema_version": EVIDENCE_BINDING_SCHEMA_VERSION,
+                "status": "required",
+                "source_commit": missing,
+                "reason": "terminal replay remains open",
+            },
+        )
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match=f"release_retention_live_reference_release_missing:{missing}",
+    ):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active  # type: ignore[arg-type]
+        )
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo), *args],
