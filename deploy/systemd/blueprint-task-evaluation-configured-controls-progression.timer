@@ -1,0 +1,13 @@
+[Unit]
+Description=Advance configured scene controls progression periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=blueprint-task-evaluation-configured-controls-progression.service
+
+[Install]
+WantedBy=timers.target
+
