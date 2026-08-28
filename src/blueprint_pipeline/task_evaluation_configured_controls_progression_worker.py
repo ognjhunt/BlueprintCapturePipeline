@@ -36,12 +36,23 @@ from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_r
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v1"
 WORKER_RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_worker.v1"
+CONFIGURED_CONTROLS_KEY_PREFIX = (
+    "task-evaluation/production-inputs/configured-controls"
+)
 Submitter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 PublisherFactory = Callable[[], Callable[..., Mapping[str, Any]]]
 
 
 class TaskEvaluationConfiguredControlsProgressionWorkerError(RuntimeError):
     """The automatic progression worker refused an unsafe transition."""
+
+
+def configured_controls_object_store_publisher() -> Callable[..., Mapping[str, Any]]:
+    """Publish readiness inputs inside the preparation worker's admitted prefix."""
+
+    return configured_scene_object_store_publisher(
+        key_prefix=CONFIGURED_CONTROLS_KEY_PREFIX
+    )
 
 
 def _load(path: Path, *, blocker: str) -> dict[str, Any]:
@@ -260,7 +271,7 @@ def advance_configured_controls_plan(
     progression_root: str | Path,
     preparation_queue_root: str | Path,
     activation_queue_root: str | Path,
-    publisher_factory: PublisherFactory = configured_scene_object_store_publisher,
+    publisher_factory: PublisherFactory = configured_controls_object_store_publisher,
     submitter: Submitter | None = None,
     repo_root: str | Path | None = None,
     webapp_secret_file: str | Path | None = None,
