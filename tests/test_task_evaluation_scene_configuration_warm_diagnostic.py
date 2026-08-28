@@ -145,6 +145,24 @@ def test_scene_warm_retention_requires_runtime_and_direct_access() -> None:
     )
 
 
+def test_cold_adapter_recognizes_distinct_artifixer_warm_runtime_inventory() -> None:
+    shell = vpa._probe_shell_script(
+        "https://example.test/heartbeat",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+    )
+
+    assert "BLUEPRINT_VAST_SCENE_CONFIGURATION_ARTIFIXER_WARM_RUNTIME_READY" in shell
+    assert (
+        "input/artifixer_post_training_checkpoint/"
+        "task_evaluation_scene_configuration_artifixer_post_training_checkpoint.v1.json"
+    ) in shell
+    assert (
+        "task_evaluation_scene_configuration_artifixer_warm_readiness.v1.json"
+        in shell
+    )
+
+
 def test_fresh_bundle_switches_to_checkpoint_resume_inside_warm_iteration() -> None:
     assert provider_runner._effective_diagnostic_bootstrap_mode(
         bundle_bootstrap_mode="fresh", warm_source_commit=""
@@ -152,6 +170,28 @@ def test_fresh_bundle_switches_to_checkpoint_resume_inside_warm_iteration() -> N
     assert provider_runner._effective_diagnostic_bootstrap_mode(
         bundle_bootstrap_mode="fresh", warm_source_commit="a" * 40
     ) == "checkpoint_resume"
+
+
+def test_artifixer_warm_retention_refuses_any_visual_review_call_marker(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    producer = output / "stages/stage-1/producer"
+    checkpoint = producer / "artifixer_post_training_checkpoint"
+    checkpoint.mkdir(parents=True)
+    (
+        checkpoint
+        / "task_evaluation_scene_configuration_artifixer_post_training_checkpoint.v1.json"
+    ).write_text("{}\n", encoding="utf-8")
+    (producer / "artifixer_visual_review_provider_call_started.v1.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    assert provider_runner._install_artifixer_warm_ready_checkpoint_after_failure(
+        runtime=tmp_path / "runtime",
+        output=output,
+        expected_scientific_binding_digest="sha256:" + "1" * 64,
+    ) is None
 
 
 def test_diagnostic_producer_registry_binds_bundle_toolchain_commit(
@@ -482,6 +522,176 @@ def test_blocked_fresh_bootstrap_can_retain_validated_stage_three_prefix() -> No
         session_authority=authority,
         advanced_checkpoint=advanced,
     ) == []
+
+
+def test_blocked_fresh_bootstrap_can_retain_artifixer_post_training_checkpoint() -> None:
+    scientific = "sha256:" + "5" * 64
+    checkpoint_digest = "sha256:" + "4" * 64
+    source_checkpoint_digest = "sha256:" + "3" * 64
+    receipt = {
+        "source_commit": "a" * 40,
+        "run_id": "run-1",
+        "toolchain_digest": "sha256:" + "1" * 64,
+        "portable_construction_envelope_digest": "sha256:" + "2" * 64,
+    }
+    authority = {
+        "diagnostic_bootstrap_mode": "fresh",
+        "scientific_binding_digest": scientific,
+        "artifixer_post_training_continuation": {"authorized": True},
+    }
+    execution = {
+        "status": "blocked_diagnostic_only",
+        "diagnostic_source_commit": receipt["source_commit"],
+        "diagnostic_run_id": receipt["run_id"],
+        "diagnostic_toolchain_digest": receipt["toolchain_digest"],
+        "diagnostic_construction_envelope_digest": receipt[
+            "portable_construction_envelope_digest"
+        ],
+        "diagnostic_bootstrap_mode": "fresh",
+        "diagnostic_scientific_binding_digest": scientific,
+        "source_checkpoint_digest": source_checkpoint_digest,
+        "artifixer_post_training_checkpoint_digest": checkpoint_digest,
+        "artifixer_warm_readiness": {
+            "source_diagnostic_checkpoint_digest": source_checkpoint_digest,
+            "post_training_checkpoint_digest": checkpoint_digest,
+            "scientific_binding_digest": scientific,
+            "visual_review_provider_call_started": False,
+            "general_stage_three_warm_gate_satisfied": False,
+        },
+    }
+    checkpoint = {
+        "checkpoint_digest": checkpoint_digest,
+        "source_diagnostic_checkpoint_digest": source_checkpoint_digest,
+        "scientific_binding_digest": scientific,
+        "visual_review_provider_call_started": False,
+    }
+
+    assert warm_contract.warm_bootstrap_execution_binding_blockers(
+        execution=execution,
+        bundle_receipt=receipt,
+        session_authority=authority,
+        advanced_checkpoint=None,
+        artifixer_post_training_checkpoint=checkpoint,
+    ) == []
+
+    checkpoint["visual_review_provider_call_started"] = True
+    blockers = warm_contract.warm_bootstrap_execution_binding_blockers(
+        execution=execution,
+        bundle_receipt=receipt,
+        session_authority=authority,
+        advanced_checkpoint=None,
+        artifixer_post_training_checkpoint=checkpoint,
+    )
+    assert "scene_configuration_artifixer_warm_bootstrap_identity_mismatch" in blockers
+
+
+def test_artifixer_warm_remote_protocol_keeps_secret_values_on_stdin_only() -> None:
+    iteration_id = "i001-" + "a" * 12
+    secret = "fake-secret-must-never-enter-command-or-script"
+    values = {
+        name: secret + name
+        for name in warm.ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES
+    }
+    envelope = warm_remote.artifixer_warm_secret_envelope(
+        iteration_id=iteration_id,
+        secret_values=values,
+    )
+    installer_argv = warm_remote.artifixer_warm_secret_install_remote_argv(
+        iteration_id=iteration_id
+    )
+    authority = {
+        "iteration_id": iteration_id,
+        "source_overlay_archive_sha256": "sha256:" + "1" * 64,
+        "source_overlay_manifest_digest": "sha256:" + "2" * 64,
+        "source_commit": "a" * 40,
+        "source_checkpoint_digest": "sha256:" + "3" * 64,
+        "scientific_binding_digest": "sha256:" + "4" * 64,
+        "remote_checkpoint_root": warm.BASE_RUNTIME_ROOT
+        + "/input/diagnostic_checkpoint",
+        "watchdog_deadline_epoch": 9_999_999_999.0,
+        "maximum_output_archive_bytes": 1_000_000,
+        "continuation_kind": warm.ARTIFIXER_POST_TRAINING_CONTINUATION_KIND,
+        "remote_artifixer_post_training_checkpoint_root": warm.BASE_RUNTIME_ROOT
+        + "/input/artifixer_post_training_checkpoint",
+        "openai_public_environment": {
+            "OPENAI_PROJECT_ID": "project-public-id",
+            "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID": "review-public-id",
+            "OPENAI_CONTENT_AGENTS_API_KEY_ID": "content-public-id",
+            "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": "sha256:"
+            + "5" * 64,
+        },
+        "openai_stage_max_cost_usd": {
+            "artifixer_visual_review": 1.0,
+            "content_agents": 1.0,
+        },
+        "openai_maximum_requests": 8,
+    }
+    session = {
+        "session_digest": "sha256:" + "6" * 64,
+        "provider_instance_id": 123,
+        "bootstrap_allocation_binding_digest": "sha256:" + "7" * 64,
+    }
+    script = warm_remote._remote_iteration_script(
+        authority=authority,
+        session=session,
+        overlay_url="https://objects.example/overlay.zip?signature=public",
+        output_put_url="https://objects.example/output.zip?signature=public",
+    )
+
+    assert secret.encode() in envelope
+    assert secret not in json.dumps(installer_argv)
+    assert secret not in script
+    assert "ARTIFIXER_POST_TRAINING_CHECKPOINT_ROOT" in script
+    assert "BLUEPRINT_SCENE_ARTIFIXER_WARM_SECRET_FILES_SCRUBBED" in script
+    syntax = subprocess.run(
+        ["bash", "-n"], input=script, text=True, capture_output=True, check=False
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_artifixer_warm_secret_transport_uncertainty_forces_scrub_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_secret = "fake-secret-never-recorded"
+    expected_digests: dict[str, str] = {}
+    for name in warm.ARTIFIXER_WARM_SECRET_FILE_ENV_NAMES:
+        path = tmp_path / name.lower()
+        path.write_text(fake_secret + name, encoding="utf-8")
+        path.chmod(0o600)
+        monkeypatch.setenv(name, str(path))
+        if "COST_SCOPE_ATTESTATION" in name:
+            expected_digests[name] = warm._sha256_file(path)
+    enrollment = {
+        "status": "enrolled",
+        "known_hosts_file": str(tmp_path / "known-hosts"),
+    }
+    monkeypatch.setattr(
+        warm, "enroll_vast_ssh_host_key", lambda *_args, **_kwargs: enrollment
+    )
+    monkeypatch.setattr(
+        warm,
+        "_run_pinned_ssh",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("uncertain transport")),
+    )
+    authority = {
+        "iteration_id": "i001-" + "a" * 12,
+        "continuation_kind": warm.ARTIFIXER_POST_TRAINING_CONTINUATION_KIND,
+        "fresh_openai_cost_scope_attestation_digests": expected_digests,
+    }
+
+    installed = warm._install_artifixer_warm_secret_files(
+        session={}, authority=authority, job=tmp_path / "job"
+    )
+    assert installed["status"] == "blocked"
+    assert installed["host_key_enrollment"] == enrollment
+    assert fake_secret not in json.dumps(installed)
+
+    scrubbed = warm._scrub_artifixer_warm_secret_files(
+        session={}, authority=authority, install=installed
+    )
+    assert scrubbed["status"] == "blocked"
+    assert scrubbed["secret_files_absent"] is False
+    assert fake_secret not in json.dumps(scrubbed)
 
 
 def test_warm_output_get_retries_only_transient_and_refuses_redirects(
@@ -1230,6 +1440,92 @@ def test_stage_failure_advances_safe_checkpoint_for_next_iteration(
     assert authority["carried_completed_stage_prefix_count"] == 4
     assert authority["carried_completed_stage_ids"][-1] == "stage-4"
     assert authority["remote_checkpoint_root"] == remote_root
+
+
+def test_artifixer_warm_continuation_cannot_reuse_paid_stage_caps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _session_root(tmp_path)
+    session_path = root / f"{warm.SESSION_SCHEMA_VERSION}.json"
+    state_path = root / warm.SESSION_STATE_NAME
+    session = json.loads(session_path.read_text())
+    session.update(
+        {
+            "continuation_kind": warm.ARTIFIXER_POST_TRAINING_CONTINUATION_KIND,
+            "rerun_paid_model_stages": list(
+                warm.ARTIFIXER_POST_TRAINING_RERUN_PAID_MODEL_STAGES
+            ),
+            "warm_openai_external_service_spend_permitted": True,
+            "artifixer_post_training_continuation_authority": {
+                "authorized": True,
+                "maximum_remote_continuations": 1,
+            },
+            "session_digest": "",
+        }
+    )
+    session["session_digest"] = canonical_digest(
+        session, digest_field="session_digest"
+    )
+    session_path.chmod(0o600)
+    session_path.write_text(json.dumps(session), encoding="utf-8")
+    state = json.loads(state_path.read_text())
+    state.update(
+        {
+            "status": "iteration_failed",
+            "session_digest": session["session_digest"],
+            "attempted_iteration_count": 1,
+            "current_completed_stage_prefix_count": 0,
+            "current_completed_stage_ids": [],
+            "current_carried_paid_model_stages": ["artifixer_semantic_teacher"],
+            "current_artifixer_post_training_checkpoint_digest": "sha256:"
+            + "8" * 64,
+            "current_remote_artifixer_post_training_checkpoint_root": (
+                warm.BASE_RUNTIME_ROOT + "/input/artifixer_post_training_checkpoint"
+            ),
+            "state_digest": "",
+        }
+    )
+    state["state_digest"] = canonical_digest(state, digest_field="state_digest")
+    state_path.chmod(0o600)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(
+        warm,
+        "validate_scene_configuration_warm_source_overlay",
+        lambda *_args, **_kwargs: {
+            "source_commit": "b" * 40,
+            "remote_ref": "refs/heads/codex/warm-fix",
+            "receipt_digest": "sha256:" + "9" * 64,
+            "overlay_archive": {"sha256": "sha256:" + "a" * 64},
+            "manifest_digest": "sha256:" + "b" * 64,
+            "source_checkpoint_digest": session["source_checkpoint_digest"],
+            "scientific_binding_digest": session["scientific_binding_digest"],
+        },
+    )
+    overlay_path = tmp_path / "overlay.json"
+    overlay_path.write_text("{}\n")
+
+    with pytest.raises(
+        warm.SceneConfigurationWarmDiagnosticError,
+        match="scene_configuration_artifixer_warm_continuation_limit_exhausted",
+    ):
+        warm.materialize_scene_configuration_warm_iteration_authority(
+            session_root=root,
+            overlay_receipt_path=overlay_path,
+            output_path=tmp_path / "second-authority.json",
+            observed_now_epoch=1.0,
+        )
+
+    base_checkpoint = (
+        warm.BASE_RUNTIME_ROOT + "/input/artifixer_post_training_checkpoint"
+    )
+    assert warm._remote_artifixer_checkpoint_root(base_checkpoint) == base_checkpoint
+    with pytest.raises(
+        warm.SceneConfigurationWarmDiagnosticError,
+        match="scene_configuration_artifixer_warm_remote_checkpoint_invalid",
+    ):
+        warm._remote_artifixer_checkpoint_root(
+            warm.BASE_RUNTIME_ROOT + "/input/unbound-checkpoint"
+        )
 
 
 def test_closeout_is_resumable_after_terminate_exception_and_double_proves_zero(

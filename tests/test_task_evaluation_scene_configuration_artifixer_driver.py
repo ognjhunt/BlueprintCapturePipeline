@@ -142,6 +142,36 @@ def test_nullable_production_tuning_resolves_before_paid_semantic_edits() -> Non
     }
 
 
+def test_post_training_binding_survives_a_diagnostic_code_overlay() -> None:
+    base = {
+        "source_commit": "a" * 40,
+        "run_id": "base-run",
+        "toolchain_digest": "sha256:" + "1" * 64,
+        "configuration_sha256": "sha256:" + "2" * 64,
+        "construction_envelope": {
+            "control_plane_envelope_digest": "sha256:" + "3" * 64
+        },
+    }
+    overlay = {
+        **base,
+        "source_commit": "b" * 40,
+        "run_id": "warm-iteration-run",
+        "toolchain_digest": "sha256:" + "4" * 64,
+    }
+    inputs = {
+        "package_manifest": {"package_digest": "sha256:" + "5" * 64},
+        "tuning": {
+            "transition_radius_pixels": 3,
+            "artifixer3d_steps": 30_000,
+            "random_seed": 839_873,
+        },
+    }
+
+    assert driver._post_training_bindings(stage_input=base, **inputs) == (
+        driver._post_training_bindings(stage_input=overlay, **inputs)
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [
