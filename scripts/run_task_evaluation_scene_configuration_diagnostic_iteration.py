@@ -315,6 +315,19 @@ def run_scene_configuration_diagnostic_iteration(
         field="iteration_preparation_receipt",
     )
     retain_warm_session = bool(getattr(args, "retain_warm_session", False))
+    allowed_machine_values = getattr(args, "allowed_vast_machine_id", ()) or ()
+    try:
+        if any(isinstance(value, bool) for value in allowed_machine_values):
+            raise ValueError("boolean machine id")
+        allowed_machine_ids = tuple(
+            sorted({int(value) for value in allowed_machine_values})
+        )
+        if any(value <= 0 for value in allowed_machine_ids):
+            raise ValueError("non-positive machine id")
+    except (TypeError, ValueError) as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_allowed_vast_machine_ids_invalid"
+        ) from exc
     if retain_warm_session and not args.execute:
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_warm_retention_requires_execute"
@@ -569,6 +582,7 @@ def run_scene_configuration_diagnostic_iteration(
         "terminal_e2e_completion_permitted": False,
         "paid_execution_requested": bool(args.execute),
         "warm_session_retention_requested": retain_warm_session,
+        "allowed_vast_machine_ids": list(allowed_machine_ids),
         "diagnostic_bootstrap_mode": diagnostic_bootstrap_mode,
         "provider_mutation_performed_during_preparation": False,
         "raw_secret_values_recorded": False,
@@ -617,6 +631,10 @@ def run_scene_configuration_diagnostic_iteration(
     ]
     if args.execute:
         allocator_command.append("--execute")
+    for machine_id in allowed_machine_ids:
+        allocator_command.extend(
+            ["--scene-configuration-allowed-vast-machine-id", str(machine_id)]
+        )
     if retain_warm_session:
         allocator_command.extend(
             [
@@ -676,6 +694,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--adapter-output", required=True)
     parser.add_argument("--iteration-preparation-receipt", required=True)
     parser.add_argument("--retain-warm-session", action="store_true")
+    parser.add_argument("--allowed-vast-machine-id", action="append", type=int, default=[])
     parser.add_argument("--warm-session-authority")
     parser.add_argument("--warm-session-output-root")
     parser.add_argument("--maximum-warm-iterations", type=int, default=8)

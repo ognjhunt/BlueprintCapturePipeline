@@ -73,6 +73,7 @@ def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
             (tmp_path / "preparation.json").resolve()
         ),
         retain_warm_session=False,
+        allowed_vast_machine_id=[],
         warm_session_authority=None,
         warm_session_output_root=None,
         maximum_warm_iterations=8,
@@ -307,6 +308,7 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
     args = _args(tmp_path, execute=True)
     _install_paid_runtime_environment(tmp_path, monkeypatch)
     args.retain_warm_session = True
+    args.allowed_vast_machine_id = [44762, 21899, 44762]
     args.warm_session_authority = str((tmp_path / "warm-authority.json").resolve())
     args.warm_session_output_root = str((tmp_path / "warm-session").resolve())
     checkpoint_root = tmp_path / "checkpoint"
@@ -423,7 +425,14 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
     assert "--scene-configuration-retain-warm-session" in command
     assert command[command.index("--scene-configuration-warm-session-authority") + 1] == args.warm_session_authority
     assert command[command.index("--scene-configuration-warm-session-output-root") + 1] == args.warm_session_output_root
+    machine_flag = "--scene-configuration-allowed-vast-machine-id"
+    assert [
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == machine_flag
+    ] == ["21899", "44762"]
     assert result["warm_session_retention_requested"] is True
+    assert result["allowed_vast_machine_ids"] == [21899, 44762]
     assert result["diagnostic_bootstrap_mode"] == (
         "fresh" if fresh_bootstrap else "checkpoint_resume"
     )
