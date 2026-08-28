@@ -12,6 +12,7 @@ from blueprint_pipeline.task_evaluation_scene_artifact_retention import (
     apply_scene_artifact_retention,
     plan_scene_artifact_retention,
     seal_scene_artifact_lease,
+    seal_scene_artifact_remote_index,
 )
 
 
@@ -58,6 +59,35 @@ def test_pending_and_inflight_leases_never_expire_silently(tmp_path: Path) -> No
     assert plan["status"] == "completed"
     assert plan["candidates"] == []
     assert plan["protected"][0]["reason"] == "active_lease"
+
+
+def test_remote_index_is_small_immutable_and_digest_bound(tmp_path: Path) -> None:
+    artifact = tmp_path / "provider-output.zip"
+    artifact.write_bytes(b"provider output")
+    reference = _reference(artifact)
+    reference["content_addressed_key"] = True
+    destination = tmp_path / "remote-index.json"
+
+    index = seal_scene_artifact_remote_index(
+        destination=destination,
+        run_id="scene-839873-run-1",
+        source_commit="a" * 40,
+        bundle_digest="sha256:" + "b" * 64,
+        artifact_references=[reference],
+    )
+
+    assert index["all_artifacts_remote_verified"] is True
+    assert index["all_artifacts_content_addressed"] is True
+    assert index["artifact_count"] == 1
+    assert destination.stat().st_mode & 0o777 == 0o440
+    with pytest.raises(FileExistsError):
+        seal_scene_artifact_remote_index(
+            destination=destination,
+            run_id="scene-839873-run-1",
+            source_commit="a" * 40,
+            bundle_digest="sha256:" + "b" * 64,
+            artifact_references=[reference],
+        )
 
 
 def test_expired_retry_lease_allows_exact_remote_verified_local_copy(
