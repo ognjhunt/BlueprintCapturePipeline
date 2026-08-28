@@ -76,7 +76,16 @@ export UV_NATIVE_TLS=true
 "${uv_command[@]}" venv "${runtime_dir}/.artifixer-venv" --python "$(command -v python3)" \
   || { write_missing_result "artifixer3d_venv_failed"; exit 2; }
 artifixer_python="${runtime_dir}/.artifixer-venv/bin/python"
-export CUDA_HOME=/usr/local/cuda
+nvcc_path="$(command -v nvcc)" \
+  || { write_missing_result "artifixer3d_nvcc_missing"; exit 2; }
+nvcc_path="$(readlink -f "${nvcc_path}")"
+export CUDA_HOME="$(cd "$(dirname "${nvcc_path}")/.." && pwd)"
+if [[ "${CUDA_HOME}" != /usr/local/cuda* ]] \
+    || [[ ! -x "${CUDA_HOME}/bin/nvcc" ]] \
+    || ! "${CUDA_HOME}/bin/nvcc" --version | grep -Fq "release 12.8"; then
+  write_missing_result "artifixer3d_cuda_toolkit_identity_invalid"
+  exit 2
+fi
 
 mapfile -t runtime_mode < <(
   python3 - "${runtime_dir}/artifixer3d_runtime_request.json" <<'PY'

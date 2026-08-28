@@ -17,6 +17,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ARTIFIXER_REPOSITORY,
     ARTIFIXER_TREE,
     COMPONENT_SOURCE_SCHEMA_VERSION,
+    RUNTIME_BLUEPRINT_MODULES,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_python_wheelhouse import (
     build_scene_configuration_python_wheelhouse,
@@ -131,17 +132,19 @@ def build_artifixer_scene_configuration_component(
             "scripts/public_scene_artifixer3d_runner.py": (
                 "blueprint_runtime/scripts/public_scene_artifixer3d_runner.py"
             ),
-            "src/blueprint_pipeline/__init__.py": (
-                "blueprint_runtime/src/blueprint_pipeline/__init__.py"
-            ),
-            "src/blueprint_pipeline/image_editor_backend_registry.py": (
-                "blueprint_runtime/src/blueprint_pipeline/image_editor_backend_registry.py"
-            ),
             "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json": (
                 "blueprint_runtime/docs/arm_decision_proof_v1/manifests/"
                 "image_editor_backends.v1.json"
             ),
         }
+        copies.update(
+            {
+                f"src/blueprint_pipeline/{name}": (
+                    f"blueprint_runtime/src/blueprint_pipeline/{name}"
+                )
+                for name in RUNTIME_BLUEPRINT_MODULES
+            }
+        )
         for source_name, destination_name in copies.items():
             source = repository / source_name
             _copy(

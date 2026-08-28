@@ -19,6 +19,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ArtiFixer3DBundleError,
     COMPONENT_SOURCE_SCHEMA_VERSION,
     DEFAULT_IMAGE,
+    RUNTIME_BLUEPRINT_MODULES,
     SCHEMA_VERSION,
     VIBE_IMAGE_EDIT_REVISION,
     VIBE_SOURCE_COMMIT,
@@ -77,7 +78,7 @@ def _repository(tmp_path: Path) -> Path:
     ):
         (root / "scripts" / name).write_bytes((source_repo / "scripts" / name).read_bytes())
     (root / "src" / "blueprint_pipeline").mkdir(parents=True)
-    for name in ("__init__.py", "image_editor_backend_registry.py"):
+    for name in RUNTIME_BLUEPRINT_MODULES:
         (root / "src" / "blueprint_pipeline" / name).write_bytes(
             (source_repo / "src" / "blueprint_pipeline" / name).read_bytes()
         )
@@ -369,6 +370,10 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert "provider_runtime/public_scene_artifixer3d_runner.py" in names
     assert "provider_runtime/blueprint_pipeline/__init__.py" in names
     assert "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py" in names
+    assert all(
+        f"provider_runtime/blueprint_pipeline/{name}" in names
+        for name in RUNTIME_BLUEPRINT_MODULES
+    )
     assert "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json" in names
     assert not any(name.endswith("artifixer-1.3b.pt") for name in names)
     assert request["source_object_restoration_permitted"] is False
@@ -388,6 +393,29 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert entrypoint.index(build_seed) < entrypoint.index(native_requirements)
     assert 'pip install --python "${artifixer_python}" --no-build-isolation' in entrypoint
     assert '-r "${submodule_dir}/requirements.txt"' in entrypoint
+
+    extracted = tmp_path / "isolated-native-export-import"
+    with zipfile.ZipFile(bundle) as archive:
+        archive.extractall(extracted)
+    runtime = extracted / "provider_runtime"
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import sys; "
+                f"sys.path.insert(0, {str(runtime)!r}); "
+                "import blueprint_pipeline.nurec_usdz_layer_transform"
+            ),
+        ],
+        cwd=tmp_path,
+        env={"PATH": str(Path(sys.executable).parent)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert imported.returncode == 0, imported.stderr
     assert "submodule update --init --recursive" in entrypoint
     assert "submodule status --recursive" in entrypoint
     assert "artifixer3d_nested_submodule_identity_mismatch" in entrypoint

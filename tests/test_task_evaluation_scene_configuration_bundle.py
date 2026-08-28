@@ -3760,6 +3760,10 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         / "run_public_scene_artifixer3d.sh"
     ).read_text(encoding="utf-8")
     assert "torch==2.11.0 torchvision==0.26.0" in runtime_script
+    assert "export CUDA_HOME=/usr/local/cuda" not in runtime_script
+    assert 'nvcc_path="$(command -v nvcc)"' in runtime_script
+    assert 'export CUDA_HOME="$(cd "$(dirname "${nvcc_path}")/.." && pwd)"' in runtime_script
+    assert 'grep -Fq "release 12.8"' in runtime_script
     assert "artifixer_cuda_package_paths.py" in runtime_script
     assert 'export CPATH="${cuda_package_paths[0]}' in runtime_script
     assert 'export CPLUS_INCLUDE_PATH="${cuda_package_paths[0]}' in runtime_script

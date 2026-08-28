@@ -46,6 +46,15 @@ RUNTIME_EDITOR_REGISTRY = "provider_runtime/blueprint_pipeline/image_editor_back
 RUNTIME_CUDA_PACKAGE_PATHS = (
     "provider_runtime/blueprint_pipeline/artifixer_cuda_package_paths.py"
 )
+RUNTIME_BLUEPRINT_MODULES = (
+    "__init__.py",
+    "image_editor_backend_registry.py",
+    "artifixer_cuda_package_paths.py",
+    "nurec_usdz_layer_transform.py",
+    "aura_nurec_usdz.py",
+    "native_task_appearance_frame_alignment.py",
+    "nurec_volume_codec.py",
+)
 RUNTIME_EDITOR_REGISTRY_MANIFEST = (
     "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
 )
@@ -901,9 +910,10 @@ def build_artifixer3d_bundle(
         or repo.is_symlink()
         or not (repo / "scripts" / "run_public_scene_artifixer3d.sh").is_file()
         or not (repo / "scripts" / "public_scene_artifixer3d_runner.py").is_file()
-        or not (repo / "src" / "blueprint_pipeline" / "__init__.py").is_file()
-        or not (repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py").is_file()
-        or not (repo / "src" / "blueprint_pipeline" / "artifixer_cuda_package_paths.py").is_file()
+        or any(
+            not (repo / "src" / "blueprint_pipeline" / name).is_file()
+            for name in RUNTIME_BLUEPRINT_MODULES
+        )
         or not (repo / RUNTIME_EDITOR_REGISTRY_MANIFEST).is_file()
         or not isinstance(artifixer3d_steps, int)
         or isinstance(artifixer3d_steps, bool)
@@ -1005,18 +1015,11 @@ def build_artifixer3d_bundle(
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
     runtime_package = runtime / "blueprint_pipeline"
     runtime_package.mkdir()
-    shutil.copyfile(
-        repo / "src" / "blueprint_pipeline" / "__init__.py",
-        runtime_package / "__init__.py",
-    )
-    shutil.copyfile(
-        repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py",
-        runtime_package / "image_editor_backend_registry.py",
-    )
-    shutil.copyfile(
-        repo / "src" / "blueprint_pipeline" / "artifixer_cuda_package_paths.py",
-        runtime_package / "artifixer_cuda_package_paths.py",
-    )
+    for name in RUNTIME_BLUEPRINT_MODULES:
+        shutil.copyfile(
+            repo / "src" / "blueprint_pipeline" / name,
+            runtime_package / name,
+        )
     registry_manifest = stage / RUNTIME_EDITOR_REGISTRY_MANIFEST
     registry_manifest.parent.mkdir(parents=True)
     shutil.copyfile(repo / RUNTIME_EDITOR_REGISTRY_MANIFEST, registry_manifest)
