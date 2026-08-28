@@ -1612,6 +1612,11 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     assert "task_evaluation_scene_configuration_provider_output.zip" in script
     assert "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT" in script
     assert "scene_configuration_runtime_toolchain_missing" in script
+    assert "BLUEPRINT_VAST_SCENE_CONFIGURATION_WARM_RUNTIME_NOT_READY" in script
+    assert (
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:"
+        "scene_configuration_warm_runtime_not_ready"
+    ) not in script
     assert "timeout 300 apt-get" in script
     assert script.index(
         f" install -y {vpa.SCENE_CONFIGURATION_APT_PACKAGES}"
