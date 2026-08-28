@@ -206,7 +206,10 @@ def _assert_no_references(*, paths: Sequence[Path], needles: Sequence[str], bloc
             raise BlockedActivationRetentionError(blocker)
 
 
-def _assert_no_forbidden_activation_artifacts(*, activation_root: Path, bundle_root: Path) -> None:
+def _assert_no_forbidden_activation_artifacts(
+    *, activation_root: Path, bundle_root: Path, allowed_step_logs: Sequence[Path]
+) -> None:
+    allowed_logs = {path.resolve() for path in allowed_step_logs}
     forbidden = (
         "paid_authority",
         "attempt-authority",
@@ -227,10 +230,76 @@ def _assert_no_forbidden_activation_artifacts(*, activation_root: Path, bundle_r
             continue
         if path.is_symlink():
             raise BlockedActivationRetentionError("blocked_activation_retention_activation_symlink")
+        if path.is_file() and path.resolve() in allowed_logs:
+            continue
         if path.is_file() and any(token in path.name for token in forbidden):
             raise BlockedActivationRetentionError(
                 "blocked_activation_retention_authority_or_execution_artifact_present"
             )
+
+
+def _validate_step_logs(
+    *,
+    preparation: Mapping[str, Any],
+    completed_step_ids: Sequence[str],
+    bundle_receipt: Path,
+    launch_set: Path,
+) -> list[dict[str, Any]]:
+    expected_attempted_steps = (
+        ["provider_bundle", "immutable_manifest"]
+        if list(completed_step_ids) == ["provider_bundle"]
+        else ["provider_bundle", "immutable_manifest", "paid_authority"]
+    )
+    produces = {
+        "provider_bundle": bundle_receipt,
+        "immutable_manifest": launch_set / "manifest_publication_receipt.v1.json",
+        "paid_authority": (
+            launch_set / "task_evaluation_scene_configuration_paid_authority.v1.json"
+        ),
+    }
+    rows = preparation.get("step_logs")
+    if (
+        not isinstance(rows, list)
+        or not all(isinstance(row, Mapping) for row in rows)
+        or [row.get("step_id") for row in rows] != expected_attempted_steps
+    ):
+        raise BlockedActivationRetentionError("blocked_activation_retention_step_logs_invalid")
+    validated: list[dict[str, Any]] = []
+    for row in rows:
+        step_id = str(row["step_id"])
+        base = produces[step_id]
+        expected_stdout = base.with_name(f"{base.name}.{step_id}.stdout.log")
+        expected_stderr = base.with_name(f"{base.name}.{step_id}.stderr.log")
+        stdout = Path(str(row.get("stdout_path") or ""))
+        stderr = Path(str(row.get("stderr_path") or ""))
+        if (
+            not stdout.is_absolute()
+            or not stderr.is_absolute()
+            or stdout.resolve() != expected_stdout
+            or stderr.resolve() != expected_stderr
+            or row.get("credential_redaction_applied") is not True
+        ):
+            raise BlockedActivationRetentionError("blocked_activation_retention_step_logs_invalid")
+        stdout_record = _file_record(
+            stdout, blocker="blocked_activation_retention_step_logs_invalid"
+        )
+        stderr_record = _file_record(
+            stderr, blocker="blocked_activation_retention_step_logs_invalid"
+        )
+        if (
+            row.get("stdout_sha256") != stdout_record["sha256"]
+            or row.get("stderr_sha256") != stderr_record["sha256"]
+        ):
+            raise BlockedActivationRetentionError("blocked_activation_retention_step_logs_invalid")
+        validated.append(
+            {
+                "step_id": step_id,
+                "stdout": stdout_record,
+                "stderr": stderr_record,
+                "credential_redaction_applied": True,
+            }
+        )
+    return validated
 
 
 def build_blocked_activation_retention_plan(
@@ -320,15 +389,22 @@ def build_blocked_activation_retention_plan(
             "blocked_activation_retention_preparation_receipt_invalid"
         ) from exc
     completed = preparation.get("completed_steps") if isinstance(preparation, Mapping) else None
+    completed_step_ids = (
+        [row.get("step_id") for row in completed]
+        if isinstance(completed, list) and all(isinstance(row, Mapping) for row in completed)
+        else []
+    )
     if (
         preparation.get("schema_version") != "paid_lane_launch_preparation.v1"
         or preparation.get("lane") != "task_evaluation_scene_configuration"
         or preparation.get("status") != "blocked"
         or preparation.get("provider_allocation_performed") is not False
         or preparation.get("paid_inference_performed") is not False
-        or not isinstance(completed, list)
-        or [row.get("step_id") for row in completed if isinstance(row, Mapping)]
-        != ["provider_bundle"]
+        or completed_step_ids
+        not in (
+            ["provider_bundle"],
+            ["provider_bundle", "immutable_manifest"],
+        )
     ):
         raise BlockedActivationRetentionError(
             "blocked_activation_retention_preparation_receipt_invalid"
@@ -348,6 +424,28 @@ def build_blocked_activation_retention_plan(
     )
     if completed[0].get("artifact_sha256") != receipt_record["sha256"]:
         raise BlockedActivationRetentionError("blocked_activation_retention_bundle_receipt_invalid")
+    immutable_manifest_record: dict[str, Any] | None = None
+    if completed_step_ids == ["provider_bundle", "immutable_manifest"]:
+        immutable_manifest = activation / "launch-set" / "manifest_publication_receipt.v1.json"
+        declared_manifest = Path(str(completed[1].get("artifact_path") or ""))
+        if not declared_manifest.is_absolute() or declared_manifest.resolve() != immutable_manifest:
+            raise BlockedActivationRetentionError(
+                "blocked_activation_retention_immutable_manifest_invalid"
+            )
+        immutable_manifest_record = _file_record(
+            immutable_manifest,
+            blocker="blocked_activation_retention_immutable_manifest_invalid",
+        )
+        if completed[1].get("artifact_sha256") != immutable_manifest_record["sha256"]:
+            raise BlockedActivationRetentionError(
+                "blocked_activation_retention_immutable_manifest_invalid"
+            )
+    step_log_records = _validate_step_logs(
+        preparation=preparation,
+        completed_step_ids=completed_step_ids,
+        bundle_receipt=bundle_receipt,
+        launch_set=activation / "launch-set",
+    )
     try:
         receipt = dict(bundle_validator(bundle_receipt))
     except (OSError, TypeError, ValueError) as exc:
@@ -373,7 +471,15 @@ def build_blocked_activation_retention_plan(
     ):
         raise BlockedActivationRetentionError("blocked_activation_retention_bundle_receipt_invalid")
     stage_record = _tree_and_archive_snapshot(bundle_root / "stage", bundle)
-    _assert_no_forbidden_activation_artifacts(activation_root=activation, bundle_root=bundle_root)
+    _assert_no_forbidden_activation_artifacts(
+        activation_root=activation,
+        bundle_root=bundle_root,
+        allowed_step_logs=[
+            Path(record[stream]["path"])
+            for record in step_log_records
+            for stream in ("stdout", "stderr")
+        ],
+    )
 
     profiles = _absolute(profile_dir, field="profile_dir")
     standing = _absolute(standing_authorization_dir, field="standing_authorization_dir")
@@ -424,12 +530,14 @@ def build_blocked_activation_retention_plan(
         "terminal_result": result_record,
         "terminal_result_digest": result["result_digest"],
         "preparation_receipt": preparation_record,
+        "immutable_manifest": immutable_manifest_record,
+        "step_logs": step_log_records,
         "bundle_receipt": receipt_record,
         "public_catalog_snapshot": catalog_record,
         "removable_bundle": bundle_record,
         "removable_stage_tree": stage_record,
         "predicted_removed_bytes": bundle_record["size_bytes"] + stage_record["size_bytes"],
-        "completed_preparation_steps": ["provider_bundle"],
+        "completed_preparation_steps": completed_step_ids,
         "profile_or_standing_authorization_observed": False,
         "live_queue_reference_observed": False,
         "paid_authority_observed": False,
@@ -441,6 +549,16 @@ def build_blocked_activation_retention_plan(
             str(result_path),
             str(preparation_path),
             str(bundle_receipt),
+            *(
+                [str(immutable_manifest_record["path"])]
+                if immutable_manifest_record is not None
+                else []
+            ),
+            *[
+                str(record[stream]["path"])
+                for record in step_log_records
+                for stream in ("stdout", "stderr")
+            ],
             str(activation / "references"),
         ],
         "plan_digest": "",
