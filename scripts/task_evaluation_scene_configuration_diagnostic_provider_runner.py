@@ -557,7 +557,7 @@ def main() -> int:
         )
         advanced = checkpoint
 
-        def write_checkpoint(results, source_checkpoint_root: Path) -> None:
+        def write_checkpoint(results, source_checkpoint_root: Path) -> Path:
             nonlocal checkpoint, active_checkpoint_root, advanced, advanced_root
             if checkpoint is None:
                 checkpoint = validate_scene_configuration_diagnostic_checkpoint(
@@ -598,6 +598,7 @@ def main() -> int:
                         "diagnostic_scientific_binding_digest"
                     ],
                 )
+            return active_checkpoint_root
 
         def resume_stage_one(**kwargs):
             return producers.execute(**{key: value for key, value in kwargs.items() if key not in {"checkpoint", "checkpoint_root"}})

@@ -153,9 +153,17 @@ def test_fresh_diagnostic_bootstrap_materializes_checkpoint_before_retention(
     producers.execute = produce
     outputs = tmp_path / "outputs"
     outputs.mkdir()
-    checkpoints: list[tuple[int, Path]] = []
+    checkpoints: list[tuple[int, Path, Path]] = []
     observed: list[str] = []
     now = 1_000.0
+
+    def write_checkpoint(rows, source_root: Path) -> Path:
+        destination = outputs / "diagnostic_checkpoints" / f"after-stage-{len(rows)}"
+        destination.mkdir(parents=True)
+        checkpoints.append((len(rows), source_root, destination))
+        if source_root.is_relative_to(outputs):
+            source_root.rmdir()
+        return destination
 
     result = execute_scene_configuration_diagnostic_stage_chain(
         diagnostic_bootstrap_mode="fresh",
@@ -168,16 +176,26 @@ def test_fresh_diagnostic_bootstrap_materializes_checkpoint_before_retention(
         stage_one_resume_producer=lambda **_kwargs: pytest.fail(
             "fresh bootstrap must not call the resume producer"
         ),
-        stage_checkpoint_writer=lambda rows, root: checkpoints.append(
-            (len(rows), root)
-        ),
+        stage_checkpoint_writer=write_checkpoint,
         parent_deadline_epoch=now + 100_000,
         clock=lambda: now,
     )
 
     expected_root = outputs / "stage-1/producer/diagnostic_checkpoint"
     assert validated_roots == [expected_root]
-    assert checkpoints == [(index, expected_root) for index in range(1, 7)]
+    assert checkpoints == [
+        (
+            index,
+            expected_root
+            if index == 1
+            else outputs / "diagnostic_checkpoints" / f"after-stage-{index - 1}",
+            outputs / "diagnostic_checkpoints" / f"after-stage-{index}",
+        )
+        for index in range(1, 7)
+    ]
+    assert not expected_root.exists()
+    assert not (outputs / "diagnostic_checkpoints/after-stage-5").exists()
+    assert (outputs / "diagnostic_checkpoints/after-stage-6").is_dir()
     assert result["diagnostic_bootstrap_mode"] == "fresh"
     assert result["carried_completed_stage_count"] == 0
     assert all(row["diagnostic_only"] is True for row in result["stage_results"])

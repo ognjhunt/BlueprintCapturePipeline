@@ -47,7 +47,7 @@ RESULT_SCHEMA_VERSION = (
 STATUS = "completed_diagnostic_only_not_qualification_eligible"
 StageOneResumeProducer = Callable[..., Sequence[Mapping[str, Any]]]
 StageCheckpointWriter = Callable[
-    [tuple[Mapping[str, Any], ...], Path], None
+    [tuple[Mapping[str, Any], ...], Path], Path
 ]
 
 
@@ -285,7 +285,9 @@ def execute_scene_configuration_diagnostic_stage_chain(
                 raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
                     "scene_configuration_diagnostic_checkpoint_missing_after_stage"
                 )
-            stage_checkpoint_writer(tuple(results), active_checkpoint_root)
+            active_checkpoint_root = Path(
+                stage_checkpoint_writer(tuple(results), active_checkpoint_root)
+            ).resolve()
     if parent_deadline_epoch - clock() < OUTPUT_AND_CLOSURE_RESERVE_SECONDS:
         raise TaskEvaluationSceneConfigurationDiagnosticRuntimeError(
             "scene_configuration_diagnostic_runtime_budget_insufficient:"
