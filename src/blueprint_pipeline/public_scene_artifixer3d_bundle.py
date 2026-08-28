@@ -55,6 +55,13 @@ RUNTIME_BLUEPRINT_MODULES = (
     "native_task_appearance_frame_alignment.py",
     "nurec_volume_codec.py",
 )
+VGG16_WEIGHTS_FILENAME = "vgg16-397923af.pth"
+VGG16_WEIGHTS_SOURCE_URL = "https://download.pytorch.org/models/vgg16-397923af.pth"
+VGG16_WEIGHTS_SHA256 = (
+    "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
+)
+VGG16_WEIGHTS_SIZE_BYTES = 553_433_881
+RUNTIME_VGG16_WEIGHTS = f"torch_home/hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"
 RUNTIME_EDITOR_REGISTRY_MANIFEST = (
     "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
 )
@@ -899,6 +906,7 @@ def build_artifixer3d_bundle(
     attestation = _validated_use_attestation(attestation_path, candidate=candidate)
     source = Path(artifixer_source_directory).expanduser().resolve()
     repo = Path(repository_root).expanduser().resolve()
+    vgg16_weights = repo / RUNTIME_VGG16_WEIGHTS
     render_only = pipeline_mode == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
     reuse_inputs_present = (
         reused_checkpoint_provider_output_zip_path is not None,
@@ -914,6 +922,10 @@ def build_artifixer3d_bundle(
             not (repo / "src" / "blueprint_pipeline" / name).is_file()
             for name in RUNTIME_BLUEPRINT_MODULES
         )
+        or vgg16_weights.is_symlink()
+        or not vgg16_weights.is_file()
+        or vgg16_weights.stat().st_size != VGG16_WEIGHTS_SIZE_BYTES
+        or _sha256(vgg16_weights) != VGG16_WEIGHTS_SHA256
         or not (repo / RUNTIME_EDITOR_REGISTRY_MANIFEST).is_file()
         or not isinstance(artifixer3d_steps, int)
         or isinstance(artifixer3d_steps, bool)
@@ -1020,6 +1032,9 @@ def build_artifixer3d_bundle(
             repo / "src" / "blueprint_pipeline" / name,
             runtime_package / name,
         )
+    runtime_vgg16_weights = runtime / RUNTIME_VGG16_WEIGHTS
+    runtime_vgg16_weights.parent.mkdir(parents=True)
+    shutil.copyfile(vgg16_weights, runtime_vgg16_weights)
     registry_manifest = stage / RUNTIME_EDITOR_REGISTRY_MANIFEST
     registry_manifest.parent.mkdir(parents=True)
     shutil.copyfile(repo / RUNTIME_EDITOR_REGISTRY_MANIFEST, registry_manifest)
@@ -1150,6 +1165,16 @@ def build_artifixer3d_bundle(
             "steps": artifixer3d_steps,
             "config_name": "apps/colmap_3dgut_sparse_mcmc_lpips",
             "use_wandb": False,
+            "lpips_vgg16_imagenet1k_v1": {
+                "filename": VGG16_WEIGHTS_FILENAME,
+                "source_url": VGG16_WEIGHTS_SOURCE_URL,
+                "size_bytes": VGG16_WEIGHTS_SIZE_BYTES,
+                "sha256": VGG16_WEIGHTS_SHA256,
+                "torch_home_relative_path": (
+                    f"hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"
+                ),
+                "network_retrieval_during_method_execution_required": False,
+            },
         },
         "random_seed": random_seed,
         "pipeline_mode": pipeline_mode,

@@ -104,7 +104,7 @@ def _bundle(
         use_attestation_path=attestation,
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
         allowed_active_instance_ids=[],
         artifixer3d_steps=10,
         direct_editor_backend=direct_editor_backend,

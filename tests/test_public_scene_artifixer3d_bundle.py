@@ -14,12 +14,14 @@ import zipfile
 import pytest
 from PIL import Image
 
+import blueprint_pipeline.public_scene_artifixer3d_bundle as bundle_subject
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ArtiFixer3DBundleError,
     COMPONENT_SOURCE_SCHEMA_VERSION,
     DEFAULT_IMAGE,
     RUNTIME_BLUEPRINT_MODULES,
+    RUNTIME_VGG16_WEIGHTS,
     SCHEMA_VERSION,
     VIBE_IMAGE_EDIT_REVISION,
     VIBE_SOURCE_COMMIT,
@@ -31,6 +33,9 @@ from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     materialize_artifixer3d_candidate_inputs,
 )
 from tests.test_public_scene_artifixer3d_candidate_inputs import _preflight
+
+
+_VGG16_FIXTURE = b"digest-bound-vgg16-fixture"
 
 
 def _git(command: list[str], root: Path) -> str:
@@ -68,7 +73,13 @@ def _candidate(tmp_path: Path, *, count: int = 2, cameras_per_task: int = 2) -> 
     return output / f"{receipt['schema_version']}.json"
 
 
-def _repository(tmp_path: Path) -> Path:
+def _repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(bundle_subject, "VGG16_WEIGHTS_SIZE_BYTES", len(_VGG16_FIXTURE))
+    monkeypatch.setattr(
+        bundle_subject,
+        "VGG16_WEIGHTS_SHA256",
+        "sha256:" + hashlib.sha256(_VGG16_FIXTURE).hexdigest(),
+    )
     source_repo = Path(__file__).resolve().parents[1]
     root = tmp_path / "repository"
     (root / "scripts").mkdir(parents=True)
@@ -85,6 +96,9 @@ def _repository(tmp_path: Path) -> Path:
     registry = Path("docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json")
     (root / registry).parent.mkdir(parents=True)
     (root / registry).write_bytes((source_repo / registry).read_bytes())
+    weights = root / RUNTIME_VGG16_WEIGHTS
+    weights.parent.mkdir(parents=True)
+    weights.write_bytes(_VGG16_FIXTURE)
     _git(["git", "init", "-q"], root)
     _git(["git", "config", "user.name", "Fixture"], root)
     _git(["git", "config", "user.email", "fixture@example.test"], root)
@@ -344,7 +358,7 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
         allowed_active_instance_ids=[12, 9, 12],
         artifixer3d_steps=10,
     )
@@ -374,6 +388,15 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         f"provider_runtime/blueprint_pipeline/{name}" in names
         for name in RUNTIME_BLUEPRINT_MODULES
     )
+    assert f"provider_runtime/{RUNTIME_VGG16_WEIGHTS}" in names
+    assert request["artifixer3d"]["lpips_vgg16_imagenet1k_v1"] == {
+        "filename": "vgg16-397923af.pth",
+        "source_url": bundle_subject.VGG16_WEIGHTS_SOURCE_URL,
+        "size_bytes": len(_VGG16_FIXTURE),
+        "sha256": "sha256:" + hashlib.sha256(_VGG16_FIXTURE).hexdigest(),
+        "torch_home_relative_path": "hub/checkpoints/vgg16-397923af.pth",
+        "network_retrieval_during_method_execution_required": False,
+    }
     assert "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json" in names
     assert not any(name.endswith("artifixer-1.3b.pt") for name in names)
     assert request["source_object_restoration_permitted"] is False
@@ -419,6 +442,10 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert "submodule update --init --recursive" in entrypoint
     assert "submodule status --recursive" in entrypoint
     assert "artifixer3d_nested_submodule_identity_mismatch" in entrypoint
+    assert 'export TORCH_HOME="${runtime_dir}/torch_home"' in entrypoint
+    assert "LearnedPerceptualImagePatchSimilarity" in entrypoint
+    assert "lpips_vgg16_materialization_invalid" in entrypoint
+    assert "lpips_vgg16_preflight_network_forbidden" in entrypoint
     assert 'pip check --python "${artifixer_python}"' in entrypoint
     assert "public_scene_artifixer3d_runtime_preflight.v1" in entrypoint
     assert '"model_eval.run_inference"' in entrypoint
@@ -488,7 +515,7 @@ def test_component_source_receipt_reuses_bundle_builder_without_git_checkout(
         artifixer_source_directory=source,
         artifixer_source_receipt_path=receipt_path,
         output_root=tmp_path / "component-bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
         blueprint_source_identity={
             "commit": "1" * 40,
             "tree": "2" * 40,
@@ -519,7 +546,7 @@ def test_isolated_bundle_import_fails_when_runtime_registry_module_is_removed(
         use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
     )
     mutated = tmp_path / "mutated.zip"
     missing = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
@@ -562,7 +589,7 @@ def test_seals_pinned_vibe_semantic_editor_only_bundle(
         use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
         artifixer_source_directory=source,
         output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
+        repository_root=_repository(tmp_path, monkeypatch),
         direct_editor_backend="vibe_image_edit",
         semantic_editor_only=True,
     )
@@ -602,7 +629,7 @@ def test_rejects_vibe_combined_with_3d_training(
             use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle",
-            repository_root=_repository(tmp_path),
+            repository_root=_repository(tmp_path, monkeypatch),
             direct_editor_backend="vibe_image_edit",
             semantic_editor_only=False,
         )
@@ -623,7 +650,7 @@ def test_rejects_semantic_only_with_nonsemantic_backend(
             use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle",
-            repository_root=_repository(tmp_path),
+            repository_root=_repository(tmp_path, monkeypatch),
             semantic_editor_only=True,
         )
 
@@ -647,7 +674,7 @@ def test_rejects_tampered_candidate_or_dirty_source(
             use_attestation_path=attestation,
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle-a",
-            repository_root=_repository(tmp_path),
+            repository_root=_repository(tmp_path, monkeypatch),
         )
 
     candidate = _candidate(tmp_path / "other")
@@ -659,7 +686,7 @@ def test_rejects_tampered_candidate_or_dirty_source(
             use_attestation_path=attestation,
             artifixer_source_directory=source,
             output_root=tmp_path / "bundle-b",
-            repository_root=_repository(tmp_path / "other"),
+            repository_root=_repository(tmp_path / "other", monkeypatch),
         )
 
 
