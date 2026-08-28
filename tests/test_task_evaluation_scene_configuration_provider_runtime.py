@@ -152,7 +152,9 @@ def _producers():
     return SceneConfigurationStageProducerRegistry(handlers)
 
 
-def test_runs_all_six_stages_inside_one_parent_allocation(tmp_path: Path) -> None:
+def test_runs_all_six_stages_inside_one_parent_allocation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     envelope, configurations = _inputs(tmp_path)
     outputs = tmp_path / "outputs"
     outputs.mkdir()
@@ -171,6 +173,16 @@ def test_runs_all_six_stages_inside_one_parent_allocation(tmp_path: Path) -> Non
     assert result["executed_inside_one_parent_provider_run"] is True
     assert result["nested_provider_mutations_performed"] == 0
     assert result["evaluation_episode_executed"] is False
+    assert capsys.readouterr().out.splitlines() == [
+        marker
+        for index in range(1, 7)
+        for marker in (
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_STARTED:"
+            f" index={index}/6 stage_id=stage-{index}",
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_COMPLETED:"
+            f" index={index}/6 stage_id=stage-{index}",
+        )
+    ]
 
 
 def test_rejects_any_stage_that_claims_a_nested_provider_mutation(

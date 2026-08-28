@@ -91,6 +91,11 @@ def execute_scene_configuration_stage_chain(
                 "scene_configuration_provider_stage_set_invalid"
             )
         stage_id = str(stage["stage_id"])
+        print(
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_STARTED:"
+            f" index={index + 1}/{len(stages)} stage_id={stage_id}",
+            flush=True,
+        )
         if parent_deadline_epoch is not None:
             remaining_seconds = parent_deadline_epoch - clock()
             required_seconds = required_remaining_stage_seconds(
@@ -160,6 +165,11 @@ def execute_scene_configuration_stage_chain(
                 f"scene_configuration_provider_stage_result_invalid:{stage_id}"
             )
         results.append(result)
+        print(
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_COMPLETED:"
+            f" index={index + 1}/{len(stages)} stage_id={stage_id}",
+            flush=True,
+        )
     if (
         parent_deadline_epoch is not None
         and parent_deadline_epoch - clock() < OUTPUT_AND_CLOSURE_RESERVE_SECONDS
