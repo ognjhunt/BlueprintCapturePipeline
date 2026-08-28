@@ -818,7 +818,11 @@ def materialize_same_goal_spend_reconciliation(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lane", choices=sorted(SUPPORTED_LANES), required=True)
+    parser.add_argument(
+        "--lane",
+        choices=sorted(SUPPORTED_LANES | {DIAGNOSTIC_SCENE_CONFIGURATION_LANE}),
+        required=True,
+    )
     parser.add_argument("--terminal-result", action="append", required=True)
     parser.add_argument("--teardown-manifest", action="append", required=True)
     parser.add_argument("--provider-zero", action="append", required=True)
