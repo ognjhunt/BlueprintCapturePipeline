@@ -2508,6 +2508,28 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
         execution, receipt, diagnostic_only=False
     ) == []
 
+    diagnostic_receipt = {
+        **receipt,
+        "source_diagnostic_checkpoint_digest": "sha256:" + "e" * 64,
+        "diagnostic_bootstrap_mode": "fresh",
+        "diagnostic_scientific_binding_digest": "sha256:" + "f" * 64,
+    }
+    minimal_diagnostic_failure = {
+        "status": "blocked_diagnostic_only",
+        "blockers": ["scene_configuration_diagnostic_provider_failed:fixture"],
+    }
+    assert scene_vast._provider_execution_binding_blockers(
+        minimal_diagnostic_failure,
+        diagnostic_receipt,
+        diagnostic_only=True,
+    ) == []
+    minimal_diagnostic_failure["diagnostic_run_id"] = "different-run"
+    assert scene_vast._provider_execution_binding_blockers(
+        minimal_diagnostic_failure,
+        diagnostic_receipt,
+        diagnostic_only=True,
+    ) == ["scene_configuration_provider_run_id_mismatch"]
+
     execution["source_construction_envelope_digest"] = "sha256:" + "d" * 64
     assert scene_vast._provider_execution_binding_blockers(
         execution, receipt, diagnostic_only=False
