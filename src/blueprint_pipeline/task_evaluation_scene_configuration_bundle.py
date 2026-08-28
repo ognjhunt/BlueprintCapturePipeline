@@ -53,6 +53,7 @@ from .task_evaluation_splat_render_runtime import (
     PROVIDER_RENDERER_REQUIRED_PACKAGES,
     PROVIDER_RENDERER_SCHEMA_VERSION,
     TaskEvaluationSplatRenderRuntimeError,
+    validate_diagnostic_splat_render_runtime,
     validate_splat_render_runtime,
 )
 
@@ -615,10 +616,21 @@ def build_scene_configuration_provider_bundle(
             )
         provider_render_runtime_source = Path(unresolved_runtime).expanduser()
         try:
-            provider_render_runtime = validate_splat_render_runtime(
-                runtime_root=provider_render_runtime_source,
-                repo_root=repo,
-            )
+            if diagnostic_mode_requested and (
+                construction_source_commit != expected_source_commit
+            ):
+                provider_render_runtime = (
+                    validate_diagnostic_splat_render_runtime(
+                        runtime_root=provider_render_runtime_source,
+                        repo_root=repo,
+                        expected_runtime_source_commit=construction_source_commit,
+                    )
+                )
+            else:
+                provider_render_runtime = validate_splat_render_runtime(
+                    runtime_root=provider_render_runtime_source,
+                    repo_root=repo,
+                )
         except (OSError, TaskEvaluationSplatRenderRuntimeError) as exc:
             raise TaskEvaluationSceneConfigurationBundleError(
                 "scene_configuration_bundle_provider_render_runtime_invalid"

@@ -1049,7 +1049,7 @@ def test_fresh_diagnostic_separates_executable_and_construction_commits(
     )
     monkeypatch.setattr(
         bundle_module,
-        "validate_splat_render_runtime",
+        "validate_diagnostic_splat_render_runtime",
         lambda **_kwargs: identity,
     )
 
