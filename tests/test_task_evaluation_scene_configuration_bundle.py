@@ -1051,7 +1051,7 @@ def test_fresh_diagnostic_separates_executable_and_construction_commits(
     )
     envelope.write_text(json.dumps(envelope_value), encoding="utf-8")
     toolchain = _toolchain(
-        tmp_path / "split-identity-toolchain", construction_commit
+        tmp_path / "split-identity-toolchain", diagnostic_commit
     )
     repo = _repo(tmp_path / "split-identity-repo")
     runtime, identity = _provider_runtime(
@@ -1075,6 +1075,7 @@ def test_fresh_diagnostic_separates_executable_and_construction_commits(
 
     assert receipt["source_commit"] == diagnostic_commit
     assert receipt["construction_source_commit"] == construction_commit
+    assert receipt["toolchain_source_commit"] == diagnostic_commit
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         portable = json.loads(
             archive.read(

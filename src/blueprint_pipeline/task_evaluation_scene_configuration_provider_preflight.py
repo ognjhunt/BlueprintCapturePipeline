@@ -268,13 +268,10 @@ def scene_configuration_bundle_contract(
             blockers.append("scene_configuration_provider_input_digest_invalid")
 
     files = toolchain.get("files")
-    expected_toolchain_commit = (
-        manifest.get("construction_source_commit")
-        if diagnostic_only
-        else source_commit
-    )
+    expected_toolchain_commit = _string(manifest.get("toolchain_source_commit"))
     if (
-        toolchain.get("schema_version") != TOOLCHAIN_SCHEMA_VERSION
+        expected_toolchain_commit != source_commit
+        or toolchain.get("schema_version") != TOOLCHAIN_SCHEMA_VERSION
         or toolchain.get("status") != "published_full_byte_readback_passed"
         or toolchain.get("source_commit") != expected_toolchain_commit
         or toolchain.get("full_byte_service_account_readback_passed") is not True

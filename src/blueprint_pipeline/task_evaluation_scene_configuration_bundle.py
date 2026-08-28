@@ -558,8 +558,13 @@ def build_scene_configuration_provider_bundle(
         raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
     repo = Path(repository_root).resolve()
     toolchain = Path(toolchain_root).resolve()
+    toolchain_source_commit = (
+        expected_source_commit
+        if diagnostic_mode_requested
+        else construction_source_commit
+    )
     toolchain_manifest = validate_scene_configuration_toolchain(
-        root=toolchain, expected_source_commit=construction_source_commit
+        root=toolchain, expected_source_commit=toolchain_source_commit
     )
     try:
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
@@ -792,7 +797,7 @@ def build_scene_configuration_provider_bundle(
     portable_toolchain = runtime / "toolchain"
     _copy_tree(toolchain, portable_toolchain)
     copied_toolchain_manifest = validate_scene_configuration_toolchain(
-        root=portable_toolchain, expected_source_commit=construction_source_commit
+        root=portable_toolchain, expected_source_commit=toolchain_source_commit
     )
     if copied_toolchain_manifest["toolchain_digest"] != toolchain_manifest["toolchain_digest"]:
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -837,6 +842,7 @@ def build_scene_configuration_provider_bundle(
         "construction_envelope_source_digest": envelope["envelope_digest"],
         "portable_construction_envelope_digest": portable["envelope_digest"],
         "toolchain_schema_version": TOOLCHAIN_SCHEMA_VERSION,
+        "toolchain_source_commit": toolchain_source_commit,
         "toolchain_digest": toolchain_manifest["toolchain_digest"],
         "provider_python_runtime_required": True,
         "provider_python_runtime_manifest": (
