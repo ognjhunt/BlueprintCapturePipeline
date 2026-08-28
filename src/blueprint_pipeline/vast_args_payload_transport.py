@@ -14,11 +14,14 @@ VAST_ARGS_STR_SAFE_MAX_BYTES = 16_000
 VAST_ARGS_GZIP_BASE64_MARKER = "BLUEPRINT_VAST_ARGS_GZIP_BASE64_V1="
 
 
-def args_mode_command(wrapped_script: str) -> str:
+def args_mode_command(wrapped_script: str, *, force_compression: bool = False) -> str:
     """Return a raw or compressed fail-closed ``bash -lc`` command."""
 
     raw_args_str = "bash -lc " + shlex.quote(wrapped_script)
-    if len(raw_args_str.encode("utf-8")) <= VAST_ARGS_STR_SAFE_MAX_BYTES:
+    if (
+        not force_compression
+        and len(raw_args_str.encode("utf-8")) <= VAST_ARGS_STR_SAFE_MAX_BYTES
+    ):
         return raw_args_str
 
     # Runtime secrets remain in Vast's separate environment map. Deterministic
@@ -42,7 +45,7 @@ def args_mode_command(wrapped_script: str) -> str:
 
 
 
-def onstart_mode_script(script: str) -> str:
+def onstart_mode_script(script: str, *, force_compression: bool = False) -> str:
     """Return a raw or compressed onstart script under the same ceiling.
 
     Vast applies the 16384-byte args limit to onstart too: run
@@ -55,7 +58,7 @@ def onstart_mode_script(script: str) -> str:
     itself a script that decodes and runs the real one under pipefail.
     """
 
-    if len(script.encode("utf-8")) <= VAST_ARGS_STR_SAFE_MAX_BYTES:
+    if not force_compression and len(script.encode("utf-8")) <= VAST_ARGS_STR_SAFE_MAX_BYTES:
         return script
     encoded_script = base64.b64encode(
         gzip.compress(script.encode("utf-8"), mtime=0)

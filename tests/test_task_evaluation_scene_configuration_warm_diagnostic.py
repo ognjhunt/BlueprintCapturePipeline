@@ -209,6 +209,9 @@ def test_fresh_ssh_probe_and_child_entrypoint_never_inherit_secret_environment(
         command = str(kwargs["remote_argv"][-1])
         assert "compgen -e" in command
         assert "BLUEPRINT_VAST_RUNTIME_SECRET_B64_*" in command
+        assert "BLUEPRINT_EVAL_MANIFEST_URI" in command
+        assert "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL" in command
+        assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in command
         return {
             "status": "completed",
             "stdout": "RUNTIME_SECRET_ENVIRONMENT:absent\n",

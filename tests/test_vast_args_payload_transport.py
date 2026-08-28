@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import base64
+import gzip
+import re
 import shlex
 import subprocess
 
@@ -9,6 +12,15 @@ from blueprint_pipeline import vast_args_payload_transport as transport
 
 
 MAX_SAFE_VAST_ARGS_STR_BYTES = 16_000
+
+
+def _decoded_compressed_script(value: str) -> str:
+    match = re.search(
+        re.escape(transport.VAST_ARGS_GZIP_BASE64_MARKER) + r"([A-Za-z0-9+/=]+)",
+        value,
+    )
+    assert match is not None
+    return gzip.decompress(base64.b64decode(match.group(1))).decode("utf-8")
 
 
 def test_scene_configuration_args_payload_compresses_below_vast_safe_limit() -> None:
@@ -104,6 +116,56 @@ def test_scene_configuration_onstart_payload_compresses_below_vast_safe_limit() 
         check=False,
     )
     assert syntax.returncode == 0, syntax.stderr.decode("utf-8", errors="replace")
+
+
+def test_scene_configuration_private_startup_values_never_enter_container_env() -> None:
+    fake_secret = "private-bootstrap-value-for-test"
+    full_env = {
+        "ACCEPT_EULA": "Y",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "OPENAI_PROJECT_ID": "proj_public_identity",
+        "BLUEPRINT_EVAL_MANIFEST_URI": (
+            "https://objects.example/bundle?X-Amz-Signature=fake-signature"
+        ),
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": (
+            "https://objects.example/output?X-Amz-Signature=fake-put-signature"
+        ),
+        "HF_TOKEN": fake_secret,
+        vpa.VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + "OPENAI_API_KEY_FILE": (
+            "cHJpdmF0ZS10ZXN0LWtleQ=="
+        ),
+    }
+    container_env, private_startup_env = (
+        vpa._scene_configuration_startup_environments(full_env)
+    )
+    assert container_env == {
+        "ACCEPT_EULA": "Y",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "OPENAI_PROJECT_ID": "proj_public_identity",
+    }
+    assert set(private_startup_env) == set(full_env) - set(container_env)
+
+    payload = vpa._create_payload(
+        image=vpa.DEFAULT_ISAAC_IMAGE,
+        label="blueprint-scene-private-startup-env",
+        launch_mode="ssh_direct",
+        probe_script="echo probe-started",
+        disk_gb=vpa.DEFAULT_ISAAC_DISK_GB,
+        env=container_env,
+        private_startup_env=private_startup_env,
+    )
+    assert payload["env"] == container_env
+    assert fake_secret not in payload["onstart"]
+    assert transport.VAST_ARGS_GZIP_BASE64_MARKER in payload["onstart"]
+    decoded = _decoded_compressed_script(payload["onstart"])
+    assert "rm -f /root/onstart.sh" in decoded
+    assert "BLUEPRINT_VAST_PRIVATE_STARTUP_ENV_READY" in decoded
+    for name, value in private_startup_env.items():
+        assert f"export {name}=" in decoded
+        assert value in decoded
+    summary = vpa._create_request_summary(payload, secret_values=[fake_secret])
+    assert summary["raw_payload_redacted"]["onstart"] == vpa.REDACTED_SECRET_FIELD
+    assert transport.VAST_ARGS_GZIP_BASE64_MARKER not in str(summary)
 
 
 def test_compressed_onstart_preserves_probe_output_and_exit_code() -> None:

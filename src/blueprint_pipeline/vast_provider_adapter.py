@@ -176,6 +176,16 @@ VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
 VAST_INLINE_PROVIDER_BUNDLE_MAX_BASE64_CHARS = 130_000
 VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX = "BLUEPRINT_VAST_RUNTIME_SECRET_B64_"
+VAST_SCENE_CONFIGURATION_PRIVATE_STARTUP_ENV_NAMES = frozenset(
+    {
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "BLUEPRINT_RUNTIME_DEPENDENCY_URI",
+        VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV,
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+    }
+)
 VAST_RUNTIME_SECRET_FILE_LIMIT = 8
 VAST_RUNTIME_SECRET_MAX_BYTES = 65_536
 VAST_IMAGE_LOGIN_MODE_ENV = "BLUEPRINT_VAST_IMAGE_LOGIN_MODE"
@@ -4052,6 +4062,48 @@ def _forwarded_secret_values() -> list[str]:
     return _dedupe(values)
 
 
+def _scene_configuration_startup_environments(
+    env: Mapping[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Keep credentials out of the container-wide environment for warm SSH."""
+
+    container_env: dict[str, str] = {}
+    private_startup_env: dict[str, str] = {}
+    for name, value in env.items():
+        private = (
+            name.startswith(VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX)
+            or name in VAST_SCENE_CONFIGURATION_PRIVATE_STARTUP_ENV_NAMES
+            or (
+                any(marker in name.upper() for marker in SENSITIVE_KEY_MARKERS)
+                and not vrec.is_public_openai_identity_name(name)
+            )
+        )
+        (private_startup_env if private else container_env)[name] = value
+    return container_env, private_startup_env
+
+
+def _private_startup_environment_script(env: Mapping[str, str]) -> str:
+    if not env:
+        return ""
+    exports: list[str] = []
+    for name, value in sorted(env.items()):
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{1,160}", name) is None:
+            raise ValueError("invalid_vast_private_startup_environment_name")
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise ValueError("invalid_vast_private_startup_environment_value")
+        exports.append(f"export {name}={shlex.quote(value)}")
+    return (
+        "if [ -e /root/onstart.sh ]; then "
+        "if [ -L /root/onstart.sh ] || [ ! -f /root/onstart.sh ]; then "
+        "echo BLUEPRINT_VAST_PRIVATE_STARTUP_BLOCKED:onstart_path_invalid; exit 91; fi; "
+        "rm -f /root/onstart.sh || exit 92; fi; "
+        "if [ -e /root/onstart.sh ]; then "
+        "echo BLUEPRINT_VAST_PRIVATE_STARTUP_BLOCKED:onstart_path_persisted; exit 93; fi; "
+        + "; ".join(exports)
+        + "; echo BLUEPRINT_VAST_PRIVATE_STARTUP_ENV_READY; "
+    )
+
+
 def _official_public_isaac_image(image: str) -> bool:
     return image.startswith("nvcr.io/nvidia/isaac-sim:")
 
@@ -4146,6 +4198,7 @@ def _create_payload(
     probe_script: str,
     disk_gb: int,
     env: Mapping[str, str] | None = None,
+    private_startup_env: Mapping[str, str] | None = None,
     image_login: str | None = None,
     template_hash_id: str | None = None,
 ) -> dict[str, Any]:
@@ -4161,6 +4214,10 @@ def _create_payload(
         payload["image"] = image
     if _string(template_hash_id):
         payload["template_hash_id"] = _string(template_hash_id)
+    private_startup_script = _private_startup_environment_script(
+        private_startup_env or {}
+    )
+    resolved_probe_script = private_startup_script + probe_script
     if launch_mode == "args":
         # Vast API args mode uses args_str, not onstart. Run through bash so
         # images whose entrypoint execs CMD still receive an executable command.
@@ -4175,7 +4232,7 @@ def _create_payload(
         wrapped_script = (
             "set +e\n"
             "(\n"
-            f"{probe_script.rstrip()}\n"
+            f"{resolved_probe_script.rstrip()}\n"
             ")\n"
             "script_rc=$?\n"
             "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED\n"
@@ -4183,9 +4240,13 @@ def _create_payload(
             "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_DONE\n"
             'exit "$script_rc"'
         )
-        payload["args_str"] = args_mode_command(wrapped_script)
+        payload["args_str"] = args_mode_command(
+            wrapped_script, force_compression=bool(private_startup_env)
+        )
     else:
-        payload["onstart"] = onstart_mode_script(probe_script)
+        payload["onstart"] = onstart_mode_script(
+            resolved_probe_script, force_compression=bool(private_startup_env)
+        )
         if launch_mode == "jupyter_direct":
             payload["use_jupyter_lab"] = True
             payload["jupyter_dir"] = "/workspace"
@@ -5564,6 +5625,14 @@ def _create_request_summary(
 ) -> dict[str, Any]:
     env = _mapping(payload.get("env"))
     inline_payload = _string(env.get(VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV))
+    receipt_payload = dict(payload)
+    # Startup programs may be compressed. Once compressed, ordinary value
+    # replacement cannot see credential bytes embedded in the encoded stream.
+    # Length and presence are sufficient evidence; never retain the reversible
+    # command body in a receipt.
+    for command_field in ("args", "args_str", "onstart"):
+        if command_field in receipt_payload:
+            receipt_payload[command_field] = REDACTED_SECRET_FIELD
     return {
         "image": payload.get("image"),
         "label": payload.get("label"),
@@ -5594,7 +5663,7 @@ def _create_request_summary(
             "NVIDIA_DRIVER_CAPABILITIES": bool(env.get("NVIDIA_DRIVER_CAPABILITIES")),
         },
         "image_login_supplied": bool(payload.get("image_login")),
-        "raw_payload_redacted": _redact_runtime_value(payload, secret_values),
+        "raw_payload_redacted": _redact_runtime_value(receipt_payload, secret_values),
     }
 
 
@@ -8665,6 +8734,29 @@ def run_vast_provider_adapter(
                 provider_bundle_kind=provider_bundle_kind,
                 expected_provider_bundle_sha256=expected_provider_bundle_sha256,
             )
+            probe_env = _probe_env(
+                job_dir=resolved_job_dir,
+                enable_isaac_smoke=enable_isaac_smoke,
+                provider_bundle_url=provider_bundle_url,
+                provider_output_put_url=provider_output_put_url,
+                runtime_dependency_url=runtime_dependency_url,
+                provider_bundle_inline_base64=_string(
+                    inline_bundle_transport.get("inline_provider_bundle_base64")
+                ),
+                provider_bundle_inline_sha256=_string(
+                    inline_bundle_transport.get("inline_provider_bundle_sha256")
+                ),
+                retain_cosmos_server=retain_instance_on_runtime_failure,
+                forward_hf_token=forward_hf_token,
+                provider_bundle_kind=provider_bundle_kind,
+                runtime_secret_file_values=runtime_secret_values,
+                provider_runtime_environment=provider_runtime_environment,
+            )
+            private_startup_env: dict[str, str] = {}
+            if provider_bundle_kind == "task_evaluation_scene_configuration":
+                probe_env, private_startup_env = (
+                    _scene_configuration_startup_environments(probe_env)
+                )
             create_payload = _create_payload(
                 image=create_request_image,
                 label=(
@@ -8675,24 +8767,8 @@ def run_vast_provider_adapter(
                 launch_mode=launch_mode,
                 probe_script=probe_script,
                 disk_gb=resolved_disk_gb,
-                env=_probe_env(
-                    job_dir=resolved_job_dir,
-                    enable_isaac_smoke=enable_isaac_smoke,
-                    provider_bundle_url=provider_bundle_url,
-                    provider_output_put_url=provider_output_put_url,
-                    runtime_dependency_url=runtime_dependency_url,
-                    provider_bundle_inline_base64=_string(
-                        inline_bundle_transport.get("inline_provider_bundle_base64")
-                    ),
-                    provider_bundle_inline_sha256=_string(
-                        inline_bundle_transport.get("inline_provider_bundle_sha256")
-                    ),
-                    retain_cosmos_server=retain_instance_on_runtime_failure,
-                    forward_hf_token=forward_hf_token,
-                    provider_bundle_kind=provider_bundle_kind,
-                    runtime_secret_file_values=runtime_secret_values,
-                    provider_runtime_environment=provider_runtime_environment,
-                ),
+                env=probe_env,
+                private_startup_env=private_startup_env,
                 image_login=image_login,
                 template_hash_id=template_hash,
             )
