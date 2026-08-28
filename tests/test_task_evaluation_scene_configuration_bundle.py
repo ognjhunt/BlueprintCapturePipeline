@@ -2338,6 +2338,7 @@ def test_scene_configuration_accepts_nonzero_scope_for_incremental_cost_metering
     _secret_paths, runtime_environment = scene_vast._provider_runtime_inputs(authority)
 
     assert observed == ["key_semantic", "key_review", "key_content_agents"]
+    assert runtime_environment["BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS"] == "true"
     assert (
         runtime_environment[
             "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_MAX_COST_USD"

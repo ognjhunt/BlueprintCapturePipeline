@@ -21,6 +21,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
 from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
@@ -406,6 +407,11 @@ def _provider_runtime_inputs(
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,
+        # Reaching this mapping proves the paid scene authority, three distinct
+        # stage identities, their cost-scope attestations, and official cost
+        # baselines above. The generic Agents SDK keeps its own opt-in gate;
+        # the admitted scene caller must explicitly satisfy it on the provider.
+        LIVE_AGENTS_SDK_ENV: "true",
         "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": str(
             authority["authority_digest"]
         ),
