@@ -368,6 +368,7 @@ def _zip_tree(source: Path, destination: Path) -> None:
             info.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o444)) << 16
             with path.open("rb") as input_stream, archive.open(info, "w") as output_stream:
                 shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+    destination.chmod(0o644)
 
 
 def _diagnostic_portable_render_inputs(

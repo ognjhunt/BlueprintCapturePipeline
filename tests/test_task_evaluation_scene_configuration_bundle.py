@@ -478,6 +478,18 @@ def test_bundle_preserves_valid_external_stage_configuration_bytes(
     assert actual == expected
 
 
+def test_bundle_zip_is_not_group_writable_before_content_addressing(
+    tmp_path: Path,
+) -> None:
+    original_umask = os.umask(0o002)
+    try:
+        receipt = _build(tmp_path, "content-addressable-bundle")
+    finally:
+        os.umask(original_umask)
+
+    assert os.stat(receipt["bundle_path"]).st_mode & 0o777 == 0o644
+
+
 def _construction_queue(tmp_path: Path) -> Path:
     envelope_path = tmp_path / "source" / "envelope.json"
     envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
