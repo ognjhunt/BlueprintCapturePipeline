@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import zipfile
 from pathlib import Path
 
@@ -58,11 +59,19 @@ def _fixture(tmp_path: Path) -> dict:
     (stage / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (stage / "run.sh").chmod(0o555)
     (stage / "provider_runtime" / "payload.bin").write_bytes(b"provider payload")
+    (stage / "provider_runtime" / "payload.bin").chmod(0o600)
     bundle = bundle_root / "task_evaluation_scene_configuration_provider_bundle.zip"
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         for path in sorted(stage.rglob("*")):
             if path.is_file():
-                archive.write(path, path.relative_to(stage).as_posix())
+                info = zipfile.ZipInfo(
+                    path.relative_to(stage).as_posix(),
+                    date_time=(1980, 1, 1, 0, 0, 0),
+                )
+                info.create_system = 3
+                archived_mode = 0o755 if path.stat().st_mode & 0o111 else 0o444
+                info.external_attr = (stat.S_IFREG | archived_mode) << 16
+                archive.writestr(info, path.read_bytes())
     receipt_path = bundle_root / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
     receipt_path.write_text("{}\n", encoding="utf-8")
     receipt = {
@@ -242,6 +251,10 @@ def test_plan_apply_removes_only_exact_rebuildables_and_preserves_evidence(
     assert plan["terminal_envelope_digest"] == fixture["envelope_digest"]
     assert plan["terminal_result_digest"] == fixture["result_digest"]
     assert plan["removable_stage_tree"]["archive_byte_identity_proven"] is True
+    assert plan["removable_stage_tree"]["archive_mode_normalization_counts"] == {
+        "0555->0755": 1,
+        "0600->0444": 1,
+    }
     plan_path = tmp_path / "retention-plan.json"
     plan_path.write_text(json.dumps(plan, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -419,6 +432,32 @@ def test_plan_refuses_stage_archive_mismatch_or_symlink(tmp_path: Path) -> None:
     with pytest.raises(
         BlockedActivationRetentionError,
         match="blocked_activation_retention_stage_tree_symlink",
+    ):
+        build_blocked_activation_retention_plan(
+            **{
+                key: fixture[key]
+                for key in (
+                    "activation_root",
+                    "activation_base_root",
+                    "state_root",
+                    "activation_queue_root",
+                    "profile_dir",
+                    "public_catalog",
+                    "standing_authorization_dir",
+                    "live_reference_roots",
+                    "bundle_validator",
+                )
+            }
+        )
+
+
+def test_plan_refuses_unrecognized_archive_mode_normalization(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    (fixture["stage"] / "provider_runtime/payload.bin").chmod(0o640)
+
+    with pytest.raises(
+        BlockedActivationRetentionError,
+        match="blocked_activation_retention_stage_archive_mismatch",
     ):
         build_blocked_activation_retention_plan(
             **{
