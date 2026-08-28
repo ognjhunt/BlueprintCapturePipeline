@@ -17,6 +17,7 @@ from blueprint_pipeline.retained_gpu_session_lifecycle import record_retained_gp
 from blueprint_pipeline import task_evaluation_scene_configuration_provider_cleanup as provider_cleanup
 from blueprint_pipeline import task_evaluation_scene_configuration_allocator as allocator
 from blueprint_pipeline import task_evaluation_scene_configuration_warm_diagnostic as warm
+from blueprint_pipeline import task_evaluation_scene_configuration_warm_contract as warm_session_contract
 from blueprint_pipeline import task_evaluation_scene_configuration_warm_overlay as warm_overlay
 from blueprint_pipeline import task_evaluation_scene_configuration_warm_remote_protocol as warm_remote
 from blueprint_pipeline import task_evaluation_scene_configuration_warm_transport as warm_transport
@@ -27,6 +28,21 @@ from blueprint_pipeline.wam_provider_object_store import (
     signed_output_object_binding_sha256,
 )
 from scripts import task_evaluation_scene_configuration_diagnostic_provider_runner as provider_runner
+
+
+def test_warm_diagnostic_reexports_immutable_contract_seam() -> None:
+    assert (
+        warm.materialize_scene_configuration_warm_session_authority
+        is warm_session_contract.materialize_scene_configuration_warm_session_authority
+    )
+    assert (
+        warm.validate_scene_configuration_warm_iteration_authority
+        is warm_session_contract.validate_scene_configuration_warm_iteration_authority
+    )
+    assert (
+        warm.scene_configuration_warm_session_owner_lock
+        is warm_session_contract.scene_configuration_warm_session_owner_lock
+    )
 
 
 def _release_tree(root: Path) -> Path:
@@ -1425,7 +1441,7 @@ def test_stage_failure_advances_safe_checkpoint_for_next_iteration(
         "scientific_binding_digest": "sha256:" + "2" * 64,
     }
     monkeypatch.setattr(
-        warm,
+        warm_session_contract,
         "validate_scene_configuration_warm_source_overlay",
         lambda *_args, **_kwargs: overlay,
     )
@@ -1489,7 +1505,7 @@ def test_artifixer_warm_continuation_cannot_reuse_paid_stage_caps(
     state_path.chmod(0o600)
     state_path.write_text(json.dumps(state), encoding="utf-8")
     monkeypatch.setattr(
-        warm,
+        warm_session_contract,
         "validate_scene_configuration_warm_source_overlay",
         lambda *_args, **_kwargs: {
             "source_commit": "b" * 40,
