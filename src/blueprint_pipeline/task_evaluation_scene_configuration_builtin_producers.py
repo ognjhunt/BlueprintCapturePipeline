@@ -314,6 +314,7 @@ def _handler(
     identity: SceneConfigurationStageProducerIdentity,
     toolchain_root: Path,
     expected_source_commit: str,
+    diagnostic_only: bool,
     runner: Runner,
     environment: Mapping[str, str],
 ) -> Callable[..., Mapping[str, Any]]:
@@ -342,6 +343,13 @@ def _handler(
             "configuration": dict(configuration),
             "configuration_sha256": _sha256(configuration_path),
             "source_commit": expected_source_commit,
+            "construction_source_commit": str(
+                envelope.get("expected_production_commit")
+                or expected_source_commit
+            ),
+            "execution_mode": (
+                "diagnostic_only" if diagnostic_only else "production"
+            ),
             "toolchain_digest": toolchain_digest,
             "construction_envelope": dict(envelope),
         }
@@ -358,6 +366,14 @@ def _handler(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_RESULT": str(result_path),
         }
+        if diagnostic_only:
+            run_environment[
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY"
+            ] = "1"
+        else:
+            run_environment.pop(
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY", None
+            )
         if any(str(run_environment.get(name) or "").strip() for name in _RAW_SECRET_ENVIRONMENT_NAMES):
             raise TaskEvaluationSceneConfigurationStageProducerError(
                 "scene_configuration_raw_secret_environment_forbidden"
@@ -418,6 +434,7 @@ def builtin_scene_configuration_stage_producer_registry(
     toolchain_root: str | Path | None = None,
     runner: Runner = subprocess.run,
     environment: Mapping[str, str] | None = None,
+    diagnostic_only: bool = False,
 ) -> SceneConfigurationStageProducerRegistry:
     """Resolve all GPU stage producers from one exact published toolchain."""
 
@@ -435,6 +452,7 @@ def builtin_scene_configuration_stage_producer_registry(
             identity=identity,
             toolchain_root=root,
             expected_source_commit=expected_source_commit,
+            diagnostic_only=diagnostic_only,
             runner=runner,
             environment=values,
         )

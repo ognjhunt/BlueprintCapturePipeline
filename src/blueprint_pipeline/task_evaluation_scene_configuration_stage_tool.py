@@ -69,6 +69,7 @@ _DEPENDENCIES_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
 _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 _RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_RESULT"
 _COMPONENT_RESULT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
+_DIAGNOSTIC_ONLY_ENV = "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY"
 
 
 class TaskEvaluationSceneConfigurationStageToolError(RuntimeError):
@@ -132,7 +133,9 @@ def _validate_dependencies(value: Any) -> list[dict[str, Any]]:
     return results
 
 
-def _validate_input(value: Any, *, adapter_id: str) -> dict[str, Any]:
+def _validate_input(
+    value: Any, *, adapter_id: str, diagnostic_only: bool
+) -> dict[str, Any]:
     admitted = {identity.adapter_id for identity in ADMITTED_PRODUCER_IDENTITIES}
     if not isinstance(value, Mapping):
         raise TaskEvaluationSceneConfigurationStageToolError(
@@ -141,6 +144,11 @@ def _validate_input(value: Any, *, adapter_id: str) -> dict[str, Any]:
     stage = value.get("stage")
     adapter = stage.get("adapter") if isinstance(stage, Mapping) else None
     envelope = value.get("construction_envelope")
+    source_commit = str(value.get("source_commit") or "")
+    construction_source_commit = str(
+        value.get("construction_source_commit") or source_commit
+    )
+    execution_mode = str(value.get("execution_mode") or "production")
     if (
         adapter_id not in admitted
         or value.get("schema_version") != _INPUT_SCHEMA_VERSION
@@ -151,10 +159,18 @@ def _validate_input(value: Any, *, adapter_id: str) -> dict[str, Any]:
         or value.get("run_id") != (envelope or {}).get("run_id")
         or not isinstance(value.get("configuration"), Mapping)
         or not _DIGEST.fullmatch(str(value.get("configuration_sha256") or ""))
-        or not _COMMIT.fullmatch(str(value.get("source_commit") or ""))
+        or not _COMMIT.fullmatch(source_commit)
+        or not _COMMIT.fullmatch(construction_source_commit)
         or not _DIGEST.fullmatch(str(value.get("toolchain_digest") or ""))
         or not isinstance(envelope, Mapping)
-        or envelope.get("expected_production_commit") != value.get("source_commit")
+        or envelope.get("expected_production_commit")
+        != construction_source_commit
+        or execution_mode not in {"production", "diagnostic_only"}
+        or (execution_mode == "diagnostic_only") != diagnostic_only
+        or (
+            execution_mode == "production"
+            and source_commit != construction_source_commit
+        )
         or envelope.get("envelope_digest")
         != canonical_digest(envelope, digest_field="envelope_digest")
     ):
@@ -301,6 +317,7 @@ def execute_stage_tool(
     production_input = _validate_input(
         _read(input_path, code="scene_configuration_stage_tool_input_invalid"),
         adapter_id=adapter_id,
+        diagnostic_only=values.get(_DIAGNOSTIC_ONLY_ENV) == "1",
     )
     _validate_dependencies(
         _read(

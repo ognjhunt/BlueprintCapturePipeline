@@ -157,11 +157,12 @@ def test_fresh_bundle_switches_to_checkpoint_resume_inside_warm_iteration() -> N
 def test_diagnostic_producer_registry_binds_bundle_toolchain_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    observed: dict[str, str] = {}
+    observed: dict[str, str | bool] = {}
     sentinel = object()
 
-    def build_registry(*, expected_source_commit: str):
+    def build_registry(*, expected_source_commit: str, diagnostic_only: bool):
         observed["expected_source_commit"] = expected_source_commit
+        observed["diagnostic_only"] = diagnostic_only
         return sentinel
 
     monkeypatch.setattr(
@@ -177,7 +178,10 @@ def test_diagnostic_producer_registry_binds_bundle_toolchain_commit(
     )
 
     assert registry is sentinel
-    assert observed == {"expected_source_commit": "b" * 40}
+    assert observed == {
+        "expected_source_commit": "b" * 40,
+        "diagnostic_only": True,
+    }
     with pytest.raises(
         ValueError, match="scene_configuration_diagnostic_toolchain_identity_invalid"
     ):

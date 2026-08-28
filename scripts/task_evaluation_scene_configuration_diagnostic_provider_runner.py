@@ -112,7 +112,8 @@ def _diagnostic_stage_producer_registry(*, bundle_manifest: dict):
             "scene_configuration_diagnostic_toolchain_identity_invalid"
         )
     return builtin_scene_configuration_stage_producer_registry(
-        expected_source_commit=toolchain_source_commit
+        expected_source_commit=toolchain_source_commit,
+        diagnostic_only=True,
     )
 
 
