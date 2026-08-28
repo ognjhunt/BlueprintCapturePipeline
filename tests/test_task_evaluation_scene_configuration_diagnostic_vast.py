@@ -8,6 +8,14 @@ from pathlib import Path
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import task_evaluation_scene_configuration_provider_cleanup as provider_cleanup
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as vast
+from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_failure_evidence import (
+    ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
+    SCHEMA_VERSION as ARTIFIXER_CHECKPOINT_SCHEMA_VERSION,
+    materialize_artifixer_post_training_checkpoint,
+    validate_artifixer_post_training_checkpoint,
+)
 
 
 CHECKPOINT_BODY = b'{}\n'
@@ -237,6 +245,106 @@ def test_blocked_diagnostic_output_preserves_validated_advanced_checkpoint(
 
     assert "provider_result_blocker:stage_4_refused_after_stage_3_checkpoint" in blockers
     assert observed["_validated_advanced_checkpoint"]["checkpoint_digest"] == CHECKPOINT_DIGEST
+
+
+def test_blocked_diagnostic_output_restores_authenticated_artifixer_checkpoint_modes(
+    tmp_path: Path,
+) -> None:
+    runtime_result = tmp_path / "runtime-result.json"
+    runtime_result.write_text(
+        json.dumps(
+            {
+                "schema_version": "public_scene_artifixer3d_runtime_result.v1",
+                "status": ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+            }
+        ),
+        encoding="utf-8",
+    )
+    review_frames = []
+    for index in range(8):
+        frame = tmp_path / f"review-{index}.png"
+        frame.write_bytes(f"review-frame-{index}".encode())
+        review_frames.append(
+            {
+                "frame_index": index,
+                "camera_id": f"camera-{index}",
+                "final_frame": {"path": str(frame)},
+            }
+        )
+    native = tmp_path / "configured.usdz"
+    native.write_bytes(b"configured-appearance")
+    checkpoint_root = tmp_path / "provider-checkpoint"
+    checkpoint = materialize_artifixer_post_training_checkpoint(
+        source_diagnostic_checkpoint={
+            "checkpoint_digest": "sha256:" + "1" * 64,
+            "scientific_bindings": {"binding_digest": "sha256:" + "2" * 64},
+            "completed_stage_prefix_count": 0,
+            "completed_stage_results": [],
+        },
+        bindings={
+            "source_commit": "a" * 40,
+            "run_id": "diagnostic-run-1",
+            "configuration_sha256": "sha256:" + "3" * 64,
+        },
+        runtime_result_path=runtime_result,
+        review_frames=review_frames,
+        native_appearance_path=native,
+        output_root=checkpoint_root,
+    )
+    relative_root = Path("stages/stage-1/producer/artifixer_post_training_checkpoint")
+    manifest = checkpoint_root / f"{ARTIFIXER_CHECKPOINT_SCHEMA_VERSION}.json"
+    result = _diagnostic_provider_result()
+    result["status"] = "blocked_diagnostic_only"
+    result["blockers"] = ["stage_2_refused_after_artifixer"]
+    result.pop("diagnostic_stage_chain")
+    result.pop("advanced_checkpoint")
+    result["artifixer_post_training_checkpoint"] = {
+        "provider_output_relative_root": relative_root.as_posix(),
+        "manifest_relative_path": (relative_root / manifest.name).as_posix(),
+        "manifest_sha256": "sha256:"
+        + hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "checkpoint_digest": checkpoint["checkpoint_digest"],
+        "source_diagnostic_checkpoint_digest": checkpoint[
+            "source_diagnostic_checkpoint_digest"
+        ],
+        "binding_digest": checkpoint["binding_digest"],
+        "file_count": 1 + len(checkpoint["inventory"]),
+        "total_bytes": sum(
+            path.stat().st_size for path in checkpoint_root.rglob("*") if path.is_file()
+        ),
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    archive = tmp_path / "blocked-artifixer-output.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(vast.RESULT_FILENAME, json.dumps(result, sort_keys=True))
+        for path in checkpoint_root.rglob("*"):
+            if path.is_file():
+                bundle.write(
+                    path,
+                    (relative_root / path.relative_to(checkpoint_root)).as_posix(),
+                )
+
+    observed, blockers = vast._extract_provider_output(
+        archive,
+        tmp_path / "extracted",
+        maximum_archive_bytes=1_000_000,
+        diagnostic_only=True,
+    )
+
+    assert blockers == [
+        "provider_result_blocker:stage_2_refused_after_artifixer"
+    ]
+    reference = observed["_validated_artifixer_post_training_checkpoint"]
+    extracted_root = Path(reference["checkpoint_root"])
+    reopened = validate_artifixer_post_training_checkpoint(
+        checkpoint_root=extracted_root
+    )
+    assert reopened["checkpoint_digest"] == checkpoint["checkpoint_digest"]
+    assert {
+        path.stat().st_mode & 0o777
+        for path in extracted_root.rglob("*")
+        if path.is_file() and path.name != manifest.name
+    } == {0o440}
 
 
 def test_escaped_adapter_finally_defers_cleanup_when_allocation_may_exist(
