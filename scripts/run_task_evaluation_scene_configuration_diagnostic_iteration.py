@@ -23,32 +23,42 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from blueprint_pipeline.core.common import redacted_failure_text
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
+
+# systemd EnvironmentFile entries can replace an earlier PYTHONPATH setting.
+# Re-establish this script's exact staged source root before importing any
+# Blueprint module, then prove below that every loaded Blueprint module came
+# from the same release.
+_SCRIPT_SOURCE_ROOT = (Path(__file__).resolve().parents[1] / "src").resolve()
+_script_source_text = str(_SCRIPT_SOURCE_ROOT)
+sys.path[:] = [entry for entry in sys.path if entry != _script_source_text]
+sys.path.insert(0, _script_source_text)
+
+from blueprint_pipeline.core.common import redacted_failure_text  # noqa: E402
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest  # noqa: E402
+from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (  # noqa: E402
     BUNDLE_SCHEMA_VERSION,
     PROBE_KIND,
     TaskEvaluationSceneConfigurationBundleError,
     load_scene_configuration_provider_bundle_receipt,
 )
-from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_release import (
+from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_release import (  # noqa: E402
     SceneConfigurationDiagnosticReleaseError,
     stage_scene_configuration_diagnostic_release,
     validate_scene_configuration_diagnostic_release_receipt,
 )
-from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode import (
+from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode import (  # noqa: E402
     CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
     FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
 )
-from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (
+from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (  # noqa: E402
     AUTHORITY_SCHEMA_VERSION,
     SCENE_CONFIGURATION_PROVIDER_IMAGE,
 )
-from blueprint_pipeline.spend_authority_consumption_root import (
+from blueprint_pipeline.spend_authority_consumption_root import (  # noqa: E402
     SpendAuthorityRootError,
     prepare_consumption_root,
 )
-from blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic import (
+from blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic import (  # noqa: E402
     materialize_scene_configuration_warm_session_authority,
 )
 
@@ -78,10 +88,59 @@ _OPENAI_RUNTIME_VALUE_ENV_NAMES = (
     "OPENAI_CONTENT_AGENTS_API_KEY_ID",
 )
 _CHILD_FAILURE_DETAIL_MAX_CHARS = 300
+_REQUIRED_BLUEPRINT_IMPORTS = frozenset(
+    {
+        "blueprint_pipeline.core.common",
+        "blueprint_pipeline.decision_evidence_contracts",
+        "blueprint_pipeline.spend_authority_consumption_root",
+        "blueprint_pipeline.task_evaluation_scene_configuration_bundle",
+        "blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_mode",
+        "blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_release",
+        "blueprint_pipeline.task_evaluation_scene_configuration_paid_authority",
+        "blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic",
+    }
+)
 
 
 class SceneConfigurationDiagnosticIterationError(ValueError):
     """The fixed diagnostic iteration command could not be prepared safely."""
+
+
+def _blueprint_import_provenance_blockers(
+    *,
+    script_path: Path = Path(__file__),
+    loaded_modules: Mapping[str, object] | None = None,
+) -> list[str]:
+    """Name Blueprint imports that do not come from this script's release."""
+
+    expected_package_root = (
+        script_path.resolve().parents[1] / "src" / "blueprint_pipeline"
+    ).resolve()
+    modules = sys.modules if loaded_modules is None else loaded_modules
+    blockers: list[str] = []
+    for name in sorted(_REQUIRED_BLUEPRINT_IMPORTS):
+        module = modules.get(name)
+        module_file = getattr(module, "__file__", None)
+        if not isinstance(module_file, str) or not module_file:
+            blockers.append(name)
+            continue
+        try:
+            resolved = Path(module_file).resolve(strict=True)
+        except OSError:
+            blockers.append(name)
+            continue
+        if not resolved.is_relative_to(expected_package_root):
+            blockers.append(name)
+    return blockers
+
+
+def _assert_blueprint_import_provenance() -> None:
+    blockers = _blueprint_import_provenance_blockers()
+    if blockers:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_import_provenance_invalid:"
+            + ",".join(blockers)
+        )
 
 
 def _absolute(value: str | Path, *, field: str) -> Path:
@@ -481,6 +540,7 @@ def run_scene_configuration_diagnostic_iteration(
 ) -> dict[str, Any]:
     """Prepare the source overlay and invoke the fixed diagnostic chain."""
 
+    _assert_blueprint_import_provenance()
     _preflight_paid_runtime_environment(
         os.environ,
         execute=bool(args.execute),
