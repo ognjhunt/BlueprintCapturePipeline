@@ -277,6 +277,8 @@ def compile_native_arena_episode(
         or base.get("scene_identity") != request["scene"]["identity"]
         or base.get("robot_mount_interface_digest")
         != revision["registration"]["robot_mount_interface"]["digest"]
+        or sensors.get("scene_camera_calibration_digest")
+        != revision["registration"]["camera_calibration"]["digest"]
         or task_definition.get("identity") != request["task"]["identity"]
         or success.get("identity") != request["task"]["identity"]
         or execution.get("identity") != request["task"]["identity"]
