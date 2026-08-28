@@ -2489,6 +2489,12 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
         execution, receipt, diagnostic_only=False
     ) == ["scene_configuration_provider_run_id_mismatch"]
 
+    execution["stage_chain"] = None
+    execution["status"] = "blocked"
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == []
+
 
 def test_blocked_provider_result_retains_its_redacted_failure_in_terminal_blockers(
     tmp_path: Path,

@@ -16,17 +16,12 @@ def provider_execution_binding_blockers(
     chain = execution.get(
         "diagnostic_stage_chain" if diagnostic_only else "stage_chain"
     )
-    result_run_id = (
-        chain.get("run_id")
-        if diagnostic_only and isinstance(chain, Mapping)
-        else execution.get("run_id")
+    result_run_id = execution.get(
+        "diagnostic_run_id" if diagnostic_only else "run_id"
     )
     if result_run_id != receipt.get("run_id") or (
-        not diagnostic_only
-        and (
-            not isinstance(chain, Mapping)
-            or chain.get("run_id") != receipt.get("run_id")
-        )
+        isinstance(chain, Mapping)
+        and chain.get("run_id") != receipt.get("run_id")
     ):
         blockers.append("scene_configuration_provider_run_id_mismatch")
     provider_source_commit = execution.get(
