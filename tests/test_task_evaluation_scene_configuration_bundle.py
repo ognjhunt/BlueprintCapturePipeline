@@ -524,8 +524,13 @@ def _provider_runtime(
         "browser_executable": str(browser),
         "renderer_root": str(source_renderer),
         "identity": {
+            "mode": "immutable_host_runtime",
+            "schema_version": "task_evaluation_splat_render_runtime.v1",
             "runtime_digest": "sha256:" + "9" * 64,
             "source_commit": commit,
+            "platform": "linux-x86_64",
+            "file_count": 17,
+            "full_byte_service_account_readback_passed": True,
         },
     }
     return runtime, identity
@@ -769,6 +774,16 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     monkeypatch.setattr(
         bundle_module, "validate_splat_render_runtime", lambda **_kwargs: identity
     )
+    checkpoint_renderer_identity = {
+        "mode": "digest_bound_provider_bundle_renderer",
+        "schema_version": PROVIDER_RENDERER_SCHEMA_VERSION,
+        "renderer_digest": "sha256:" + "9" * 64,
+        "source_runtime_digest": identity["identity"]["runtime_digest"],
+        "source_commit": commit,
+        "platform": identity["identity"]["platform"],
+        "file_count": identity["identity"]["file_count"],
+        "provider_full_byte_inventory_reopened": True,
+    }
     checkpoint_root = tmp_path / "diagnostic-checkpoint"
     checkpoint_root.mkdir()
     inventory = []
@@ -832,7 +847,11 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
                 "size_bytes": render["source_appearance"]["size_bytes"],
                 "checkpoint_role": None,
             },
-            "renderer_runtime": identity["identity"],
+            # A checkpoint records the renderer after the provider has reopened
+            # the staged renderer inventory.  A retry validates the same bytes
+            # from the retained host runtime, whose receipt uses a different
+            # schema and mode.
+            "renderer_runtime": checkpoint_renderer_identity,
             "camera_calibration": calibration,
             "render_manifest": render_manifest,
             "derived_frames": frames,
@@ -856,6 +875,9 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         assert kwargs["stage_input"]["stage"] == envelope["recipe"][
             "stage_sequence"
         ][0]
+        assert kwargs["render_inputs"]["renderer_runtime"] == (
+            checkpoint_renderer_identity
+        )
         return checkpoint["scientific_bindings"]["binding_digest"]
 
     monkeypatch.setattr(

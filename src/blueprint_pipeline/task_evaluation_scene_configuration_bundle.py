@@ -660,9 +660,33 @@ def build_scene_configuration_provider_bundle(
             "disclosure_decision",
         ):
             current_binding_render[key] = json.loads(json.dumps(render_inputs[key]))
-        current_binding_render["renderer_runtime"] = dict(
-            provider_render_runtime["identity"]
-        )
+        checkpoint_renderer = current_binding_render.get("renderer_runtime")
+        retained_host_runtime = provider_render_runtime.get("identity")
+        if (
+            not isinstance(checkpoint_renderer, Mapping)
+            or not isinstance(retained_host_runtime, Mapping)
+            or checkpoint_renderer.get("mode")
+            != "digest_bound_provider_bundle_renderer"
+            or checkpoint_renderer.get("schema_version")
+            != PROVIDER_RENDERER_SCHEMA_VERSION
+            or checkpoint_renderer.get("provider_full_byte_inventory_reopened")
+            is not True
+            or checkpoint_renderer.get("source_runtime_digest")
+            != retained_host_runtime.get("runtime_digest")
+            or checkpoint_renderer.get("platform")
+            != retained_host_runtime.get("platform")
+            or checkpoint_renderer.get("file_count")
+            != retained_host_runtime.get("file_count")
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_diagnostic_checkpoint_binding_mismatch"
+            )
+        # The checkpoint binds the provider-reopened renderer receipt, while a
+        # retry can only reopen its immutable host source runtime.  The runtime
+        # digest, platform, file count, and the validator's full-byte comparison
+        # prove those are the same renderer.  Preserve the checkpoint receipt
+        # here so an executable-only source commit does not rewrite scientific
+        # history into a different receipt schema.
         expected_binding = diagnostic_checkpoint_scientific_binding_digest(
             stage_input={
                 "stage": dict(envelope["recipe"]["stage_sequence"][0]),
