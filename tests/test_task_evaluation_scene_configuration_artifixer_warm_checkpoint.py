@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_failure_evidence import (
+    ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
     ArtifixerPostTrainingCheckpointError,
     artifixer_post_training_binding_digest,
@@ -18,7 +21,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_warm_check
 def _fixture(tmp_path: Path) -> dict:
     runtime = {
         "schema_version": "public_scene_artifixer3d_runtime_result.v1",
-        "status": "completed",
+        "status": ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
         "tasks": [{"task_id": "remove-source-object-104"}],
         "result_digest": "",
     }
@@ -115,6 +118,29 @@ def test_post_training_checkpoint_refuses_changed_bytes(tmp_path: Path) -> None:
         match="scene_configuration_artifixer_warm_checkpoint_inventory_invalid",
     ):
         validate_artifixer_post_training_checkpoint(checkpoint_root=root)
+
+
+def test_post_training_checkpoint_refuses_generic_completed_runtime_status(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    runtime = json.loads(fixture["runtime_path"].read_text(encoding="utf-8"))
+    runtime["status"] = "completed"
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    fixture["runtime_path"].write_text(json.dumps(runtime), encoding="utf-8")
+
+    with pytest.raises(
+        ArtifixerPostTrainingCheckpointError,
+        match="scene_configuration_artifixer_warm_runtime_result_invalid",
+    ):
+        materialize_artifixer_post_training_checkpoint(
+            source_diagnostic_checkpoint=fixture["source"],
+            bindings=fixture["bindings"],
+            runtime_result_path=fixture["runtime_path"],
+            review_frames=fixture["frames"],
+            native_appearance_path=fixture["native"],
+            output_root=tmp_path / "checkpoint",
+        )
 
 
 def test_post_training_checkpoint_refuses_secret_shaped_bindings(

@@ -12,6 +12,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_configuration_artifixer_failure_evidence import (
+    ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+)
 
 
 SCHEMA_VERSION = (
@@ -166,7 +169,7 @@ def materialize_artifixer_post_training_checkpoint(
     if (
         runtime_result.get("schema_version")
         != "public_scene_artifixer3d_runtime_result.v1"
-        or runtime_result.get("status") != "completed"
+        or runtime_result.get("status") != ARTIFIXER_RUNTIME_ACCEPTED_STATUS
         or runtime_result.get("result_digest")
         != canonical_digest(runtime_result, digest_field="result_digest")
         or _contains_secret_material(runtime_result)
