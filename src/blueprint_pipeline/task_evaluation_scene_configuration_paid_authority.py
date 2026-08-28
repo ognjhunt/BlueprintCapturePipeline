@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adp_task_evaluation_abstention import valid_vast_provider_zero_api_call
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_IMAGE as SCENE_CONFIGURATION_PROVIDER_IMAGE,
@@ -37,6 +36,7 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     REQUIRED_PARENT_TTL_SECONDS,
     diagnostic_parent_runtime_budget_blockers,
 )
+from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 
 
 AUTHORITY_SCHEMA_VERSION = "task_evaluation_scene_configuration_paid_authority.v1"

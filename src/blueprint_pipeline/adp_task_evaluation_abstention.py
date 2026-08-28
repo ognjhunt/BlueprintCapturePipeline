@@ -13,17 +13,17 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .vast_evidence_contracts import (
+    VAST_PROVIDER_ZERO_API_CALL,
+    VAST_PROVIDER_ZERO_LEGACY_COMMAND,
+    valid_vast_provider_zero_api_call,
+)
 
 SCHEMA_VERSION = "adp_task_evaluation_run_abstention.v1"
 CONSTRUCTION_SCHEMA_VERSION = "articulated_public_scene_construction_run.v2"
 FREEZE_SCHEMA_VERSION = "second_scene_scene_task_freeze.v1"
 NATIVE_GATE_ABSTENTION_SCHEMA_VERSION = "adp_native_gate_abstention.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
-VAST_PROVIDER_ZERO_API_CALL = [
-    "blueprint_pipeline.gpu_render_providers.VastRenderProvider.billable_inventory",
-    "name_prefix=",
-]
-VAST_PROVIDER_ZERO_LEGACY_COMMAND = ["vastai", "show", "instances", "--raw"]
 GAUSSIAN_ATTEMPT_SCHEMA_VERSION = "adp_gaussian_excision_attempt_receipt.v1"
 GAUSSIAN_RECOVERY_SCHEMA_VERSION = "adp_gaussian_excision_recovery_readiness.v1"
 DUAL_TASK_FREEZE_SCHEMA_VERSION = "dual_task_task_freeze.v1"
@@ -133,12 +133,6 @@ def collect_vast_provider_zero_receipt(
     if not receipt["provider_zero"]:
         raise TaskEvaluationAbstentionError("provider_zero_not_observed")
     return receipt
-
-
-def valid_vast_provider_zero_api_call(value: object) -> bool:
-    """Accept the hardened in-process API seam and retained legacy receipts."""
-
-    return value in (VAST_PROVIDER_ZERO_API_CALL, VAST_PROVIDER_ZERO_LEGACY_COMMAND)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

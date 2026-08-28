@@ -101,6 +101,7 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog_without_allocation,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_evidence_contracts import SCENE_CONFIGURATION_DIAGNOSTIC_RESULT_SCHEMA_VERSION
 from .vast_provider_transfer_upload import EXPECTED_PROVIDER_UPLOAD_BYTES_ENV
 from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
@@ -109,9 +110,7 @@ from .wam_provider_object_store import (
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
-DIAGNOSTIC_RESULT_SCHEMA_VERSION = (
-    "task_evaluation_scene_configuration_diagnostic_vast_result.v1"
-)
+DIAGNOSTIC_RESULT_SCHEMA_VERSION = SCENE_CONFIGURATION_DIAGNOSTIC_RESULT_SCHEMA_VERSION
 #: Provider-namespace label the independent watchdog reaps by. It is not the
 #: run's admission identity: the authority's ``resource_name`` names *which
 #: attempt* is authorized, while this names *whose instances* the watchdog may
