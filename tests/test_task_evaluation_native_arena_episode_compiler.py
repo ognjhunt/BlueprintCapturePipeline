@@ -5,6 +5,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
     OUTPUT_SCHEMA_VERSION,
@@ -127,6 +129,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         },
         "sensors.configuration": {
             "schema_version": "task_evaluation_native_sensor_configuration.v1",
+            "scene_camera_calibration_digest": configured["registration"][
+                "camera_calibration"
+            ]["digest"],
             "cameras": [{"role": "external"}],
         },
         "scene.configured_revision.task_template.definition": {
@@ -242,3 +247,113 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         if row["semantic_role"] == "task_object"
     )
     assert replacement["asset_id"] == configured["replacement"]["identity"]["id"]
+
+
+def test_closed_compiler_refuses_sensor_calibration_from_another_scene(
+    tmp_path: Path, monkeypatch
+) -> None:
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    value = request()
+    configured = revision()
+    value["team_namespace"] = configured["team_namespace"]
+    value["expected_production_commit"] = configured["source_commit"]
+    value["scene"]["identity"] = configured["scene_identity"]
+    value["task"]["identity"] = configured["task_template"]["identity"]
+    value["task"]["subject"]["identity"] = configured["replacement"]["identity"]
+    value["task"]["configured_scene_revision_digest"] = configured["revision_digest"]
+    revision_path = _write_json(inputs, "revision.json", configured)
+    bundle_path = inputs / "configured-scene.zip"
+    _configured_bundle(bundle_path)
+    robot_identity = value["robot"]["identity"]
+    controller_identity = value["controller"]["identity"]
+    task_identity = value["task"]["identity"]
+    docs = {
+        "robot.configuration": {
+            "schema_version": "task_evaluation_native_robot_configuration.v1",
+            "identity": robot_identity,
+            "joint_reset_positions_rad": {"panda_joint1": 0.0},
+        },
+        "robot.kinematics": {
+            "schema_version": "task_evaluation_native_robot_kinematics.v1",
+            "identity": robot_identity,
+        },
+        "robot.joint_bounds": {
+            "schema_version": "task_evaluation_native_robot_joint_bounds.v1",
+            "identity": robot_identity,
+        },
+        "robot.base_registration": {
+            "schema_version": "task_evaluation_robot_to_scene_registration.v1",
+            "robot_identity": robot_identity,
+            "scene_identity": value["scene"]["identity"],
+            "robot_mount_interface_digest": configured["registration"]["robot_mount_interface"][
+                "digest"
+            ],
+            "pose_world": {
+                "position_world_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        },
+        "controller.configuration": {
+            "schema_version": "task_evaluation_native_controller_configuration.v1",
+            "identity": controller_identity,
+            "kind": value["controller"]["kind"],
+        },
+        "sensors.configuration": {
+            "schema_version": "task_evaluation_native_sensor_configuration.v1",
+            "scene_camera_calibration_digest": "sha256:" + "f" * 64,
+            "cameras": [{"role": "external"}],
+        },
+        "scene.configured_revision.task_template.definition": {
+            "schema_version": "task_evaluation_native_task_definition.v1",
+            "identity": task_identity,
+            "task_spec": {"task_kind": "rigid_pick_place"},
+            "task_object_pose_world": {
+                "position_world_m": [2.9, -6.7, 0.82],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        },
+        "scene.configured_revision.task_template.success_criteria": {
+            "schema_version": "task_evaluation_native_success_criteria.v1",
+            "identity": task_identity,
+            "criteria": {"minimum_displacement_m": 0.1},
+        },
+        "scene.configured_revision.task_template.execution": {
+            "schema_version": "task_evaluation_native_episode_execution.v1",
+            "identity": task_identity,
+            "physics_frequency_hz": 120,
+            "scenario": {"cell_id": "canonical.seed_17"},
+        },
+    }
+    references = {
+        "scene.configured_revision": _record(revision_path, "scene.configured_revision"),
+        "scene.configured_revision.configured_scene_bundle": _record(
+            bundle_path, "scene.configured_revision.configured_scene_bundle"
+        ),
+    }
+    runtime_bundle = inputs / "runtime-source.zip"
+    runtime_bundle.write_bytes(b"runtime-source")
+    references["execution_adapter.runtime_source_bundle"] = _record(
+        runtime_bundle, "execution_adapter.runtime_source_bundle"
+    )
+    for index, (contract_path, document) in enumerate(docs.items()):
+        path = _write_json(inputs, f"input-{index}.json", document)
+        references[contract_path] = _record(path, contract_path)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_native_arena_episode_compiler."
+        "materialize_native_task_arena_packet",
+        lambda **kwargs: None,
+    )
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    with pytest.raises(RuntimeError, match="episode_compiler_request_binding_mismatch"):
+        compile_native_arena_episode(
+            envelope={
+                "request": value,
+                "run_id": value["run_id"],
+                "configured_scene_revision_digest": configured["revision_digest"],
+            },
+            materialized_references=references,
+            output_root=output_root,
+        )
