@@ -101,6 +101,14 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     assert (output / "content_agents_source.zip").is_file()
     assert (output / "content_agents_source_receipt.json").is_file()
     assert (output / "run").stat().st_mode & 0o111
+    provider_runtime = output / "run_adp_content_agents_provider_runtime.sh"
+    assert provider_runtime.stat().st_mode & 0o111
+    provider_runtime_inventory = next(
+        row
+        for row in value["files"]
+        if row["relative_path"] == provider_runtime.name
+    )
+    assert provider_runtime_inventory["executable"] is True
     assert not any("839873" in path.read_text(errors="ignore") for path in output.rglob("*.*"))
     archive_command = next(command for command in git_commands if "archive" in command)
     assert archive_command[:5] == [

@@ -27,6 +27,12 @@ from scripts.build_task_evaluation_scene_configuration_component_package import 
 )
 
 
+_EXECUTABLE_SOURCES = {
+    "scripts/run_adp_content_agents_provider_runtime.sh",
+    "scripts/run_task_evaluation_scene_configuration_content_agents_component.sh",
+}
+
+
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -132,7 +138,12 @@ def build_content_agents_scene_configuration_component(
                     "scene_configuration_content_agents_blueprint_source_invalid"
                 )
             shutil.copyfile(source, destination)
-            destination.chmod(0o755 if source.stat().st_mode & 0o111 else 0o644)
+            executable = source_name in _EXECUTABLE_SOURCES
+            destination.chmod(0o755 if executable else 0o644)
+            if bool(destination.stat().st_mode & 0o111) is not executable:
+                raise ValueError(
+                    "scene_configuration_content_agents_blueprint_source_invalid"
+                )
         materialize_content_agents_model_compatibility_plan(
             model_ids=(CONTENT_LLM_MODEL, CONTENT_IMAGE_MODEL),
             destination=staging
