@@ -663,7 +663,50 @@ def test_catalog_disabled_scene_handoff_with_missing_release_is_inventory_only(
             "source_commit": missing,
             "reference_paths": [str(handoff)],
             "profile_ids": ["unreachable-scene-profile"],
+            "catalog_profile_present": True,
             "catalog_live_enabled": False,
+            "paid_execution_requested": False,
+            "provider_mutation_performed": False,
+            "source_release_already_missing": True,
+            "paid_launch_reachable": False,
+        }
+    ]
+
+
+def test_profileless_no_spend_scene_handoff_is_inventory_only(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    missing = "d" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    scene_queue = tmp_path / "task-evaluation-scene-constructions"
+    pending = scene_queue / "pending"
+    processing = scene_queue / "processing"
+    pending.mkdir(parents=True)
+    processing.mkdir()
+    state["live_reference_roots"] = (pending, processing)
+    handoff = pending / "profileless-scene.json"
+    _write_json(
+        handoff,
+        {
+            "schema_version": "task_evaluation_scene_construction_envelope.v1",
+            "expected_production_commit": missing,
+            "paid_execution_requested": False,
+            "provider_mutation_performed": False,
+        },
+    )
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert plan["catalog_disabled_unreachable_scene_references"] == [
+        {
+            "source_commit": missing,
+            "reference_paths": [str(handoff)],
+            "profile_ids": [],
+            "catalog_profile_present": False,
+            "catalog_live_enabled": None,
             "paid_execution_requested": False,
             "provider_mutation_performed": False,
             "source_release_already_missing": True,
