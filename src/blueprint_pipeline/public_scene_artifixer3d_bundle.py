@@ -43,6 +43,9 @@ ENTRYPOINT = "provider_runtime/run_public_scene_artifixer3d.sh"
 RUNNER = "provider_runtime/public_scene_artifixer3d_runner.py"
 RUNTIME_PACKAGE_INIT = "provider_runtime/blueprint_pipeline/__init__.py"
 RUNTIME_EDITOR_REGISTRY = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
+RUNTIME_CUDA_PACKAGE_PATHS = (
+    "provider_runtime/blueprint_pipeline/artifixer_cuda_package_paths.py"
+)
 RUNTIME_EDITOR_REGISTRY_MANIFEST = (
     "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
 )
@@ -900,6 +903,7 @@ def build_artifixer3d_bundle(
         or not (repo / "scripts" / "public_scene_artifixer3d_runner.py").is_file()
         or not (repo / "src" / "blueprint_pipeline" / "__init__.py").is_file()
         or not (repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py").is_file()
+        or not (repo / "src" / "blueprint_pipeline" / "artifixer_cuda_package_paths.py").is_file()
         or not (repo / RUNTIME_EDITOR_REGISTRY_MANIFEST).is_file()
         or not isinstance(artifixer3d_steps, int)
         or isinstance(artifixer3d_steps, bool)
@@ -1008,6 +1012,10 @@ def build_artifixer3d_bundle(
     shutil.copyfile(
         repo / "src" / "blueprint_pipeline" / "image_editor_backend_registry.py",
         runtime_package / "image_editor_backend_registry.py",
+    )
+    shutil.copyfile(
+        repo / "src" / "blueprint_pipeline" / "artifixer_cuda_package_paths.py",
+        runtime_package / "artifixer_cuda_package_paths.py",
     )
     registry_manifest = stage / RUNTIME_EDITOR_REGISTRY_MANIFEST
     registry_manifest.parent.mkdir(parents=True)

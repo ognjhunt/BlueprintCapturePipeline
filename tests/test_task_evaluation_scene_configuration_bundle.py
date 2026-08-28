@@ -3760,6 +3760,11 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         / "run_public_scene_artifixer3d.sh"
     ).read_text(encoding="utf-8")
     assert "torch==2.11.0 torchvision==0.26.0" in runtime_script
+    assert "artifixer_cuda_package_paths.py" in runtime_script
+    assert 'export CPATH="${cuda_package_paths[0]}' in runtime_script
+    assert 'export CPLUS_INCLUDE_PATH="${cuda_package_paths[0]}' in runtime_script
+    assert 'export LIBRARY_PATH="${cuda_package_paths[1]}' in runtime_script
+    assert 'export LD_LIBRARY_PATH="${cuda_package_paths[1]}' in runtime_script
 
     for broken in ({}, {"bundle_size_bytes": 0}, {"bundle_size_bytes": True}):
         with pytest.raises(

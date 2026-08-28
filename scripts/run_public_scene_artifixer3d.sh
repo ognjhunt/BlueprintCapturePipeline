@@ -191,6 +191,26 @@ else
 "${uv_command[@]}" pip install --python "${artifixer_python}" \
   torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128 \
   || { write_missing_result "artifixer3d_torch_install_failed"; exit 2; }
+
+# Isaac contributes nvcc, while the pinned PyTorch CUDA wheels contribute the
+# developer headers and shared libraries.  Torch's extension builder otherwise
+# searches only the incomplete /usr/local/cuda tree and fails on cusparse.h.
+cuda_package_path_output="$(
+  "${artifixer_python}" \
+    "${runtime_dir}/blueprint_pipeline/artifixer_cuda_package_paths.py"
+)" || { write_missing_result "artifixer3d_cuda_package_paths_invalid"; exit 2; }
+mapfile -t cuda_package_paths <<< "${cuda_package_path_output}"
+if [[ "${#cuda_package_paths[@]}" -ne 2 \
+      || -z "${cuda_package_paths[0]}" \
+      || -z "${cuda_package_paths[1]}" ]]; then
+  write_missing_result "artifixer3d_cuda_package_paths_invalid"
+  exit 2
+fi
+export CPATH="${cuda_package_paths[0]}${CPATH:+:${CPATH}}"
+export CPLUS_INCLUDE_PATH="${cuda_package_paths[0]}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
+export LIBRARY_PATH="${cuda_package_paths[1]}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${cuda_package_paths[1]}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
 "${uv_command[@]}" pip uninstall --python "${artifixer_python}" flash-attn opencv-python || true
 "${uv_command[@]}" pip install --python "${artifixer_python}" \
   accelerate==1.13.0 diffusers==0.37.1 transformers==5.5.0 ftfy \
