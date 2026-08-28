@@ -36,7 +36,9 @@ from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
+    validate_launch_profile_structure,
     validate_public_launch_profile_descriptor,
+    verify_profile_immutable_inputs,
 )
 from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
     StandingAuthorizationError,
@@ -350,8 +352,14 @@ def _active_commit(*, active_link: Path, release_root: Path) -> str:
 
 def _profiles_and_catalog(
     *, profile_dir: Path, public_catalog: Path
-) -> tuple[dict[str, dict[str, Any]], set[str], list[dict[str, Any]]]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    set[str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     profiles: dict[str, dict[str, Any]] = {}
+    unavailable_profiles: dict[str, list[str]] = {}
     documents: list[dict[str, Any]] = []
     for path, value, evidence in _json_documents(
         profile_dir, blocker="release_retention_profile_directory"
@@ -359,10 +367,11 @@ def _profiles_and_catalog(
         if not isinstance(value, Mapping):
             raise ReleaseRetentionError(f"release_retention_profile_invalid:{path.name}")
         profile = dict(value)
-        blockers = validate_launch_profile(profile)
-        if blockers:
+        structural_blockers = validate_launch_profile_structure(profile)
+        if structural_blockers:
             raise ReleaseRetentionError(
-                f"release_retention_profile_invalid:{path.name}:{','.join(blockers)}"
+                f"release_retention_profile_invalid:{path.name}:"
+                + ",".join(structural_blockers)
             )
         profile_id = str(profile.get("profile_id") or "")
         if path.stem != profile_id or profile_id in profiles:
@@ -374,6 +383,16 @@ def _profiles_and_catalog(
             raise ReleaseRetentionError(
                 f"release_retention_profile_source_commit_invalid:{path.name}"
             )
+        unavailable = verify_profile_immutable_inputs(profile)
+        if unavailable:
+            unavailable_profiles[profile_id] = sorted(set(unavailable))
+        else:
+            blockers = validate_launch_profile(profile)
+            if blockers:
+                raise ReleaseRetentionError(
+                    f"release_retention_profile_invalid:{path.name}:"
+                    + ",".join(blockers)
+                )
         profiles[profile_id] = profile
         documents.append(evidence)
 
@@ -402,6 +421,20 @@ def _profiles_and_catalog(
             raise ReleaseRetentionError(
                 f"release_retention_public_catalog_profile_mismatch:{profile_id}"
             )
+        unavailable = unavailable_profiles.get(profile_id)
+        if unavailable:
+            admission = dict(descriptor.get("execution_admission") or {})
+            catalog_blockers = {
+                str(item) for item in admission.get("blockers") or []
+            }
+            if (
+                admission.get("live_enabled") is not False
+                or not set(unavailable).issubset(catalog_blockers)
+            ):
+                raise ReleaseRetentionError(
+                    "release_retention_unavailable_profile_catalog_not_fail_closed:"
+                    + profile_id
+                )
         if profile_id in catalog_ids:
             raise ReleaseRetentionError(
                 f"release_retention_public_catalog_profile_duplicate:{profile_id}"
@@ -409,7 +442,18 @@ def _profiles_and_catalog(
         catalog_ids.add(profile_id)
     if catalog_ids != set(profiles):
         raise ReleaseRetentionError("release_retention_public_catalog_incomplete")
-    return profiles, catalog_ids, documents
+    unavailable_inventory = [
+        {
+            "profile_id": profile_id,
+            "source_commit": profiles[profile_id].get("source_commit"),
+            "unavailable_blockers": blockers,
+            "catalog_live_enabled": False,
+            "paid_launch_reachable": False,
+            "profile_bytes_retained": True,
+        }
+        for profile_id, blockers in sorted(unavailable_profiles.items())
+    ]
+    return profiles, catalog_ids, documents, unavailable_inventory
 
 
 def _standing_authorization_protections(
@@ -637,7 +681,7 @@ def build_release_retention_plan(
             raise ReleaseRetentionError("release_retention_keep_commit_invalid")
         protected.setdefault(commit, set()).add("operator_pin")
 
-    profiles, _catalog_ids, documents = _profiles_and_catalog(
+    profiles, _catalog_ids, documents, unavailable_profiles = _profiles_and_catalog(
         profile_dir=profiles_root, public_catalog=catalog_path
     )
     live_profile_ids: set[str] = set()
@@ -738,6 +782,7 @@ def build_release_retention_plan(
             commit: sorted(reasons) for commit, reasons in sorted(protected.items())
         },
         "terminal_orphan_standing_authorizations": terminal_orphans,
+        "catalog_disabled_unavailable_profiles": unavailable_profiles,
         "reference_documents": sorted(documents, key=lambda item: item["path"]),
         "eligible_commits": eligible,
         "retained_commits": retained,
