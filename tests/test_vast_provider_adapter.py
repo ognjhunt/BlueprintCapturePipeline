@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import gzip
 import inspect
 import json
 import os
+import re
 import shlex
 import subprocess
 import urllib.error
@@ -16,6 +18,7 @@ import pytest
 
 import blueprint_pipeline.vast_provider_adapter as vpa
 import blueprint_pipeline.vast_cuda_runtime_probe as vcrp
+from blueprint_pipeline.vast_args_payload_transport import VAST_ARGS_GZIP_BASE64_MARKER
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -36,6 +39,14 @@ from blueprint_pipeline.vast_provider_adapter import (
 
 
 pytestmark = pytest.mark.slow
+
+
+def _decoded_compressed_script(value: str) -> str:
+    match = re.search(
+        re.escape(VAST_ARGS_GZIP_BASE64_MARKER) + r"([A-Za-z0-9+/=]+)", value
+    )
+    assert match is not None
+    return gzip.decompress(base64.b64decode(match.group(1))).decode("utf-8")
 
 
 def _created_instance_detail(
@@ -4073,10 +4084,11 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
             assert "onstart" not in payload
             assert "args" not in payload
             assert payload["args_str"].startswith("bash -lc ")
-            assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED" in payload["args_str"]
-            assert "BLUEPRINT_VAST_WORK_DIR:$WORK_DIR" in payload["args_str"]
-            assert "/tmp/blueprint_vast_work" in payload["args_str"]
-            assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in payload["args_str"]
+            startup_program = _decoded_compressed_script(payload["args_str"])
+            assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED" in startup_program
+            assert "BLUEPRINT_VAST_WORK_DIR:$WORK_DIR" in startup_program
+            assert "/tmp/blueprint_vast_work" in startup_program
+            assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in startup_program
             env = payload["env"]
             assert env["BLUEPRINT_EVAL_MANIFEST_URI"].endswith(tunnel_token)
             assert env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith(tunnel_token)

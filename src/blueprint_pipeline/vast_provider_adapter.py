@@ -75,6 +75,12 @@ from .provider_runtime_bundle_contract import (
     wam_registered_alternative_inputs_present,
 )
 from . import vast_runtime_environment_contract as vrec
+from .vast_scene_private_startup_environment import (
+    SENSITIVE_KEY_MARKERS,
+    VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX,
+    private_startup_environment_script as _private_startup_environment_script,
+    scene_configuration_startup_environments as _scene_configuration_startup_environments,
+)
 from .task_evaluation_scene_configuration_provider_preflight import (
     scene_configuration_bundle_contract as _scene_configuration_bundle_contract,
 )
@@ -175,17 +181,6 @@ VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
 VAST_INLINE_PROVIDER_BUNDLE_MAX_BASE64_CHARS = 130_000
-VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX = "BLUEPRINT_VAST_RUNTIME_SECRET_B64_"
-VAST_SCENE_CONFIGURATION_PRIVATE_STARTUP_ENV_NAMES = frozenset(
-    {
-        "BLUEPRINT_EVAL_MANIFEST_URI",
-        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
-        "BLUEPRINT_RUNTIME_DEPENDENCY_URI",
-        VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV,
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-    }
-)
 VAST_RUNTIME_SECRET_FILE_LIMIT = 8
 VAST_RUNTIME_SECRET_MAX_BYTES = 65_536
 VAST_IMAGE_LOGIN_MODE_ENV = "BLUEPRINT_VAST_IMAGE_LOGIN_MODE"
@@ -284,15 +279,6 @@ VAST_REQUIRED_PHASES = (
     "vast_artifacts_exported",
     "vast_instance_teardown_started",
     "vast_instance_teardown_completed",
-)
-SENSITIVE_KEY_MARKERS = (
-    "KEY",
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "CREDENTIAL",
-    "LOGIN",
-    "JUPYTER",
 )
 REDACTED_SECRET = "REDACTED_SECRET"
 REDACTED_SECRET_FIELD = "REDACTED_SECRET_FIELD"
@@ -4060,48 +4046,6 @@ def _forwarded_secret_values() -> list[str]:
         if value:
             values.append(value)
     return _dedupe(values)
-
-
-def _scene_configuration_startup_environments(
-    env: Mapping[str, str],
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Keep credentials out of the container-wide environment for warm SSH."""
-
-    container_env: dict[str, str] = {}
-    private_startup_env: dict[str, str] = {}
-    for name, value in env.items():
-        private = (
-            name.startswith(VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX)
-            or name in VAST_SCENE_CONFIGURATION_PRIVATE_STARTUP_ENV_NAMES
-            or (
-                any(marker in name.upper() for marker in SENSITIVE_KEY_MARKERS)
-                and not vrec.is_public_openai_identity_name(name)
-            )
-        )
-        (private_startup_env if private else container_env)[name] = value
-    return container_env, private_startup_env
-
-
-def _private_startup_environment_script(env: Mapping[str, str]) -> str:
-    if not env:
-        return ""
-    exports: list[str] = []
-    for name, value in sorted(env.items()):
-        if re.fullmatch(r"[A-Z][A-Z0-9_]{1,160}", name) is None:
-            raise ValueError("invalid_vast_private_startup_environment_name")
-        if not isinstance(value, str) or not value or "\x00" in value:
-            raise ValueError("invalid_vast_private_startup_environment_value")
-        exports.append(f"export {name}={shlex.quote(value)}")
-    return (
-        "if [ -e /root/onstart.sh ]; then "
-        "if [ -L /root/onstart.sh ] || [ ! -f /root/onstart.sh ]; then "
-        "echo BLUEPRINT_VAST_PRIVATE_STARTUP_BLOCKED:onstart_path_invalid; exit 91; fi; "
-        "rm -f /root/onstart.sh || exit 92; fi; "
-        "if [ -e /root/onstart.sh ]; then "
-        "echo BLUEPRINT_VAST_PRIVATE_STARTUP_BLOCKED:onstart_path_persisted; exit 93; fi; "
-        + "; ".join(exports)
-        + "; echo BLUEPRINT_VAST_PRIVATE_STARTUP_ENV_READY; "
-    )
 
 
 def _official_public_isaac_image(image: str) -> bool:
