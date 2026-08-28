@@ -306,3 +306,19 @@ def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() 
     assert "vast_provider_adapter" not in service
     assert "--webapp-secret-file" in service
     assert "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT" in service
+
+
+def test_default_readiness_publication_uses_preparation_admitted_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def factory(**kwargs: object) -> object:
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(worker, "configured_scene_object_store_publisher", factory)
+    worker.configured_controls_object_store_publisher()
+    assert observed == {
+        "key_prefix": "task-evaluation/production-inputs/configured-controls"
+    }
