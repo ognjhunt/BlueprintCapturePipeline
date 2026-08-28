@@ -90,6 +90,7 @@ DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _COMMIT_SEARCH_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
+_PUBLICATION_RECEIPT_RE = re.compile(r"([0-9a-f]{40})\.publication\.v1\.json")
 _PROFILE_ID_KEYS = frozenset({"profile_id", "launch_profile_id"})
 _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
     {
@@ -177,16 +178,100 @@ def _artifact_snapshot(path: Path, *, kind: str, commit: str) -> dict[str, Any]:
     }
 
 
-def _managed_children(root: Path, *, kind: str) -> dict[str, dict[str, Any]]:
+_RUNTIME_PUBLICATION_RECEIPTS = {
+    "runtime_splat_render": (
+        "task_evaluation_splat_render_runtime_publication.v1",
+        "runtime_root",
+    ),
+    "runtime_scene_configuration": (
+        "task_evaluation_scene_configuration_toolchain_publication.v1",
+        "toolchain_root",
+    ),
+}
+
+
+def _publication_receipt_snapshot(
+    path: Path, *, kind: str, commit: str, runtime_path: Path
+) -> dict[str, Any]:
+    expected = _RUNTIME_PUBLICATION_RECEIPTS.get(kind)
+    if expected is None:
+        raise ReleaseRetentionError(
+            f"release_retention_publication_receipt_kind_invalid:{kind}"
+        )
+    schema_version, root_field = expected
+    value, _evidence = _read_json_file(
+        path, blocker="release_retention_publication_receipt_unreadable"
+    )
+    if not isinstance(value, Mapping):
+        raise ReleaseRetentionError(
+            f"release_retention_publication_receipt_invalid:{kind}:{commit}"
+        )
+    receipt = dict(value)
+    if (
+        receipt.get("schema_version") != schema_version
+        or receipt.get("status") != "published_and_read_back"
+        or receipt.get("source_commit") != commit
+        or receipt.get(root_field) != str(runtime_path)
+        or receipt.get("full_byte_service_account_readback_passed") is not True
+        or receipt.get("provider_mutation_performed") is not False
+        or receipt.get("paid_resource_allocated") is not False
+        or receipt.get("receipt_digest")
+        != _canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise ReleaseRetentionError(
+            f"release_retention_publication_receipt_invalid:{kind}:{commit}"
+        )
+    info = path.lstat()
+    return {
+        "kind": f"{kind}_publication_receipt",
+        "artifact_type": "file",
+        "path": str(path),
+        "source_commit": commit,
+        "size_bytes": int(info.st_size),
+        "device": int(info.st_dev),
+        "inode": int(info.st_ino),
+        "mtime_ns": int(info.st_mtime_ns),
+        "sha256": _sha256_bytes(path.read_bytes()),
+    }
+
+
+def _managed_children(root: Path, *, kind: str) -> dict[str, list[dict[str, Any]]]:
     _assert_directory(root, blocker=f"release_retention_{kind}_root")
-    values: dict[str, dict[str, Any]] = {}
+    values: dict[str, list[dict[str, Any]]] = {}
+    receipt_paths: dict[str, Path] = {}
     for path in sorted(root.iterdir(), key=lambda item: item.name):
         commit = _valid_commit(path.name)
-        if commit is None or path.is_symlink() or not path.is_dir():
+        if commit is not None and not path.is_symlink() and path.is_dir():
+            values[commit] = [_artifact_snapshot(path, kind=kind, commit=commit)]
+            continue
+        receipt_match = _PUBLICATION_RECEIPT_RE.fullmatch(path.name)
+        if (
+            kind in _RUNTIME_PUBLICATION_RECEIPTS
+            and receipt_match is not None
+            and not path.is_symlink()
+            and path.is_file()
+        ):
+            receipt_paths[receipt_match.group(1)] = path
+            continue
+        else:
             raise ReleaseRetentionError(
                 f"release_retention_unknown_managed_child:{kind}:{path.name}"
             )
-        values[commit] = _artifact_snapshot(path, kind=kind, commit=commit)
+    if kind in _RUNTIME_PUBLICATION_RECEIPTS:
+        if set(receipt_paths) != set(values):
+            mismatched = sorted(set(receipt_paths) ^ set(values))[0]
+            raise ReleaseRetentionError(
+                f"release_retention_publication_receipt_pair_invalid:{kind}:{mismatched}"
+            )
+        for commit, receipt_path in receipt_paths.items():
+            values[commit].append(
+                _publication_receipt_snapshot(
+                    receipt_path,
+                    kind=kind,
+                    commit=commit,
+                    runtime_path=root / commit,
+                )
+            )
     return values
 
 
@@ -534,7 +619,7 @@ def build_release_retention_plan(
         raise ReleaseRetentionError("release_retention_live_reference_root_duplicate")
 
     release_artifacts = _managed_children(releases, kind="control_plane_release")
-    runtime_artifacts: dict[str, dict[str, dict[str, Any]]] = {}
+    runtime_artifacts: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for component in MANAGED_RUNTIME_COMPONENTS:
         component_root = runtimes / component
         runtime_artifacts[component] = _managed_children(
@@ -604,11 +689,11 @@ def build_release_retention_plan(
             )
 
     by_commit: dict[str, list[dict[str, Any]]] = {}
-    for commit, artifact in release_artifacts.items():
-        by_commit.setdefault(commit, []).append(artifact)
+    for commit, artifacts in release_artifacts.items():
+        by_commit.setdefault(commit, []).extend(artifacts)
     for component in MANAGED_RUNTIME_COMPONENTS:
-        for commit, artifact in runtime_artifacts[component].items():
-            by_commit.setdefault(commit, []).append(artifact)
+        for commit, artifacts in runtime_artifacts[component].items():
+            by_commit.setdefault(commit, []).extend(artifacts)
 
     eligible: list[dict[str, Any]] = []
     retained: list[dict[str, Any]] = []
@@ -712,7 +797,20 @@ def _assert_snapshot_current(artifact: Mapping[str, Any]) -> Path:
     path = Path(str(artifact.get("path") or ""))
     commit = _valid_commit(artifact.get("source_commit"))
     kind = str(artifact.get("kind") or "invalid")
-    if commit is None or path.name != commit or path.is_symlink() or not path.is_dir():
+    artifact_type = str(artifact.get("artifact_type") or "directory")
+    expected_name = (
+        commit
+        if artifact_type == "directory"
+        else f"{commit}.publication.v1.json"
+    )
+    if (
+        commit is None
+        or path.name != expected_name
+        or path.is_symlink()
+        or (artifact_type == "directory" and not path.is_dir())
+        or (artifact_type == "file" and not path.is_file())
+        or artifact_type not in {"directory", "file"}
+    ):
         raise ReleaseRetentionError(
             f"release_retention_target_changed:{kind}:{commit or 'invalid'}"
         )
@@ -721,8 +819,10 @@ def _assert_snapshot_current(artifact: Mapping[str, Any]) -> Path:
         "device": int(info.st_dev),
         "inode": int(info.st_ino),
         "mtime_ns": int(info.st_mtime_ns),
-        "size_bytes": _tree_size(path),
+        "size_bytes": _tree_size(path) if artifact_type == "directory" else int(info.st_size),
     }
+    if artifact_type == "file":
+        observed["sha256"] = _sha256_bytes(path.read_bytes())
     for field, value in observed.items():
         if artifact.get(field) != value:
             raise ReleaseRetentionError(
@@ -799,6 +899,27 @@ def _remove_runtime_tree(path: Path, *, commit: str, kind: str) -> None:
         )
 
 
+def _remove_publication_receipt(path: Path, *, commit: str, kind: str) -> None:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.name != f"{commit}.publication.v1.json"
+    ):
+        raise ReleaseRetentionError(
+            f"release_retention_publication_receipt_target_invalid:{kind}:{commit}"
+        )
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise ReleaseRetentionError(
+            f"release_retention_publication_receipt_remove_failed:{kind}:{commit}"
+        ) from exc
+    if os.path.lexists(path):
+        raise ReleaseRetentionError(
+            f"release_retention_publication_receipt_remove_failed:{kind}:{commit}"
+        )
+
+
 def _apply_release_retention_plan_locked(
     *,
     dry_run_plan_path: str | Path,
@@ -863,7 +984,11 @@ def _apply_release_retention_plan_locked(
             raise ReleaseRetentionError("release_retention_dry_run_plan_invalid")
         artifacts = sorted(
             (dict(item) for item in row.get("artifacts") or []),
-            key=lambda item: (item.get("kind") != "control_plane_release", item.get("kind")),
+            key=lambda item: (
+                item.get("kind") != "control_plane_release",
+                str(item.get("kind") or "").endswith("_publication_receipt"),
+                item.get("kind"),
+            ),
         )
         for artifact in artifacts:
             path = _assert_snapshot_current(artifact)
@@ -875,6 +1000,11 @@ def _apply_release_retention_plan_locked(
                 "runtime_scene_configuration",
             }:
                 _remove_runtime_tree(path, commit=commit, kind=kind)
+            elif kind in {
+                "runtime_splat_render_publication_receipt",
+                "runtime_scene_configuration_publication_receipt",
+            }:
+                _remove_publication_receipt(path, commit=commit, kind=kind)
             else:
                 raise ReleaseRetentionError(
                     f"release_retention_artifact_kind_invalid:{kind}"
