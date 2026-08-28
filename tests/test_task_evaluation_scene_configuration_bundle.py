@@ -2463,6 +2463,7 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
     receipt = {
         "run_id": "scene-839873-run",
         "source_commit": "a" * 40,
+        "construction_envelope_source_digest": "sha256:" + "c" * 64,
         "portable_construction_envelope_digest": "sha256:" + "b" * 64,
     }
     execution = {
@@ -2471,12 +2472,23 @@ def test_provider_execution_binding_requires_the_receipt_run_identity() -> None:
         "construction_envelope_digest": receipt[
             "portable_construction_envelope_digest"
         ],
+        "source_construction_envelope_digest": receipt[
+            "construction_envelope_source_digest"
+        ],
         "stage_chain": {"run_id": receipt["run_id"]},
     }
 
     assert scene_vast._provider_execution_binding_blockers(
         execution, receipt, diagnostic_only=False
     ) == []
+
+    execution["source_construction_envelope_digest"] = "sha256:" + "d" * 64
+    assert scene_vast._provider_execution_binding_blockers(
+        execution, receipt, diagnostic_only=False
+    ) == ["scene_configuration_provider_source_envelope_mismatch"]
+    execution["source_construction_envelope_digest"] = receipt[
+        "construction_envelope_source_digest"
+    ]
 
     execution["run_id"] = "different-run"
     assert scene_vast._provider_execution_binding_blockers(
@@ -3143,6 +3155,9 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             "status": "completed",
             "run_id": receipt["run_id"],
             "source_commit": receipt["source_commit"],
+            "source_construction_envelope_digest": receipt[
+                "construction_envelope_source_digest"
+            ],
             "construction_envelope_digest": receipt[
                 "portable_construction_envelope_digest"
             ],

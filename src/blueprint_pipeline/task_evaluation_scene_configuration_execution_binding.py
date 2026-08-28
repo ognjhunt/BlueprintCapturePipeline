@@ -35,6 +35,12 @@ def provider_execution_binding_blockers(
         != receipt.get("portable_construction_envelope_digest")
     ):
         blockers.append("scene_configuration_provider_envelope_mismatch")
+    if (
+        not diagnostic_only
+        and execution.get("source_construction_envelope_digest")
+        != receipt.get("construction_envelope_source_digest")
+    ):
+        blockers.append("scene_configuration_provider_source_envelope_mismatch")
     if diagnostic_only and execution.get(
         "source_checkpoint_digest"
     ) != receipt.get("source_diagnostic_checkpoint_digest"):
