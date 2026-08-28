@@ -10,6 +10,9 @@ from typing import Any, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .task_evaluation_scene_evaluation_readiness import (
+    CONFIGURATION_COMPLETE_OFFERING_STATUSES,
+)
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
@@ -190,10 +193,17 @@ def sync_launch_receipt_to_webapp(
     )
     offering = scene_configuration.get("configured_scene_offering")
     if isinstance(offering, Mapping):
+        offering_status = offering.get("status")
         common["configured_scene_offering_digest"] = offering.get(
             "offering_digest"
         )
-        common["configured_scene_offering_status"] = "launch_ready"
+        common["configured_scene_offering_status"] = offering_status
+        if offering_status not in CONFIGURATION_COMPLETE_OFFERING_STATUSES:
+            return {
+                **common,
+                "status": "failed",
+                "reason": "configured_scene_offering_status_invalid",
+            }
     resolved_url = str(endpoint_url or os.getenv(LAUNCH_WEBAPP_URL_ENV) or "").strip()
     resolved_token = _optional_pipeline_sync_token(token)
     if not resolved_url or not resolved_token:

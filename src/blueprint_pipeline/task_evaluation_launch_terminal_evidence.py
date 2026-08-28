@@ -15,6 +15,9 @@ from typing import Any
 
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_evaluation_readiness import (
+    CONFIGURATION_COMPLETE_OFFERING_STATUSES,
+)
 
 
 _URI_SCHEMES = ("gs://", "s3://", "r2://", "https://")
@@ -97,7 +100,8 @@ def _scene_configuration_terminal_projection(
         and isinstance(offering, Mapping)
         and offering.get("schema_version")
         == "task_evaluation_configured_scene_offering.v1"
-        and offering.get("status") == "launch_ready"
+        and offering.get("status")
+        in CONFIGURATION_COMPLETE_OFFERING_STATUSES
         and offering.get("configuration_run_id") == result.get("run_id")
         and offering.get("catalog_visibility") == "team_only"
         and offering.get("offering_digest")

@@ -521,7 +521,12 @@ def _webapp_sync_succeeded(receipt: dict, *, attempt_number: int = 1) -> dict:
     return value
 
 
-def test_durable_webapp_sync_proof_requires_the_configured_offering_ack() -> None:
+@pytest.mark.parametrize(
+    "offering_status", ["launch_ready", "configured_controls_pending"]
+)
+def test_durable_webapp_sync_proof_requires_the_configured_offering_ack(
+    offering_status: str,
+) -> None:
     offering_digest = "sha256:" + "9" * 64
     receipt = {
         "status": "completed",
@@ -532,7 +537,7 @@ def test_durable_webapp_sync_proof_requires_the_configured_offering_ack() -> Non
         "terminal_evidence": {
             "scene_configuration": {
                 "configured_scene_offering": {
-                    "status": "launch_ready",
+                    "status": offering_status,
                     "offering_digest": offering_digest,
                 }
             }
@@ -542,13 +547,13 @@ def test_durable_webapp_sync_proof_requires_the_configured_offering_ack() -> Non
     attempt.update(
         {
             "configured_scene_offering_digest": offering_digest,
-            "configured_scene_offering_status": "launch_ready",
+            "configured_scene_offering_status": offering_status,
         }
     )
     attempt["response"].update(
         {
             "configured_scene_offering_digest": offering_digest,
-            "configured_scene_offering_status": "launch_ready",
+            "configured_scene_offering_status": offering_status,
         }
     )
     attempt["sync_result_digest"] = canonical_digest(
@@ -562,7 +567,7 @@ def test_durable_webapp_sync_proof_requires_the_configured_offering_ack() -> Non
         offering_digest
     )
     assert validated["receipt"]["configured_scene_offering_status"] == (
-        "launch_ready"
+        offering_status
     )
 
     incomplete = json.loads(json.dumps(attempt))
@@ -918,8 +923,11 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     assert live["agent_operator_used"] is False
 
 
+@pytest.mark.parametrize(
+    "offering_status", ["launch_ready", "configured_controls_pending"]
+)
 def test_scene_configuration_terminal_evidence_carries_published_revision(
-    tmp_path: Path,
+    tmp_path: Path, offering_status: str,
 ) -> None:
     result_path = tmp_path / "allocator-result.json"
     teardown = tmp_path / "teardown.json"
@@ -967,7 +975,7 @@ def test_scene_configuration_terminal_evidence_carries_published_revision(
     }
     offering = {
         "schema_version": "task_evaluation_configured_scene_offering.v1",
-        "status": "launch_ready",
+        "status": offering_status,
         "configuration_run_id": "scene-run-1",
         "team_namespace": "team-a",
         "catalog_visibility": "team_only",

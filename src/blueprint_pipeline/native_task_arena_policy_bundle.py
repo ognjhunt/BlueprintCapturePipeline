@@ -19,9 +19,8 @@ from .native_task_arena_bundle import (
 )
 from .native_task_arena_controls_bundle import controls_runtime_sources
 from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
-from .native_task_camera_observability import (
-    NativeTaskCameraObservabilityError,
-    validate_native_task_policy_start_camera_observability,
+from .native_task_arena_controls_admission import (
+    validate_native_task_controls_admission,
 )
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
@@ -324,59 +323,26 @@ def build_native_task_policy_execution_spec(
     controls = _read(
         control_result_path, error="native_task_policy_control_result_invalid"
     )
-    pair = controls.get("control_pair") or {}
-    task_spec = scene.get("task_spec") or {}
-    scene_digest = scene.get("plan_digest")
-    construction_digest = construction.get("result_digest")
-    control_digest = controls.get("result_digest")
-    pair_digest = pair.get("pair_digest") if isinstance(pair, Mapping) else None
-    cell_id = (scene.get("scenario") or {}).get("cell_id")
     errors: list[str] = []
-    if (
-        scene.get("schema_version") != "native_task_arena_scene_plan.v1"
-        or scene_digest != canonical_digest(scene, digest_field="plan_digest")
-        or not isinstance(task_spec, Mapping)
-        or not str(scene.get("task_id") or "")
-        or not str(cell_id or "")
-        or not str(task_spec.get("prompt") or "")
-    ):
-        errors.append("native_task_policy_scene_plan_invalid")
-    if (
-        construction.get("schema_version")
-        != "native_task_arena_construction_result.v1"
-        or construction.get("status") != "completed"
-        or construction.get("construction_gate_qualified") is not True
-        or construction.get("scene_plan_digest") != scene_digest
-        or construction_digest
-        != canonical_digest(construction, digest_field="result_digest")
-    ):
-        errors.append("native_task_policy_construction_not_qualified")
     try:
-        validate_native_task_policy_start_camera_observability(construction)
-    except NativeTaskCameraObservabilityError as exc:
-        errors.extend(exc.errors)
-    if (
-        controls.get("schema_version") != "native_task_arena_control_result.v1"
-        or controls.get("status") != "completed"
-        or controls.get("controls_qualified") is not True
-        or controls.get("candidate_policy_queried") is not False
-        or controls.get("scene_plan_digest") != scene_digest
-        or controls.get("construction_result_digest") != construction_digest
-        or control_digest != canonical_digest(controls, digest_field="result_digest")
-        or not isinstance(pair, Mapping)
-        or pair.get("schema_version") != "adp_task_control_pair.v1"
-        or pair.get("cell_id") != cell_id
-        or pair.get("task_spec_digest") != canonical_digest(task_spec)
-        or pair.get("cell_admitted_for_policy_execution") is not True
-        or pair.get("policy_execution_blockers") != []
-        or pair.get("candidate_policy_queried") is not False
-        or pair_digest != canonical_digest(pair, digest_field="pair_digest")
-    ):
-        errors.append("native_task_policy_controls_not_qualified")
+        admission = validate_native_task_controls_admission(
+            scene_plan=scene,
+            construction_result=construction,
+            control_result=controls,
+        )
+    except ValueError as exc:
+        errors.extend(str(exc).split(";"))
     if candidate_id not in FROZEN_CANDIDATES:
         errors.append("native_task_policy_candidate_invalid")
     if errors:
         raise ValueError(";".join(sorted(set(errors))))
+
+    task_spec = scene["task_spec"]
+    scene_digest = admission["scene_plan_digest"]
+    construction_digest = admission["construction_result_digest"]
+    control_digest = admission["control_result_digest"]
+    pair_digest = admission["control_pair_digest"]
+    cell_id = admission["cell_id"]
 
     policy, endpoint, identity = _candidate_runtime_binding(candidate_id)
     from .adp009d_policy_rights import build_candidate_policy_rights
@@ -518,7 +484,6 @@ def build_native_task_arena_policy_bundle(
         scene_policy_readiness_path=scene_policy_readiness_path,
         scenario_suite_path=scenario_suite_path,
     )
-    pair = controls.get("control_pair") or {}
     errors: list[str] = []
     task_spec = scene_plan.get("task_spec") or {}
     try:
@@ -533,37 +498,25 @@ def build_native_task_arena_policy_bundle(
         errors.append("native_task_policy_prompt_task_spec_mismatch")
     if spec.get("max_policy_queries") != expected_policy_queries:
         errors.append("native_task_policy_shared_query_budget_mismatch")
-    if (
-        construction.get("schema_version")
-        != "native_task_arena_construction_result.v1"
-        or construction.get("status") != "completed"
-        or construction.get("construction_gate_qualified") is not True
-        or construction.get("scene_plan_digest") != scene_plan.get("plan_digest")
-        or construction.get("result_digest")
-        != spec.get("construction_result_digest")
-    ):
-        errors.append("native_task_policy_construction_not_qualified")
     try:
-        validate_native_task_policy_start_camera_observability(construction)
-    except NativeTaskCameraObservabilityError as exc:
-        errors.extend(exc.errors)
+        admission = validate_native_task_controls_admission(
+            scene_plan=scene_plan,
+            construction_result=construction,
+            control_result=controls,
+        )
+    except ValueError as exc:
+        errors.extend(str(exc).split(";"))
+        admission = {}
     if (
-        controls.get("schema_version") != "native_task_arena_control_result.v1"
-        or controls.get("status") != "completed"
-        or controls.get("controls_qualified") is not True
-        or controls.get("result_digest") != spec.get("control_result_digest")
-        or not isinstance(pair, Mapping)
-        or pair.get("cell_admitted_for_policy_execution") is not True
-        or pair.get("pair_digest") != spec.get("control_pair_digest")
-    ):
-        errors.append("native_task_policy_controls_not_qualified")
-    if (
-        spec.get("scene_plan_digest") != scene_plan.get("plan_digest")
-        or spec.get("task_id") != scene_plan.get("task_id")
-        or spec.get("cell_id") != (scene_plan.get("scenario") or {}).get("cell_id")
-        or pair.get("cell_id") != spec.get("cell_id")
-        or pair.get("task_spec_digest")
-        != canonical_digest(task_spec)
+        spec.get("scene_plan_digest") != admission.get("scene_plan_digest")
+        or spec.get("construction_result_digest")
+        != admission.get("construction_result_digest")
+        or spec.get("control_result_digest")
+        != admission.get("control_result_digest")
+        or spec.get("control_pair_digest")
+        != admission.get("control_pair_digest")
+        or spec.get("task_id") != admission.get("task_id")
+        or spec.get("cell_id") != admission.get("cell_id")
     ):
         errors.append("native_task_policy_task_cell_binding_mismatch")
     if errors:

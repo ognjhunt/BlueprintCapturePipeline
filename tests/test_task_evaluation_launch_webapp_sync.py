@@ -99,8 +99,11 @@ def test_progress_sync_rejects_a_different_webapp_record_binding(monkeypatch) ->
     }
 
 
-def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "offering_status", ["launch_ready", "configured_controls_pending"]
+)
+def test_scene_configuration_sync_requires_atomic_offering_status_ack(
+    monkeypatch, offering_status: str,
 ) -> None:
     offering_digest = "sha256:" + "e" * 64
     receipt = {
@@ -112,6 +115,7 @@ def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
         "terminal_evidence": {
             "scene_configuration": {
                 "configured_scene_offering": {
+                    "status": offering_status,
                     "offering_digest": offering_digest,
                 }
             }
@@ -126,7 +130,7 @@ def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
         "request_digest": "sha256:" + "a" * 64,
         "receipt_digest": "sha256:" + "b" * 64,
         "configured_scene_offering_digest": offering_digest,
-        "configured_scene_offering_status": "launch_ready",
+        "configured_scene_offering_status": offering_status,
     }
     monkeypatch.setattr(
         sync_module.urllib_request,
@@ -141,7 +145,7 @@ def test_scene_configuration_sync_requires_atomic_launch_ready_offering_ack(
     )
 
     assert result["status"] == "succeeded"
-    assert result["configured_scene_offering_status"] == "launch_ready"
+    assert result["configured_scene_offering_status"] == offering_status
 
     response["schema_version"] = "error.v1"
     refused = sync_module.sync_launch_receipt_to_webapp(
