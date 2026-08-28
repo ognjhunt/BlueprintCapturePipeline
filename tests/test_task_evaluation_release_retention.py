@@ -381,6 +381,71 @@ def test_unexpired_or_malformed_orphan_standing_authorization_still_blocks(
         )
 
 
+def test_catalog_disabled_unavailable_profile_does_not_block_safe_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    active = "a" * 40
+    stale = "c" * 40
+    state = _base_state(tmp_path, commits=[active, stale], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    profile = _profile(tmp_path, profile_id="unavailable-profile", commit=stale)
+    _write_json(profile_dir / "unavailable-profile.json", profile)
+    missing_input = Path(profile["immutable_inputs"][0]["path"])
+    missing_input.unlink()
+    _rewrite_catalog(profile_dir, catalog)
+    monkeypatch.setattr(
+        retention,
+        "validate_launch_profile",
+        lambda _profile: ["joint_agent_prior_spend_lineage_invalid"],
+    )
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [stale]
+    assert plan["catalog_disabled_unavailable_profiles"] == [
+        {
+            "profile_id": "unavailable-profile",
+            "source_commit": stale,
+            "unavailable_blockers": [
+                "launch_profile_immutable_input_missing:source_bundle_manifest"
+            ],
+            "catalog_live_enabled": False,
+            "paid_launch_reachable": False,
+            "profile_bytes_retained": True,
+        }
+    ]
+    assert (profile_dir / "unavailable-profile.json").is_file()
+
+
+def test_unavailable_profile_must_be_disabled_in_the_bound_catalog(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    stale = "c" * 40
+    state = _base_state(tmp_path, commits=[active, stale], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    profile = _profile(tmp_path, profile_id="stale-live-profile", commit=stale)
+    _write_json(profile_dir / "stale-live-profile.json", profile)
+    _rewrite_catalog(profile_dir, catalog)
+    Path(profile["immutable_inputs"][0]["path"]).unlink()
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match="release_retention_unavailable_profile_catalog_not_fail_closed",
+    ):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     "corruption",
     ("unknown_managed_child", "managed_symlink", "malformed_pending"),
