@@ -24,6 +24,32 @@ class _Client:
         return {"Body": io.BytesIO(payload)}
 
 
+class _ContentAddressedClient(_Client):
+    def __init__(self, *, corrupt_readback: bool = False) -> None:
+        super().__init__(corrupt_readback=corrupt_readback)
+        self.metadata: dict[tuple[str, str], dict[str, str]] = {}
+        self.upload_count = 0
+
+    def upload_file(
+        self,
+        source: str,
+        bucket: str,
+        key: str,
+        ExtraArgs: dict[str, object] | None = None,
+    ) -> None:
+        self.upload_count += 1
+        super().upload_file(source, bucket, key)
+        extra = ExtraArgs or {}
+        self.metadata[(bucket, key)] = dict(extra.get("Metadata") or {})
+
+    def head_object(self, *, Bucket: str, Key: str):
+        payload = self.objects[(Bucket, Key)]
+        return {
+            "ContentLength": len(payload),
+            "Metadata": self.metadata[(Bucket, Key)],
+        }
+
+
 def test_local_readiness_constructs_client_without_object_store_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -96,6 +122,126 @@ def test_configured_scene_publication_refuses_changed_readback(
             path=source,
             object_name="team-a/scene/revision/configured_scene.usda",
         )
+
+
+def test_large_artifact_publication_reuses_verified_content_address(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "provider-output.zip"
+    source.write_bytes((b"scene-output\n" * 4096) + b"terminal")
+    client = _ContentAddressedClient()
+
+    first = store.publish_configured_scene_artifact(
+        path=source,
+        artifact_kind="provider-output",
+        client=client,
+        bucket="blueprint-inputs",
+    )
+    second = store.publish_configured_scene_artifact(
+        path=source,
+        artifact_kind="provider-output",
+        client=client,
+        bucket="blueprint-inputs",
+    )
+
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert first["uri"].endswith(
+        f"/artifacts/provider-output/sha256/{digest}/provider-output.zip"
+    )
+    assert first["upload_performed"] is True
+    assert first["cache_hit"] is False
+    assert second["upload_performed"] is False
+    assert second["cache_hit"] is True
+    assert second["remote_identity_verified"] is True
+    assert second["full_byte_service_account_readback_passed"] is True
+    assert client.upload_count == 1
+
+
+def test_large_artifact_publication_refuses_existing_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "provider-bundle.zip"
+    source.write_bytes(b"exact bundle")
+    client = _ContentAddressedClient()
+    reference = store.publish_configured_scene_artifact(
+        path=source,
+        artifact_kind="provider-bundle",
+        client=client,
+        bucket="blueprint-inputs",
+    )
+    key = reference["uri"].split("blueprint-inputs/", 1)[1]
+    client.metadata[("blueprint-inputs", key)]["sha256"] = "0" * 64
+
+    with pytest.raises(
+        store.TaskEvaluationConfiguredSceneObjectStoreError,
+        match="configured_scene_artifact_existing_identity_mismatch",
+    ):
+        store.publish_configured_scene_artifact(
+            path=source,
+            artifact_kind="provider-bundle",
+            client=client,
+            bucket="blueprint-inputs",
+        )
+
+
+def test_large_artifact_materialization_streams_and_verifies_before_exposure(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "checkpoint.zip"
+    source.write_bytes(b"checkpoint" * 1_000_000)
+    client = _ContentAddressedClient()
+    reference = store.publish_configured_scene_artifact(
+        path=source,
+        artifact_kind="diagnostic-checkpoint",
+        client=client,
+        bucket="blueprint-inputs",
+    )
+    destination = tmp_path / "materialized" / "checkpoint.zip"
+
+    result = store.materialize_configured_scene_artifact(
+        reference=reference,
+        destination=destination,
+        maximum_size_bytes=source.stat().st_size,
+        client=client,
+        bucket="blueprint-inputs",
+    )
+
+    assert result["status"] == "completed"
+    assert result["local_full_byte_readback_passed"] is True
+    assert destination.read_bytes() == source.read_bytes()
+    assert destination.stat().st_mode & 0o777 == 0o440
+    assert not list(destination.parent.glob("*.partial"))
+
+
+def test_large_artifact_materialization_removes_corrupt_partial(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "checkpoint.zip"
+    source.write_bytes(b"checkpoint")
+    client = _ContentAddressedClient()
+    reference = store.publish_configured_scene_artifact(
+        path=source,
+        artifact_kind="diagnostic-checkpoint",
+        client=client,
+        bucket="blueprint-inputs",
+    )
+    client.corrupt_readback = True
+    destination = tmp_path / "materialized" / "checkpoint.zip"
+
+    with pytest.raises(
+        store.TaskEvaluationConfiguredSceneObjectStoreError,
+        match="configured_scene_artifact_materialization_exceeds_limit",
+    ):
+        store.materialize_configured_scene_artifact(
+            reference=reference,
+            destination=destination,
+            maximum_size_bytes=source.stat().st_size,
+            client=client,
+            bucket="blueprint-inputs",
+        )
+
+    assert not destination.exists()
+    assert not list(destination.parent.glob("*.partial"))
 
 
 def test_configured_scene_publication_refuses_unsafe_object_names(
