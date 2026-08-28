@@ -278,10 +278,31 @@ def materialize_franka_robotiq_readiness_inputs(
     ):
         raise TaskEvaluationFrankaRobotiqReadinessInputsError("franka_readiness_controller_invalid")
     if (
-        base_pose_candidate.get("scene_identity") != scene_identity
+        base_pose_candidate.get("schema_version")
+        != "task_evaluation_planar_push_readiness_candidate.v1"
+        or base_pose_candidate.get("status")
+        != "candidate_pending_native_construction_readback"
+        or base_pose_candidate.get("scene_identity") != scene_identity
+        or base_pose_candidate.get("configured_scene_revision_digest")
+        != revision["revision_digest"]
         or base_pose_candidate.get("robot_mount_interface_digest") != mount_reference["digest"]
+        or base_pose_candidate.get("task_definition_digest")
+        != revision["task_template"]["definition"]["digest"]
+        or base_pose_candidate.get("workspace_clearance_digest")
+        != revision["registration"]["workspace_clearance"]["digest"]
+        or base_pose_candidate.get("derivation_method")
+        != "reflect_reach_candidate_behind_start_along_frozen_planar_push"
+        or base_pose_candidate.get("task_direction_considered") is not True
+        or base_pose_candidate.get("robot_base_qualified") is not False
+        or base_pose_candidate.get("reachability_qualified") is not False
+        or base_pose_candidate.get("collision_clearance_qualified") is not False
         or base_pose_candidate.get("learned_policy_outcomes_consulted") is not False
         or base_pose_candidate.get("native_construction_readback_completed") is not False
+        or base_pose_candidate.get("base_pose_candidate_digest")
+        != canonical_digest(
+            base_pose_candidate,
+            digest_field="base_pose_candidate_digest",
+        )
     ):
         raise TaskEvaluationFrankaRobotiqReadinessInputsError(
             "franka_readiness_base_pose_candidate_binding_invalid"
