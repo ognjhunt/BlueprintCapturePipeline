@@ -136,8 +136,16 @@ def _normalized_semantic_request(value: Mapping[str, Any]) -> dict[str, Any]:
     """Remove locations/provenance while retaining scientific bytes and choices."""
 
     omitted = {
+        # These fields govern how an execution is scheduled or admitted; they
+        # cannot change the model, prompt, input frames/masks, or the exact
+        # checkpointed output bytes.  A diagnostic retry intentionally sets the
+        # cost ceiling to zero because it must reuse those sealed outputs.
+        "expected_request_cost_usd",
+        "max_parallel_requests",
+        "maximum_cost_usd",
         "path",
         "relative_path",
+        "retry_count",
         "source_commit_sha",
         "source_packet_digest",
         "request_digest",
@@ -1040,8 +1048,30 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
     checkpoint = validate_scene_configuration_diagnostic_checkpoint(
         checkpoint_root=checkpoint_root
     )
+    root = Path(checkpoint_root).expanduser().resolve()
+    source_by_role = {
+        str(row["role"]): root / str(row["relative_path"])
+        for row in checkpoint["inventory"]
+    }
+    checkpoint_request_path = source_by_role.get("semantic_runtime_request")
+    try:
+        checkpoint_request = json.loads(
+            checkpoint_request_path.read_text(encoding="utf-8")
+            if checkpoint_request_path is not None
+            else ""
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_request_invalid"
+        ) from exc
     if (
-        current_semantic_runtime_request.get("schema_version")
+        not isinstance(checkpoint_request, Mapping)
+        or checkpoint_request.get("schema_version") != _SEMANTIC_REQUEST_SCHEMA
+        or checkpoint_request.get("request_digest")
+        != canonical_digest(checkpoint_request, digest_field="request_digest")
+        or checkpoint["semantic_teacher"].get("runtime_request_digest")
+        != checkpoint_request.get("request_digest")
+        or current_semantic_runtime_request.get("schema_version")
         != _SEMANTIC_REQUEST_SCHEMA
         or current_semantic_runtime_request.get("request_digest")
         != canonical_digest(
@@ -1050,7 +1080,7 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         or canonical_digest(
             _normalized_semantic_request(current_semantic_runtime_request)
         )
-        != checkpoint["semantic_teacher"]["scientific_request_digest"]
+        != canonical_digest(_normalized_semantic_request(checkpoint_request))
     ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_request_mismatch"
@@ -1072,11 +1102,6 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_request_mismatch"
         )
-    root = Path(checkpoint_root).expanduser().resolve()
-    source_by_role = {
-        str(row["role"]): root / str(row["relative_path"])
-        for row in checkpoint["inventory"]
-    }
     output = Path(output_root).expanduser().resolve()
     if output.is_symlink() or output.exists():
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(

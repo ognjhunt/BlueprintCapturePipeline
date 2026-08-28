@@ -410,6 +410,72 @@ def test_hydration_reuses_exact_frames_and_skips_semantic_provider(
     assert len(list((tmp_path / "hydrated-semantic").rglob("*.png"))) == 8
 
 
+def test_semantic_checkpoint_reuse_ignores_execution_budget_and_scheduling(
+    tmp_path: Path,
+) -> None:
+    root, _checkpoint, fixture = _materialize(tmp_path)
+    request = json.loads(fixture["request_path"].read_text(encoding="utf-8"))
+
+    # Checkpoints emitted before this repair bound their stored scientific
+    # digest to budget/scheduling fields. Preserve that exact legacy shape to
+    # prove a new retry compares against the checkpointed request bytes rather
+    # than silently requiring the old normalization algorithm forever.
+    legacy_omitted = {
+        "path",
+        "relative_path",
+        "request_digest",
+        "source_commit_sha",
+        "source_packet_digest",
+    }
+
+    def legacy_normalize(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): legacy_normalize(child)
+                for key, child in value.items()
+                if str(key) not in legacy_omitted
+            }
+        if isinstance(value, list):
+            return [legacy_normalize(child) for child in value]
+        return value
+
+    manifest_path = (
+        root / "task_evaluation_scene_configuration_diagnostic_checkpoint.v1.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["semantic_teacher"]["scientific_request_digest"] = canonical_digest(
+        legacy_normalize(request)
+    )
+    manifest["checkpoint_digest"] = canonical_digest(
+        manifest, digest_field="checkpoint_digest"
+    )
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o444)
+
+    request.update(
+        {
+            "max_parallel_requests": 4,
+            "maximum_cost_usd": 0.0,
+            "expected_request_cost_usd": 0.31,
+            "retry_count": 3,
+        }
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    semantic = hydrate_scene_configuration_diagnostic_semantic_outputs(
+        checkpoint_root=root,
+        current_semantic_runtime_request=request,
+        output_root=tmp_path / "hydrated-semantic-operational-drift",
+    )
+
+    assert semantic["successful_request_count"] == 8
+    assert semantic["provider_calls_performed"] == 0
+    assert semantic["diagnostic_checkpoint_reused"] is True
+
+
 def test_semantic_model_or_prompt_change_refuses_reuse(tmp_path: Path) -> None:
     root, _checkpoint, fixture = _materialize(tmp_path)
     request = json.loads(fixture["request_path"].read_text(encoding="utf-8"))
