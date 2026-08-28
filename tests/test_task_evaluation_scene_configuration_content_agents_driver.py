@@ -25,6 +25,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_drive
 from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
     MATERIALIZED_STATUS,
     PENDING_PROVIDER_RENDER_STATUS,
+    SCHEMA_VERSION as DISCLOSURE_SCHEMA_VERSION,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_render_handoff import (
     materialize_provider_render_handoff,
@@ -150,6 +151,30 @@ def test_provider_render_handoff_feeds_released_content_agents_runner(
     pending_render["result_digest"] = canonical_digest(
         pending_render, digest_field="result_digest"
     )
+    disclosure_decision = {
+        "schema_version": DISCLOSURE_SCHEMA_VERSION,
+        "render_execution_site": "provider_gpu",
+        "source_appearance_bytes_to_provider": True,
+        "rights_admission_permits_upload": True,
+        "stage_configuration_requests_upload": True,
+        "human_authority_accepts_provider_terms": True,
+        "refusals": [],
+        "provider_training_authorized": False,
+        "public_redistribution_authorized": False,
+        "decision_digest": "",
+    }
+    disclosure_decision["decision_digest"] = canonical_digest(
+        disclosure_decision, digest_field="decision_digest"
+    )
+    portable_pending_render = {
+        **pending_render,
+        "control_plane_result_digest": pending_render["result_digest"],
+        "disclosure_decision": disclosure_decision,
+    }
+    portable_pending_render["result_digest"] = canonical_digest(
+        portable_pending_render, digest_field="result_digest"
+    )
+    assert portable_pending_render["result_digest"] != pending_render["result_digest"]
     completed_render = {
         "status": MATERIALIZED_STATUS,
         "derived_frames": [_record(reference)],
@@ -193,7 +218,9 @@ def test_provider_render_handoff_feeds_released_content_agents_runner(
                 "restitution_bounds": [0.0, 0.15],
             },
         },
-        "construction_envelope": {"render_inputs_result": pending_render},
+        "construction_envelope": {
+            "render_inputs_result": portable_pending_render,
+        },
     }
     stage_input_path = output / "input.json"
     stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
