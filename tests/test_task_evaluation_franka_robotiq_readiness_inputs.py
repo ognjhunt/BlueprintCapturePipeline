@@ -92,15 +92,33 @@ def _inputs(tmp_path: Path) -> tuple[dict, Path, Path, dict]:
     value["registration"]["camera_calibration"] = calibration_ref
     value["revision_digest"] = canonical_digest(value, digest_field="revision_digest")
     candidate = {
+        "schema_version": "task_evaluation_planar_push_readiness_candidate.v1",
+        "status": "candidate_pending_native_construction_readback",
         "scene_identity": value["scene_identity"],
+        "configured_scene_revision_digest": value["revision_digest"],
         "robot_mount_interface_digest": mount_ref["digest"],
+        "task_definition_digest": value["task_template"]["definition"]["digest"],
+        "workspace_clearance_digest": value["registration"][
+            "workspace_clearance"
+        ]["digest"],
+        "derivation_method": (
+            "reflect_reach_candidate_behind_start_along_frozen_planar_push"
+        ),
+        "task_direction_considered": True,
+        "robot_base_qualified": False,
+        "reachability_qualified": False,
+        "collision_clearance_qualified": False,
         "learned_policy_outcomes_consulted": False,
         "native_construction_readback_completed": False,
         "pose_world": {
             "position_world_m": [0.42, -0.17, 0.0],
             "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
+        "base_pose_candidate_digest": "",
     }
+    candidate["base_pose_candidate_digest"] = canonical_digest(
+        candidate, digest_field="base_pose_candidate_digest"
+    )
     return value, mount_path, calibration_path, candidate
 
 
