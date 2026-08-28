@@ -32,6 +32,9 @@ from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bun
 from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as authority_module
 from blueprint_pipeline import task_evaluation_live_profile as live_profile_module
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
+from blueprint_pipeline import (
+    task_evaluation_scene_configuration_provider_artifacts as provider_artifacts,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     MAX_ATTEMPT_SPEND_USD,
     MAX_HOURLY_RATE_USD,
@@ -1379,6 +1382,9 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
         paid_resource_admission_grant=object(),
         execute=True,
         scene_construction_queue_root=_construction_queue(tmp_path),
+        disk_usage_provider=lambda _path: type(
+            "Usage", (), {"free": 100_000_000_000}
+        )(),
     )
 
     result_path = job / f"{scene_vast.RESULT_SCHEMA_VERSION}.json"
@@ -2747,16 +2753,16 @@ def test_scene_configuration_provider_output_disk_formula_and_rechecks_are_fail_
         "maximum_archive_bytes": archive_ceiling,
         "maximum_expanded_bytes": maximum_expanded,
         "operational_reserve_bytes": (
-            scene_vast.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+            provider_artifacts.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
         ),
         "required_free_bytes_before_download": (
             archive_ceiling
             + maximum_expanded
-            + scene_vast.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+            + provider_artifacts.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
         ),
         "required_free_bytes_before_extraction": (
             maximum_expanded
-            + scene_vast.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+            + provider_artifacts.PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
         ),
     }
 
@@ -2773,10 +2779,11 @@ def test_scene_configuration_provider_output_disk_formula_and_rechecks_are_fail_
 
     monkeypatch.setattr(scene_vast, "_extract_provider_output", observed_extract)
     observed, blockers, capacity = (
-        scene_vast._extract_provider_output_with_capacity_guard(
+        provider_artifacts.extract_provider_output_with_capacity_guard(
             archive,
             tmp_path / "insufficient-extraction",
             maximum_archive_bytes=archive_ceiling,
+            extractor=scene_vast._extract_provider_output,
             disk_usage_provider=lambda _path: type(
                 "Usage", (), {"free": extraction_required - 1}
             )(),
@@ -2791,10 +2798,11 @@ def test_scene_configuration_provider_output_disk_formula_and_rechecks_are_fail_
     assert not (tmp_path / "insufficient-extraction").exists()
 
     _observed, blockers, capacity = (
-        scene_vast._extract_provider_output_with_capacity_guard(
+        provider_artifacts.extract_provider_output_with_capacity_guard(
             archive,
             tmp_path / "exact-boundary-extraction",
             maximum_archive_bytes=archive_ceiling,
+            extractor=scene_vast._extract_provider_output,
             disk_usage_provider=lambda _path: type(
                 "Usage", (), {"free": extraction_required}
             )(),
@@ -3314,7 +3322,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         }
 
     monkeypatch.setattr(
-        scene_vast, "publish_configured_scene_artifact", durable_publisher
+        provider_artifacts, "publish_configured_scene_artifact", durable_publisher
     )
 
     result = scene_vast.run_scene_configuration_vast(
@@ -3324,6 +3332,9 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         paid_resource_admission_grant=object(),
         execute=True,
         scene_construction_queue_root=_construction_queue(tmp_path),
+        disk_usage_provider=lambda _path: type(
+            "Usage", (), {"free": 100_000_000_000}
+        )(),
     )
 
     assert result["status"] == "completed", result["blockers"]
@@ -3902,19 +3913,20 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     receipt = _build(tmp_path, "bundle")
     expected_upload = max(
         2 * receipt["bundle_size_bytes"],
-        scene_vast.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+        provider_artifacts.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
     )
 
     assert scene_vast._provider_transfer_byte_budget(receipt) == (
-        receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
+        receipt["bundle_size_bytes"]
+        + provider_artifacts.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
         expected_upload,
     )
     assert receipt["bundle_size_bytes"] > 0
     observed_pinned_wheel_floor = 2_209_255_046
-    assert scene_vast.ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES == (
+    assert provider_artifacts.ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES == (
         observed_pinned_wheel_floor
     )
-    assert scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES >= (
+    assert provider_artifacts.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES >= (
         4 * observed_pinned_wheel_floor
     )
     runtime_script = (
@@ -3940,7 +3952,7 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         ):
             scene_vast._provider_transfer_byte_budget(broken)
     monkeypatch.setattr(
-        scene_vast,
+        provider_artifacts,
         "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
         observed_pinned_wheel_floor,
     )
@@ -3950,11 +3962,13 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     ):
         scene_vast._provider_transfer_byte_budget(receipt)
     monkeypatch.setattr(
-        scene_vast,
+        provider_artifacts,
         "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
         10_000_000_000,
     )
-    monkeypatch.setattr(scene_vast, "PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES", 1)
+    monkeypatch.setattr(
+        provider_artifacts, "PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES", 1
+    )
     with pytest.raises(
         scene_vast.TaskEvaluationSceneConfigurationVastError,
         match="scene_configuration_provider_transfer_budget_underdeclared",
@@ -4088,11 +4102,12 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
 
     monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", _adapter)
     expected_download = (
-        receipt["bundle_size_bytes"] + scene_vast.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
+        receipt["bundle_size_bytes"]
+        + provider_artifacts.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
     )
     expected_upload = max(
         2 * receipt["bundle_size_bytes"],
-        scene_vast.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+        provider_artifacts.PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
     )
     required_free = scene_vast._provider_output_disk_requirements(expected_upload)[
         "required_free_bytes_before_download"
