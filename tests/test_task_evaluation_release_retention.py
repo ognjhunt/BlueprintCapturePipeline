@@ -946,6 +946,41 @@ def test_apply_requires_exact_reviewed_plan_and_removes_only_eligible_sha(
     assert receipt_path.is_file()
 
 
+def test_git_worktree_removal_scopes_safe_directory_to_exact_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "c" * 40
+    worktree = tmp_path / commit
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /managed/worktree\n", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object):
+        commands.append(command)
+        if command[-3:] == ["worktree", "remove", str(worktree)]:
+            shutil.rmtree(worktree)
+            stdout = ""
+        elif command[-2:] == ["--verify", "HEAD^{commit}"]:
+            stdout = commit + "\n"
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(retention.subprocess, "run", run)
+
+    retention._remove_git_worktree(worktree, commit=commit)
+
+    assert len(commands) == 3
+    for command in commands:
+        assert command[:5] == [
+            "git",
+            "-c",
+            f"safe.directory={worktree}",
+            "-C",
+            str(worktree),
+        ]
+
+
 def test_apply_rejects_a_binding_added_after_dry_run_before_any_delete(
     tmp_path: Path,
 ) -> None:

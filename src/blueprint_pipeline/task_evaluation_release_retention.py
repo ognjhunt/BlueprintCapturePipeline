@@ -1101,7 +1101,14 @@ def _remove_git_worktree(path: Path, *, commit: str) -> None:
     for args in commands:
         try:
             completed = subprocess.run(  # nosec B603
-                ["git", "-C", str(path), *args],
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={path}",
+                    "-C",
+                    str(path),
+                    *args,
+                ],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1121,7 +1128,16 @@ def _remove_git_worktree(path: Path, *, commit: str) -> None:
             f"release_retention_release_worktree_not_clean:{commit}"
         )
     completed = subprocess.run(  # nosec B603
-        ["git", "-C", str(path), "worktree", "remove", str(path)],
+        [
+            "git",
+            "-c",
+            f"safe.directory={path}",
+            "-C",
+            str(path),
+            "worktree",
+            "remove",
+            str(path),
+        ],
         check=False,
         capture_output=True,
         text=True,
