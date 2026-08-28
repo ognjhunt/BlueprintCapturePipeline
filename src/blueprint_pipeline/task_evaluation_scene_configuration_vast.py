@@ -29,7 +29,6 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
-from .provider_output_disk_capacity import observe_provider_output_disk_capacity
 from .spend_authority_consumption_root import (
     SpendAuthorityRootError,
     prepare_consumption_root,
@@ -60,10 +59,19 @@ from .task_evaluation_scene_configuration_execution_binding import (
 )
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
-    publish_configured_scene_artifact,
 )
-from .task_evaluation_scene_artifact_retention import (
-    seal_scene_artifact_remote_index,
+from .task_evaluation_scene_configuration_provider_artifacts import (
+    PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO,
+    PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT,
+    TaskEvaluationSceneConfigurationVastError,
+    _provider_output_disk_capacity,
+    _provider_output_disk_requirements,
+    _provider_transfer_byte_budget,
+    _publish_provider_output_archive,
+    _read,
+    _seal_provider_bundle_remote_index,
+    _sha256,
+    extract_provider_output_with_capacity_guard,
 )
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
@@ -79,9 +87,6 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     ceil_live_minutes,
     diagnostic_parent_runtime_budget_blockers,
     parent_runtime_budget_blockers,
-)
-from .task_evaluation_scene_configuration_transfer_budget import (
-    scene_configuration_provider_transfer_byte_budget,
 )
 from .task_evaluation_scene_configuration_provider_cleanup import cleanup_scene_staging
 from .task_evaluation_scene_construction_queue import (
@@ -180,10 +185,6 @@ _OPENAI_STAGE_SCOPE_BINDINGS = (
         "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
     ),
 )
-
-
-class TaskEvaluationSceneConfigurationVastError(RuntimeError):
-    """The canonical provider path could not run or close one configuration."""
 
 
 def _stage_owner_only_runtime_secrets(
@@ -438,28 +439,6 @@ def _provider_runtime_inputs(
         ),
     }
     return secret_paths, runtime_environment
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
-
-
-def _read(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_vast_json_invalid"
-        ) from exc
-    if path.is_symlink() or not isinstance(value, Mapping):
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_vast_json_invalid"
-        )
-    return dict(value)
 
 
 def _validated_advanced_checkpoint_reference(
@@ -916,56 +895,6 @@ def _publish_completed_configuration(
     return publication
 
 
-def _publish_provider_output_archive(
-    *,
-    output_zip: Path,
-    job: Path,
-    receipt: Mapping[str, Any],
-    publisher: Callable[..., dict[str, Any]] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    """Make the exact provider ZIP durable before local retention may reap it."""
-
-    publish = publisher or publish_configured_scene_artifact
-    reference = publish(path=output_zip, artifact_kind="provider-output")
-    index_path = job / "scene_artifact_remote_index.v1.json"
-    index = seal_scene_artifact_remote_index(
-        destination=index_path,
-        run_id=str(receipt["run_id"]),
-        source_commit=str(receipt["source_commit"]),
-        bundle_digest=str(receipt["bundle_sha256"]),
-        artifact_references=[reference],
-    )
-    return reference, index, index_path
-
-
-def _seal_provider_bundle_remote_index(
-    *,
-    job: Path,
-    receipt: Mapping[str, Any],
-    staging: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    """Bind the staged CAS bundle to a small immutable local index."""
-
-    raw_reference = staging.get("provider_bundle_remote_reference")
-    reference = dict(raw_reference) if isinstance(raw_reference, Mapping) else {}
-    if not reference:
-        # Compatibility for an older staging implementation during a rolling
-        # deploy: still require durable CAS publication before allocation.
-        reference = publish_configured_scene_artifact(
-            path=Path(str(receipt["bundle_path"])),
-            artifact_kind="provider-bundle",
-        )
-    index_path = job / "scene_provider_bundle_remote_index.v1.json"
-    index = seal_scene_artifact_remote_index(
-        destination=index_path,
-        run_id=str(receipt["run_id"]),
-        source_commit=str(receipt["source_commit"]),
-        bundle_digest=str(receipt["bundle_sha256"]),
-        artifact_references=[reference],
-    )
-    return reference, index, index_path
-
-
 @contextmanager
 def _authority_environment():
     names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
@@ -983,123 +912,6 @@ def _authority_environment():
                 os.environ[name] = value
 
 
-#: The bundle is not all this lane pulls. Before the first stage the onstart
-#: apt-installs its build and render toolchain, and the ArtiFixer runtime then
-#: fetches ``uv`` and builds a venv. Declaring only ``bundle_size_bytes``
-#: left all of that outside the hard-cap projection.
-#:
-#: The production ``dual_target_artifixer3d_only`` path skips the VIBE editor,
-#: but it does *not* skip Torch: ``run_public_scene_artifixer3d.sh`` installs
-#: the CUDA 12.8 build before importing the 3DGRUT JIT graph.  The exact Torch
-#: wheel plus only cuDNN, NCCL, cuSPARSELt, NVSHMEM, and torchvision already
-#: total this many bytes in their publisher indexes.  CUDA Toolkit components,
-#: Triton, the remaining Python closure, apt packages, ``uv``, and pinned source
-#: fetches are additional.  The previous 2 GB allowance was therefore smaller
-#: than a provable subset of what the caller downloads and underpriced every
-#: offer before allocation.
-ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES = 2_209_255_046
-
-#: Conservative pre-allocation ceiling for all non-bundle downloads above.
-#: Keep this fail-closed: a tighter value needs a complete publisher-size
-#: inventory, not an assumption that one of the executed install branches is
-#: skipped.
-PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 10_000_000_000
-
-#: The result ZIP is bounded before its signed PUT is used.  The floor leaves
-#: room for generated stage evidence even when a synthetic/test bundle is
-#: tiny; the receipt-relative term scales for production bundles containing
-#: the scene, renderer, browser, and native components.
-PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES = 1_000_000_000
-PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER = 2
-PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO = 4
-PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT = 10_000
-#: Space retained beyond the declared archive and its maximum permitted
-#: expansion for filesystem metadata, terminal manifests, and publication
-#: temporaries. This is operational headroom, not a larger ZIP allowance.
-PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES = 512 * 1024 * 1024
-
-
-def _provider_output_disk_requirements(maximum_archive_bytes: int) -> dict[str, int]:
-    """Return the one capacity formula used before transfer and extraction."""
-
-    if (
-        isinstance(maximum_archive_bytes, bool)
-        or not isinstance(maximum_archive_bytes, int)
-        or maximum_archive_bytes <= 0
-        or PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO < 1
-        or PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES <= 0
-    ):
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_provider_output_disk_requirement_invalid"
-        )
-    maximum_expanded_bytes = (
-        maximum_archive_bytes * PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO
-    )
-    return {
-        "maximum_archive_bytes": maximum_archive_bytes,
-        "maximum_expanded_bytes": maximum_expanded_bytes,
-        "operational_reserve_bytes": PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES,
-        "required_free_bytes_before_download": (
-            maximum_archive_bytes
-            + maximum_expanded_bytes
-            + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
-        ),
-        # At this checkpoint the ZIP is already resident, so free space no
-        # longer includes those bytes. Counting it again would require 2x the
-        # archive without protecting any additional write.
-        "required_free_bytes_before_extraction": (
-            maximum_expanded_bytes + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
-        ),
-    }
-
-
-def _provider_output_disk_capacity(
-    *,
-    destination_directory: Path,
-    required_free_bytes: int,
-    phase: str,
-    disk_usage_provider: Callable[[Path], Any] | None = None,
-) -> dict[str, Any]:
-    """Measure the destination filesystem and fail closed on unknown capacity."""
-
-    return observe_provider_output_disk_capacity(
-        destination_directory=destination_directory,
-        required_free_bytes=required_free_bytes,
-        phase=phase,
-        schema_version="scene_configuration_provider_output_disk_capacity.v1",
-        blocker_prefix="scene_configuration_provider_output",
-        disk_usage_provider=disk_usage_provider,
-    )
-
-
-def _extract_provider_output_with_capacity_guard(
-    archive_path: Path,
-    destination: Path,
-    *,
-    maximum_archive_bytes: int,
-    diagnostic_only: bool = False,
-    disk_usage_provider: Callable[[Path], Any] | None = None,
-) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
-    """Re-stat free bytes immediately before invoking the unchanged extractor."""
-
-    requirements = _provider_output_disk_requirements(maximum_archive_bytes)
-    capacity = _provider_output_disk_capacity(
-        destination_directory=destination.parent,
-        required_free_bytes=requirements[
-            "required_free_bytes_before_extraction"
-        ],
-        phase="before_extraction",
-        disk_usage_provider=disk_usage_provider,
-    )
-    if capacity["status"] != "ready":
-        return {}, list(capacity["blockers"]), capacity
-    result, blockers = _extract_provider_output(
-        archive_path,
-        destination,
-        maximum_archive_bytes=maximum_archive_bytes,
-        diagnostic_only=diagnostic_only,
-    )
-    return result, blockers, capacity
 
 
 def _seal_terminal_result(job: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1179,23 +991,6 @@ def _seal_live_terminal_result(
         },
     )
     return _seal_terminal_result(job, result)
-
-
-def _provider_transfer_byte_budget(
-    receipt: Mapping[str, Any],
-) -> tuple[int, int]:
-    return scene_configuration_provider_transfer_byte_budget(
-        receipt,
-        provisioning_download_overhead_bytes=PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
-        artifixer_pinned_wheel_download_floor_bytes=(
-            ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES
-        ),
-        provider_output_upload_minimum_bytes=PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
-        provider_output_upload_bundle_multiplier=(
-            PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER
-        ),
-        error_factory=TaskEvaluationSceneConfigurationVastError,
-    )
 
 
 def _close_watchdog_after_adapter(
@@ -1833,10 +1628,11 @@ def run_scene_configuration_vast(
     ):
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     execution, blockers, extraction_disk_capacity = (
-        _extract_provider_output_with_capacity_guard(
+        extract_provider_output_with_capacity_guard(
             output_zip,
             job / "immutable_execution",
             maximum_archive_bytes=expected_upload_bytes,
+            extractor=_extract_provider_output,
             diagnostic_only=diagnostic_only,
             disk_usage_provider=disk_usage_provider,
         )
