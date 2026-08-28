@@ -40,6 +40,10 @@ from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority impor
     AUTHORITY_SCHEMA_VERSION,
     SCENE_CONFIGURATION_PROVIDER_IMAGE,
 )
+from blueprint_pipeline.spend_authority_consumption_root import (
+    SpendAuthorityRootError,
+    prepare_consumption_root,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_warm_diagnostic import (
     materialize_scene_configuration_warm_session_authority,
 )
@@ -264,6 +268,20 @@ def _preflight_paid_runtime_environment(
         )
 
 
+def _preflight_paid_service_identity(*, execute: bool) -> None:
+    """Reach the canonical single-use-ledger gate before expensive bundle work."""
+
+    if not execute:
+        return
+    try:
+        prepare_consumption_root()
+    except SpendAuthorityRootError as exc:
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_spend_identity_invalid:"
+            + str(exc)
+        ) from exc
+
+
 def run_scene_configuration_diagnostic_iteration(
     args: argparse.Namespace,
     *,
@@ -277,6 +295,7 @@ def run_scene_configuration_diagnostic_iteration(
         execute=bool(args.execute),
         openai_max_cost_usd=float(args.openai_max_cost_usd),
     )
+    _preflight_paid_service_identity(execute=bool(args.execute))
 
     source_repo = _input_directory(args.source_repo, field="source_repo")
     release_root = _output_directory(

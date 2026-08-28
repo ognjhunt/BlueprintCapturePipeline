@@ -488,6 +488,7 @@ def _install_paid_runtime_environment(
         monkeypatch.setenv(name, str(value.resolve()))
     for name in iteration._OPENAI_RUNTIME_VALUE_ENV_NAMES:
         monkeypatch.setenv(name, "fixture-identity")
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "spend"))
 
 
 def test_execute_preflights_openai_environment_before_staging_or_spend(
@@ -515,6 +516,43 @@ def test_execute_preflights_openai_environment_before_staging_or_spend(
         match=(
             "scene_configuration_diagnostic_iteration_openai_runtime_environment_missing:"
             "OPENAI_ADMIN_API_KEY_FILE"
+        ),
+    ):
+        iteration.run_scene_configuration_diagnostic_iteration(args)
+
+    assert stage_called is False
+
+
+def test_execute_preflights_spend_identity_before_bundle_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    _install_paid_runtime_environment(tmp_path, monkeypatch)
+    stage_called = False
+
+    def stage(**_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        pytest.fail("release staging must not run after spend-identity refusal")
+
+    monkeypatch.setattr(
+        iteration, "stage_scene_configuration_diagnostic_release", stage
+    )
+    monkeypatch.setattr(
+        iteration,
+        "prepare_consumption_root",
+        lambda: (_ for _ in ()).throw(
+            iteration.SpendAuthorityRootError(
+                "spend_authority_consumption_root_not_owned"
+            )
+        ),
+    )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match=(
+            "scene_configuration_diagnostic_iteration_spend_identity_invalid:"
+            "spend_authority_consumption_root_not_owned"
         ),
     ):
         iteration.run_scene_configuration_diagnostic_iteration(args)
