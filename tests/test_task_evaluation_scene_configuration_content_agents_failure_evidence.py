@@ -109,9 +109,16 @@ def test_accepted_nested_runtime_does_not_emit_failure_evidence(
     tmp_path: Path,
 ) -> None:
     result_path = tmp_path / "adp_content_agents_vast_result.json"
-    result_path.write_text(
-        json.dumps({"status": "completed", "blockers": []}), encoding="utf-8"
+    runtime_result = {
+        "schema_version": "adp_content_agents_vast_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "result_digest": "",
+    }
+    runtime_result["result_digest"] = canonical_digest(
+        runtime_result, digest_field="result_digest"
     )
+    result_path.write_text(json.dumps(runtime_result), encoding="utf-8")
     evidence_path = tmp_path / "content_agents_runtime_failure_evidence.v1.json"
 
     result = read_content_agents_runtime_result(
@@ -122,6 +129,38 @@ def test_accepted_nested_runtime_does_not_emit_failure_evidence(
 
     assert result["blockers"] == []
     assert not evidence_path.exists()
+
+
+def test_completed_nested_runtime_requires_its_canonical_result_digest(
+    tmp_path: Path,
+) -> None:
+    result_path = tmp_path / "adp_content_agents_vast_result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "adp_content_agents_vast_result.v1",
+                "status": "completed",
+                "blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence_path = tmp_path / "content_agents_runtime_failure_evidence.v1.json"
+
+    with pytest.raises(
+        ContentAgentsRuntimeFailureEvidenceError,
+        match="scene_configuration_content_agents_runtime_result_invalid",
+    ):
+        read_content_agents_runtime_result(
+            completed=subprocess.CompletedProcess(["runtime"], 0, "", ""),
+            runtime_result_path=result_path,
+            evidence_path=evidence_path,
+        )
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["typed_blockers"] == [
+        "scene_configuration_content_agents_runtime_result_invalid"
+    ]
 
 
 def test_failure_evidence_refuses_provider_excluded_destination(

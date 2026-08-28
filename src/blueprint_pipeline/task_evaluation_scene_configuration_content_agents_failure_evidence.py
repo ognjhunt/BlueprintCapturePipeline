@@ -246,10 +246,24 @@ def read_content_agents_runtime_result(
         )
     runtime_result = dict(value)
     result_digest = str(runtime_result.get("result_digest") or "") or None
-    if completed.returncode == 0 and runtime_result.get("status") == (
-        CONTENT_AGENTS_RUNTIME_ACCEPTED_STATUS
-    ):
+    accepted = (
+        completed.returncode == 0
+        and runtime_result.get("schema_version")
+        == "adp_content_agents_vast_result.v1"
+        and runtime_result.get("status") == CONTENT_AGENTS_RUNTIME_ACCEPTED_STATUS
+        and runtime_result.get("blockers") == []
+        and result_digest
+        == canonical_digest(runtime_result, digest_field="result_digest")
+    )
+    if accepted:
         return runtime_result
+    if (
+        completed.returncode == 0
+        and runtime_result.get("status") == CONTENT_AGENTS_RUNTIME_ACCEPTED_STATUS
+    ):
+        blockers = list(runtime_result.get("blockers") or [])
+        blockers.append("scene_configuration_content_agents_runtime_result_invalid")
+        runtime_result["blockers"] = blockers
     evidence = retain_content_agents_runtime_failure_evidence(
         destination=evidence_path,
         completed=completed,
