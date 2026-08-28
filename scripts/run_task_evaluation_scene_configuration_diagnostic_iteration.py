@@ -81,7 +81,7 @@ def _input_directory(value: str | Path, *, field: str) -> Path:
 
 
 def _python_executable(value: str | Path) -> Path:
-    """Resolve the normal venv symlink once and execute only its file target."""
+    """Validate a Python entrypoint without discarding its venv identity."""
 
     path = _absolute(value, field="python_executable")
     try:
@@ -90,11 +90,11 @@ def _python_executable(value: str | Path) -> Path:
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_python_executable_invalid"
         ) from exc
-    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+    if not resolved.is_file() or not os.access(path, os.X_OK):
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_python_executable_invalid"
         )
-    return resolved
+    return path
 
 
 def _output_path(value: str | Path, *, field: str) -> Path:

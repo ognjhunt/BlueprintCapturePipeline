@@ -484,7 +484,7 @@ def test_paths_are_explicit_absolute_and_no_arbitrary_command_option_exists(
     assert "--shell" not in option_names
 
 
-def test_normal_venv_python_symlink_is_resolved_to_its_executable_target(
+def test_normal_venv_python_symlink_preserves_venv_entrypoint(
     tmp_path: Path,
 ) -> None:
     executable = tmp_path / "python-target"
@@ -493,4 +493,4 @@ def test_normal_venv_python_symlink_is_resolved_to_its_executable_target(
     venv_python = tmp_path / "venv-python"
     venv_python.symlink_to(executable)
 
-    assert iteration._python_executable(venv_python) == executable
+    assert iteration._python_executable(venv_python) == venv_python
