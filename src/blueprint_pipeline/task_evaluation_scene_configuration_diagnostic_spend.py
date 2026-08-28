@@ -143,6 +143,25 @@ def _contains_secret_material(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(("sk-", "Bearer "))
 
 
+def _adapter_secret_proof_valid(adapter: Mapping[str, Any]) -> bool:
+    """Accept the legacy v1 omission only with both exact secret proofs.
+
+    Current adapter receipts write ``raw_secret_values_recorded=false``.
+    Historical v1 receipts predate that aggregate field, but already prove the
+    two underlying properties independently.  An explicitly present aggregate
+    field never falls back: null/true/other values remain refusals.
+    """
+
+    if "raw_secret_values_recorded" in adapter:
+        return adapter.get("raw_secret_values_recorded") is False
+    return (
+        adapter.get("schema_version") == VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION
+        and adapter.get("status") in {"completed", "blocked"}
+        and adapter.get("raw_api_key_stored") is False
+        and adapter.get("secret_values_in_artifact") is False
+    )
+
+
 def _exact_instance_ids(value: Any) -> list[int]:
     if (
         not isinstance(value, list)
@@ -252,7 +271,7 @@ def _validate_sources(
         or adapter.get("retained_owned") is not False
         or adapter.get("raw_api_key_stored") is not False
         or adapter.get("secret_values_in_artifact") is not False
-        or adapter.get("raw_secret_values_recorded") is not False
+        or not _adapter_secret_proof_valid(adapter)
         or teardown.get("schema_version") != VAST_TEARDOWN_SCHEMA_VERSION
         or teardown.get("status") != "completed"
         or teardown.get("continuing_spend_from_this_run") is not False
