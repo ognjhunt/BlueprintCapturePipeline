@@ -27,6 +27,7 @@ def _reference(path: Path, *, kind: str = "provider-output") -> dict[str, object
         "size_bytes": path.stat().st_size,
         "remote_identity_verified": True,
         "full_byte_service_account_readback_passed": True,
+        "remote_verified_at": "2026-08-01T00:00:00Z",
         "raw_secret_values_recorded": False,
     }
 
@@ -155,6 +156,48 @@ def test_active_release_or_run_root_is_never_candidate(tmp_path: Path) -> None:
 
     assert plan["candidates"] == []
     assert plan["protected"][0]["reason"] == "protected_root"
+
+
+def test_minimum_fourteen_day_retention_is_fail_closed(tmp_path: Path) -> None:
+    artifact = tmp_path / "recent-provider-output.zip"
+    artifact.write_bytes(b"provider output")
+    reference = _reference(artifact)
+    reference["remote_verified_at"] = (_now() - timedelta(days=13)).isoformat()
+
+    plan = plan_scene_artifact_retention(
+        artifacts=[{"local_path": artifact, "remote_reference": reference}],
+        leases=[],
+        protected_roots=[],
+        now=_now().isoformat(),
+    )
+
+    assert plan["candidate_count"] == 0
+    assert plan["protected"][0]["reason"] == "minimum_14_day_retention"
+
+
+@pytest.mark.parametrize(
+    "protected_component",
+    ["billing-audit", "spend-lineage", "launch-profiles", "receipts", "secrets"],
+)
+def test_evidence_and_secret_paths_are_hard_protected_regardless_of_age(
+    tmp_path: Path, protected_component: str
+) -> None:
+    artifact = tmp_path / protected_component / "old-provider-output.zip"
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"provider output")
+    reference = _reference(artifact)
+
+    plan = plan_scene_artifact_retention(
+        artifacts=[{"local_path": artifact, "remote_reference": reference}],
+        leases=[],
+        protected_roots=[],
+        now=_now().isoformat(),
+    )
+
+    assert plan["candidate_count"] == 0
+    assert plan["protected"][0]["reason"] == (
+        "hard_protected_evidence_or_secret_path"
+    )
 
 
 def test_apply_rechecks_identity_and_requires_explicit_ack(tmp_path: Path) -> None:

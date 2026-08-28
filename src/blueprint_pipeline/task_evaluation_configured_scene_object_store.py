@@ -7,7 +7,8 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,6 +17,24 @@ from urllib.parse import urlsplit
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes"
 LARGE_ARTIFACT_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/artifacts"
 _SAFE_KEY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}")
+
+_ARTIFACT_STORE_FILE_ENV = {
+    "access_key": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE",
+    "secret_key": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE",
+    "bucket": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE",
+    "endpoint": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE",
+    "region": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE",
+}
+_LEGACY_OBJECT_STORE_FILE_ENV = {
+    "access_key": "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE",
+    "secret_key": "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE",
+    "bucket": "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE",
+    "endpoint": "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE",
+    "region": "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE",
+}
+_EXPECTED_ARTIFACT_BUCKET_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET"
+)
 
 
 class TaskEvaluationConfiguredSceneObjectStoreError(RuntimeError):
@@ -91,7 +110,9 @@ def _private_file_value(environment_name: str, *, required: bool) -> str:
     return value
 
 
-def _object_store_client() -> tuple[Any, str]:
+def _client_from_file_environment(
+    names: Mapping[str, str], *, require_endpoint_and_region: bool = False
+) -> tuple[Any, str]:
     try:
         import boto3  # type: ignore[import-not-found]
         from botocore.client import Config  # type: ignore[import-not-found]
@@ -99,20 +120,14 @@ def _object_store_client() -> tuple[Any, str]:
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_object_store_client_unavailable"
         ) from exc
-    access_key = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE", required=True
-    )
-    secret_key = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE", required=True
-    )
-    bucket = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE", required=True
-    )
+    access_key = _private_file_value(names["access_key"], required=True)
+    secret_key = _private_file_value(names["secret_key"], required=True)
+    bucket = _private_file_value(names["bucket"], required=True)
     endpoint = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE", required=False
+        names["endpoint"], required=require_endpoint_and_region
     )
     region = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE", required=False
+        names["region"], required=require_endpoint_and_region
     )
     kwargs: dict[str, Any] = {
         "aws_access_key_id": access_key,
@@ -123,6 +138,37 @@ def _object_store_client() -> tuple[Any, str]:
     if endpoint:
         kwargs["endpoint_url"] = endpoint
     return boto3.client("s3", **kwargs), bucket
+
+
+def _object_store_client() -> tuple[Any, str]:
+    """Return the existing configured-scene/Spaces client unchanged."""
+
+    return _client_from_file_environment(_LEGACY_OBJECT_STORE_FILE_ENV)
+
+
+def _artifact_object_store_client() -> tuple[Any, str]:
+    """Return the dedicated large-artifact client, or the legacy fallback."""
+
+    # If any dedicated binding is present, require all five dedicated values;
+    # never borrow a missing value from the legacy store. This allows durable
+    # bundle/output bytes to move to B2 without rerouting configured-scene
+    # publication or transient WAM objects away from Spaces.
+    dedicated = any(
+        str(os.getenv(name) or "").strip()
+        for name in _ARTIFACT_STORE_FILE_ENV.values()
+    )
+    names = _ARTIFACT_STORE_FILE_ENV if dedicated else _LEGACY_OBJECT_STORE_FILE_ENV
+    # Endpoint and region are part of the exact B2 account identity; unlike
+    # the legacy AWS-compatible fallback, both are mandatory here.
+    client, bucket = _client_from_file_environment(
+        names, require_endpoint_and_region=dedicated
+    )
+    expected_bucket = str(os.getenv(_EXPECTED_ARTIFACT_BUCKET_ENV) or "").strip()
+    if expected_bucket and bucket != expected_bucket:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_store_bucket_identity_mismatch"
+        )
+    return client, bucket
 
 
 def _safe_object_name(value: str) -> PurePosixPath:
@@ -225,7 +271,9 @@ def publish_configured_scene_artifact(
         / source.name
     )
     resolved_client, resolved_bucket = (
-        _object_store_client() if client is None or bucket is None else (client, bucket)
+        _artifact_object_store_client()
+        if client is None or bucket is None
+        else (client, bucket)
     )
     cache_hit = False
     upload_performed = False
@@ -272,6 +320,10 @@ def publish_configured_scene_artifact(
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_artifact_readback_mismatch"
         )
+    remote_verified_at = datetime.now(UTC)
+    last_modified = head.get("LastModified")
+    if isinstance(last_modified, datetime) and last_modified.tzinfo is not None:
+        remote_verified_at = last_modified.astimezone(UTC)
     return {
         "schema_version": "task_evaluation_scene_artifact_reference.v1",
         "status": "remote_verified",
@@ -284,10 +336,73 @@ def publish_configured_scene_artifact(
         "content_addressed_key": True,
         "remote_identity_verified": True,
         "full_byte_service_account_readback_passed": True,
+        "remote_verified_at": remote_verified_at.isoformat().replace("+00:00", "Z"),
         "readback_digest": readback_digest,
         "readback_size_bytes": readback_size,
         "raw_secret_values_recorded": False,
     }
+
+
+def presign_configured_scene_artifact(
+    *, reference: Mapping[str, Any], expiration_seconds: int
+) -> str:
+    """Issue a bounded GET URL for one exact verified CAS reference."""
+
+    if (
+        not isinstance(expiration_seconds, int)
+        or isinstance(expiration_seconds, bool)
+        or expiration_seconds < 1
+        or expiration_seconds > 7 * 24 * 60 * 60
+    ):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_presign_expiration_invalid"
+        )
+    uri = str(reference.get("uri") or "")
+    parsed = urlsplit(uri)
+    digest = str(reference.get("digest") or "")
+    kind = str(reference.get("artifact_kind") or "")
+    key = parsed.path.lstrip("/")
+    prefix = LARGE_ARTIFACT_KEY_PREFIX.strip("/") + "/"
+    if (
+        reference.get("schema_version")
+        != "task_evaluation_scene_artifact_reference.v1"
+        or reference.get("status") != "remote_verified"
+        or parsed.scheme != "s3"
+        or not parsed.netloc
+        or not key.startswith(prefix)
+        or _SAFE_KEY_COMPONENT.fullmatch(kind) is None
+        or f"/{kind}/sha256/" not in "/" + key
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        or f"/sha256/{digest.removeprefix('sha256:')}/" not in key
+        or reference.get("content_addressed_key") is not True
+        or reference.get("remote_identity_verified") is not True
+        or reference.get("full_byte_service_account_readback_passed") is not True
+    ):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_reference_invalid"
+        )
+    client, bucket = _artifact_object_store_client()
+    if parsed.netloc != bucket:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_reference_invalid"
+        )
+    try:
+        return str(
+            client.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": bucket,
+                    "Key": key,
+                    "ResponseCacheControl": "no-store, max-age=0",
+                },
+                ExpiresIn=expiration_seconds,
+                HttpMethod="GET",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - S3-compatible clients vary
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_presign_failed"
+        ) from exc
 
 
 def materialize_configured_scene_artifact(
@@ -335,7 +450,9 @@ def materialize_configured_scene_artifact(
             "configured_scene_artifact_reference_invalid"
         )
     resolved_client, resolved_bucket = (
-        _object_store_client() if client is None or bucket is None else (client, bucket)
+        _artifact_object_store_client()
+        if client is None or bucket is None
+        else (client, bucket)
     )
     if parsed.netloc != resolved_bucket:
         raise TaskEvaluationConfiguredSceneObjectStoreError(
@@ -570,6 +687,7 @@ __all__ = [
     "TaskEvaluationConfiguredSceneObjectStoreError",
     "configured_scene_object_store_publisher",
     "materialize_configured_scene_artifact",
+    "presign_configured_scene_artifact",
     "publish_configured_scene_artifact",
     "read_configured_scene_object",
     "validate_configured_scene_object_store_configuration",

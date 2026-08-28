@@ -938,6 +938,34 @@ def _publish_provider_output_archive(
     return reference, index, index_path
 
 
+def _seal_provider_bundle_remote_index(
+    *,
+    job: Path,
+    receipt: Mapping[str, Any],
+    staging: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    """Bind the staged CAS bundle to a small immutable local index."""
+
+    raw_reference = staging.get("provider_bundle_remote_reference")
+    reference = dict(raw_reference) if isinstance(raw_reference, Mapping) else {}
+    if not reference:
+        # Compatibility for an older staging implementation during a rolling
+        # deploy: still require durable CAS publication before allocation.
+        reference = publish_configured_scene_artifact(
+            path=Path(str(receipt["bundle_path"])),
+            artifact_kind="provider-bundle",
+        )
+    index_path = job / "scene_provider_bundle_remote_index.v1.json"
+    index = seal_scene_artifact_remote_index(
+        destination=index_path,
+        run_id=str(receipt["run_id"]),
+        source_commit=str(receipt["source_commit"]),
+        bundle_digest=str(receipt["bundle_sha256"]),
+        artifact_references=[reference],
+    )
+    return reference, index, index_path
+
+
 @contextmanager
 def _authority_environment():
     names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
@@ -1493,6 +1521,7 @@ def run_scene_configuration_vast(
         bundle_path=bundle_path,
         key_prefix="blueprint/arm-decision-proof-v1/scene-configuration",
         expiration_seconds=ttl + 1_800,
+        retain_content_addressed_bundle=True,
     )
     if staging.get("status") != "completed":
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -1515,6 +1544,49 @@ def run_scene_configuration_vast(
                 "object_store_cleanup": cleanup,
                 "continuing_spend_from_this_run": False,
                 "blockers": blockers,
+            },
+            receipt=receipt,
+            scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
+        )
+    provider_bundle_reference: dict[str, Any] = {}
+    provider_bundle_remote_index: dict[str, Any] = {}
+    provider_bundle_remote_index_path = (
+        job / "scene_provider_bundle_remote_index.v1.json"
+    )
+    try:
+        (
+            provider_bundle_reference,
+            provider_bundle_remote_index,
+            provider_bundle_remote_index_path,
+        ) = _seal_provider_bundle_remote_index(
+            job=job,
+            receipt=receipt,
+            staging=staging,
+        )
+    except Exception as exc:  # noqa: BLE001 - object-store clients vary
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        blockers = [
+            "scene_configuration_provider_bundle_durable_publication_failed:"
+            + redacted_failure_detail(exc)
+        ]
+        if cleanup.get("all_objects_absent") is not True:
+            blockers.append("object_store_provider_zero_not_proven")
+        return _seal_live_terminal_result(
+            job,
+            {
+                "schema_version": result_schema_version,
+                "status": blocked_status,
+                "run_id": receipt["run_id"],
+                "source_commit": receipt["source_commit"],
+                "bundle_sha256": receipt["bundle_sha256"],
+                "authority_digest": authority["authority_digest"],
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                **diagnostic_claim_boundary,
+                "object_store_cleanup": cleanup,
+                "continuing_spend_from_this_run": False,
+                "blockers": sorted(set(blockers)),
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
@@ -1874,6 +1946,11 @@ def run_scene_configuration_vast(
         "allocator_adapter_result",
         "teardown_manifest",
     ]
+    if provider_bundle_remote_index.get("status") == "completed":
+        artifact_roots["durable_provider_bundle"] = (
+            provider_bundle_remote_index_path
+        )
+        required_roles.append("durable_provider_bundle")
     if publication.get("status") == "configured_scene_published":
         artifact_roots["configured_scene_publication"] = publication_root
         required_roles.append("configured_scene_publication")
@@ -1950,6 +2027,17 @@ def run_scene_configuration_vast(
         ),
         "provider_runtime_output_zip_sha256": (
             _sha256(output_zip) if output_zip.is_file() else None
+        ),
+        "provider_bundle_remote_reference": (
+            provider_bundle_reference or None
+        ),
+        "provider_bundle_remote_index_path": (
+            str(provider_bundle_remote_index_path)
+            if provider_bundle_remote_index_path.is_file()
+            else None
+        ),
+        "provider_bundle_remote_index_digest": (
+            provider_bundle_remote_index.get("index_digest")
         ),
         "provider_runtime_output_remote_reference": (
             provider_output_reference or None

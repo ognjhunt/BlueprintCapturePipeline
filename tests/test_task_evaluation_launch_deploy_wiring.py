@@ -170,6 +170,12 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
         "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
     ):
         assert binding in dispatcher
     assert (
@@ -362,6 +368,12 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
         "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
         "PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token",
     ):
         assert binding in environment

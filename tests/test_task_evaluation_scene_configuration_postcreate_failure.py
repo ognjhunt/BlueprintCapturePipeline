@@ -65,7 +65,22 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
             (staging / name).write_text(
                 f"https://objects.example.test/{name}", encoding="utf-8"
             )
-        return {"status": "completed"}
+        bundle = Path(_kwargs["bundle_path"])
+        return {
+            "status": "completed",
+            "provider_bundle_remote_reference": {
+                "schema_version": "task_evaluation_scene_artifact_reference.v1",
+                "status": "remote_verified",
+                "artifact_kind": "provider-bundle",
+                "uri": "s3://scene-artifacts/provider-bundle.zip",
+                "digest": receipt["bundle_sha256"],
+                "size_bytes": bundle.stat().st_size,
+                "content_addressed_key": True,
+                "remote_identity_verified": True,
+                "full_byte_service_account_readback_passed": True,
+                "raw_secret_values_recorded": False,
+            },
+        }
 
     monkeypatch.setattr(
         scene_vast, "stage_wam_provider_bundle_object_store", stage
