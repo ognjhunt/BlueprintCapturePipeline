@@ -813,7 +813,6 @@ def build_release_retention_plan(
             row_reasons = {str(row["reason"]) for row in rows}
             exact_unreachable_scene_handoff = (
                 bool(rows)
-                and bool(profiles_for_commit)
                 and set(protected.get(commit, set())) == row_reasons
                 and all(
                     row["queue_name"] == "task-evaluation-scene-constructions"
@@ -825,9 +824,12 @@ def build_release_retention_plan(
                     and row["provider_mutation_performed"] is False
                     for row in rows
                 )
-                and all(
-                    profile_id in unavailable_by_profile
-                    for profile_id in profiles_for_commit
+                and (
+                    not profiles_for_commit
+                    or all(
+                        profile_id in unavailable_by_profile
+                        for profile_id in profiles_for_commit
+                    )
                 )
             )
             if not exact_unreachable_scene_handoff:
@@ -839,7 +841,10 @@ def build_release_retention_plan(
                     "source_commit": commit,
                     "reference_paths": sorted(str(row["path"]) for row in rows),
                     "profile_ids": sorted(profiles_for_commit),
-                    "catalog_live_enabled": False,
+                    "catalog_profile_present": bool(profiles_for_commit),
+                    "catalog_live_enabled": (
+                        False if profiles_for_commit else None
+                    ),
                     "paid_execution_requested": False,
                     "provider_mutation_performed": False,
                     "source_release_already_missing": True,
