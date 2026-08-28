@@ -24,6 +24,10 @@ from .safe_outbound_http import (
     presigned_transfer_policy,
     request as safe_http_request,
 )
+from .task_evaluation_configured_scene_object_store import (
+    presign_configured_scene_artifact,
+    publish_configured_scene_artifact,
+)
 
 
 SCHEMA_VERSION = "wam_provider_object_store_staging.v1"
@@ -668,13 +672,34 @@ def cleanup_staged_wam_provider_objects(
         or manifest_status not in {"completed", "blocked"}
     ):
         blockers.append("completed_staging_manifest_required")
-    keys = [str(manifest.get(name) or "") for name in ("bundle_key", "output_key")]
+    bundle_key = str(manifest.get("bundle_key") or "")
+    output_key = str(manifest.get("output_key") or "")
+    keys = [bundle_key, output_key]
+    bundle_retained = manifest.get("bundle_object_retained_for_reuse") is True
+    cleanup_keys = [output_key] if bundle_retained else keys
     if not all(keys) or len(set(keys)) != 2:
         blockers.append("exact_staged_object_keys_required")
     object_store = _mapping(manifest.get("object_store"))
     expected_prefix = _string(object_store.get("key_prefix")).strip("/")
-    if not expected_prefix or any(not key.startswith(expected_prefix + "/") for key in keys):
+    if not expected_prefix or any(
+        not key.startswith(expected_prefix + "/") for key in cleanup_keys
+    ):
         blockers.append("staged_object_key_prefix_mismatch")
+    remote_reference = _mapping(manifest.get("provider_bundle_remote_reference"))
+    if bundle_retained and (
+        remote_reference.get("schema_version")
+        != "task_evaluation_scene_artifact_reference.v1"
+        or remote_reference.get("status") != "remote_verified"
+        or remote_reference.get("artifact_kind") != "provider-bundle"
+        or remote_reference.get("remote_identity_verified") is not True
+        or remote_reference.get("full_byte_service_account_readback_passed")
+        is not True
+        or urlparse(str(remote_reference.get("uri") or "")).path.lstrip("/")
+        != bundle_key
+        or str(remote_reference.get("digest") or "").removeprefix("sha256:")
+        != _string(manifest.get("bundle_sha256"))
+    ):
+        blockers.append("retained_provider_bundle_reference_invalid")
     if manifest_status == "blocked":
         binding_path = resolved_job_dir / STAGING_BINDING_FILENAME
         try:
@@ -773,7 +798,7 @@ def cleanup_staged_wam_provider_objects(
                 if endpoint:
                     kwargs["endpoint_url"] = endpoint
                 client = boto3.client("s3", **kwargs)
-                for key in keys:
+                for key in cleanup_keys:
                     client.delete_object(Bucket=bucket_value, Key=key)
                     absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
                     cleanup_rows.append(
@@ -813,11 +838,19 @@ def cleanup_staged_wam_provider_objects(
         "staging_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         if manifest_path.is_file()
         else None,
-        "exact_object_count": len(keys) if all(keys) else 0,
+        "exact_object_count": len(cleanup_keys) if all(cleanup_keys) else 0,
         "objects": cleanup_rows,
         "cleanup_attempts": cleanup_attempts,
         "all_objects_absent": bool(cleanup_rows)
         and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
+        "all_ephemeral_objects_absent": bool(cleanup_rows)
+        and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
+        "content_addressed_bundle_retained_for_reuse": bundle_retained,
+        "retained_bundle_key_sha256": (
+            hashlib.sha256(bundle_key.encode("utf-8")).hexdigest()
+            if bundle_retained and bundle_key
+            else None
+        ),
         "signed_url_files_removed": not any(path.exists() for path in signed_url_files),
         "blockers": sorted(set(blockers)),
         "raw_secret_values_recorded": False,
@@ -975,6 +1008,7 @@ def stage_wam_provider_bundle_object_store(
     output_content_type: str = "application/zip",
     expiration_seconds: int = 12 * 60 * 60,
     generated_at: str | None = None,
+    retain_content_addressed_bundle: bool = False,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
@@ -1101,6 +1135,8 @@ def stage_wam_provider_bundle_object_store(
     }
     output_url_object_binding_sha256 = ""
     binding_initialized = False
+    provider_bundle_remote_reference: dict[str, Any] = {}
+    durable_bundle_url = ""
     if not blockers:
         assert boto3 is not None
         assert Config is not None
@@ -1137,7 +1173,77 @@ def stage_wam_provider_bundle_object_store(
             client_kwargs["endpoint_url"] = endpoint
         try:
             client = boto3.client("s3", **client_kwargs)
-            client.upload_file(str(resolved_bundle), bucket_value, bundle_key)
+            if retain_content_addressed_bundle:
+                # A scene-configuration provider bundle is immutable and often
+                # byte-identical across retries. Publish it once under the
+                # shared CAS namespace, prove the complete remote bytes, and
+                # sign that object instead of uploading a run-local duplicate.
+                # The output remains run-unique and is still deleted below.
+                provider_bundle_remote_reference = publish_configured_scene_artifact(
+                    path=resolved_bundle,
+                    artifact_kind="provider-bundle",
+                )
+                durable_bundle_url = presign_configured_scene_artifact(
+                    reference=provider_bundle_remote_reference,
+                    expiration_seconds=int(expiration_seconds),
+                )
+                parsed_reference = urlparse(
+                    str(provider_bundle_remote_reference.get("uri") or "")
+                )
+                reference_digest = str(
+                    provider_bundle_remote_reference.get("digest") or ""
+                ).removeprefix("sha256:")
+                if (
+                    parsed_reference.scheme != "s3"
+                    or not parsed_reference.netloc
+                    or not parsed_reference.path.lstrip("/")
+                    or reference_digest != bundle_sha256
+                    or provider_bundle_remote_reference.get("size_bytes")
+                    != resolved_bundle.stat().st_size
+                    or provider_bundle_remote_reference.get(
+                        "remote_identity_verified"
+                    )
+                    is not True
+                    or provider_bundle_remote_reference.get(
+                        "full_byte_service_account_readback_passed"
+                    )
+                    is not True
+                ):
+                    blockers.append("durable_provider_bundle_reference_invalid")
+                else:
+                    bundle_key = parsed_reference.path.lstrip("/")
+                    staging_binding_sha256 = _staging_binding_sha256(
+                        bundle_sha256=bundle_sha256,
+                        bundle_key=bundle_key,
+                        output_key=output_key,
+                    )
+                    binding["bundle_key"] = bundle_key
+                    binding["staging_binding_sha256"] = staging_binding_sha256
+                    binding["bundle_object_retained_for_reuse"] = True
+                    # The binding was sealed before the network mutation so a
+                    # concurrent writer cannot race this job directory. Replace
+                    # only our own just-created bytes with the final CAS key and
+                    # prove the replacement before any signed URL is exposed.
+                    binding_bytes = (
+                        json.dumps(binding, indent=2, sort_keys=True) + "\n"
+                    ).encode("utf-8")
+                    temporary_binding = binding_path.with_suffix(".json.next")
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    descriptor = os.open(temporary_binding, flags, 0o600)
+                    try:
+                        with os.fdopen(descriptor, "wb") as handle:
+                            descriptor = -1
+                            handle.write(binding_bytes)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                    finally:
+                        if descriptor >= 0:
+                            os.close(descriptor)
+                    os.replace(temporary_binding, binding_path)
+                    if binding_path.read_bytes() != binding_bytes:
+                        blockers.append("durable_provider_bundle_binding_readback_failed")
+            else:
+                client.upload_file(str(resolved_bundle), bucket_value, bundle_key)
             # The paid worker output key is run-unique and must be absent before
             # its GET URL is handed to a poller.  This prevents a stale object
             # from being consumed as a fresh episode result.
@@ -1160,7 +1266,7 @@ def stage_wam_provider_bundle_object_store(
                 content_type=output_content_type,
             )
             blockers.extend(signed_output_round_trip.get("blockers") or [])
-            bundle_url = client.generate_presigned_url(
+            bundle_url = durable_bundle_url or client.generate_presigned_url(
                 "get_object",
                 # Paid-worker egress proxies have returned stale bytes for a
                 # previously fetched signed object even after the object key
@@ -1204,6 +1310,19 @@ def stage_wam_provider_bundle_object_store(
                 "bundle_key": bundle_key,
                 "output_key": output_key,
                 "bundle_size_bytes": resolved_bundle.stat().st_size,
+                "bundle_cache_hit": provider_bundle_remote_reference.get(
+                    "cache_hit"
+                ),
+                "bundle_upload_performed": provider_bundle_remote_reference.get(
+                    "upload_performed"
+                ),
+                "bundle_remote_identity_verified": (
+                    provider_bundle_remote_reference.get(
+                        "remote_identity_verified"
+                    )
+                    if retain_content_addressed_bundle
+                    else None
+                ),
                 "raw_secret_values_recorded": False,
             }
         except Exception as exc:
@@ -1245,7 +1364,19 @@ def stage_wam_provider_bundle_object_store(
         "bundle_size_bytes": resolved_bundle.stat().st_size if resolved_bundle.is_file() else 0,
         "bundle_sha256": bundle_sha256 or None,
         "bundle_key_content_addressed": bool(
-            binding_initialized and bundle_sha256 and bundle_key.endswith(f"/{bundle_sha256}.zip")
+            binding_initialized
+            and bundle_sha256
+            and (
+                bundle_key.endswith(f"/{bundle_sha256}.zip")
+                or f"/sha256/{bundle_sha256}/" in bundle_key
+            )
+        ),
+        "bundle_object_retained_for_reuse": bool(
+            retain_content_addressed_bundle
+            and provider_bundle_remote_reference.get("status") == "remote_verified"
+        ),
+        "provider_bundle_remote_reference": (
+            provider_bundle_remote_reference or None
         ),
         "staging_binding_sha256": staging_binding_sha256,
         "staging_binding_file": _file_status(

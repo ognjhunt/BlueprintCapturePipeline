@@ -490,6 +490,15 @@ def test_bundle_zip_is_not_group_writable_before_content_addressing(
     assert os.stat(receipt["bundle_path"]).st_mode & 0o777 == 0o644
 
 
+def test_bundle_does_not_retain_its_rebuildable_expansion_tree(
+    tmp_path: Path,
+) -> None:
+    receipt = _build(tmp_path, "bundle-without-stage-cache")
+
+    assert Path(receipt["bundle_path"]).is_file()
+    assert not (tmp_path / "bundle-without-stage-cache" / "stage").exists()
+
+
 def _construction_queue(tmp_path: Path) -> Path:
     envelope_path = tmp_path / "source" / "envelope.json"
     envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
@@ -3471,7 +3480,7 @@ def test_scene_configuration_result_reports_why_the_adapter_refused(
 
     source = inspect.getsource(lane.run_scene_configuration_vast)
     merge_index = source.find('adapter.get("blockers")')
-    result_index = source.find('"blockers": sorted(set(blockers))')
+    result_index = source.rfind('"blockers": sorted(set(blockers))')
     assert merge_index != -1, "adapter blockers are never merged into the result"
     assert result_index != -1
     assert merge_index < result_index, (
@@ -3997,7 +4006,16 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
     )
 
-    def _stage(*, job_dir, bundle_path, key_prefix, expiration_seconds):
+    def _stage(
+        *,
+        job_dir,
+        bundle_path,
+        key_prefix,
+        expiration_seconds,
+        retain_content_addressed_bundle,
+    ):
+        del key_prefix, expiration_seconds
+        assert retain_content_addressed_bundle is True
         staging = Path(job_dir)
         staging.mkdir(parents=True, exist_ok=True)
         for name in (
@@ -4008,7 +4026,24 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
             (staging / name).write_text(
                 f"https://objects.example.test/{name}", encoding="utf-8"
             )
-        return {"status": "completed"}
+        bundle = Path(bundle_path)
+        return {
+            "status": "completed",
+            "provider_bundle_remote_reference": {
+                "schema_version": (
+                    "task_evaluation_scene_artifact_reference.v1"
+                ),
+                "status": "remote_verified",
+                "artifact_kind": "provider-bundle",
+                "uri": "s3://scene-artifacts/provider-bundle.zip",
+                "digest": _sha256(bundle),
+                "size_bytes": bundle.stat().st_size,
+                "content_addressed_key": True,
+                "remote_identity_verified": True,
+                "full_byte_service_account_readback_passed": True,
+                "raw_secret_values_recorded": False,
+            },
+        }
 
     monkeypatch.setattr(
         scene_vast, "stage_wam_provider_bundle_object_store", _stage

@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,14 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 ACTIVE_STATES = {"pending", "in_flight"}
 EXPIRING_ACTIVE_STATES = {"retained_for_retry"}
 APPLY_ACK = "reap-remotely-verified-scene-artifacts"
+MINIMUM_REMOTE_RETENTION_AGE = timedelta(days=14)
+_HARD_PROTECTED_PATH_TOKENS = (
+    "billing",
+    "lineage",
+    "profile",
+    "receipt",
+    "secret",
+)
 
 
 class TaskEvaluationSceneArtifactRetentionError(RuntimeError):
@@ -61,6 +69,16 @@ def _valid_remote_reference(value: Any) -> bool:
         and int(value["size_bytes"]) > 0
         and str(value.get("uri") or "").startswith("s3://")
         and value.get("raw_secret_values_recorded") is False
+    )
+
+
+def _hard_protected_path(path: Path) -> bool:
+    """Protect evidence/security namespaces independent of operator inputs."""
+
+    return any(
+        token in component.lower()
+        for component in path.parts
+        for token in _HARD_PROTECTED_PATH_TOKENS
     )
 
 
@@ -247,7 +265,10 @@ def plan_scene_artifact_retention(
             reason = "local_file_invalid"
         else:
             resolved = path.resolve()
-            if any(resolved == root or root in resolved.parents for root in roots):
+            remote_verified_at = str(reference.get("remote_verified_at") or "")
+            if _hard_protected_path(resolved):
+                reason = "hard_protected_evidence_or_secret_path"
+            elif any(resolved == root or root in resolved.parents for root in roots):
                 reason = "protected_root"
             elif reference["digest"] in active_digests:
                 reason = "active_lease"
@@ -257,10 +278,34 @@ def plan_scene_artifact_retention(
             ):
                 blockers.append(f"scene_artifact_local_identity_mismatch:{path}")
                 reason = "local_identity_mismatch"
+            elif not remote_verified_at:
+                reason = "remote_verification_age_unbound"
+            else:
+                try:
+                    verified_at = _parse_time(remote_verified_at)
+                except TaskEvaluationSceneArtifactRetentionError:
+                    blockers.append(
+                        f"scene_artifact_remote_verification_time_invalid:{path}"
+                    )
+                    reason = "remote_verification_time_invalid"
+                else:
+                    age = observed_at - verified_at
+                    if age < timedelta(0):
+                        blockers.append(
+                            f"scene_artifact_remote_verification_time_invalid:{path}"
+                        )
+                        reason = "remote_verification_time_invalid"
+                    elif age < MINIMUM_REMOTE_RETENTION_AGE:
+                        reason = "minimum_14_day_retention"
         item = {
             "local_path": str(path),
             "digest": reference.get("digest") if isinstance(reference, Mapping) else None,
             "size_bytes": reference.get("size_bytes") if isinstance(reference, Mapping) else None,
+            "remote_verified_at": (
+                reference.get("remote_verified_at")
+                if isinstance(reference, Mapping)
+                else None
+            ),
         }
         if reason:
             protected.append({**item, "reason": reason})
@@ -311,8 +356,12 @@ def apply_scene_artifact_retention(
         if (
             path.is_symlink()
             or not path.is_file()
+            or _hard_protected_path(path.resolve())
             or path.stat().st_size != row.get("size_bytes")
             or _sha256(path) != row.get("digest")
+            or not isinstance(row.get("remote_verified_at"), str)
+            or _parse_time(str(row["remote_verified_at"]))
+            > _parse_time(str(plan["observed_at"])) - MINIMUM_REMOTE_RETENTION_AGE
         ):
             raise TaskEvaluationSceneArtifactRetentionError(
                 "scene_artifact_retention_candidate_changed"

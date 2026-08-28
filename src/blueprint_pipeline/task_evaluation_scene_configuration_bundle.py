@@ -371,6 +371,27 @@ def _zip_tree(source: Path, destination: Path) -> None:
     destination.chmod(0o644)
 
 
+def _remove_self_created_stage_tree(stage: Path) -> None:
+    """Remove only the builder-owned tree, including its sealed read-only files."""
+
+    for root, directories, files in os.walk(stage, topdown=True, followlinks=False):
+        root_path = Path(root)
+        if root_path.is_symlink():
+            raise OSError("scene bundle stage symlink")
+        root_path.chmod(0o700)
+        for name in directories:
+            child = root_path / name
+            if child.is_symlink():
+                raise OSError("scene bundle stage symlink")
+            child.chmod(0o700)
+        for name in files:
+            child = root_path / name
+            if child.is_symlink():
+                raise OSError("scene bundle stage symlink")
+            child.chmod(0o600)
+    shutil.rmtree(stage)
+
+
 def _diagnostic_portable_render_inputs(
     *, checkpoint: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -954,6 +975,21 @@ def build_scene_configuration_provider_bundle(
     )
     bundle = output / "task_evaluation_scene_configuration_provider_bundle.zip"
     _zip_tree(stage, bundle)
+    # ``stage`` is a self-created expansion tree used only to construct the
+    # immutable ZIP. Keeping a second 1.5 GB copy per activation filled the
+    # production host even though every allocator consumes ``bundle_path``.
+    # Remove it before sealing the receipt; the ZIP's digest and internal
+    # manifest remain the sole portable provider input.
+    try:
+        _remove_self_created_stage_tree(stage)
+    except OSError as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_stage_cleanup_failed"
+        ) from exc
+    if stage.exists() or stage.is_symlink():
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_stage_cleanup_failed"
+        )
     receipt = {
         **manifest,
         "bundle_path": str(bundle),
