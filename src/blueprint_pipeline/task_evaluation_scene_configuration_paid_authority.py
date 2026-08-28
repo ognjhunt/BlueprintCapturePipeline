@@ -44,6 +44,7 @@ MAX_TTL_SECONDS = REQUIRED_PARENT_TTL_SECONDS
 MIN_TTL_SECONDS = 600
 MAX_PROVIDER_ZERO_AGE_SECONDS = 900
 _RESOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{15,127}")
+_LEGACY_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.30
 
 
 class TaskEvaluationSceneConfigurationAuthorityError(ValueError):
@@ -55,6 +56,7 @@ def _required_external_stage_minima(
     diagnostic_only: bool,
     diagnostic_bootstrap_mode: object,
     carried_stage_count: int,
+    historical_terminal_evidence: bool = False,
 ) -> dict[str, float]:
     fresh_diagnostic_bootstrap = (
         diagnostic_only
@@ -69,7 +71,11 @@ def _required_external_stage_minima(
         "artifixer_visual_review": (
             0.0
             if diagnostic_only and carried_stage_count >= 1
-            else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+            else (
+                _LEGACY_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+                if diagnostic_only and historical_terminal_evidence
+                else MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+            )
         ),
         "content_agents": (
             0.0
@@ -445,9 +451,17 @@ def materialize_scene_configuration_paid_authority(
 
 
 def validate_scene_configuration_paid_authority(
-    value: Mapping[str, Any], *, bundle_receipt: Mapping[str, Any]
+    value: Mapping[str, Any],
+    *,
+    bundle_receipt: Mapping[str, Any],
+    historical_terminal_evidence: bool = False,
 ) -> dict[str, Any]:
-    """Reopen nested spend/zero bytes and validate one exact authority."""
+    """Reopen nested spend/zero bytes and validate one exact authority.
+
+    ``historical_terminal_evidence`` exists only for the diagnostic spend
+    reconciler, which has already bound teardown and fresh global provider-zero.
+    Allocation and execution callers keep the current reservation minimum.
+    """
 
     authority = dict(value)
     errors: list[str] = []
@@ -470,7 +484,10 @@ def validate_scene_configuration_paid_authority(
         diagnostic_only=diagnostic_only,
         diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
         carried_stage_count=carried_stage_count,
+        historical_terminal_evidence=historical_terminal_evidence,
     )
+    if historical_terminal_evidence and not diagnostic_only:
+        errors.append("historical_terminal_evidence_scope_invalid")
     minimum_external_cap = sum(required_stage_minima.values())
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(

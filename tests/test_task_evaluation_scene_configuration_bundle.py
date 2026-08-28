@@ -1150,6 +1150,16 @@ def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
         "artifixer_visual_review": 0.0,
         "content_agents": 0.0,
     }
+    assert authority_module._required_external_stage_minima(
+        diagnostic_only=True,
+        diagnostic_bootstrap_mode="checkpoint_resume",
+        carried_stage_count=0,
+        historical_terminal_evidence=True,
+    ) == {
+        "artifixer_semantic_teacher": 0.0,
+        "artifixer_visual_review": 0.3,
+        "content_agents": 0.2,
+    }
 
 
 def test_bundle_is_portable_deterministic_and_omits_raw_splat(tmp_path: Path) -> None:

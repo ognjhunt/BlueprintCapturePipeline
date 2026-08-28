@@ -206,7 +206,9 @@ def _validate_sources(
         ):
             raise ValueError("bundle record mismatch")
         validate_scene_configuration_paid_authority(
-            authority, bundle_receipt=bundle
+            authority,
+            bundle_receipt=bundle,
+            historical_terminal_evidence=True,
         )
     except (OSError, TypeError, ValueError) as exc:
         raise SceneConfigurationDiagnosticSpendError(
