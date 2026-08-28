@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_failure_evidence import (
     ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
 )
@@ -22,10 +21,10 @@ def _fixture(tmp_path: Path) -> dict:
     runtime = {
         "schema_version": "public_scene_artifixer3d_runtime_result.v1",
         "status": ARTIFIXER_RUNTIME_ACCEPTED_STATUS,
+        "manifest_digest": "sha256:" + "7" * 64,
+        "runtime_request_digest": "sha256:" + "8" * 64,
         "tasks": [{"task_id": "remove-source-object-104"}],
-        "result_digest": "",
     }
-    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
     runtime_path = tmp_path / "runtime-result.json"
     runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
     frames = []
@@ -126,7 +125,6 @@ def test_post_training_checkpoint_refuses_generic_completed_runtime_status(
     fixture = _fixture(tmp_path)
     runtime = json.loads(fixture["runtime_path"].read_text(encoding="utf-8"))
     runtime["status"] = "completed"
-    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
     fixture["runtime_path"].write_text(json.dumps(runtime), encoding="utf-8")
 
     with pytest.raises(
