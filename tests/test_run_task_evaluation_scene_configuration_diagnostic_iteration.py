@@ -123,6 +123,9 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
             events.append("bundle")
             output = Path(command[command.index("--output-root") + 1])
             output.mkdir(parents=True)
+            staging = output / "stage"
+            staging.mkdir()
+            (staging / "expanded-runtime.bin").write_bytes(b"regenerable")
             (output / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
                 json.dumps(
                     {
@@ -145,6 +148,7 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
                 encoding="utf-8",
             )
         elif module.endswith("task_evaluation_scene_configuration_paid_authority"):
+            assert not (Path(args.bundle_output_root) / "stage").exists()
             events.append("authority")
             output = Path(command[command.index("--output") + 1])
             output.write_text(
@@ -193,6 +197,7 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
     assert result["source_materialization_target_met"] is True
     assert result["total_preparation_elapsed_ms"] == 620
     assert result["total_preparation_seconds_claimed"] is False
+    assert result["bundle_staging_tree_removed_after_seal"] is True
     assert result["splat_runtime_reused_by_reference"] is True
     assert result["splat_runtime_copied"] is False
     assert result["remaining_preparation_bottleneck"][

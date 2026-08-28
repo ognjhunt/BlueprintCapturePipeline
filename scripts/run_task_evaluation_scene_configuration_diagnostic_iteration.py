@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess  # nosec B404 - fixed Python module commands only
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -175,6 +176,24 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         os.fchmod(descriptor, 0o440)
     finally:
         os.close(descriptor)
+
+
+def _discard_sealed_bundle_staging_tree(bundle_output: Path) -> bool:
+    """Remove only the builder's self-created expanded tree after sealing."""
+
+    staging = bundle_output / "stage"
+    if not staging.exists() and not staging.is_symlink():
+        return False
+    if staging.is_symlink() or not staging.is_dir():
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_staging_invalid"
+        )
+    shutil.rmtree(staging)
+    if staging.exists() or staging.is_symlink():
+        raise SceneConfigurationDiagnosticIterationError(
+            "scene_configuration_diagnostic_iteration_bundle_staging_cleanup_failed"
+        )
+    return True
 
 
 def _run_fixed(
@@ -430,7 +449,7 @@ def run_scene_configuration_diagnostic_iteration(
         raise SceneConfigurationDiagnosticIterationError(
             "scene_configuration_diagnostic_iteration_bundle_receipt_invalid"
         )
-
+    bundle_staging_tree_removed = _discard_sealed_bundle_staging_tree(bundle_output)
     authority_started = clock()
     authority_command = [
         str(python),
@@ -556,6 +575,7 @@ def run_scene_configuration_diagnostic_iteration(
         "total_preparation_elapsed_ms": total_preparation_elapsed_ms,
         "total_preparation_seconds_claimed": False,
         "bundle_build_elapsed_ms": bundle_elapsed_ms,
+        "bundle_staging_tree_removed_after_seal": bundle_staging_tree_removed,
         "authority_build_elapsed_ms": authority_elapsed_ms,
         "bundle_receipt_digest": bundle_receipt.get("receipt_digest"),
         "authority_digest": authority.get("authority_digest"),
