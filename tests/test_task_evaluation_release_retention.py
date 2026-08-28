@@ -12,6 +12,9 @@ import pytest
 import blueprint_pipeline.task_evaluation_release_retention as retention
 
 from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
+from blueprint_pipeline.task_evaluation_launch_activation_queue import (
+    stage_launch_activation_request,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     canonical_digest,
@@ -22,6 +25,9 @@ from blueprint_pipeline.task_evaluation_release_retention import (
     ReleaseRetentionError,
     apply_release_retention_plan,
     build_release_retention_plan,
+)
+from tests.test_task_evaluation_launch_activation_contract import (
+    request as activation_request,
 )
 
 
@@ -662,6 +668,9 @@ def test_catalog_disabled_scene_handoff_with_missing_release_is_inventory_only(
         {
             "source_commit": missing,
             "reference_paths": [str(handoff)],
+            "reference_schema_versions": [
+                "task_evaluation_scene_construction_envelope.v1"
+            ],
             "profile_ids": ["unreachable-scene-profile"],
             "catalog_profile_present": True,
             "catalog_live_enabled": False,
@@ -704,9 +713,69 @@ def test_profileless_no_spend_scene_handoff_is_inventory_only(
         {
             "source_commit": missing,
             "reference_paths": [str(handoff)],
+            "reference_schema_versions": [
+                "task_evaluation_scene_construction_envelope.v1"
+            ],
             "profile_ids": [],
             "catalog_profile_present": False,
             "catalog_live_enabled": None,
+            "paid_execution_requested": False,
+            "provider_mutation_performed": False,
+            "source_release_already_missing": True,
+            "paid_launch_reachable": False,
+        }
+    ]
+
+
+def test_catalog_disabled_stale_activation_is_inventory_only(
+    tmp_path: Path,
+) -> None:
+    active = "a" * 40
+    missing = "d" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    profile = _profile(
+        tmp_path, profile_id="unreachable-activation-profile", commit=missing
+    )
+    _write_json(profile_dir / "unreachable-activation-profile.json", profile)
+    Path(profile["immutable_inputs"][0]["path"]).unlink()
+    _rewrite_catalog(profile_dir, catalog)
+
+    activation_root = tmp_path / "task-evaluation-launch-activations"
+    request = activation_request()
+    request["activation_id"] = "unreachable-activation"
+    request["expected_production_commit"] = missing
+    stage_launch_activation_request(
+        value=request,
+        queue_root=activation_root,
+        submitted_by="blueprint-webapp",
+    )
+    pending = next((activation_root / "pending").glob("*.json"))
+    processing = activation_root / "processing" / pending.name
+    pending.replace(processing)
+    state["live_reference_roots"] = (
+        *state["live_reference_roots"],  # type: ignore[index]
+        activation_root / "pending",
+        activation_root / "processing",
+    )
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert plan["catalog_disabled_unreachable_scene_references"] == [
+        {
+            "source_commit": missing,
+            "reference_paths": [str(processing)],
+            "reference_schema_versions": [
+                "task_evaluation_launch_activation_envelope.v1"
+            ],
+            "profile_ids": ["unreachable-activation-profile"],
+            "catalog_profile_present": True,
+            "catalog_live_enabled": False,
             "paid_execution_requested": False,
             "provider_mutation_performed": False,
             "source_release_already_missing": True,
