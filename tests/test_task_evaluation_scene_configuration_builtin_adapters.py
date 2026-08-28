@@ -16,6 +16,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters imp
     execute_simready_native_import_qualification,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (
+    _is_exact_package_member,
     _usd_findings,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
@@ -52,7 +53,10 @@ def artifact(role: str, path: Path) -> dict[str, object]:
 
 
 def _portable_rigid_asset(
-    path: Path, *, dynamic_triangle_mesh: bool = False
+    path: Path,
+    *,
+    dynamic_triangle_mesh: bool = False,
+    embedded_texture: bool = False,
 ) -> None:
     dependency_path = path.with_suffix(".body.usda")
     dependency = Usd.Stage.CreateNew(str(dependency_path))
@@ -84,6 +88,11 @@ def _portable_rigid_asset(
     physics_material.CreateStaticFrictionAttr(0.5)
     physics_material.CreateDynamicFrictionAttr(0.4)
     physics_material.CreateRestitutionAttr(0.1)
+    if embedded_texture:
+        texture_path = path.with_suffix(".png")
+        texture_path.write_bytes(b"digest-bound-packaged-texture")
+        shader = UsdShade.Shader.Define(dependency, "/Body/Looks/Texture")
+        shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(str(texture_path))
     dependency.GetRootLayer().Save()
 
     source = path.with_suffix(".usda")
@@ -138,6 +147,35 @@ def test_static_gate_rejects_dynamic_triangle_mesh_collision(tmp_path: Path) -> 
     assert observed["dynamic_mesh_collision_approximations"] == [
         {"path": "/Asset/Body/Collider", "approximation": ""}
     ]
+
+
+def test_static_gate_accepts_asset_embedded_in_exact_usdz_package(
+    tmp_path: Path,
+) -> None:
+    asset = tmp_path / "packaged-texture.usdz"
+    _portable_rigid_asset(asset, embedded_texture=True)
+
+    findings, observed = _usd_findings(asset, physics_bounds=PHYSICS_BOUNDS)
+
+    assert "replacement_external_or_unresolved_dependency" not in findings
+    assert observed["external_asset_count"] == 0
+    assert observed["embedded_package_asset_count"] == 1
+
+
+def test_static_gate_keeps_external_asset_identifier_fail_closed(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "replacement.usdz"
+    external = tmp_path / "outside.png"
+
+    assert not _is_exact_package_member(
+        external,
+        package_identifier=str(package),
+    )
+    assert not _is_exact_package_member(
+        f"{package}[../outside.png]",
+        package_identifier=str(package),
+    )
 
 
 def test_artifixer_handler_admits_only_qualified_generated_appearance(

@@ -7,7 +7,7 @@ import math
 import stat
 import zipfile
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
@@ -158,6 +158,22 @@ def _portable_package_findings(path: Path) -> list[str]:
     return findings
 
 
+def _is_exact_package_member(
+    identifier: object, *, package_identifier: str
+) -> bool:
+    value = str(identifier)
+    prefix = package_identifier + "["
+    if not value.startswith(prefix) or not value.endswith("]"):
+        return False
+    member = value[len(prefix) : -1]
+    member_path = PurePosixPath(member)
+    return (
+        bool(member)
+        and not member_path.is_absolute()
+        and ".." not in member_path.parts
+    )
+
+
 def _usd_findings(
     path: Path, *, physics_bounds: Mapping[str, list[float]]
 ) -> tuple[list[str], dict[str, Any]]:
@@ -177,6 +193,14 @@ def _usd_findings(
         layers, external_assets, unresolved = [], [], [str(path)]
     package_identifier = str(path)
     layer_identifiers = [str(layer.identifier) for layer in layers]
+    unpinned_external_assets = [
+        asset
+        for asset in external_assets
+        if not _is_exact_package_member(
+            asset,
+            package_identifier=package_identifier,
+        )
+    ]
     if (
         not layer_identifiers
         or any(
@@ -184,7 +208,7 @@ def _usd_findings(
             and not identifier.startswith(package_identifier + "[")
             for identifier in layer_identifiers
         )
-        or external_assets
+        or unpinned_external_assets
         or unresolved
     ):
         findings.append("replacement_external_or_unresolved_dependency")
@@ -351,7 +375,9 @@ def _usd_findings(
         "diagonal_inertia_kg_m2": inertia,
         "physics_materials": material_rows,
         "dependency_layer_count": len(layers),
-        "external_asset_count": len(external_assets),
+        "external_asset_count": len(unpinned_external_assets),
+        "embedded_package_asset_count": len(external_assets)
+        - len(unpinned_external_assets),
         "unresolved_dependency_count": len(unresolved),
     }
 
