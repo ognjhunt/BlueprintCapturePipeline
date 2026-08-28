@@ -1090,6 +1090,18 @@ def test_fresh_diagnostic_separates_executable_and_construction_commits(
         diagnostic_only=True,
     )
     assert reopened["construction_source_commit"] == construction_commit
+    preflight = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "split-identity-preflight",
+        generated_at="2026-08-27T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://objects.example.test/split-identity.zip",
+        provider_output_put_url="https://objects.example.test/output.zip",
+    )
+    assert preflight["blockers"] == []
+    assert preflight["status"] == "passed"
 
 
 def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
