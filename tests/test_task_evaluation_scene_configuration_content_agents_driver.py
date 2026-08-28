@@ -18,6 +18,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
     TaskEvaluationSceneConfigurationContentAgentsError,
     _metric_envelope_spec,
+    _physics_output,
     _reference_frames,
     _validate_metric_envelope_dimensions,
     execute_content_agents_component,
@@ -33,6 +34,21 @@ from blueprint_pipeline.task_evaluation_scene_configuration_render_handoff impor
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_completed_agent_chain_prefers_the_texture_export_with_authored_physics(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "physics_workdir/physics/source_physics.usda"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("#usda 1.0\n# physics only\n", encoding="utf-8")
+    completed = tmp_path / "texture_workdir/output/textured_output.usd"
+    completed.parent.mkdir(parents=True)
+    completed.write_text(
+        "#usda 1.0\n# material plus physics plus texture\n", encoding="utf-8"
+    )
+
+    assert _physics_output(tmp_path) == completed
 
 
 def _sha256(path: Path) -> str:
@@ -278,20 +294,22 @@ def test_provider_render_handoff_feeds_released_content_agents_runner(
             str(dependency), "/PhysicsGeometry"
         )
         physics_stage.GetRootLayer().Save()
+        runtime_result = {
+            "schema_version": "adp_content_agents_vast_result.v1",
+            "status": "completed",
+            "material_agent_executed": True,
+            "texture_agent_executed": True,
+            "physics_agent_executed": True,
+            "validation_agent_executed": True,
+            "retry_cap": 0,
+            "blockers": [],
+            "result_digest": "",
+        }
+        runtime_result["result_digest"] = canonical_digest(
+            runtime_result, digest_field="result_digest"
+        )
         (runtime_output / "adp_content_agents_vast_result.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "adp_content_agents_vast_result.v1",
-                    "status": "completed",
-                    "material_agent_executed": True,
-                    "texture_agent_executed": True,
-                    "physics_agent_executed": True,
-                    "validation_agent_executed": True,
-                    "retry_cap": 0,
-                    "blockers": [],
-                }
-            ),
-            encoding="utf-8",
+            json.dumps(runtime_result), encoding="utf-8"
         )
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 

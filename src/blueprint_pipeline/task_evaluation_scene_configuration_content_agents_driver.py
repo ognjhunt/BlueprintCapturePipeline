@@ -428,6 +428,13 @@ def _reference_frames(
 
 
 def _physics_output(root: Path) -> Path:
+    # The released runner executes material -> physics -> texture so the final
+    # Texture Agent export preserves both prior authored layers and its portable
+    # sibling texture tree. Prefer that completed chain output; keep the legacy
+    # physics-workdir search only for older retained runtime results.
+    completed_chain = root / "texture_workdir/output/textured_output.usd"
+    if completed_chain.is_file() and not completed_chain.is_symlink():
+        return completed_chain
     physics_root = root / "physics_workdir"
     candidates = sorted(
         path
