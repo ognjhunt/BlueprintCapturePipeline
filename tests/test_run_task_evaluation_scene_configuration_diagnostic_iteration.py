@@ -5,6 +5,7 @@ import stat
 import subprocess
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,6 +80,72 @@ def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
         maximum_warm_iterations=8,
         execute=execute,
     )
+
+
+def test_import_provenance_names_host_checkout_module(
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "exact-release"
+    script_path = release / "scripts" / "diagnostic.py"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("# fixture\n", encoding="utf-8")
+    package_root = release / "src" / "blueprint_pipeline"
+    host_root = tmp_path / "host-checkout" / "src" / "blueprint_pipeline"
+    loaded: dict[str, object] = {}
+    for name in iteration._REQUIRED_BLUEPRINT_IMPORTS:
+        relative = Path(*name.split(".")[1:]).with_suffix(".py")
+        module_path = package_root / relative
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text("# exact release fixture\n", encoding="utf-8")
+        loaded[name] = SimpleNamespace(__file__=str(module_path))
+    warm_name = (
+        "blueprint_pipeline."
+        "task_evaluation_scene_configuration_warm_diagnostic"
+    )
+    host_warm = host_root / "task_evaluation_scene_configuration_warm_diagnostic.py"
+    host_warm.parent.mkdir(parents=True)
+    host_warm.write_text("# stale host fixture\n", encoding="utf-8")
+    loaded[warm_name] = SimpleNamespace(__file__=str(host_warm))
+
+    assert iteration._blueprint_import_provenance_blockers(
+        script_path=script_path,
+        loaded_modules=loaded,
+    ) == [warm_name]
+
+
+def test_launcher_refuses_import_mismatch_before_release_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path)
+    stage_called = False
+
+    def stage(**_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        pytest.fail("release staging must not follow import-provenance refusal")
+
+    monkeypatch.setattr(
+        iteration,
+        "_assert_blueprint_import_provenance",
+        lambda: (_ for _ in ()).throw(
+            iteration.SceneConfigurationDiagnosticIterationError(
+                "scene_configuration_diagnostic_iteration_import_provenance_invalid:"
+                "blueprint_pipeline."
+                "task_evaluation_scene_configuration_warm_diagnostic"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        iteration, "stage_scene_configuration_diagnostic_release", stage
+    )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match="scene_configuration_diagnostic_iteration_import_provenance_invalid",
+    ):
+        iteration.run_scene_configuration_diagnostic_iteration(args)
+
+    assert stage_called is False
 
 
 def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_allocator(
