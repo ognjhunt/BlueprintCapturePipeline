@@ -1039,10 +1039,13 @@ def _seal_live_terminal_result(
     *,
     receipt: Mapping[str, Any],
     scene_construction_queue_root: str | Path | None,
+    diagnostic_only: bool = False,
 ) -> dict[str, Any]:
     """Finalize the originating queue item before exposing a live terminal result."""
 
     result = dict(value)
+    if diagnostic_only:
+        return _seal_terminal_result(job, result)
     blockers = [str(item) for item in result.get("blockers") or [] if str(item)]
     try:
         if scene_construction_queue_root is None or not str(
@@ -1308,6 +1311,7 @@ def run_scene_configuration_vast(
                 blocked,
                 receipt=receipt,
                 scene_construction_queue_root=scene_construction_queue_root,
+                diagnostic_only=diagnostic_only,
             )
         return _seal_terminal_result(job, blocked)
     if execute and not diagnostic_only:
@@ -1344,6 +1348,7 @@ def run_scene_configuration_vast(
                 blocked,
                 receipt=receipt,
                 scene_construction_queue_root=scene_construction_queue_root,
+                diagnostic_only=diagnostic_only,
             )
     runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
     if not execute:
@@ -1420,6 +1425,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
     runtime_environment = dict(runtime_environment)
     runtime_environment[EXPECTED_PROVIDER_UPLOAD_BYTES_ENV] = str(
@@ -1456,6 +1462,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
     watchdog_handoff, watchdog = arm_independent_vast_watchdog(
         job_dir=job,
@@ -1490,6 +1497,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
     runtime_environment = dict(runtime_environment)
     runtime_environment[PARENT_DEADLINE_EPOCH_ENV] = str(
@@ -1540,6 +1548,7 @@ def run_scene_configuration_vast(
             },
             receipt=receipt,
             scene_construction_queue_root=scene_construction_queue_root,
+            diagnostic_only=diagnostic_only,
         )
 
     output_zip = provider_run / "vast_provider_runtime_output.zip"
@@ -1952,6 +1961,7 @@ def run_scene_configuration_vast(
         result,
         receipt=receipt,
         scene_construction_queue_root=scene_construction_queue_root,
+        diagnostic_only=diagnostic_only,
     )
 
 
