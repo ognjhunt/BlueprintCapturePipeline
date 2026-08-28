@@ -15,6 +15,23 @@ from scripts import run_task_evaluation_scene_configuration_diagnostic_iteration
 SOURCE_COMMIT = "a" * 40
 
 
+def _content_address_stub(**kwargs):
+    bundle = (
+        Path(kwargs["bundle_output_root"])
+        / "task_evaluation_scene_configuration_provider_bundle.zip"
+    )
+    return {
+        "bundle_path": str(bundle),
+        "bundle_sha256": "sha256:" + "2" * 64,
+        "path_preserved": True,
+        "bytes_preserved": True,
+        "mode_preserved": True,
+        "existing_content_object_reused": True,
+        "allocated_bytes_reclaimed": 4096,
+        "provider_mutations_performed": 0,
+    }
+
+
 def _args(tmp_path: Path, *, execute: bool = False) -> Namespace:
     source = tmp_path / "source"
     source.mkdir()
@@ -241,12 +258,25 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
             pytest.fail(f"unexpected fixed module: {module}")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
+    def content_addresser(**kwargs):
+        events.append("content_address")
+        return _content_address_stub(**kwargs)
+
     times = iter((0.0, 0.11, 0.2, 0.41, 0.5, 0.62))
     result = iteration.run_scene_configuration_diagnostic_iteration(
-        args, runner=runner, clock=lambda: next(times)
+        args,
+        runner=runner,
+        clock=lambda: next(times),
+        bundle_content_addresser=content_addresser,
     )
 
-    assert events == ["bundle", "authority", "validate", "allocator"]
+    assert events == [
+        "bundle",
+        "content_address",
+        "authority",
+        "validate",
+        "allocator",
+    ]
     assert [command[command.index("-m") + 1] for command in commands] == [
         "blueprint_pipeline.task_evaluation_scene_configuration_bundle",
         "blueprint_pipeline.task_evaluation_scene_configuration_paid_authority",
@@ -265,6 +295,10 @@ def test_one_command_stages_source_builds_fixed_chain_and_revalidates_before_all
     assert result["total_preparation_elapsed_ms"] == 620
     assert result["total_preparation_seconds_claimed"] is False
     assert result["bundle_staging_tree_removed_after_seal"] is True
+    assert result["bundle_content_address_storage"] == _content_address_stub(
+        bundle_output_root=args.bundle_output_root,
+        content_address_root="unused",
+    )
     assert result["splat_runtime_reused_by_reference"] is True
     assert result["splat_runtime_copied"] is False
     assert result["remaining_preparation_bottleneck"][
@@ -499,6 +533,149 @@ def test_cleanup_command_uses_receipted_no_provider_mutation_path(
     assert output["provider_mutations_performed"] == 0
 
 
+def _install_fake_sealed_bundle(
+    root: Path, payload: bytes = b"same-sealed-provider-bundle"
+) -> Path:
+    root.mkdir()
+    bundle = root / "task_evaluation_scene_configuration_provider_bundle.zip"
+    bundle.write_bytes(payload)
+    bundle.chmod(0o644)
+    (root / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json").write_text(
+        '{"fixture":"receipt-bytes-must-not-change"}\n', encoding="utf-8"
+    )
+    return bundle
+
+
+def _fake_sealed_bundle_loader(path: Path, *, diagnostic_only: bool):
+    assert diagnostic_only is True
+    bundle = path.parent / "task_evaluation_scene_configuration_provider_bundle.zip"
+    return {
+        "bundle_path": str(bundle),
+        "bundle_sha256": iteration._sha256_file(bundle),
+        "bundle_size_bytes": bundle.stat().st_size,
+        "receipt_digest": "sha256:" + "d" * 64,
+    }
+
+
+def test_content_addressing_preserves_paths_bytes_modes_receipts_and_shares_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_root = (tmp_path / "first").resolve()
+    second_root = (tmp_path / "second").resolve()
+    first = _install_fake_sealed_bundle(first_root)
+    second = _install_fake_sealed_bundle(second_root)
+    first_receipt = first_root / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json"
+    second_receipt = second_root / f"{iteration.BUNDLE_SCHEMA_VERSION}.receipt.json"
+    original_receipts = (first_receipt.read_bytes(), second_receipt.read_bytes())
+    original_inodes = (first.stat().st_ino, second.stat().st_ino)
+    content_root = (tmp_path / "content-addressed").resolve()
+    deduplication_receipt = second_root / "bundle-content-address.v1.json"
+    monkeypatch.setattr(
+        iteration,
+        "load_scene_configuration_provider_bundle_receipt",
+        _fake_sealed_bundle_loader,
+    )
+
+    first_result = iteration.content_address_sealed_provider_bundle(
+        bundle_output_root=first_root,
+        content_address_root=content_root,
+    )
+    second_result = iteration.reconcile_content_addressed_provider_bundle(
+        bundle_output_root=second_root,
+        content_address_root=content_root,
+        deduplication_receipt=deduplication_receipt,
+    )
+
+    assert first_result["content_object_created"] is True
+    assert first_result["existing_content_object_reused"] is False
+    assert second_result["content_object_created"] is False
+    assert second_result["existing_content_object_reused"] is True
+    assert first != second
+    assert first.stat().st_ino == second.stat().st_ino
+    assert first.stat().st_ino == second_result["content_object_inode"]
+    assert first.stat().st_ino == original_inodes[0]
+    assert second_result["before_inode"] == original_inodes[1]
+    assert first.read_bytes() == second.read_bytes() == b"same-sealed-provider-bundle"
+    assert stat.S_IMODE(first.stat().st_mode) == 0o644
+    assert stat.S_IMODE(second.stat().st_mode) == 0o644
+    assert (first_receipt.read_bytes(), second_receipt.read_bytes()) == original_receipts
+    recorded = json.loads(deduplication_receipt.read_text(encoding="utf-8"))
+    assert recorded == second_result
+    assert recorded["path_preserved"] is True
+    assert recorded["bytes_preserved"] is True
+    assert recorded["mode_preserved"] is True
+    assert recorded["provider_mutations_performed"] == 0
+    assert recorded["receipt_digest"] == iteration.canonical_digest(
+        recorded, digest_field="receipt_digest"
+    )
+    assert stat.S_IMODE(deduplication_receipt.stat().st_mode) == 0o440
+
+
+def test_content_addressing_refuses_mode_mismatch_without_replacing_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_root = (tmp_path / "first").resolve()
+    second_root = (tmp_path / "second").resolve()
+    _install_fake_sealed_bundle(first_root)
+    second = _install_fake_sealed_bundle(second_root)
+    second.chmod(0o600)
+    content_root = (tmp_path / "content-addressed").resolve()
+    monkeypatch.setattr(
+        iteration,
+        "load_scene_configuration_provider_bundle_receipt",
+        _fake_sealed_bundle_loader,
+    )
+    iteration.content_address_sealed_provider_bundle(
+        bundle_output_root=first_root,
+        content_address_root=content_root,
+    )
+    second_inode = second.stat().st_ino
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match="scene_configuration_diagnostic_iteration_bundle_content_object_invalid",
+    ):
+        iteration.content_address_sealed_provider_bundle(
+            bundle_output_root=second_root,
+            content_address_root=content_root,
+        )
+
+    assert second.stat().st_ino == second_inode
+    assert stat.S_IMODE(second.stat().st_mode) == 0o600
+    assert second.read_bytes() == b"same-sealed-provider-bundle"
+
+
+def test_content_addressing_refuses_symlink_object_without_replacing_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_root = (tmp_path / "bundle").resolve()
+    bundle = _install_fake_sealed_bundle(bundle_root)
+    content_root = (tmp_path / "content-addressed").resolve()
+    content_root.mkdir(mode=0o750)
+    digest = iteration._sha256_file(bundle).removeprefix("sha256:")
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(bundle.read_bytes())
+    (content_root / f"{digest}.zip").symlink_to(outside)
+    original_inode = bundle.stat().st_ino
+    monkeypatch.setattr(
+        iteration,
+        "load_scene_configuration_provider_bundle_receipt",
+        _fake_sealed_bundle_loader,
+    )
+
+    with pytest.raises(
+        iteration.SceneConfigurationDiagnosticIterationError,
+        match="scene_configuration_diagnostic_iteration_bundle_content_object_invalid",
+    ):
+        iteration.content_address_sealed_provider_bundle(
+            bundle_output_root=bundle_root,
+            content_address_root=content_root,
+        )
+
+    assert bundle.stat().st_ino == original_inode
+    assert outside.read_bytes() == b"same-sealed-provider-bundle"
+
+
 def test_execute_only_adds_canonical_allocator_execute_switch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,7 +756,10 @@ def test_execute_only_adds_canonical_allocator_execute_switch(
 
     times = iter((0.0, 0.1, 0.2, 0.3, 0.4, 0.5))
     iteration.run_scene_configuration_diagnostic_iteration(
-        args, runner=runner, clock=lambda: next(times)
+        args,
+        runner=runner,
+        clock=lambda: next(times),
+        bundle_content_addresser=_content_address_stub,
     )
     assert allocator_commands and allocator_commands[0][-1] == "--execute"
 
@@ -693,7 +873,10 @@ def test_execute_can_retain_one_warm_session_through_canonical_allocator(
 
     times = iter((0.0, 0.1, 0.2, 0.3, 0.4, 0.5))
     result = iteration.run_scene_configuration_diagnostic_iteration(
-        args, runner=runner, clock=lambda: next(times)
+        args,
+        runner=runner,
+        clock=lambda: next(times),
+        bundle_content_addresser=_content_address_stub,
     )
 
     assert len(warm_calls) == 1
