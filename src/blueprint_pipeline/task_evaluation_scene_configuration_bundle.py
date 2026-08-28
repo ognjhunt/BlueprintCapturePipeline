@@ -675,15 +675,20 @@ def build_scene_configuration_provider_bundle(
             != retained_host_runtime.get("runtime_digest")
             or checkpoint_renderer.get("platform")
             != retained_host_runtime.get("platform")
-            or checkpoint_renderer.get("file_count")
-            != retained_host_runtime.get("file_count")
+            or not isinstance(checkpoint_renderer.get("file_count"), int)
+            or isinstance(checkpoint_renderer.get("file_count"), bool)
+            or checkpoint_renderer.get("file_count", 0) <= 0
+            or not isinstance(retained_host_runtime.get("file_count"), int)
+            or isinstance(retained_host_runtime.get("file_count"), bool)
+            or retained_host_runtime.get("file_count", 0) <= 0
         ):
             raise TaskEvaluationSceneConfigurationBundleError(
                 "scene_configuration_bundle_diagnostic_checkpoint_binding_mismatch"
             )
         # The checkpoint binds the provider-reopened renderer receipt, while a
         # retry can only reopen its immutable host source runtime.  The runtime
-        # digest, platform, file count, and the validator's full-byte comparison
+        # digest, platform, valid scoped inventories, and the validator's
+        # full-byte comparison
         # prove those are the same renderer.  Preserve the checkpoint receipt
         # here so an executable-only source commit does not rewrite scientific
         # history into a different receipt schema.

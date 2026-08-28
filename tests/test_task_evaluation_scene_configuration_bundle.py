@@ -781,7 +781,9 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         "source_runtime_digest": identity["identity"]["runtime_digest"],
         "source_commit": commit,
         "platform": identity["identity"]["platform"],
-        "file_count": identity["identity"]["file_count"],
+        # Provider packaging intentionally inventories only the staged renderer
+        # subset, not every browser/runtime file in the host runtime receipt.
+        "file_count": 11,
         "provider_full_byte_inventory_reopened": True,
     }
     checkpoint_root = tmp_path / "diagnostic-checkpoint"
