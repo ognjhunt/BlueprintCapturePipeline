@@ -9,7 +9,9 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+    DEFINITION_CONTRACT_PATH,
     TaskEvaluationRigidRelocationNativeAdapterError,
+    _source_document,
     adapt_rigid_relocation_task_template,
 )
 from tests.test_task_evaluation_configured_scene_revision import revision
@@ -282,4 +284,41 @@ def test_refuses_reference_that_is_not_the_revision_bound_object(
             request=launch,
             configured_revision=configured,
             materialized_references=references,
+        )
+
+
+def test_source_document_refuses_symlink_even_when_target_bytes_match(
+    tmp_path: Path,
+) -> None:
+    document = _documents(
+        {"id": "task", "version": "v1"},
+        {"id": "object", "version": "v1"},
+    )[DEFINITION_CONTRACT_PATH]
+    payload = (json.dumps(document, sort_keys=True) + "\n").encode("utf-8")
+    target = tmp_path / "definition.json"
+    target.write_bytes(payload)
+    link = tmp_path / "definition-link.json"
+    link.symlink_to(target)
+    expected = {
+        "uri": "s3://blueprint-production-inputs/definition.json",
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+    references = {
+        DEFINITION_CONTRACT_PATH: {
+            "contract_path": DEFINITION_CONTRACT_PATH,
+            **expected,
+            "materialized_path": str(link),
+            "full_byte_service_account_readback_passed": True,
+        }
+    }
+
+    with pytest.raises(
+        TaskEvaluationRigidRelocationNativeAdapterError,
+        match="rigid_relocation_native_adapter_source_invalid",
+    ):
+        _source_document(
+            references,
+            contract_path=DEFINITION_CONTRACT_PATH,
+            expected_reference=expected,
         )

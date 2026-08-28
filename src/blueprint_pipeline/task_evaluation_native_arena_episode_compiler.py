@@ -52,10 +52,13 @@ def _reference_path(
     references: Mapping[str, Mapping[str, Any]], contract_path: str
 ) -> Path:
     row = references.get(contract_path)
-    path = Path(str((row or {}).get("materialized_path") or "")).resolve()
+    unresolved_path = Path(
+        str((row or {}).get("materialized_path") or "")
+    ).expanduser()
+    path = unresolved_path.resolve()
     if (
         row is None
-        or path.is_symlink()
+        or unresolved_path.is_symlink()
         or not path.is_file()
         or _sha256_and_size(path) != (row.get("digest"), row.get("size_bytes"))
         or row.get("full_byte_service_account_readback_passed") is not True
