@@ -16,8 +16,10 @@ from blueprint_pipeline.project_spend_reconciliation import (
     validate_project_spend_reconciliation,
 )
 from blueprint_pipeline.same_goal_spend_reconciliation import (
+    DIAGNOSTIC_SCENE_CONFIGURATION_LANE,
     SUPPORTED_LANES,
     _attempt_id,
+    main as same_goal_main,
     materialize_same_goal_spend_reconciliation,
 )
 from blueprint_pipeline.semantic_teacher_image_edit_paid_authority import (
@@ -951,6 +953,52 @@ def test_cli_derives_cost_and_digests_without_handwritten_ledger(tmp_path: Path)
     assert summary["status"] == "materialized"
     assert summary["total_cost_usd"] == 0.025
     assert output.is_file()
+
+
+@pytest.mark.parametrize(
+    "lane", sorted(SUPPORTED_LANES | {DIAGNOSTIC_SCENE_CONFIGURATION_LANE})
+)
+def test_cli_accepts_every_materializer_lane_choice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lane: str,
+) -> None:
+    observed: list[str] = []
+
+    def materialize(**kwargs):
+        observed.append(str(kwargs["lane"]))
+        return {
+            "receipt_digest": "sha256:" + "a" * 64,
+            "entry_count": 1,
+            "total_cost_usd": 0.0,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.same_goal_spend_reconciliation."
+        "materialize_same_goal_spend_reconciliation",
+        materialize,
+    )
+    placeholder = str(tmp_path / "placeholder.json")
+
+    assert same_goal_main(
+        [
+            "--lane",
+            lane,
+            "--terminal-result",
+            placeholder,
+            "--teardown-manifest",
+            placeholder,
+            "--provider-zero",
+            placeholder,
+            "--official-billing-response",
+            placeholder,
+            "--provider-billing-source-receipt",
+            placeholder,
+            "--output",
+            str(tmp_path / f"{lane}.json"),
+        ]
+    ) == 0
+    assert observed == [lane]
 
 
 def test_materializer_prefers_provider_zero_schema_digest(tmp_path: Path) -> None:
