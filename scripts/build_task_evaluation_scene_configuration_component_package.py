@@ -9,10 +9,13 @@ configuration bound to the same exact Blueprint release.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -51,8 +54,18 @@ def _copy_source_tree(source: Path, destination: Path) -> None:
             target.mkdir(exist_ok=True)
         elif path.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
-            target.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
+            target_mode = 0o555 if path.stat().st_mode & 0o111 else 0o444
+            linked = False
+            if stat.S_IMODE(path.stat().st_mode) == target_mode:
+                try:
+                    os.link(path, target, follow_symlinks=False)
+                    linked = True
+                except OSError as exc:
+                    if exc.errno != errno.EXDEV:
+                        raise
+            if not linked:
+                shutil.copyfile(path, target)
+                target.chmod(target_mode)
 
 
 def build_scene_configuration_component_package(
@@ -166,7 +179,8 @@ def build_scene_configuration_component_package(
             for path in sorted(
                 owned.rglob("*"), key=lambda item: len(item.parts), reverse=True
             ):
-                path.chmod(0o700 if path.is_dir() else 0o600)
+                if path.is_dir():
+                    path.chmod(0o700)
             owned.chmod(0o700)
             shutil.rmtree(owned)
         raise

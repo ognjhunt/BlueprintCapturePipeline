@@ -65,6 +65,7 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
     monkeypatch.setattr(subject, "ARTIFIXER_TREE", artifixer_tree)
     vgg16_weights = tmp_path / "vgg16-397923af.pth"
     vgg16_weights.write_bytes(b"vgg16 fixture")
+    vgg16_weights.chmod(0o444)
     monkeypatch.setattr(subject, "VGG16_WEIGHTS_SIZE_BYTES", vgg16_weights.stat().st_size)
     monkeypatch.setattr(subject, "VGG16_WEIGHTS_SHA256", subject._sha256(vgg16_weights))
 
@@ -153,10 +154,12 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
         (output / "blueprint_runtime/src/blueprint_pipeline" / name).is_file()
         for name in RUNTIME_BLUEPRINT_MODULES
     )
-    assert (
+    packaged_vgg16 = (
         output
         / "blueprint_runtime/torch_home/hub/checkpoints/vgg16-397923af.pth"
-    ).read_bytes() == b"vgg16 fixture"
+    )
+    assert packaged_vgg16.read_bytes() == b"vgg16 fixture"
+    assert packaged_vgg16.stat().st_ino == vgg16_weights.stat().st_ino
     assert (
         output
         / "python_wheelhouse"

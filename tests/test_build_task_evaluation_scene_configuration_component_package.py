@@ -19,6 +19,9 @@ def test_builds_scene_neutral_exhaustive_component_package(tmp_path: Path) -> No
     driver.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     driver.chmod(0o755)
     (source / "public_source.py").write_text("VALUE = 1\n", encoding="utf-8")
+    immutable_asset = source / "immutable_asset.bin"
+    immutable_asset.write_bytes(b"immutable model bytes")
+    immutable_asset.chmod(0o444)
     output = tmp_path / "package"
 
     value = build_scene_configuration_component_package(
@@ -37,9 +40,11 @@ def test_builds_scene_neutral_exhaustive_component_package(tmp_path: Path) -> No
     )
     assert value["source_identity"]["scene_specific_source"] is False
     assert {row["relative_path"] for row in value["files"]} == {
+        "immutable_asset.bin",
         "public_source.py",
         "run",
     }
+    assert (output / "immutable_asset.bin").stat().st_ino == immutable_asset.stat().st_ino
     assert all(not path.stat().st_mode & 0o222 for path in output.rglob("*"))
 
 

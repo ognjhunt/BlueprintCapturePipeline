@@ -15,9 +15,15 @@ def _remove_owned_tree(root: Path) -> None:
     if not root.exists() or root.is_symlink():
         return
     for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        path.chmod(0o700 if path.is_dir() else 0o600)
+        if path.is_dir():
+            path.chmod(0o700)
     root.chmod(0o700)
     shutil.rmtree(root)
+
+
+def _link_immutable_file(source: str, destination: str) -> str:
+    os.link(source, destination, follow_symlinks=False)
+    return destination
 
 
 def _fsync_directory(path: Path) -> None:
@@ -71,9 +77,14 @@ def publish_staged_immutable_directory(
         for source in children:
             installed = target / source.name
             if source.is_dir():
-                shutil.copytree(source, installed, symlinks=False)
+                shutil.copytree(
+                    source,
+                    installed,
+                    symlinks=False,
+                    copy_function=_link_immutable_file,
+                )
             else:
-                shutil.copy2(source, installed, follow_symlinks=False)
+                _link_immutable_file(str(source), str(installed))
         _remove_owned_tree(staged)
         target.chmod(0o555)
         _fsync_directory(target)
