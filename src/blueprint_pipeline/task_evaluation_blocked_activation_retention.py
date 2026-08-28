@@ -47,6 +47,15 @@ DEFAULT_LIVE_REFERENCE_ROOTS = tuple(
 
 BundleValidator = Callable[..., Mapping[str, Any]]
 
+# `_zip_tree` in task_evaluation_scene_configuration_bundle deliberately
+# normalizes published files to read-only or executable modes.  Retention is
+# narrower than that builder rule: equality is always valid, while only the
+# two stage modes observed in the immutable production tree may differ.
+_ALLOWED_ARCHIVE_MODE_NORMALIZATIONS = {
+    (0o600, 0o444),
+    (0o555, 0o755),
+}
+
 
 class BlockedActivationRetentionError(ValueError):
     """The activation was not proven safe for rebuildable-byte reclamation."""
@@ -152,6 +161,7 @@ def _tree_and_archive_snapshot(stage: Path, bundle: Path) -> dict[str, Any]:
                     "blocked_activation_retention_stage_archive_mismatch"
                 )
             rows_by_name = {row["path"]: row for row in rows}
+            mode_normalization_counts: dict[str, int] = {}
             for member in members:
                 digest_builder = hashlib.sha256()
                 with archive.open(member) as stream:
@@ -160,14 +170,22 @@ def _tree_and_archive_snapshot(stage: Path, bundle: Path) -> dict[str, Any]:
                 digest = "sha256:" + digest_builder.hexdigest()
                 mode = (member.external_attr >> 16) & 0o777
                 source = rows_by_name[member.filename]
+                source_mode = int(source["mode"])
+                mode_pair = (source_mode, mode)
                 if (
                     digest != source["sha256"]
                     or member.file_size != source["size_bytes"]
-                    or mode != source["mode"]
+                    or (
+                        mode != source_mode
+                        and mode_pair not in _ALLOWED_ARCHIVE_MODE_NORMALIZATIONS
+                    )
                 ):
                     raise BlockedActivationRetentionError(
                         "blocked_activation_retention_stage_archive_mismatch"
                     )
+                if mode != source_mode:
+                    key = f"{source_mode:04o}->{mode:04o}"
+                    mode_normalization_counts[key] = mode_normalization_counts.get(key, 0) + 1
     except (OSError, zipfile.BadZipFile) as exc:
         raise BlockedActivationRetentionError(
             "blocked_activation_retention_bundle_archive_invalid"
@@ -181,6 +199,8 @@ def _tree_and_archive_snapshot(stage: Path, bundle: Path) -> dict[str, Any]:
         "size_bytes": sum(row["size_bytes"] for row in rows),
         "tree_digest": canonical_digest({"files": rows}),
         "archive_byte_identity_proven": True,
+        "archive_mode_normalization_counts": mode_normalization_counts,
+        "archive_mode_normalization_proven": True,
         "symlinks_followed": False,
     }
 
