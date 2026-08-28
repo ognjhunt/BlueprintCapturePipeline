@@ -212,6 +212,20 @@ def request_with_fetchable_bytes(
                 ].items()
             ],
             (
+                "replacement-source-object",
+                configured_revision["replacement"]["source_object"],
+            ),
+            (
+                "replacement-static-qualification",
+                configured_revision["replacement"]["static_qualification"],
+            ),
+            (
+                "replacement-native-import-qualification",
+                configured_revision["replacement"][
+                    "native_import_qualification"
+                ],
+            ),
+            (
                 "task-template-definition",
                 configured_revision["task_template"]["definition"],
             ),

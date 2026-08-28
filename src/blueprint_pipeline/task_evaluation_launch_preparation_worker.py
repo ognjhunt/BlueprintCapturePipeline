@@ -840,6 +840,28 @@ def process_launch_preparation_queue(
                     },
                     {
                         "contract_path": (
+                            "scene.configured_revision.replacement.source_object"
+                        ),
+                        **configured_revision["replacement"]["source_object"],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.replacement.static_qualification"
+                        ),
+                        **configured_revision["replacement"][
+                            "static_qualification"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.replacement.native_import_qualification"
+                        ),
+                        **configured_revision["replacement"][
+                            "native_import_qualification"
+                        ],
+                    },
+                    {
+                        "contract_path": (
                             "scene.configured_revision.task_template.definition"
                         ),
                         **configured_revision["task_template"]["definition"],

@@ -131,6 +131,52 @@ def _rigid_task_documents(
     }
 
 
+def _configured_runtime_documents(configured: dict[str, object]) -> dict[str, dict]:
+    scene_id = str(configured["scene_identity"]["id"]).rsplit("-", 1)[-1]
+    source = {
+        "schema_version": "task_evaluation_source_object_selection.v1",
+        "status": "frozen_before_scene_configuration_run",
+        "scene_id": scene_id,
+        "center_xyz_m": [2.9742285, -6.7605156, 0.818319],
+        "aabb_min_xyz_m": [2.9103536, -6.8264092, 0.7545],
+        "aabb_max_xyz_m": [3.0381034, -6.6946220, 0.882138],
+    }
+    static = {
+        "schema_version": "task_evaluation_rigid_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified",
+        "replacement_identity": configured["replacement"]["identity"],
+        "observed_structure": {
+            "center_of_mass_m": [0.0, 0.0, 0.063819],
+            "rigid_body_paths": ["/Asset"],
+        },
+        "result_digest": "",
+    }
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    native = {
+        "schema_version": "task_evaluation_replacement_native_import_result.v1",
+        "status": "qualified",
+        "replacement_identity": configured["replacement"]["identity"],
+        "native_simulator_import_qualified": True,
+        "blockers": [],
+        "result_digest": "",
+    }
+    native["result_digest"] = canonical_digest(native, digest_field="result_digest")
+    return {
+        "scene.configured_revision.registration.support_plane": {
+            "schema_version": "task_evaluation_support_plane_input.v1",
+            "status": "frozen_candidate_pending_production_validation",
+            "scene_id": scene_id,
+            "sage_prim_path": "/Root/Support",
+            "bounds_min_xyz_m": [2.5, -9.5, 0.0],
+            "bounds_max_xyz_m": [4.5, -1.4, 0.7545],
+            "top_z_m": 0.7545,
+        },
+        "scene.configured_revision.replacement.source_object": source,
+        "scene.configured_revision.replacement.static_qualification": static,
+        "scene.configured_revision.replacement.native_import_qualification": native,
+    }
+
+
 def test_closed_compiler_joins_revision_and_robot_team_inputs(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -237,6 +283,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             ],
             "termination": ["success", "timeout"],
         },
+        **_configured_runtime_documents(configured),
     }
     document_paths = {
         contract_path: _write_json(inputs, f"input-{index}.json", document)
@@ -252,6 +299,32 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     ):
         record = _record(document_paths[contract_path], contract_path)
         configured["task_template"][revision_field] = {
+            key: record[key] for key in ("uri", "digest", "size_bytes")
+        }
+    for contract_path, section, field in (
+        (
+            "scene.configured_revision.registration.support_plane",
+            "registration",
+            "support_plane",
+        ),
+        (
+            "scene.configured_revision.replacement.source_object",
+            "replacement",
+            "source_object",
+        ),
+        (
+            "scene.configured_revision.replacement.static_qualification",
+            "replacement",
+            "static_qualification",
+        ),
+        (
+            "scene.configured_revision.replacement.native_import_qualification",
+            "replacement",
+            "native_import_qualification",
+        ),
+    ):
+        record = _record(document_paths[contract_path], contract_path)
+        configured[section][field] = {
             key: record[key] for key in ("uri", "digest", "size_bytes")
         }
     configured["revision_digest"] = canonical_digest(
@@ -349,6 +422,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert observed["packet_request"]["task_spec"]["task_kind"] == (
         "rigid_pick_place"
     )
+    assert observed["packet_request"]["task_spec"]["schema_version"] == (
+        "adp_task_spec.v2"
+    )
     assert observed["packet_request"]["task_spec"]["start_pose_world"][:3] == [
         2.9742285,
         -6.7605156,
@@ -358,6 +434,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         "configured_success_criteria"
     ]["maximum_final_planar_target_error_m"] == 0.05
     assert observed["packet_request"]["physics_frequency_hz"] == 120
+    assert observed["packet_request"]["assets"][2]["pose_world"][
+        "position_world_m"
+    ] == pytest.approx([2.9742285, -6.7605156, 0.7545])
     assert observed["packet_request"]["scenario"]["seed"] == 839873104
     assert observed["packet_request"]["scenario"]["cell_id"] == (
         "configured_scene_canonical.seed_839873104"
@@ -433,6 +512,7 @@ def test_closed_compiler_refuses_sensor_calibration_from_another_scene(
             task_identity,
             configured["replacement"]["identity"],
         ),
+        **_configured_runtime_documents(configured),
     }
     document_paths = {
         contract_path: _write_json(inputs, f"input-{index}.json", document)
@@ -448,6 +528,32 @@ def test_closed_compiler_refuses_sensor_calibration_from_another_scene(
     ):
         record = _record(document_paths[contract_path], contract_path)
         configured["task_template"][revision_field] = {
+            key: record[key] for key in ("uri", "digest", "size_bytes")
+        }
+    for contract_path, section, field in (
+        (
+            "scene.configured_revision.registration.support_plane",
+            "registration",
+            "support_plane",
+        ),
+        (
+            "scene.configured_revision.replacement.source_object",
+            "replacement",
+            "source_object",
+        ),
+        (
+            "scene.configured_revision.replacement.static_qualification",
+            "replacement",
+            "static_qualification",
+        ),
+        (
+            "scene.configured_revision.replacement.native_import_qualification",
+            "replacement",
+            "native_import_qualification",
+        ),
+    ):
+        record = _record(document_paths[contract_path], contract_path)
+        configured[section][field] = {
             key: record[key] for key in ("uri", "digest", "size_bytes")
         }
     configured["revision_digest"] = canonical_digest(

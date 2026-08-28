@@ -35,6 +35,18 @@ SUCCESS_CONTRACT_PATH = (
     "scene.configured_revision.task_template.success_criteria"
 )
 EXECUTION_CONTRACT_PATH = "scene.configured_revision.task_template.execution"
+SUPPORT_PLANE_CONTRACT_PATH = (
+    "scene.configured_revision.registration.support_plane"
+)
+SOURCE_OBJECT_CONTRACT_PATH = (
+    "scene.configured_revision.replacement.source_object"
+)
+STATIC_QUALIFICATION_CONTRACT_PATH = (
+    "scene.configured_revision.replacement.static_qualification"
+)
+NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH = (
+    "scene.configured_revision.replacement.native_import_qualification"
+)
 SOURCE_SCHEMAS = {
     DEFINITION_CONTRACT_PATH: "task_evaluation_rigid_relocation_template.v1",
     SUCCESS_CONTRACT_PATH: (
@@ -42,6 +54,14 @@ SOURCE_SCHEMAS = {
     ),
     EXECUTION_CONTRACT_PATH: (
         "task_evaluation_rigid_relocation_execution_spec.v1"
+    ),
+    SUPPORT_PLANE_CONTRACT_PATH: "task_evaluation_support_plane_input.v1",
+    SOURCE_OBJECT_CONTRACT_PATH: "task_evaluation_source_object_selection.v1",
+    STATIC_QUALIFICATION_CONTRACT_PATH: (
+        "task_evaluation_rigid_replacement_static_qualification.v1"
+    ),
+    NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH: (
+        "task_evaluation_replacement_native_import_result.v1"
     ),
 }
 NATIVE_PHYSICS_FREQUENCY_HZ = 120
@@ -172,6 +192,104 @@ def _success_bounds(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _runtime_geometry(
+    *,
+    revision: Mapping[str, Any],
+    support: Mapping[str, Any],
+    source_object: Mapping[str, Any],
+    static: Mapping[str, Any],
+    native_import: Mapping[str, Any],
+    start: Sequence[float],
+    target: Sequence[float],
+) -> dict[str, Any]:
+    replacement_identity = revision["replacement"]["identity"]
+    observed = static.get("observed_structure")
+    if (
+        static.get("status") != "authored_structure_statically_qualified"
+        or static.get("replacement_identity") != replacement_identity
+        or static.get("result_digest")
+        != canonical_digest(static, digest_field="result_digest")
+        or not isinstance(observed, Mapping)
+        or source_object.get("status")
+        != "frozen_before_scene_configuration_run"
+        or source_object.get("center_xyz_m") != list(start)
+        or native_import.get("status") != "qualified"
+        or native_import.get("replacement_identity") != replacement_identity
+        or native_import.get("native_simulator_import_qualified") is not True
+        or native_import.get("blockers") not in ([], ())
+        or native_import.get("result_digest")
+        != canonical_digest(native_import, digest_field="result_digest")
+        or support.get("status")
+        != "frozen_candidate_pending_production_validation"
+        or not str(support.get("sage_prim_path") or "").startswith("/")
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_executable_geometry_missing"
+        )
+    source_lower = _vector(
+        source_object.get("aabb_min_xyz_m"), field="source_object.aabb_min"
+    )
+    source_upper = _vector(
+        source_object.get("aabb_max_xyz_m"), field="source_object.aabb_max"
+    )
+    lower = [source_lower[index] - float(start[index]) for index in range(3)]
+    upper = [source_upper[index] - float(start[index]) for index in range(3)]
+    if any(low >= high for low, high in zip(lower, upper, strict=True)):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_executable_geometry_missing"
+        )
+    rigid_paths = observed.get("rigid_body_paths")
+    if (
+        not isinstance(rigid_paths, list)
+        or len(rigid_paths) != 1
+        or not str(rigid_paths[0]).startswith("/")
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_executable_geometry_missing"
+        )
+    delta = [float(target[index]) - float(start[index]) for index in range(3)]
+    if abs(delta[2]) > 1.0e-9:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_planar_height_mismatch"
+        )
+    horizontal_norm = math.hypot(delta[0], delta[1])
+    if horizontal_norm <= 0.0:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_push_direction_invalid"
+        )
+    push = [delta[0] / horizontal_norm, delta[1] / horizontal_norm, 0.0]
+    try:
+        center = [float(value) for value in observed["center_of_mass_m"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_executable_geometry_missing"
+        ) from exc
+    if len(center) != 3 or not all(math.isfinite(value) for value in center):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_executable_geometry_missing"
+        )
+    # The contact point is the support-function minimum of the qualified
+    # collision AABB along the push direction. The gripper approaches farther
+    # from the object along the opposite direction, then follows +push.
+    contact = [
+        lower[index]
+        if push[index] > 0.0
+        else upper[index]
+        if push[index] < 0.0
+        else 0.0
+        for index in range(3)
+    ]
+    root_position = [float(start[index]) - center[index] for index in range(3)]
+    return {
+        "center_body_frame_m": center,
+        "root_position_world_m": root_position,
+        "contact_point_scoring_frame_m": contact,
+        "approach_unit_scoring_frame": [-push[0], -push[1], 0.0],
+        "allowed_contact_prim_paths": [str(rigid_paths[0])],
+        "intended_support_prim_paths": [str(support["sage_prim_path"])],
+    }
+
+
 def adapt_rigid_relocation_task_template(
     *,
     request: Mapping[str, Any],
@@ -215,6 +333,31 @@ def adapt_rigid_relocation_task_template(
             materialized_references,
             contract_path=contract_path,
             expected_reference=revision["task_template"][revision_field],
+        )
+        documents[contract_path] = document
+        bindings.append(binding)
+    for contract_path, expected_reference in (
+        (
+            SUPPORT_PLANE_CONTRACT_PATH,
+            revision["registration"]["support_plane"],
+        ),
+        (
+            SOURCE_OBJECT_CONTRACT_PATH,
+            revision["replacement"]["source_object"],
+        ),
+        (
+            STATIC_QUALIFICATION_CONTRACT_PATH,
+            revision["replacement"]["static_qualification"],
+        ),
+        (
+            NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH,
+            revision["replacement"]["native_import_qualification"],
+        ),
+    ):
+        document, binding = _source_document(
+            materialized_references,
+            contract_path=contract_path,
+            expected_reference=expected_reference,
         )
         documents[contract_path] = document
         bindings.append(binding)
@@ -319,12 +462,27 @@ def adapt_rigid_relocation_task_template(
         success.get("maximum_final_planar_target_error_m"),
         field="maximum_final_planar_target_error_m",
     )
+    geometry = _runtime_geometry(
+        revision=revision,
+        support=documents[SUPPORT_PLANE_CONTRACT_PATH],
+        source_object=documents[SOURCE_OBJECT_CONTRACT_PATH],
+        static=documents[STATIC_QUALIFICATION_CONTRACT_PATH],
+        native_import=documents[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH],
+        start=start,
+        target=target,
+    )
     source_documents = {
         "bindings": bindings,
         "documents": {
             "definition": template,
             "success_criteria": success,
             "execution": execution,
+            "support_plane": documents[SUPPORT_PLANE_CONTRACT_PATH],
+            "source_object": documents[SOURCE_OBJECT_CONTRACT_PATH],
+            "static_qualification": documents[STATIC_QUALIFICATION_CONTRACT_PATH],
+            "native_import_qualification": documents[
+                NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH
+            ],
         },
     }
     source_documents["source_documents_digest"] = canonical_digest(
@@ -364,8 +522,49 @@ def adapt_rigid_relocation_task_template(
     scenario_document["instance_digest"] = canonical_digest(
         scenario_document, digest_field="instance_digest"
     )
+    support = documents[SUPPORT_PLANE_CONTRACT_PATH]
+    support_minimum = _vector(
+        support.get("bounds_min_xyz_m"), field="support.bounds_min"
+    )
+    support_maximum = _vector(
+        support.get("bounds_max_xyz_m"), field="support.bounds_max"
+    )
+    if any(
+        low >= high
+        for low, high in zip(support_minimum, support_maximum, strict=True)
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_support_bounds_invalid"
+        )
+    interaction_affordance: dict[str, Any] = {
+        "schema_version": "native_rigid_interaction_affordance.v1",
+        "subject_asset_id": task["subject"]["identity"]["id"],
+        "scoring_frame_id": "task_scoring_frame",
+        "asset_root_from_scoring_frame": {
+            "position_m": geometry["center_body_frame_m"],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "contact_point_scoring_frame_m": geometry[
+            "contact_point_scoring_frame_m"
+        ],
+        "approach_unit_scoring_frame": geometry[
+            "approach_unit_scoring_frame"
+        ],
+        "lift_unit_world": [0.0, 0.0, 1.0],
+        "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "pregrasp_clearance_m": 0.12,
+        "arrival_orientation_tolerance_rad": 0.08,
+        "allowed_contact_prim_paths": geometry["allowed_contact_prim_paths"],
+        "intended_support_prim_paths": geometry[
+            "intended_support_prim_paths"
+        ],
+        "affordance_digest": "",
+    }
+    interaction_affordance["affordance_digest"] = canonical_digest(
+        interaction_affordance, digest_field="affordance_digest"
+    )
     native_task_spec = {
-        "schema_version": "adp_task_spec.v1",
+        "schema_version": "adp_task_spec.v2",
         "task_kind": "rigid_pick_place",
         "manipulation_strategy": "planar_push",
         "subject_asset_id": task["subject"]["identity"]["id"],
@@ -373,12 +572,42 @@ def adapt_rigid_relocation_task_template(
         "start_pose_world": [*start, 0.0, 0.0, 0.0, 1.0],
         "target_position_world_m": target,
         "destination_position_tolerance_m": target_tolerance,
+        "destination_position_bounds_world_m": {
+            "minimum": [
+                target[0] - target_tolerance,
+                target[1] - target_tolerance,
+                target[2] - 0.01,
+            ],
+            "maximum": [
+                target[0] + target_tolerance,
+                target[1] + target_tolerance,
+                target[2] + 0.01,
+            ],
+        },
+        "support_height_interval_m": [start[2] - 0.01, start[2] + 0.01],
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.08,
         "minimum_translation_m": minimum_displacement,
         "minimum_lift_m": 0.0,
+        "movement_epsilon_m": min(0.005, minimum_displacement / 10.0),
         "control_frequency_hz": control_frequency,
         "maximum_action_steps": maximum_steps,
-        "settle_window_samples": 1,
+        "settle_window_samples": 20,
         "maximum_episode_seconds": maximum_seconds,
+        "release_required": True,
+        "release_gripper_width_min_m": 0.06,
+        "task_contact_minimum_force_n": 0.5,
+        "collision_failure_minimum_force_n": 1.0,
+        "reset_translation_tolerance_m": 0.002,
+        "reset_orientation_tolerance_rad": 0.01,
+        "settle_position_tolerance_m": 0.005,
+        "settle_orientation_tolerance_rad": 0.03,
+        "relocation_tracking_tolerance_m": target_tolerance,
+        "workspace_position_bounds_world_m": {
+            "minimum": [support_minimum[0], support_minimum[1], start[2] - 0.25],
+            "maximum": [support_maximum[0], support_maximum[1], start[2] + 0.25],
+        },
+        "interaction_affordance": interaction_affordance,
         "action_bounds_m_per_step": {
             "minimum": action_minimum,
             "maximum": action_maximum,
@@ -393,7 +622,7 @@ def adapt_rigid_relocation_task_template(
         "identity": dict(task["identity"]),
         "task_spec": native_task_spec,
         "task_object_pose_world": {
-            "position_world_m": start,
+            "position_world_m": geometry["root_position_world_m"],
             "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
         "task_joint_bindings": [],

@@ -14,6 +14,9 @@ from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
     _source_document,
     adapt_rigid_relocation_task_template,
 )
+from blueprint_pipeline.native_task_construction_plan import (
+    materialize_rigid_construction_phase_plan,
+)
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_contract import request
 
@@ -21,6 +24,12 @@ from tests.test_task_evaluation_launch_preparation_contract import request
 DEFINITION = "scene.configured_revision.task_template.definition"
 SUCCESS = "scene.configured_revision.task_template.success_criteria"
 EXECUTION = "scene.configured_revision.task_template.execution"
+SUPPORT = "scene.configured_revision.registration.support_plane"
+SOURCE_OBJECT = "scene.configured_revision.replacement.source_object"
+STATIC = "scene.configured_revision.replacement.static_qualification"
+NATIVE_IMPORT = (
+    "scene.configured_revision.replacement.native_import_qualification"
+)
 
 
 def _documents(task_identity: dict, object_identity: dict) -> dict[str, dict]:
@@ -32,6 +41,26 @@ def _documents(task_identity: dict, object_identity: dict) -> dict[str, dict]:
         "minimum_planar_displacement_m": 0.1,
         "object_must_remain_on_registered_support": True,
     }
+    static = {
+        "schema_version": "task_evaluation_rigid_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified",
+        "replacement_identity": object_identity,
+        "observed_structure": {
+            "center_of_mass_m": [0.0, 0.0, 0.063819],
+            "rigid_body_paths": ["/Asset"],
+        },
+        "result_digest": "",
+    }
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    native = {
+        "schema_version": "task_evaluation_replacement_native_import_result.v1",
+        "status": "qualified",
+        "replacement_identity": object_identity,
+        "native_simulator_import_qualified": True,
+        "blockers": [],
+        "result_digest": "",
+    }
+    native["result_digest"] = canonical_digest(native, digest_field="result_digest")
     return {
         DEFINITION: {
             "schema_version": "task_evaluation_rigid_relocation_template.v1",
@@ -91,6 +120,25 @@ def _documents(task_identity: dict, object_identity: dict) -> dict[str, dict]:
                 "timeout",
             ],
         },
+        SUPPORT: {
+            "schema_version": "task_evaluation_support_plane_input.v1",
+            "status": "frozen_candidate_pending_production_validation",
+            "scene_id": "839873",
+            "sage_prim_path": "/Root/Support",
+            "bounds_min_xyz_m": [2.5, -9.5, 0.0],
+            "bounds_max_xyz_m": [4.5, -1.4, 0.7545],
+            "top_z_m": 0.7545,
+        },
+        SOURCE_OBJECT: {
+            "schema_version": "task_evaluation_source_object_selection.v1",
+            "status": "frozen_before_scene_configuration_run",
+            "scene_id": "839873",
+            "center_xyz_m": [2.9742285, -6.7605156, 0.818319],
+            "aabb_min_xyz_m": [2.9103536, -6.8264092, 0.7545],
+            "aabb_max_xyz_m": [3.0381034, -6.6946220, 0.882138],
+        },
+        STATIC: static,
+        NATIVE_IMPORT: native,
     }
 
 
@@ -122,13 +170,16 @@ def _case(tmp_path: Path) -> tuple[dict, dict, dict, dict[str, dict]]:
             "materialized_path": str(path),
             "full_byte_service_account_readback_passed": True,
         }
-        configured["task_template"][
-            {
-                DEFINITION: "definition",
-                SUCCESS: "success_criteria",
-                EXECUTION: "execution",
-            }[contract_path]
-        ] = reference
+        target = {
+            DEFINITION: ("task_template", "definition"),
+            SUCCESS: ("task_template", "success_criteria"),
+            EXECUTION: ("task_template", "execution"),
+            SUPPORT: ("registration", "support_plane"),
+            SOURCE_OBJECT: ("replacement", "source_object"),
+            STATIC: ("replacement", "static_qualification"),
+            NATIVE_IMPORT: ("replacement", "native_import_qualification"),
+        }[contract_path]
+        configured[target[0]][target[1]] = reference
     configured["revision_digest"] = canonical_digest(
         configured, digest_field="revision_digest"
     )
@@ -160,13 +211,12 @@ def _rewrite(
         "materialized_path": str(path),
         "full_byte_service_account_readback_passed": True,
     }
-    configured["task_template"][
-        {
-            DEFINITION: "definition",
-            SUCCESS: "success_criteria",
-            EXECUTION: "execution",
-        }[contract_path]
-    ] = reference
+    target = {
+        DEFINITION: ("task_template", "definition"),
+        SUCCESS: ("task_template", "success_criteria"),
+        EXECUTION: ("task_template", "execution"),
+    }[contract_path]
+    configured[target[0]][target[1]] = reference
     configured["revision_digest"] = canonical_digest(
         configured, digest_field="revision_digest"
     )
@@ -212,10 +262,35 @@ def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     ]
     assert {
         row["digest"] for row in result["source_documents"]["bindings"]
-    } == {references[path]["digest"] for path in (DEFINITION, SUCCESS, EXECUTION)}
+    } == {references[path]["digest"] for path in docs}
     assert result["adapter_digest"] == canonical_digest(
         result, digest_field="adapter_digest"
     )
+    phase_plan = materialize_rigid_construction_phase_plan(
+        {
+            "task_kind": "rigid_pick_place",
+            "task_spec": task_spec,
+            "objects": [
+                {
+                    "task_subject": True,
+                    "asset_id": configured["replacement"]["identity"]["id"],
+                    "object_type": "RIGID",
+                    "pose_world": result["native_task_definition"][
+                        "task_object_pose_world"
+                    ],
+                    "reset_state": {
+                        "root_pose_world": result["native_task_definition"][
+                            "task_object_pose_world"
+                        ],
+                        "joint_positions": {},
+                    },
+                }
+            ],
+        }
+    )
+    assert phase_plan["manipulation_strategy"] == "planar_push"
+    assert phase_plan["phases"][0]["phase_id"] == "precontact"
+    assert phase_plan["phases"][1]["phase_id"] == "push_contact"
 
 
 @pytest.mark.parametrize(
