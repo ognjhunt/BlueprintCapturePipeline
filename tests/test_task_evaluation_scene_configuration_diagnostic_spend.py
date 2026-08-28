@@ -187,10 +187,14 @@ def _patch_authority_validation(monkeypatch: pytest.MonkeyPatch) -> None:
         "load_scene_configuration_provider_bundle_receipt",
         lambda *_args, **_kwargs: {"diagnostic_only": True},
     )
+    def validate_historical(value: dict, **kwargs: object) -> dict:
+        assert kwargs.get("historical_terminal_evidence") is True
+        return value
+
     monkeypatch.setattr(
         spend,
         "validate_scene_configuration_paid_authority",
-        lambda value, **_kwargs: value,
+        validate_historical,
     )
 
 
