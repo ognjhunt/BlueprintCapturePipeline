@@ -57,6 +57,7 @@ def _portable_rigid_asset(
     *,
     dynamic_triangle_mesh: bool = False,
     embedded_texture: bool = False,
+    body_translation: tuple[float, float, float] | None = None,
 ) -> None:
     dependency_path = path.with_suffix(".body.usda")
     dependency = Usd.Stage.CreateNew(str(dependency_path))
@@ -101,9 +102,12 @@ def _portable_rigid_asset(
     stage.SetDefaultPrim(root)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-    stage.DefinePrim("/Asset/Body", "Xform").GetReferences().AddReference(
+    referenced_body = stage.DefinePrim("/Asset/Body", "Xform")
+    referenced_body.GetReferences().AddReference(
         str(dependency_path), "/Body"
     )
+    if body_translation is not None:
+        UsdGeom.Xformable(referenced_body).AddTranslateOp().Set(Gf.Vec3d(*body_translation))
     stage.GetRootLayer().Save()
     assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(path))
 
@@ -114,6 +118,11 @@ def _physics_completion() -> dict[str, object]:
         "status": "bounded_candidate_completed",
         "rigid_body_path": "/Asset/Body",
         "collision_prim_paths": ["/Asset/Body/Collider"],
+        "collision_bounds_body_frame_m": {
+            "minimum": [-0.05, -0.05, -0.05],
+            "maximum": [0.05, 0.05, 0.05],
+        },
+        "collision_dimensions_m": [0.1, 0.1, 0.1],
         "physics_bounds": PHYSICS_BOUNDS,
         "mass_kg": 0.5,
         "center_of_mass_m": [0.0, 0.0, 0.0],
@@ -147,6 +156,19 @@ def test_static_gate_rejects_dynamic_triangle_mesh_collision(tmp_path: Path) -> 
     assert observed["dynamic_mesh_collision_approximations"] == [
         {"path": "/Asset/Body/Collider", "approximation": ""}
     ]
+    assert observed["collision_bounds_asset_root_m"]["minimum"] == pytest.approx(
+        [-0.05, -0.05, -0.05]
+    )
+    assert observed["collision_bounds_asset_root_m"]["maximum"] == pytest.approx(
+        [0.05, 0.05, 0.05]
+    )
+    assert observed["collision_bounds_body_frame_m"]["minimum"] == pytest.approx(
+        [-0.05, -0.05, -0.05]
+    )
+    assert observed["collision_bounds_body_frame_m"]["maximum"] == pytest.approx(
+        [0.05, 0.05, 0.05]
+    )
+    assert observed["collision_dimensions_m"] == pytest.approx([0.1, 0.1, 0.1])
 
 
 def test_static_gate_accepts_asset_embedded_in_exact_usdz_package(
@@ -160,6 +182,29 @@ def test_static_gate_accepts_asset_embedded_in_exact_usdz_package(
     assert "replacement_external_or_unresolved_dependency" not in findings
     assert observed["external_asset_count"] == 0
     assert observed["embedded_package_asset_count"] == 1
+
+
+def test_static_gate_retains_asset_and_rigid_body_collision_frames(
+    tmp_path: Path,
+) -> None:
+    asset = tmp_path / "translated-rigid-body.usdz"
+    _portable_rigid_asset(asset, body_translation=(0.25, -0.1, 0.2))
+
+    findings, observed = _usd_findings(asset, physics_bounds=PHYSICS_BOUNDS)
+
+    assert findings == []
+    assert observed["collision_bounds_asset_root_m"]["minimum"] == pytest.approx(
+        [0.20, -0.15, 0.15]
+    )
+    assert observed["collision_bounds_asset_root_m"]["maximum"] == pytest.approx(
+        [0.30, -0.05, 0.25]
+    )
+    assert observed["collision_bounds_body_frame_m"]["minimum"] == pytest.approx(
+        [-0.05, -0.05, -0.05]
+    )
+    assert observed["collision_bounds_body_frame_m"]["maximum"] == pytest.approx(
+        [0.05, 0.05, 0.05]
+    )
 
 
 def test_static_gate_keeps_external_asset_identifier_fail_closed(

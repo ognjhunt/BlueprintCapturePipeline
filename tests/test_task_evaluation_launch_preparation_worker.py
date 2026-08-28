@@ -207,6 +207,16 @@ def request_with_fetchable_bytes(
                 ].items()
             ],
             (
+                "replacement-static-qualification",
+                configured_revision["replacement"]["static_qualification"],
+            ),
+            (
+                "replacement-native-import-qualification",
+                configured_revision["replacement"][
+                    "native_import_qualification"
+                ],
+            ),
+            (
                 "task-template-definition",
                 configured_revision["task_template"]["definition"],
             ),
@@ -523,6 +533,17 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
     assert compilation["materialized_references"] == run["results"][0][
         "references"
     ]
+    assert {
+        row["contract_path"] for row in compilation["materialized_references"]
+    }.issuperset(
+        {
+            "scene.configured_revision.replacement.static_qualification",
+            (
+                "scene.configured_revision.replacement."
+                "native_import_qualification"
+            ),
+        }
+    )
     assert compilation["production_compiler_owns_episode_packet"] is True
     assert compilation["customer_supplied_prebuilt_episode_packet"] is False
 

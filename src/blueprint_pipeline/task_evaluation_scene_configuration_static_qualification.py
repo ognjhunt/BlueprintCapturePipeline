@@ -262,7 +262,7 @@ def _usd_findings(
             findings.append(
                 "replacement_dynamic_mesh_collision_approximation_invalid"
             )
-    bounds_rows: list[tuple[list[float], list[float]]] = []
+    world_corners: list[Any] = []
     cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(),
         [
@@ -277,14 +277,43 @@ def _usd_findings(
         aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
         if aligned.IsEmpty():
             continue
-        lower = [float(aligned.GetMin()[index]) for index in range(3)]
-        upper = [float(aligned.GetMax()[index]) for index in range(3)]
-        if _finite(lower) and _finite(upper) and all(
-            upper[index] > lower[index] for index in range(3)
-        ):
-            bounds_rows.append((lower, upper))
-    if not collision_prims or len(bounds_rows) != len(collision_prims):
+        lower = aligned.GetMin()
+        upper = aligned.GetMax()
+        corners = [
+            Gf.Vec3d(float(x), float(y), float(z))
+            for x in (lower[0], upper[0])
+            for y in (lower[1], upper[1])
+            for z in (lower[2], upper[2])
+        ]
+        if all(_finite([float(point[index]) for index in range(3)]) for point in corners):
+            world_corners.extend(corners)
+    if not collision_prims or len(world_corners) != len(collision_prims) * 8:
         findings.append("replacement_collision_geometry_invalid")
+    collision_bounds: dict[str, list[float]] = {}
+    collision_bounds_body_frame: dict[str, list[float]] = {}
+    collision_dimensions: list[float] = []
+    if world_corners and body is not None:
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
+        def _bounds_in_frame(prim: Any) -> dict[str, list[float]]:
+            inverse = xform_cache.GetLocalToWorldTransform(prim).GetInverse()
+            points = [inverse.Transform(point) for point in world_corners]
+            return {
+                "minimum": [
+                    min(float(point[index]) for point in points) for index in range(3)
+                ],
+                "maximum": [
+                    max(float(point[index]) for point in points) for index in range(3)
+                ],
+            }
+
+        collision_bounds = _bounds_in_frame(stage.GetDefaultPrim())
+        collision_bounds_body_frame = _bounds_in_frame(body)
+        collision_dimensions = [
+            collision_bounds["maximum"][index]
+            - collision_bounds["minimum"][index]
+            for index in range(3)
+        ]
 
     mass_value: float | None = None
     center_of_mass: list[float] = []
@@ -317,16 +346,12 @@ def _usd_findings(
         )
     ):
         findings.append("replacement_mass_or_inertia_invalid")
-    elif body is not None and bounds_rows:
-        transform = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(
-            body
-        )
-        world_com = transform.Transform(Gf.Vec3d(*center_of_mass))
-        lower = [min(row[0][index] for row in bounds_rows) for index in range(3)]
-        upper = [max(row[1][index] for row in bounds_rows) for index in range(3)]
+    elif collision_bounds_body_frame:
+        lower = collision_bounds_body_frame["minimum"]
+        upper = collision_bounds_body_frame["maximum"]
         if any(
-            float(world_com[index]) < lower[index] - 1e-6
-            or float(world_com[index]) > upper[index] + 1e-6
+            center_of_mass[index] < lower[index] - 1e-6
+            or center_of_mass[index] > upper[index] + 1e-6
             for index in range(3)
         ):
             findings.append("replacement_center_of_mass_outside_collision")
@@ -369,6 +394,9 @@ def _usd_findings(
         "default_prim": str(stage.GetDefaultPrim().GetPath()),
         "rigid_body_paths": [str(prim.GetPath()) for prim in rigid],
         "collision_prim_paths": [str(prim.GetPath()) for prim in collision_prims],
+        "collision_bounds_asset_root_m": collision_bounds,
+        "collision_bounds_body_frame_m": collision_bounds_body_frame,
+        "collision_dimensions_m": collision_dimensions,
         "dynamic_mesh_collision_approximations": dynamic_mesh_collision_rows,
         "mass_kg": mass_value,
         "center_of_mass_m": center_of_mass,
@@ -436,6 +464,24 @@ def qualify_scene_configuration_rigid_asset_static(
         completion.get("physics_materials") if isinstance(completion, Mapping) else None,
         observed.get("physics_materials"),
     )
+    completion_bounds = (
+        completion.get("collision_bounds_body_frame_m")
+        if isinstance(completion, Mapping)
+        else None
+    )
+    completion_dimensions = (
+        [
+            float(completion_bounds["maximum"][index])
+            - float(completion_bounds["minimum"][index])
+            for index in range(3)
+        ]
+        if isinstance(completion_bounds, Mapping)
+        and _finite(completion_bounds.get("minimum") or [])
+        and _finite(completion_bounds.get("maximum") or [])
+        and len(completion_bounds.get("minimum") or []) == 3
+        and len(completion_bounds.get("maximum") or []) == 3
+        else []
+    )
     if (
         not isinstance(completion, Mapping)
         or completion.get("schema_version")
@@ -458,6 +504,21 @@ def qualify_scene_configuration_rigid_asset_static(
             completion.get("diagonal_inertia_kg_m2"),
             observed.get("diagonal_inertia_kg_m2"),
         )
+        or not isinstance(completion_bounds, Mapping)
+        or not _close_sequence(
+            completion_bounds.get("minimum"),
+            observed.get("collision_bounds_body_frame_m", {}).get("minimum"),
+        )
+        or not _close_sequence(
+            completion_bounds.get("maximum"),
+            observed.get("collision_bounds_body_frame_m", {}).get("maximum"),
+        )
+        or not _close_sequence(
+            completion.get("collision_dimensions_m"),
+            completion_dimensions,
+        )
+        or completion.get("collision_prim_paths")
+        != observed.get("collision_prim_paths")
         or not materials_match
     ):
         findings.append("replacement_physics_completion_invalid")
