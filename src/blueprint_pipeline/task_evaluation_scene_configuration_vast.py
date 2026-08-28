@@ -1225,6 +1225,7 @@ def run_scene_configuration_vast(
     execute: bool,
     diagnostic_only: bool = False,
     retain_warm_session: bool = False,
+    allowed_machine_ids: tuple[int, ...] = (),
     warm_session_authority_path: str | Path | None = None,
     warm_session_output_root: str | Path | None = None,
     scene_construction_queue_root: str | Path | None = None,
@@ -1619,6 +1620,7 @@ def run_scene_configuration_vast(
                 require_known_supported_isaac_driver=True,
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
                 prefer_isaac_rt=True,
+                allowed_machine_ids=allowed_machine_ids,
                 allowed_active_instance_ids=(),
                 vast_launch_lock_file=job.parent
                 / "scene_configuration_paid_launch.lock",

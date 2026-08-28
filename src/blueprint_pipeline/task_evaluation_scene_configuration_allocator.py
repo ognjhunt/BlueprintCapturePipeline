@@ -204,6 +204,10 @@ def run_scene_configuration_allocator_probe(
     retain_warm_session = bool(
         getattr(args, "scene_configuration_retain_warm_session", False)
     )
+    allowed_machine_values = (
+        getattr(args, "scene_configuration_allowed_vast_machine_id", ()) or ()
+    )
+    allowed_machine_ids: tuple[int, ...] = ()
     missing = [
         name
         for name in (
@@ -218,6 +222,21 @@ def run_scene_configuration_allocator_probe(
         args.expected_source_commit or "", control_identity
     )
     blockers = [*missing, *control_blockers, *source_blockers]
+    try:
+        if any(isinstance(value, bool) for value in allowed_machine_values):
+            raise ValueError("boolean machine id")
+        allowed_machine_ids = tuple(
+            sorted({int(value) for value in allowed_machine_values})
+        )
+        if any(value <= 0 for value in allowed_machine_ids):
+            raise ValueError("non-positive machine id")
+    except (TypeError, ValueError):
+        blockers.append("scene_configuration_allowed_vast_machine_ids_invalid")
+        allowed_machine_ids = ()
+    if allowed_machine_ids and not diagnostic_only:
+        blockers.append(
+            "scene_configuration_machine_allowlist_requires_diagnostic_only"
+        )
     diagnostic_release: dict[str, Any] | None = None
     if diagnostic_only:
         diagnostic_release_path = str(
@@ -351,6 +370,7 @@ def run_scene_configuration_allocator_probe(
             else None
         ),
         "allowed_active_vast_instance_ids": [],
+        "allowed_vast_machine_ids": list(allowed_machine_ids),
         "retry_cap": 0,
         "diagnostic_only": diagnostic_only,
         "retain_warm_session": retain_warm_session,
@@ -490,6 +510,7 @@ def run_scene_configuration_allocator_probe(
             execute=args.execute,
             diagnostic_only=diagnostic_only,
             retain_warm_session=retain_warm_session,
+            allowed_machine_ids=allowed_machine_ids,
             warm_session_authority_path=warm_session_authority_path,
             warm_session_output_root=(
                 Path(warm_session_output_root).expanduser()

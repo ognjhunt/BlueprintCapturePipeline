@@ -41,6 +41,7 @@ def _args(tmp_path: Path, *, execute: bool) -> Namespace:
         adapter_output=str(tmp_path / "result.json"),
         execute=execute,
         scene_configuration_diagnostic_only=False,
+        scene_configuration_allowed_vast_machine_id=[],
         release_evidence=None,
     )
 
@@ -115,6 +116,7 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
             "execute": True,
             "diagnostic_only": False,
             "retain_warm_session": False,
+            "allowed_machine_ids": (),
             "warm_session_authority_path": None,
             "warm_session_output_root": None,
             "scene_construction_queue_root": str(tmp_path / "scene-queue"),
@@ -138,6 +140,7 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
         "hard_cap_usd": 2.25,
         "hard_ttl_seconds": 3600,
         "allowed_active_vast_instance_ids": [],
+        "allowed_vast_machine_ids": [],
         "retry_cap": 0,
         "diagnostic_only": False,
         "retain_warm_session": False,
@@ -155,6 +158,7 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
 ) -> None:
     args = _args(tmp_path, execute=True)
     args.scene_configuration_diagnostic_only = True
+    args.scene_configuration_allowed_vast_machine_id = [44762, 21899, 44762]
     args.release_evidence = str(
         tmp_path / "diagnostic-release.json"
     )
@@ -221,6 +225,7 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
         == 0
     )
     assert calls[0]["diagnostic_only"] is True
+    assert calls[0]["allowed_machine_ids"] == (21899, 44762)
     assert calls[0]["scene_construction_queue_root"] is None
     admission = json.loads(Path(args.admission_out).read_text(encoding="utf-8"))
     assert admission["diagnostic_only"] is True
@@ -250,6 +255,10 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
     assert admission["allocation_binding"][
         "diagnostic_remote_ref_tip_commit"
     ] == SOURCE_COMMIT
+    assert admission["allocation_binding"]["allowed_vast_machine_ids"] == [
+        21899,
+        44762,
+    ]
 
 
 def test_diagnostic_allocator_refuses_arbitrary_detached_checkout_without_release_receipt(
@@ -300,6 +309,50 @@ def test_diagnostic_allocator_refuses_arbitrary_detached_checkout_without_releas
     assert result["configured_revision_publication_permitted"] is False
     assert result["offering_publication_permitted"] is False
     assert result["terminal_e2e_completion_permitted"] is False
+
+
+def test_scene_allocator_refuses_machine_allowlist_for_production_qualification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    args.scene_configuration_allowed_vast_machine_id = [44762]
+    monkeypatch.setattr(
+        lane,
+        "resolve_host_resident_bundle_receipt",
+        lambda _path: {"blockers": []},
+    )
+    monkeypatch.setattr(
+        lane,
+        "load_scene_configuration_provider_bundle_receipt",
+        lambda _path, **_kwargs: _prepared_bundle(),
+    )
+    monkeypatch.setattr(
+        lane,
+        "validate_scene_configuration_paid_authority",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        lane,
+        "run_scene_configuration_vast",
+        lambda **_kwargs: pytest.fail(
+            "production provider reached with a diagnostic machine allowlist"
+        ),
+    )
+
+    assert (
+        lane.run_scene_configuration_allocator_probe(
+            args,
+            control_plane_identity_probe=_identity,
+            expected_source_commit_probe=_expected_source,
+        )
+        == 2
+    )
+    admission = json.loads(Path(args.admission_out).read_text(encoding="utf-8"))
+    assert admission["status"] == "blocked"
+    assert admission["blockers"] == [
+        "scene_configuration_machine_allowlist_requires_diagnostic_only"
+    ]
+    assert admission["allocation_binding"]["allowed_vast_machine_ids"] == [44762]
 
 
 def test_scene_allocator_refuses_before_adapter_when_admission_is_blocked(

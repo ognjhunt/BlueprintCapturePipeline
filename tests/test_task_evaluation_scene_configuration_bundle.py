@@ -3940,6 +3940,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         paid_attempt_authority_path=authority_path,
         paid_resource_admission_grant=object(),
         execute=True,
+        allowed_machine_ids=(21899, 44762),
         scene_construction_queue_root=_construction_queue(tmp_path),
         disk_usage_provider=lambda _path: types.SimpleNamespace(free=required_free),
     )
@@ -3959,6 +3960,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     assert captured["target_spend_usd"] == provider_all_in_cap
     assert captured["max_live_minutes"] == 420
     assert captured["session_max_live_minutes"] == 420
+    assert captured["allowed_machine_ids"] == (21899, 44762)
     assert result["expected_provider_download_bytes"] == expected_download
     assert result["expected_provider_upload_bytes"] == expected_upload
 
