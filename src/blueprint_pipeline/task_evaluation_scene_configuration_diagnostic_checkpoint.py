@@ -25,6 +25,11 @@ from .task_evaluation_scene_configuration_disclosure import MATERIALIZED_STATUS
 from .task_evaluation_scene_configuration_render_inputs import (
     RESULT_SCHEMA_VERSION as RENDER_RESULT_SCHEMA_VERSION,
 )
+from .task_evaluation_scene_configuration_render_handoff import (
+    ARTIFACT_ROLE as PROVIDER_RENDER_REFERENCE_ROLE,
+    TaskEvaluationSceneConfigurationRenderHandoffError,
+    validate_provider_render_handoff,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_scene_configuration_diagnostic_checkpoint.v1"
@@ -830,6 +835,38 @@ def _portable_stage_result(
             code=f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}",
         )
         checkpoint_role = f"completed_stage:{stage_id}:{role}"
+        if role == PROVIDER_RENDER_REFERENCE_ROLE:
+            try:
+                _manifest, frames = validate_provider_render_handoff(source)
+            except TaskEvaluationSceneConfigurationRenderHandoffError as exc:
+                raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                    f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}"
+                ) from exc
+            handoff_root = f"completed_stages/{stage_id}/provider_render_handoff"
+            inventory.append(
+                _copy_inventory_file(
+                    source=source,
+                    root=checkpoint_root,
+                    relative=f"{handoff_root}/{source.name}",
+                    role=checkpoint_role,
+                )
+            )
+            for frame_index, frame in enumerate(frames):
+                relative = frame.relative_to(source.parent).as_posix()
+                inventory.append(
+                    _copy_inventory_file(
+                        source=frame,
+                        root=checkpoint_root,
+                        relative=f"{handoff_root}/{relative}",
+                        role=(
+                            f"completed_stage:{stage_id}:"
+                            f"provider_render_reference_frame:{frame_index}"
+                        ),
+                    )
+                )
+            target_row.pop("path", None)
+            target_row["checkpoint_role"] = checkpoint_role
+            continue
         inventory.append(
             _copy_inventory_file(
                 source=source,
