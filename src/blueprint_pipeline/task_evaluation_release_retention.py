@@ -40,6 +40,10 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_public_launch_profile_descriptor,
     verify_profile_immutable_inputs,
 )
+from blueprint_pipeline.task_evaluation_launch_activation_contract import (
+    TaskEvaluationLaunchActivationContractError,
+    validate_launch_activation_request,
+)
 from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
     StandingAuthorizationError,
     consumption_totals,
@@ -739,6 +743,25 @@ def build_release_retention_plan(
             root, blocker="release_retention_live_reference_root"
         ):
             commits, profile_ids = _extract_bindings(value)
+            activation_request_valid = False
+            activation_expected_commit: str | None = None
+            if (
+                isinstance(value, Mapping)
+                and value.get("schema_version")
+                == "task_evaluation_launch_activation_envelope.v1"
+                and isinstance(value.get("request"), Mapping)
+            ):
+                try:
+                    activation_request = validate_launch_activation_request(
+                        value["request"]
+                    )
+                except TaskEvaluationLaunchActivationContractError:
+                    pass
+                else:
+                    activation_request_valid = True
+                    activation_expected_commit = str(
+                        activation_request["expected_production_commit"]
+                    )
             for commit in commits:
                 reason = f"live_reference:{path.parent.name}/{path.name}"
                 protected.setdefault(commit, set()).add(reason)
@@ -766,6 +789,36 @@ def build_release_retention_plan(
                         ),
                         "provider_mutation_performed": (
                             value.get("provider_mutation_performed")
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                        "activation_request_valid": activation_request_valid,
+                        "activation_expected_production_commit": (
+                            activation_expected_commit
+                        ),
+                        "envelope_digest_valid": (
+                            isinstance(value, Mapping)
+                            and value.get("envelope_digest")
+                            == _canonical_digest(
+                                value, digest_field="envelope_digest"
+                            )
+                        ),
+                        "provider_mutation_performed_inside_intake": (
+                            value.get(
+                                "provider_mutation_performed_inside_intake"
+                            )
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                        "catalog_mutation_performed_inside_intake": (
+                            value.get("catalog_mutation_performed_inside_intake")
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                        "standing_authorization_published_inside_intake": (
+                            value.get(
+                                "standing_authorization_published_inside_intake"
+                            )
                             if isinstance(value, Mapping)
                             else None
                         ),
@@ -811,19 +864,51 @@ def build_release_retention_plan(
                 if profile.get("source_commit") == commit
             }
             row_reasons = {str(row["reason"]) for row in rows}
-            exact_unreachable_scene_handoff = (
-                bool(rows)
-                and set(protected.get(commit, set())) == row_reasons
-                and all(
-                    row["queue_name"] == "task-evaluation-scene-constructions"
+            all_rows_are_scene_handoffs = all(
+                row["queue_name"] == "task-evaluation-scene-constructions"
+                and row["queue_state"] in {"pending", "processing"}
+                and row["schema_version"]
+                == "task_evaluation_scene_construction_envelope.v1"
+                and row["expected_production_commit"] == commit
+                and row["paid_execution_requested"] is False
+                and row["provider_mutation_performed"] is False
+                for row in rows
+            )
+            all_rows_are_unreachable_control_plane_handoffs = all(
+                (
+                    row["queue_name"]
+                    == "task-evaluation-scene-constructions"
                     and row["queue_state"] in {"pending", "processing"}
                     and row["schema_version"]
                     == "task_evaluation_scene_construction_envelope.v1"
                     and row["expected_production_commit"] == commit
                     and row["paid_execution_requested"] is False
                     and row["provider_mutation_performed"] is False
-                    for row in rows
                 )
+                or (
+                    row["queue_name"]
+                    == "task-evaluation-launch-activations"
+                    and row["queue_state"] in {"pending", "processing"}
+                    and row["schema_version"]
+                    == "task_evaluation_launch_activation_envelope.v1"
+                    and row["activation_request_valid"] is True
+                    and row["activation_expected_production_commit"] == commit
+                    and row["envelope_digest_valid"] is True
+                    and row["paid_execution_requested"] is False
+                    and row["provider_mutation_performed_inside_intake"] is False
+                    and row["catalog_mutation_performed_inside_intake"] is False
+                    and row[
+                        "standing_authorization_published_inside_intake"
+                    ]
+                    is False
+                )
+                for row in rows
+            )
+            exact_unreachable_scene_handoff = (
+                bool(rows)
+                and set(protected.get(commit, set())) == row_reasons
+                and all_rows_are_unreachable_control_plane_handoffs
+                and (bool(profiles_for_commit) or all_rows_are_scene_handoffs)
                 and (
                     not profiles_for_commit
                     or all(
@@ -840,6 +925,9 @@ def build_release_retention_plan(
                 {
                     "source_commit": commit,
                     "reference_paths": sorted(str(row["path"]) for row in rows),
+                    "reference_schema_versions": sorted(
+                        {str(row["schema_version"]) for row in rows}
+                    ),
                     "profile_ids": sorted(profiles_for_commit),
                     "catalog_profile_present": bool(profiles_for_commit),
                     "catalog_live_enabled": (
