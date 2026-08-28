@@ -728,18 +728,49 @@ def build_release_retention_plan(
     profiles, _catalog_ids, documents, unavailable_profiles = _profiles_and_catalog(
         profile_dir=profiles_root, public_catalog=catalog_path
     )
+    unavailable_by_profile = {
+        str(row["profile_id"]): row for row in unavailable_profiles
+    }
     live_profile_ids: set[str] = set()
     live_required_commits: set[str] = set()
+    live_reference_rows: dict[str, list[dict[str, Any]]] = {}
     for root in live_roots:
         for path, value, evidence in _json_documents(
             root, blocker="release_retention_live_reference_root"
         ):
             commits, profile_ids = _extract_bindings(value)
             for commit in commits:
-                protected.setdefault(commit, set()).add(
-                    f"live_reference:{path.parent.name}/{path.name}"
-                )
+                reason = f"live_reference:{path.parent.name}/{path.name}"
+                protected.setdefault(commit, set()).add(reason)
                 live_required_commits.add(commit)
+                live_reference_rows.setdefault(commit, []).append(
+                    {
+                        "path": str(path),
+                        "reason": reason,
+                        "queue_name": path.parent.parent.name,
+                        "queue_state": path.parent.name,
+                        "schema_version": (
+                            value.get("schema_version")
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                        "expected_production_commit": (
+                            value.get("expected_production_commit")
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                        "paid_execution_requested": (
+                            value.get("paid_execution_requested")
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                        "provider_mutation_performed": (
+                            value.get("provider_mutation_performed")
+                            if isinstance(value, Mapping)
+                            else None
+                        ),
+                    }
+                )
             live_profile_ids.update(profile_ids)
             documents.append(evidence)
     for profile_id in sorted(live_profile_ids):
@@ -770,10 +801,50 @@ def build_release_retention_plan(
     live_required_commits.update(evidence_protected)
     documents.extend(evidence_documents)
 
+    unreachable_scene_references: list[dict[str, Any]] = []
     for commit in sorted(live_required_commits):
         if commit not in release_artifacts:
-            raise ReleaseRetentionError(
-                f"release_retention_live_reference_release_missing:{commit}"
+            rows = live_reference_rows.get(commit, [])
+            profiles_for_commit = {
+                profile_id: profile
+                for profile_id, profile in profiles.items()
+                if profile.get("source_commit") == commit
+            }
+            row_reasons = {str(row["reason"]) for row in rows}
+            exact_unreachable_scene_handoff = (
+                bool(rows)
+                and bool(profiles_for_commit)
+                and set(protected.get(commit, set())) == row_reasons
+                and all(
+                    row["queue_name"] == "task-evaluation-scene-constructions"
+                    and row["queue_state"] in {"pending", "processing"}
+                    and row["schema_version"]
+                    == "task_evaluation_scene_construction_envelope.v1"
+                    and row["expected_production_commit"] == commit
+                    and row["paid_execution_requested"] is False
+                    and row["provider_mutation_performed"] is False
+                    for row in rows
+                )
+                and all(
+                    profile_id in unavailable_by_profile
+                    for profile_id in profiles_for_commit
+                )
+            )
+            if not exact_unreachable_scene_handoff:
+                raise ReleaseRetentionError(
+                    f"release_retention_live_reference_release_missing:{commit}"
+                )
+            unreachable_scene_references.append(
+                {
+                    "source_commit": commit,
+                    "reference_paths": sorted(str(row["path"]) for row in rows),
+                    "profile_ids": sorted(profiles_for_commit),
+                    "catalog_live_enabled": False,
+                    "paid_execution_requested": False,
+                    "provider_mutation_performed": False,
+                    "source_release_already_missing": True,
+                    "paid_launch_reachable": False,
+                }
             )
 
     by_commit: dict[str, list[dict[str, Any]]] = {}
@@ -827,6 +898,9 @@ def build_release_retention_plan(
         },
         "terminal_orphan_standing_authorizations": terminal_orphans,
         "catalog_disabled_unavailable_profiles": unavailable_profiles,
+        "catalog_disabled_unreachable_scene_references": (
+            unreachable_scene_references
+        ),
         "reference_documents": sorted(documents, key=lambda item: item["path"]),
         "eligible_commits": eligible,
         "retained_commits": retained,
