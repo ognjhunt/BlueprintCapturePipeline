@@ -20,6 +20,11 @@ from .task_evaluation_supervisor.agents_sdk import (
     AgentsSDKInvoker,
     OpenAIAgentsSDKConfig,
 )
+from .scene_placement.robot_profile import get_robot_profile
+from .task_evaluation_robot_placement_orientation import (
+    RobotPlacementOrientationError,
+    evaluate_orientation_slew_feasibility,
+)
 from .task_evaluation_robot_placement_trajectory import (
     RobotPlacementTrajectoryError,
     validate_robot_placement_trajectory,
@@ -309,6 +314,64 @@ def _reject_reused_native_pose(
     return result
 
 
+def _reject_infeasible_orientation_slew(
+    *,
+    gate: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    trajectory: Mapping[str, Any] | None,
+    robot_id: str,
+    maximum_steps_per_phase: int | None,
+) -> dict[str, Any]:
+    """Fail a candidate whose base orientation cannot serve the authored plan.
+
+    Reach and support say the gripper can arrive; they do not say it can arrive
+    ORIENTED.  The required wrist slew is fixed by the base orientation and the
+    robot's rest grasp frame, so it is decidable here -- before the candidate is
+    compiled, bundled, and executed on a rented GPU.  Eleven paid allocations on
+    scene 839873 were spent rediscovering one such refusal.
+    """
+
+    result = dict(gate)
+    if trajectory is None or maximum_steps_per_phase is None or not robot_id:
+        return result
+    phases = trajectory.get("phases")
+    if not phases:
+        return result
+    try:
+        profile = get_robot_profile(robot_id)
+    except (KeyError, ValueError):
+        # An unregistered embodiment has no rest grasp frame to reason from.
+        # Native execution still gates it; do not invent an analytic verdict.
+        return result
+    orientation = _orientation_world_xyzw(proposal.get("pose"))
+    if orientation is None:
+        raise RobotPlacementAgentError("robot_placement_pose_invalid")
+    try:
+        report = evaluate_orientation_slew_feasibility(
+            base_orientation_xyzw=orientation,
+            rest_grasp_orientation_base_xyzw=(
+                profile.rest_grasp_orientation_base_xyzw
+            ),
+            phases=phases,
+            maximum_steps_per_phase=maximum_steps_per_phase,
+            orientation_slew_rad_per_step=profile.orientation_slew_rad_per_step,
+        )
+    except RobotPlacementOrientationError as exc:
+        raise RobotPlacementAgentError(str(exc)) from exc
+    result["orientation_slew_feasibility"] = report
+    if report["feasible"]:
+        return result
+    result["status"] = "rejected"
+    result["blockers"] = sorted(
+        set([*result.get("blockers", []), *report["blockers"]])
+    )
+    result["geometry_gate_digest"] = ""
+    result["geometry_gate_digest"] = canonical_digest(
+        result, digest_field="geometry_gate_digest"
+    )
+    return result
+
+
 def _visual_passed(review: RobotPlacementVisualReviewOutput) -> bool:
     return bool(
         review.status == "passed"
@@ -589,6 +652,19 @@ def run_task_evaluation_robot_placement_agent(
                     scene_context=scene_advisory_context,
                     history=history,
                     prior_native_attempts=prior_attempt_records,
+                ),
+            )
+        )
+        geometry_gate = _validated_gate(
+            _reject_infeasible_orientation_slew(
+                gate=geometry_gate,
+                proposal=proposal,
+                trajectory=trajectory,
+                robot_id=str(task.get("robot_id") or ""),
+                maximum_steps_per_phase=(
+                    trajectory.get("maximum_steps_per_phase")
+                    if trajectory is not None
+                    else None
                 ),
             )
         )

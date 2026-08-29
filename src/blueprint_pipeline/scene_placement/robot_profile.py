@@ -55,6 +55,27 @@ class RobotProfile:
     shoulder_above_root_m: float = 0.29
     max_effector_to_affordance_m: float = 0.35
 
+    # True when the task contract requires the effector to arrive AT the
+    # authored tool pose (fixed-base manipulators), rather than merely within
+    # reaching distance of an affordance (humanoids approaching an object).
+    # When set, `max_shoulder_to_affordance_m` drops the affordance slack: the
+    # gripper must actually get there, so `arm_span_m` is the honest ceiling.
+    effector_reaches_tool_pose: bool = False
+
+    # Orientation authority. `rest_grasp_orientation_base_xyzw` is the grasp
+    # frame's orientation IN THE BASE FRAME at the profile's reset joint pose;
+    # composed with the base orientation it yields the world rest grasp frame,
+    # which fixes how far the wrist must slew to reach an authored tool pose.
+    # `orientation_slew_rad_per_step` is the achievable (not nominal) Cartesian
+    # reorientation rate; keep it conservative, it gates paid execution.
+    rest_grasp_orientation_base_xyzw: Tuple[float, float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    orientation_slew_rad_per_step: float = 0.10
+
     # Spawn / USD metadata.
     usd_prim_path: str = "/World/Robot"
     articulation_name: str = "robot"
@@ -90,8 +111,31 @@ class RobotProfile:
     )
 
     def max_shoulder_to_affordance_m(self, margin_m: float = 0.0) -> float:
-        """Farthest shoulder→affordance distance a seed pose may claim reachable."""
-        return self.arm_span_m + self.max_effector_to_affordance_m + margin_m
+        """Farthest shoulder→affordance distance a seed pose may claim reachable.
+
+        The affordance slack models a robot *approaching* an affordance it need
+        not touch precisely.  An embodiment whose contract puts the gripper ON
+        the authored tool pose (``effector_reaches_tool_pose``) gets no such
+        slack: adding it overstates reach by that margin and lets the analytic
+        gate accept poses the arm cannot actually serve.
+        """
+        reach = self.arm_span_m
+        if not self.effector_reaches_tool_pose:
+            reach += self.max_effector_to_affordance_m
+        return reach + margin_m
+
+    def reach_utilization(self, shoulder_to_target_m: float) -> float:
+        """Fraction of usable arm span a target consumes; >1.0 is out of reach.
+
+        A gradient, not a bit.  Near full extension the wrist loses the freedom
+        to satisfy an authored orientation even though the position is nominally
+        reachable, so callers should prefer low utilization rather than merely
+        accepting anything under the ceiling.
+        """
+        limit = self.max_shoulder_to_affordance_m()
+        if limit <= 0.0:
+            return float("inf")
+        return float(shoulder_to_target_m) / limit
 
     def to_dict(self) -> Dict[str, object]:
         """JSON-safe dict; round-trips through :func:`robot_profile_from_dict`."""
@@ -266,6 +310,16 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     shoulder_lateral_offset_m=0.0,
     shoulder_above_root_m=0.333,
     max_effector_to_affordance_m=0.30,
+    # A Franka push/grasp contract lands the gripper on the authored tool pose.
+    effector_reaches_tool_pose=True,
+    # Measured from the native readback on scene 839873 (candidate9 / r33): at
+    # the reset joint pose the grasp frame is a 180 degree rotation about the
+    # base Y axis -- the gripper points straight down.
+    rest_grasp_orientation_base_xyzw=(0.0, -1.0, 0.0, 0.0),
+    # Achieved Cartesian reorientation rate on that same run (1.706 rad closed
+    # over 64 steps), well under the 0.10 rad/step nominal cap. Gate on the
+    # measured rate: the nominal one would have passed a phase that failed.
+    orientation_slew_rad_per_step=0.0267,
     usd_prim_path="/World/Franka",
     articulation_name="franka",
     head_link_candidates=("camera_link", "panda_hand"),
