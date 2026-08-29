@@ -15,9 +15,71 @@ from blueprint_pipeline.task_evaluation_terminal_scene_payload_retention import 
     archive_terminal_scene_payload_to_b2,
     plan_terminal_scene_payload_retention,
 )
+from blueprint_pipeline import task_evaluation_terminal_scene_payload_retention as retention
 
 
 EXPECTED_BUCKET = "blueprint-task-evaluation-artifacts-prod"
+
+
+def test_cli_serializes_domain_refusal_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def refuse(**_: object) -> dict[str, object]:
+        raise TaskEvaluationTerminalScenePayloadRetentionError(
+            "terminal_scene_payload_provider_nonzero"
+        )
+
+    monkeypatch.setattr(retention, "archive_terminal_scene_payload_to_b2", refuse)
+
+    status = retention.main(
+        [
+            "archive",
+            "--scope-kind",
+            "diagnostic",
+            "--scope-root",
+            "/nonexistent/scope",
+            "--managed-root",
+            "/nonexistent/managed",
+            "--expected-bucket",
+            EXPECTED_BUCKET,
+            "--b2-index-out",
+            "/nonexistent/index.json",
+        ]
+    )
+
+    assert status == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "blockers": ["terminal_scene_payload_provider_nonzero"],
+        "removed_bytes": 0,
+        "removed_count": 0,
+        "status": "blocked",
+    }
+
+
+def test_cli_does_not_mask_unexpected_programmer_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(**_: object) -> dict[str, object]:
+        raise RuntimeError("unexpected programmer fault")
+
+    monkeypatch.setattr(retention, "archive_terminal_scene_payload_to_b2", fail)
+
+    with pytest.raises(RuntimeError, match="unexpected programmer fault"):
+        retention.main(
+            [
+                "archive",
+                "--scope-kind",
+                "diagnostic",
+                "--scope-root",
+                "/nonexistent/scope",
+                "--managed-root",
+                "/nonexistent/managed",
+                "--expected-bucket",
+                EXPECTED_BUCKET,
+                "--b2-index-out",
+                "/nonexistent/index.json",
+            ]
+        )
 
 
 def _sha256(path: Path) -> str:
