@@ -438,6 +438,10 @@ def _reject_infeasible_orientation_slew(
         raise RobotPlacementAgentError(str(exc)) from exc
     result["orientation_slew_feasibility"] = report
     if report["feasible"]:
+        result["geometry_gate_digest"] = ""
+        result["geometry_gate_digest"] = canonical_digest(
+            result, digest_field="geometry_gate_digest"
+        )
         return result
     result["status"] = "rejected"
     result["blockers"] = sorted(
