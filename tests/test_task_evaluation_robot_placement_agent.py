@@ -12,6 +12,7 @@ from blueprint_pipeline.task_evaluation_robot_placement_agent import (
     RobotPlacementAgentError,
     RobotPlacementProposalOutput,
     RobotPlacementVisualReviewOutput,
+    _exact_inventory_member,
     robot_placement_agents_sdk_config,
     run_task_evaluation_robot_placement_agent,
     validate_robot_placement_receipt,
@@ -174,6 +175,63 @@ def _trajectory() -> dict:
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return placement_trajectory_from_native_plan(plan)
+
+
+def _inventory_context(proposal: RobotPlacementProposalOutput) -> dict:
+    value = proposal.model_dump(mode="json")
+    member = {
+        "candidate_id": value["candidate_id"],
+        "pose": value["pose"],
+        "support_surface_id": value["support_surface_id"],
+        "geometry_gate_digest": _DIGEST,
+        "trajectory_position_ik_gate_digest": "sha256:" + "b" * 64,
+    }
+    inventory = [member]
+    return {
+        "deterministic_geometry_passing_candidate_inventory": inventory,
+        "deterministic_geometry_passing_candidate_inventory_digest": canonical_digest(
+            {"trajectory_digest": None, "candidates": inventory}
+        ),
+        "deterministic_geometry_passing_candidate_inventory_trajectory_digest": None,
+    }
+
+
+def test_exact_inventory_member_accepts_identical_selection() -> None:
+    proposal = _proposal("geometry_0000", 3.4).model_dump(mode="json")
+    member = _exact_inventory_member(
+        proposal, scene_context=_inventory_context(_proposal("geometry_0000", 3.4))
+    )
+    assert member is not None
+    assert member["candidate_id"] == "geometry_0000"
+
+
+def test_exact_inventory_member_rejects_unknown_candidate() -> None:
+    with pytest.raises(
+        RobotPlacementAgentError, match="robot_placement_candidate_not_in_inventory"
+    ):
+        _exact_inventory_member(
+            _proposal("unknown", 3.4).model_dump(mode="json"),
+            scene_context=_inventory_context(_proposal("geometry_0000", 3.4)),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["position", "orientation", "support"])
+def test_exact_inventory_member_rejects_pose_or_support_mutation(mutation) -> None:
+    selected = _proposal("geometry_0000", 3.4).model_dump(mode="json")
+    if mutation == "position":
+        selected["pose"]["position_world_m"][0] += 0.001
+    elif mutation == "orientation":
+        selected["pose"]["orientation_xyzw"] = [0.0, 0.0, 1.0, 0.0]
+    else:
+        selected["support_surface_id"] = "/Scene/OtherSurface"
+    with pytest.raises(
+        RobotPlacementAgentError,
+        match="robot_placement_candidate_inventory_member_mutated",
+    ):
+        _exact_inventory_member(
+            selected,
+            scene_context=_inventory_context(_proposal("geometry_0000", 3.4)),
+        )
 
 
 def test_production_config_pins_sol_high_agent_contract() -> None:
