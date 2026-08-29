@@ -15,6 +15,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .decision_evidence_contracts import canonical_digest
+from .franka_kinematics import FRANKA_JOINT_LIMITS_RAD, forward_kinematics
+from .native_task_arena_stance_variant import DROID_ARENA_DEFAULT_RESET
 from .task_evaluation_supervisor.agents_sdk import (
     AgentsSDKAgentSpec,
     AgentsSDKInvoker,
@@ -24,6 +26,7 @@ from .scene_placement.robot_profile import get_robot_profile
 from .task_evaluation_robot_placement_orientation import (
     RobotPlacementOrientationError,
     evaluate_orientation_slew_feasibility,
+    evaluate_task_aware_reset_orientation_feasibility,
     solve_base_yaw_for_orientation,
 )
 from .task_evaluation_robot_placement_trajectory import (
@@ -374,7 +377,8 @@ def _reject_infeasible_orientation_slew(
     ORIENTED.  The required wrist slew is fixed by the base orientation and the
     robot's rest grasp frame, so it is decidable here -- before the candidate is
     compiled, bundled, and executed on a rented GPU.  Eleven paid allocations on
-    scene 839873 were spent rediscovering one such refusal.
+    scene 839873 showed this can be a paid blocker, but each exact candidate is
+    evaluated independently rather than assigning one cause to every refusal.
     """
 
     result = dict(gate)
@@ -393,15 +397,38 @@ def _reject_infeasible_orientation_slew(
     if orientation is None:
         raise RobotPlacementAgentError("robot_placement_pose_invalid")
     try:
-        report = evaluate_orientation_slew_feasibility(
-            base_orientation_xyzw=orientation,
-            rest_grasp_orientation_base_xyzw=(
-                profile.rest_grasp_orientation_base_xyzw
-            ),
-            phases=phases,
-            maximum_steps_per_phase=maximum_steps_per_phase,
-            orientation_slew_rad_per_step=profile.orientation_slew_rad_per_step,
-        )
+        if robot_id == "franka_panda":
+            arm_joint_names = tuple(
+                f"panda_joint{index}" for index in range(1, 8)
+            )
+            report = evaluate_task_aware_reset_orientation_feasibility(
+                base_orientation_xyzw=orientation,
+                phases=phases,
+                maximum_steps_per_phase=maximum_steps_per_phase,
+                orientation_slew_rad_per_step=(
+                    profile.orientation_slew_rad_per_step
+                ),
+                nominal_joint_positions=[
+                    DROID_ARENA_DEFAULT_RESET[name] for name in arm_joint_names
+                ],
+                joint_limits_rad=FRANKA_JOINT_LIMITS_RAD,
+                forward_kinematics=forward_kinematics,
+                flange_to_grasp_orientation_xyzw=(
+                    profile.flange_to_grasp_orientation_xyzw
+                ),
+            )
+        else:
+            report = evaluate_orientation_slew_feasibility(
+                base_orientation_xyzw=orientation,
+                rest_grasp_orientation_base_xyzw=(
+                    profile.rest_grasp_orientation_base_xyzw
+                ),
+                phases=phases,
+                maximum_steps_per_phase=maximum_steps_per_phase,
+                orientation_slew_rad_per_step=(
+                    profile.orientation_slew_rad_per_step
+                ),
+            )
     except RobotPlacementOrientationError as exc:
         raise RobotPlacementAgentError(str(exc)) from exc
     result["orientation_slew_feasibility"] = report

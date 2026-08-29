@@ -8,12 +8,11 @@ orientation and the robot profile alone.  That makes it pure quaternion algebra
 -- decidable locally, in microseconds, before any provider allocation.
 
 This module exists because the analytic placement gates scored position and
-support only.  Eleven paid Arena allocations on scene 839873 were each accepted
-analytically and then rejected natively with ``native_task_phase_ik_unreached``
-on every phase, across base poses spanning 57.9%-93.6% of arm span, because the
-authored planar-push orientation demanded a 180 degree wrist slew that no base
-*position* could shorten.  Base *yaw* can: the same task needs only 90 degrees
-at yaw 0.  Both facts are computed here.
+support only.  Scene 839873 produced repeated paid native phase-IK refusals; in
+one retained attempt the selected base/reset pair required an approximately pi
+rotation before precontact.  That measurement does not prove every rejected
+pose had the same cause.  The CPU gate therefore evaluates each exact base,
+reset, and authored phase sequence instead of generalizing one native failure.
 
 Robot-specific numbers (the rest grasp frame, the achievable slew rate) live on
 :class:`~blueprint_pipeline.scene_placement.robot_profile.RobotProfile`, so this
@@ -235,6 +234,88 @@ def evaluate_orientation_slew_feasibility(
         "worst_required_slew_rad": worst_slew,
         "orientation_slew_rad_per_step": rate,
         "maximum_steps_per_phase": steps,
+    }
+
+
+def evaluate_task_aware_reset_orientation_feasibility(
+    *,
+    base_orientation_xyzw: Sequence[float],
+    phases: Sequence[Mapping[str, Any]],
+    maximum_steps_per_phase: int,
+    orientation_slew_rad_per_step: float,
+    nominal_joint_positions: Sequence[float],
+    joint_limits_rad: Sequence[Sequence[float]],
+    forward_kinematics: Any,
+    flange_to_grasp_orientation_xyzw: Sequence[float],
+) -> dict[str, Any]:
+    """Derive the reset from phase zero, then gate phase-to-phase orientation.
+
+    A reset only precedes the first phase.  Later phases start from the prior
+    authored phase, so comparing every phase to a fixed home orientation is
+    both physically wrong and capable of rejecting valid task plans.  This
+    function preserves that sequence while leaving native full-pose IK,
+    collision, contact, and reset readback authoritative.
+    """
+
+    steps, rate = _budget(maximum_steps_per_phase, orientation_slew_rad_per_step)
+    if (
+        not isinstance(phases, Sequence)
+        or isinstance(phases, (str, bytes))
+        or not phases
+    ):
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_phase_plan_empty"
+        )
+    base = _quaternion(base_orientation_xyzw, field="base_orientation_xyzw")
+    parsed = [_phase_orientation(phase, index) for index, phase in enumerate(phases)]
+    first_target_world = parsed[0][1]
+    base_inverse = (-base[0], -base[1], -base[2], base[3])
+    first_target_base = quaternion_multiply_xyzw(base_inverse, first_target_world)
+    reset = solve_task_aware_reset_joints(
+        target_orientation_base_xyzw=first_target_base,
+        nominal_joint_positions=nominal_joint_positions,
+        joint_limits_rad=joint_limits_rad,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=flange_to_grasp_orientation_xyzw,
+    )
+    reset_world = quaternion_multiply_xyzw(
+        base, reset["achieved_grasp_orientation_base_xyzw"]
+    )
+
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    reference = reset_world
+    for phase_id, target in parsed:
+        slew = quaternion_angle_rad(reference, target)
+        required_steps = int(math.ceil(slew / rate))
+        feasible = required_steps <= steps
+        rows.append(
+            {
+                "phase_id": phase_id,
+                "required_slew_rad": slew,
+                "required_steps": required_steps,
+                "step_budget": steps,
+                "budget_utilization": required_steps / steps,
+                "reference": "derived_reset" if not rows else "prior_phase",
+                "feasible": feasible,
+            }
+        )
+        if not feasible:
+            blockers.append(f"{SLEW_BUDGET_BLOCKER}:{phase_id}")
+        reference = target
+    worst = max(rows, key=lambda row: row["required_slew_rad"])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "feasible": not blockers,
+        "blockers": blockers,
+        "phases": rows,
+        "worst_phase_id": worst["phase_id"],
+        "worst_required_slew_rad": worst["required_slew_rad"],
+        "orientation_slew_rad_per_step": rate,
+        "maximum_steps_per_phase": steps,
+        "task_aware_reset": reset,
+        "native_full_pose_ik_required": True,
+        "native_collision_contact_and_reset_readback_required": True,
     }
 
 

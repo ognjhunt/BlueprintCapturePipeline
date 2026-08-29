@@ -113,8 +113,11 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
     assert recompiled_plan["plan_digest"] != plan["plan_digest"]
     allocator_calls = []
 
-    def fake_compile(*, output_root, droid_profile_reference, **_kwargs):
+    def fake_compile(
+        *, output_root, droid_profile_reference, task_trajectory, **_kwargs
+    ):
         assert droid_profile_reference == {"digest": "sha256:x"}
+        assert task_trajectory == trajectory
         packet = Path(output_root) / "native-task-packet"
         packet.mkdir(parents=True)
         _write(packet / "native_task_arena_scene_plan.v1.json", {"fixture": True})

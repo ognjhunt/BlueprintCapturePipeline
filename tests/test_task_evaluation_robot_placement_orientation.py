@@ -1,11 +1,8 @@
 """Contract tests for CPU-decidable gripper-orientation feasibility.
 
-These pin the defect that cost eleven paid Arena allocations on scene 839873:
-every candidate base pose was accepted by the analytic placement gates and then
-rejected natively with ``native_task_phase_ik_unreached`` on every phase, because
-the authored tool orientation demanded a slew the phase step budget could not
-deliver.  That question is pure quaternion algebra and must be answered before
-any provider spend.
+These pin the CPU-decidable part of a defect observed on scene 839873: candidate
+base/reset pairs reached native execution before their authored orientation slew
+was screened.  They do not assign every native rejection the same root cause.
 """
 
 from __future__ import annotations
@@ -18,6 +15,7 @@ from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
     RobotPlacementOrientationError,
     SCHEMA_VERSION,
     evaluate_orientation_slew_feasibility,
+    evaluate_task_aware_reset_orientation_feasibility,
     quaternion_angle_rad,
     required_orientation_slew_rad,
     solve_base_yaw_for_orientation,
@@ -273,26 +271,26 @@ def _trajectory(steps: int = 64) -> dict:
     }
 
 
-def test_agent_gate_rejects_the_unslewable_candidate_before_any_execution() -> None:
-    """The spend-stopping contract: geometry passes, orientation refuses."""
+def test_agent_gate_derives_a_task_aware_reset_before_any_execution() -> None:
+    """The static home refusal is repaired before it can waste provider spend."""
 
     from blueprint_pipeline.task_evaluation_robot_placement_agent import (
         _reject_infeasible_orientation_slew,
     )
 
-    rejected = _reject_infeasible_orientation_slew(
+    admitted = _reject_infeasible_orientation_slew(
         gate=_gate("passed"),
         proposal={"pose": {"orientation_xyzw": list(YAW_180)}},
         trajectory=_trajectory(),
         robot_id="franka_panda",
         maximum_steps_per_phase=64,
     )
-    assert rejected["status"] == "rejected"
-    assert (
-        "robot_placement_orientation_slew_exceeds_phase_budget:precontact"
-        in rejected["blockers"]
-    )
-    assert rejected["orientation_slew_feasibility"]["feasible"] is False
+    assert admitted["status"] == "passed"
+    report = admitted["orientation_slew_feasibility"]
+    assert report["feasible"] is True
+    assert report["task_aware_reset"]["residual_slew_rad"] < 0.08
+    assert report["phases"][0]["reference"] == "derived_reset"
+    assert report["native_full_pose_ik_required"] is True
 
 
 def test_agent_gate_admits_a_slewable_candidate_and_attaches_the_report() -> None:
@@ -309,6 +307,37 @@ def test_agent_gate_admits_a_slewable_candidate_and_attaches_the_report() -> Non
     )
     assert admitted["status"] == "passed"
     assert admitted["orientation_slew_feasibility"]["feasible"] is True
+
+
+def test_task_aware_gate_carries_prior_phase_orientation_sequentially() -> None:
+    from blueprint_pipeline.franka_kinematics import (
+        FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics,
+    )
+
+    report = evaluate_task_aware_reset_orientation_feasibility(
+        base_orientation_xyzw=YAW_180,
+        phases=[
+            _phase("precontact", PUSH_TARGET),
+            _phase(
+                "turnaround",
+                (0.0, -math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+            ),
+        ],
+        maximum_steps_per_phase=64,
+        orientation_slew_rad_per_step=0.0267,
+        nominal_joint_positions=FRANKA_RESET_JOINTS,
+        joint_limits_rad=FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=(0.0, 0.0, 1.0, 0.0),
+    )
+
+    assert report["phases"][0]["reference"] == "derived_reset"
+    assert report["phases"][1]["reference"] == "prior_phase"
+    assert report["feasible"] is False
+    assert report["blockers"] == [
+        "robot_placement_orientation_slew_exceeds_phase_budget:turnaround"
+    ]
 
 
 def test_agent_gate_is_inert_without_a_trajectory_or_known_profile() -> None:
