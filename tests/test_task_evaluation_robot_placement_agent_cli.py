@@ -88,6 +88,7 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
             [0.0, 0.70710678, 0.0, 0.70710678],
             [0.0, 0.70710678, 0.0, 0.70710678],
         ]
+        assert kwargs["geometry_worker_count"] == 4
         assert kwargs["trajectory_worker_count"] == 4
         return [proposal]
 

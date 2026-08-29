@@ -133,6 +133,7 @@ def run_robot_placement_cli(
         list(row["orientation_world_xyzw"])
         for row in trajectory_phases
     ]
+    placement_worker_count = min(8, max(1, os.cpu_count() or 1))
     candidates = enumerate_robot_placement_geometry_candidates(
         index=index,
         target_position_world_m=target_position_world_m,
@@ -141,7 +142,8 @@ def run_robot_placement_cli(
         trajectory_waypoints_world_m=trajectory_waypoints,
         trajectory_phase_ids=trajectory_phase_ids,
         trajectory_orientations_world_xyzw=trajectory_orientations,
-        trajectory_worker_count=min(8, max(1, os.cpu_count() or 1)),
+        geometry_worker_count=placement_worker_count,
+        trajectory_worker_count=placement_worker_count,
     )
     if not candidates:
         raise ValueError("robot_placement_geometry_candidate_inventory_empty")

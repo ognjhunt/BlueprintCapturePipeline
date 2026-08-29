@@ -5,6 +5,7 @@ import math
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
+    _parallel_geometry_gates,
     _parallel_trajectory_gates,
     build_robot_placement_geometry_index,
     enumerate_robot_placement_geometry_candidates,
@@ -412,3 +413,56 @@ def test_parallel_trajectory_workers_preserve_serial_order_and_digests(
     assert [
         row["trajectory_position_ik_gate_digest"] for row in parallel
     ] == [row["trajectory_position_ik_gate_digest"] for row in serial]
+
+
+def test_parallel_geometry_workers_preserve_serial_order_and_gate_bytes(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_geometry as module
+
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    floor = next(
+        surface
+        for surface in index.support_surfaces
+        if surface.prim_path == "/Scene/Floor"
+    )
+    proposals = [
+        _proposal(floor.surface_id),
+        {
+            **_proposal(floor.surface_id, position=(0.05, 0.0, 0.0)),
+            "candidate_id": "candidate-b",
+        },
+    ]
+    kwargs = {
+        "index": index,
+        "proposals": proposals,
+        "target_position_world_m": [0.8, 0.0, 0.5],
+        "robot_id": "franka_panda",
+    }
+    serial = _parallel_geometry_gates(**kwargs, worker_count=1)
+    executor_calls = []
+
+    class RecordingExecutor:
+        def __init__(self, *, max_workers, mp_context):
+            executor_calls.append(
+                {"max_workers": max_workers, "start_method": mp_context.get_start_method()}
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def map(self, function, work):
+            return map(function, work)
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", RecordingExecutor)
+    parallel = _parallel_geometry_gates(**kwargs, worker_count=2)
+
+    assert executor_calls == [{"max_workers": 2, "start_method": "spawn"}]
+    assert parallel == serial
