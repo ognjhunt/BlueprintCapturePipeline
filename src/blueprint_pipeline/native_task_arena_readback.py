@@ -939,8 +939,14 @@ class NativeArticulatedTaskArenaReadback:
 class NativeRigidTaskArenaReadback:
     """Read rigid root pose and exact contact channels from one Arena build."""
 
-    def __init__(self, built: NativeTaskArenaEnvironment):
+    def __init__(
+        self,
+        built: NativeTaskArenaEnvironment,
+        *,
+        gripper_pad_readback_callback: Callable[[], Mapping[str, Any]] | None = None,
+    ):
         self._built = built
+        self._gripper_pad_readback_callback = gripper_pad_readback_callback
         if built.plan.get("task_kind") != "rigid_pick_place":
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_readback_task_kind_invalid"]
@@ -1022,19 +1028,47 @@ class NativeRigidTaskArenaReadback:
                 math.sqrt(sum(component * component for component in vector))
                 for vector in vectors
             )
-        grasp_frame = self._built.plan["robot"]["grasp_frame"]
-        finger_positions = [
-            _body_position(
-                robot,
-                body_name=body_name,
-                error="native_task_arena_grasp_body_missing",
-            )[0]
-            for body_name in grasp_frame.get("body_names") or []
-        ]
-        if len(finger_positions) != 2:
-            raise NativeTaskArenaReadbackError(
-                ["native_task_arena_grasp_frame_invalid"]
+        if self._gripper_pad_readback_callback is not None:
+            try:
+                pad_readback = self._gripper_pad_readback_callback()
+                pad_centers = pad_readback["measured"]["pad_centers_world_m"]
+                finger_positions = [
+                    [float(value) for value in pad_centers[side]]
+                    for side in ("left", "right")
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_measured_gripper_pads_invalid"]
+                ) from exc
+            if (
+                any(len(position) != 3 for position in finger_positions)
+                or not all(
+                    math.isfinite(value)
+                    for position in finger_positions
+                    for value in position
+                )
+            ):
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_measured_gripper_pads_invalid"]
+                )
+            grasp_position_source = (
+                "native_franka_pose_servo.live_physical_pad_centers"
             )
+        else:
+            grasp_frame = self._built.plan["robot"]["grasp_frame"]
+            finger_positions = [
+                _body_position(
+                    robot,
+                    body_name=body_name,
+                    error="native_task_arena_grasp_body_missing",
+                )[0]
+                for body_name in grasp_frame.get("body_names") or []
+            ]
+            if len(finger_positions) != 2:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_grasp_frame_invalid"]
+                )
+            grasp_position_source = "native_inner_finger_body_origin_midpoint"
         asset_root_pose = [
                 *[float(value) for value in native_pose[:3]],
                 *_native_xyzw_to_contract_xyzw(native_pose[3:7]),
@@ -1066,7 +1100,7 @@ class NativeRigidTaskArenaReadback:
             sample_binding=self._built.plan.get("task_sample_binding") or {},
             task_spec=self._built.plan.get("task_spec") or {},
         )
-        return {
+        sample = {
             "asset_root_pose_world": asset_root_pose,
             "task_scoring_pose_world": scoring_pose,
             # The shared rigid scorer consumes this compatibility key.  It is
@@ -1092,6 +1126,8 @@ class NativeRigidTaskArenaReadback:
             **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
         }
+        sample["grasp_frame_position_source"] = grasp_position_source
+        return sample
 
 
 __all__ = [
