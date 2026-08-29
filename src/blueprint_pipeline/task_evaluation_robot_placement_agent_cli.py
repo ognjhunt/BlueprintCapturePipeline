@@ -23,6 +23,10 @@ from .task_evaluation_robot_placement_geometry import (
     summarize_robot_placement_geometry,
     validate_robot_placement_geometry_candidate,
 )
+from .task_evaluation_robot_placement_trajectory import (
+    placement_trajectory_from_native_plan,
+    placement_trajectory_from_native_result,
+)
 from .task_evaluation_supervisor.agents_sdk import OpenAIAgentsSDKInvoker
 
 
@@ -96,6 +100,7 @@ def run_robot_placement_cli(
     tracing_disabled: bool,
     robot_id: str = "franka_panda",
     execute_candidate: PlacementExecutor | None = None,
+    task_trajectory: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -120,6 +125,10 @@ def run_robot_placement_cli(
     )
     if not candidates:
         raise ValueError("robot_placement_geometry_candidate_inventory_empty")
+    trajectory_waypoints = [
+        list(row["position_world_m"])
+        for row in (task_trajectory or {}).get("phases", [])
+    ]
     overview_images = [
         _image_record(path, label=f"site_overview_{index_value:02d}")
         for index_value, path in enumerate(overview_image_paths)
@@ -128,6 +137,7 @@ def run_robot_placement_cli(
         index=index,
         proposal=candidates[0],
         target_position_world_m=target_position_world_m,
+        trajectory_waypoints_world_m=trajectory_waypoints,
     )
     overview_images.extend(
         _persist_images(seed_previews, output_dir=preview_root, prefix="geometry-overview")
@@ -155,6 +165,7 @@ def run_robot_placement_cli(
             index=index,
             proposal=proposal,
             target_position_world_m=target_position_world_m,
+            trajectory_waypoints_world_m=trajectory_waypoints,
         )
         persisted = _persist_images(
             images,
@@ -196,6 +207,7 @@ def run_robot_placement_cli(
         validate_candidate=validator,
         render_candidate=renderer,
         execute_candidate=execute_candidate,
+        task_trajectory=task_trajectory,
         max_rounds=max_rounds,
         max_input_tokens=max_input_tokens,
     )
@@ -229,7 +241,59 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-inference-cost-usd", required=True, type=float)
     parser.add_argument("--allow-live-invocation", action="store_true")
     parser.add_argument("--disable-tracing", action="store_true")
+    trajectory_source = parser.add_mutually_exclusive_group()
+    trajectory_source.add_argument(
+        "--native-trajectory-plan",
+        type=Path,
+        help=(
+            "Exact digest-bound native rigid construction phase plan. Required "
+            "when --native-loop-config enables iterative warm Isaac feedback."
+        ),
+    )
+    trajectory_source.add_argument(
+        "--native-construction-result",
+        type=Path,
+        help=(
+            "Prior digest-bound native construction result whose exact phase plan "
+            "becomes the immutable placement trajectory."
+        ),
+    )
+    parser.add_argument(
+        "--native-loop-config",
+        type=Path,
+        help=(
+            "File-backed warm Arena executor configuration. Every accepted "
+            "candidate is executed through the canonical paid allocator."
+        ),
+    )
     args = parser.parse_args(argv)
+    task_trajectory = None
+    if args.native_trajectory_plan:
+        task_trajectory = placement_trajectory_from_native_plan(
+            _read_mapping(args.native_trajectory_plan, label="native_trajectory")
+        )
+    elif args.native_construction_result:
+        task_trajectory = placement_trajectory_from_native_result(
+            _read_mapping(
+                args.native_construction_result, label="native_construction_result"
+            )
+        )
+    execute_candidate = None
+    if args.native_loop_config:
+        if task_trajectory is None:
+            parser.error(
+                "--native-loop-config requires --native-trajectory-plan or "
+                "--native-construction-result"
+            )
+        from .task_evaluation_robot_placement_warm_executor import (
+            WarmNativePlacementExecutor,
+        )
+
+        execute_candidate = WarmNativePlacementExecutor(
+            config=_read_mapping(args.native_loop_config, label="native_loop_config"),
+            task_trajectory=task_trajectory,
+            output_root=args.output_dir.expanduser().resolve() / "native-rounds",
+        )
     receipt = run_robot_placement_cli(
         run_id=args.run_id,
         scene_collision_usd=args.scene_collision_usd,
@@ -246,6 +310,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_live_invocation=args.allow_live_invocation,
         tracing_disabled=args.disable_tracing,
         robot_id=args.robot_id,
+        execute_candidate=execute_candidate,
+        task_trajectory=task_trajectory,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "accepted" else 2

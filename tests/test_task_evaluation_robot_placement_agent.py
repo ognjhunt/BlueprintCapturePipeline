@@ -16,6 +16,9 @@ from blueprint_pipeline.task_evaluation_robot_placement_agent import (
     run_task_evaluation_robot_placement_agent,
     validate_robot_placement_receipt,
 )
+from blueprint_pipeline.task_evaluation_robot_placement_trajectory import (
+    placement_trajectory_from_native_plan,
+)
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
     AgentsSDKInvocationResult,
 )
@@ -126,6 +129,38 @@ def _native_attempt(status: str, *, blocker: str | None = None) -> dict:
     return value
 
 
+def _trajectory() -> dict:
+    plan = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "task_kind": "rigid_pick_place",
+        "manipulation_strategy": "planar_push",
+        "phase_count": 2,
+        "execution_parameters": {
+            "arrival_tolerance_m": 0.02,
+            "arrival_orientation_tolerance_rad": 0.08,
+        },
+        "phases": [
+            {
+                "phase_id": "precontact",
+                "position_world_m": [2.79, -6.76, 0.818],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                "gripper_state": "open",
+                "gate_ids": ["precontact_reachability"],
+            },
+            {
+                "phase_id": "push_contact",
+                "position_world_m": [2.91, -6.76, 0.818],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                "gripper_state": "closed",
+                "gate_ids": ["push_contact"],
+            },
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return placement_trajectory_from_native_plan(plan)
+
+
 def test_production_config_pins_sol_high_agent_contract() -> None:
     config = robot_placement_agents_sdk_config(
         max_inference_cost_usd=0.5,
@@ -231,6 +266,7 @@ def test_agent_creates_next_pose_from_native_failure_until_controls_pass() -> No
         ),
         render_candidate=lambda _proposal, _round: _images(),
         execute_candidate=execute_candidate,
+        task_trajectory=_trajectory(),
         max_rounds=3,
     )
 
@@ -239,11 +275,17 @@ def test_agent_creates_next_pose_from_native_failure_until_controls_pass() -> No
     assert receipt["native_agent_loop_enabled"] is True
     assert receipt["native_attempt_count"] == 2
     assert receipt["native_construction_required"] is False
+    assert receipt["task_trajectory_digest"] == _trajectory()["trajectory_digest"]
     assert receipt["rounds"][0]["native_attempt"]["status"] == "rejected"
     assert receipt["rounds"][1]["native_attempt"]["status"] == "passed"
     assert provisional_receipts[0]["native_construction_required"] is True
     second_proposal_input = invoker.specs[2][1][0]["content"]
     assert sum(item["type"] == "input_image" for item in second_proposal_input) == 2
+    second_prompt = next(
+        item["text"] for item in second_proposal_input if item["type"] == "input_text"
+    )
+    assert '"phase_id": "precontact"' in second_prompt
+    assert "native_reset_collision" in second_prompt
     assert validate_robot_placement_receipt(receipt) == receipt
 
 
@@ -273,6 +315,7 @@ def test_agent_cannot_reuse_a_pose_rejected_by_native_execution() -> None:
         ),
         render_candidate=lambda _proposal, _round: _images(),
         execute_candidate=lambda _proposal, _receipt, _round: native_results.pop(0),
+        task_trajectory=_trajectory(),
         max_rounds=3,
     )
 
@@ -286,6 +329,26 @@ def test_agent_cannot_reuse_a_pose_rejected_by_native_execution() -> None:
     assert receipt["rounds"][1]["visual_review"] is None
 
 
+def test_native_loop_refuses_point_only_context_without_exact_trajectory() -> None:
+    invoker = _Invoker(outputs=[])
+
+    with pytest.raises(
+        RobotPlacementAgentError, match="robot_placement_native_trajectory_missing"
+    ):
+        run_task_evaluation_robot_placement_agent(
+            invoker=invoker,
+            run_id="placement-native-no-trajectory",
+            scene_binding={"scene": "839873"},
+            task_binding={"task": "move mug"},
+            overview_images=_images(),
+            validate_candidate=lambda proposal: _gate(
+                proposal["candidate_id"], "passed"
+            ),
+            render_candidate=lambda _proposal, _round: _images(),
+            execute_candidate=lambda _proposal, _receipt, _round: _native_attempt(
+                "passed"
+            ),
+        )
 def test_agent_honors_rejected_native_pose_history_from_prior_run() -> None:
     invoker = _Invoker(
         outputs=[
