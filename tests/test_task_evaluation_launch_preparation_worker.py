@@ -510,7 +510,7 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         "worker_status": "queued_for_production_episode_compilation",
         "source_commit": value["expected_production_commit"],
         "result_digest": run["results"][0]["result_digest"],
-        "reference_count": len(payloads),
+        "reference_count": len(run["results"][0]["references"]),
         "full_byte_service_account_readback_passed": True,
         "blockers": [],
         "provider_mutation_performed_by_worker": False,
