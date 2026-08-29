@@ -49,16 +49,13 @@ PRE_SPEND_CLOSEOUT_KIND = "pre_spend_preflight_blocked_before_allocation"
 MAX_PREALLOCATION_API_ZERO_AGE_SECONDS = 300
 MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS = 900
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
-# Explicitly expanded by the active Task Arena goal owner on 2026-08-29 so the
-# retained-warm controls diagnostic can continue after the reconciled goal
-# total reached $49.399914.  The aggregate ceiling does not weaken the
-# per-attempt contract: every authority remains single-use, retry-0,
-# provider-zero-gated, and bounded by ``MAX_HARD_CAP_USD`` below.
-AGGREGATE_GOAL_SPEND_CAP_USD = 52.0
-# Historical authorities remain immutable and therefore retain the ceiling
-# that was current when they were issued.  Accept only explicitly recorded
-# legacy ceilings; newly materialized authorities always use the current one.
-LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD = (50.0,)
+# Historical authorities remain immutable and therefore retain the fixed
+# aggregate ceilings that were current when they were issued.  New authority
+# has no fixed campaign ceiling: the owner authorizes one bounded attempt at a
+# time, so its aggregate ceiling is the reconciled prior total plus only that
+# attempt's hard cap.  This keeps cumulative spend measured without making an
+# unrelated historical total a permanent refusal.
+LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD = (50.0, 52.0)
 MAX_HARD_CAP_USD = 2.0
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
@@ -102,6 +99,29 @@ def native_task_arena_attempt_budget_blockers(
         if not math.isfinite(projected_cost) or projected_cost > cap:
             blockers.append("native_task_arena_runtime_cost_exceeds_hard_cap")
     return tuple(blockers)
+
+
+def rolling_aggregate_spend_ceiling_usd(
+    *, prior_spend_usd: Any, authorized_increment_usd: Any
+) -> float:
+    """Return the exact cumulative ceiling for one newly authorized scope."""
+
+    values = (prior_spend_usd, authorized_increment_usd)
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in values
+    ):
+        raise ValueError("native_task_arena_rolling_spend_ceiling_invalid")
+    prior = float(prior_spend_usd)
+    increment = float(authorized_increment_usd)
+    if (
+        not math.isfinite(prior)
+        or not math.isfinite(increment)
+        or prior < 0
+        or increment <= 0
+    ):
+        raise ValueError("native_task_arena_rolling_spend_ceiling_invalid")
+    return round(prior + increment, 6)
 
 
 def _sha256(path: Path) -> str:
@@ -1064,12 +1084,10 @@ def materialize_native_task_arena_paid_attempt_authority(
         }
         prior_spend = round(float(project_spend["total_cost_usd"]), 6)
     allowed = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
-    # A newly deployed program ceiling is itself the authority boundary.  The
-    # predecessor's lower historical ceiling remains bound in its immutable
-    # receipt, but must not make an explicitly raised current ceiling
-    # impossible to issue: taking ``min`` here permanently froze the chain at
-    # its first value even after the owner expanded the active goal budget.
-    aggregate_cap = AGGREGATE_GOAL_SPEND_CAP_USD
+    aggregate_cap = rolling_aggregate_spend_ceiling_usd(
+        prior_spend_usd=prior_spend,
+        authorized_increment_usd=hard_cap_usd,
+    )
     campaign_inputs_complete = (
         policy_campaign_path is not None and campaign_member_id is not None
     )
@@ -1086,7 +1104,6 @@ def materialize_native_task_arena_paid_attempt_authority(
         or not authorized_by.strip()
         or not authorized_on.strip()
         or budget_blockers
-        or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
         or (
             retain_warm_session
@@ -1393,15 +1410,16 @@ def validate_native_task_arena_paid_attempt_authority(
                 errors.append("prior_terminal_spend_mismatch")
         else:
             raise ValueError("lineage_kind_invalid")
-        if (
-            value.get("aggregate_goal_spend_cap_usd")
-            not in (
-                *LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD,
-                AGGREGATE_GOAL_SPEND_CAP_USD,
-            )
-            or value.get("aggregate_goal_spend_before_attempt_usd", 0) + hard_cap_usd
-            > value.get("aggregate_goal_spend_cap_usd", 0)
-        ):
+        declared_aggregate_cap = value.get("aggregate_goal_spend_cap_usd")
+        rolling_aggregate_cap = rolling_aggregate_spend_ceiling_usd(
+            prior_spend_usd=value.get("aggregate_goal_spend_before_attempt_usd"),
+            authorized_increment_usd=hard_cap_usd,
+        )
+        legacy_cap_valid = (
+            declared_aggregate_cap in LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD
+            and rolling_aggregate_cap <= declared_aggregate_cap
+        )
+        if declared_aggregate_cap != rolling_aggregate_cap and not legacy_cap_valid:
             errors.append("aggregate_goal_spend_mismatch")
     except ValueError:
         errors.append("prior_terminal_spend_invalid")

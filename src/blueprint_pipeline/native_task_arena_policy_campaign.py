@@ -27,8 +27,9 @@ from typing import Any
 from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_paid_authority import (
-    AGGREGATE_GOAL_SPEND_CAP_USD,
+    LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD,
     native_task_arena_attempt_budget_blockers,
+    rolling_aggregate_spend_ceiling_usd,
     validate_terminal_spend_chain,
 )
 from .native_task_arena_policy_bundle import (
@@ -305,7 +306,6 @@ def validate_native_task_arena_policy_campaign(
         or not _IDENTIFIER.fullmatch(str(payload.get("campaign_id") or ""))
         or not _COMMIT.fullmatch(commit)
         or (expected_blueprint_commit is not None and commit != expected_blueprint_commit)
-        or payload.get("aggregate_goal_spend_cap_usd") != AGGREGATE_GOAL_SPEND_CAP_USD
         or payload.get("provider_wide_launch_lock_required") is not True
         or payload.get("independent_watchdog_required_per_member") is not True
         or payload.get("automatic_retry_authorized") is not False
@@ -480,11 +480,17 @@ def validate_native_task_arena_policy_campaign(
     projected = (
         round(float(prior_spend) + member_cap, 6) if _finite_nonnegative(prior_spend) else None
     )
+    declared_cap = payload.get("aggregate_goal_spend_cap_usd")
+    legacy_cap_valid = (
+        declared_cap in LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD
+        and projected is not None
+        and projected <= declared_cap
+    )
     if (
         payload.get("maximum_campaign_spend_usd") != member_cap
         or payload.get("projected_aggregate_goal_spend_usd") != projected
         or projected is None
-        or projected > AGGREGATE_GOAL_SPEND_CAP_USD
+        or (declared_cap != projected and not legacy_cap_valid)
     ):
         errors.append("native_task_arena_policy_campaign_aggregate_spend_invalid")
     if payload.get("campaign_digest") != canonical_digest(payload, digest_field="campaign_digest"):
@@ -615,6 +621,10 @@ def materialize_native_task_arena_policy_campaign(
     maximum_campaign_spend = round(
         sum(float(row["hard_attempt_spend_cap_usd"]) for row in members), 6
     )
+    aggregate_cap = rolling_aggregate_spend_ceiling_usd(
+        prior_spend_usd=prior_spend,
+        authorized_increment_usd=maximum_campaign_spend,
+    )
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "program_id": "arm-decision-proof-v1",
@@ -622,7 +632,7 @@ def materialize_native_task_arena_policy_campaign(
         "blueprint_commit": blueprint_commit,
         "execution_mode": members[0]["execution_mode"],
         "controls_allowed_active_instance_ids": controls_ids,
-        "aggregate_goal_spend_cap_usd": AGGREGATE_GOAL_SPEND_CAP_USD,
+        "aggregate_goal_spend_cap_usd": aggregate_cap,
         "prior_official_spend": {
             "aggregate_goal_spend_before_campaign_usd": prior_spend,
             "reconciled_actual_total_usd": reconciled["actual_total_usd"],
