@@ -156,6 +156,84 @@ def _validated_pose(value: Any) -> dict[str, list[float]]:
     }
 
 
+def _digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+    )
+
+
+def _base_pose_candidate_matches(
+    candidate: Mapping[str, Any],
+    *,
+    scene_identity: Mapping[str, Any],
+    revision_digest: str,
+    mount_digest: str,
+    task_definition_digest: str,
+    workspace_clearance_digest: str,
+) -> bool:
+    if (
+        candidate.get("status")
+        != "candidate_pending_native_construction_readback"
+        or candidate.get("scene_identity") != scene_identity
+        or candidate.get("configured_scene_revision_digest") != revision_digest
+        or candidate.get("robot_mount_interface_digest") != mount_digest
+        or candidate.get("task_definition_digest") != task_definition_digest
+        or candidate.get("workspace_clearance_digest")
+        != workspace_clearance_digest
+        or candidate.get("robot_base_qualified") is not False
+        or candidate.get("reachability_qualified") is not False
+        or candidate.get("collision_clearance_qualified") is not False
+        or candidate.get("learned_policy_outcomes_consulted") is not False
+        or candidate.get("native_construction_readback_completed") is not False
+        or candidate.get("base_pose_candidate_digest")
+        != canonical_digest(candidate, digest_field="base_pose_candidate_digest")
+    ):
+        return False
+    schema_version = candidate.get("schema_version")
+    if schema_version == "task_evaluation_planar_push_readiness_candidate.v1":
+        return (
+            candidate.get("derivation_method")
+            == "reflect_reach_candidate_behind_start_along_frozen_planar_push"
+            and candidate.get("task_direction_considered") is True
+        )
+    if schema_version != "task_evaluation_robot_placement_readiness_candidate.v1":
+        return False
+    trajectory_digest = candidate.get("task_trajectory_digest")
+    manipulability = candidate.get("trajectory_minimum_manipulability")
+    return (
+        candidate.get("derivation_method")
+        == "deterministic_trajectory_inventory_selection"
+        and _digest(candidate.get("robot_placement_receipt_digest"))
+        and _digest(candidate.get("candidate_inventory_digest"))
+        and _digest(candidate.get("candidate_inventory_checkpoint_digest"))
+        and _digest(candidate.get("selected_geometry_gate_digest"))
+        and _digest(candidate.get("trajectory_position_ik_gate_digest"))
+        and _digest(candidate.get("orientation_slew_feasibility_digest"))
+        and bool(str(candidate.get("selected_candidate_id") or ""))
+        and bool(str(candidate.get("selected_support_surface_id") or ""))
+        and (
+            trajectory_digest is None
+            or _digest(trajectory_digest)
+        )
+        and candidate.get("task_trajectory_considered")
+        is (trajectory_digest is not None)
+        and candidate.get("deterministic_candidate_inventory_member_verified")
+        is True
+        and candidate.get("position_ik_qualified_on_cpu") is True
+        and candidate.get("orientation_ik_qualified") is False
+        and candidate.get(
+            "native_orientation_collision_contact_and_camera_gates_required"
+        )
+        is True
+        and isinstance(manipulability, (int, float))
+        and not isinstance(manipulability, bool)
+        and math.isfinite(float(manipulability))
+        and float(manipulability) > 0.0
+    )
+
+
 def _validated_cameras(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise TaskEvaluationFrankaRobotiqReadinessInputsError(
@@ -277,32 +355,15 @@ def materialize_franka_robotiq_readiness_inputs(
         or not all(str(controller_identity.get(field) or "") for field in ("id", "version"))
     ):
         raise TaskEvaluationFrankaRobotiqReadinessInputsError("franka_readiness_controller_invalid")
-    if (
-        base_pose_candidate.get("schema_version")
-        != "task_evaluation_planar_push_readiness_candidate.v1"
-        or base_pose_candidate.get("status")
-        != "candidate_pending_native_construction_readback"
-        or base_pose_candidate.get("scene_identity") != scene_identity
-        or base_pose_candidate.get("configured_scene_revision_digest")
-        != revision["revision_digest"]
-        or base_pose_candidate.get("robot_mount_interface_digest") != mount_reference["digest"]
-        or base_pose_candidate.get("task_definition_digest")
-        != revision["task_template"]["definition"]["digest"]
-        or base_pose_candidate.get("workspace_clearance_digest")
-        != revision["registration"]["workspace_clearance"]["digest"]
-        or base_pose_candidate.get("derivation_method")
-        != "reflect_reach_candidate_behind_start_along_frozen_planar_push"
-        or base_pose_candidate.get("task_direction_considered") is not True
-        or base_pose_candidate.get("robot_base_qualified") is not False
-        or base_pose_candidate.get("reachability_qualified") is not False
-        or base_pose_candidate.get("collision_clearance_qualified") is not False
-        or base_pose_candidate.get("learned_policy_outcomes_consulted") is not False
-        or base_pose_candidate.get("native_construction_readback_completed") is not False
-        or base_pose_candidate.get("base_pose_candidate_digest")
-        != canonical_digest(
-            base_pose_candidate,
-            digest_field="base_pose_candidate_digest",
-        )
+    if not _base_pose_candidate_matches(
+        base_pose_candidate,
+        scene_identity=scene_identity,
+        revision_digest=revision["revision_digest"],
+        mount_digest=mount_reference["digest"],
+        task_definition_digest=revision["task_template"]["definition"]["digest"],
+        workspace_clearance_digest=revision["registration"][
+            "workspace_clearance"
+        ]["digest"],
     ):
         raise TaskEvaluationFrankaRobotiqReadinessInputsError(
             "franka_readiness_base_pose_candidate_binding_invalid"

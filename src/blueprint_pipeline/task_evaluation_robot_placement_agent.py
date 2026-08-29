@@ -548,6 +548,8 @@ def _build_placement_receipt(
     max_rounds: int,
     native_loop_enabled: bool,
     task_trajectory_digest: str | None,
+    candidate_inventory_digest: str | None,
+    candidate_inventory_trajectory_digest: str | None,
 ) -> dict[str, Any]:
     accepted_native = dict((accepted or {}).get("native_attempt") or {})
     receipt: dict[str, Any] = {
@@ -563,6 +565,10 @@ def _build_placement_receipt(
         "scene_context_digest": scene_context_digest,
         "task_context_digest": task_context_digest,
         "task_trajectory_digest": task_trajectory_digest,
+        "candidate_inventory_digest": candidate_inventory_digest,
+        "candidate_inventory_trajectory_digest": (
+            candidate_inventory_trajectory_digest
+        ),
         "overview_images": _image_metadata(overview_images),
         "prior_native_attempts": list(prior_native_attempts),
         "prior_native_attempt_count": len(prior_native_attempts),
@@ -653,6 +659,12 @@ def run_task_evaluation_robot_placement_agent(
     task_digest = canonical_digest(task)
     scene_context_digest = canonical_digest(scene_advisory_context)
     task_context_digest = canonical_digest(task_advisory_context)
+    candidate_inventory_digest = scene_advisory_context.get(
+        "deterministic_geometry_passing_candidate_inventory_digest"
+    )
+    candidate_inventory_trajectory_digest = scene_advisory_context.get(
+        "deterministic_geometry_passing_candidate_inventory_trajectory_digest"
+    )
     history: list[dict[str, Any]] = []
     accepted: dict[str, Any] | None = None
     prior_attempt_records: list[dict[str, Any]] = []
@@ -843,6 +855,10 @@ def run_task_evaluation_robot_placement_agent(
                 task_trajectory_digest=(
                     trajectory["trajectory_digest"] if trajectory is not None else None
                 ),
+                candidate_inventory_digest=candidate_inventory_digest,
+                candidate_inventory_trajectory_digest=(
+                    candidate_inventory_trajectory_digest
+                ),
             )
             native_attempt = _validated_native_attempt(
                 execute_candidate(proposal, provisional_receipt, round_index)
@@ -869,6 +885,10 @@ def run_task_evaluation_robot_placement_agent(
         native_loop_enabled=execute_candidate is not None,
         task_trajectory_digest=(
             trajectory["trajectory_digest"] if trajectory is not None else None
+        ),
+        candidate_inventory_digest=candidate_inventory_digest,
+        candidate_inventory_trajectory_digest=(
+            candidate_inventory_trajectory_digest
         ),
     )
 
@@ -898,6 +918,29 @@ def validate_robot_placement_receipt(
                 and len(str(receipt["task_trajectory_digest"])) == 71
             )
         )
+        or (
+            receipt.get("candidate_inventory_digest") is not None
+            and not (
+                isinstance(receipt.get("candidate_inventory_digest"), str)
+                and str(receipt["candidate_inventory_digest"]).startswith("sha256:")
+                and len(str(receipt["candidate_inventory_digest"])) == 71
+            )
+        )
+        or (
+            receipt.get("candidate_inventory_trajectory_digest") is not None
+            and not (
+                isinstance(
+                    receipt.get("candidate_inventory_trajectory_digest"), str
+                )
+                and str(
+                    receipt["candidate_inventory_trajectory_digest"]
+                ).startswith("sha256:")
+                and len(
+                    str(receipt["candidate_inventory_trajectory_digest"])
+                )
+                == 71
+            )
+        )
         or receipt.get("model_grades_controls") is not False
         or receipt.get("claim_ceiling") != ROBOT_PLACEMENT_CLAIM_CEILING
         or receipt.get("receipt_digest")
@@ -919,12 +962,26 @@ def validate_robot_placement_receipt(
     if not isinstance(rounds, list) or not rounds:
         raise RobotPlacementAgentError("robot_placement_receipt_rounds_missing")
     accepted = rounds[-1]
+    accepted_proposal = (
+        accepted.get("proposal") if isinstance(accepted, Mapping) else None
+    )
+    accepted_gate = (
+        accepted.get("geometry_gate") if isinstance(accepted, Mapping) else None
+    )
     if (
         not isinstance(accepted, Mapping)
-        or (accepted.get("proposal") or {}).get("candidate_id")
+        or not isinstance(accepted_proposal, Mapping)
+        or not isinstance(accepted_gate, Mapping)
+        or accepted_proposal.get("candidate_id")
         != receipt.get("accepted_candidate_id")
-        or (accepted.get("geometry_gate") or {}).get("status") != "passed"
-        or (accepted.get("geometry_gate") or {}).get("geometry_gate_digest")
+        or accepted_proposal.get("pose") != receipt.get("accepted_pose")
+        or accepted_proposal.get("support_surface_id")
+        != receipt.get("accepted_support_surface_id")
+        or accepted_gate.get("candidate_id") != receipt.get("accepted_candidate_id")
+        or accepted_gate.get("declared_support_surface_id")
+        not in (None, receipt.get("accepted_support_surface_id"))
+        or accepted_gate.get("status") != "passed"
+        or accepted_gate.get("geometry_gate_digest")
         != receipt.get("accepted_geometry_gate_digest")
     ):
         raise RobotPlacementAgentError("robot_placement_receipt_acceptance_invalid")

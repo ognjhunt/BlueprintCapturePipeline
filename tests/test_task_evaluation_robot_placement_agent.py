@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -569,7 +570,37 @@ def test_receipt_tampering_is_rejected() -> None:
         render_candidate=lambda _proposal, _round: _images(),
         max_rounds=1,
     )
+    receipt = json.loads(json.dumps(receipt))
     receipt["accepted_pose"]["position_world_m"][0] += 1.0
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
 
-    with pytest.raises(RobotPlacementAgentError, match="receipt_invalid"):
+    with pytest.raises(RobotPlacementAgentError, match="receipt_acceptance_invalid"):
         validate_robot_placement_receipt(receipt)
+
+
+def test_receipt_exposes_the_exact_candidate_inventory_binding() -> None:
+    proposal = _proposal("inventory-member", 3.4)
+    context = _inventory_context(proposal)
+    invoker = _Invoker(outputs=[proposal, _visual("passed")])
+
+    receipt = run_task_evaluation_robot_placement_agent(
+        invoker=invoker,
+        run_id="placement-inventory-binding",
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "move mug"},
+        scene_context=context,
+        overview_images=_images(),
+        validate_candidate=lambda selected: _gate(
+            selected["candidate_id"], "passed"
+        ),
+        render_candidate=lambda _proposal, _round: _images(),
+        max_rounds=1,
+    )
+
+    assert receipt["candidate_inventory_digest"] == context[
+        "deterministic_geometry_passing_candidate_inventory_digest"
+    ]
+    assert receipt["candidate_inventory_trajectory_digest"] is None
+    assert validate_robot_placement_receipt(receipt) == receipt
