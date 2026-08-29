@@ -122,6 +122,7 @@ def _native_profile() -> dict:
 
 def test_task_aware_reset_is_base_and_trajectory_bound() -> None:
     reset, report = _derive_task_aware_franka_reset(
+        robot_id="franka_panda",
         profile=_native_profile(),
         base_pose={
             "position_world_m": [3.544, -6.7605, 0.752958],
@@ -154,6 +155,7 @@ def test_task_aware_reset_rejects_unbound_trajectory() -> None:
         match="diagnostic_native_compiler_task_trajectory_invalid",
     ):
         _derive_task_aware_franka_reset(
+            robot_id="franka_panda",
             profile=_native_profile(),
             base_pose={
                 "position_world_m": [3.544, -6.7605, 0.752958],
