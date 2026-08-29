@@ -64,6 +64,9 @@ def _assets(tmp_path):
     robot_root = UsdGeom.Xform.Define(robot, "/Robot")
     robot.SetDefaultPrim(robot_root.GetPrim())
     _box(robot, "/Robot/Body", (-0.15, -0.15, 0), (0.15, 0.15, 0.75))
+    # Flattened simulator assets may retain environment geometry next to the
+    # default robot prim. It must not become part of the placement preview.
+    _box(robot, "/GroundPlane", (-25, -25, -0.01), (25, 25, 0,))
     robot.GetRootLayer().Save()
     return scene_path, robot_path
 
@@ -88,6 +91,7 @@ def test_exact_geometry_gate_accepts_supported_clear_facing_pose(tmp_path) -> No
     assert index.robot_triangles.shape == (12, 3, 3)
     assert index.robot_triangles[:, :, 0].min() >= -0.1501
     assert index.robot_triangles[:, :, 0].max() <= 0.1501
+    assert float(abs(index.robot_triangles).max()) < 1.0
     floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
     target = [0.8, 0.0, 0.5]
 
