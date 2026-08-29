@@ -1202,7 +1202,7 @@ def test_build_official_g1_policy_handoff_with_fake_runtime(
         camera_set="overview,side,follow,robot_pov",
     )
 
-    assert os.environ["MUJOCO_GL"] == "egl"
+    assert "MUJOCO_GL" not in os.environ
     assert result["official_policy_execution_proven"] is True
     assert result["fresh_policy_rollout_proven"] is True
     assert result["steps"] == 2

@@ -28,6 +28,7 @@ from .mujoco_g1_simulator_command import (
     _glb_visual_summary,
     _render_capture_steps,
 )
+from .mujoco_gl_environment import import_mujoco_with_scoped_gl_default as _import_mujoco
 
 
 OFFICIAL_G1_HANDOFF_SCHEMA_VERSION = "official_unitree_g1_robot_team_handoff.v1"
@@ -1743,12 +1744,10 @@ def build_official_g1_policy_handoff(
     enable_navigation_planner: bool = True,
     copy_policy_source_snapshot: bool = True,
 ) -> dict[str, Any]:
-    if platform.system().lower() == "linux":
-        os.environ.setdefault("MUJOCO_GL", "egl")
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
     try:
-        import mujoco  # type: ignore[import-not-found]
+        mujoco, _ = _import_mujoco(default="egl", platform_name=platform.system())
         import torch
         from PIL import Image
     except Exception as exc:  # pragma: no cover - runtime dependency guard.
