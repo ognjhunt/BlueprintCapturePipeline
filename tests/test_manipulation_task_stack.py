@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import builtins
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -287,15 +286,12 @@ def test_manipulation_physics_helper_edges(monkeypatch: pytest.MonkeyPatch, tmp_
         placed_z=0.3,
     ) == [3.0, 4.0, 0.3]
 
-    monkeypatch.setattr(physics.platform, "system", lambda: "Linux")
-    original_import = builtins.__import__
+    def missing_mujoco(*, default: str, platform_name: str) -> tuple[object, str | None]:
+        assert default == "egl"
+        assert platform_name == physics.platform.system()
+        raise ImportError("missing")
 
-    def fake_import(name: str, *args: object, **kwargs: object) -> object:
-        if name == "mujoco":
-            raise ImportError("missing")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(physics, "_import_mujoco", missing_mujoco)
     with pytest.raises(RuntimeError, match="mujoco is required"):
         physics.run_mujoco_manipulation_physics(capture_root=tmp_path)
 
