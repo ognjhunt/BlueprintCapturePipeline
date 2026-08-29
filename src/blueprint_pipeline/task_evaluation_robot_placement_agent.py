@@ -1,0 +1,439 @@
+"""Bounded multimodal agent loop for task-aware robot base placement.
+
+The model proposes and visually reviews poses; deterministic site geometry and
+robot-reach gates remain the only placement acceptance authority.  The accepted
+pose is digest-bound before a native/GPU construction lane may consume it.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_supervisor.agents_sdk import (
+    AgentsSDKAgentSpec,
+    AgentsSDKInvoker,
+    OpenAIAgentsSDKConfig,
+)
+
+
+ROBOT_PLACEMENT_AGENT_MODEL = "gpt-5.6-sol"
+ROBOT_PLACEMENT_AGENT_REASONING_EFFORT = "high"
+ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION = "task_evaluation_robot_placement_agent.v1"
+ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION = "task_evaluation_robot_placement_receipt.v1"
+ROBOT_PLACEMENT_CLAIM_CEILING = "analytic_and_visual_robot_placement_candidate"
+DEFAULT_MAX_PLACEMENT_ROUNDS = 4
+
+
+class RobotPlacementAgentError(ValueError):
+    """The bounded placement loop or its receipt is invalid."""
+
+
+class RobotBasePoseOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position_world_m: list[float] = Field(min_length=3, max_length=3)
+    orientation_xyzw: list[float] = Field(min_length=4, max_length=4)
+
+    @field_validator("position_world_m", "orientation_xyzw")
+    @classmethod
+    def _finite(cls, values: list[float]) -> list[float]:
+        result = [float(value) for value in values]
+        if not all(math.isfinite(value) for value in result):
+            raise ValueError("robot_placement_pose_non_finite")
+        return result
+
+    @field_validator("orientation_xyzw")
+    @classmethod
+    def _unit_quaternion(cls, values: list[float]) -> list[float]:
+        norm = math.sqrt(sum(value * value for value in values))
+        if not math.isclose(norm, 1.0, rel_tol=0.0, abs_tol=1.0e-4):
+            raise ValueError("robot_placement_orientation_not_unit")
+        return values
+
+
+class RobotPlacementProposalOutput(BaseModel):
+    """Non-authoritative pose proposal returned by the placement agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(min_length=1, max_length=160)
+    pose: RobotBasePoseOutput
+    support_surface_id: str = Field(min_length=1, max_length=300)
+    rationale: str = Field(min_length=1, max_length=4_000)
+    addressed_blockers: list[str] = Field(default_factory=list, max_length=50)
+    uncertainty: str = Field(min_length=1, max_length=2_000)
+
+
+class RobotPlacementVisualReviewOutput(BaseModel):
+    """Advisory visual verdict; it can veto but never approve geometry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["passed", "rejected", "uncertain"]
+    robot_supported_by_declared_surface: bool
+    robot_not_visibly_clipping_site_geometry: bool
+    robot_faces_task_workspace: bool
+    task_workspace_visually_reachable: bool
+    camera_views_are_sufficient: bool
+    reason: str = Field(min_length=1, max_length=4_000)
+    revision_guidance: list[str] = Field(default_factory=list, max_length=30)
+
+
+PlacementValidator = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+PlacementRenderer = Callable[
+    [Mapping[str, Any], int], Sequence[Mapping[str, Any]]
+]
+
+
+def robot_placement_agents_sdk_config(
+    *,
+    max_inference_cost_usd: float,
+    allow_live_invocation: bool,
+    tracing_disabled: bool = False,
+) -> OpenAIAgentsSDKConfig:
+    """Explicit production configuration for the user-selected placement model."""
+
+    return OpenAIAgentsSDKConfig(
+        model=ROBOT_PLACEMENT_AGENT_MODEL,
+        max_turns=1,
+        max_output_tokens=2_000,
+        allow_live_invocation=allow_live_invocation,
+        tracing_disabled=tracing_disabled,
+        max_inference_cost_usd=max_inference_cost_usd,
+        input_cost_per_million_tokens_usd=4.0,
+        output_cost_per_million_tokens_usd=20.0,
+    )
+
+
+def _image_metadata(images: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for index, image in enumerate(images):
+        digest = str(image.get("digest") or "")
+        label = str(image.get("label") or f"image_{index}")
+        if not (
+            digest.startswith("sha256:")
+            and len(digest) == 71
+            and all(character in "0123456789abcdef" for character in digest[7:])
+        ):
+            raise RobotPlacementAgentError("robot_placement_image_digest_invalid")
+        result.append({"label": label, "digest": digest})
+    return result
+
+
+def _multimodal_input(
+    *, prompt: Mapping[str, Any], images: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    metadata = _image_metadata(images)
+    content: list[dict[str, Any]] = [
+        {
+            "type": "input_text",
+            "text": json.dumps(
+                {**dict(prompt), "image_inventory": metadata},
+                sort_keys=True,
+            ),
+        }
+    ]
+    for image in images:
+        image_url = str(image.get("image_url") or "")
+        if not image_url.startswith(("data:image/", "https://")):
+            raise RobotPlacementAgentError("robot_placement_image_url_invalid")
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": image_url,
+                "detail": str(image.get("detail") or "high"),
+            }
+        )
+    return [{"role": "user", "content": content}]
+
+
+def _validated_gate(value: Mapping[str, Any]) -> dict[str, Any]:
+    gate = json.loads(json.dumps(dict(value), allow_nan=False))
+    if (
+        gate.get("schema_version") != "task_evaluation_robot_placement_geometry_gate.v1"
+        or gate.get("status") not in {"passed", "rejected"}
+        or not isinstance(gate.get("blockers"), list)
+        or gate.get("geometry_gate_digest")
+        != canonical_digest(gate, digest_field="geometry_gate_digest")
+    ):
+        raise RobotPlacementAgentError("robot_placement_geometry_gate_invalid")
+    return gate
+
+
+def _visual_passed(review: RobotPlacementVisualReviewOutput) -> bool:
+    return bool(
+        review.status == "passed"
+        and review.robot_supported_by_declared_surface
+        and review.robot_not_visibly_clipping_site_geometry
+        and review.robot_faces_task_workspace
+        and review.task_workspace_visually_reachable
+        and review.camera_views_are_sufficient
+    )
+
+
+def run_task_evaluation_robot_placement_agent(
+    *,
+    invoker: AgentsSDKInvoker,
+    run_id: str,
+    scene_binding: Mapping[str, Any],
+    task_binding: Mapping[str, Any],
+    scene_context: Mapping[str, Any] | None = None,
+    task_context: Mapping[str, Any] | None = None,
+    overview_images: Sequence[Mapping[str, Any]],
+    validate_candidate: PlacementValidator,
+    render_candidate: PlacementRenderer,
+    max_rounds: int = DEFAULT_MAX_PLACEMENT_ROUNDS,
+    max_input_tokens: int = 300_000,
+) -> dict[str, Any]:
+    """Propose, validate, render, visually review, and freeze one robot pose."""
+
+    if not 1 <= int(max_rounds) <= 8:
+        raise RobotPlacementAgentError("robot_placement_round_cap_invalid")
+    if not overview_images:
+        raise RobotPlacementAgentError("robot_placement_overview_images_missing")
+    scene = json.loads(json.dumps(dict(scene_binding), allow_nan=False))
+    task = json.loads(json.dumps(dict(task_binding), allow_nan=False))
+    scene_advisory_context = json.loads(
+        json.dumps(dict(scene_context or {}), allow_nan=False)
+    )
+    task_advisory_context = json.loads(
+        json.dumps(dict(task_context or {}), allow_nan=False)
+    )
+    scene_digest = canonical_digest(scene)
+    task_digest = canonical_digest(task)
+    history: list[dict[str, Any]] = []
+    accepted: dict[str, Any] | None = None
+
+    proposal_instructions = (
+        "You place a fixed-base robot for one observed site and task. Use the supplied exact "
+        "geometry summary, target, robot dimensions, overview images, and prior gate failures. "
+        "Propose one physically sensible mount pose. The robot base must sit on the declared "
+        "support surface, never inside a table/counter/floor; its body must not visibly clip site "
+        "geometry; and the task workspace must be reachable. Do not claim success or modify any "
+        "threshold. Return only the declared structured proposal."
+    )
+    review_instructions = (
+        "You are the visual sanity reviewer for one proposed fixed-base robot placement. Review "
+        "all supplied candidate previews. Fail closed if the base appears embedded, floating, "
+        "unsupported, occluded so placement cannot be judged, pointed away from the task, or the "
+        "task workspace looks implausibly unreachable. Your verdict is advisory and cannot "
+        "override deterministic geometry gates. Return only the declared structured verdict."
+    )
+
+    for round_index in range(int(max_rounds)):
+        prompt = {
+            "schema_version": ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION,
+            "run_id": run_id,
+            "round_index": round_index,
+            "scene_binding": scene,
+            "task_binding": task,
+            "scene_context": scene_advisory_context,
+            "task_context": task_advisory_context,
+            "prior_rounds": history,
+            "authority_boundary": {
+                "model_proposes_only": True,
+                "deterministic_geometry_gate_is_authoritative": True,
+                "native_construction_still_required": True,
+                "model_may_not_change_thresholds": True,
+            },
+        }
+        proposal_result = invoker.invoke(
+            AgentsSDKAgentSpec(
+                run_id=run_id,
+                capability="task_aware_robot_placement_proposal",
+                name="Blueprint Task-aware Robot Placement Agent",
+                instructions=proposal_instructions,
+                model=ROBOT_PLACEMENT_AGENT_MODEL,
+                max_turns=1,
+                max_output_tokens=2_000,
+                max_input_tokens=max_input_tokens,
+                reasoning_effort=ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
+                output_type=RobotPlacementProposalOutput,
+            ),
+            _multimodal_input(prompt=prompt, images=overview_images),
+        )
+        proposal = RobotPlacementProposalOutput.model_validate(
+            proposal_result.output
+        ).model_dump(mode="json")
+        geometry_gate = _validated_gate(validate_candidate(proposal))
+        round_record: dict[str, Any] = {
+            "round_index": round_index,
+            "proposal": proposal,
+            "proposal_provider": proposal_result.provider,
+            "proposal_model": proposal_result.model,
+            "proposal_sdk_version": proposal_result.sdk_version,
+            "proposal_usage": dict(proposal_result.usage),
+            "proposal_trace_id": proposal_result.trace_id,
+            "geometry_gate": geometry_gate,
+            "visual_review": None,
+            "preview_images": [],
+        }
+        if geometry_gate["status"] != "passed":
+            history.append(round_record)
+            continue
+
+        preview_images = list(render_candidate(proposal, round_index))
+        if not preview_images:
+            raise RobotPlacementAgentError("robot_placement_candidate_previews_missing")
+        preview_metadata = _image_metadata(preview_images)
+        review_result = invoker.invoke(
+            AgentsSDKAgentSpec(
+                run_id=run_id,
+                capability="task_aware_robot_placement_visual_review",
+                name="Blueprint Robot Placement Visual Reviewer",
+                instructions=review_instructions,
+                model=ROBOT_PLACEMENT_AGENT_MODEL,
+                max_turns=1,
+                max_output_tokens=1_200,
+                max_input_tokens=max_input_tokens,
+                reasoning_effort=ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
+                output_type=RobotPlacementVisualReviewOutput,
+            ),
+            _multimodal_input(
+                prompt={
+                    "schema_version": ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION,
+                    "run_id": run_id,
+                    "round_index": round_index,
+                    "scene_binding": scene,
+                    "task_binding": task,
+                    "scene_context": scene_advisory_context,
+                    "task_context": task_advisory_context,
+                    "proposal": proposal,
+                    "geometry_gate": geometry_gate,
+                    "authority_boundary": {
+                        "visual_review_is_advisory": True,
+                        "visual_review_may_veto": True,
+                        "visual_review_may_not_override_geometry": True,
+                    },
+                },
+                images=preview_images,
+            ),
+        )
+        visual_review = RobotPlacementVisualReviewOutput.model_validate(
+            review_result.output
+        )
+        round_record["preview_images"] = preview_metadata
+        round_record["visual_review"] = visual_review.model_dump(mode="json")
+        round_record["visual_review_provider"] = review_result.provider
+        round_record["visual_review_model"] = review_result.model
+        round_record["visual_review_sdk_version"] = review_result.sdk_version
+        round_record["visual_review_usage"] = dict(review_result.usage)
+        round_record["visual_review_trace_id"] = review_result.trace_id
+        history.append(round_record)
+        if _visual_passed(visual_review):
+            accepted = round_record
+            break
+
+    receipt: dict[str, Any] = {
+        "schema_version": ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION,
+        "status": "accepted" if accepted is not None else "blocked",
+        "run_id": run_id,
+        "model": ROBOT_PLACEMENT_AGENT_MODEL,
+        "reasoning_effort": ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
+        "max_rounds": int(max_rounds),
+        "round_count": len(history),
+        "scene_binding_digest": scene_digest,
+        "task_binding_digest": task_digest,
+        "scene_context_digest": canonical_digest(scene_advisory_context),
+        "task_context_digest": canonical_digest(task_advisory_context),
+        "overview_images": _image_metadata(overview_images),
+        "rounds": history,
+        "accepted_pose": accepted["proposal"]["pose"] if accepted is not None else None,
+        "accepted_candidate_id": (
+            accepted["proposal"]["candidate_id"] if accepted is not None else None
+        ),
+        "accepted_support_surface_id": (
+            accepted["proposal"]["support_surface_id"] if accepted is not None else None
+        ),
+        "accepted_geometry_gate_digest": (
+            accepted["geometry_gate"]["geometry_gate_digest"]
+            if accepted is not None
+            else None
+        ),
+        "candidate_may_self_authorize": False,
+        "physical_execution_authorized": False,
+        "native_construction_required": True,
+        "model_grades_controls": False,
+        "claim_ceiling": ROBOT_PLACEMENT_CLAIM_CEILING,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
+def validate_robot_placement_receipt(
+    value: Mapping[str, Any],
+    *,
+    expected_scene_binding_digest: str | None = None,
+    expected_task_binding_digest: str | None = None,
+) -> dict[str, Any]:
+    """Validate an immutable accepted receipt before native compilation."""
+
+    receipt = json.loads(json.dumps(dict(value), allow_nan=False))
+    if (
+        receipt.get("schema_version") != ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION
+        or receipt.get("status") != "accepted"
+        or receipt.get("model") != ROBOT_PLACEMENT_AGENT_MODEL
+        or receipt.get("reasoning_effort") != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        or receipt.get("candidate_may_self_authorize") is not False
+        or receipt.get("physical_execution_authorized") is not False
+        or receipt.get("native_construction_required") is not True
+        or receipt.get("model_grades_controls") is not False
+        or receipt.get("claim_ceiling") != ROBOT_PLACEMENT_CLAIM_CEILING
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise RobotPlacementAgentError("robot_placement_receipt_invalid")
+    if (
+        expected_scene_binding_digest is not None
+        and receipt.get("scene_binding_digest") != expected_scene_binding_digest
+    ):
+        raise RobotPlacementAgentError("robot_placement_scene_binding_mismatch")
+    if (
+        expected_task_binding_digest is not None
+        and receipt.get("task_binding_digest") != expected_task_binding_digest
+    ):
+        raise RobotPlacementAgentError("robot_placement_task_binding_mismatch")
+    pose = RobotBasePoseOutput.model_validate(receipt.get("accepted_pose"))
+    rounds = receipt.get("rounds")
+    if not isinstance(rounds, list) or not rounds:
+        raise RobotPlacementAgentError("robot_placement_receipt_rounds_missing")
+    accepted = rounds[-1]
+    if (
+        not isinstance(accepted, Mapping)
+        or (accepted.get("proposal") or {}).get("candidate_id")
+        != receipt.get("accepted_candidate_id")
+        or (accepted.get("geometry_gate") or {}).get("status") != "passed"
+        or (accepted.get("geometry_gate") or {}).get("geometry_gate_digest")
+        != receipt.get("accepted_geometry_gate_digest")
+    ):
+        raise RobotPlacementAgentError("robot_placement_receipt_acceptance_invalid")
+    visual = RobotPlacementVisualReviewOutput.model_validate(
+        accepted.get("visual_review")
+    )
+    if not _visual_passed(visual):
+        raise RobotPlacementAgentError("robot_placement_visual_acceptance_invalid")
+    receipt["accepted_pose"] = pose.model_dump(mode="json")
+    return receipt
+
+
+__all__ = [
+    "DEFAULT_MAX_PLACEMENT_ROUNDS",
+    "ROBOT_PLACEMENT_AGENT_MODEL",
+    "ROBOT_PLACEMENT_AGENT_REASONING_EFFORT",
+    "ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION",
+    "RobotPlacementAgentError",
+    "RobotPlacementProposalOutput",
+    "RobotPlacementVisualReviewOutput",
+    "robot_placement_agents_sdk_config",
+    "run_task_evaluation_robot_placement_agent",
+    "validate_robot_placement_receipt",
+]
