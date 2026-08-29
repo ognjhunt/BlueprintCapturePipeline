@@ -300,6 +300,12 @@ def _affordance(task_spec: Mapping[str, Any], *, subject_asset_id: str) -> dict[
         value.get("gripper_orientation_scoring_frame_xyzw"),
         error="native_rigid_construction_gripper_orientation_invalid",
     )
+    if is_unauthored_identity_quaternion_xyzw(
+        value["gripper_orientation_scoring_frame_xyzw"]
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_rigid_construction_gripper_orientation_unauthored"]
+        )
     value["pregrasp_clearance_m"] = _positive(
         value.get("pregrasp_clearance_m"),
         error="native_rigid_construction_pregrasp_clearance_invalid",

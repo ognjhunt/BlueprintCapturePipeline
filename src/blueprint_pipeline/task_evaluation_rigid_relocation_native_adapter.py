@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_franka_action_math import (
+    NativeFrankaActionMathError,
+    grasp_orientation_contact_xyzw,
+)
 from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
@@ -659,7 +663,7 @@ def adapt_rigid_relocation_task_template(
             "approach_unit_scoring_frame"
         ],
         "lift_unit_world": [0.0, 0.0, 1.0],
-        "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_scoring_frame_xyzw": [],
         "pregrasp_clearance_m": 0.12,
         "arrival_orientation_tolerance_rad": 0.08,
         "allowed_contact_prim_paths": geometry["allowed_contact_prim_paths"],
@@ -668,6 +672,27 @@ def adapt_rigid_relocation_task_template(
         ],
         "affordance_digest": "",
     }
+    # ``approach_unit_scoring_frame`` points outward from the contact face;
+    # the gripper's +Z approach axis must point the other way, into the object.
+    # Keep the parallel-jaw axis horizontal and tangent to the planar push so
+    # neither finger is authored through the support.  Identity here is not a
+    # harmless default: it points +Z upward and made native Isaac spend every
+    # phase rotating toward an unrelated frame instead of reaching the mug.
+    outward = interaction_affordance["approach_unit_scoring_frame"]
+    contact_approach = [-float(value) for value in outward]
+    horizontal_jaw = [-contact_approach[1], contact_approach[0], 0.0]
+    try:
+        interaction_affordance[
+            "gripper_orientation_scoring_frame_xyzw"
+        ] = grasp_orientation_contact_xyzw(
+            approach_axis=contact_approach,
+            jaw_axis=horizontal_jaw,
+        )
+    except NativeFrankaActionMathError as exc:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_gripper_orientation_unauthorable:"
+            + ";".join(exc.errors)
+        ) from exc
     interaction_affordance["affordance_digest"] = canonical_digest(
         interaction_affordance, digest_field="affordance_digest"
     )

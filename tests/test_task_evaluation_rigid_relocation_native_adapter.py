@@ -19,6 +19,9 @@ from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
 from blueprint_pipeline.native_task_construction_plan import (
     materialize_rigid_construction_phase_plan,
 )
+from blueprint_pipeline.native_franka_action_math import (
+    grasp_orientation_contact_xyzw,
+)
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_contract import request
 
@@ -259,6 +262,19 @@ def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     assert execution["scenario"]["cell_id"] == (
         "configured_scene_canonical.seed_839873104"
     )
+    affordance = task_spec["interaction_affordance"]
+    assert affordance["gripper_orientation_scoring_frame_xyzw"] == pytest.approx(
+        grasp_orientation_contact_xyzw(
+            approach_axis=[1.0, 0.0, 0.0],
+            jaw_axis=[0.0, 1.0, 0.0],
+        )
+    )
+    assert affordance["gripper_orientation_scoring_frame_xyzw"] != [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
     assert result["source_documents"]["documents"]["definition"] == docs[
         DEFINITION
     ]
