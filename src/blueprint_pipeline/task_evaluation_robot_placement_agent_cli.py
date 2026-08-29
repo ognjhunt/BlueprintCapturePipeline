@@ -25,6 +25,10 @@ from .task_evaluation_robot_placement_geometry import (
     summarize_robot_placement_geometry,
     validate_robot_placement_geometry_candidate,
 )
+from .task_evaluation_robot_placement_inventory import (
+    build_candidate_inventory_checkpoint,
+    validate_candidate_inventory_checkpoint,
+)
 from .task_evaluation_robot_placement_trajectory import (
     placement_trajectory_from_native_plan,
     placement_trajectory_from_native_result,
@@ -107,6 +111,7 @@ def run_robot_placement_cli(
     execute_candidate: PlacementExecutor | None = None,
     task_trajectory: Mapping[str, Any] | None = None,
     prior_native_attempts: Sequence[Mapping[str, Any]] = (),
+    candidate_inventory_checkpoint: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -134,22 +139,46 @@ def run_robot_placement_cli(
         for row in trajectory_phases
     ]
     placement_worker_count = min(8, max(1, os.cpu_count() or 1))
-    candidates = enumerate_robot_placement_geometry_candidates(
-        index=index,
-        target_position_world_m=target_position_world_m,
-        robot_id=robot_id,
-        maximum_candidates=candidate_inventory_cap,
-        trajectory_waypoints_world_m=trajectory_waypoints,
-        trajectory_phase_ids=trajectory_phase_ids,
-        trajectory_orientations_world_xyzw=trajectory_orientations,
-        geometry_worker_count=placement_worker_count,
-        trajectory_worker_count=placement_worker_count,
-    )
+    trajectory_digest = (task_trajectory or {}).get("trajectory_digest")
+    geometry_summary_digest = str(summary.get("geometry_summary_digest") or "")
+    if candidate_inventory_checkpoint is None:
+        candidates = enumerate_robot_placement_geometry_candidates(
+            index=index,
+            target_position_world_m=target_position_world_m,
+            robot_id=robot_id,
+            maximum_candidates=candidate_inventory_cap,
+            trajectory_waypoints_world_m=trajectory_waypoints,
+            trajectory_phase_ids=trajectory_phase_ids,
+            trajectory_orientations_world_xyzw=trajectory_orientations,
+            geometry_worker_count=placement_worker_count,
+            trajectory_worker_count=placement_worker_count,
+        )
+    else:
+        candidates = validate_candidate_inventory_checkpoint(
+            checkpoint=candidate_inventory_checkpoint,
+            index=index,
+            robot_id=robot_id,
+            target_position_world_m=target_position_world_m,
+            maximum_candidates=candidate_inventory_cap,
+            trajectory_digest=trajectory_digest,
+            geometry_summary_digest=geometry_summary_digest,
+        )
     if not candidates:
         raise ValueError("robot_placement_geometry_candidate_inventory_empty")
-    trajectory_digest = (task_trajectory or {}).get("trajectory_digest")
     candidate_inventory_digest = canonical_digest(
         {"trajectory_digest": trajectory_digest, "candidates": candidates}
+    )
+    checkpoint = build_candidate_inventory_checkpoint(
+        robot_id=robot_id,
+        target_position_world_m=target_position_world_m,
+        maximum_candidates=candidate_inventory_cap,
+        trajectory_digest=trajectory_digest,
+        geometry_summary_digest=geometry_summary_digest,
+        candidates=candidates,
+    )
+    write_json(
+        root / "task_evaluation_robot_placement_candidate_inventory.v1.json",
+        checkpoint,
     )
     overview_images = [
         _image_record(path, label=f"site_overview_{index_value:02d}")
@@ -315,6 +344,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Canonical allocator result paired with --prior-native-construction-result."
         ),
     )
+    parser.add_argument(
+        "--candidate-inventory-checkpoint",
+        type=Path,
+        help=(
+            "Prior complete digest-bound CPU candidate inventory. Its exact input "
+            "bindings and every retained geometry gate are revalidated before reuse."
+        ),
+    )
     args = parser.parse_args(argv)
     task_trajectory = None
     if args.native_trajectory_plan:
@@ -380,6 +417,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         execute_candidate=execute_candidate,
         task_trajectory=task_trajectory,
         prior_native_attempts=prior_native_attempts,
+        candidate_inventory_checkpoint=(
+            _read_mapping(
+                args.candidate_inventory_checkpoint,
+                label="candidate_inventory_checkpoint",
+            )
+            if args.candidate_inventory_checkpoint
+            else None
+        ),
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "accepted" else 2

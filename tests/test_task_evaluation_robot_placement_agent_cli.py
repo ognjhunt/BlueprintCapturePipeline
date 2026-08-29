@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
+
+import pytest
 
 from blueprint_pipeline.task_evaluation_robot_placement_agent_cli import (
     _persist_images,
     _read_mapping,
     run_robot_placement_cli,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_robot_placement_inventory import (
+    build_candidate_inventory_checkpoint,
+    validate_candidate_inventory_checkpoint,
 )
 
 
@@ -72,6 +80,14 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
             "position_world_m": [3.0, -6.3, 0.75],
             "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
+        "geometry_gate_digest": "sha256:geometry",
+        "shoulder_to_target_distance_m": 0.5,
+        "trajectory_position_ik_gate_digest": "sha256:trajectory",
+        "trajectory_minimum_manipulability": 0.2,
+        "trajectory_position_ik_gate": {
+            "trajectory_position_ik_gate_digest": "sha256:trajectory",
+            "minimum_manipulability": 0.2,
+        },
     }
     rendered_waypoints = []
 
@@ -115,24 +131,34 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
         proposal,
         target_position_world_m,
         robot_id,
-        trajectory_waypoints_world_m,
-        trajectory_phase_ids,
-        trajectory_orientations_world_xyzw,
+        trajectory_waypoints_world_m=(),
+        trajectory_phase_ids=(),
+        trajectory_orientations_world_xyzw=(),
+        trajectory_gate_override=None,
     ):
         assert index is not None
         assert proposal["candidate_id"] == "candidate"
         assert target_position_world_m == [3.0, -6.7, 0.8]
         assert robot_id == "franka_panda"
-        assert trajectory_waypoints_world_m == [
-            [2.79, -6.76, 0.818],
-            [2.91, -6.76, 0.818],
-        ]
-        assert trajectory_phase_ids == ["precontact", "push_contact"]
-        assert trajectory_orientations_world_xyzw == [
-            [0.0, 0.70710678, 0.0, 0.70710678],
-            [0.0, 0.70710678, 0.0, 0.70710678],
-        ]
-        return {"status": "passed"}
+        if trajectory_gate_override is None:
+            assert trajectory_waypoints_world_m == [
+                [2.79, -6.76, 0.818],
+                [2.91, -6.76, 0.818],
+            ]
+            assert trajectory_phase_ids == ["precontact", "push_contact"]
+            assert trajectory_orientations_world_xyzw == [
+                [0.0, 0.70710678, 0.0, 0.70710678],
+                [0.0, 0.70710678, 0.0, 0.70710678],
+            ]
+        else:
+            assert trajectory_gate_override == proposal[
+                "trajectory_position_ik_gate"
+            ]
+        return {
+            "status": "passed",
+            "geometry_gate_digest": "sha256:geometry",
+            "shoulder_to_target_distance_m": 0.5,
+        }
 
     def run_agent(**kwargs):
         inventory = kwargs["scene_context"][
@@ -176,3 +202,104 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
         [[2.79, -6.76, 0.818], [2.91, -6.76, 0.818]],
         [[2.79, -6.76, 0.818], [2.91, -6.76, 0.818]],
     ]
+    checkpoint = json.loads(
+        (tmp_path / "output" / "task_evaluation_robot_placement_candidate_inventory.v1.json")
+        .read_text(encoding="utf-8")
+    )
+    assert checkpoint["status"] == "complete"
+    assert checkpoint["checkpoint_digest"] == canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+
+    monkeypatch.setattr(
+        module,
+        "enumerate_robot_placement_geometry_candidates",
+        lambda **_kwargs: pytest.fail("checkpoint reuse must not enumerate"),
+    )
+    import blueprint_pipeline.task_evaluation_robot_placement_inventory as inventory
+
+    monkeypatch.setattr(inventory, "validate_robot_placement_geometry_candidate", validate)
+    run_robot_placement_cli(
+        run_id="trajectory-preview-resume",
+        scene_collision_usd=Path("scene.usda"),
+        robot_asset_usd=Path("robot.usda"),
+        target_position_world_m=[3.0, -6.7, 0.8],
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "push"},
+        overview_image_paths=[],
+        output_dir=tmp_path / "resumed-output",
+        max_rounds=2,
+        candidate_inventory_cap=12,
+        max_input_tokens=1_000,
+        max_inference_cost_usd=1.0,
+        allow_live_invocation=False,
+        tracing_disabled=True,
+        task_trajectory=trajectory,
+        candidate_inventory_checkpoint=checkpoint,
+    )
+
+
+def test_candidate_inventory_checkpoint_revalidates_before_reuse(monkeypatch) -> None:
+    trajectory_gate = {
+        "trajectory_position_ik_gate_digest": "sha256:trajectory",
+        "minimum_manipulability": 0.2,
+    }
+    candidate = {
+        "candidate_id": "candidate",
+        "support_surface_id": "surface",
+        "pose": {
+            "position_world_m": [3.0, -6.3, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "geometry_gate_digest": "sha256:geometry",
+        "shoulder_to_target_distance_m": 0.5,
+        "trajectory_position_ik_gate_digest": "sha256:trajectory",
+        "trajectory_minimum_manipulability": 0.2,
+        "trajectory_position_ik_gate": trajectory_gate,
+    }
+    checkpoint = build_candidate_inventory_checkpoint(
+        robot_id="franka_panda",
+        target_position_world_m=[3.0, -6.7, 0.8],
+        maximum_candidates=48,
+        trajectory_digest="sha256:plan",
+        geometry_summary_digest="sha256:geometry-summary",
+        candidates=[candidate],
+    )
+    validation_calls = []
+
+    def validate(**kwargs):
+        validation_calls.append(kwargs)
+        return {
+            "status": "passed",
+            "geometry_gate_digest": "sha256:geometry",
+            "shoulder_to_target_distance_m": 0.5,
+        }
+
+    import blueprint_pipeline.task_evaluation_robot_placement_inventory as inventory
+
+    monkeypatch.setattr(inventory, "validate_robot_placement_geometry_candidate", validate)
+    restored = validate_candidate_inventory_checkpoint(
+        checkpoint=checkpoint,
+        index=object(),
+        robot_id="franka_panda",
+        target_position_world_m=[3.0, -6.7, 0.8],
+        maximum_candidates=48,
+        trajectory_digest="sha256:plan",
+        geometry_summary_digest="sha256:geometry-summary",
+    )
+
+    assert restored == [candidate]
+    assert validation_calls[0]["trajectory_gate_override"] == trajectory_gate
+
+    with pytest.raises(
+        ValueError, match="robot_placement_candidate_inventory_checkpoint_invalid"
+    ):
+        validate_candidate_inventory_checkpoint(
+            checkpoint=checkpoint,
+            index=object(),
+            robot_id="franka_panda",
+            target_position_world_m=[3.1, -6.7, 0.8],
+            maximum_candidates=48,
+            trajectory_digest="sha256:plan",
+            geometry_summary_digest="sha256:geometry-summary",
+        )

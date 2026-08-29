@@ -174,14 +174,19 @@ def _multimodal_input(
 
 def _validated_gate(value: Mapping[str, Any]) -> dict[str, Any]:
     gate = json.loads(json.dumps(dict(value), allow_nan=False))
-    if (
-        gate.get("schema_version") != "task_evaluation_robot_placement_geometry_gate.v1"
-        or gate.get("status") not in {"passed", "rejected"}
-        or not isinstance(gate.get("blockers"), list)
-        or gate.get("geometry_gate_digest")
-        != canonical_digest(gate, digest_field="geometry_gate_digest")
+    if gate.get("schema_version") != "task_evaluation_robot_placement_geometry_gate.v1":
+        raise RobotPlacementAgentError("robot_placement_geometry_gate_schema_invalid")
+    if gate.get("status") not in {"passed", "rejected"}:
+        raise RobotPlacementAgentError("robot_placement_geometry_gate_status_invalid")
+    if not isinstance(gate.get("blockers"), list):
+        raise RobotPlacementAgentError("robot_placement_geometry_gate_blockers_invalid")
+    if gate.get("geometry_gate_digest") != canonical_digest(
+        gate, digest_field="geometry_gate_digest"
     ):
-        raise RobotPlacementAgentError("robot_placement_geometry_gate_invalid")
+        candidate_id = str(gate.get("candidate_id") or "unknown")
+        raise RobotPlacementAgentError(
+            f"robot_placement_geometry_gate_digest_mismatch:{candidate_id}"
+        )
     return gate
 
 
