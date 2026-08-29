@@ -34,6 +34,7 @@ ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION = "task_evaluation_robot_placement_receip
 ROBOT_PLACEMENT_CLAIM_CEILING = "analytic_and_visual_robot_placement_candidate"
 DEFAULT_MAX_PLACEMENT_ROUNDS = 4
 NATIVE_REJECTED_POSE_EXCLUSION_RADIUS_M = 0.08
+NATIVE_REJECTED_POSE_ORIENTATION_EXCLUSION_RAD = math.radians(5.0)
 
 
 class RobotPlacementAgentError(ValueError):
@@ -192,10 +193,42 @@ def _position_world_m(value: object) -> list[float] | None:
     return result if all(math.isfinite(item) for item in result) else None
 
 
-def _native_rejected_positions(
+def _orientation_world_xyzw(value: object) -> list[float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    orientation = value.get("orientation_xyzw")
+    if orientation is None:
+        return None
+    if (
+        not isinstance(orientation, Sequence)
+        or isinstance(orientation, (str, bytes))
+        or len(orientation) != 4
+    ):
+        raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
+    try:
+        result = [float(item) for item in orientation]
+    except (TypeError, ValueError) as exc:
+        raise RobotPlacementAgentError(
+            "robot_placement_rejected_native_poses_invalid"
+        ) from exc
+    norm = math.sqrt(sum(item * item for item in result))
+    if not all(math.isfinite(item) for item in result) or not math.isclose(
+        norm, 1.0, rel_tol=0.0, abs_tol=1.0e-4
+    ):
+        raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
+    return result
+
+
+def _quaternion_distance_rad(left: Sequence[float], right: Sequence[float]) -> float:
+    # q and -q encode the same rotation, so use the absolute dot product.
+    dot = abs(math.fsum(float(a) * float(b) for a, b in zip(left, right, strict=True)))
+    return 2.0 * math.acos(min(1.0, max(-1.0, dot)))
+
+
+def _native_rejected_poses(
     *, scene_context: Mapping[str, Any], history: Sequence[Mapping[str, Any]]
-) -> list[list[float]]:
-    positions: list[list[float]] = []
+) -> list[tuple[list[float], list[float] | None]]:
+    poses: list[tuple[list[float], list[float] | None]] = []
     configured = scene_context.get("rejected_native_base_poses") or []
     if not isinstance(configured, Sequence) or isinstance(configured, (str, bytes)):
         raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
@@ -203,34 +236,40 @@ def _native_rejected_positions(
         position = _position_world_m(value)
         if position is None:
             raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
-        positions.append(position)
+        poses.append((position, _orientation_world_xyzw(value)))
     for round_record in history:
         native_attempt = round_record.get("native_attempt")
         if not isinstance(native_attempt, Mapping) or native_attempt.get("status") != "rejected":
             continue
         proposal = round_record.get("proposal")
-        position = _position_world_m(
-            proposal.get("pose") if isinstance(proposal, Mapping) else None
-        )
+        pose = proposal.get("pose") if isinstance(proposal, Mapping) else None
+        position = _position_world_m(pose)
         if position is not None:
-            positions.append(position)
-    return positions
+            poses.append((position, _orientation_world_xyzw(pose)))
+    return poses
 
 
 def _reject_reused_native_pose(
     *,
     gate: Mapping[str, Any],
     proposal: Mapping[str, Any],
-    rejected_positions: Sequence[Sequence[float]],
+    rejected_poses: Sequence[tuple[Sequence[float], Sequence[float] | None]],
 ) -> dict[str, Any]:
     result = dict(gate)
-    position = _position_world_m(proposal.get("pose"))
-    if position is None:
+    pose = proposal.get("pose")
+    position = _position_world_m(pose)
+    orientation = _orientation_world_xyzw(pose)
+    if position is None or orientation is None:
         raise RobotPlacementAgentError("robot_placement_pose_invalid")
     reused = any(
-        math.dist(position, [float(item) for item in rejected])
+        math.dist(position, [float(item) for item in rejected_position])
         < NATIVE_REJECTED_POSE_EXCLUSION_RADIUS_M
-        for rejected in rejected_positions
+        and (
+            rejected_orientation is None
+            or _quaternion_distance_rad(orientation, rejected_orientation)
+            < NATIVE_REJECTED_POSE_ORIENTATION_EXCLUSION_RAD
+        )
+        for rejected_position, rejected_orientation in rejected_poses
     )
     if not reused:
         return result
@@ -452,7 +491,7 @@ def run_task_evaluation_robot_placement_agent(
             _reject_reused_native_pose(
                 gate=geometry_gate,
                 proposal=proposal,
-                rejected_positions=_native_rejected_positions(
+                rejected_poses=_native_rejected_poses(
                     scene_context=scene_advisory_context,
                     history=history,
                 ),
