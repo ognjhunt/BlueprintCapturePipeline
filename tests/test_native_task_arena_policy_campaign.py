@@ -488,7 +488,7 @@ def test_single_use_authority_binds_exact_campaign_member_and_rejects_alteration
         )
 
 
-def test_campaign_rejects_sum_of_member_caps_over_fifty(
+def test_campaign_rejects_sum_of_member_caps_over_current_goal_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(
@@ -497,7 +497,7 @@ def test_campaign_rejects_sum_of_member_caps_over_fifty(
         _campaign(
             tmp_path,
             monkeypatch,
-            prior_before=49.0,
+            prior_before=51.0,
             reconciled_total=0.25,
         )
     assert not (tmp_path / "policy-campaign.json").exists()
