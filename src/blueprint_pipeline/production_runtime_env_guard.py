@@ -118,6 +118,7 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_launch_supervisor",
     "blueprint_pipeline.task_evaluation_terminal_resource_release",
+    "blueprint_pipeline.task_evaluation_configured_controls_progression_worker",
 )
 
 ENTRYPOINT_REMEDIATION = (
