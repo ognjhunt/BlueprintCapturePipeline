@@ -234,8 +234,18 @@ def build_robot_placement_geometry_index(
     normal_abs_z = np.zeros(len(triangles), dtype=np.float64)
     valid = norm > 1.0e-12
     normal_abs_z[valid] = np.abs(cross[valid, 2]) / norm[valid]
-    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage)
     robot_minimum, robot_maximum = _robot_bounds(robot_stage)
+    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage)
+    robot_bounds_minimum = np.asarray(robot_minimum, dtype=np.float64) - 1.0e-4
+    robot_bounds_maximum = np.asarray(robot_maximum, dtype=np.float64) + 1.0e-4
+    inside_robot_bounds = np.all(
+        (robot_triangles >= robot_bounds_minimum)
+        & (robot_triangles <= robot_bounds_maximum),
+        axis=(1, 2),
+    )
+    robot_triangles = robot_triangles[inside_robot_bounds]
+    if not len(robot_triangles):
+        raise RobotPlacementGeometryError("robot_placement_robot_preview_triangles_missing")
     return RobotPlacementGeometryIndex(
         scene_path=str(scene_path),
         scene_digest=_sha256(scene_path),
