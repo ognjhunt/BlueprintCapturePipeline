@@ -141,9 +141,21 @@ def _valid_digest_bound_mapping(
 
 
 def materialize_native_rigid_control_plan(
-    *, scene_plan: Mapping[str, Any], construction_result: Mapping[str, Any]
+    *,
+    scene_plan: Mapping[str, Any],
+    construction_result: Mapping[str, Any],
+    allow_unqualified_construction_diagnostic: bool = False,
 ) -> dict[str, Any]:
-    """Reuse one qualified rigid construction trajectory as the positive control."""
+    """Reuse rigid construction targets as the positive control.
+
+    Production admission remains exact: only a fully qualified construction may
+    produce a qualifying controls plan.  The explicit diagnostic mode exists so
+    a paid construction refusal can exercise the later zero/scripted runtime
+    without turning that refusal into controls or policy authority.  It retains
+    every upstream blocker, uses bounded plan-authored targets rather than
+    claiming the failed trajectory was qualified, and is permanently marked as
+    unable to qualify anything downstream.
+    """
 
     scene = _copy_mapping(scene_plan, error="native_rigid_control_scene_plan_invalid")
     construction = _copy_mapping(
@@ -199,12 +211,28 @@ def materialize_native_rigid_control_plan(
         schema_version=CONSTRUCTION_RESULT_SCHEMA_VERSION,
     ):
         errors.append("native_rigid_control_construction_result_invalid")
-    if (
-        construction.get("status") != "completed"
-        or construction.get("construction_gate_qualified") is not True
-        or construction.get("blockers") != []
-    ):
-        errors.append("native_rigid_control_construction_not_qualified")
+    construction_blockers = construction.get("blockers")
+    construction_qualified = (
+        construction.get("status") == "completed"
+        and construction.get("construction_gate_qualified") is True
+        and construction_blockers == []
+    )
+    if not construction_qualified:
+        if not allow_unqualified_construction_diagnostic:
+            errors.append("native_rigid_control_construction_not_qualified")
+        elif (
+            construction.get("status") != "blocked"
+            or construction.get("construction_gate_qualified") is not False
+            or not isinstance(construction_blockers, list)
+            or not construction_blockers
+            or any(
+                not isinstance(value, str) or not value
+                for value in construction_blockers
+            )
+        ):
+            errors.append(
+                "native_rigid_control_diagnostic_construction_contract_invalid"
+            )
     if construction.get("scene_plan_digest") != scene.get("plan_digest"):
         errors.append("native_rigid_control_construction_binding_mismatch")
 
@@ -239,11 +267,8 @@ def materialize_native_rigid_control_plan(
         gate_evaluation = {}
     gate_rows = gate_evaluation.get("gates")
     required_gate_ids = phase_plan.get("required_gate_ids")
-    if (
+    gate_evaluation_structurally_invalid = (
         gate_evaluation.get("phase_plan_digest") != phase_plan.get("plan_digest")
-        or gate_evaluation.get("passed") is not True
-        or gate_evaluation.get("all_phase_targets_reached") is not True
-        or gate_evaluation.get("blockers") != []
         or not isinstance(gate_rows, list)
         or not isinstance(required_gate_ids, list)
         or sorted(
@@ -252,21 +277,28 @@ def materialize_native_rigid_control_plan(
             if isinstance(row, Mapping)
         )
         != sorted(str(value) for value in required_gate_ids)
-        or any(
-            not isinstance(row, Mapping) or row.get("passed") is not True
-            for row in gate_rows or []
-        )
+        or any(not isinstance(row, Mapping) for row in gate_rows or [])
+    )
+    if gate_evaluation_structurally_invalid:
+        errors.append("native_rigid_control_gate_evaluation_invalid")
+    elif not allow_unqualified_construction_diagnostic and (
+        gate_evaluation.get("passed") is not True
+        or gate_evaluation.get("all_phase_targets_reached") is not True
+        or gate_evaluation.get("blockers") != []
+        or any(row.get("passed") is not True for row in gate_rows)
     ):
         errors.append("native_rigid_control_gate_evaluation_not_qualified")
 
     camera_gates = construction.get("camera_gates")
-    if (
-        not isinstance(camera_gates, Mapping)
-        or set(camera_gates) != {"external", "wrist", "overview"}
-        or any(
-            not isinstance(row, Mapping) or row.get("passed") is not True
-            for row in camera_gates.values()
-        )
+    camera_gates_structurally_valid = (
+        isinstance(camera_gates, Mapping)
+        and set(camera_gates) == {"external", "wrist", "overview"}
+        and all(isinstance(row, Mapping) for row in camera_gates.values())
+    )
+    if not camera_gates_structurally_valid:
+        errors.append("native_rigid_control_camera_preflight_invalid")
+    elif not allow_unqualified_construction_diagnostic and (
+        any(row.get("passed") is not True for row in camera_gates.values())
     ):
         errors.append("native_rigid_control_camera_preflight_incomplete")
     reset_replay = construction.get("reset_replay")
@@ -289,16 +321,24 @@ def materialize_native_rigid_control_plan(
         for row in phase_results
         if isinstance(row, Mapping)
     ]
-    if (
+    phase_results_structurally_valid = (
         len(expected_ids) != len(phases)
         or not all(expected_ids)
         or len(set(expected_ids)) != len(expected_ids)
         or observed_ids != expected_ids
         or len(observed_ids) != len(phase_results)
         or any(
-            not isinstance(row, Mapping) or row.get("target_reached") is not True
+            not isinstance(row, Mapping)
+            or not isinstance(row.get("target_reached"), bool)
+            or isinstance(row.get("steps"), bool)
+            or not isinstance(row.get("steps"), int)
+            or int(row["steps"]) < 0
             for row in phase_results
         )
+    )
+    if phase_results_structurally_valid or (
+        not allow_unqualified_construction_diagnostic
+        and any(row.get("target_reached") is not True for row in phase_results)
     ):
         errors.append("native_rigid_control_construction_phase_results_invalid")
 
@@ -331,6 +371,28 @@ def materialize_native_rigid_control_plan(
         maximum_steps_per_phase = 0
 
     actions: list[dict[str, Any]] = []
+    diagnostic_step_budget = 0
+    if allow_unqualified_construction_diagnostic and phases:
+        try:
+            task_maximum_steps = _positive_integer(
+                task_spec.get("maximum_action_steps"),
+                error="native_rigid_control_action_budget_invalid",
+            )
+            task_settle_steps = _positive_integer(
+                task_spec.get("settle_window_samples"),
+                error="native_rigid_control_settle_window_invalid",
+            )
+            available = task_maximum_steps - task_settle_steps
+            diagnostic_step_budget = min(
+                maximum_steps_per_phase,
+                available // len(phases),
+            )
+            if diagnostic_step_budget < stable_samples:
+                raise NativeTaskControlPlanError(
+                    ["native_rigid_control_diagnostic_action_budget_invalid"]
+                )
+        except NativeTaskControlPlanError as exc:
+            errors.extend(exc.errors)
     if len(phases) == len(phase_results):
         for index, (phase, observed) in enumerate(
             zip(phases, phase_results, strict=True)
@@ -348,9 +410,13 @@ def materialize_native_rigid_control_plan(
                     phase.get("orientation_world_xyzw"),
                     error=f"native_rigid_control_phase_invalid:{index}",
                 )
-                observed_steps = _positive_integer(
-                    observed.get("steps"),
-                    error=f"native_rigid_control_phase_steps_invalid:{index}",
+                observed_steps = (
+                    diagnostic_step_budget
+                    if allow_unqualified_construction_diagnostic
+                    else _positive_integer(
+                        observed.get("steps"),
+                        error=f"native_rigid_control_phase_steps_invalid:{index}",
+                    )
                 )
             except NativeTaskControlPlanError as exc:
                 errors.extend(exc.errors)
@@ -414,7 +480,11 @@ def materialize_native_rigid_control_plan(
         "task_kind": "rigid_pick_place",
         "cell_id": scenario["cell_id"],
         "task_spec_digest": canonical_digest(scene["task_spec"]),
-        "trajectory_source": "native_ik_preflight",
+        "trajectory_source": (
+            "native_ik_diagnostic_unqualified"
+            if allow_unqualified_construction_diagnostic
+            else "native_ik_preflight"
+        ),
         "planner_receipt_digest": construction["result_digest"],
         "zero_action_steps": settle_steps,
         "scripted_positive_actions": actions,
@@ -425,10 +495,27 @@ def materialize_native_rigid_control_plan(
             "evaluation_digest"
         ],
         "interaction_affordance_digest": affordance["affordance_digest"],
-        "positive_trajectory_reexecutes_exact_qualified_phase_targets_and_budgets": True,
+        "positive_trajectory_reexecutes_exact_qualified_phase_targets_and_budgets": (
+            not allow_unqualified_construction_diagnostic
+        ),
         "candidate_policy_queried": False,
         "plan_digest": "",
     }
+    if allow_unqualified_construction_diagnostic:
+        result.update(
+            {
+                "qualification_allowed": False,
+                "diagnostic_only": True,
+                "qualification_effect": "none",
+                "upstream_construction_blockers": sorted(
+                    set(construction_blockers or [])
+                ),
+                "claim_boundary": (
+                    "blocked_construction_downstream_execution_only;cannot_qualify_"
+                    "construction_controls_policy_admission_or_task_success"
+                ),
+            }
+        )
     result["plan_digest"] = canonical_digest(result, digest_field="plan_digest")
     return result
 
@@ -993,7 +1080,10 @@ def materialize_native_graph_articulated_control_plan(
 
 
 def materialize_native_task_control_plan(
-    *, scene_plan: Mapping[str, Any], construction_result: Mapping[str, Any]
+    *,
+    scene_plan: Mapping[str, Any],
+    construction_result: Mapping[str, Any],
+    allow_unqualified_construction_diagnostic: bool = False,
 ) -> dict[str, Any]:
     """Dispatch one sealed task to its task-neutral native controls adapter."""
 
@@ -1012,6 +1102,9 @@ def materialize_native_task_control_plan(
         return materialize_native_rigid_control_plan(
             scene_plan=scene_plan,
             construction_result=construction_result,
+            allow_unqualified_construction_diagnostic=(
+                allow_unqualified_construction_diagnostic
+            ),
         )
     raise NativeTaskControlPlanError(
         [f"native_task_control_task_kind_unsupported:{task_kind or 'missing'}"]

@@ -109,8 +109,15 @@ def build_native_task_arena_controls_bundle(
     enable_synthetic_post_phase5_downstream_diagnostic: bool = False,
     bounded_orientation_reference_joint_positions_rad: Sequence[float]
     | None = None,
+    allow_unqualified_construction_diagnostic: bool = False,
 ) -> dict[str, Any]:
-    """Bind a qualified construction receipt to one or both controls."""
+    """Bind construction evidence to qualifying or diagnostic controls.
+
+    The diagnostic option carries a blocked rigid construction forward only
+    for downstream runtime measurement.  The frozen plan and execution spec
+    both bind that nonqualification, and the worker must preserve it even if a
+    later episode happens to meet its task scorer.
+    """
 
     packet = Path(packet_dir).expanduser().resolve()
     scene_plan = _read_mapping(
@@ -125,7 +132,15 @@ def build_native_task_arena_controls_bundle(
     control_plan = materialize_native_task_control_plan(
         scene_plan=scene_plan,
         construction_result=construction,
+        allow_unqualified_construction_diagnostic=(
+            allow_unqualified_construction_diagnostic
+        ),
     )
+    if allow_unqualified_construction_diagnostic and (
+        control_selection != CONTROL_PAIR
+        or scene_plan.get("task_kind") != "rigid_pick_place"
+    ):
+        raise ValueError("native_task_controls_diagnostic_mode_invalid")
     if control_selection not in CONTROL_SELECTIONS:
         raise ValueError("native_task_controls_selection_invalid")
     if control_selection != CONTROL_PAIR and not (
@@ -198,6 +213,16 @@ def build_native_task_arena_controls_bundle(
             ),
             "execution_spec_digest": "",
         }
+        if allow_unqualified_construction_diagnostic:
+            execution_spec.update(
+                {
+                    "diagnostic_only": True,
+                    "qualification_effect": "none",
+                    "upstream_construction_blockers": list(
+                        control_plan["upstream_construction_blockers"]
+                    ),
+                }
+            )
         execution_spec["execution_spec_digest"] = canonical_digest(
             execution_spec, digest_field="execution_spec_digest"
         )

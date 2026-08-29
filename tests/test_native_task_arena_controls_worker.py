@@ -1698,7 +1698,9 @@ def test_rigid_controls_environment_fails_closed_on_missing_native_channel() -> 
         environment.read_object_sample()
 
 
-def _bundled_controls_inputs(tmp_path: Path, task_kind: str) -> dict[str, dict]:
+def _bundled_controls_inputs(
+    tmp_path: Path, task_kind: str, *, diagnostic_only: bool = False
+) -> dict[str, dict]:
     """Read back exactly what the worker reads on the provider, from real bytes.
 
     Nothing here is hand-written: the packet, the construction receipt, the
@@ -1725,6 +1727,7 @@ def _bundled_controls_inputs(tmp_path: Path, task_kind: str) -> dict[str, dict]:
         construction_path = _qualified_construction(tmp_path, scene)
     else:
         from tests.test_native_task_control_plan import (
+            _blocked_rigid_construction,
             _rigid_construction,
             _rigid_scene,
         )
@@ -1751,7 +1754,16 @@ def _bundled_controls_inputs(tmp_path: Path, task_kind: str) -> dict[str, dict]:
         )
         construction_path = tmp_path / "native_task_arena_construction_result.v1.json"
         construction_path.write_text(
-            json.dumps(_rigid_construction(scene), indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                (
+                    _blocked_rigid_construction(scene)
+                    if diagnostic_only
+                    else _rigid_construction(scene)
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
 
@@ -1762,6 +1774,7 @@ def _bundled_controls_inputs(tmp_path: Path, task_kind: str) -> dict[str, dict]:
         runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="c" * 40,
         generated_at="fixed",
+        allow_unqualified_construction_diagnostic=diagnostic_only,
     )
     extracted = tmp_path / "extracted"
     with zipfile.ZipFile(bundle["bundle_path"]) as archive:
@@ -1769,7 +1782,7 @@ def _bundled_controls_inputs(tmp_path: Path, task_kind: str) -> dict[str, dict]:
     runtime = extracted / "provider_runtime"
     inner = runtime / "native_task_packet"
     read = lambda path: json.loads(path.read_text(encoding="utf-8"))  # noqa: E731
-    return {
+    result = {
         "manifest": read(runtime / "adp_arena_provider_manifest.json"),
         "packet_receipt": read(
             inner / "native_task_arena_packet_receipt.v1.json"
@@ -1783,6 +1796,12 @@ def _bundled_controls_inputs(tmp_path: Path, task_kind: str) -> dict[str, dict]:
             runtime / "runtime_inputs/adp_task_control_plan.v1.json"
         ),
     }
+    if diagnostic_only:
+        result["execution_spec"] = read(
+            runtime
+            / "runtime_inputs/adp_task_control_execution_spec.v1.json"
+        )
+    return result
 
 
 @pytest.mark.parametrize(
@@ -1801,6 +1820,27 @@ def test_real_producers_satisfy_every_controls_input_binding_relation(
 
     assert _input_binding_mismatches(**inputs) == []
     assert inputs["scene_plan"]["task_kind"] == task_kind
+
+
+def test_blocked_construction_bundle_freezes_nonqualifying_controls_boundary(
+    tmp_path: Path,
+) -> None:
+    inputs = _bundled_controls_inputs(
+        tmp_path, "rigid_pick_place", diagnostic_only=True
+    )
+
+    plan = inputs["control_plan"]
+    execution = inputs["execution_spec"]
+    assert plan["diagnostic_only"] is True
+    assert plan["qualification_allowed"] is False
+    assert plan["upstream_construction_blockers"] == sorted(
+        inputs["construction"]["blockers"]
+    )
+    assert execution["diagnostic_only"] is True
+    assert execution["qualification_effect"] == "none"
+    assert execution["upstream_construction_blockers"] == plan[
+        "upstream_construction_blockers"
+    ]
 
 
 def test_parallel_jaw_variant_is_accepted_by_real_control_plan_validator(
