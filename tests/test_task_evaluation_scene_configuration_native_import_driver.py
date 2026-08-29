@@ -184,6 +184,12 @@ def test_native_driver_seals_only_three_matching_contact_settles(
     assert runtime["native_isaac_executed"] is True
     assert runtime["support_contact_observed"] is True
     assert runtime["deterministic_reset_state_digest_repeat_count"] == 3
+    assert runtime["qualification_limits"] == {
+        "gravity_settle_seconds": 3.0,
+        "maximum_settle_rotation_rad": 0.08,
+        "maximum_settle_translation_m": 0.01,
+        "state_digest_repeat_count": 3,
+    }
 
 
 def test_native_driver_rejects_nondeterministic_reset(tmp_path: Path) -> None:

@@ -510,7 +510,7 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
         "worker_status": "queued_for_production_episode_compilation",
         "source_commit": value["expected_production_commit"],
         "result_digest": run["results"][0]["result_digest"],
-        "reference_count": len(payloads),
+        "reference_count": len(run["results"][0]["references"]),
         "full_byte_service_account_readback_passed": True,
         "blockers": [],
         "provider_mutation_performed_by_worker": False,
@@ -542,6 +542,17 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
     assert compilation["materialized_references"] == run["results"][0][
         "references"
     ]
+    assert {
+        row["contract_path"] for row in compilation["materialized_references"]
+    }.issuperset(
+        {
+            "scene.configured_revision.replacement.static_qualification",
+            (
+                "scene.configured_revision.replacement."
+                "native_import_qualification"
+            ),
+        }
+    )
     assert compilation["production_compiler_owns_episode_packet"] is True
     assert compilation["customer_supplied_prebuilt_episode_packet"] is False
 

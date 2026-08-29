@@ -388,6 +388,18 @@ def execute_native_import_component(
             "deterministic_reset_state_digest": state_digests[0],
             "maximum_observed_settle_translation_m": maximum_translation,
             "maximum_observed_settle_rotation_rad": maximum_rotation,
+            "qualification_limits": {
+                "gravity_settle_seconds": float(checks["gravity_settle_seconds"]),
+                "maximum_settle_translation_m": float(
+                    checks["maximum_settle_translation_m"]
+                ),
+                "maximum_settle_rotation_rad": float(
+                    checks["maximum_settle_rotation_rad"]
+                ),
+                "state_digest_repeat_count": int(
+                    checks["state_digest_repeat_count"]
+                ),
+            },
             "runtime_identity": dict(runtime_identity),
             "repeats": repeats,
             "physical_equivalence_claimed": False,

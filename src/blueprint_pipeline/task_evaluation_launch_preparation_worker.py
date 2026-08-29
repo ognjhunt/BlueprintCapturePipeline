@@ -810,6 +810,24 @@ def process_launch_preparation_queue(
                     },
                     {
                         "contract_path": (
+                            "scene.configured_revision.replacement."
+                            "static_qualification"
+                        ),
+                        **configured_revision["replacement"][
+                            "static_qualification"
+                        ],
+                    },
+                    {
+                        "contract_path": (
+                            "scene.configured_revision.replacement."
+                            "native_import_qualification"
+                        ),
+                        **configured_revision["replacement"][
+                            "native_import_qualification"
+                        ],
+                    },
+                    {
+                        "contract_path": (
                             "scene.configured_revision.registration.support_plane"
                         ),
                         **configured_revision["registration"]["support_plane"],
