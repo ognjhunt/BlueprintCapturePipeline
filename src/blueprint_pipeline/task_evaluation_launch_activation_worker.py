@@ -11,6 +11,7 @@ authorization, or allocates a provider resource.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -111,6 +112,20 @@ ActivationPreparer = Callable[..., dict[str, Any]]
 
 class TaskEvaluationLaunchActivationWorkerError(RuntimeError):
     """One authority-gated activation could not be completed safely."""
+
+
+def _acquire_processing_lease(path: Path) -> Any:
+    """Hold one claim inode until its worker result reaches a terminal state."""
+
+    lease = path.open("rb")
+    try:
+        fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lease.close()
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_processing_lease_unavailable"
+        ) from None
+    return lease
 
 
 def validate_release_window_uri(uri: str, *, prefix: str) -> str:
@@ -1079,6 +1094,7 @@ def process_launch_activation_queue(
     conflicts_root = results_root / "conflicts"
     conflicts_root.mkdir(mode=0o750, exist_ok=True)
     processed: list[dict[str, Any]] = []
+    processing_leases: list[Any] = []
     for source in sorted((root / "pending").glob("*.json"))[:max_messages]:
         claimed = root / "processing" / source.name
         try:
@@ -1092,6 +1108,7 @@ def process_launch_activation_queue(
         except FileNotFoundError:
             claimed.unlink(missing_ok=True)
             continue
+        processing_leases.append(_acquire_processing_lease(claimed))
         terminal_state = "prepared"
         try:
             envelope = _load_sealed(
@@ -1287,6 +1304,8 @@ def process_launch_activation_queue(
                 result = existing
         os.replace(claimed, root / terminal_state / source.name)
         processed.append(result)
+    for lease in processing_leases:
+        lease.close()
     return {
         "schema_version": "task_evaluation_launch_activation_queue_run.v1",
         "status": "processed" if processed else "idle",
