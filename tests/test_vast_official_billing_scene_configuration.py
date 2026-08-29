@@ -38,7 +38,7 @@ def _scene_configuration_terminal_fixture(
     run_root = tmp_path / "task-evaluation-launch-runs" / RUN_ID
     allocator = run_root / "allocator"
     job = allocator / "scene-configuration-job"
-    provider_run = job / "provider_run"
+    provider_run = job / "vast_provider_run"
     profile = {
         "schema_version": "task_evaluation_launch_profile.v1",
         "profile_id": "task-evaluation-scene-configuration-fixture",
@@ -105,13 +105,13 @@ def _scene_configuration_terminal_fixture(
     runtime_path.write_text("typed provider blocker\n", encoding="utf-8")
     rows = [
         {
-            "relative_path": "provider_run/vast_provider_adapter_result.json",
+            "relative_path": "vast_provider_run/vast_provider_adapter_result.json",
             "roles": ["allocator_adapter_result", "provider_run_diagnostics"],
             "size_bytes": adapter_path.stat().st_size,
             "sha256": _sha256(adapter_path),
         },
         {
-            "relative_path": "provider_run/vast_teardown_manifest.json",
+            "relative_path": "vast_provider_run/vast_teardown_manifest.json",
             "roles": ["provider_run_diagnostics", "teardown_manifest"],
             "size_bytes": teardown_path.stat().st_size,
             "sha256": _sha256(teardown_path),
