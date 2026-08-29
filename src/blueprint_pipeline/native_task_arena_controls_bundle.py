@@ -423,6 +423,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--allow-unqualified-construction-diagnostic",
+        action="store_true",
+        help=(
+            "Carry one digest-bound blocked rigid construction into an "
+            "explicitly nonqualifying controls diagnostic"
+        ),
+    )
+    parser.add_argument(
         "--bounded-orientation-reference-joint-positions-rad",
         nargs=7,
         type=float,
@@ -448,6 +456,9 @@ def main(argv: list[str] | None = None) -> int:
             zero_action_result_path=args.zero_action_result,
             enable_synthetic_post_phase5_downstream_diagnostic=(
                 args.enable_synthetic_post_phase5_downstream_diagnostic
+            ),
+            allow_unqualified_construction_diagnostic=(
+                args.allow_unqualified_construction_diagnostic
             ),
             bounded_orientation_reference_joint_positions_rad=(
                 args.bounded_orientation_reference_joint_positions_rad
