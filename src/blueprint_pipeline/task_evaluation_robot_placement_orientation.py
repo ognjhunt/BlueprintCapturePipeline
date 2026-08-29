@@ -328,3 +328,186 @@ def solve_base_yaw_for_orientation(
         "feasible_yaw_count": len(feasible_yaws),
         "yaw_sample_count": samples,
     }
+
+
+def rotation_matrix_to_xyzw(rotation: Sequence[Sequence[float]]) -> list[float]:
+    """Convert a 3x3 rotation matrix to an XYZW quaternion, branch-stable."""
+
+    try:
+        m = [[float(rotation[r][c]) for c in range(3)] for r in range(3)]
+    except (TypeError, ValueError, IndexError) as exc:
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_rotation_matrix_invalid"
+        ) from exc
+    if not all(math.isfinite(value) for row in m for value in row):
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_rotation_matrix_invalid"
+        )
+    trace = m[0][0] + m[1][1] + m[2][2]
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        quaternion = [
+            (m[2][1] - m[1][2]) / s,
+            (m[0][2] - m[2][0]) / s,
+            (m[1][0] - m[0][1]) / s,
+            0.25 * s,
+        ]
+    elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+        s = math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2.0
+        quaternion = [
+            0.25 * s,
+            (m[0][1] + m[1][0]) / s,
+            (m[0][2] + m[2][0]) / s,
+            (m[2][1] - m[1][2]) / s,
+        ]
+    elif m[1][1] > m[2][2]:
+        s = math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2.0
+        quaternion = [
+            (m[0][1] + m[1][0]) / s,
+            0.25 * s,
+            (m[1][2] + m[2][1]) / s,
+            (m[0][2] - m[2][0]) / s,
+        ]
+    else:
+        s = math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2.0
+        quaternion = [
+            (m[0][2] + m[2][0]) / s,
+            (m[1][2] + m[2][1]) / s,
+            0.25 * s,
+            (m[1][0] - m[0][1]) / s,
+        ]
+    return list(_quaternion(quaternion, field="rotation_matrix"))
+
+
+def grasp_orientation_base_xyzw(
+    *,
+    joint_positions: Sequence[float],
+    forward_kinematics: Any,
+    flange_to_grasp_orientation_xyzw: Sequence[float],
+) -> list[float]:
+    """Grasp-frame orientation in the arm base frame at a joint configuration.
+
+    ``forward_kinematics`` is injected rather than imported so this stays
+    embodiment-agnostic: any callable returning ``(position, rotation_matrix)``
+    in the base frame works.  The flange-to-grasp offset is a fixed tool-mount
+    rotation and belongs to the robot profile, not to this computation.
+    """
+
+    try:
+        _position, rotation = forward_kinematics(list(joint_positions))
+    except RobotPlacementOrientationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any solver failure is a refusal
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_forward_kinematics_failed"
+        ) from exc
+    return quaternion_multiply_xyzw(
+        rotation_matrix_to_xyzw(rotation),
+        _quaternion(
+            flange_to_grasp_orientation_xyzw,
+            field="flange_to_grasp_orientation_xyzw",
+        ),
+    )
+
+
+def solve_task_aware_reset_joints(
+    *,
+    target_orientation_base_xyzw: Sequence[float],
+    nominal_joint_positions: Sequence[float],
+    joint_limits_rad: Sequence[Sequence[float]],
+    forward_kinematics: Any,
+    flange_to_grasp_orientation_xyzw: Sequence[float],
+    searchable_joint_indices: Sequence[int] = (3, 4, 5, 6),
+    coarse_samples: int = 9,
+    refine_rounds: int = 4,
+) -> dict[str, Any]:
+    """Pick a reset configuration whose grasp frame already faces the task.
+
+    The reset pose is otherwise a fixed constant, so a task demanding a
+    horizontal gripper inherits whatever orientation the profile happened to
+    ship -- on the Franka, pointing straight down, a full pi away.  Searching
+    only the wrist joints keeps the arm in its nominal retracted position while
+    moving the orientation that the phase budget has to pay for.
+
+    Coordinate-descent over the searchable joints: coarse sweep, then successive
+    refinement around the incumbent.  Deterministic, derivative-free, and small
+    enough to run inside a placement gate.
+    """
+
+    target = _quaternion(
+        target_orientation_base_xyzw, field="target_orientation_base_xyzw"
+    )
+    try:
+        nominal = [float(value) for value in nominal_joint_positions]
+        limits = [
+            (float(low), float(high)) for low, high in joint_limits_rad
+        ]
+        indices = [int(index) for index in searchable_joint_indices]
+        samples = int(coarse_samples)
+        rounds = int(refine_rounds)
+    except (TypeError, ValueError) as exc:
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_reset_search_invalid"
+        ) from exc
+    if (
+        not nominal
+        or len(limits) != len(nominal)
+        or samples < 2
+        or rounds < 0
+        or any(not 0 <= index < len(nominal) for index in indices)
+        or any(low > high for low, high in limits)
+        or not all(math.isfinite(value) for value in nominal)
+    ):
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_reset_search_invalid"
+        )
+
+    def slew_for(joints: Sequence[float]) -> float:
+        achieved = grasp_orientation_base_xyzw(
+            joint_positions=joints,
+            forward_kinematics=forward_kinematics,
+            flange_to_grasp_orientation_xyzw=flange_to_grasp_orientation_xyzw,
+        )
+        return quaternion_angle_rad(achieved, target)
+
+    incumbent = list(nominal)
+    nominal_slew = slew_for(incumbent)
+    best_slew = nominal_slew
+    # Coordinate descent with a shrinking window per round.
+    for round_index in range(rounds + 1):
+        shrink = 0.5**round_index
+        improved = False
+        for index in indices:
+            low, high = limits[index]
+            span = (high - low) * shrink
+            centre = incumbent[index]
+            start = max(low, centre - span / 2.0)
+            stop = min(high, centre + span / 2.0)
+            if stop <= start:
+                continue
+            for sample in range(samples):
+                value = start + (stop - start) * sample / (samples - 1)
+                trial = list(incumbent)
+                trial[index] = value
+                candidate = slew_for(trial)
+                if candidate < best_slew - 1e-12:
+                    best_slew = candidate
+                    incumbent = trial
+                    improved = True
+        if not improved and round_index > 0:
+            break
+
+    achieved = grasp_orientation_base_xyzw(
+        joint_positions=incumbent,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=flange_to_grasp_orientation_xyzw,
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "joint_positions_rad": [float(value) for value in incumbent],
+        "achieved_grasp_orientation_base_xyzw": achieved,
+        "residual_slew_rad": best_slew,
+        "nominal_slew_rad": nominal_slew,
+        "improvement_rad": nominal_slew - best_slew,
+        "searchable_joint_indices": indices,
+    }
