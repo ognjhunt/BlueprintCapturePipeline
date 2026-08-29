@@ -550,6 +550,72 @@ def _trajectory_gate_worker(
     )
 
 
+def _geometry_gate_chunk_worker(
+    work: tuple[
+        RobotPlacementGeometryIndex,
+        Sequence[Mapping[str, Any]],
+        Sequence[float],
+        str,
+    ],
+) -> list[dict[str, Any]]:
+    index, proposals, target, robot_id = work
+    return [
+        validate_robot_placement_geometry_candidate(
+            index=index,
+            proposal=proposal,
+            target_position_world_m=target,
+            robot_id=robot_id,
+        )
+        for proposal in proposals
+    ]
+
+
+def _validated_worker_count(worker_count: int, *, blocker: str) -> int:
+    try:
+        workers = int(worker_count)
+    except (TypeError, ValueError) as exc:
+        raise RobotPlacementGeometryError(blocker) from exc
+    if not 1 <= workers <= 32:
+        raise RobotPlacementGeometryError(blocker)
+    return workers
+
+
+def _parallel_geometry_gates(
+    *,
+    index: RobotPlacementGeometryIndex,
+    proposals: Sequence[Mapping[str, Any]],
+    target_position_world_m: Sequence[float],
+    robot_id: str,
+    worker_count: int,
+) -> list[dict[str, Any]]:
+    """Evaluate complete geometry gates concurrently, retaining proposal order."""
+
+    workers = _validated_worker_count(
+        worker_count, blocker="robot_placement_geometry_worker_count_invalid"
+    )
+    if workers == 1 or len(proposals) <= 1:
+        return _geometry_gate_chunk_worker(
+            (index, proposals, target_position_world_m, robot_id)
+        )
+    active_workers = min(workers, len(proposals))
+    chunk_size = math.ceil(len(proposals) / active_workers)
+    work = [
+        (
+            index,
+            [dict(proposal) for proposal in proposals[offset : offset + chunk_size]],
+            list(target_position_world_m),
+            robot_id,
+        )
+        for offset in range(0, len(proposals), chunk_size)
+    ]
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=active_workers, mp_context=context
+    ) as executor:
+        chunks = executor.map(_geometry_gate_chunk_worker, work)
+        return [gate for chunk in chunks for gate in chunk]
+
+
 def _parallel_trajectory_gates(
     *,
     proposals: Sequence[Mapping[str, Any]],
@@ -560,16 +626,9 @@ def _parallel_trajectory_gates(
 ) -> list[dict[str, Any]]:
     """Evaluate independent base candidates concurrently, retaining order."""
 
-    try:
-        workers = int(worker_count)
-    except (TypeError, ValueError) as exc:
-        raise RobotPlacementGeometryError(
-            "robot_placement_trajectory_worker_count_invalid"
-        ) from exc
-    if not 1 <= workers <= 32:
-        raise RobotPlacementGeometryError(
-            "robot_placement_trajectory_worker_count_invalid"
-        )
+    workers = _validated_worker_count(
+        worker_count, blocker="robot_placement_trajectory_worker_count_invalid"
+    )
     work = [
         (
             dict(proposal),
@@ -711,6 +770,7 @@ def enumerate_robot_placement_geometry_candidates(
     trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     trajectory_phase_ids: Sequence[str] = (),
     trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
+    geometry_worker_count: int = 1,
     trajectory_worker_count: int = 1,
 ) -> list[dict[str, Any]]:
     """Return ranked, deterministic, geometry-passing candidates for agent context."""
@@ -743,8 +803,8 @@ def enumerate_robot_placement_geometry_candidates(
         np.arange(minimum_radius, maximum_radius + 1.0e-9, profile.probe_step_m),
         key=lambda value: (abs(float(value) - 0.45), float(value)),
     )
-    prequalified: list[
-        tuple[dict[str, Any], dict[str, Any], SupportSurface, float, int]
+    geometry_work: list[
+        tuple[dict[str, Any], SupportSurface, float, int]
     ] = []
     for surface_index, surface in enumerate(surfaces[:12]):
         for radius_index, radius in enumerate(radii):
@@ -772,17 +832,24 @@ def enumerate_robot_placement_geometry_candidates(
                         ],
                     },
                 }
-                gate = validate_robot_placement_geometry_candidate(
-                    index=index,
-                    proposal=proposal,
-                    target_position_world_m=target,
-                    robot_id=robot_id,
+                geometry_work.append(
+                    (proposal, surface, float(radius), angle_index)
                 )
-                if gate["status"] != "passed":
-                    continue
-                prequalified.append(
-                    (proposal, gate, surface, float(radius), angle_index)
-                )
+
+    geometry_gates = _parallel_geometry_gates(
+        index=index,
+        proposals=[row[0] for row in geometry_work],
+        target_position_world_m=target,
+        robot_id=robot_id,
+        worker_count=geometry_worker_count,
+    )
+    prequalified = [
+        (proposal, gate, surface, radius, angle_index)
+        for (proposal, surface, radius, angle_index), gate in zip(
+            geometry_work, geometry_gates, strict=True
+        )
+        if gate["status"] == "passed"
+    ]
 
     trajectory_gates = _parallel_trajectory_gates(
         proposals=[row[0] for row in prequalified],
