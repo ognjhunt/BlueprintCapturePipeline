@@ -138,6 +138,7 @@ def test_projection_refuses_diagnostic_result_even_when_authorized() -> None:
     ("field", "value"),
     [
         ("summary", "Internal path /var/lib/blueprint/scene.usdc"),
+        ("summary", "Internal path /tmp/blueprint/scene.usdc"),
         ("title", "s3://private-bucket/task-thumbnail.png"),
         ("category", "API_KEY material"),
     ],

@@ -39,7 +39,8 @@ _FORBIDDEN_PUBLIC_TEXT = (
     "file://",
     "/var/",
     "/private/",
-    "/tmp/",
+    # This is a forbidden-public-text rejection marker, never a filesystem target.
+    "/tmp/",  # nosec B108
     "\\",
     "api_key",
     "password",

@@ -21,15 +21,8 @@ from typing import Any
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_evidence_contracts import valid_vast_provider_zero_api_call
-from .native_task_arena_construction_bundle import (
-    load_verified_native_task_arena_construction_bundle,
-)
-from .native_task_arena_controls_bundle import (
-    load_verified_native_task_arena_controls_bundle,
-)
-from .native_task_arena_policy_bundle import load_verified_native_task_arena_policy_bundle
-from .native_task_arena_policy_diagnostic_bundle import (
-    load_verified_native_task_arena_policy_diagnostic_bundle,
+from .native_task_arena_authority_bundle_loader import (
+    native_task_arena_bundle_loader as _bundle_loader,
 )
 from .paid_attempt_authority import (
     bind_lane_prior_spend,
@@ -838,15 +831,6 @@ def validate_terminal_spend_chain(
             "provider_zero": _record(zero_file),
         },
     }
-
-
-def _bundle_loader(mode: str):
-    return {
-        "construction_canary": load_verified_native_task_arena_construction_bundle,
-        "controls": load_verified_native_task_arena_controls_bundle,
-        "policy": load_verified_native_task_arena_policy_bundle,
-        "policy_diagnostic": load_verified_native_task_arena_policy_diagnostic_bundle,
-    }[mode]
 
 
 def _native_policy_campaign_binding(
