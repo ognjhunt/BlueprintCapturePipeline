@@ -134,6 +134,12 @@ DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES = (
         for name in ("pending", "processing", "completed", "blocked")
     ),
 )
+DEFAULT_CONFIGURED_CONTROLS_PLAN_ROOT = (
+    "/etc/blueprint/task-evaluation-configured-controls-plans"
+)
+DEFAULT_CONFIGURED_CONTROLS_WEBAPP_SECRET = (
+    "/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret"
+)
 DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "/etc/systemd/system/blueprint-pipeline-intake.service.d/"
     "90-blueprint-deploy-identity.conf"
@@ -549,6 +555,80 @@ def _install_episode_compilation_runtime_directories(
             }
         )
     return receipts
+
+
+def _install_configured_controls_runtime_prerequisites(
+    *,
+    plan_root: str = DEFAULT_CONFIGURED_CONTROLS_PLAN_ROOT,
+    webapp_secret: str = DEFAULT_CONFIGURED_CONTROLS_WEBAPP_SECRET,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+    root_uid: int = 0,
+    chown: Any = os.chown,
+    stat_reader: Any = lambda path: path.stat(),
+) -> dict[str, Any]:
+    """Provision the timer plan root and secret permission without reading it."""
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        raise ControlPlaneDeployError(
+            f"deploy_configured_controls_account_missing:{account}"
+        )
+    owner_uid, owner_gid = account_ids
+    root = Path(plan_root)
+    secret = Path(webapp_secret)
+    if (
+        not root.is_absolute()
+        or not secret.is_absolute()
+        or root.is_symlink()
+        or secret.is_symlink()
+    ):
+        raise ControlPlaneDeployError(
+            "deploy_configured_controls_runtime_path_invalid"
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        if not root.is_dir() or not secret.is_file():
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_runtime_prerequisite_missing"
+            )
+        root_metadata = stat_reader(root)
+        if root_metadata.st_uid != owner_uid or root_metadata.st_gid != owner_gid:
+            chown(root, owner_uid, owner_gid)
+        if stat.S_IMODE(root_metadata.st_mode) != 0o750:
+            root.chmod(0o750)
+        secret_metadata = stat_reader(secret)
+        if secret_metadata.st_uid != root_uid or secret_metadata.st_gid != owner_gid:
+            chown(secret, root_uid, owner_gid)
+        if stat.S_IMODE(secret_metadata.st_mode) != 0o440:
+            secret.chmod(0o440)
+        root_readback = stat_reader(root)
+        secret_readback = stat_reader(secret)
+    except OSError as exc:
+        raise ControlPlaneDeployError(
+            "deploy_configured_controls_runtime_prerequisite_install_failed"
+        ) from exc
+    if (
+        root_readback.st_uid != owner_uid
+        or root_readback.st_gid != owner_gid
+        or stat.S_IMODE(root_readback.st_mode) != 0o750
+        or secret_readback.st_uid != root_uid
+        or secret_readback.st_gid != owner_gid
+        or stat.S_IMODE(secret_readback.st_mode) != 0o440
+    ):
+        raise ControlPlaneDeployError(
+            "deploy_configured_controls_runtime_prerequisite_readback_mismatch"
+        )
+    return {
+        "plan_root": str(root),
+        "plan_root_owner_uid": owner_uid,
+        "plan_root_owner_gid": owner_gid,
+        "plan_root_mode": "0750",
+        "webapp_secret": str(secret),
+        "webapp_secret_owner_uid": root_uid,
+        "webapp_secret_owner_gid": owner_gid,
+        "webapp_secret_mode": "0440",
+        "secret_bytes_read": False,
+    }
 
 
 @contextlib.contextmanager
@@ -1400,6 +1480,9 @@ def deploy_control_plane_commit(
         episode_compilation_runtime_directories = (
             _install_episode_compilation_runtime_directories()
         )
+        configured_controls_runtime = (
+            _install_configured_controls_runtime_prerequisites()
+        )
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -1456,6 +1539,7 @@ def deploy_control_plane_commit(
         "episode_compilation_runtime_directories": (
             episode_compilation_runtime_directories
         ),
+        "configured_controls_runtime": configured_controls_runtime,
         "path_unit_states": [
             row for row in automation_unit_state_receipts if row["unit"].endswith(".path")
         ],

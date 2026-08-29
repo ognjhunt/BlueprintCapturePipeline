@@ -979,6 +979,11 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
     monkeypatch.setattr(
         deploy,
+        "_install_configured_controls_runtime_prerequisites",
+        lambda: {"plan_root": "/etc/blueprint/configured-controls"},
+    )
+    monkeypatch.setattr(
+        deploy,
         "validate_splat_render_prerequisites",
         lambda **kwargs: {
             "entrypoints": {
@@ -1095,6 +1100,9 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["episode_compilation_runtime_directories"] == [
         {"path": "/runtime/episode-compilations/pending"}
     ]
+    assert receipt["configured_controls_runtime"] == {
+        "plan_root": "/etc/blueprint/configured-controls"
+    }
     assert receipt["activated_path_units"] == [
         {
             "unit": "blueprint-task-evaluation-launch-dispatcher.path",
@@ -1130,6 +1138,93 @@ def test_episode_compilation_directory_retry_skips_correct_privileged_mutations(
 
     assert [row["path"] for row in receipts] == [str(path) for path in directories]
     assert all(row["mode"] == "0750" for row in receipts)
+
+
+def test_configured_controls_prerequisites_skip_correct_cross_owner_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "plans"
+    root.mkdir()
+    secret = tmp_path / "submit-secret"
+    secret.write_bytes(b"not-read-by-installer")
+    service_uid = 1234
+    service_gid = 2345
+    root_uid = 0
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (service_uid, service_gid)
+    )
+
+    class Metadata:
+        def __init__(self, uid: int, gid: int, mode: int) -> None:
+            self.st_uid = uid
+            self.st_gid = gid
+            self.st_mode = mode
+
+    def metadata(path: Path) -> Metadata:
+        return (
+            Metadata(service_uid, service_gid, 0o40750)
+            if path == root
+            else Metadata(root_uid, service_gid, 0o100440)
+        )
+
+    def unexpected(*_args: object) -> None:
+        raise AssertionError("already-correct cross-owner state must not mutate")
+
+    receipt = deploy._install_configured_controls_runtime_prerequisites(
+        plan_root=str(root),
+        webapp_secret=str(secret),
+        account="blueprint",
+        root_uid=root_uid,
+        chown=unexpected,
+        stat_reader=metadata,
+    )
+    assert receipt["secret_bytes_read"] is False
+
+
+def test_configured_controls_prerequisites_repair_wrong_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "plans"
+    root.mkdir()
+    secret = tmp_path / "submit-secret"
+    secret.write_bytes(b"not-read-by-installer")
+    service_uid, service_gid, root_uid = 1234, 2345, 0
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (service_uid, service_gid)
+    )
+    calls: list[tuple[str, int, int]] = []
+    reads = {root: 0, secret: 0}
+
+    class Metadata:
+        def __init__(self, uid: int, gid: int, mode: int) -> None:
+            self.st_uid = uid
+            self.st_gid = gid
+            self.st_mode = mode
+
+    def metadata(path: Path) -> Metadata:
+        reads[path] += 1
+        if reads[path] == 1:
+            return Metadata(999, 999, 0o40777 if path == root else 0o100400)
+        return (
+            Metadata(service_uid, service_gid, 0o40750)
+            if path == root
+            else Metadata(root_uid, service_gid, 0o100440)
+        )
+
+    monkeypatch.setattr(Path, "chmod", lambda path, mode: calls.append((str(path), mode, -1)))
+    receipt = deploy._install_configured_controls_runtime_prerequisites(
+        plan_root=str(root),
+        webapp_secret=str(secret),
+        account="blueprint",
+        root_uid=root_uid,
+        chown=lambda path, uid, gid: calls.append((str(path), uid, gid)),
+        stat_reader=metadata,
+    )
+    assert (str(root), service_uid, service_gid) in calls
+    assert (str(secret), root_uid, service_gid) in calls
+    assert (str(root), 0o750, -1) in calls
+    assert (str(secret), 0o440, -1) in calls
+    assert receipt["secret_bytes_read"] is False
 
 
 def test_deploy_refuses_mismatched_promotion_before_moving_source(

@@ -42,7 +42,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipel
 Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
-Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/task_evaluation_launch_webapp_hmac
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret
 Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL=https://tryblueprint.io/api/internal/task-evaluation-launch-submissions
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import stat
 import subprocess  # nosec B404 - fixed repository-owned launch-only client
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -23,6 +24,7 @@ from .decision_evidence_contracts import canonical_digest, cross_runtime_canonic
 from .task_evaluation_configured_controls_progression import (
     PROGRESSION_SCHEMA_VERSION,
     TaskEvaluationConfiguredControlsProgressionError,
+    _publish_materialized_file,
     stage_configured_controls_activation,
     stage_configured_controls_episode_preparation,
     submit_authorized_progression_launch,
@@ -110,11 +112,99 @@ def _plan(path: Path) -> dict[str, Any]:
         or value.get("enabled") is not True
         or value.get("plan_digest") != canonical_digest(value, digest_field="plan_digest")
         or not str(value.get("source_launch_id") or "").strip()
+        or not str(value.get("source_launch_receipt_digest") or "").startswith(
+            "sha256:"
+        )
         or not str(value.get("submitted_by") or "").strip()
         or set(value.get("phases") or {}) != {"construction", "controls"}
+        or set(value["phases"].get("construction") or {})
+        != {
+            "release_window_path",
+            "lineage_path",
+            "authorization_path",
+            "launch_authority_path",
+        }
+        or set(value["phases"].get("controls") or {})
+        != {
+            "release_window_path",
+            "authorization_path",
+            "launch_authority_path",
+        }
+        or not Path(str(value.get("profile_dir") or "")).is_absolute()
+        or Path(str(value.get("profile_dir") or "")).is_symlink()
+        or not Path(str(value.get("profile_dir") or "")).is_dir()
     ):
         raise TaskEvaluationConfiguredControlsProgressionWorkerError(
             "configured_controls_worker_plan_invalid"
+        )
+    inventory = value.get("artifact_inventory")
+    declared_paths: set[str] = set()
+
+    def collect_paths(row: Any, key: str = "") -> None:
+        if isinstance(row, Mapping):
+            for child_key, child in row.items():
+                if child_key.endswith("_path") and isinstance(child, str):
+                    declared_paths.add(child)
+                elif child_key == "lineage_artifact_paths" and isinstance(
+                    child, Mapping
+                ):
+                    declared_paths.update(str(item) for item in child.values())
+                elif child_key not in {"artifact_inventory", "future_outputs"}:
+                    collect_paths(child, child_key)
+
+    collect_paths(value)
+    if not isinstance(inventory, Mapping) or not inventory:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_plan_inventory_invalid"
+        )
+    inventory_paths: set[str] = set()
+    for row in inventory.values():
+        if not isinstance(row, Mapping) or set(row) != {
+            "path",
+            "digest",
+            "size_bytes",
+            "mode",
+        }:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_plan_inventory_invalid"
+            )
+        artifact = Path(str(row.get("path") or ""))
+        try:
+            metadata = artifact.stat()
+        except OSError as exc:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_plan_inventory_invalid"
+            ) from exc
+        if (
+            not artifact.is_absolute()
+            or artifact.is_symlink()
+            or not artifact.is_file()
+            or _sha256(artifact) != row.get("digest")
+            or metadata.st_size != row.get("size_bytes")
+            or f"{stat.S_IMODE(metadata.st_mode):04o}" != row.get("mode")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_plan_inventory_invalid"
+            )
+        inventory_paths.add(str(artifact))
+    future = value.get("future_outputs")
+    if not isinstance(future, Mapping) or set(future) != {"construction", "controls"}:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_plan_future_outputs_invalid"
+        )
+    for phase in ("construction", "controls"):
+        row = future.get(phase)
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"expected_activation_id"}
+            or not str(row.get("expected_activation_id") or "")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_plan_future_outputs_invalid"
+            )
+    if inventory_paths != declared_paths:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_plan_inventory_invalid"
         )
     return value
 
@@ -216,6 +306,221 @@ def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | Non
     return _load(matches[0], blocker="configured_controls_worker_preparation_result_invalid")
 
 
+def _activation_authority(
+    *, activation_queue_root: Path, profile_dir: Path, activation_id: str
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    matches = list((activation_queue_root / "results").glob(f"{activation_id}-*.json"))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_activation_result_ambiguous"
+        )
+    activation = _load(
+        matches[0], blocker="configured_controls_worker_activation_result_invalid"
+    )
+    profile_id = str(activation.get("profile_id") or "")
+    profile_path = profile_dir / f"{profile_id}.json"
+    if (
+        activation.get("activation_id") != activation_id
+        or not profile_id
+        or profile_path.parent != profile_dir
+        or not profile_path.is_file()
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_activation_result_invalid"
+        )
+    profile = _load(
+        profile_path, blocker="configured_controls_worker_profile_invalid"
+    )
+    if profile.get("profile_digest") != activation.get("profile_digest"):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_profile_invalid"
+        )
+    return activation, profile
+
+
+def _construction_predecessor(
+    *,
+    launch_state_root: Path,
+    construction_launch_id: str,
+    publisher: Callable[..., Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str]] | None:
+    """Resolve and publish the exact terminal construction evidence set."""
+
+    run_root = launch_state_root / construction_launch_id
+    receipt_path = run_root / "launch_receipt.json"
+    if not receipt_path.exists():
+        return None
+    receipt = _load(
+        receipt_path,
+        blocker="configured_controls_worker_construction_launch_receipt_invalid",
+    )
+    expected_receipt_digest = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    terminal = receipt.get("terminal_evidence")
+    terminal_artifact = (
+        terminal.get("result") if isinstance(terminal, Mapping) else None
+    )
+    if (
+        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
+        or receipt.get("status") != "completed"
+        or receipt.get("launch_id") != construction_launch_id
+        or receipt.get("run_id") != construction_launch_id
+        or receipt.get("receipt_digest") != expected_receipt_digest
+        or not isinstance(terminal, Mapping)
+        or terminal.get("status") != "passed"
+        or not isinstance(terminal_artifact, Mapping)
+        or terminal_artifact.get("exists") is not True
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_launch_receipt_invalid"
+        )
+    result_path = Path(str(terminal_artifact.get("path") or "")).expanduser()
+    if (
+        result_path.is_symlink()
+        or not result_path.is_file()
+        or _sha256(result_path) != terminal_artifact.get("digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_terminal_artifact_invalid"
+        )
+    result = _load(
+        result_path,
+        blocker="configured_controls_worker_construction_terminal_result_invalid",
+    )
+    construction_result_path = Path(
+        str(result.get("native_control_result_path") or "")
+    ).expanduser()
+    construction_result = _load(
+        construction_result_path,
+        blocker="configured_controls_worker_construction_result_invalid",
+    )
+    if (
+        result.get("schema_version") != "native_task_arena_vast_run.v1"
+        or result.get("status") != "completed"
+        or result.get("blockers") not in ([], ())
+        or construction_result.get("schema_version")
+        != "native_task_arena_construction_result.v1"
+        or construction_result.get("status") != "completed"
+        or construction_result.get("construction_gate_qualified") is not True
+        or construction_result.get("candidate_policy_queried") is not False
+        or construction_result.get("blockers") not in ([], ())
+        or construction_result.get("result_digest")
+        != canonical_digest(construction_result, digest_field="result_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_result_invalid"
+        )
+    sync_path = run_root / "webapp_sync_succeeded.json"
+    sync = _load(
+        sync_path,
+        blocker="configured_controls_worker_construction_webapp_sync_missing",
+    )
+    try:
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=sync)
+    except Exception as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_webapp_sync_invalid"
+        ) from exc
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = _load(
+        zero_path,
+        blocker="configured_controls_worker_construction_provider_zero_missing",
+    )
+    if (
+        zero.get("schema_version")
+        != "task_evaluation_post_teardown_provider_zero.v1"
+        or zero.get("status") != "provider_zero_confirmed"
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("allocator_invoked") is not False
+        or zero.get("provider_mutation_performed") is not False
+        or zero.get("automatic_retry_performed") is not False
+        or zero.get("blockers") != []
+        or zero.get("provider_zero_receipt_digest")
+        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
+        or any(
+            zero.get(field) != receipt.get(field)
+            for field in (
+                "launch_id",
+                "run_id",
+                "request_digest",
+                "receipt_digest",
+                "launch_profile_digest",
+            )
+        )
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_provider_zero_invalid"
+        )
+    profile_path = run_root / "launch_profile.json"
+    profile = _load(
+        profile_path,
+        blocker="configured_controls_worker_construction_profile_invalid",
+    )
+    if (
+        profile.get("schema_version") != "task_evaluation_launch_profile.v1"
+        or profile.get("profile_digest") != receipt.get("launch_profile_digest")
+        or profile.get("profile_digest")
+        != canonical_digest(profile, digest_field="profile_digest")
+        or not isinstance(profile.get("immutable_inputs"), list)
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_construction_profile_invalid"
+        )
+    input_names = {
+        "prior_authority": "native_task_arena_attempt_authority",
+        "prior_spend_reconciliation": (
+            "native_task_arena_attempt_authority_prior_spend_reconciliation"
+        ),
+    }
+    artifact_paths: dict[str, Path] = {
+        "prior_result": result_path,
+        "prior_launch_receipt": receipt_path,
+        "prior_webapp_sync": sync_path,
+        "prior_provider_zero": zero_path,
+        "construction_result": construction_result_path,
+    }
+    for role, expected_name in input_names.items():
+        matches = [
+            row
+            for row in profile["immutable_inputs"]
+            if isinstance(row, Mapping) and row.get("name") == expected_name
+        ]
+        if len(matches) != 1:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_construction_profile_invalid"
+            )
+        row = matches[0]
+        path = Path(str(row.get("path") or "")).expanduser()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or _sha256(path) != row.get("digest")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_construction_profile_input_invalid"
+            )
+        artifact_paths[role] = path
+    lineage: dict[str, Any] = {"kind": "predecessor"}
+    published_paths: dict[str, str] = {}
+    for role, path in sorted(artifact_paths.items()):
+        lineage[role] = _publish_materialized_file(
+            path=path,
+            object_name=(
+                f"construction-predecessor/{construction_launch_id}/{role}.json"
+            ),
+            publisher=publisher,
+        )
+        published_paths[role] = str(path)
+    return lineage, published_paths
+
+
 def _production_submitter(
     *, repo_root: Path, secret_file: Path, endpoint: str, state_root: Path
 ) -> Submitter:
@@ -286,7 +591,23 @@ def advance_configured_controls_plan(
     base_path = state / "configured_controls_progression.v1.json"
     base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
     if base is None:
-        terminal, _, _ = _validate_source(run_root)
+        terminal, receipt, _ = _validate_source(run_root)
+        if receipt.get("receipt_digest") != plan["source_launch_receipt_digest"]:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_source_receipt_mismatch"
+            )
+        namespace = (
+            f"{terminal['run_id']}-franka-controls-"
+            f"{plan['expected_production_commit'][:12]}-episode"
+        )
+        if any(
+            plan["future_outputs"][phase]["expected_activation_id"]
+            != f"{namespace}-{phase}"
+            for phase in ("construction", "controls")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_future_activation_identity_mismatch"
+            )
         publication = _input(
             terminal.get("publication_result_path"), blocker="configured_controls_worker_publication_missing"
         )
@@ -347,10 +668,16 @@ def advance_configured_controls_plan(
         construction_launch_path, statuses={"construction_launch_queued"}
     )
     if construction_launch is None:
-        activation_result_path = Path(str(construction_phase.get("activation_result_path") or ""))
-        profile_path = Path(str(construction_phase.get("profile_path") or ""))
-        if not activation_result_path.is_file() or not profile_path.is_file():
+        authority = _activation_authority(
+            activation_queue_root=Path(activation_queue_root),
+            profile_dir=Path(plan["profile_dir"]),
+            activation_id=plan["future_outputs"]["construction"][
+                "expected_activation_id"
+            ],
+        )
+        if authority is None:
             return {"status": "awaiting_construction_activation", "source_launch_id": plan["source_launch_id"]}
+        activation_result, profile = authority
         if submitter is None:
             if repo_root is None or webapp_secret_file is None:
                 raise TaskEvaluationConfiguredControlsProgressionWorkerError(
@@ -362,8 +689,8 @@ def advance_configured_controls_plan(
             )
         result = submit_authorized_progression_launch(
             activation_progression=construction_activation,
-            activation_result=_input(activation_result_path, blocker="configured_controls_worker_activation_result_invalid"),
-            profile=_input(profile_path, blocker="configured_controls_worker_profile_invalid"),
+            activation_result=activation_result,
+            profile=profile,
             launch_authority=_input(construction_phase.get("launch_authority_path"), blocker="configured_controls_worker_launch_authority_missing"),
             submitter=submitter,
         )
@@ -376,16 +703,22 @@ def advance_configured_controls_plan(
         controls_activation_path, statuses={"controls_activation_queued"}
     )
     if controls_activation is None:
-        artifact_paths = controls_phase.get("lineage_artifact_paths")
-        if not isinstance(artifact_paths, Mapping) or any(
-            not Path(str(path)).is_file() for path in artifact_paths.values()
-        ):
-            return {"status": "awaiting_qualified_construction", "source_launch_id": plan["source_launch_id"]}
+        predecessor = _construction_predecessor(
+            launch_state_root=Path(launch_state_root),
+            construction_launch_id=str(construction_launch["launch_id"]),
+            publisher=publisher_factory(),
+        )
+        if predecessor is None:
+            return {
+                "status": "awaiting_qualified_construction",
+                "source_launch_id": plan["source_launch_id"],
+            }
+        lineage, artifact_paths = predecessor
         result = stage_configured_controls_activation(
             progression=base,
             preparation_result=preparation,
             release_window=_input(controls_phase.get("release_window_path"), blocker="configured_controls_worker_release_window_missing"),
-            lineage=_input(controls_phase.get("lineage_path"), blocker="configured_controls_worker_lineage_missing"),
+            lineage=lineage,
             authorization=_input(controls_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing"),
             lane="native_task_arena_controls",
             queue_root=activation_queue_root,
@@ -399,10 +732,14 @@ def advance_configured_controls_plan(
     controls_launch = _sealed_progression(controls_launch_path, statuses={"controls_pair_launch_queued"})
     if controls_launch is not None:
         return {"status": "controls_pair_launch_queued", "source_launch_id": plan["source_launch_id"]}
-    activation_result_path = Path(str(controls_phase.get("activation_result_path") or ""))
-    profile_path = Path(str(controls_phase.get("profile_path") or ""))
-    if not activation_result_path.is_file() or not profile_path.is_file():
+    authority = _activation_authority(
+        activation_queue_root=Path(activation_queue_root),
+        profile_dir=Path(plan["profile_dir"]),
+        activation_id=plan["future_outputs"]["controls"]["expected_activation_id"],
+    )
+    if authority is None:
         return {"status": "awaiting_controls_activation", "source_launch_id": plan["source_launch_id"]}
+    activation_result, profile = authority
     if submitter is None:
         if repo_root is None or webapp_secret_file is None:
             raise TaskEvaluationConfiguredControlsProgressionWorkerError(
@@ -414,8 +751,8 @@ def advance_configured_controls_plan(
         )
     result = submit_authorized_progression_launch(
         activation_progression=controls_activation,
-        activation_result=_input(activation_result_path, blocker="configured_controls_worker_activation_result_invalid"),
-        profile=_input(profile_path, blocker="configured_controls_worker_profile_invalid"),
+        activation_result=activation_result,
+        profile=profile,
         launch_authority=_input(controls_phase.get("launch_authority_path"), blocker="configured_controls_worker_launch_authority_missing"),
         submitter=submitter,
     )
