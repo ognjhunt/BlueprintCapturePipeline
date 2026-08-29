@@ -129,6 +129,7 @@ def _sources(tmp_path: Path) -> dict[str, Path]:
             "global_live_resource_count": 0,
             "provider_zero": True,
             "inventory": [],
+            "stderr_present": False,
             "raw_secret_values_recorded": False,
             "provider_zero_digest": "",
         },
