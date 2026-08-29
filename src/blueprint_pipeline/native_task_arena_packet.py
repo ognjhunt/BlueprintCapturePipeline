@@ -20,6 +20,7 @@ from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
+from .native_task_arena_runtime import author_gpu_compatible_scene_collision
 from .native_task_execution_admission import seal_native_task_execution_admission
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
 from .paired_target_native_construction_bindings import (
@@ -394,10 +395,22 @@ def materialize_native_task_arena_packet(
                 raise NativeTaskArenaPacketError(
                     [f"native_task_arena_packet_asset_filename_duplicate:{filename}"]
                 )
-            shutil.copyfile(source_path, destination)
-            if (
-                destination.stat().st_size != source_size
-                or _sha256(destination) != source_digest
+            collision_adaptation = None
+            if role == "scene_collision":
+                try:
+                    collision_adaptation = author_gpu_compatible_scene_collision(
+                        source_path, destination
+                    )
+                except Exception as exc:
+                    raise NativeTaskArenaPacketError(
+                        ["native_task_arena_packet_scene_collision_adaptation_failed"]
+                    ) from exc
+            if collision_adaptation is None:
+                shutil.copyfile(source_path, destination)
+            staged_size = destination.stat().st_size
+            staged_digest = _sha256(destination)
+            if collision_adaptation is None and (
+                staged_size != source_size or staged_digest != source_digest
             ):
                 raise NativeTaskArenaPacketError(
                     [f"native_task_arena_packet_asset_copy_mismatch:{role}"]
@@ -409,8 +422,13 @@ def materialize_native_task_arena_packet(
                     "asset_id": raw.get("asset_id"),
                     "source": source,
                     "staged_relative_path": f"assets/{filename}",
-                    "staged_size_bytes": source_size,
-                    "staged_sha256": source_digest,
+                    "staged_size_bytes": staged_size,
+                    "staged_sha256": staged_digest,
+                    **(
+                        {"static_scene_collision_adaptation": collision_adaptation}
+                        if collision_adaptation is not None
+                        else {}
+                    ),
                 }
             )
             runtime_assets.append(
@@ -434,7 +452,7 @@ def materialize_native_task_arena_packet(
                     ),
                     "visible": bool(raw.get("visible", True)),
                     "filename": filename,
-                    "sha256": source_digest,
+                    "sha256": staged_digest,
                     "pose_world": raw.get("pose_world"),
                     # the grounded articulated asset's declared derivation --
                     # the runtime contract joins the GPU collision
@@ -524,13 +542,19 @@ def materialize_native_task_arena_packet(
         }
         for binding, raw in zip(source_bindings, raw_assets, strict=True):
             path, digest, size = _asset_source(raw, evidence_root=evidence)
-            if (
-                digest != binding["staged_sha256"]
-                or size != binding["staged_size_bytes"]
-                or _sha256(path) != digest
-            ):
+            if digest != binding["source"]["sha256"] or _sha256(path) != digest:
                 raise NativeTaskArenaPacketError(
                     ["native_task_arena_packet_sealed_source_mutated"]
+                )
+            if (
+                "static_scene_collision_adaptation" not in binding
+                and (
+                    digest != binding["staged_sha256"]
+                    or size != binding["staged_size_bytes"]
+                )
+            ):
+                raise NativeTaskArenaPacketError(
+                    ["native_task_arena_packet_asset_copy_mismatch"]
                 )
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
