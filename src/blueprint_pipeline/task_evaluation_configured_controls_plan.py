@@ -15,7 +15,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 
 
-PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v1"
+PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TOP_LEVEL_PATHS = {
@@ -147,9 +147,11 @@ def materialize_configured_controls_plan(
     )
 
     terminal, receipt, _ = _validate_source(launch_root / source_launch_id)
+    source_configuration_commit = receipt.get("source_commit")
     if (
         receipt.get("launch_id") != source_launch_id
-        or receipt.get("source_commit") != expected_production_commit
+        or not isinstance(source_configuration_commit, str)
+        or _COMMIT.fullmatch(source_configuration_commit) is None
     ):
         raise TaskEvaluationConfiguredControlsPlanError(
             "configured_controls_plan_source_launch_mismatch"
@@ -158,7 +160,19 @@ def materialize_configured_controls_plan(
     inventory: dict[str, dict[str, Any]] = {}
     for name, path in paths.items():
         row = _file_identity(path)
-        _validate_commit_fields(row["value"], expected_production_commit)
+        # Mount and calibration bytes are products of the sealed configuration
+        # release. Every downstream input belongs to the separately qualified
+        # construction release. Do not blur those two provenance boundaries.
+        artifact_commit = (
+            source_configuration_commit
+            if name
+            in {
+                "robot_mount_interface_path",
+                "scene_camera_calibration_path",
+            }
+            else expected_production_commit
+        )
+        _validate_commit_fields(row["value"], artifact_commit)
         inventory[name] = row
     configuration_run_id = str(terminal.get("run_id") or "")
     namespace = (
@@ -179,6 +193,7 @@ def materialize_configured_controls_plan(
         "enabled": True,
         "source_launch_id": source_launch_id,
         "source_launch_receipt_digest": receipt["receipt_digest"],
+        "source_configuration_commit": source_configuration_commit,
         "expected_production_commit": expected_production_commit,
         "submitted_by": submitted_by,
         "profile_dir": str(profiles),

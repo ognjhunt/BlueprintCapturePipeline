@@ -14,7 +14,8 @@ from blueprint_pipeline.task_evaluation_configured_controls_plan import (
 
 
 SOURCE_LAUNCH_ID = "scene-839873-qualifying"
-COMMIT = "a" * 40
+SOURCE_COMMIT = "a" * 40
+TARGET_COMMIT = "b" * 40
 CONFIGURATION_RUN_ID = "scene-839873-configuration"
 
 
@@ -28,7 +29,23 @@ def _write(path: Path, value: dict[str, object]) -> Path:
 def _bindings(tmp_path: Path) -> dict[str, object]:
     inputs = tmp_path / "inputs"
     top = {
-        name: str(_write(inputs / f"{name}.json", {"schema_version": f"test.{name}.v1"}))
+        name: str(
+            _write(
+                inputs / f"{name}.json",
+                {
+                    "schema_version": f"test.{name}.v1",
+                    "source_commit": (
+                        SOURCE_COMMIT
+                        if name
+                        in {
+                            "robot_mount_interface_path",
+                            "scene_camera_calibration_path",
+                        }
+                        else TARGET_COMMIT
+                    ),
+                },
+            )
+        )
         for name in (
             "robot_mount_interface_path",
             "scene_camera_calibration_path",
@@ -43,7 +60,10 @@ def _bindings(tmp_path: Path) -> dict[str, object]:
             name: str(
                 _write(
                     inputs / phase / f"{name}.json",
-                    {"schema_version": f"test.{phase}.{name}.v1"},
+                    {
+                        "schema_version": f"test.{phase}.{name}.v1",
+                        "expected_production_commit": TARGET_COMMIT,
+                    },
                 )
             )
             for name in (
@@ -56,7 +76,10 @@ def _bindings(tmp_path: Path) -> dict[str, object]:
             row["lineage_path"] = str(
                 _write(
                     inputs / phase / "lineage_path.json",
-                    {"schema_version": "test.construction.lineage_path.v1"},
+                    {
+                        "schema_version": "test.construction.lineage_path.v1",
+                        "source_commit": TARGET_COMMIT,
+                    },
                 )
             )
         phases[phase] = row
@@ -71,7 +94,7 @@ def _qualifying_source(monkeypatch: pytest.MonkeyPatch) -> None:
             {"run_id": CONFIGURATION_RUN_ID},
             {
                 "launch_id": SOURCE_LAUNCH_ID,
-                "source_commit": COMMIT,
+                "source_commit": SOURCE_COMMIT,
                 "receipt_digest": "sha256:" + "1" * 64,
             },
             {"provider_zero_verified": True},
@@ -87,7 +110,7 @@ def test_materializes_exact_present_inputs_and_binds_future_identities(
     kwargs = {
         "source_launch_id": SOURCE_LAUNCH_ID,
         "launch_state_root": tmp_path / "launch-runs",
-        "expected_production_commit": COMMIT,
+        "expected_production_commit": TARGET_COMMIT,
         "submitted_by": "configured-controls-materializer",
         "bindings": bindings,
         "plan_root": tmp_path / "plans",
@@ -103,6 +126,8 @@ def test_materializes_exact_present_inputs_and_binds_future_identities(
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     assert stat.S_IMODE(plan_path.stat().st_mode) == 0o440
     assert plan["source_launch_receipt_digest"] == "sha256:" + "1" * 64
+    assert plan["source_configuration_commit"] == SOURCE_COMMIT
+    assert plan["expected_production_commit"] == TARGET_COMMIT
     assert plan["future_outputs"]["construction"]["expected_activation_id"].endswith(
         "-episode-construction"
     )
@@ -131,7 +156,7 @@ def test_nonqualifying_source_refuses_before_plan_write(
         materialize_configured_controls_plan(
             source_launch_id=SOURCE_LAUNCH_ID,
             launch_state_root=tmp_path / "launch-runs",
-            expected_production_commit=COMMIT,
+            expected_production_commit=TARGET_COMMIT,
             submitted_by="configured-controls-materializer",
             bindings=_bindings(tmp_path),
             plan_root=tmp_path / "plans",
@@ -149,7 +174,7 @@ def test_worker_refuses_present_input_changed_after_materialization(
     result = materialize_configured_controls_plan(
         source_launch_id=SOURCE_LAUNCH_ID,
         launch_state_root=tmp_path / "launch-runs",
-        expected_production_commit=COMMIT,
+        expected_production_commit=TARGET_COMMIT,
         submitted_by="configured-controls-materializer",
         bindings=bindings,
         plan_root=tmp_path / "plans",
@@ -176,9 +201,43 @@ def test_profile_directory_must_exist_before_plan_materialization(
         materialize_configured_controls_plan(
             source_launch_id=SOURCE_LAUNCH_ID,
             launch_state_root=tmp_path / "launch-runs",
-            expected_production_commit=COMMIT,
+            expected_production_commit=TARGET_COMMIT,
             submitted_by="configured-controls-materializer",
             bindings=_bindings(tmp_path),
             plan_root=tmp_path / "plans",
             profile_dir=tmp_path / "missing-profiles",
+        )
+
+
+def test_configuration_artifact_cannot_claim_the_target_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _qualifying_source(monkeypatch)
+    bindings = _bindings(tmp_path)
+    mount = Path(str(bindings["robot_mount_interface_path"]))
+    mount.chmod(0o640)
+    mount.write_text(
+        json.dumps(
+            {
+                "schema_version": "test.robot_mount_interface_path.v1",
+                "source_commit": TARGET_COMMIT,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "profiles").mkdir()
+
+    with pytest.raises(
+        TaskEvaluationConfiguredControlsPlanError,
+        match="configured_controls_plan_artifact_commit_mismatch",
+    ):
+        materialize_configured_controls_plan(
+            source_launch_id=SOURCE_LAUNCH_ID,
+            launch_state_root=tmp_path / "launch-runs",
+            expected_production_commit=TARGET_COMMIT,
+            submitted_by="configured-controls-materializer",
+            bindings=bindings,
+            plan_root=tmp_path / "plans",
+            profile_dir=tmp_path / "profiles",
         )

@@ -10,6 +10,9 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
 
 
+SOURCE_CONFIGURATION_COMMIT = "c" * 40
+
+
 def _write(path: Path, value: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
@@ -77,6 +80,7 @@ def _source(tmp_path: Path, *, provider_zero: bool = True) -> tuple[Path, Path]:
         "schema_version": "task_evaluation_launch_receipt.v1",
         "status": "completed",
         "launch_id": launch_id,
+        "source_commit": SOURCE_CONFIGURATION_COMMIT,
         "run_id": "scene-839873",
         "request_digest": "sha256:" + "1" * 64,
         "launch_profile_digest": "sha256:" + "2" * 64,
@@ -154,6 +158,7 @@ def _plan(tmp_path: Path) -> Path:
         "enabled": True,
         "source_launch_id": "scene-839873-qualifying",
         "source_launch_receipt_digest": "sha256:" + "0" * 64,
+        "source_configuration_commit": SOURCE_CONFIGURATION_COMMIT,
         "expected_production_commit": "a" * 40,
         "submitted_by": "configured-controls-progression",
         "profile_dir": str(tmp_path / "profiles"),
@@ -253,6 +258,40 @@ def test_missing_post_teardown_global_zero_fails_before_queue_mutation(
     ):
         worker.advance_configured_controls_plan(
             plan_path=plan,
+            launch_state_root=launch_root,
+            progression_root=tmp_path / "progressions",
+            preparation_queue_root=tmp_path / "preparations",
+            activation_queue_root=tmp_path / "activations",
+            publisher_factory=lambda: object(),
+        )
+    assert called is False
+
+
+def test_source_configuration_commit_mismatch_fails_before_queue_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_root, _ = _source(tmp_path)
+    plan_path = _plan(tmp_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["source_configuration_commit"] = "d" * 40
+    _seal_plan(plan)
+    _write(plan_path, plan)
+    called = False
+
+    def stage(**_: object) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(
+        worker, "stage_configured_controls_episode_preparation", stage
+    )
+    with pytest.raises(
+        worker.TaskEvaluationConfiguredControlsProgressionWorkerError,
+        match="configured_controls_worker_source_receipt_mismatch",
+    ):
+        worker.advance_configured_controls_plan(
+            plan_path=plan_path,
             launch_state_root=launch_root,
             progression_root=tmp_path / "progressions",
             preparation_queue_root=tmp_path / "preparations",
