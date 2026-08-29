@@ -25,6 +25,18 @@ class RobotPlacementTrajectoryError(ValueError):
     """The supplied native construction path is not an immutable trajectory."""
 
 
+def _optional_positive_int(value: object) -> int | None:
+    """Project a positive integer budget, or None when the plan omits it."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
 def _vector(value: object, length: int, *, blocker: str) -> list[float]:
     if (
         not isinstance(value, Sequence)
@@ -110,6 +122,15 @@ def placement_trajectory_from_native_plan(
             (plan.get("execution_parameters") or {}).get(
                 "arrival_orientation_tolerance_rad"
             )
+        ),
+        # The per-phase control-step budget bounds how far the wrist can slew
+        # inside a phase, so it is part of what makes an authored tool
+        # orientation reachable from a given base pose.  Projected here so the
+        # analytic placement gate can decide that before any provider spend.
+        # Optional: a plan that does not declare one simply cannot be screened
+        # for slew feasibility analytically, and stays native-gated.
+        "maximum_steps_per_phase": _optional_positive_int(
+            (plan.get("execution_parameters") or {}).get("maximum_steps_per_phase")
         ),
         "phases": compact_phases,
         "model_may_modify_trajectory": False,
