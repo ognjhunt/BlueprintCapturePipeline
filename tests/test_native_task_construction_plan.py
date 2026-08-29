@@ -52,7 +52,12 @@ def _rigid_fixture(*, asset_id: str, scene_id: str = "840313") -> dict:
         "contact_point_scoring_frame_m": [0.0, 0.0, 0.06],
         "approach_unit_scoring_frame": [0.0, -1.0, 0.0],
         "lift_unit_world": [0.0, 0.0, 1.0],
-        "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_scoring_frame_xyzw": [
+            0.0,
+            -0.7071067811865475,
+            0.0,
+            0.7071067811865476,
+        ],
         "pregrasp_clearance_m": 0.12,
         "arrival_orientation_tolerance_rad": 0.05,
         "allowed_contact_prim_paths": ["/Asset/body"],
@@ -275,6 +280,22 @@ def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
     }.issubset(plan["required_gate_ids"])
     assert plan["plan_digest"] == canonical_digest(
         plan, digest_field="plan_digest"
+    )
+
+
+def test_rigid_plan_refuses_an_unauthored_gripper_orientation() -> None:
+    scene = _planar_push_fixture()
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["gripper_orientation_scoring_frame_xyzw"] = [0.0, 0.0, 0.0, 1.0]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+
+    with pytest.raises(NativeTaskConstructionPlanError) as excinfo:
+        materialize_native_task_construction_phase_plan(scene)
+
+    assert excinfo.value.errors == (
+        "native_rigid_construction_gripper_orientation_unauthored",
     )
 
 

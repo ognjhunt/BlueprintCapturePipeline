@@ -101,7 +101,7 @@ def _rigid_scene(
         "contact_point_scoring_frame_m": [0.0, 0.0, 0.06],
         "approach_unit_scoring_frame": [0.0, -1.0, 0.0],
         "lift_unit_world": [0.0, 0.0, 1.0],
-        "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "gripper_orientation_scoring_frame_xyzw": [-0.5, 0.5, 0.5, 0.5],
         "pregrasp_clearance_m": 0.12,
         "arrival_orientation_tolerance_rad": 0.05,
         "allowed_contact_prim_paths": ["/Asset/links/base"],
