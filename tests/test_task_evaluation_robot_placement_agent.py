@@ -116,7 +116,12 @@ def _images():
     ]
 
 
-def _native_attempt(status: str, *, blocker: str | None = None) -> dict:
+def _native_attempt(
+    status: str,
+    *,
+    blocker: str | None = None,
+    robot_root_pose_world: list[float] | None = None,
+) -> dict:
     value = {
         "schema_version": "task_evaluation_robot_placement_native_attempt.v1",
         "status": status,
@@ -125,6 +130,11 @@ def _native_attempt(status: str, *, blocker: str | None = None) -> dict:
         "native_result_digest": "sha256:" + "b" * 64,
         "provider_instance_id": 123,
         "provider_allocations_performed": 0,
+        "native_feedback": (
+            {"initial_robot_root_pose_world": robot_root_pose_world}
+            if robot_root_pose_world is not None
+            else {}
+        ),
         "native_attempt_digest": "",
     }
     value["native_attempt_digest"] = canonical_digest(
@@ -424,6 +434,57 @@ def test_agent_honors_rejected_native_pose_history_from_prior_run() -> None:
     assert receipt["rounds"][0]["geometry_gate"]["blockers"] == [
         "prior_native_pose_reused"
     ]
+
+
+def test_agent_resumes_prior_native_metrics_frames_and_rejected_pose() -> None:
+    invoker = _Invoker(
+        outputs=[
+            _proposal("prior-native-pose", 3.4),
+            _proposal("new-pose", 3.7),
+            _visual("passed"),
+        ]
+    )
+    prior = _native_attempt(
+        "rejected",
+        blocker="native_task_phase_ik_unreached:precontact",
+        robot_root_pose_world=[3.4, -6.1, 0.7545, 0.0, 0.0, 0.0, 1.0],
+    )
+
+    receipt = run_task_evaluation_robot_placement_agent(
+        invoker=invoker,
+        run_id="placement-prior-native-resume",
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "move mug"},
+        overview_images=_images(),
+        validate_candidate=lambda proposal: _gate(
+            proposal["candidate_id"], "passed"
+        ),
+        render_candidate=lambda _proposal, _round: _images(),
+        task_trajectory=_trajectory(),
+        prior_native_attempts=[prior],
+        max_rounds=2,
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["accepted_candidate_id"] == "new-pose"
+    assert receipt["prior_native_attempt_count"] == 1
+    assert receipt["prior_native_attempts"][0]["blockers"] == [
+        "native_task_phase_ik_unreached:precontact"
+    ]
+    assert receipt["rounds"][0]["geometry_gate"]["blockers"] == [
+        "prior_native_pose_reused"
+    ]
+    first_proposal_content = invoker.specs[0][1][0]["content"]
+    assert sum(
+        item["type"] == "input_image" for item in first_proposal_content
+    ) == 2
+    first_prompt = next(
+        item["text"]
+        for item in first_proposal_content
+        if item["type"] == "input_text"
+    )
+    assert "native_task_phase_ik_unreached:precontact" in first_prompt
+    assert '"initial_robot_root_pose_world": [3.4, -6.1, 0.7545' in first_prompt
 
 
 def test_receipt_tampering_is_rejected() -> None:
