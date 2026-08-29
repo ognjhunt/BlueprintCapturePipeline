@@ -155,6 +155,9 @@ def _native_feedback_summary(result: Mapping[str, Any]) -> dict[str, Any]:
                     "steps",
                     "target_position_world_m",
                     "terminal_position_world_m",
+                    "terminal_position_error_m",
+                    "terminal_orientation_error_rad",
+                    "target_reached",
                     "position_error_m",
                     "orientation_error_rad",
                     "ik_reached",
@@ -177,6 +180,11 @@ def _native_feedback_summary(result: Mapping[str, Any]) -> dict[str, Any]:
             "blockers": best.get("blockers"),
         }
     return {
+        "initial_robot_root_pose_world": (
+            (result.get("initial_readback") or {}).get("robot_root_pose_world")
+            if isinstance(result.get("initial_readback"), Mapping)
+            else None
+        ),
         "franka_pose_binding": result.get("franka_pose_binding"),
         "rigid_construction_gates": result.get("rigid_construction_gates"),
         "phase_results": phases,

@@ -226,7 +226,10 @@ def _quaternion_distance_rad(left: Sequence[float], right: Sequence[float]) -> f
 
 
 def _native_rejected_poses(
-    *, scene_context: Mapping[str, Any], history: Sequence[Mapping[str, Any]]
+    *,
+    scene_context: Mapping[str, Any],
+    history: Sequence[Mapping[str, Any]],
+    prior_native_attempts: Sequence[Mapping[str, Any]] = (),
 ) -> list[tuple[list[float], list[float] | None]]:
     poses: list[tuple[list[float], list[float] | None]] = []
     configured = scene_context.get("rejected_native_base_poses") or []
@@ -237,6 +240,28 @@ def _native_rejected_poses(
         if position is None:
             raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
         poses.append((position, _orientation_world_xyzw(value)))
+    for attempt in prior_native_attempts:
+        feedback = attempt.get("native_feedback")
+        pose = (
+            feedback.get("initial_robot_root_pose_world")
+            if isinstance(feedback, Mapping)
+            else None
+        )
+        if not isinstance(pose, Sequence) or isinstance(pose, (str, bytes)):
+            raise RobotPlacementAgentError(
+                "robot_placement_prior_native_attempt_pose_invalid"
+            )
+        pose_mapping = {
+            "position_world_m": list(pose[:3]),
+            "orientation_xyzw": list(pose[3:]),
+        }
+        position = _position_world_m(pose_mapping)
+        orientation = _orientation_world_xyzw(pose_mapping)
+        if position is None or orientation is None:
+            raise RobotPlacementAgentError(
+                "robot_placement_prior_native_attempt_pose_invalid"
+            )
+        poses.append((position, orientation))
     for round_record in history:
         native_attempt = round_record.get("native_attempt")
         if not isinstance(native_attempt, Mapping) or native_attempt.get("status") != "rejected":
@@ -321,6 +346,7 @@ def _build_placement_receipt(
     scene_context_digest: str,
     task_context_digest: str,
     overview_images: Sequence[Mapping[str, Any]],
+    prior_native_attempts: Sequence[Mapping[str, Any]],
     history: Sequence[Mapping[str, Any]],
     accepted: Mapping[str, Any] | None,
     max_rounds: int,
@@ -342,6 +368,8 @@ def _build_placement_receipt(
         "task_context_digest": task_context_digest,
         "task_trajectory_digest": task_trajectory_digest,
         "overview_images": _image_metadata(overview_images),
+        "prior_native_attempts": list(prior_native_attempts),
+        "prior_native_attempt_count": len(prior_native_attempts),
         "rounds": list(history),
         "accepted_pose": accepted["proposal"]["pose"] if accepted is not None else None,
         "accepted_candidate_id": (
@@ -388,6 +416,7 @@ def run_task_evaluation_robot_placement_agent(
     render_candidate: PlacementRenderer,
     execute_candidate: PlacementExecutor | None = None,
     task_trajectory: Mapping[str, Any] | None = None,
+    prior_native_attempts: Sequence[Mapping[str, Any]] = (),
     max_rounds: int = DEFAULT_MAX_PLACEMENT_ROUNDS,
     max_input_tokens: int = 300_000,
 ) -> dict[str, Any]:
@@ -421,7 +450,16 @@ def run_task_evaluation_robot_placement_agent(
     task_context_digest = canonical_digest(task_advisory_context)
     history: list[dict[str, Any]] = []
     accepted: dict[str, Any] | None = None
+    prior_attempt_records: list[dict[str, Any]] = []
     native_feedback_images: list[Mapping[str, Any]] = []
+    for raw_attempt in prior_native_attempts:
+        attempt = _validated_native_attempt(raw_attempt)
+        if attempt.get("status") != "rejected":
+            raise RobotPlacementAgentError(
+                "robot_placement_prior_native_attempt_not_rejected"
+            )
+        native_feedback_images.extend(attempt.pop("_feedback_image_inputs"))
+        prior_attempt_records.append(attempt)
 
     proposal_instructions = (
         "You place a fixed-base robot for one observed site and task. Use the supplied exact "
@@ -452,6 +490,7 @@ def run_task_evaluation_robot_placement_agent(
             "scene_context": scene_advisory_context,
             "task_context": task_advisory_context,
             "task_trajectory": trajectory,
+            "prior_native_attempts": prior_attempt_records,
             "prior_rounds": history,
             "authority_boundary": {
                 "model_proposes_only": True,
@@ -494,6 +533,7 @@ def run_task_evaluation_robot_placement_agent(
                 rejected_poses=_native_rejected_poses(
                     scene_context=scene_advisory_context,
                     history=history,
+                    prior_native_attempts=prior_attempt_records,
                 ),
             )
         )
@@ -573,6 +613,7 @@ def run_task_evaluation_robot_placement_agent(
                 scene_context_digest=scene_context_digest,
                 task_context_digest=task_context_digest,
                 overview_images=overview_images,
+                prior_native_attempts=prior_attempt_records,
                 history=history,
                 accepted=round_record,
                 max_rounds=max_rounds,
@@ -599,6 +640,7 @@ def run_task_evaluation_robot_placement_agent(
         scene_context_digest=scene_context_digest,
         task_context_digest=task_context_digest,
         overview_images=overview_images,
+        prior_native_attempts=prior_attempt_records,
         history=history,
         accepted=accepted,
         max_rounds=max_rounds,

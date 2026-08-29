@@ -155,12 +155,26 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
             "construction_gate_qualified": passed,
             "phase_reached": "controls" if passed else "construction",
             "blockers": [] if passed else ["native_task_phase_ik_unreached:precontact"],
+            "initial_readback": {
+                "robot_root_pose_world": [
+                    3.4,
+                    -6.1,
+                    0.7545,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ]
+            },
             "phase_results": [
                 {
                     "phase_id": "precontact",
                     "steps": 64,
                     "target_position_world_m": [2.79, -6.76, 0.818],
                     "terminal_position_world_m": [2.90, -6.78, 0.80],
+                    "terminal_position_error_m": 0.05563,
+                    "terminal_orientation_error_rad": 1.037,
+                    "target_reached": False,
                 }
             ],
             "camera_gates": {},
@@ -210,6 +224,24 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
 
     assert rejected["status"] == "rejected"
     assert rejected["feedback_images"][0]["label"] == "native_external_precontact"
+    assert rejected["native_feedback"]["initial_robot_root_pose_world"] == [
+        3.4,
+        -6.1,
+        0.7545,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    assert rejected["native_feedback"]["phase_results"][0] == {
+        "phase_id": "precontact",
+        "steps": 64,
+        "target_position_world_m": [2.79, -6.76, 0.818],
+        "terminal_position_world_m": [2.90, -6.78, 0.80],
+        "terminal_position_error_m": 0.05563,
+        "terminal_orientation_error_rad": 1.037,
+        "target_reached": False,
+    }
     assert passed["status"] == "passed"
     assert len(allocator_calls) == 2
     assert all("49104791" in call for call in allocator_calls)

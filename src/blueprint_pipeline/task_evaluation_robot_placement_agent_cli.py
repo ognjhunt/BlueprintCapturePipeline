@@ -27,6 +27,9 @@ from .task_evaluation_robot_placement_trajectory import (
     placement_trajectory_from_native_plan,
     placement_trajectory_from_native_result,
 )
+from .task_evaluation_robot_placement_warm_executor import (
+    native_attempt_from_warm_result,
+)
 from .task_evaluation_supervisor.agents_sdk import OpenAIAgentsSDKInvoker
 
 
@@ -101,6 +104,7 @@ def run_robot_placement_cli(
     robot_id: str = "franka_panda",
     execute_candidate: PlacementExecutor | None = None,
     task_trajectory: Mapping[str, Any] | None = None,
+    prior_native_attempts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -208,6 +212,7 @@ def run_robot_placement_cli(
         render_candidate=renderer,
         execute_candidate=execute_candidate,
         task_trajectory=task_trajectory,
+        prior_native_attempts=prior_native_attempts,
         max_rounds=max_rounds,
         max_input_tokens=max_input_tokens,
     )
@@ -266,6 +271,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "candidate is executed through the canonical paid allocator."
         ),
     )
+    parser.add_argument(
+        "--prior-native-construction-result",
+        type=Path,
+        help=(
+            "Prior rejected native construction result whose exact failure metrics "
+            "and selected frames seed the first proposal."
+        ),
+    )
+    parser.add_argument(
+        "--prior-native-allocator-result",
+        type=Path,
+        help=(
+            "Canonical allocator result paired with --prior-native-construction-result."
+        ),
+    )
     args = parser.parse_args(argv)
     task_trajectory = None
     if args.native_trajectory_plan:
@@ -294,6 +314,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_trajectory=task_trajectory,
             output_root=args.output_dir.expanduser().resolve() / "native-rounds",
         )
+    if bool(args.prior_native_construction_result) != bool(
+        args.prior_native_allocator_result
+    ):
+        parser.error(
+            "--prior-native-construction-result and "
+            "--prior-native-allocator-result are required together"
+        )
+    prior_native_attempts = []
+    if args.prior_native_construction_result:
+        prior_native_attempts.append(
+            native_attempt_from_warm_result(
+                allocator_result=_read_mapping(
+                    args.prior_native_allocator_result,
+                    label="prior_native_allocator_result",
+                ),
+                native_result_path=args.prior_native_construction_result,
+            )
+        )
     receipt = run_robot_placement_cli(
         run_id=args.run_id,
         scene_collision_usd=args.scene_collision_usd,
@@ -312,6 +350,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         robot_id=args.robot_id,
         execute_candidate=execute_candidate,
         task_trajectory=task_trajectory,
+        prior_native_attempts=prior_native_attempts,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "accepted" else 2
