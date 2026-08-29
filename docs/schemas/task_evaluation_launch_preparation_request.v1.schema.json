@@ -355,7 +355,7 @@
       "additionalProperties": false,
       "properties": {
         "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
-        "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 10},
+        "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 12},
         "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 25200},
         "provider_compute_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 6},
         "external_service_caps": {
@@ -368,7 +368,7 @@
               "required": ["maximum_cost_usd", "maximum_requests", "stage_max_cost_usd"],
               "additionalProperties": false,
               "properties": {
-                "maximum_cost_usd": {"type": "number", "minimum": 0, "maximum": 5},
+                "maximum_cost_usd": {"type": "number", "minimum": 0, "maximum": 6},
                 "maximum_requests": {"type": "integer", "minimum": 0, "maximum": 100},
                 "stage_max_cost_usd": {
                   "type": "object",

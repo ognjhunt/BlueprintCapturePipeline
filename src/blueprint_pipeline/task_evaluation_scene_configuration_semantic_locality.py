@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageFilter
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .semantic_teacher_image_edit_worker import (
@@ -28,8 +28,11 @@ from .semantic_teacher_image_edit_worker import (
 SEMANTIC_LOCALITY_SCHEMA_VERSION = (
     "task_evaluation_artifixer_semantic_locality_seal.v1"
 )
-SEMANTIC_LOCALITY_POLICY = "exact_edit_support_source_preservation_v1"
+SEMANTIC_LOCALITY_POLICY = (
+    "exact_edit_support_source_preservation_inner_feather_v2"
+)
 MAX_LOCALITY_SEAL_FRAMES = 8
+MAX_INNER_FEATHER_RADIUS_PIXELS = 16
 GROSS_OUTSIDE_CHANGE_CHANNEL_DELTA = 32
 GROSS_OUTSIDE_CHANGE_FRACTION = 0.25
 
@@ -145,6 +148,29 @@ def _outside_high_delta_fraction(
     return high_delta_pixels / outside_pixels
 
 
+def _inner_feather_alpha(support: Image.Image) -> tuple[Image.Image, int]:
+    """Fade a generated fill toward source pixels without leaving support."""
+
+    bounds = support.getbbox()
+    if bounds is None:
+        raise TaskEvaluationSceneConfigurationSemanticLocalityError(
+            "scene_configuration_artifixer_semantic_locality_mask_empty"
+        )
+    width = bounds[2] - bounds[0]
+    height = bounds[3] - bounds[1]
+    radius = min(
+        MAX_INNER_FEATHER_RADIUS_PIXELS,
+        max(1, min(width, height) // 8),
+    )
+    eroded = support.filter(ImageFilter.MinFilter(radius * 2 + 1))
+    if eroded.getbbox() is None:
+        # Extremely narrow supports cannot be feathered without deleting the
+        # admitted edit region. Keep their existing exact-support behavior.
+        return support, 0
+    blurred = eroded.filter(ImageFilter.GaussianBlur(radius=radius / 2))
+    return ImageChops.multiply(support, blurred), radius
+
+
 def seal_semantic_teacher_frame(
     *,
     source_path: str | Path,
@@ -187,7 +213,8 @@ def seal_semantic_teacher_frame(
         candidate=raw_teacher,
         support=support,
     )
-    sealed = Image.composite(raw_teacher, source, support)
+    inner_feather, feather_radius = _inner_feather_alpha(support)
+    sealed = Image.composite(raw_teacher, source, inner_feather)
     if _outside_difference_present(
         source=source,
         candidate=sealed,
@@ -204,6 +231,8 @@ def seal_semantic_teacher_frame(
         "deterministic_selective_repair_required": (
             high_delta_fraction > GROSS_OUTSIDE_CHANGE_FRACTION
         ),
+        "inner_feather_radius_pixels": feather_radius,
+        "outside_exact_support_preserved_after_inner_feather": True,
     }
 
 
@@ -376,6 +405,14 @@ def materialize_semantic_locality_seal(
                         else None
                     ),
                     "sealed_semantic_teacher": _record(destination, root=root),
+                    "inner_feather_radius_pixels": frame_seal[
+                        "inner_feather_radius_pixels"
+                    ],
+                    "outside_exact_support_preserved_after_inner_feather": (
+                        frame_seal[
+                            "outside_exact_support_preserved_after_inner_feather"
+                        ]
+                    ),
                     "outside_exact_support_changed_pixels_after_seal": 0,
                     "non_target_source_pixels_preserved_exactly": True,
                 }
@@ -428,6 +465,7 @@ def materialize_semantic_locality_seal(
 __all__ = [
     "GROSS_OUTSIDE_CHANGE_CHANNEL_DELTA",
     "GROSS_OUTSIDE_CHANGE_FRACTION",
+    "MAX_INNER_FEATHER_RADIUS_PIXELS",
     "MAX_LOCALITY_SEAL_FRAMES",
     "SEMANTIC_LOCALITY_POLICY",
     "SEMANTIC_LOCALITY_SCHEMA_VERSION",

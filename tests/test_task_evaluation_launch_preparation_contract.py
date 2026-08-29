@@ -11,7 +11,9 @@ from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+    MAX_ATTEMPT_SPEND_USD,
     MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MAX_PROVIDER_COMPUTE_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
     MIN_CONTENT_AGENTS_SPEND_USD,
@@ -31,12 +33,12 @@ def ref(index: int) -> dict[str, object]:
 
 def configuration_spend() -> dict[str, object]:
     return {
-        "hard_cap_usd": 10.0,
+        "hard_cap_usd": MAX_ATTEMPT_SPEND_USD,
         "hard_ttl_seconds": 25_200,
-        "provider_compute_spend_cap_usd": 6.0,
+        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
         "external_service_caps": {
             "openai": {
-                "maximum_cost_usd": 3.0,
+                "maximum_cost_usd": MAX_EXTERNAL_SERVICE_SPEND_USD,
                 "maximum_requests": 32,
                 "stage_max_cost_usd": {
                     "artifixer_semantic_teacher": (
@@ -240,7 +242,10 @@ def test_configuration_external_service_caps_fit_total_authority() -> None:
     ] = MAX_EXTERNAL_SERVICE_SPEND_USD + 0.01
     with pytest.raises(
         TaskEvaluationLaunchPreparationContractError,
-        match="launch_preparation_scene_configuration_external_spend_invalid",
+        match=(
+            "launch_preparation_request_invalid:"
+            "spend.external_service_caps.openai.maximum_cost_usd"
+        ),
     ):
         validate_launch_preparation_request(value)
 

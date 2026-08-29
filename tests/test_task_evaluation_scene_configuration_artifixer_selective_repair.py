@@ -25,6 +25,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_selective_
 from blueprint_pipeline.task_evaluation_scene_configuration_semantic_locality import (
     SEMANTIC_LOCALITY_POLICY,
     materialize_semantic_locality_seal,
+    seal_semantic_teacher_frame,
 )
 
 
@@ -44,7 +45,13 @@ def _record(path: Path, *, root: Path | None = None) -> dict[str, object]:
     return record
 
 
-def _fixture(tmp_path: Path, *, rejected_count: int = 1) -> dict[str, object]:
+def _fixture(
+    tmp_path: Path,
+    *,
+    rejected_count: int = 1,
+    frame_count: int = 4,
+    implausible_repair: bool = False,
+) -> dict[str, object]:
     request_root = tmp_path / "request"
     source_root = tmp_path / "source-output"
     request_root.mkdir(parents=True)
@@ -54,7 +61,7 @@ def _fixture(tmp_path: Path, *, rejected_count: int = 1) -> dict[str, object]:
     review_frames = []
     decisions = []
     semantic_frames = []
-    for index in range(4):
+    for index in range(frame_count):
         camera_id = f"camera-{index}"
         source = tmp_path / f"source-{index}.png"
         mask = tmp_path / f"mask-{index}.png"
@@ -98,8 +105,12 @@ def _fixture(tmp_path: Path, *, rejected_count: int = 1) -> dict[str, object]:
                 "frame_sha256": _sha256(final),
                 "orientation_is_upright": True,
                 "source_object_absent": True,
-                "repair_is_locally_plausible": True,
-                "preserves_non_target_content": not rejected,
+                "repair_is_locally_plausible": not (
+                    rejected and implausible_repair
+                ),
+                "preserves_non_target_content": (
+                    True if implausible_repair else not rejected
+                ),
                 "decision": "rejected" if rejected else "accepted",
                 "rationale": (
                     "Table veining changed outside the mask."
@@ -145,7 +156,11 @@ def _fixture(tmp_path: Path, *, rejected_count: int = 1) -> dict[str, object]:
         "prompt_policy": "first-pass",
         "prompt": "Remove the masked object.",
         "tasks": [
-            {"task_id": task_id, "camera_count": 4, "frames": request_frames}
+            {
+                "task_id": task_id,
+                "camera_count": frame_count,
+                "frames": request_frames,
+            }
         ],
         "max_parallel_requests": 4,
         "maximum_cost_usd": 2.4,
@@ -166,7 +181,7 @@ def _fixture(tmp_path: Path, *, rejected_count: int = 1) -> dict[str, object]:
         "tasks": [
             {
                 "task_id": task_id,
-                "physical_camera_count": 4,
+                "physical_camera_count": frame_count,
                 "frames": review_frames,
             }
         ],
@@ -207,10 +222,14 @@ def _fixture(tmp_path: Path, *, rejected_count: int = 1) -> dict[str, object]:
         "source_runtime_request_digest": request["request_digest"],
         "backend_id": "openai-gpt-image",
         "model_snapshot": "gpt-image-2-2026-04-21",
-        "request_count": 4,
-        "computed_editor_cost_usd": 0.88,
+        "request_count": frame_count,
+        "computed_editor_cost_usd": 0.22 * frame_count,
         "tasks": [
-            {"task_id": task_id, "camera_count": 4, "frames": semantic_frames}
+            {
+                "task_id": task_id,
+                "camera_count": frame_count,
+                "frames": semantic_frames,
+            }
         ],
         "result_digest": "",
     }
@@ -261,8 +280,39 @@ def test_semantic_locality_seal_restores_false_accepted_non_target_pixels(
             for x in range(8):
                 if (x, y) in {(3, 3), (4, 3)}:
                     assert candidate.getpixel((x, y)) == raw.getpixel((x, y))
-                else:
-                    assert candidate.getpixel((x, y)) == source.getpixel((x, y))
+            else:
+                assert candidate.getpixel((x, y)) == source.getpixel((x, y))
+
+
+def test_semantic_locality_feathers_inside_mask_without_changing_outside(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.png"
+    mask_path = tmp_path / "mask.png"
+    raw_path = tmp_path / "raw.png"
+    output_path = tmp_path / "sealed.png"
+    Image.new("RGB", (64, 64), color=(100, 100, 100)).save(source_path)
+    mask = Image.new("L", (64, 64), color=0)
+    for y in range(8, 56):
+        for x in range(8, 56):
+            mask.putpixel((x, y), 255)
+    mask.save(mask_path)
+    Image.new("RGB", (64, 64), color=(200, 200, 200)).save(raw_path)
+
+    result = seal_semantic_teacher_frame(
+        source_path=source_path,
+        mask_path=mask_path,
+        raw_teacher_path=raw_path,
+        mask_encoding="binary_white_edit_region_png",
+        output_path=output_path,
+    )
+
+    with Image.open(output_path) as image:
+        sealed = image.convert("RGB")
+    assert result["inner_feather_radius_pixels"] > 0
+    assert sealed.getpixel((7, 32)) == (100, 100, 100)
+    assert 100 <= sealed.getpixel((8, 32))[0] < 110
+    assert sealed.getpixel((32, 32)) == (200, 200, 200)
 
 
 def test_locality_only_rejection_repairs_one_camera_and_reuses_the_rest(
@@ -401,24 +451,36 @@ def test_non_locality_rejection_is_not_repaired(tmp_path: Path) -> None:
         )
 
 
-def test_repair_refuses_more_than_two_frames_or_insufficient_remaining_cost(
+def test_all_eight_implausible_fills_get_one_bounded_repair_round(
     tmp_path: Path,
 ) -> None:
-    too_many = _fixture(tmp_path / "many", rejected_count=3)
-    with pytest.raises(
-        TaskEvaluationArtifixerSelectiveRepairError,
-        match="scene_configuration_artifixer_selective_repair_ineligible_rejection",
-    ):
-        materialize_selective_repair_request(
-            review_input_path=too_many["review_path"],
-            review_execution_path=too_many["execution_path"],
-            semantic_runtime_request_path=too_many["request_path"],
-            semantic_runtime_result=too_many["source_result"],
-            semantic_locality_receipt_path=too_many["locality"]["receipt_path"],
-            expected_request_cost_usd=0.22,
-            maximum_stage_cost_usd=2.4,
-            output_root=tmp_path / "too-many-repair",
-        )
+    fixture = _fixture(
+        tmp_path / "all-eight",
+        rejected_count=8,
+        frame_count=8,
+        implausible_repair=True,
+    )
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"],
+        review_execution_path=fixture["execution_path"],
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22,
+        maximum_stage_cost_usd=4.0,
+        output_root=tmp_path / "all-eight-repair",
+    )
+
+    assert staged["plan"]["selected_frame_count"] == 8
+    assert staged["plan"]["additional_provider_request_cap"] == 8
+    assert all(
+        "independent_visual_review_local_plausibility_rejection"
+        in row["selection_reasons"]
+        for row in staged["plan"]["selected_frames"]
+    )
+
+
+def test_repair_refuses_insufficient_remaining_cost(tmp_path: Path) -> None:
 
     insufficient = _fixture(tmp_path / "cost")
     with pytest.raises(

@@ -1,10 +1,10 @@
 """Bound one semantic-teacher repair round to an exact rejected review.
 
 The production ArtiFixer reviewer can reject a candidate even when object
-absence, orientation, and local plausibility all pass.  This module recognizes
-only the remaining locality-only failure, stages a stricter request for those
-exact cameras, and merges the returned semantic targets without modifying the
-already sealed render or first-pass semantic outputs.
+absence and orientation pass while either the fill remains visibly implausible
+or non-target content is not preserved. This module stages a stricter request
+for those exact cameras and merges the returned semantic targets without
+modifying the already sealed render or first-pass semantic outputs.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ STRICT_LOCALITY_PROMPT = (
     "Do not add an object, silhouette, patch, panel, text, watermark, or robot."
 )
 MAX_REPAIR_ROUNDS = 1
-MAX_SELECTIVE_REPAIR_FRAMES = 2
+MAX_SELECTIVE_REPAIR_FRAMES = 8
 
 
 class TaskEvaluationArtifixerSelectiveRepairError(RuntimeError):
@@ -195,7 +195,7 @@ def materialize_selective_repair_request(
     maximum_stage_cost_usd: float,
     output_root: str | Path,
 ) -> dict[str, Any]:
-    """Stage one exact-mask repair request for locality-only rejections."""
+    """Stage one exact-mask repair request for bounded appearance rejections."""
 
     review_path = Path(review_input_path).expanduser().resolve()
     execution_path = Path(review_execution_path).expanduser().resolve()
@@ -346,17 +346,28 @@ def materialize_selective_repair_request(
             and row.get("repair_is_locally_plausible") is True
             and row.get("preserves_non_target_content") is True
         )
-        locality_only = (
+        bounded_appearance_failure = (
             row.get("decision") == "rejected"
             and row.get("orientation_is_upright") is True
             and row.get("source_object_absent") is True
-            and row.get("repair_is_locally_plausible") is True
-            and row.get("preserves_non_target_content") is False
+            and (
+                row.get("repair_is_locally_plausible") is False
+                or row.get("preserves_non_target_content") is False
+            )
         )
-        if locality_only:
+        if bounded_appearance_failure:
+            selection_reasons: list[str] = []
+            if row.get("repair_is_locally_plausible") is False:
+                selection_reasons.append(
+                    "independent_visual_review_local_plausibility_rejection"
+                )
+            if row.get("preserves_non_target_content") is False:
+                selection_reasons.append(
+                    "independent_visual_review_preservation_rejection"
+                )
             selected_by_camera[camera_id] = {
                 "review_row": row,
-                "selection_reasons": ["independent_visual_review_preservation_rejection"],
+                "selection_reasons": selection_reasons,
                 "feedback": [str(row["rationale"])],
             }
         elif not accepted:

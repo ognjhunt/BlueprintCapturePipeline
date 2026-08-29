@@ -34,27 +34,20 @@ REQUIRED_PARENT_TTL_SECONDS = (
 
 MAX_HOURLY_RATE_USD = 0.80
 MAX_PROVIDER_COMPUTE_SPEND_USD = 6.0
-# One full semantic-teacher pass is 8 frames at an observed $0.219282 each
-# ($1.754 total; run ...-163900Z measured it directly), and the visual-review
-# and Content Agents stages spend from the same external budget. $1.50 was
-# below the physical price of the work it authorized: the run spent $1.10 on
-# five frames and died mid-pass with nothing usable. The ceiling exists to
-# bound an attempt, not to starve it below one complete pass.
-MAX_EXTERNAL_SERVICE_SPEND_USD = 3.0
-MAX_ATTEMPT_SPEND_USD = 10.0
-# Scene configuration sends eight immutable review frames through the selected
-# semantic-teacher backend.  Its registry binds a fail-closed maximum of $0.30
-# per request, so an authority below $2.40 cannot fund the admitted frame set.
-# The additional reserve covers the two later OpenAI-backed stages without
-# changing the independent semantic-teacher or evaluation-episode policies.
-MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 2.4
+# One first pass plus one bounded repair pass can send at most sixteen frames
+# through the selected semantic-teacher backend. Its registry binds a
+# fail-closed maximum of $0.30 per request, so the caller must reserve $4.80
+# before a paid run instead of discovering an unreachable repair after rent.
+MAX_EXTERNAL_SERVICE_SPEND_USD = 6.0
+MAX_ATTEMPT_SPEND_USD = 12.0
+MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 4.8
 # The fixed visual reviewer declares an 80k-token multimodal input ceiling and
 # an 8k-token output ceiling.  The canonical Agents SDK reservation rates are
-# $2.50/M input and $15/M output, so the caller must authorize at least $0.32;
-# $0.30 deterministically refuses before the provider call.
-MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.32
+# $2.50/M input and $15/M output, so each round needs $0.32. One bounded
+# repair must be independently reviewed again, requiring $0.64 total.
+MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.64
 MIN_CONTENT_AGENTS_SPEND_USD = 0.2
-MIN_EXTERNAL_SERVICE_SPEND_USD = 2.92
+MIN_EXTERNAL_SERVICE_SPEND_USD = 5.64
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
 OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (
