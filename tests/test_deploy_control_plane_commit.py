@@ -1407,3 +1407,161 @@ def test_a_deploy_receipt_never_claims_a_lane_that_did_not_run(tmp_path) -> None
     assert promoted["canonical_full_lane_verified"] is True
     assert promoted["promotion_eligible"] is True
     assert promoted["provenance_status"] == "verified"
+
+
+# --- promotion proof the service account can actually read -------------------
+#
+# Deploy runs as root; every service that consumes the promotion proof runs as
+# `blueprint`. The installer set mode 0440 but never set ownership, so on the
+# live control plane on 2026-08-29 every `deploy-release-provenance.json` was
+# `root:root 0440` and `sudo -u blueprint cat` returned Permission denied --
+# alongside 304 root-owned directories with no `o+x`, which hide readable files
+# beneath them. Nothing failed: the deploy passed, and the reader's side was
+# simply never asserted.
+
+
+def _provenance_tree(tmp_path: Path) -> tuple[Path, Path]:
+    commit_dir = tmp_path / "state" / ("c" * 40)
+    commit_dir.mkdir(parents=True)
+    destination = commit_dir / deploy.DEPLOY_RELEASE_PROVENANCE_NAME
+    destination.write_bytes(b"{}")
+    destination.chmod(0o440)
+    return commit_dir, destination
+
+
+def test_provenance_access_gate_passes_when_the_service_account_can_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit_dir, destination = _provenance_tree(tmp_path)
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (os.getuid(), os.getgid())
+    )
+
+    receipt = deploy._install_release_provenance_access(destination, None)
+
+    assert receipt["status"] == "readable"
+    assert str(destination) in receipt["verified_paths"]
+
+
+def test_provenance_access_gate_fails_closed_when_the_grant_does_not_take(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A grant that silently no-ops must fail the deploy, not pass it.
+
+    This is the regression that matters: the gate re-derives readability from
+    the installed inode instead of trusting that the chown happened, so the
+    installer cannot quietly return to writing proof nobody can open.
+    """
+
+    _commit_dir, destination = _provenance_tree(tmp_path)
+    foreign_uid, foreign_gid = os.getuid() + 4242, os.getgid() + 4242
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (foreign_uid, foreign_gid)
+    )
+
+    with pytest.raises(deploy.ControlPlaneDeployError) as excinfo:
+        deploy._install_release_provenance_access(
+            destination, None, chown=lambda *_args, **_kwargs: None
+        )
+
+    assert str(excinfo.value).startswith(
+        "deploy_release_provenance_unreadable_by_service_account:"
+    )
+
+
+def test_untraversable_parent_directory_is_reported_as_a_blocker(
+    tmp_path: Path,
+) -> None:
+    """The 304-directory shape: a readable file nobody can reach."""
+
+    commit_dir, destination = _provenance_tree(tmp_path)
+    commit_dir.chmod(0o600)  # readable, but not traversable
+    try:
+        blocker = deploy._service_account_read_blocker(
+            destination, owner_uid=os.getuid(), owner_gid=os.getgid()
+        )
+    finally:
+        commit_dir.chmod(0o750)
+
+    assert blocker == f"untraversable_directory:{commit_dir}"
+
+
+def test_unreadable_provenance_file_is_reported_as_a_blocker(
+    tmp_path: Path,
+) -> None:
+    _commit_dir, destination = _provenance_tree(tmp_path)
+    destination.chmod(0o000)
+    try:
+        blocker = deploy._service_account_read_blocker(
+            destination, owner_uid=os.getuid(), owner_gid=os.getgid()
+        )
+    finally:
+        destination.chmod(0o440)
+
+    assert blocker == f"unreadable_file:{destination}"
+
+
+def test_readable_provenance_reports_no_blocker(tmp_path: Path) -> None:
+    _commit_dir, destination = _provenance_tree(tmp_path)
+
+    assert (
+        deploy._service_account_read_blocker(
+            destination, owner_uid=os.getuid(), owner_gid=os.getgid()
+        )
+        is None
+    )
+
+
+def test_grant_moves_the_group_and_never_the_owning_uid(tmp_path: Path) -> None:
+    """0440 root:blueprint keeps the reader unable to rewrite its own proof.
+
+    Chowning the receipt to the service account would let the consumer chmod
+    the file that authorises it, so the grant must only ever move the group.
+    """
+
+    _commit_dir, destination = _provenance_tree(tmp_path)
+    calls: list[tuple[str, int, int]] = []
+
+    def _record(path: object, uid: int, gid: int) -> None:
+        calls.append((str(path), uid, gid))
+
+    deploy._grant_service_account_read(
+        [destination], owner_gid=os.getgid() + 4242, chown=_record
+    )
+
+    assert calls, "expected the group to be moved"
+    assert all(uid == -1 for _path, uid, _gid in calls)
+
+
+def test_missing_service_account_is_not_applicable_rather_than_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Developer and CI hosts have no `blueprint` user; deploy must still run."""
+
+    _commit_dir, destination = _provenance_tree(tmp_path)
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda _account: None)
+
+    receipt = deploy._install_release_provenance_access(destination, None)
+
+    assert receipt["status"] == "not_applicable_no_service_account"
+
+
+def test_installer_records_the_service_account_access_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate runs inside the installer, so no call site can skip it."""
+
+    commit = "d" * 40
+    payload, receipt = _verified_provenance(commit)
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (os.getuid(), os.getgid())
+    )
+
+    installed = deploy._install_release_provenance(
+        payload=payload,
+        state_root=tmp_path / "state",
+        source_commit=commit,
+        receipt=receipt,
+    )
+
+    assert installed["service_account_access"]["status"] == "readable"

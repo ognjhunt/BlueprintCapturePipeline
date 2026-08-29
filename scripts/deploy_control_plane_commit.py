@@ -331,6 +331,13 @@ def _install_release_provenance(
         raise ControlPlaneDeployError("deploy_release_provenance_install_failed") from exc
     if reopened != payload:
         raise ControlPlaneDeployError("deploy_release_provenance_readback_mismatch")
+    # Inside the installer, not at the call site: promotion proof the reader
+    # cannot open is indistinguishable from proof that was never installed, so
+    # no caller gets to skip this.
+    provenance_access = _install_release_provenance_access(
+        destination,
+        superseded_iteration if superseded_receipt is not None else None,
+    )
     installed = {
         "path": str(destination),
         "sha256": _sha256_bytes(reopened),
@@ -350,6 +357,7 @@ def _install_release_provenance(
         "promotion_eligible": bool(receipt.get("promotion_eligible")),
         "provenance_status": receipt.get("status"),
         "mode": "0440",
+        "service_account_access": provenance_access,
     }
     if superseded_receipt is not None:
         installed["superseded_iteration_provenance"] = superseded_receipt
@@ -434,6 +442,130 @@ def _service_account_ids(account: str) -> tuple[int, int] | None:
         return None
     return entry.pw_uid, entry.pw_gid
 
+
+
+def _service_account_read_blocker(
+    path: Path, *, owner_uid: int, owner_gid: int
+) -> str | None:
+    """Report why `owner_uid:owner_gid` cannot read `path`, or None if it can.
+
+    Every ancestor directory is checked for traverse permission, not just the
+    file's own read bit. A directory the service account cannot enter hides a
+    perfectly readable file beneath it, and that is the shape the live control
+    plane actually took: 304 root-owned directories, no `o+x`, holding
+    promotion proof the blueprint-run services could not reach.
+    """
+
+    def _granted(metadata: os.stat_result, want: int) -> bool:
+        mode = stat.S_IMODE(metadata.st_mode)
+        if metadata.st_uid == owner_uid:
+            bits = (mode >> 6) & 0o7
+        elif metadata.st_gid == owner_gid:
+            bits = (mode >> 3) & 0o7
+        else:
+            bits = mode & 0o7
+        return bool(bits & want)
+
+    for ancestor in reversed(path.parents):
+        try:
+            metadata = ancestor.stat()
+        except OSError:
+            return f"unstatable_directory:{ancestor}"
+        if not _granted(metadata, 0o1):
+            return f"untraversable_directory:{ancestor}"
+    try:
+        metadata = path.stat()
+    except OSError:
+        return f"unstatable_file:{path}"
+    if not _granted(metadata, 0o4):
+        return f"unreadable_file:{path}"
+    return None
+
+
+def _grant_service_account_read(
+    paths: Sequence[Path], *, owner_gid: int, chown: Any = os.chown
+) -> list[str]:
+    """Give the service account group-read on what deploy just wrote.
+
+    Only the group is moved; the owning uid is left alone deliberately. The
+    provenance receipt is installed 0440 precisely so that nothing can rewrite
+    it, and a root-owned file the service account merely reads keeps that
+    property. Chowning it to the service account would hand the reader the
+    power to chmod its own promotion proof.
+    """
+
+    adjusted: list[str] = []
+    for path in paths:
+        try:
+            metadata = path.stat()
+        except OSError:
+            continue
+        changed = False
+        if metadata.st_gid != owner_gid:
+            chown(path, -1, owner_gid)
+            changed = True
+            metadata = path.stat()
+        wanted = 0o050 if path.is_dir() else 0o040
+        mode = stat.S_IMODE(metadata.st_mode)
+        if mode & wanted != wanted:
+            path.chmod(mode | wanted)
+            changed = True
+        if changed:
+            adjusted.append(str(path))
+    return adjusted
+
+
+def _install_release_provenance_access(
+    destination: Path,
+    superseded: Path | None,
+    *,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+    chown: Any = os.chown,
+) -> dict[str, Any]:
+    """Make the promotion proof readable by the account that consumes it, then prove it.
+
+    Deploy runs as root; every service that reads this file runs as
+    `blueprint`. `os.chmod(..., 0o440)` alone therefore installed `root:root`
+    promotion proof that the reader could not open, so a host could pass its
+    whole deploy and still have every launch fall back to `development_only`
+    -- with no error anywhere, because nothing asserted the reader's side.
+
+    The grant is not trusted on its own. The gate below re-derives readability
+    from the installed inode and fails the deploy if the service account still
+    cannot reach it, so this can never silently regress to a no-op.
+    """
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        return {
+            "status": "not_applicable_no_service_account",
+            "account": account,
+            "adjusted_paths": [],
+        }
+    owner_uid, owner_gid = account_ids
+    targets: list[Path] = [destination.parent, destination]
+    if superseded is not None:
+        targets.append(superseded)
+    adjusted = _grant_service_account_read(
+        targets, owner_gid=owner_gid, chown=chown
+    )
+    for path in targets:
+        blocker = _service_account_read_blocker(
+            path, owner_uid=owner_uid, owner_gid=owner_gid
+        )
+        if blocker is not None:
+            raise ControlPlaneDeployError(
+                "deploy_release_provenance_unreadable_by_service_account:"
+                f"{account}:{blocker}"
+            )
+    return {
+        "status": "readable",
+        "account": account,
+        "owner_uid": owner_uid,
+        "owner_gid": owner_gid,
+        "adjusted_paths": adjusted,
+        "verified_paths": [str(path) for path in targets],
+    }
 
 def _install_scene_object_discovery_runtime_directories(
     *,
