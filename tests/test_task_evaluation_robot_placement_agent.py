@@ -247,6 +247,79 @@ def test_agent_creates_next_pose_from_native_failure_until_controls_pass() -> No
     assert validate_robot_placement_receipt(receipt) == receipt
 
 
+def test_agent_cannot_reuse_a_pose_rejected_by_native_execution() -> None:
+    invoker = _Invoker(
+        outputs=[
+            _proposal("native-collision", 3.4),
+            _visual("passed"),
+            _proposal("same-pose-again", 3.4),
+            _proposal("native-clear", 3.7),
+            _visual("passed"),
+        ]
+    )
+    native_results = [
+        _native_attempt("rejected", blocker="native_reset_collision"),
+        _native_attempt("passed"),
+    ]
+
+    receipt = run_task_evaluation_robot_placement_agent(
+        invoker=invoker,
+        run_id="placement-native-repeat-guard",
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "move mug"},
+        overview_images=_images(),
+        validate_candidate=lambda proposal: _gate(
+            proposal["candidate_id"], "passed"
+        ),
+        render_candidate=lambda _proposal, _round: _images(),
+        execute_candidate=lambda _proposal, _receipt, _round: native_results.pop(0),
+        max_rounds=3,
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["accepted_candidate_id"] == "native-clear"
+    assert receipt["native_attempt_count"] == 2
+    assert receipt["rounds"][1]["geometry_gate"]["status"] == "rejected"
+    assert receipt["rounds"][1]["geometry_gate"]["blockers"] == [
+        "prior_native_pose_reused"
+    ]
+    assert receipt["rounds"][1]["visual_review"] is None
+
+
+def test_agent_honors_rejected_native_pose_history_from_prior_run() -> None:
+    invoker = _Invoker(
+        outputs=[
+            _proposal("prior-native-pose", 3.4),
+            _proposal("new-pose", 3.7),
+            _visual("passed"),
+        ]
+    )
+
+    receipt = run_task_evaluation_robot_placement_agent(
+        invoker=invoker,
+        run_id="placement-prior-run-repeat-guard",
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "move mug"},
+        scene_context={
+            "rejected_native_base_poses": [
+                {"position_world_m": [3.4, -6.1, 0.7545]}
+            ]
+        },
+        overview_images=_images(),
+        validate_candidate=lambda proposal: _gate(
+            proposal["candidate_id"], "passed"
+        ),
+        render_candidate=lambda _proposal, _round: _images(),
+        max_rounds=2,
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["accepted_candidate_id"] == "new-pose"
+    assert receipt["rounds"][0]["geometry_gate"]["blockers"] == [
+        "prior_native_pose_reused"
+    ]
+
+
 def test_receipt_tampering_is_rejected() -> None:
     invoker = _Invoker(outputs=[_proposal("candidate", 3.4), _visual("passed")])
     receipt = run_task_evaluation_robot_placement_agent(

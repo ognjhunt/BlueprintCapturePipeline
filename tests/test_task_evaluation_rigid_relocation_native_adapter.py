@@ -220,6 +220,10 @@ def _rewrite(
         DEFINITION: ("task_template", "definition"),
         SUCCESS: ("task_template", "success_criteria"),
         EXECUTION: ("task_template", "execution"),
+        SUPPORT: ("registration", "support_plane"),
+        SOURCE_OBJECT: ("replacement", "source_object"),
+        STATIC: ("replacement", "static_qualification"),
+        NATIVE_IMPORT: ("replacement", "native_import_qualification"),
     }[contract_path]
     configured[target[0]][target[1]] = reference
     configured["revision_digest"] = canonical_digest(
@@ -309,6 +313,56 @@ def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     assert phase_plan["manipulation_strategy"] == "planar_push"
     assert phase_plan["phases"][0]["phase_id"] == "precontact"
     assert phase_plan["phases"][1]["phase_id"] == "push_contact"
+
+
+def test_rigid_root_cannot_begin_below_registered_support(tmp_path: Path) -> None:
+    launch, configured, references, docs = _case(tmp_path)
+    source = copy.deepcopy(docs[SOURCE_OBJECT])
+    source["aabb_min_xyz_m"][2] = 0.7539999997558593
+    _rewrite(
+        tmp_path=tmp_path,
+        configured=configured,
+        references=references,
+        contract_path=SOURCE_OBJECT,
+        document=source,
+    )
+    static = copy.deepcopy(docs[STATIC])
+    static["observed_structure"]["center_of_mass_m"][2] = 0.06400000303983688
+    static["result_digest"] = canonical_digest(
+        static, digest_field="result_digest"
+    )
+    _rewrite(
+        tmp_path=tmp_path,
+        configured=configured,
+        references=references,
+        contract_path=STATIC,
+        document=static,
+    )
+    launch["task"]["configured_scene_revision_digest"] = configured[
+        "revision_digest"
+    ]
+
+    result = adapt_rigid_relocation_task_template(
+        request=launch,
+        configured_revision=configured,
+        materialized_references=references,
+    )
+
+    pose = result["native_task_definition"]["task_object_pose_world"]
+    expected_root_z = 0.7545 - (
+        0.06400000303983688 + 0.7539999997558593 - 0.818319
+    )
+    assert pose["position_world_m"][2] == pytest.approx(expected_root_z)
+    alignment = result["native_task_definition"]["task_spec"][
+        "interaction_affordance"
+    ]["support_alignment"]
+    assert alignment["support_aligned_root_z_m"] == pytest.approx(
+        expected_root_z
+    )
+    assert alignment["initial_support_penetration_permitted"] is False
+    assert result["adapter_digest"] == canonical_digest(
+        result, digest_field="adapter_digest"
+    )
 
 
 def test_diagnostic_authority_reuses_exact_documents_without_revision_claim(
