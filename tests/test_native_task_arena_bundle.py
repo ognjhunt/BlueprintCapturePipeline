@@ -3430,6 +3430,11 @@ def test_canonical_allocator_attaches_controls_without_new_gpu(
         "validate_native_task_arena_warm_attempt_authority",
         lambda value, **_kwargs: value,
     )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda: tmp_path / "valid-identity",
+    )
 
     def fake_run(**kwargs):
         observed.update(kwargs)
@@ -3504,6 +3509,32 @@ def test_canonical_allocator_attaches_controls_without_new_gpu(
         warm_session["session_digest"]
     )
 
+    # A missing/bad service identity is an admission blocker, not a dispatch
+    # failure after the single-use warm authority has reached the runner.
+    observed.clear()
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda: (_ for _ in ()).throw(
+            ValueError("native_task_arena_warm_ssh_identity_invalid")
+        ),
+    )
+    for flag, value in (
+        ("--admission-out", tmp_path / "blocked-admission.json"),
+        ("--adapter-output", tmp_path / "blocked-adapter.json"),
+        ("--adp-job-dir", tmp_path / "blocked-job"),
+    ):
+        args[args.index(flag) + 1] = str(value)
+
+    assert allocator.main(args) == 2
+    assert observed == {}
+    blocked_admission = json.loads(
+        (tmp_path / "blocked-admission.json").read_text()
+    )
+    assert "native_task_arena_warm_ssh_identity_invalid" in blocked_admission[
+        "blockers"
+    ]
+
 
 def test_canonical_allocator_attaches_construction_and_retains_same_gpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3545,6 +3576,11 @@ def test_canonical_allocator_attaches_construction_and_retains_same_gpu(
         allocator,
         "validate_native_task_arena_warm_attempt_authority",
         lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda: tmp_path / "valid-identity",
     )
 
     def fake_run(**kwargs):
