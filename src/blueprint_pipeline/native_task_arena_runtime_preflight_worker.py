@@ -10,10 +10,13 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline.native_task_nurec_render_setup import (
+    setup_and_warm_native_nurec_renderer as _official_nurec_render_setup_and_warmup,
+)
+
 
 RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
-OFFICIAL_NUREC_WARMUP_STEPS = 800
 
 
 def _robot_reset_task_space_readback(
@@ -339,116 +342,6 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
     }
 
 
-def _official_nurec_render_setup_and_warmup(
-    simulation_app: Any,
-    stage: Any,
-    *,
-    warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
-    setup_for_rendering_factory: Any = None,
-    progress_callback: Any = None,
-) -> dict[str, Any]:
-    """Apply NVIDIA's shipped NuRec setup and accumulation procedure."""
-
-    if (
-        isinstance(warmup_steps, bool)
-        or int(warmup_steps) < 40
-        or int(warmup_steps) > 2_000
-    ):
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "passed": False,
-            "blockers": ["native_task_arena_nurec_warmup_steps_invalid"],
-        }
-    try:
-        if setup_for_rendering_factory is None:
-            from isaacsim.replicator.nurec_utils.rendering_setup import (
-                setup_for_rendering,
-            )
-
-            setup_for_rendering_factory = setup_for_rendering
-        success, nurec, spg, problems = setup_for_rendering_factory(stage)
-    except Exception as exc:  # noqa: BLE001 - retained diagnostic boundary
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "passed": False,
-            "blockers": [
-                "native_task_arena_nurec_official_setup_failed:"
-                f"{type(exc).__name__}"
-            ],
-        }
-    if not success or not nurec:
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "official_setup_success": bool(success),
-            "stage_classified_nurec": bool(nurec),
-            "stage_classified_spg": bool(spg),
-            "official_setup_problems": list(problems or []),
-            "passed": False,
-            "blockers": ["native_task_arena_nurec_official_setup_not_qualified"],
-        }
-
-    attempts = 8
-    updates_per_attempt = max(int(warmup_steps) // attempts, 5)
-    warmup_update_count = 0
-    prime_update_count = 0
-    # The standalone nurec_render CameraRenderer creates its own Replicator
-    # annotator and therefore calls orchestrator.step(). This lane already has
-    # Isaac Lab CameraCfg render products and annotators. NVIDIA's exact pinned
-    # Isaac Lab Gaussian camera test advances that path with simulation/app
-    # ticks only; invoking Replicator's orchestrator here blocks indefinitely
-    # because this process owns no Replicator trigger graph.
-    for _ in range(5):
-        simulation_app.update()
-        prime_update_count += 1
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "round": 0,
-                "prime_updates_completed": prime_update_count,
-                "warmup_updates_completed": warmup_update_count,
-            }
-        )
-    for attempt in range(attempts):
-        for _ in range(updates_per_attempt):
-            simulation_app.update()
-            warmup_update_count += 1
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "round": attempt + 1,
-                    "prime_updates_completed": prime_update_count,
-                    "warmup_updates_completed": warmup_update_count,
-                }
-            )
-    return {
-        "schema_version": "native_task_arena_nurec_warmup.v1",
-        "official_setup_success": True,
-        "stage_classified_nurec": True,
-        "stage_classified_spg": bool(spg),
-        "official_setup_problems": [],
-        "requested_warmup_steps": int(warmup_steps),
-        "orchestrator_attempts": 0,
-        "orchestrator_error_types": [],
-        "prime_app_update_count": prime_update_count,
-        "warmup_app_update_count": warmup_update_count,
-        "app_update_count": prime_update_count + warmup_update_count,
-        "procedure_sources": [
-            (
-                "isaac-sim/IsaacSim:source/standalone_examples/nurec/"
-                "nurec_render.py@987015050efebfd0cd5d3736ae47fffe5adee308"
-            ),
-            (
-                "isaac-sim/IsaacLab:source/isaaclab/test/sensors/"
-                "test_camera_ppisp_gaussian.py@"
-                "ffff603eafc6b74264a5261cc0183d6a65390d78"
-            ),
-        ],
-        "camera_warmup_method": "isaaclab_camera_app_updates_without_replicator_orchestrator",
-        "passed": warmup_update_count >= int(warmup_steps),
-        "blockers": [],
-    }
-
-
 def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str, Any]:
     appearance_rows = [
         row
@@ -669,9 +562,8 @@ def main() -> int:
             raise RuntimeError(
                 "native_task_arena_preflight_object_reset_failed"
             )
-        if result["appearance_render_path"]["render_path"] == (
-            "particlefield_3d_gaussian_splat"
-        ):
+        render_path = result["appearance_render_path"]["render_path"]
+        if render_path == "particlefield_3d_gaussian_splat":
             import omni.usd
 
             result["particlefield_stage_readback"] = (
@@ -686,6 +578,12 @@ def main() -> int:
                 raise RuntimeError(
                     "native_task_arena_preflight_particlefield_composition_failed"
                 )
+        if render_path in {
+            "particlefield_3d_gaussian_splat",
+            "plain_nurec_volume",
+        }:
+            import omni.usd
+
             result["official_nurec_render_setup"] = (
                 _official_nurec_render_setup_and_warmup(
                     simulation_app,

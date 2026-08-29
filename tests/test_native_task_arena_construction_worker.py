@@ -13,6 +13,7 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _pad_centers_from_finger_body_offsets,
     _pad_offsets_from_relative_geometry,
     _pose_arrival_readback,
+    _prepare_site_appearance_renderer,
     _requested_arm_reset,
     _retain_task_path_samples,
     _task_joint_reset_passed,
@@ -21,6 +22,65 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
+
+
+def test_construction_warms_plain_nurec_before_camera_evidence() -> None:
+    class App:
+        updates = 0
+
+        def update(self):
+            self.updates += 1
+
+    app = App()
+    result = _prepare_site_appearance_renderer(
+        simulation_app=app,
+        plan={
+            "appearance_frame_alignment": {"representation": "nurec_volume"}
+        },
+        stage=object(),
+        setup_for_rendering_factory=lambda _stage: (True, True, False, []),
+        warmup_steps=40,
+    )
+
+    assert result["passed"] is True
+    assert result["representation"] == "nurec_volume"
+    assert result["stage_classified_nurec"] is True
+    assert result["app_update_count"] == 45
+    assert app.updates == 45
+
+
+def test_construction_skips_nurec_setup_for_other_appearance_formats() -> None:
+    result = _prepare_site_appearance_renderer(
+        simulation_app=object(),
+        plan={
+            "appearance_frame_alignment": {"representation": "mesh_texture"}
+        },
+    )
+
+    assert result == {
+        "schema_version": "native_task_arena_nurec_warmup.v1",
+        "status": "not_required",
+        "representation": "mesh_texture",
+        "passed": True,
+        "blockers": [],
+    }
+
+
+def test_construction_refuses_nurec_stage_that_renderer_cannot_classify() -> None:
+    result = _prepare_site_appearance_renderer(
+        simulation_app=object(),
+        plan={
+            "appearance_frame_alignment": {"representation": "nurec_volume"}
+        },
+        stage=object(),
+        setup_for_rendering_factory=lambda _stage: (True, False, False, []),
+    )
+
+    assert result["passed"] is False
+    assert result["representation"] == "nurec_volume"
+    assert result["blockers"] == [
+        "native_task_arena_nurec_official_setup_not_qualified"
+    ]
 
 
 def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
