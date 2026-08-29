@@ -32,6 +32,7 @@ from .paid_attempt_authority import (
 from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .native_task_arena_spend_ceiling import rolling_aggregate_spend_ceiling_usd
 from .spend_authority_consumption_root import prepare_consumption_root
+from .native_task_arena_pre_spend_evidence import validate_pre_spend_original_evidence
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -425,6 +426,9 @@ def _validate_pre_spend_closed_chain(
         "native_task_arena_pre_spend_closeout_time_invalid",
     )
     provider_run = attempt_root / "vast_provider_run"
+    expected_original_teardown = validate_pre_spend_original_evidence(
+        original=original, provider_run=provider_run
+    )
     if (
         _read(authority_path, "native_task_arena_pre_spend_authority_invalid")
         != dict(authority)
@@ -442,8 +446,6 @@ def _validate_pre_spend_closed_chain(
         or original.get("status") != "blocked"
         or original.get("blockers") != expected_blockers
         or original.get("provider_mutations_performed") != 0
-        or original.get("estimated_cost_usd") is not None
-        or original.get("continuing_spend_from_this_run") is not None
         or original.get("instance_id") not in (None, "")
         or original.get("vast_instance_ids") not in (None, [], ())
         or original.get("provider_instance_ids") not in (None, [], ())
@@ -469,9 +471,11 @@ def _validate_pre_spend_closed_chain(
         != f"native-task-arena-{str(authority.get('authorization_digest'))[7:]}.json"
         or attempt_root.name != "attempt_001"
         or attempt_root.parent.name != "attempts"
-        or attempt_root.parent.parent.name != _expected_job_dir(authority)
         or (provider_run / "vast_provider_adapter_result.json").exists()
-        or (provider_run / "vast_teardown_manifest.json").exists()
+        or result.get("original_pre_spend_teardown")
+        != expected_original_teardown
+        or teardown.get("original_pre_spend_teardown")
+        != expected_original_teardown
         or (attempt_root / "object_store_staging").exists()
         or (attempt_root / "vast_independent_watchdog_handoff.json").exists()
         or teardown.get("schema_version") != PREALLOCATION_TEARDOWN_SCHEMA_VERSION
@@ -1698,6 +1702,9 @@ def materialize_native_task_arena_pre_spend_closeout(
     attempt_root = Path(attempt_root_raw).resolve()
     provider_run = attempt_root / "vast_provider_run"
     preflight_file = provider_run / "pre_spend_preflight.json"
+    original_teardown = validate_pre_spend_original_evidence(
+        original=original, provider_run=provider_run
+    )
     preflight = _read(
         preflight_file, "native_task_arena_pre_spend_preflight_invalid"
     )
@@ -1729,8 +1736,6 @@ def materialize_native_task_arena_pre_spend_closeout(
         or original.get("status") != "blocked"
         or original.get("blockers") != expected_blockers
         or original.get("provider_mutations_performed") != 0
-        or original.get("estimated_cost_usd") is not None
-        or original.get("continuing_spend_from_this_run") is not None
         or original.get("instance_id") not in (None, "")
         or original.get("vast_instance_ids") not in (None, [], ())
         or original.get("provider_instance_ids") not in (None, [], ())
@@ -1749,10 +1754,8 @@ def materialize_native_task_arena_pre_spend_closeout(
         or original_file != attempt_root / "adp_arena_vast_result.json"
         or attempt_root.name != "attempt_001"
         or attempt_root.parent.name != "attempts"
-        or attempt_root.parent.parent.name != _expected_job_dir(authority)
         or consumption_file.name != f"native-task-arena-{authority_digest[7:]}.json"
         or (provider_run / "vast_provider_adapter_result.json").exists()
-        or (provider_run / "vast_teardown_manifest.json").exists()
         or (attempt_root / "object_store_staging").exists()
         or (attempt_root / "vast_independent_watchdog_handoff.json").exists()
         or zero_at < result_at
@@ -1789,6 +1792,7 @@ def materialize_native_task_arena_pre_spend_closeout(
         "original_allocator_result": _record(original_file),
         "pre_spend_preflight": _record(preflight_file),
         "authority_consumption_record": _record(consumption_file),
+        **({"original_pre_spend_teardown": original_teardown} if original_teardown else {}),
         "receipt_digest": "",
     }
     teardown["receipt_digest"] = canonical_digest(
@@ -1811,6 +1815,7 @@ def materialize_native_task_arena_pre_spend_closeout(
         "original_allocator_result": _record(original_file),
         "pre_spend_preflight": _record(preflight_file),
         "authority_consumption_record": _record(consumption_file),
+        **({"original_pre_spend_teardown": original_teardown} if original_teardown else {}),
         "teardown_manifest_path": str(teardown_path),
         "scientific_attempt_started": False,
         "first_observation_reached": False,
