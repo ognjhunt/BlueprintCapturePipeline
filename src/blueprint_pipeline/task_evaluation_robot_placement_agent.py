@@ -89,6 +89,9 @@ PlacementValidator = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 PlacementRenderer = Callable[
     [Mapping[str, Any], int], Sequence[Mapping[str, Any]]
 ]
+PlacementExecutor = Callable[
+    [Mapping[str, Any], Mapping[str, Any], int], Mapping[str, Any]
+]
 
 
 def robot_placement_agents_sdk_config(
@@ -177,6 +180,84 @@ def _visual_passed(review: RobotPlacementVisualReviewOutput) -> bool:
     )
 
 
+def _validated_native_attempt(value: Mapping[str, Any]) -> dict[str, Any]:
+    attempt = json.loads(json.dumps(dict(value), allow_nan=False))
+    feedback_images = attempt.pop("feedback_images", [])
+    if (
+        attempt.get("schema_version")
+        != "task_evaluation_robot_placement_native_attempt.v1"
+        or attempt.get("status") not in {"passed", "rejected"}
+        or not isinstance(attempt.get("blockers"), list)
+        or attempt.get("native_attempt_digest")
+        != canonical_digest(attempt, digest_field="native_attempt_digest")
+    ):
+        raise RobotPlacementAgentError("robot_placement_native_attempt_invalid")
+    images = list(feedback_images)
+    attempt["feedback_images"] = _image_metadata(images)
+    attempt["_feedback_image_inputs"] = images
+    return attempt
+
+
+def _build_placement_receipt(
+    *,
+    run_id: str,
+    scene_digest: str,
+    task_digest: str,
+    scene_context_digest: str,
+    task_context_digest: str,
+    overview_images: Sequence[Mapping[str, Any]],
+    history: Sequence[Mapping[str, Any]],
+    accepted: Mapping[str, Any] | None,
+    max_rounds: int,
+    native_loop_enabled: bool,
+) -> dict[str, Any]:
+    accepted_native = dict((accepted or {}).get("native_attempt") or {})
+    receipt: dict[str, Any] = {
+        "schema_version": ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION,
+        "status": "accepted" if accepted is not None else "blocked",
+        "run_id": run_id,
+        "model": ROBOT_PLACEMENT_AGENT_MODEL,
+        "reasoning_effort": ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
+        "max_rounds": int(max_rounds),
+        "round_count": len(history),
+        "scene_binding_digest": scene_digest,
+        "task_binding_digest": task_digest,
+        "scene_context_digest": scene_context_digest,
+        "task_context_digest": task_context_digest,
+        "overview_images": _image_metadata(overview_images),
+        "rounds": list(history),
+        "accepted_pose": accepted["proposal"]["pose"] if accepted is not None else None,
+        "accepted_candidate_id": (
+            accepted["proposal"]["candidate_id"] if accepted is not None else None
+        ),
+        "accepted_support_surface_id": (
+            accepted["proposal"]["support_surface_id"] if accepted is not None else None
+        ),
+        "accepted_geometry_gate_digest": (
+            accepted["geometry_gate"]["geometry_gate_digest"]
+            if accepted is not None
+            else None
+        ),
+        "native_agent_loop_enabled": native_loop_enabled,
+        "native_attempt_count": sum(
+            1 for round_record in history if round_record.get("native_attempt")
+        ),
+        "accepted_native_attempt_digest": (
+            accepted_native.get("native_attempt_digest") if accepted_native else None
+        ),
+        "candidate_may_self_authorize": False,
+        "physical_execution_authorized": False,
+        "native_construction_required": not bool(accepted_native),
+        "model_grades_controls": False,
+        "claim_ceiling": ROBOT_PLACEMENT_CLAIM_CEILING,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
 def run_task_evaluation_robot_placement_agent(
     *,
     invoker: AgentsSDKInvoker,
@@ -188,10 +269,11 @@ def run_task_evaluation_robot_placement_agent(
     overview_images: Sequence[Mapping[str, Any]],
     validate_candidate: PlacementValidator,
     render_candidate: PlacementRenderer,
+    execute_candidate: PlacementExecutor | None = None,
     max_rounds: int = DEFAULT_MAX_PLACEMENT_ROUNDS,
     max_input_tokens: int = 300_000,
 ) -> dict[str, Any]:
-    """Propose, validate, render, visually review, and freeze one robot pose."""
+    """Create poses and, when supplied, iterate on native execution feedback."""
 
     if not 1 <= int(max_rounds) <= 8:
         raise RobotPlacementAgentError("robot_placement_round_cap_invalid")
@@ -207,8 +289,11 @@ def run_task_evaluation_robot_placement_agent(
     )
     scene_digest = canonical_digest(scene)
     task_digest = canonical_digest(task)
+    scene_context_digest = canonical_digest(scene_advisory_context)
+    task_context_digest = canonical_digest(task_advisory_context)
     history: list[dict[str, Any]] = []
     accepted: dict[str, Any] | None = None
+    native_feedback_images: list[Mapping[str, Any]] = []
 
     proposal_instructions = (
         "You place a fixed-base robot for one observed site and task. Use the supplied exact "
@@ -240,6 +325,8 @@ def run_task_evaluation_robot_placement_agent(
                 "model_proposes_only": True,
                 "deterministic_geometry_gate_is_authoritative": True,
                 "native_construction_still_required": True,
+                "model_chooses_and_creates_each_next_pose": True,
+                "native_failures_must_inform_the_next_pose": True,
                 "model_may_not_change_thresholds": True,
             },
         }
@@ -256,7 +343,10 @@ def run_task_evaluation_robot_placement_agent(
                 reasoning_effort=ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
                 output_type=RobotPlacementProposalOutput,
             ),
-            _multimodal_input(prompt=prompt, images=overview_images),
+            _multimodal_input(
+                prompt=prompt,
+                images=[*overview_images, *native_feedback_images],
+            ),
         )
         proposal = RobotPlacementProposalOutput.model_validate(
             proposal_result.output
@@ -273,6 +363,7 @@ def run_task_evaluation_robot_placement_agent(
             "geometry_gate": geometry_gate,
             "visual_review": None,
             "preview_images": [],
+            "native_attempt": None,
         }
         if geometry_gate["status"] != "passed":
             history.append(round_record)
@@ -327,46 +418,44 @@ def run_task_evaluation_robot_placement_agent(
         round_record["visual_review_trace_id"] = review_result.trace_id
         history.append(round_record)
         if _visual_passed(visual_review):
-            accepted = round_record
-            break
+            if execute_candidate is None:
+                accepted = round_record
+                break
+            provisional_receipt = _build_placement_receipt(
+                run_id=run_id,
+                scene_digest=scene_digest,
+                task_digest=task_digest,
+                scene_context_digest=scene_context_digest,
+                task_context_digest=task_context_digest,
+                overview_images=overview_images,
+                history=history,
+                accepted=round_record,
+                max_rounds=max_rounds,
+                native_loop_enabled=False,
+            )
+            native_attempt = _validated_native_attempt(
+                execute_candidate(proposal, provisional_receipt, round_index)
+            )
+            native_feedback_images = list(
+                native_attempt.pop("_feedback_image_inputs")
+            )
+            round_record["native_attempt"] = native_attempt
+            if native_attempt["status"] == "passed":
+                accepted = round_record
+                break
 
-    receipt: dict[str, Any] = {
-        "schema_version": ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION,
-        "status": "accepted" if accepted is not None else "blocked",
-        "run_id": run_id,
-        "model": ROBOT_PLACEMENT_AGENT_MODEL,
-        "reasoning_effort": ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
-        "max_rounds": int(max_rounds),
-        "round_count": len(history),
-        "scene_binding_digest": scene_digest,
-        "task_binding_digest": task_digest,
-        "scene_context_digest": canonical_digest(scene_advisory_context),
-        "task_context_digest": canonical_digest(task_advisory_context),
-        "overview_images": _image_metadata(overview_images),
-        "rounds": history,
-        "accepted_pose": accepted["proposal"]["pose"] if accepted is not None else None,
-        "accepted_candidate_id": (
-            accepted["proposal"]["candidate_id"] if accepted is not None else None
-        ),
-        "accepted_support_surface_id": (
-            accepted["proposal"]["support_surface_id"] if accepted is not None else None
-        ),
-        "accepted_geometry_gate_digest": (
-            accepted["geometry_gate"]["geometry_gate_digest"]
-            if accepted is not None
-            else None
-        ),
-        "candidate_may_self_authorize": False,
-        "physical_execution_authorized": False,
-        "native_construction_required": True,
-        "model_grades_controls": False,
-        "claim_ceiling": ROBOT_PLACEMENT_CLAIM_CEILING,
-        "receipt_digest": "",
-    }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
+    return _build_placement_receipt(
+        run_id=run_id,
+        scene_digest=scene_digest,
+        task_digest=task_digest,
+        scene_context_digest=scene_context_digest,
+        task_context_digest=task_context_digest,
+        overview_images=overview_images,
+        history=history,
+        accepted=accepted,
+        max_rounds=max_rounds,
+        native_loop_enabled=execute_candidate is not None,
     )
-    return receipt
 
 
 def validate_robot_placement_receipt(
@@ -385,7 +474,7 @@ def validate_robot_placement_receipt(
         or receipt.get("reasoning_effort") != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
         or receipt.get("candidate_may_self_authorize") is not False
         or receipt.get("physical_execution_authorized") is not False
-        or receipt.get("native_construction_required") is not True
+        or not isinstance(receipt.get("native_construction_required"), bool)
         or receipt.get("model_grades_controls") is not False
         or receipt.get("claim_ceiling") != ROBOT_PLACEMENT_CLAIM_CEILING
         or receipt.get("receipt_digest")
@@ -421,6 +510,19 @@ def validate_robot_placement_receipt(
     )
     if not _visual_passed(visual):
         raise RobotPlacementAgentError("robot_placement_visual_acceptance_invalid")
+    if receipt.get("native_agent_loop_enabled") is True:
+        native_attempt = accepted.get("native_attempt")
+        if (
+            not isinstance(native_attempt, Mapping)
+            or native_attempt.get("status") != "passed"
+            or native_attempt.get("native_attempt_digest")
+            != receipt.get("accepted_native_attempt_digest")
+            or receipt.get("native_construction_required") is not False
+        ):
+            raise RobotPlacementAgentError("robot_placement_native_acceptance_invalid")
+        _validated_native_attempt(native_attempt)
+    elif receipt.get("native_construction_required") is not True:
+        raise RobotPlacementAgentError("robot_placement_native_boundary_invalid")
     receipt["accepted_pose"] = pose.model_dump(mode="json")
     return receipt
 
@@ -433,6 +535,7 @@ __all__ = [
     "RobotPlacementAgentError",
     "RobotPlacementProposalOutput",
     "RobotPlacementVisualReviewOutput",
+    "PlacementExecutor",
     "robot_placement_agents_sdk_config",
     "run_task_evaluation_robot_placement_agent",
     "validate_robot_placement_receipt",

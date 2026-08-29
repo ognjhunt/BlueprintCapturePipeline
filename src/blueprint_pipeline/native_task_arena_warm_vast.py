@@ -1,4 +1,4 @@
-"""Attach one digest-bound controls bundle to a retained Vast Arena worker."""
+"""Attach one digest-bound construction or controls bundle to a warm worker."""
 
 from __future__ import annotations
 
@@ -25,7 +25,12 @@ from .gpu_render_providers import (
     _validated_vast_known_hosts_pin,
     enroll_vast_ssh_host_key,
 )
-from .native_task_arena_controls_bundle import RESULT_FILENAME
+from .native_task_arena_construction_worker import (
+    RESULT_FILENAME as CONSTRUCTION_RESULT_FILENAME,
+)
+from .native_task_arena_controls_bundle import (
+    RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
+)
 from .native_task_arena_execution_contract import (
     native_task_arena_execution_transport_completed,
 )
@@ -51,7 +56,11 @@ from .wam_provider_object_store import (
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_warm_vast_run.v1"
-DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-controls"
+DEFAULT_KEY_PREFIX = "blueprint/adp/native-task-arena/warm-attachment"
+WARM_RESULT_FILENAMES = {
+    "construction_canary": CONSTRUCTION_RESULT_FILENAME,
+    "controls": CONTROLS_RESULT_FILENAME,
+}
 POLL_SECONDS = 10
 DEFAULT_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 VAST_SSH_IDENTITY_FILE_ENV = "BLUEPRINT_VAST_SSH_IDENTITY_FILE"
@@ -598,6 +607,10 @@ def _execute_staged_warm_attempt(
     instance_id: int,
     api_key: str,
 ) -> dict[str, Any]:
+    execution_mode = str(prepared_bundle.get("execution_mode") or "")
+    expected_output_filename = WARM_RESULT_FILENAMES.get(execution_mode)
+    if expected_output_filename is None:
+        raise ValueError("native_task_arena_warm_bundle_mode_invalid")
     bundle_url = _read_url(staging_dir / "provider_bundle_url.txt")
     output_put_url = _read_url(staging_dir / "provider_output_put_url.txt")
     output_get_url = _read_url(staging_dir / "provider_output_get_url.txt")
@@ -652,8 +665,8 @@ def _execute_staged_warm_attempt(
         _extract_provider_output(
             output_zip,
             job / "immutable_execution",
-            result_name=RESULT_FILENAME,
-            blocker_prefix="native_task_arena_warm_controls",
+            result_name=expected_output_filename,
+            blocker_prefix=f"native_task_arena_warm_{execution_mode}",
         )
         if output_ready
         else {"execution": {}, "blockers": ["native_task_arena_warm_output_timeout"]}
@@ -668,7 +681,7 @@ def _execute_staged_warm_attempt(
     }
 
 
-def run_native_task_arena_warm_controls_vast(
+def run_native_task_arena_warm_vast(
     *,
     job_dir: str | Path,
     prepared_bundle: Mapping[str, Any],
@@ -679,7 +692,7 @@ def run_native_task_arena_warm_controls_vast(
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
-    """Run through the same scoped Vast mutation gates as a cold Arena run."""
+    """Run one construction or controls bundle without another allocation."""
 
     kwargs = {
         "job_dir": job_dir,
@@ -692,16 +705,16 @@ def run_native_task_arena_warm_controls_vast(
         "close_on_success": close_on_success,
     }
     if not execute:
-        return _run_native_task_arena_warm_controls_vast(**kwargs)
+        return _run_native_task_arena_warm_vast(**kwargs)
     # The cold Arena path deliberately opens these process-local gates only
     # after paid-resource admission and restores them afterwards. Warm attach
     # has the same provider GET/execute/DELETE surface, so it must use the same
     # scoped authority instead of depending on persistent service env flags.
     with _vast_authority_environment():
-        return _run_native_task_arena_warm_controls_vast(**kwargs)
+        return _run_native_task_arena_warm_vast(**kwargs)
 
 
-def _run_native_task_arena_warm_controls_vast(
+def _run_native_task_arena_warm_vast(
     *,
     job_dir: str | Path,
     prepared_bundle: Mapping[str, Any],
@@ -712,17 +725,20 @@ def _run_native_task_arena_warm_controls_vast(
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
-    """Run one controls bundle on an existing instance; allocate no provider."""
+    """Run one admitted warm bundle on an existing instance; allocate none."""
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
     generated = utc_now_iso()
     bundle_path = Path(str(prepared_bundle.get("bundle_path") or "")).resolve()
+    execution_mode = str(prepared_bundle.get("execution_mode") or "")
+    expected_output_filename = WARM_RESULT_FILENAMES.get(execution_mode)
     if (
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
-        or prepared_bundle.get("execution_mode") != "controls"
-        or prepared_bundle.get("expected_output_filename") != RESULT_FILENAME
+        or expected_output_filename is None
+        or prepared_bundle.get("expected_output_filename")
+        != expected_output_filename
         or not bundle_path.is_file()
         or _file_sha256(bundle_path) != prepared_bundle.get("bundle_sha256")
     ):
@@ -747,6 +763,7 @@ def _run_native_task_arena_warm_controls_vast(
             "provider_allocations_performed": 0,
             "warm_session_digest": session["session_digest"],
             "bundle_sha256": prepared_bundle.get("bundle_sha256"),
+            "execution_mode": execution_mode,
             "blockers": [],
         }
         write_json(job / "native_task_arena_warm_vast_result.json", result)
@@ -844,10 +861,11 @@ def _run_native_task_arena_warm_controls_vast(
         blockers.append("native_task_arena_warm_output_upload_unproven")
     if not native_task_arena_execution_transport_completed(
         execution,
-        expected_output_filename=RESULT_FILENAME,
+        expected_output_filename=expected_output_filename,
     ):
         blockers.extend(
-            execution.get("blockers") or ["native_task_arena_warm_controls_not_completed"]
+            execution.get("blockers")
+            or [f"native_task_arena_warm_{execution_mode}_not_completed"]
         )
     if cleanup.get("all_objects_absent") is not True:
         blockers.append("native_task_arena_warm_object_store_cleanup_unproven")
@@ -869,10 +887,19 @@ def _run_native_task_arena_warm_controls_vast(
         "provider_instance_id": instance_id,
         "warm_session_digest": session["session_digest"],
         "bundle_sha256": prepared_bundle.get("bundle_sha256"),
+        "execution_mode": execution_mode,
         "authorization_consumption": consumption,
         "dispatch": outcome.get("dispatch"),
         "remote_log_fetch": outcome.get("remote_log"),
-        "native_control_result_path": extracted.get("result_path"),
+        "native_result_path": extracted.get("result_path"),
+        "native_control_result_path": (
+            extracted.get("result_path") if execution_mode == "controls" else None
+        ),
+        "native_construction_result_path": (
+            extracted.get("result_path")
+            if execution_mode == "construction_canary"
+            else None
+        ),
         "runtime_seconds": round(elapsed, 3),
         "incremental_cost_upper_bound_usd": round(
             float(session.get("max_hourly_rate_usd") or 0.0) * elapsed / 3600,
@@ -913,7 +940,7 @@ def _run_native_task_arena_warm_controls_vast(
             "continuing_spend_from_this_run": False,
             "zero_continuing_spend_scope": (
                 "The exact retained Vast instance was destroyed and provider "
-                "absence was observed after the successful warm controls attempt."
+                "absence was observed after the successful warm attachment."
             ),
         }
     else:
@@ -932,12 +959,13 @@ def _run_native_task_arena_warm_controls_vast(
     result = seal_lane_terminal_artifacts(
         result,
         attempt_root=job,
-        lane="native_task_arena_warm_controls",
+        lane=f"native_task_arena_warm_{execution_mode}",
         binding={
             "provider": "vast",
             "provider_instance_id": instance_id,
             "warm_session_digest": session["session_digest"],
             "bundle_sha256": prepared_bundle.get("bundle_sha256"),
+            "execution_mode": execution_mode,
             "provider_allocations_performed": 0,
         },
     )
@@ -947,5 +975,11 @@ def _run_native_task_arena_warm_controls_vast(
 
 __all__ = [
     "RESULT_SCHEMA_VERSION",
+    "run_native_task_arena_warm_vast",
     "run_native_task_arena_warm_controls_vast",
 ]
+
+
+# Compatibility alias for existing controls callers. The implementation now
+# validates and dispatches both construction_canary and controls bundles.
+run_native_task_arena_warm_controls_vast = run_native_task_arena_warm_vast

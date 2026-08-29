@@ -5109,8 +5109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing.append("native_task_arena_control_result")
             if any_policy_requested and not args.native_task_arena_policy_execution_spec:
                 missing.append("native_task_arena_policy_execution_spec")
-            if warm_attach_requested and not controls_requested:
-                missing.append("native_task_arena_warm_attach_requires_controls")
+            if warm_attach_requested and (
+                preflight_requested or any_policy_requested
+            ):
+                missing.append(
+                    "native_task_arena_warm_attach_requires_construction_or_controls"
+                )
             if warm_attach_requested and args.native_task_arena_retain_warm_session:
                 missing.append("native_task_arena_warm_modes_conflict")
             if warm_attach_requested and not args.native_task_arena_attempt_authority:
@@ -5530,6 +5534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         warm_attempt_authority=native_authority,
                         paid_resource_admission_grant=grant,
                         execute=args.execute,
+                        close_on_success=controls_requested,
                     )
                     write_json(Path(args.adapter_output), result)
                     success = result.get("status") in {
@@ -5574,11 +5579,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if name in os.environ
                     }
                 if args.native_task_arena_retain_warm_session:
-                    if not controls_requested:
+                    if preflight_requested or any_policy_requested:
                         result = {
                             "status": "blocked",
                             "blockers": [
-                                "native_task_arena_warm_session_requires_controls"
+                                "native_task_arena_warm_session_requires_construction_or_controls"
                             ],
                             "provider_mutations_performed": 0,
                         }

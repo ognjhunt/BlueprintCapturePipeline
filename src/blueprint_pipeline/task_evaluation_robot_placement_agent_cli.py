@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from .common import write_json
 from .task_evaluation_robot_placement_agent import (
+    PlacementExecutor,
     robot_placement_agents_sdk_config,
     run_task_evaluation_robot_placement_agent,
 )
@@ -94,6 +95,7 @@ def run_robot_placement_cli(
     allow_live_invocation: bool,
     tracing_disabled: bool,
     robot_id: str = "franka_panda",
+    execute_candidate: PlacementExecutor | None = None,
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -193,6 +195,7 @@ def run_robot_placement_cli(
         overview_images=overview_images,
         validate_candidate=validator,
         render_candidate=renderer,
+        execute_candidate=execute_candidate,
         max_rounds=max_rounds,
         max_input_tokens=max_input_tokens,
     )
