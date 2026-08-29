@@ -1115,6 +1115,7 @@ def test_static_scene_convex_is_converted_to_triangle_mesh(tmp_path: Path) -> No
 
     assert adaptation is not None
     assert adaptation["converted_prim_paths"] == ["/Root/wall"]
+    assert adaptation["conversion_scope"] == "all_static_convex_collision_meshes"
     assert adaptation["candidate_bytes_modified"] is False
     # the derived scene now passes the gate, and the sealed bytes are untouched
     verify_gpu_compatible_scene_collision(derived)
@@ -1139,6 +1140,40 @@ def test_a_scene_within_tolerance_is_left_alone(tmp_path: Path) -> None:
 
     assert author_gpu_compatible_scene_collision(scene, derived) is None
     assert not derived.exists()
+
+
+def test_non_oblong_static_convex_scene_is_still_kept_as_exact_mesh(
+    tmp_path: Path,
+) -> None:
+    """Support topology must not depend on a mesh crossing a cook aspect ratio."""
+
+    from pxr import Usd, UsdPhysics
+
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_gpu_compatible_scene_collision,
+    )
+
+    source = tmp_path / "captured_support.usda"
+    source.write_text(
+        OBLONG_COLLISION_USDA.replace("(1800,0,0)", "(20,0,0)")
+        .replace("(1800,250,0)", "(20,20,0)")
+        .replace("(0,250,0)", "(0,20,0)")
+        .replace("(0,0,11)", "(0,0,20)")
+        .replace("(1800,0,11)", "(20,0,20)")
+        .replace("(1800,250,11)", "(20,20,20)")
+        .replace("(0,250,11)", "(0,20,20)"),
+        encoding="utf-8",
+    )
+    derived = tmp_path / "runtime_support.usda"
+
+    adaptation = author_gpu_compatible_scene_collision(source, derived)
+
+    assert adaptation is not None
+    stage = Usd.Stage.Open(str(derived))
+    support = stage.GetPrimAtPath("/Root/wall")
+    assert (
+        UsdPhysics.MeshCollisionAPI(support).GetApproximationAttr().Get() == "none"
+    )
 
 
 def test_presets_is_left_unset_so_the_callback_physics_survives(monkeypatch) -> None:

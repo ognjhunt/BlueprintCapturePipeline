@@ -700,14 +700,16 @@ def _bbox_aspect_ratio(mesh: Any) -> float:
 def author_gpu_compatible_scene_collision(
     source_usd: str | Path, destination: str | Path
 ) -> dict[str, Any] | None:
-    """Re-approximate static convex collision that PhysX cannot GPU-cook.
+    """Author static scene collision as the source triangle mesh.
 
-    Static scene geometry does not need convex decomposition at all: a
-    triangle-mesh collider (approximation ``none``) is the standard static
-    representation and is GPU-compatible regardless of shape. Convert every
-    convex-approximated collision mesh whose bounding-box aspect ratio exceeds
-    the GPU cook tolerance, in a derived copy; sealed bytes untouched,
-    provenance recorded. Returns ``None`` when nothing needs converting.
+    Static scene geometry does not need a convex approximation: a triangle-mesh
+    collider (approximation ``none``) is the standard static representation and
+    is GPU-compatible regardless of shape.  More importantly, convexifying a
+    captured support surface changes its contact topology; a rigid task object
+    can fall through a support triangle that is present in the sealed mesh but
+    absent from the cooked convex approximation. Convert every convex-authored
+    static collision mesh in a derived copy. Sealed bytes remain untouched and
+    provenance is recorded. Returns ``None`` when nothing needs converting.
     """
 
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -719,8 +721,6 @@ def author_gpu_compatible_scene_collision(
         value = approximation.Get() if approximation else None
         if str(value or "") not in {"convexDecomposition", "convexHull"}:
             continue
-        if _bbox_aspect_ratio(mesh) <= GPU_CONVEX_MAX_ASPECT_RATIO:
-            continue
         UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Set("none")
         converted.append(prim.GetPath().pathString)
     if not converted:
@@ -730,8 +730,9 @@ def author_gpu_compatible_scene_collision(
     stage.GetRootLayer().Export(str(output))
     verify_gpu_compatible_scene_collision(output)
     return {
-        "adaptation": "static_convex_over_aspect_ratio_to_triangle_mesh",
+        "adaptation": "static_convex_to_triangle_mesh",
         "converted_prim_paths": sorted(converted),
+        "conversion_scope": "all_static_convex_collision_meshes",
         "maximum_convex_hull_aspect_ratio": GPU_CONVEX_MAX_ASPECT_RATIO,
         "candidate_bytes_modified": False,
         "derived_from_sha256": _sha256(source),

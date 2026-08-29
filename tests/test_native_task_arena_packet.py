@@ -493,6 +493,70 @@ def test_original_and_second_scene_share_one_packet_materializer(
     }
 
 
+@pytest.mark.parametrize("articulated", [False, True])
+def test_packet_preserves_exact_static_support_topology_for_both_task_types(
+    tmp_path: Path, articulated: bool
+) -> None:
+    """Rigid and articulated tasks share the exact static-scene collision path."""
+
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdPhysics
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=articulated)
+    collision_row = next(
+        row for row in request["assets"] if row["semantic_role"] == "scene_collision"
+    )
+    collision = evidence / collision_row["source"]["relative_path"]
+    sealed = '''#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Root"
+{
+    def Mesh "captured_support" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+    )
+    {
+        uniform token physics:approximation = "convexDecomposition"
+        point3f[] points = [(0,0,0), (1,0,0), (1,1,0), (0,1,0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0,1,2,3]
+    }
+}
+'''
+    collision.write_text(sealed, encoding="utf-8")
+    collision_row["source"]["size_bytes"] = collision.stat().st_size
+    collision_row["source"]["sha256"] = f"sha256:{sha256_file(collision)}"
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    output = tmp_path / "packet"
+    receipt = materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=output
+    )
+
+    binding = next(
+        row
+        for row in receipt["source_bindings"]
+        if row["semantic_role"] == "scene_collision"
+    )
+    adaptation = binding["static_scene_collision_adaptation"]
+    assert adaptation["adaptation"] == "static_convex_to_triangle_mesh"
+    assert adaptation["converted_prim_paths"] == ["/Root/captured_support"]
+    assert binding["staged_sha256"] != collision_row["source"]["sha256"]
+    assert collision.read_text(encoding="utf-8") == sealed
+    stage = Usd.Stage.Open(str(output / "assets" / collision_row["filename"]))
+    support = stage.GetPrimAtPath("/Root/captured_support")
+    assert (
+        UsdPhysics.MeshCollisionAPI(support).GetApproximationAttr().Get() == "none"
+    )
+
+
 def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     tmp_path: Path,
 ) -> None:
