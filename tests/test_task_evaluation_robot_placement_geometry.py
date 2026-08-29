@@ -5,6 +5,7 @@ import math
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
+    _parallel_trajectory_gates,
     build_robot_placement_geometry_index,
     enumerate_robot_placement_geometry_candidates,
     render_robot_placement_geometry_previews,
@@ -314,3 +315,100 @@ def test_trajectory_ik_carries_sequential_seed_and_records_per_phase(monkeypatch
         0.70710678,
     ]
     assert gate["trajectory_position_ik_gate_digest"].startswith("sha256:")
+
+
+def test_precomputed_trajectory_gate_preserves_exact_geometry_gate_bytes(
+    tmp_path,
+) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    floor = next(
+        surface
+        for surface in index.support_surfaces
+        if surface.prim_path == "/Scene/Floor"
+    )
+    proposal = _proposal(floor.surface_id)
+    waypoints = [[0.6, 0.0, 0.5], [0.7, 0.0, 0.5]]
+    phase_ids = ["precontact", "contact"]
+    orientations = [
+        [0.0, 0.70710678, 0.0, 0.70710678],
+        [0.0, 0.70710678, 0.0, 0.70710678],
+    ]
+    direct = validate_robot_placement_geometry_candidate(
+        index=index,
+        proposal=proposal,
+        target_position_world_m=[0.8, 0.0, 0.5],
+        trajectory_waypoints_world_m=waypoints,
+        trajectory_phase_ids=phase_ids,
+        trajectory_orientations_world_xyzw=orientations,
+    )
+    trajectory_gate = validate_robot_placement_trajectory_position_ik(
+        proposal=proposal,
+        trajectory_waypoints_world_m=waypoints,
+        trajectory_phase_ids=phase_ids,
+        trajectory_orientations_world_xyzw=orientations,
+    )
+    precomputed = validate_robot_placement_geometry_candidate(
+        index=index,
+        proposal=proposal,
+        target_position_world_m=[0.8, 0.0, 0.5],
+        trajectory_gate_override=trajectory_gate,
+    )
+
+    assert precomputed == direct
+
+
+def test_parallel_trajectory_workers_preserve_serial_order_and_digests(
+    monkeypatch,
+) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_geometry as module
+
+    proposals = [
+        _proposal("support", position=(0.0, 0.0, 0.0)),
+        {
+            **_proposal("support", position=(0.05, 0.0, 0.0)),
+            "candidate_id": "candidate-b",
+        },
+    ]
+    kwargs = {
+        "proposals": proposals,
+        "trajectory_waypoints_world_m": [[0.5, 0.0, 0.5]],
+        "trajectory_phase_ids": ["precontact"],
+        "trajectory_orientations_world_xyzw": [
+            [0.0, 0.70710678, 0.0, 0.70710678]
+        ],
+    }
+
+    serial = _parallel_trajectory_gates(**kwargs, worker_count=1)
+
+    executor_calls = []
+
+    class RecordingExecutor:
+        def __init__(self, *, max_workers, mp_context):
+            executor_calls.append(
+                {"max_workers": max_workers, "start_method": mp_context.get_start_method()}
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def map(self, function, work, *, chunksize):
+            executor_calls[0]["chunksize"] = chunksize
+            return map(function, work)
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", RecordingExecutor)
+    parallel = _parallel_trajectory_gates(**kwargs, worker_count=2)
+
+    assert executor_calls == [
+        {"max_workers": 2, "start_method": "spawn", "chunksize": 4}
+    ]
+    assert parallel == serial
+    assert [
+        row["trajectory_position_ik_gate_digest"] for row in parallel
+    ] == [row["trajectory_position_ik_gate_digest"] for row in serial]

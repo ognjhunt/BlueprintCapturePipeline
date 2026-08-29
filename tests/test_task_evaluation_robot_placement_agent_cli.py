@@ -75,6 +75,7 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
     }
     rendered_waypoints = []
 
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 4)
     monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
     monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {})
     def enumerate_candidates(**kwargs):
@@ -87,6 +88,7 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
             [0.0, 0.70710678, 0.0, 0.70710678],
             [0.0, 0.70710678, 0.0, 0.70710678],
         ]
+        assert kwargs["trajectory_worker_count"] == 4
         return [proposal]
 
     monkeypatch.setattr(

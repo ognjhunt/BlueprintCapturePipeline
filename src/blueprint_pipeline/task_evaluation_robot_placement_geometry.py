@@ -6,6 +6,8 @@ import base64
 import hashlib
 import io
 import math
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -365,6 +367,7 @@ def validate_robot_placement_geometry_candidate(
     trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     trajectory_phase_ids: Sequence[str] = (),
     trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
+    trajectory_gate_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(proposal.get("candidate_id") or "")
     pose = proposal.get("pose") if isinstance(proposal.get("pose"), Mapping) else {}
@@ -459,12 +462,29 @@ def validate_robot_placement_geometry_candidate(
     if facing_error_degrees > profile.max_facing_error_deg:
         blockers.append("robot_not_facing_task_workspace")
 
-    trajectory_gate = validate_robot_placement_trajectory_position_ik(
-        proposal=proposal,
-        trajectory_waypoints_world_m=trajectory_waypoints_world_m,
-        trajectory_phase_ids=trajectory_phase_ids,
-        trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
+    trajectory_gate = (
+        dict(trajectory_gate_override)
+        if trajectory_gate_override is not None
+        else validate_robot_placement_trajectory_position_ik(
+            proposal=proposal,
+            trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+            trajectory_phase_ids=trajectory_phase_ids,
+            trajectory_orientations_world_xyzw=(
+                trajectory_orientations_world_xyzw
+            ),
+        )
     )
+    if (
+        trajectory_gate.get("schema_version")
+        != TRAJECTORY_IK_GATE_SCHEMA_VERSION
+        or trajectory_gate.get("trajectory_position_ik_gate_digest")
+        != canonical_digest(
+            trajectory_gate, digest_field="trajectory_position_ik_gate_digest"
+        )
+    ):
+        raise RobotPlacementGeometryError(
+            "robot_placement_trajectory_gate_override_invalid"
+        )
     blockers.extend(trajectory_gate["blockers"])
 
     result: dict[str, Any] = {
@@ -511,6 +531,61 @@ def validate_robot_placement_geometry_candidate(
         result, digest_field="geometry_gate_digest"
     )
     return result
+
+
+def _trajectory_gate_worker(
+    work: tuple[
+        Mapping[str, Any],
+        Sequence[Sequence[float]],
+        Sequence[str],
+        Sequence[Sequence[float]],
+    ],
+) -> dict[str, Any]:
+    proposal, waypoints, phase_ids, orientations = work
+    return validate_robot_placement_trajectory_position_ik(
+        proposal=proposal,
+        trajectory_waypoints_world_m=waypoints,
+        trajectory_phase_ids=phase_ids,
+        trajectory_orientations_world_xyzw=orientations,
+    )
+
+
+def _parallel_trajectory_gates(
+    *,
+    proposals: Sequence[Mapping[str, Any]],
+    trajectory_waypoints_world_m: Sequence[Sequence[float]],
+    trajectory_phase_ids: Sequence[str],
+    trajectory_orientations_world_xyzw: Sequence[Sequence[float]],
+    worker_count: int,
+) -> list[dict[str, Any]]:
+    """Evaluate independent base candidates concurrently, retaining order."""
+
+    try:
+        workers = int(worker_count)
+    except (TypeError, ValueError) as exc:
+        raise RobotPlacementGeometryError(
+            "robot_placement_trajectory_worker_count_invalid"
+        ) from exc
+    if not 1 <= workers <= 32:
+        raise RobotPlacementGeometryError(
+            "robot_placement_trajectory_worker_count_invalid"
+        )
+    work = [
+        (
+            dict(proposal),
+            [list(row) for row in trajectory_waypoints_world_m],
+            list(trajectory_phase_ids),
+            [list(row) for row in trajectory_orientations_world_xyzw],
+        )
+        for proposal in proposals
+    ]
+    if workers == 1 or len(work) <= 1:
+        return [_trajectory_gate_worker(row) for row in work]
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=min(workers, len(work)), mp_context=context
+    ) as executor:
+        return list(executor.map(_trajectory_gate_worker, work, chunksize=4))
 
 
 def validate_robot_placement_trajectory_position_ik(
@@ -636,6 +711,7 @@ def enumerate_robot_placement_geometry_candidates(
     trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     trajectory_phase_ids: Sequence[str] = (),
     trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
+    trajectory_worker_count: int = 1,
 ) -> list[dict[str, Any]]:
     """Return ranked, deterministic, geometry-passing candidates for agent context."""
 
@@ -667,7 +743,9 @@ def enumerate_robot_placement_geometry_candidates(
         np.arange(minimum_radius, maximum_radius + 1.0e-9, profile.probe_step_m),
         key=lambda value: (abs(float(value) - 0.45), float(value)),
     )
-    candidates: list[tuple[tuple[float, ...], dict[str, Any], dict[str, Any]]] = []
+    prequalified: list[
+        tuple[dict[str, Any], dict[str, Any], SupportSurface, float, int]
+    ] = []
     for surface_index, surface in enumerate(surfaces[:12]):
         for radius_index, radius in enumerate(radii):
             for angle_index in range(72):
@@ -699,27 +777,48 @@ def enumerate_robot_placement_geometry_candidates(
                     proposal=proposal,
                     target_position_world_m=target,
                     robot_id=robot_id,
-                    trajectory_waypoints_world_m=trajectory_waypoints_world_m,
-                    trajectory_phase_ids=trajectory_phase_ids,
-                    trajectory_orientations_world_xyzw=(
-                        trajectory_orientations_world_xyzw
-                    ),
                 )
                 if gate["status"] != "passed":
                     continue
-                score = (
-                    -float(
-                        gate["trajectory_position_ik_gate"][
-                            "minimum_manipulability"
-                        ]
-                        or 0.0
-                    ),
-                    abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
-                    abs(float(radius) - 0.45),
-                    gate["shoulder_to_target_distance_m"],
-                    float(angle_index),
+                prequalified.append(
+                    (proposal, gate, surface, float(radius), angle_index)
                 )
-                candidates.append((score, proposal, gate))
+
+    trajectory_gates = _parallel_trajectory_gates(
+        proposals=[row[0] for row in prequalified],
+        trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+        trajectory_phase_ids=trajectory_phase_ids,
+        trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
+        worker_count=trajectory_worker_count,
+    )
+    candidates: list[tuple[tuple[float, ...], dict[str, Any], dict[str, Any]]] = []
+    for (
+        proposal,
+        _cheap_gate,
+        surface,
+        radius,
+        angle_index,
+    ), trajectory_gate in zip(prequalified, trajectory_gates, strict=True):
+        gate = validate_robot_placement_geometry_candidate(
+            index=index,
+            proposal=proposal,
+            target_position_world_m=target,
+            robot_id=robot_id,
+            trajectory_gate_override=trajectory_gate,
+        )
+        if gate["status"] != "passed":
+            continue
+        score = (
+            -float(
+                gate["trajectory_position_ik_gate"]["minimum_manipulability"]
+                or 0.0
+            ),
+            abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
+            abs(radius - 0.45),
+            gate["shoulder_to_target_distance_m"],
+            float(angle_index),
+        )
+        candidates.append((score, proposal, gate))
     candidates.sort(key=lambda item: item[0])
     return [
         {
