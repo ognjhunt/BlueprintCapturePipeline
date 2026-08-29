@@ -82,6 +82,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-scene-object-discovery.service",
     "blueprint-scene-object-discovery.path",
+    "blueprint-task-evaluation-configured-controls-progression.service",
+    "blueprint-task-evaluation-configured-controls-progression.timer",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -93,11 +95,18 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-scene-object-discovery.path",
 )
-#: The only unit kinds a release may install.  The oneshot ``.service`` and its
-#: queue-watching ``.path`` are a pair: installing one without the other left
-#: the durable queue watched by stale bytes (or by nothing on a rebuilt host).
-#: Timers, sockets, and anything else stay operator-managed and are refused.
-DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path")
+#: This fixed timer advances only a sealed, qualifying configured-scene plan
+#: through the canonical Website APIs.  It cannot be supplied by a request or
+#: launch profile and never invokes an allocator directly, but unlike the
+#: no-spend queue watchers above it may eventually reach already-authorized
+#: downstream spend.  Keep that authority distinct in the deployment receipt.
+DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-task-evaluation-configured-controls-progression.timer",
+)
+#: The only unit kinds a release may install.  Services and their queue-watching
+#: paths stay paired, while the one fixed progression timer stays paired with
+#: its oneshot service.  Sockets, mounts, and anything else remain refused.
+DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path", ".timer")
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT = (
     "/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries"
@@ -773,12 +782,12 @@ def _systemd_unit_state(unit: str) -> dict[str, str]:
 def _installed_path_unit_states(
     installed_units: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, str]]:
-    """Snapshot watcher intent before unit bytes or daemon state move."""
+    """Snapshot path/timer intent before unit bytes or daemon state move."""
 
     return {
         unit: _systemd_unit_state(unit)
         for entry in installed_units
-        if (unit := str(entry.get("unit") or "")).endswith(".path")
+        if (unit := str(entry.get("unit") or "")).endswith((".path", ".timer"))
     }
 
 
@@ -823,31 +832,41 @@ def _restore_installed_path_units(
     before: Mapping[str, Mapping[str, str]],
     arm_path_units: bool,
     always_arm_units: Sequence[str] = (),
+    always_arm_timer_units: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
-    """Install new watcher bytes without widening operator launch authority.
+    """Restore path/timer intent without widening arbitrary launch authority.
 
-    A stopped watcher is an operational freeze.  Deploy used to unconditionally
-    ``enable`` and ``restart`` every installed path unit, silently reopening the
-    paid queue.  Preserve both the boot and active state by default.  A fresh
-    host therefore stays disabled/inactive.  The only widening operation is the
-    explicit ``arm_path_units`` flag, whose before/requested/after state is
-    retained in the deployment receipt.  A release may separately name a
-    hard-coded no-spend watcher in ``always_arm_units``; this cannot be supplied
-    by an HTTP request or launch profile and is retained as ``arm_no_spend``.
+    A stopped paid watcher is an operational freeze, so paths preserve both boot
+    and active state unless explicitly armed or fixed as no-spend.  The one
+    configured-controls timer is a separate fixed category: it only consumes
+    sealed qualifying plans through canonical APIs, and its receipt names that
+    progression authority instead of misreporting it as no-spend.
     """
 
     receipts: list[dict[str, Any]] = []
     for entry in installed_units:
         unit = str(entry.get("unit") or "")
-        if not unit.endswith(".path"):
+        if not unit.endswith((".path", ".timer")):
             continue
         prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
         arm_no_spend = unit in always_arm_units
+        arm_progression = unit in always_arm_timer_units
+        if arm_no_spend and arm_progression:
+            raise ControlPlaneDeployError(
+                f"deploy_automation_unit_authority_ambiguous:{unit}"
+            )
+        explicit_path_arm = arm_path_units and unit.endswith(".path")
         should_enable = (
-            arm_path_units or arm_no_spend or prior.get("enabled") == "enabled"
+            explicit_path_arm
+            or arm_no_spend
+            or arm_progression
+            or prior.get("enabled") == "enabled"
         )
         should_start = (
-            arm_path_units or arm_no_spend or prior.get("state") == "active"
+            explicit_path_arm
+            or arm_no_spend
+            or arm_progression
+            or prior.get("state") == "active"
         )
         commands = ["enable" if should_enable else "disable"]
         commands.append("restart" if should_start else "stop")
@@ -881,14 +900,19 @@ def _restore_installed_path_units(
                 "before": prior,
                 "requested_intent": (
                     "arm"
-                    if arm_path_units
+                    if explicit_path_arm
                     else "arm_no_spend"
                     if arm_no_spend
+                    else "arm_configured_controls_progression"
+                    if arm_progression
                     else "preserve"
                 ),
                 "after": after,
                 "operator_freeze_preserved": (
-                    not arm_path_units and not arm_no_spend and not should_start
+                    not explicit_path_arm
+                    and not arm_no_spend
+                    and not arm_progression
+                    and not should_start
                 ),
             }
         )
@@ -1282,10 +1306,10 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
-    path_unit_names = [
+    automation_unit_names = [
         {"unit": unit}
         for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
-        if unit.endswith(".path")
+        if unit.endswith((".path", ".timer"))
     ]
     # Held for the whole deploy, not sampled before it: a launch that starts
     # mid-deploy would read a release being swapped underneath it.  The nested
@@ -1293,9 +1317,9 @@ def deploy_control_plane_commit(
     # any later deploy step fails.
     with (
         _holding_paid_launch_locks(paid_launch_locks),
-        _restore_path_unit_states_on_deploy_failure(path_unit_names) as (
-            path_unit_states_before,
-            quiesced_path_units,
+        _restore_path_unit_states_on_deploy_failure(automation_unit_names) as (
+            automation_unit_states_before,
+            quiesced_automation_units,
         ),
     ):
         installed_provenance = _install_release_provenance(
@@ -1405,11 +1429,12 @@ def deploy_control_plane_commit(
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
-        path_unit_state_receipts = _restore_installed_path_units(
+        automation_unit_state_receipts = _restore_installed_path_units(
             installed_systemd_units,
-            before=path_unit_states_before,
+            before=automation_unit_states_before,
             arm_path_units=arm_path_units,
             always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
+            always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
         )
 
     return {
@@ -1431,8 +1456,18 @@ def deploy_control_plane_commit(
         "episode_compilation_runtime_directories": (
             episode_compilation_runtime_directories
         ),
-        "path_unit_states": path_unit_state_receipts,
-        "quiesced_path_units": quiesced_path_units,
+        "path_unit_states": [
+            row for row in automation_unit_state_receipts if row["unit"].endswith(".path")
+        ],
+        "timer_unit_states": [
+            row for row in automation_unit_state_receipts if row["unit"].endswith(".timer")
+        ],
+        "quiesced_path_units": [
+            row for row in quiesced_automation_units if row["unit"].endswith(".path")
+        ],
+        "quiesced_timer_units": [
+            row for row in quiesced_automation_units if row["unit"].endswith(".timer")
+        ],
         # Compatibility projection for readers that predate the state-preserving
         # receipt. It contains only watchers that are active after this deploy.
         "activated_path_units": [
@@ -1441,8 +1476,17 @@ def deploy_control_plane_commit(
                 "enabled": row["after"]["enabled"],
                 "state": row["after"]["state"],
             }
-            for row in path_unit_state_receipts
-            if row["after"]["state"] == "active"
+            for row in automation_unit_state_receipts
+            if row["unit"].endswith(".path") and row["after"]["state"] == "active"
+        ],
+        "activated_timer_units": [
+            {
+                "unit": row["unit"],
+                "enabled": row["after"]["enabled"],
+                "state": row["after"]["state"],
+            }
+            for row in automation_unit_state_receipts
+            if row["unit"].endswith(".timer") and row["after"]["state"] == "active"
         ],
         "intake_runtime_binding": runtime_binding,
         "intake_runtime": runtime,
