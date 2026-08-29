@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
     _parallel_geometry_gates,
     _parallel_trajectory_gates,
+    _supported_sample_count,
     build_robot_placement_geometry_index,
     enumerate_robot_placement_geometry_candidates,
     render_robot_placement_geometry_previews,
@@ -14,6 +16,23 @@ from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
     validate_robot_placement_geometry_candidate,
     validate_robot_placement_trajectory_position_ik,
 )
+
+
+def test_support_coverage_batches_samples_against_all_triangles() -> None:
+    triangles = np.asarray(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            [[2.0, 2.0, 0.0], [2.0, 2.0, 0.0], [2.0, 2.0, 0.0]],
+        ],
+        dtype=np.float64,
+    )
+    samples = np.asarray(
+        [[0.1, 0.1], [0.9, 0.1], [0.5, 0.5], [1.1, 0.5]],
+        dtype=np.float64,
+    )
+
+    assert _supported_sample_count(samples, triangles) == 3
 
 
 def _mesh(stage, path, points, faces):
@@ -83,6 +102,37 @@ def _proposal(surface_id, position=(0.0, 0.0, 0.0), yaw=0.0):
             "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)],
         },
     }
+
+
+def test_geometry_gate_uses_batched_support_coverage(tmp_path, monkeypatch) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_geometry as module
+
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    floor = next(
+        surface
+        for surface in index.support_surfaces
+        if surface.prim_path == "/Scene/Floor"
+    )
+    original = module._supported_sample_count
+    calls = []
+
+    def measured(samples, triangles):
+        calls.append((samples.shape, triangles.shape))
+        return original(samples, triangles)
+
+    monkeypatch.setattr(module, "_supported_sample_count", measured)
+    validate_robot_placement_geometry_candidate(
+        index=index,
+        proposal=_proposal(floor.surface_id),
+        target_position_world_m=[0.8, 0.0, 0.5],
+    )
+
+    assert calls
+    assert calls[0][0] == (5, 2)
 
 
 def test_exact_geometry_gate_accepts_supported_clear_facing_pose(tmp_path) -> None:
