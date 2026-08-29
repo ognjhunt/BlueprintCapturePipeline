@@ -373,3 +373,141 @@ def test_guidance_is_absent_when_it_cannot_be_computed() -> None:
         )
         is None
     )
+
+
+FRANKA_RESET_JOINTS = [
+    0.0,
+    -0.6283185307179586,
+    0.0,
+    -2.5132741228718345,
+    0.0,
+    1.8849555921538759,
+    0.0,
+]
+
+
+def test_forward_kinematics_reproduces_the_native_grasp_frame_readback() -> None:
+    """The flange->grasp offset is calibrated, not guessed.
+
+    Published-DH forward kinematics at the shipped reset pose, composed with the
+    profile's flange-to-grasp rotation, must equal the grasp orientation the GPU
+    actually reported.  If this drifts, every reset-pose decision below is void.
+    """
+
+    from blueprint_pipeline.franka_kinematics import forward_kinematics
+    from blueprint_pipeline.scene_placement.robot_profile import get_robot_profile
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        grasp_orientation_base_xyzw,
+    )
+
+    profile = get_robot_profile("franka_panda")
+    computed = grasp_orientation_base_xyzw(
+        joint_positions=FRANKA_RESET_JOINTS,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=(
+            profile.flange_to_grasp_orientation_xyzw
+        ),
+    )
+    assert quaternion_angle_rad(
+        computed, profile.rest_grasp_orientation_base_xyzw
+    ) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_task_aware_reset_turns_the_infeasible_839873_slew_into_a_free_one() -> None:
+    """The real fix: derive the reset pose from the task, not from a constant."""
+
+    from blueprint_pipeline.franka_kinematics import (
+        FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics,
+    )
+    from blueprint_pipeline.scene_placement.robot_profile import get_robot_profile
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        quaternion_multiply_xyzw,
+        solve_task_aware_reset_joints,
+    )
+
+    profile = get_robot_profile("franka_panda")
+    base_inverse = [-YAW_180[0], -YAW_180[1], -YAW_180[2], YAW_180[3]]
+    target_base = quaternion_multiply_xyzw(base_inverse, PUSH_TARGET)
+
+    solved = solve_task_aware_reset_joints(
+        target_orientation_base_xyzw=target_base,
+        nominal_joint_positions=FRANKA_RESET_JOINTS,
+        joint_limits_rad=FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=(
+            profile.flange_to_grasp_orientation_xyzw
+        ),
+        coarse_samples=13,
+        refine_rounds=6,
+    )
+    # The shipped constant is a full pi away from what the task asks for.
+    assert solved["nominal_slew_rad"] == pytest.approx(math.pi, abs=1e-6)
+    # A task-derived reset is within a couple of degrees.
+    assert solved["residual_slew_rad"] < math.radians(2.0)
+    assert solved["improvement_rad"] > math.radians(170.0)
+
+    # And that turns an infeasible phase into a comfortably feasible one.
+    infeasible = math.ceil(
+        solved["nominal_slew_rad"] / profile.orientation_slew_rad_per_step
+    )
+    feasible = math.ceil(
+        solved["residual_slew_rad"] / profile.orientation_slew_rad_per_step
+    )
+    assert infeasible > 64
+    assert feasible <= 8
+
+    # The shoulder posture is preserved: only elbow and wrist move.
+    for index in (0, 1, 2):
+        assert solved["joint_positions_rad"][index] == pytest.approx(
+            FRANKA_RESET_JOINTS[index], abs=1e-9
+        )
+
+
+def test_reset_solver_respects_joint_limits() -> None:
+    from blueprint_pipeline.franka_kinematics import (
+        FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics,
+    )
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        solve_task_aware_reset_joints,
+    )
+
+    solved = solve_task_aware_reset_joints(
+        target_orientation_base_xyzw=PUSH_TARGET,
+        nominal_joint_positions=FRANKA_RESET_JOINTS,
+        joint_limits_rad=FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=(0.0, 0.0, 1.0, 0.0),
+    )
+    for value, (low, high) in zip(
+        solved["joint_positions_rad"], FRANKA_JOINT_LIMITS_RAD
+    ):
+        assert low - 1e-9 <= value <= high + 1e-9
+
+
+def test_reset_solver_fails_closed_on_malformed_search_inputs() -> None:
+    from blueprint_pipeline.franka_kinematics import forward_kinematics
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        solve_task_aware_reset_joints,
+    )
+
+    for kwargs in (
+        {"nominal_joint_positions": [], "joint_limits_rad": []},
+        {
+            "nominal_joint_positions": [0.0, 0.0],
+            "joint_limits_rad": [(-1.0, 1.0)],
+        },
+        {
+            "nominal_joint_positions": [0.0],
+            "joint_limits_rad": [(1.0, -1.0)],
+        },
+    ):
+        with pytest.raises(RobotPlacementOrientationError):
+            solve_task_aware_reset_joints(
+                target_orientation_base_xyzw=PUSH_TARGET,
+                forward_kinematics=forward_kinematics,
+                flange_to_grasp_orientation_xyzw=(0.0, 0.0, 1.0, 0.0),
+                searchable_joint_indices=(0,),
+                **kwargs,
+            )

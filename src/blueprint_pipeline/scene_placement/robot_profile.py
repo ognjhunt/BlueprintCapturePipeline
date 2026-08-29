@@ -75,6 +75,16 @@ class RobotProfile:
         1.0,
     )
     orientation_slew_rad_per_step: float = 0.10
+    # Fixed tool-mount rotation from the kinematic flange frame to the grasp
+    # frame.  Forward kinematics yields the flange; the contract and every
+    # readback speak the grasp frame, and the two differ by a constant that is
+    # a property of how the gripper is bolted on.
+    flange_to_grasp_orientation_xyzw: Tuple[float, float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
 
     # Spawn / USD metadata.
     usd_prim_path: str = "/World/Robot"
@@ -320,6 +330,10 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     # over 64 steps), well under the 0.10 rad/step nominal cap. Gate on the
     # measured rate: the nominal one would have passed a phase that failed.
     orientation_slew_rad_per_step=0.0267,
+    # Robotiq 2F-85 mounts rotated 180 deg about the flange axis; verified by
+    # composing published-DH forward kinematics at the reset pose against the
+    # r33 native grasp-frame readback.
+    flange_to_grasp_orientation_xyzw=(0.0, 0.0, 1.0, 0.0),
     usd_prim_path="/World/Franka",
     articulation_name="franka",
     head_link_candidates=("camera_link", "panda_hand"),
