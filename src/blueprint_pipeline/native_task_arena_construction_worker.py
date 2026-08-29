@@ -1469,6 +1469,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 built,
                 grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
             )
+        else:
+            # The Robotiq inner-finger body origins nearly coincide throughout
+            # travel.  Release evidence must use the physical fingertip pad
+            # centers sealed by the native convention probe, not those origins.
+            readback = NativeRigidTaskArenaReadback(
+                built,
+                gripper_pad_readback_callback=servo.current_gripper_pad_readback,
+            )
         result["franka_pose_binding"] = servo.binding
         result["arm_actuator_readback"] = read_native_arm_actuator_readback(
             robot, joint_ids=servo.binding["arm_joint_ids"]

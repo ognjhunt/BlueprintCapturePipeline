@@ -365,6 +365,42 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     )
 
 
+def test_rigid_readback_uses_live_physical_pad_centers_when_available() -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
+    built.plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "interaction_affordance": {
+            "asset_root_from_scoring_frame": {
+                "position_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        },
+    }
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = ("task_scene_contact",)
+    del built.contact_sensor_names["task_scene_contact"]
+
+    sample = NativeRigidTaskArenaReadback(
+        built,
+        gripper_pad_readback_callback=lambda: {
+            "measured": {
+                "pad_centers_world_m": {
+                    "left": [1.0, 2.0, 3.0],
+                    "right": [1.0, 2.1, 3.0],
+                }
+            }
+        },
+    ).read_task_sample()
+
+    assert sample["grasp_frame_position_world_m"] == pytest.approx([1.0, 2.05, 3.0])
+    assert sample["finger_separation_m"] == pytest.approx(0.1)
+    assert sample["grasp_frame_position_source"] == (
+        "native_franka_pose_servo.live_physical_pad_centers"
+    )
+
+
 def test_rigid_articulation_readback_monitors_every_locked_joint_during_motion() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"
