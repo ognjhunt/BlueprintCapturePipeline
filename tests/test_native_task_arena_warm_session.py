@@ -18,12 +18,14 @@ COMMIT = "a" * 40
 NOW = 2_000_000_000.0
 
 
-def _prepared(tmp_path: Path) -> tuple[dict, Path]:
+def _prepared(
+    tmp_path: Path, *, execution_mode: str = "controls"
+) -> tuple[dict, Path]:
     bundle = tmp_path / "native_task_arena_provider_bundle.zip"
     bundle.write_bytes(b"bundle")
     prepared = {
         "schema_version": "native_task_arena_provider_bundle.v1",
-        "execution_mode": "controls",
+        "execution_mode": execution_mode,
         "bundle_path": str(bundle),
         "bundle_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
         "input_digest": "sha256:" + "c" * 64,
@@ -33,7 +35,11 @@ def _prepared(tmp_path: Path) -> tuple[dict, Path]:
             "packet_sha256": "sha256:" + "e" * 64,
             "packet_size_bytes": 4_400_000_000,
         },
-        "expected_output_filename": "native_task_arena_control_result.v1.json",
+        "expected_output_filename": (
+            "native_task_arena_control_result.v1.json"
+            if execution_mode == "controls"
+            else "native_task_arena_construction_result.v1.json"
+        ),
     }
     receipt = tmp_path / "native_task_arena_provider_bundle_receipt.v1.json"
     write_json(receipt, prepared)
@@ -95,10 +101,12 @@ def test_read_url_accepts_https_signed_url(tmp_path: Path) -> None:
     assert warm_vast._read_url(path) == value
 
 
+@pytest.mark.parametrize("execution_mode", ["construction_canary", "controls"])
 def test_warm_authority_binds_session_bundle_and_zero_allocations(
     tmp_path: Path,
+    execution_mode: str,
 ) -> None:
-    prepared, receipt = _prepared(tmp_path)
+    prepared, receipt = _prepared(tmp_path, execution_mode=execution_mode)
     session = _session(prepared)
     session_path = tmp_path / "warm-session.json"
     write_json(session_path, session)
@@ -115,6 +123,7 @@ def test_warm_authority_binds_session_bundle_and_zero_allocations(
     )
 
     assert issued["maximum_provider_allocations"] == 0
+    assert issued["execution_mode"] == execution_mode
     assert issued["provider_instance_id"] == 123
     assert issued["warm_session_digest"] == session["session_digest"]
     assert authority.validate_native_task_arena_warm_attempt_authority(
@@ -436,13 +445,21 @@ def test_close_accepts_provider_404_as_observed_absence(
     assert result["continuing_spend_from_this_run"] is False
 
 
-@pytest.mark.parametrize("diagnostic_mode", [False, True])
+@pytest.mark.parametrize(
+    ("execution_mode", "diagnostic_mode"),
+    [
+        ("controls", False),
+        ("controls", True),
+        ("construction_canary", False),
+    ],
+)
 def test_warm_execution_reuses_instance_without_allocating(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    execution_mode: str,
     diagnostic_mode: bool,
 ) -> None:
-    prepared, receipt = _prepared(tmp_path)
+    prepared, receipt = _prepared(tmp_path, execution_mode=execution_mode)
     session = _session(prepared)
     session_path = tmp_path / "warm-session.json"
     write_json(session_path, session)
@@ -574,7 +591,7 @@ def test_warm_execution_reuses_instance_without_allocating(
             }
         with zipfile.ZipFile(destination, "w") as archive:
             archive.writestr(
-                "native_task_arena_control_result.v1.json",
+                prepared["expected_output_filename"],
                 json.dumps(execution),
             )
         return True
@@ -605,19 +622,29 @@ def test_warm_execution_reuses_instance_without_allocating(
         warm_attempt_authority=issued,
         paid_resource_admission_grant=object(),  # type: ignore[arg-type]
         execute=True,
+        close_on_success=execution_mode == "controls",
     )
 
     assert result["status"] == "completed"
     assert result["provider_allocations_performed"] == 0
     assert result["provider_instance_id"] == 123
-    assert result["continuing_spend_from_this_run"] is False
-    assert result["warm_session_closeout"]["provider_instance_absent"] is True
+    assert result["execution_mode"] == execution_mode
+    assert result["provider_allocations_performed"] == 0
+    assert result["native_result_path"]
+    assert result["continuing_spend_from_this_run"] is (
+        execution_mode == "construction_canary"
+    )
+    assert result["warm_session_closeout"]["provider_instance_absent"] is (
+        execution_mode == "controls"
+    )
     assert warm_vast.VAST_API_GATE_ENV not in warm_vast.os.environ
     assert warm_vast.VAST_INSTANCE_LAUNCH_GATE_ENV not in warm_vast.os.environ
     assert Path(result["artifact_manifest_path"]).is_file()
     assert Path(result["teardown_manifest_path"]).is_file()
     teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
-    assert teardown["continuing_spend_from_this_run"] is False
+    assert teardown["continuing_spend_from_this_run"] is (
+        execution_mode == "construction_canary"
+    )
     assert teardown["vast_instance_ids"] == [123]
     assert len(dispatches) == 2
 

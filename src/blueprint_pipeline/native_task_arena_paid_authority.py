@@ -1100,7 +1100,10 @@ def materialize_native_task_arena_paid_attempt_authority(
         or budget_blockers
         or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
-        or (retain_warm_session and mode != "controls")
+        or (
+            retain_warm_session
+            and mode not in {"construction_canary", "controls"}
+        )
         or campaign_inputs_partial
     ):
         raise ValueError("native_task_arena_authority_configuration_invalid")

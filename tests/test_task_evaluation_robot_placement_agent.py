@@ -107,6 +107,24 @@ def _images():
     ]
 
 
+def _native_attempt(status: str, *, blocker: str | None = None) -> dict:
+    value = {
+        "schema_version": "task_evaluation_robot_placement_native_attempt.v1",
+        "status": status,
+        "phase_reached": "controls" if status == "passed" else "construction",
+        "blockers": [blocker] if blocker else [],
+        "native_result_digest": "sha256:" + "b" * 64,
+        "provider_instance_id": 123,
+        "provider_allocations_performed": 0,
+        "native_attempt_digest": "",
+    }
+    value["native_attempt_digest"] = canonical_digest(
+        value, digest_field="native_attempt_digest"
+    )
+    value["feedback_images"] = _images()
+    return value
+
+
 def test_production_config_pins_sol_high_agent_contract() -> None:
     config = robot_placement_agents_sdk_config(
         max_inference_cost_usd=0.5,
@@ -175,6 +193,52 @@ def test_visual_review_can_veto_but_cannot_override_geometry() -> None:
     assert receipt["accepted_pose"] is None
     with pytest.raises(RobotPlacementAgentError, match="receipt_invalid"):
         validate_robot_placement_receipt(receipt)
+
+
+def test_agent_creates_next_pose_from_native_failure_until_controls_pass() -> None:
+    invoker = _Invoker(
+        outputs=[
+            _proposal("native-collision", 3.4),
+            _visual("passed"),
+            _proposal("native-clear", 3.7),
+            _visual("passed"),
+        ]
+    )
+    native_results = [
+        _native_attempt("rejected", blocker="native_reset_collision"),
+        _native_attempt("passed"),
+    ]
+    provisional_receipts: list[dict] = []
+
+    def execute_candidate(_proposal_value, receipt, _round_index):
+        provisional_receipts.append(receipt)
+        return native_results.pop(0)
+
+    receipt = run_task_evaluation_robot_placement_agent(
+        invoker=invoker,
+        run_id="placement-native-loop",
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "move mug"},
+        overview_images=_images(),
+        validate_candidate=lambda proposal: _gate(
+            proposal["candidate_id"], "passed"
+        ),
+        render_candidate=lambda _proposal, _round: _images(),
+        execute_candidate=execute_candidate,
+        max_rounds=3,
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["accepted_candidate_id"] == "native-clear"
+    assert receipt["native_agent_loop_enabled"] is True
+    assert receipt["native_attempt_count"] == 2
+    assert receipt["native_construction_required"] is False
+    assert receipt["rounds"][0]["native_attempt"]["status"] == "rejected"
+    assert receipt["rounds"][1]["native_attempt"]["status"] == "passed"
+    assert provisional_receipts[0]["native_construction_required"] is True
+    second_proposal_input = invoker.specs[2][1][0]["content"]
+    assert sum(item["type"] == "input_image" for item in second_proposal_input) == 2
+    assert validate_robot_placement_receipt(receipt) == receipt
 
 
 def test_receipt_tampering_is_rejected() -> None:

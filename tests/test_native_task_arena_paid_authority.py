@@ -430,13 +430,16 @@ def test_new_lane_genesis_refuses_stale_provider_zero(
         )
 
 
+@pytest.mark.parametrize("execution_mode", ["construction_canary", "controls"])
 def test_warm_retention_intent_is_digest_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    execution_mode: str,
 ) -> None:
     predecessor = _predecessor(tmp_path / "predecessor")
     receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
-    prepared["execution_mode"] = "controls"
-    write_json(receipt_path, {"execution_mode": "controls"})
+    prepared["execution_mode"] = execution_mode
+    write_json(receipt_path, {"execution_mode": execution_mode})
     monkeypatch.setattr(
         paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared
     )
@@ -461,7 +464,7 @@ def test_warm_retention_intent_is_digest_bound(
         prior_result_path=predecessor["result"],
         prior_provider_zero_path=predecessor["zero"],
         prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
-        authorization_reference="user-directed warm controls session",
+        authorization_reference="user-directed warm Arena session",
         authorized_by="user",
         authorized_on="2026-08-21",
         blueprint_commit=COMMIT,
