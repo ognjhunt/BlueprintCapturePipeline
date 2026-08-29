@@ -1067,7 +1067,12 @@ def main(argv: list[str] | None = None) -> int:
                 "removed_bytes": result["removed_bytes"],
                 "result_digest": result["result_digest"],
             }
-    except (OSError, TypeError, ValueError) as exc:
+    except (
+        TaskEvaluationTerminalScenePayloadRetentionError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(
             json.dumps(
                 {
