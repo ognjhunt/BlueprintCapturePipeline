@@ -10,6 +10,8 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
     DEFINITION_CONTRACT_PATH,
+    DIAGNOSTIC_SCHEMA_VERSION,
+    DIAGNOSTIC_SOURCE_ALIASES,
     TaskEvaluationRigidRelocationNativeAdapterError,
     _source_document,
     adapt_rigid_relocation_task_template,
@@ -291,6 +293,86 @@ def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     assert phase_plan["manipulation_strategy"] == "planar_push"
     assert phase_plan["phases"][0]["phase_id"] == "precontact"
     assert phase_plan["phases"][1]["phase_id"] == "push_contact"
+
+
+def test_diagnostic_authority_reuses_exact_documents_without_revision_claim(
+    tmp_path: Path,
+) -> None:
+    _, _, references, _ = _case(tmp_path)
+    rows = []
+    for contract_path, alias in DIAGNOSTIC_SOURCE_ALIASES.items():
+        reference = references[contract_path]
+        rows.append(
+            {
+                "contract_path": alias,
+                "uri": reference["uri"],
+                "digest": reference["digest"],
+                "size_bytes": reference["size_bytes"],
+                "path": reference["materialized_path"],
+                "full_byte_readback_passed": True,
+            }
+        )
+    provider = {
+        "schema_version": (
+            "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
+        ),
+        "status": "completed_diagnostic_only_not_qualification_eligible",
+        "diagnostic_only": True,
+        "qualification_eligible": False,
+        "executed_inside_one_parent_provider_run": False,
+        "configured_revision_publication_permitted": False,
+        "result_digest": "",
+    }
+    provider["result_digest"] = canonical_digest(
+        provider, digest_field="result_digest"
+    )
+    payload = (json.dumps(provider, sort_keys=True) + "\n").encode()
+    provider_path = tmp_path / "provider-result.json"
+    provider_path.write_bytes(payload)
+    rows.append(
+        {
+            "contract_path": (
+                "diagnostic_output."
+                "task_evaluation_scene_configuration_provider_result.v1.json"
+            ),
+            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+            "path": str(provider_path),
+            "full_byte_readback_passed": True,
+        }
+    )
+    authority = {
+        "schema_version": (
+            "task_evaluation_configured_scene_diagnostic_controls_input.v1"
+        ),
+        "status": "materialized",
+        "claim_ceiling": (
+            "development_only_downstream_construction_and_controls_diagnostic"
+        ),
+        "qualification_eligible": False,
+        "configured_revision_publication_permitted": False,
+        "evaluation_ready_promotion_permitted": False,
+        "materialized_inputs": rows,
+        "receipt_digest": "",
+    }
+    authority["receipt_digest"] = canonical_digest(
+        authority, digest_field="receipt_digest"
+    )
+
+    result = adapt_rigid_relocation_task_template(
+        materialized_references={},
+        diagnostic_controls_input=authority,
+    )
+
+    assert result["schema_version"] == DIAGNOSTIC_SCHEMA_VERSION
+    assert result["qualification_eligible"] is False
+    assert "configured_scene_revision_digest" not in result
+    assert result["diagnostic_controls_input_receipt_digest"] == authority[
+        "receipt_digest"
+    ]
+    assert result["native_task_definition"]["task_spec"][
+        "manipulation_strategy"
+    ] == "planar_push"
 
 
 @pytest.mark.parametrize(
