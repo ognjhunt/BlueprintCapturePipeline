@@ -497,3 +497,72 @@ def test_repair_refuses_insufficient_remaining_cost(tmp_path: Path) -> None:
             maximum_stage_cost_usd=1.0,
             output_root=tmp_path / "insufficient-repair",
         )
+
+
+def test_repair_packet_is_self_contained_for_the_worker_root(
+    tmp_path: Path,
+) -> None:
+    """Every referenced frame must resolve beside the repair request itself.
+
+    ``execute_semantic_teacher_image_edits`` resolves each frame's
+    ``relative_path`` against ``request_path.parent``.  A production run
+    (scene 839873, 2026-08-29) staged the repair request into a directory
+    holding only JSON, so the first bounded repair round -- the round the
+    corrected review budget had finally made reachable -- died on
+    ``semantic_teacher_runtime_input_invalid`` after the GPU was already paid
+    for.  The staged packet has to carry the bytes it names.
+    """
+
+    fixture = _fixture(tmp_path, rejected_count=2, implausible_repair=True)
+    output_root = tmp_path / "repair-request"
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"],
+        review_execution_path=fixture["execution_path"],
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22,
+        maximum_stage_cost_usd=2.4,
+        output_root=output_root,
+    )
+
+    request_path = Path(staged["repair_request_path"])
+    # The worker's own rule, not a convenience path.
+    root = request_path.parent
+    frames = staged["repair_request"]["tasks"][0]["frames"]
+    assert frames
+    for frame in frames:
+        for member in ("input_rgb", "edit_mask"):
+            record = frame[member]
+            staged_path = root / record["relative_path"]
+            assert staged_path.is_file(), f"{member} missing from repair packet"
+            assert not staged_path.is_symlink()
+            assert staged_path.stat().st_size == record["size_bytes"]
+            assert _sha256(staged_path) == record["sha256"]
+
+
+def test_repair_packet_bytes_match_the_original_semantic_packet(
+    tmp_path: Path,
+) -> None:
+    """The repair edits the same source pixels the first pass was given."""
+
+    fixture = _fixture(tmp_path, rejected_count=2, implausible_repair=True)
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"],
+        review_execution_path=fixture["execution_path"],
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22,
+        maximum_stage_cost_usd=2.4,
+        output_root=tmp_path / "repair-request",
+    )
+
+    source_root = Path(fixture["request_path"]).parent
+    root = Path(staged["repair_request_path"]).parent
+    for frame in staged["repair_request"]["tasks"][0]["frames"]:
+        for member in ("input_rgb", "edit_mask"):
+            relative = frame[member]["relative_path"]
+            assert (root / relative).read_bytes() == (
+                source_root / relative
+            ).read_bytes()
