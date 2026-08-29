@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 
 
 ALLOWLIST_GROUPS = ("external_provider_owned", "same_goal_concurrent")
@@ -24,6 +25,7 @@ ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
 )
 NO_PROVIDER_ALLOCATION_EVIDENCE_KIND = "provider_zero_no_allocation"
 ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
+ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA = (
     "joint_agent_same_goal_spend_lineage.v1"
 )
@@ -83,6 +85,43 @@ def _finite(value: Any) -> bool:
         and isinstance(value, (int, float))
         and math.isfinite(float(value))
         and float(value) >= 0
+    )
+
+
+def valid_adp_paid_provider_zero(value: Mapping[str, Any]) -> bool:
+    """Validate the canonical Vast-only provider-zero receipt."""
+
+    return bool(
+        value.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION
+        and value.get("provider") == "vast"
+        and value.get("api_confirmed") is True
+        and value.get("provider_zero") is True
+        and value.get("global_live_resource_count") == 0
+        and value.get("inventory") == []
+        and valid_vast_provider_zero_api_call(value.get("api_command"))
+        and isinstance(value.get("stderr_present"), bool)
+        and value.get("raw_secret_values_recorded") is False
+        and value.get("provider_zero_digest")
+        == canonical_digest(value, digest_field="provider_zero_digest")
+    )
+
+
+def _provider_zero_evidence_passed(
+    zero: Mapping[str, Any], *, lane: str
+) -> bool:
+    if lane == "task_evaluation_scene_configuration_diagnostic":
+        return zero.get("provider_zero") is True
+    if zero.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION:
+        return valid_adp_paid_provider_zero(zero)
+    return bool(
+        zero.get(
+            "provider_zero_verified",
+            zero.get(
+                "provider_zero_confirmed",
+                zero.get("provider_zero_api_confirmed"),
+            ),
+        )
+        is True
     )
 
 
@@ -495,18 +534,7 @@ def bind_lane_prior_spend(
                 )
             )
             or (not no_allocation and instance_id not in teardown_instance_ids)
-            or (
-                zero.get(
-                    "provider_zero_verified",
-                    zero.get(
-                        "provider_zero_confirmed",
-                        zero.get("provider_zero_api_confirmed"),
-                    ),
-                )
-                if lane != "task_evaluation_scene_configuration_diagnostic"
-                else zero.get("provider_zero")
-            )
-            is not True
+            or not _provider_zero_evidence_passed(zero, lane=lane)
             or zero.get("continuing_spend_from_this_run", False) is not False
             or ((zero_charge_absence or no_allocation) and float(entry["cost_usd"]) != 0.0)
             or (

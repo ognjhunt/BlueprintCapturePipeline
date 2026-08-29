@@ -25,6 +25,7 @@ from .paid_attempt_authority import (
     SAME_GOAL_RECONCILIATION_SCHEMA,
     SAME_GOAL_RECONCILIATION_STATUS,
     bind_lane_prior_spend,
+    valid_adp_paid_provider_zero,
     validate_same_goal_spend_reconciliation,
 )
 
@@ -47,6 +48,7 @@ ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
     "official_billing_zero_charge_absence_after_grace"
 )
 ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
+ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 _DIGEST_FIELDS = (
     "receipt_digest",
     "result_digest",
@@ -456,6 +458,8 @@ def _entry(
         ("provider_zero_confirmed",),
         ("provider_zero_api_confirmed",),
     ]
+    if zero.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION:
+        zero_binding_candidates.append(("api_confirmed",))
     if lane == DIAGNOSTIC_SCENE_CONFIGURATION_LANE:
         zero_binding_candidates.append(("provider_zero",))
     zero_binding_path, zero_confirmed = _json_path(
@@ -487,6 +491,10 @@ def _entry(
         result.get("status") not in accepted_terminal_statuses
         or continuing is not False
         or zero_confirmed is not True
+        or (
+            zero.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION
+            and not valid_adp_paid_provider_zero(zero)
+        )
         or (
             teardown_status not in {"completed", "PASS"}
             and not (no_allocation and teardown_status.startswith("not_required_"))

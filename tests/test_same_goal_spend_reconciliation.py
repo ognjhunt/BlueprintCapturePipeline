@@ -26,6 +26,7 @@ from blueprint_pipeline.semantic_teacher_image_edit_paid_authority import (
     _validate_prior_spend_reconciliation,
 )
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+from blueprint_pipeline.vast_evidence_contracts import VAST_PROVIDER_ZERO_API_CALL
 from blueprint_pipeline.task_evaluation_live_profile import (
     expand_prior_spend_immutable_inputs,
 )
@@ -236,6 +237,85 @@ def test_materializer_produces_each_issuer_lane_ledger(tmp_path: Path, lane: str
         expected_total_cost_usd=0.025,
     )
     assert reopened["receipt_digest"] == record["receipt_digest"]
+
+
+def test_native_materializer_accepts_canonical_adp_paid_provider_zero(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "native-adp-zero")
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-29T10:47:52+00:00",
+        "api_command": list(VAST_PROVIDER_ZERO_API_CALL),
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "stderr_present": False,
+        "raw_secret_values_recorded": False,
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    _write(fixture["zero"], zero)
+
+    output, value = _materialize(
+        tmp_path / "native-adp-zero",
+        "native_task_arena",
+        fixture,
+    )
+
+    assert output.is_file()
+    assert value["total_cost_usd"] == 0.025
+    provider_zero_binding = next(
+        binding
+        for binding in value["entries"][0]["bindings"]
+        if binding["kind"] == "provider_zero"
+    )
+    assert provider_zero_binding["json_path"] == ["api_confirmed"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("api_confirmed", False),
+        ("provider_zero", False),
+        ("global_live_resource_count", 1),
+        ("inventory", [{"instance_id": 49117581}]),
+        ("stderr_present", "false"),
+        ("raw_secret_values_recorded", True),
+        ("api_command", ["GET", "/api/v0/instances"]),
+        ("provider_zero_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_native_materializer_rejects_invalid_adp_paid_provider_zero(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    fixture = _fixture(tmp_path / field)
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-29T10:47:52+00:00",
+        "api_command": list(VAST_PROVIDER_ZERO_API_CALL),
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "stderr_present": False,
+        "raw_secret_values_recorded": False,
+        "provider_zero_digest": "",
+    }
+    zero[field] = value
+    if field != "provider_zero_digest":
+        zero["provider_zero_digest"] = canonical_digest(
+            zero, digest_field="provider_zero_digest"
+        )
+    _write(fixture["zero"], zero)
+
+    with pytest.raises(ValueError, match="same_goal_spend_terminal_or_zero_invalid"):
+        _materialize(tmp_path / field, "native_task_arena", fixture)
 
 
 def _zero_charge_absence_fixture(root: Path) -> dict[str, Path]:
