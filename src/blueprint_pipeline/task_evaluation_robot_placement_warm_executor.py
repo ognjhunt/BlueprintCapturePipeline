@@ -367,6 +367,7 @@ class WarmNativePlacementExecutor:
             droid_profile_reference=self._droid_profile_reference,
             output_root=round_root / "compiled",
             robot_placement_receipt=provisional_receipt,
+            task_trajectory=self._task_trajectory,
         )
         packet_dir = Path(compiler["packet_receipt_path"]).parent
         scene_plan = _read_mapping(

@@ -17,10 +17,24 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .franka_kinematics import (
+    FRANKA_JOINT_LIMITS_RAD,
+    forward_kinematics,
+)
 from .native_task_arena_packet import materialize_native_task_arena_packet
+from .rigid_frame_transforms import quaternion_conjugate_xyzw
 from .task_evaluation_robot_placement_agent import (
     RobotPlacementAgentError,
     validate_robot_placement_receipt,
+)
+from .task_evaluation_robot_placement_orientation import (
+    RobotPlacementOrientationError,
+    quaternion_multiply_xyzw,
+    solve_task_aware_reset_joints,
+)
+from .task_evaluation_robot_placement_trajectory import (
+    RobotPlacementTrajectoryError,
+    validate_robot_placement_trajectory,
 )
 from .task_evaluation_rigid_relocation_native_adapter import (
     adapt_rigid_relocation_task_template,
@@ -33,6 +47,9 @@ AUTHORITY_SCHEMA_VERSION = (
 )
 CLAIM_CEILING = (
     "development_only_downstream_construction_and_controls_diagnostic"
+)
+TASK_AWARE_RESET_SCHEMA_VERSION = (
+    "task_evaluation_task_aware_robot_reset_derivation.v1"
 )
 
 
@@ -221,6 +238,105 @@ def _legacy_robot_placement_is_clear(
     )
 
 
+def _derive_task_aware_franka_reset(
+    *,
+    profile: Mapping[str, Any],
+    base_pose: Mapping[str, Any],
+    task_trajectory: Mapping[str, Any],
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Derive a task-facing reset without claiming native pose feasibility.
+
+    The selected base orientation changes a world-frame tool orientation when
+    expressed in the arm base frame.  Solve the first authored phase from that
+    exact frame join, preserve all gripper joints from the immutable profile,
+    and bind the derived arm reset to the trajectory.  Collision, full pose IK,
+    application, and readback remain native gates.
+    """
+
+    try:
+        trajectory = validate_robot_placement_trajectory(task_trajectory)
+    except RobotPlacementTrajectoryError as exc:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_task_trajectory_invalid"
+        ) from exc
+    reset = profile.get("robot_joint_reset_positions_rad")
+    if not isinstance(reset, Mapping):
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_robot_reset_invalid"
+        )
+    arm_joint_names = tuple(f"panda_joint{index}" for index in range(1, 8))
+    try:
+        nominal_arm = [float(reset[name]) for name in arm_joint_names]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_robot_reset_invalid"
+        ) from exc
+    if not all(math.isfinite(value) for value in nominal_arm):
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_robot_reset_invalid"
+        )
+
+    base_orientation = _normalize(
+        _vector(
+            base_pose.get("orientation_xyzw"),
+            4,
+            blocker="diagnostic_native_compiler_source_base_invalid",
+        ),
+        blocker="diagnostic_native_compiler_source_base_invalid",
+    )
+    first_phase = trajectory["phases"][0]
+    target_world = _normalize(
+        _vector(
+            first_phase.get("orientation_world_xyzw"),
+            4,
+            blocker="diagnostic_native_compiler_task_trajectory_invalid",
+        ),
+        blocker="diagnostic_native_compiler_task_trajectory_invalid",
+    )
+    target_base = quaternion_multiply_xyzw(
+        quaternion_conjugate_xyzw(base_orientation), target_world
+    )
+    try:
+        solved = solve_task_aware_reset_joints(
+            target_orientation_base_xyzw=target_base,
+            nominal_joint_positions=nominal_arm,
+            joint_limits_rad=FRANKA_JOINT_LIMITS_RAD,
+            forward_kinematics=forward_kinematics,
+            flange_to_grasp_orientation_xyzw=(0.0, 0.0, 1.0, 0.0),
+        )
+    except RobotPlacementOrientationError as exc:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_task_aware_reset_unsolved"
+        ) from exc
+
+    derived_reset = {str(name): float(value) for name, value in reset.items()}
+    derived_reset.update(
+        dict(zip(arm_joint_names, solved["joint_positions_rad"], strict=True))
+    )
+    report: dict[str, Any] = {
+        "schema_version": TASK_AWARE_RESET_SCHEMA_VERSION,
+        "robot_id": "franka_panda",
+        "source_trajectory_digest": trajectory["trajectory_digest"],
+        "source_phase_id": first_phase["phase_id"],
+        "base_orientation_world_xyzw": base_orientation,
+        "target_orientation_world_xyzw": target_world,
+        "target_orientation_base_xyzw": target_base,
+        "nominal_arm_joint_positions_rad": nominal_arm,
+        "derived_arm_joint_positions_rad": solved["joint_positions_rad"],
+        "nominal_slew_rad": solved["nominal_slew_rad"],
+        "residual_slew_rad": solved["residual_slew_rad"],
+        "improvement_rad": solved["improvement_rad"],
+        "native_full_pose_ik_required": True,
+        "native_collision_and_contact_required": True,
+        "native_reset_application_and_readback_required": True,
+        "derivation_digest": "",
+    }
+    report["derivation_digest"] = canonical_digest(
+        report, digest_field="derivation_digest"
+    )
+    return derived_reset, report
+
+
 def compile_diagnostic_native_arena_packet(
     *,
     diagnostic_controls_input: Mapping[str, Any],
@@ -228,6 +344,7 @@ def compile_diagnostic_native_arena_packet(
     droid_profile_reference: Mapping[str, Any],
     output_root: str | Path,
     robot_placement_receipt: Mapping[str, Any] | None = None,
+    task_trajectory: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Materialize one task-aware development-only native construction packet."""
 
@@ -366,6 +483,60 @@ def compile_diagnostic_native_arena_packet(
         3,
         blocker="diagnostic_native_compiler_source_base_invalid",
     )
+    task_aware_reset: dict[str, Any] | None = None
+    robot_joint_reset_positions_rad = profile.get("robot_joint_reset_positions_rad")
+    if accepted_placement_receipt is not None:
+        if task_trajectory is None:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                "diagnostic_native_compiler_task_trajectory_required"
+            )
+        try:
+            validated_trajectory = validate_robot_placement_trajectory(task_trajectory)
+        except RobotPlacementTrajectoryError as exc:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                "diagnostic_native_compiler_task_trajectory_invalid"
+            ) from exc
+        if (
+            accepted_placement_receipt.get("task_trajectory_digest")
+            != validated_trajectory["trajectory_digest"]
+        ):
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                "diagnostic_native_compiler_task_trajectory_binding_mismatch"
+            )
+        robot_joint_reset_positions_rad, task_aware_reset = (
+            _derive_task_aware_franka_reset(
+                profile=profile,
+                base_pose=base_pose,
+                task_trajectory=validated_trajectory,
+            )
+        )
+        accepted_round = accepted_placement_receipt["rounds"][-1]
+        accepted_reset = (
+            (accepted_round.get("geometry_gate") or {})
+            .get("orientation_slew_feasibility", {})
+            .get("task_aware_reset")
+        )
+        accepted_joints = (
+            accepted_reset.get("joint_positions_rad")
+            if isinstance(accepted_reset, Mapping)
+            else None
+        )
+        derived_joints = task_aware_reset["derived_arm_joint_positions_rad"]
+        if (
+            not isinstance(accepted_joints, list)
+            or len(accepted_joints) != len(derived_joints)
+            or any(
+                not math.isclose(
+                    float(accepted), float(derived), rel_tol=0.0, abs_tol=1.0e-9
+                )
+                for accepted, derived in zip(
+                    accepted_joints, derived_joints, strict=True
+                )
+            )
+        ):
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                "diagnostic_native_compiler_task_aware_reset_binding_mismatch"
+            )
 
     camera_rows = profile.get("cameras")
     by_role = {
@@ -461,9 +632,7 @@ def compile_diagnostic_native_arena_packet(
         "task_state_binding": task_definition.get("task_state_binding"),
         "assets": packet_assets,
         "robot_base_pose_world": base_pose,
-        "robot_joint_reset_positions_rad": profile.get(
-            "robot_joint_reset_positions_rad"
-        ),
+        "robot_joint_reset_positions_rad": robot_joint_reset_positions_rad,
         "cameras": cameras,
         "scenario": execution["scenario"],
         "physics_frequency_hz": execution["physics_frequency_hz"],
@@ -481,6 +650,7 @@ def compile_diagnostic_native_arena_packet(
                 if accepted_placement_receipt is not None
                 else None
             ),
+            "task_aware_robot_reset_derivation": task_aware_reset,
         },
         "request_digest": "",
     }
@@ -516,6 +686,7 @@ def compile_diagnostic_native_arena_packet(
             if accepted_placement_receipt is not None
             else None
         ),
+        "task_aware_robot_reset_derivation": task_aware_reset,
         "droid_profile_reference": dict(droid_profile_reference),
         "claim_ceiling": CLAIM_CEILING,
         "qualification_eligible": False,
