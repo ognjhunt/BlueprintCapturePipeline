@@ -173,6 +173,33 @@ def _world_camera(
     }
 
 
+def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
+    task_spec = json.loads(json.dumps(dict(value)))
+    source_subject_id = str(task_spec.get("subject_asset_id") or "")
+    runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
+    if not runtime_subject_id or not runtime_subject_id.replace("_", "a").isalnum():
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_subject_runtime_id_invalid"
+        )
+    task_spec["subject_asset_id"] = runtime_subject_id
+    task_spec["source_subject_identity"] = source_subject_id
+    interaction_affordance = task_spec.get("interaction_affordance")
+    if (
+        not isinstance(interaction_affordance, Mapping)
+        or interaction_affordance.get("subject_asset_id") != source_subject_id
+    ):
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_interaction_affordance_invalid"
+        )
+    interaction_affordance = dict(interaction_affordance)
+    interaction_affordance["subject_asset_id"] = runtime_subject_id
+    interaction_affordance["affordance_digest"] = canonical_digest(
+        interaction_affordance, digest_field="affordance_digest"
+    )
+    task_spec["interaction_affordance"] = interaction_affordance
+    return task_spec
+
+
 def compile_diagnostic_native_arena_packet(
     *,
     diagnostic_controls_input: Mapping[str, Any],
@@ -222,17 +249,7 @@ def compile_diagnostic_native_arena_packet(
         diagnostic_controls_input=authority,
     )
     task_definition = adapter["native_task_definition"]
-    task_spec = dict(task_definition["task_spec"])
-    source_subject_id = str(task_spec["subject_asset_id"])
-    runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
-    if not runtime_subject_id or not runtime_subject_id.replace("_", "a").isalnum():
-        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
-            "diagnostic_native_compiler_subject_runtime_id_invalid"
-        )
-    task_spec["subject_asset_id"] = runtime_subject_id
-    task_spec["source_subject_identity"] = task_definition["task_spec"][
-        "subject_asset_id"
-    ]
+    task_spec = _runtime_subject_task_spec(task_definition["task_spec"])
     task_spec["success_criteria"] = adapter["native_success_criteria"]["criteria"]
     execution = adapter["native_episode_execution"]
     task_source = adapter["source_documents"]["documents"]["definition"]
