@@ -64,6 +64,14 @@ _EXPECTED_ARTIFACT_ROLES = {
         {"native_import_runtime_result"}
     ),
 }
+_DIAGNOSTIC_REJECTED_ARTIFACT_ROLES = frozenset(
+    {
+        "diagnostic_rejected_appearance_candidate",
+        "appearance_rejection_receipt",
+        "appearance_visual_review_execution",
+        "provider_render_reference_manifest",
+    }
+)
 _SECRET_ENVIRONMENT_FILES = (
     "OPENAI_API_KEY_FILE",
     "OPENAI_ADMIN_API_KEY_FILE",
@@ -415,11 +423,28 @@ def _handler(
         result = _read(
             result_path, code="scene_configuration_stage_production_result_invalid"
         )
-        if {
+        observed_roles = {
             str(row.get("role") or "")
             for row in result.get("artifacts") or []
             if isinstance(row, Mapping)
-        } != _EXPECTED_ARTIFACT_ROLES[identity.adapter_id]:
+        }
+        diagnostic_rejection = (
+            diagnostic_only
+            and identity.adapter_id == "artifixer3d_observed_object_removal"
+            and observed_roles == _DIAGNOSTIC_REJECTED_ARTIFACT_ROLES
+        )
+        if diagnostic_rejection:
+            if (
+                result.get("diagnostic_only") is not True
+                or result.get("qualification_eligible") is not False
+                or result.get("configured_revision_publication_permitted") is not False
+                or result.get("offering_publication_permitted") is not False
+                or result.get("terminal_e2e_completion_permitted") is not False
+            ):
+                raise TaskEvaluationSceneConfigurationStageProducerError(
+                    "scene_configuration_stage_production_diagnostic_claim_invalid"
+                )
+        elif observed_roles != _EXPECTED_ARTIFACT_ROLES[identity.adapter_id]:
             raise TaskEvaluationSceneConfigurationStageProducerError(
                 "scene_configuration_stage_production_artifact_roles_invalid"
             )

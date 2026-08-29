@@ -796,6 +796,153 @@ def _stage_configuration_digest(configuration_path: Path) -> str:
     return _sha256(configuration_path)
 
 
+def _validate_rejected_appearance_stage_result(
+    result: Mapping[str, Any], *, stage_id: str
+) -> None:
+    roles = {
+        str(row.get("role") or "")
+        for row in result.get("output_artifacts") or []
+        if isinstance(row, Mapping)
+    }
+    rejection_roles = {
+        "diagnostic_rejected_appearance_candidate",
+        "appearance_rejection_receipt",
+        "appearance_visual_review_execution",
+        PROVIDER_RENDER_REFERENCE_ROLE,
+    }
+    rejection_present = bool(
+        roles
+        & {
+            "diagnostic_rejected_appearance_candidate",
+            "appearance_rejection_receipt",
+            "appearance_visual_review_execution",
+        }
+    )
+    if not rejection_present:
+        if result.get("appearance_visual_review_rejected") is not True:
+            return
+        code = f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}"
+        assembly_roles = {
+            "diagnostic_configured_scene_bundle_candidate_manifest",
+            "diagnostic_scene_assembly_receipt",
+        }
+        if (
+            stage_id != "stage-6"
+            or roles != assembly_roles
+            or result.get("diagnostic_only") is not True
+            or result.get("qualification_eligible") is not False
+            or result.get("configured_revision_publication_permitted") is not False
+            or result.get("offering_publication_permitted") is not False
+            or result.get("terminal_e2e_completion_permitted") is not False
+        ):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(code)
+        by_role = {
+            str(row.get("role") or ""): row
+            for row in result.get("output_artifacts") or []
+            if isinstance(row, Mapping)
+        }
+        manifest_path = _bound_file(
+            by_role["diagnostic_configured_scene_bundle_candidate_manifest"],
+            code=code,
+        )
+        receipt_path = _bound_file(
+            by_role["diagnostic_scene_assembly_receipt"], code=code
+        )
+        manifest = _read(manifest_path, code=code)
+        receipt = _read(receipt_path, code=code)
+        if (
+            manifest.get("status")
+            != "assembled_diagnostic_with_rejected_appearance_not_publishable"
+            or manifest.get("appearance_visual_review_rejected") is not True
+            or manifest.get("diagnostic_only") is not True
+            or manifest.get("qualification_eligible") is not False
+            or manifest.get("configured_revision_publication_permitted") is not False
+            or manifest.get("offering_publication_permitted") is not False
+            or manifest.get("terminal_e2e_completion_permitted") is not False
+            or manifest.get("manifest_digest")
+            != canonical_digest(manifest, digest_field="manifest_digest")
+            or receipt.get("status")
+            != "assembled_diagnostic_with_rejected_appearance_not_publishable"
+            or receipt.get("manifest_digest") != manifest.get("manifest_digest")
+            or receipt.get("appearance_visual_review_rejected") is not True
+            or receipt.get("control_plane_publication_required") is not False
+            or receipt.get("diagnostic_only") is not True
+            or receipt.get("qualification_eligible") is not False
+            or receipt.get("configured_revision_publication_permitted") is not False
+            or receipt.get("offering_publication_permitted") is not False
+            or receipt.get("terminal_e2e_completion_permitted") is not False
+            or receipt.get("receipt_digest")
+            != canonical_digest(receipt, digest_field="receipt_digest")
+        ):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(code)
+        return
+    code = f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}"
+    if (
+        stage_id != "stage-1"
+        or roles != rejection_roles
+        or result.get("appearance_visual_review_rejected") is not True
+        or result.get("diagnostic_only") is not True
+        or result.get("qualification_eligible") is not False
+        or result.get("configured_revision_publication_permitted") is not False
+        or result.get("offering_publication_permitted") is not False
+        or result.get("terminal_e2e_completion_permitted") is not False
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(code)
+    by_role = {
+        str(row.get("role") or ""): row
+        for row in result.get("output_artifacts") or []
+        if isinstance(row, Mapping)
+    }
+    candidate = _bound_file(
+        by_role["diagnostic_rejected_appearance_candidate"], code=code
+    )
+    receipt_path = _bound_file(by_role["appearance_rejection_receipt"], code=code)
+    execution_path = _bound_file(
+        by_role["appearance_visual_review_execution"], code=code
+    )
+    receipt = _read(receipt_path, code=code)
+    execution = _read(execution_path, code=code)
+    decisions = receipt.get("frame_decisions")
+    identities = {
+        (
+            str(row.get("camera_id") or ""),
+            str(row.get("frame_sha256") or ""),
+            str(row.get("decision") or ""),
+        )
+        for row in decisions or []
+        if isinstance(row, Mapping)
+    }
+    accepted = [row for row in decisions or [] if row.get("decision") == "accepted"]
+    rejected = [row for row in decisions or [] if row.get("decision") == "rejected"]
+    if (
+        receipt.get("status")
+        != "diagnostic_generated_appearance_edit_visual_review_rejected"
+        or receipt.get("diagnostic_rejected_appearance_candidate_sha256")
+        != _sha256(candidate)
+        or receipt.get("visual_review_execution_sha256") != _sha256(execution_path)
+        or receipt.get("visual_review_execution_digest")
+        != execution.get("execution_digest")
+        or receipt.get("review_frame_count") != 8
+        or receipt.get("accepted_review_frame_count") != 7
+        or receipt.get("rejected_review_frame_count") != 1
+        or len(identities) != 8
+        or len(accepted) != 7
+        or len(rejected) != 1
+        or receipt.get("diagnostic_only") is not True
+        or receipt.get("qualification_eligible") is not False
+        or receipt.get("configured_revision_publication_permitted") is not False
+        or receipt.get("offering_publication_permitted") is not False
+        or receipt.get("terminal_e2e_completion_permitted") is not False
+        or receipt.get("result_digest")
+        != canonical_digest(receipt, digest_field="result_digest")
+        or execution.get("status") != "completed"
+        or execution.get("decision") != "rejected"
+        or execution.get("execution_digest")
+        != canonical_digest(execution, digest_field="execution_digest")
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(code)
+
+
 def _portable_stage_result(
     *,
     result: Mapping[str, Any],
@@ -824,6 +971,7 @@ def _portable_stage_result(
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             f"scene_configuration_diagnostic_completed_stage_invalid:{stage_id}"
         )
+    _validate_rejected_appearance_stage_result(result, stage_id=stage_id)
     portable = json.loads(json.dumps(dict(result)))
     portable_artifacts = portable["output_artifacts"]
     for index, (source_row, target_row) in enumerate(
@@ -1025,6 +1173,7 @@ def hydrate_scene_configuration_diagnostic_completed_stages(
                     f"scene_configuration_diagnostic_completed_stage_artifact_invalid:{stage_id}"
                 )
             artifact["path"] = str(path.resolve())
+        _validate_rejected_appearance_stage_result(value, stage_id=stage_id)
         value["stage_result_digest"] = canonical_digest(
             value, digest_field="stage_result_digest"
         )

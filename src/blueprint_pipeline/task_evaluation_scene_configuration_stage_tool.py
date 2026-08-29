@@ -64,6 +64,14 @@ _EXPECTED_ROLES = {
         {"native_import_runtime_result"}
     ),
 }
+_DIAGNOSTIC_REJECTED_ARTIFACT_ROLES = frozenset(
+    {
+        "diagnostic_rejected_appearance_candidate",
+        "appearance_rejection_receipt",
+        "appearance_visual_review_execution",
+        "provider_render_reference_manifest",
+    }
+)
 _INPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"
 _DEPENDENCIES_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
 _OUTPUT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
@@ -186,6 +194,7 @@ def _validate_component_result(
     adapter_id: str,
     stage_id: str,
     output_root: Path,
+    diagnostic_only: bool,
 ) -> list[dict[str, Any]]:
     if (
         not isinstance(value, Mapping)
@@ -225,7 +234,23 @@ def _validate_component_result(
             )
         roles.add(role)
         artifacts.append(dict(row))
-    if roles != _EXPECTED_ROLES[adapter_id]:
+    diagnostic_rejection = (
+        diagnostic_only
+        and adapter_id == "artifixer3d_observed_object_removal"
+        and roles == _DIAGNOSTIC_REJECTED_ARTIFACT_ROLES
+    )
+    if diagnostic_rejection:
+        if (
+            value.get("diagnostic_only") is not True
+            or value.get("qualification_eligible") is not False
+            or value.get("configured_revision_publication_permitted") is not False
+            or value.get("offering_publication_permitted") is not False
+            or value.get("terminal_e2e_completion_permitted") is not False
+        ):
+            raise TaskEvaluationSceneConfigurationStageToolError(
+                "scene_configuration_component_diagnostic_claim_invalid"
+            )
+    elif roles != _EXPECTED_ROLES[adapter_id]:
         raise TaskEvaluationSceneConfigurationStageToolError(
             "scene_configuration_component_artifact_roles_invalid"
         )
@@ -391,6 +416,7 @@ def execute_stage_tool(
         adapter_id=adapter_id,
         stage_id=str(production_input["stage"]["stage_id"]),
         output_root=output_root,
+        diagnostic_only=values.get(_DIAGNOSTIC_ONLY_ENV) == "1",
     )
     result: dict[str, Any] = {
         "schema_version": PRODUCTION_RESULT_SCHEMA_VERSION,
@@ -406,6 +432,18 @@ def execute_stage_tool(
         "executed_inside_parent_configuration_run": True,
         "production_result_digest": "",
     }
+    if {
+        str(row.get("role") or "") for row in artifacts
+    } == _DIAGNOSTIC_REJECTED_ARTIFACT_ROLES:
+        result.update(
+            {
+                "diagnostic_only": True,
+                "qualification_eligible": False,
+                "configured_revision_publication_permitted": False,
+                "offering_publication_permitted": False,
+                "terminal_e2e_completion_permitted": False,
+            }
+        )
     result["production_result_digest"] = canonical_digest(
         result, digest_field="production_result_digest"
     )
