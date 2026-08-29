@@ -29,6 +29,7 @@ ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION = "task_evaluation_robot_placement_agent.v1
 ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION = "task_evaluation_robot_placement_receipt.v1"
 ROBOT_PLACEMENT_CLAIM_CEILING = "analytic_and_visual_robot_placement_candidate"
 DEFAULT_MAX_PLACEMENT_ROUNDS = 4
+NATIVE_REJECTED_POSE_EXCLUSION_RADIUS_M = 0.08
 
 
 class RobotPlacementAgentError(ValueError):
@@ -168,6 +169,76 @@ def _validated_gate(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise RobotPlacementAgentError("robot_placement_geometry_gate_invalid")
     return gate
+
+
+def _position_world_m(value: object) -> list[float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    position = value.get("position_world_m")
+    if (
+        not isinstance(position, Sequence)
+        or isinstance(position, (str, bytes))
+        or len(position) != 3
+    ):
+        return None
+    try:
+        result = [float(item) for item in position]
+    except (TypeError, ValueError):
+        return None
+    return result if all(math.isfinite(item) for item in result) else None
+
+
+def _native_rejected_positions(
+    *, scene_context: Mapping[str, Any], history: Sequence[Mapping[str, Any]]
+) -> list[list[float]]:
+    positions: list[list[float]] = []
+    configured = scene_context.get("rejected_native_base_poses") or []
+    if not isinstance(configured, Sequence) or isinstance(configured, (str, bytes)):
+        raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
+    for value in configured:
+        position = _position_world_m(value)
+        if position is None:
+            raise RobotPlacementAgentError("robot_placement_rejected_native_poses_invalid")
+        positions.append(position)
+    for round_record in history:
+        native_attempt = round_record.get("native_attempt")
+        if not isinstance(native_attempt, Mapping) or native_attempt.get("status") != "rejected":
+            continue
+        proposal = round_record.get("proposal")
+        position = _position_world_m(
+            proposal.get("pose") if isinstance(proposal, Mapping) else None
+        )
+        if position is not None:
+            positions.append(position)
+    return positions
+
+
+def _reject_reused_native_pose(
+    *,
+    gate: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    rejected_positions: Sequence[Sequence[float]],
+) -> dict[str, Any]:
+    result = dict(gate)
+    position = _position_world_m(proposal.get("pose"))
+    if position is None:
+        raise RobotPlacementAgentError("robot_placement_pose_invalid")
+    reused = any(
+        math.dist(position, [float(item) for item in rejected])
+        < NATIVE_REJECTED_POSE_EXCLUSION_RADIUS_M
+        for rejected in rejected_positions
+    )
+    if not reused:
+        return result
+    result["status"] = "rejected"
+    result["blockers"] = sorted(
+        set([*result.get("blockers", []), "prior_native_pose_reused"])
+    )
+    result["geometry_gate_digest"] = ""
+    result["geometry_gate_digest"] = canonical_digest(
+        result, digest_field="geometry_gate_digest"
+    )
+    return result
 
 
 def _visual_passed(review: RobotPlacementVisualReviewOutput) -> bool:
@@ -353,6 +424,16 @@ def run_task_evaluation_robot_placement_agent(
             proposal_result.output
         ).model_dump(mode="json")
         geometry_gate = _validated_gate(validate_candidate(proposal))
+        geometry_gate = _validated_gate(
+            _reject_reused_native_pose(
+                gate=geometry_gate,
+                proposal=proposal,
+                rejected_positions=_native_rejected_positions(
+                    scene_context=scene_advisory_context,
+                    history=history,
+                ),
+            )
+        )
         round_record: dict[str, Any] = {
             "round_index": round_index,
             "proposal": proposal,
