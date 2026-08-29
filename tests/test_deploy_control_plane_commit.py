@@ -334,6 +334,22 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/scene-object-discoveries/pending/*.json\n",
         encoding="utf-8",
     )
+    progression_service = (
+        unit_dir
+        / "blueprint-task-evaluation-configured-controls-progression.service"
+    )
+    progression_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-progress-configured-controls\n",
+        encoding="utf-8",
+    )
+    progression_timer = (
+        unit_dir
+        / "blueprint-task-evaluation-configured-controls-progression.timer"
+    )
+    progression_timer.write_text(
+        "[Timer]\nOnUnitInactiveSec=2min\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -361,6 +377,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_path,
         discovery_service,
         discovery_path,
+        progression_service,
+        progression_timer,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -397,6 +415,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-scene-object-discovery.service",
         "blueprint-scene-object-discovery.path",
+        "blueprint-task-evaluation-configured-controls-progression.service",
+        "blueprint-task-evaluation-configured-controls-progression.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -404,18 +424,21 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-scene-object-discovery.path",
     )
+    assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-task-evaluation-configured-controls-progression.timer",
+    )
 
 
 @pytest.mark.parametrize(
     "unit",
     [
-        "blueprint-task-evaluation-launch-dispatcher.timer",
         "blueprint-task-evaluation-launch-dispatcher.socket",
+        "blueprint-task-evaluation-launch-dispatcher.mount",
         "../blueprint-task-evaluation-launch-dispatcher.service",
         "dispatcher",
     ],
 )
-def test_only_service_and_path_unit_suffixes_may_be_installed(
+def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
     tmp_path: Path, unit: str
 ) -> None:
     with pytest.raises(
@@ -426,6 +449,58 @@ def test_only_service_and_path_unit_suffixes_may_be_installed(
             systemd_dir=tmp_path / "systemd",
             units=(unit,),
         )
+
+
+def test_configured_controls_timer_is_installed_and_armed_by_default(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    unit = "blueprint-task-evaluation-configured-controls-progression.timer"
+    enabled = "disabled"
+    active = "inactive"
+
+    def completed(argv, **kwargs):
+        nonlocal enabled, active
+        calls.append(tuple(argv))
+        if argv[:2] == ["systemctl", "enable"]:
+            enabled = "enabled"
+        elif argv[:2] == ["systemctl", "restart"]:
+            active = "active"
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = enabled + "\n"
+        elif argv[:2] == ["systemctl", "is-active"]:
+            stdout = active + "\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+
+    observed = deploy._installed_path_unit_states([{"unit": unit}])
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}],
+        before=observed,
+        arm_path_units=False,
+        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+    )
+
+    assert observed == {unit: {"enabled": "disabled", "state": "inactive"}}
+    assert calls == [
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+        ("systemctl", "enable", unit),
+        ("systemctl", "restart", unit),
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+    ]
+    assert restored == [
+        {
+            "unit": unit,
+            "before": {"enabled": "disabled", "state": "inactive"},
+            "requested_intent": "arm_configured_controls_progression",
+            "after": {"enabled": "enabled", "state": "active"},
+            "operator_freeze_preserved": False,
+        }
+    ]
 
 
 def test_path_unit_state_restore_preserves_an_active_enabled_watcher(monkeypatch) -> None:
@@ -1166,7 +1241,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
             "installed": [
                 {"unit": unit}
                 for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-                if unit.endswith(".path")
+                if unit.endswith((".path", ".timer"))
             ],
             "before": {watcher: {"enabled": "enabled", "state": "active"}},
             "arm_path_units": False,
