@@ -272,6 +272,74 @@ def test_warm_authority_cli_supplies_zero_allocation_contract(
     }
 
 
+def test_warm_authority_cli_verifies_construction_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load("issue_native_task_arena_warm_attempt_authority")
+    prepared = {
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "input_digest": "sha256:" + "c" * 64,
+        "execution_mode": "construction_canary",
+    }
+    observed = {}
+
+    def fake_construction_loader(*args, **kwargs):
+        observed["loader_args"] = args
+        observed["loader_kwargs"] = kwargs
+        return prepared
+
+    monkeypatch.setattr(
+        module,
+        "load_verified_native_task_arena_construction_bundle",
+        fake_construction_loader,
+    )
+    monkeypatch.setattr(
+        module,
+        "load_verified_native_task_arena_controls_bundle",
+        lambda *_args, **_kwargs: pytest.fail("controls loader must not be used"),
+    )
+    monkeypatch.setattr(
+        module,
+        "materialize_native_task_arena_warm_attempt_authority",
+        lambda **_kwargs: {"authorization_digest": "sha256:" + "a" * 64},
+    )
+    output = tmp_path / "warm-construction-authority.json"
+    result = module.main(
+        [
+            "--warm-session",
+            "warm-session.json",
+            "--bundle-receipt",
+            "construction-bundle.json",
+            "--execution-mode",
+            "construction_canary",
+            "--blueprint-commit",
+            "a" * 40,
+            "--packet-receipt-digest",
+            "sha256:" + "d" * 64,
+            "--runtime-source-packet-digest",
+            "sha256:" + "e" * 64,
+            "--authority-reference",
+            "explicit-user-goal",
+            "--authorized-by",
+            "user",
+            "--authorized-on",
+            "2026-08-29",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert observed == {
+        "loader_args": ("construction-bundle.json",),
+        "loader_kwargs": {
+            "expected_implementation_commit": "a" * 40,
+            "expected_packet_receipt_digest": "sha256:" + "d" * 64,
+            "expected_runtime_source_packet_digest": "sha256:" + "e" * 64,
+        },
+    }
+
+
 def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_path) -> None:
     module = _load("seal_native_task_arena_provider_zero")
     observed = {}
