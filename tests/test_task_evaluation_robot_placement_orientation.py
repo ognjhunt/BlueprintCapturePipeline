@@ -296,6 +296,7 @@ def test_agent_gate_derives_a_task_aware_reset_before_any_execution() -> None:
 def test_agent_gate_admits_a_slewable_candidate_and_attaches_the_report() -> None:
     from blueprint_pipeline.task_evaluation_robot_placement_agent import (
         _reject_infeasible_orientation_slew,
+        _validated_gate,
     )
 
     admitted = _reject_infeasible_orientation_slew(
@@ -307,6 +308,7 @@ def test_agent_gate_admits_a_slewable_candidate_and_attaches_the_report() -> Non
     )
     assert admitted["status"] == "passed"
     assert admitted["orientation_slew_feasibility"]["feasible"] is True
+    assert _validated_gate(admitted) == admitted
 
 
 def test_task_aware_gate_carries_prior_phase_orientation_sequentially() -> None:
