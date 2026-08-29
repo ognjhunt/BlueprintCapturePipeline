@@ -2643,6 +2643,37 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
     )
 
 
+def test_construction_vast_adapter_can_retain_warm_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed = {}
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "construction_canary",
+        "policy_candidate_id": None,
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_construction_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    module.run_native_task_arena_vast(
+        job_dir=tmp_path / "retained-construction",
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+        retain_warm_instance=True,
+    )
+
+    assert observed["retain_warm_instance"] is True
+
+
 @pytest.mark.parametrize(
     ("runner", "execution_mode", "expected_output", "expected_prefix", "candidate"),
     (
@@ -3084,6 +3115,7 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         "1.2",
         "--adp-hard-ttl-seconds",
         "5400",
+        "--native-task-arena-retain-warm-session",
     ]
     if execute:
         authority_path = tmp_path / "native-task-arena-authority.json"
@@ -3111,6 +3143,7 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
 
     assert allocator.main(args) == 0
     assert observed["execute"] is execute
+    assert observed["retain_warm_instance"] is True
     assert isinstance(
         observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant
     ) is execute
