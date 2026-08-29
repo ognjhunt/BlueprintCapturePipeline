@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import hashlib
 import json
+import os
 import shutil
 import sys
 from dataclasses import replace
@@ -244,6 +245,7 @@ class _FixtureAgentsSDKInvoker:
 
 def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import agents
 
@@ -275,6 +277,17 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
         return _Result()
 
     monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    key_file = tmp_path / "openai-api-key"
+    key_file.write_text("test-only-openai-api-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(key_file))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        agents,
+        "set_default_openai_key",
+        lambda key, *, use_for_tracing: captured.update(
+            file_key=key, file_key_used_for_tracing=use_for_tracing
+        ),
+    )
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_fake_run_sync))
     invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
@@ -322,6 +335,9 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     assert captured["kwargs"]["max_turns"] == 2
     assert captured["kwargs"]["run_config"].trace_include_sensitive_data is False
     assert captured["kwargs"]["run_config"].tracing_disabled is True
+    assert captured["file_key"] == "test-only-openai-api-key"
+    assert captured["file_key_used_for_tracing"] is False
+    assert "OPENAI_API_KEY" not in os.environ
     assert captured["agent"].model_settings.store is False
     assert captured["agent"].model_settings.reasoning.effort == "max"
     assert result.provider == "openai"
