@@ -24,6 +24,7 @@ from .task_evaluation_supervisor.agents_sdk import (
 
 ROBOT_PLACEMENT_AGENT_MODEL = "gpt-5.6-sol"
 ROBOT_PLACEMENT_AGENT_REASONING_EFFORT = "high"
+ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS = 8_000
 ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION = "task_evaluation_robot_placement_agent.v1"
 ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION = "task_evaluation_robot_placement_receipt.v1"
 ROBOT_PLACEMENT_CLAIM_CEILING = "analytic_and_visual_robot_placement_candidate"
@@ -105,7 +106,7 @@ def robot_placement_agents_sdk_config(
     return OpenAIAgentsSDKConfig(
         model=ROBOT_PLACEMENT_AGENT_MODEL,
         max_turns=1,
-        max_output_tokens=2_000,
+        max_output_tokens=ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS,
         allow_live_invocation=allow_live_invocation,
         tracing_disabled=tracing_disabled,
         max_inference_cost_usd=max_inference_cost_usd,
@@ -338,7 +339,7 @@ def run_task_evaluation_robot_placement_agent(
                 instructions=proposal_instructions,
                 model=ROBOT_PLACEMENT_AGENT_MODEL,
                 max_turns=1,
-                max_output_tokens=2_000,
+                max_output_tokens=ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS,
                 max_input_tokens=max_input_tokens,
                 reasoning_effort=ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
                 output_type=RobotPlacementProposalOutput,
@@ -381,7 +382,7 @@ def run_task_evaluation_robot_placement_agent(
                 instructions=review_instructions,
                 model=ROBOT_PLACEMENT_AGENT_MODEL,
                 max_turns=1,
-                max_output_tokens=1_200,
+                max_output_tokens=ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS,
                 max_input_tokens=max_input_tokens,
                 reasoning_effort=ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
                 output_type=RobotPlacementVisualReviewOutput,
@@ -530,6 +531,7 @@ def validate_robot_placement_receipt(
 __all__ = [
     "DEFAULT_MAX_PLACEMENT_ROUNDS",
     "ROBOT_PLACEMENT_AGENT_MODEL",
+    "ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS",
     "ROBOT_PLACEMENT_AGENT_REASONING_EFFORT",
     "ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION",
     "RobotPlacementAgentError",
