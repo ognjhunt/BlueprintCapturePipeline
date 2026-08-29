@@ -8,6 +8,7 @@ import struct
 from types import ModuleType, SimpleNamespace
 import zipfile
 
+import numpy
 import pytest
 from PIL import Image
 
@@ -367,11 +368,23 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
     runner = _runner_module()
 
     class Tensor:
+        """Carries values: the export adapter measures position range."""
+
         def __init__(self, shape: tuple[int, ...]) -> None:
             self.shape = shape
+            self._array = numpy.zeros(shape, dtype=numpy.float32)
 
         def detach(self):
             return self
+
+        def __array__(self, dtype=None):
+            return self._array.astype(dtype) if dtype is not None else self._array
+
+        def __getitem__(self, key):
+            selected = self._array[key]
+            tensor = Tensor(tuple(selected.shape))
+            tensor._array = selected
+            return tensor
 
     config = SimpleNamespace(export_usdz=SimpleNamespace(apply_normalizing_transform=True))
     checkpoint_value = {

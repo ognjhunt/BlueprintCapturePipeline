@@ -8,6 +8,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 import zipfile
 
+import numpy
 import pytest
 
 from blueprint_pipeline.common import write_json
@@ -27,11 +28,29 @@ from tests.test_native_task_appearance_frame_alignment import (
 
 
 class _Tensor:
+    """A checkpoint tensor stub that carries values, not just a shape.
+
+    The export adapter measures position representability before handing the
+    model to the pinned NuRec exporter, so a shape-only fake no longer stands
+    in for a real checkpoint tensor.
+    """
+
     def __init__(self, shape: tuple[int, ...]) -> None:
         self.shape = shape
+        # Origin-centred and finite: representable room-scale coordinates.
+        self._array = numpy.zeros(shape, dtype=numpy.float32)
 
     def detach(self) -> _Tensor:
         return self
+
+    def __array__(self, dtype=None):
+        return self._array.astype(dtype) if dtype is not None else self._array
+
+    def __getitem__(self, key) -> _Tensor:
+        selected = self._array[key]
+        tensor = _Tensor(tuple(selected.shape))
+        tensor._array = selected
+        return tensor
 
 
 def _load_real_provider_runner():

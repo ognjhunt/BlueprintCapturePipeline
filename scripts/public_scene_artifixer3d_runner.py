@@ -35,6 +35,15 @@ DUAL_TARGET_INPUT_FILENAME = f"{DUAL_TARGET_INPUT_SCHEMA}.json"
 DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
 CHECKPOINT_REUSE_SCHEMA = "public_scene_artifixer3d_checkpoint_reuse.v1"
+# The pinned NuRec template casts .gaussians_nodes.gaussians.positions to
+# float16, so a gaussian outside this magnitude silently becomes inf and ships
+# a scene the frame-alignment gate then refuses. Measure representability here,
+# where the checkpoint is still addressable, instead of after the export.
+NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT = 65504.0
+# Diverged far-field floaters are a known 3DGS artifact and are dropped. A
+# larger share is a scale defect rather than floaters, and gutting the scene
+# would be worse than refusing it.
+MAX_PRUNABLE_UNREPRESENTABLE_POSITION_FRACTION = 0.001
 NATIVE_APPEARANCE_EXPORT_SCHEMA = "public_scene_artifixer3d_native_appearance_export.v1"
 DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
@@ -802,6 +811,34 @@ class _CheckpointExportModel:
             or tuple(self.features_specular.shape) != (count, expected_specular)
         ):
             raise ValueError("artifixer3d_native_export_checkpoint_features_invalid")
+        self._seal_representable_positions(count)
+
+    def _seal_representable_positions(self, count: int) -> None:
+        """Drop unrepresentable floaters, or refuse a scene that is not floaters."""
+
+        import numpy as np
+
+        positions = np.asarray(self.positions.detach(), dtype=np.float64)
+        keep = np.isfinite(positions).all(axis=1) & (
+            np.abs(positions) <= NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT
+        ).all(axis=1)
+        retained = int(keep.sum())
+        unrepresentable = count - retained
+        self.unrepresentable_position_count = unrepresentable
+        self.exported_gaussian_count = retained
+        if not unrepresentable:
+            return
+        if (
+            not retained
+            or unrepresentable / count
+            > MAX_PRUNABLE_UNREPRESENTABLE_POSITION_FRACTION
+        ):
+            raise ValueError(
+                "artifixer3d_native_export_positions_unrepresentable:"
+                f"{unrepresentable}/{count}"
+            )
+        for name in self._TENSOR_FIELDS:
+            setattr(self, name, getattr(self, name)[keep])
 
     def get_positions(self):
         return self.positions
@@ -897,6 +934,11 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
         "status": "native_appearance_candidates_exported_pending_native_import_and_multiview_review",
         "source_checkpoint": _file_record(checkpoint),
         "gaussian_count": int(model.positions.shape[0]),
+        # Disclosed rather than silent: a run that drops floaters says so, and
+        # a receipt that says zero is evidence the export needed no pruning.
+        "exported_gaussian_count": int(model.exported_gaussian_count),
+        "unrepresentable_position_count": int(model.unrepresentable_position_count),
+        "position_magnitude_limit": NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT,
         "coordinate_contract": {
             "source_gaussian_tensor_coordinates_preserved": True,
             "camera_derived_normalizing_transform_applied": False,
