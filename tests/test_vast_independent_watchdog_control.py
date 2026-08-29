@@ -694,36 +694,42 @@ def test_live_retained_watchdog_publishes_fleet_reaper_lease(
     )
 
 
-def test_systemd_watchdog_refuses_retention_without_kill_mode_contract(
+def test_systemd_watchdog_refuses_allocation_without_kill_mode_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "fixture-systemd-invocation")
     monkeypatch.delenv(control.CALLER_EXIT_SURVIVAL_ENV, raising=False)
-    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    process_started = False
+
+    def fake_popen(*_args: Any, **_kwargs: Any) -> _FakeProcess:
+        nonlocal process_started
+        process_started = True
+        raise AssertionError("watchdog process must not start without survival proof")
+
+    monkeypatch.setattr(control.subprocess, "Popen", fake_popen)
     handoff, handle = control.arm_independent_vast_watchdog(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-08-17T00:00:00+00:00",
         pod_name_prefix="blueprint-adp-paired-native-import-",
     )
-    assert handle is not None
+    assert handle is None
+    assert process_started is False
+    assert handoff["status"] == "blocked"
+    assert handoff["watchdog_armed_before_allocation"] is False
+    assert handoff["provider_mutations_performed"] == 0
     assert handoff["caller_exit_survival_contract"] == (
         "systemd_cgroup_survival_unproven"
     )
-
-    result = control.close_independent_vast_watchdog(
-        job_dir=tmp_path,
-        handle=handle,
-        instance_ids=[47999991],
-        provider_teardown_completed=False,
-    )
-
-    assert result["status"] == "watchdog_caller_exit_survival_unproven"
-    assert result["watchdog_retention_liveness_confirmed"] is True
-    assert result["watchdog_caller_exit_survival_confirmed"] is False
-    assert result["blockers"] == [
+    assert handoff["blockers"] == [
         "independent_vast_watchdog_caller_exit_survival_unproven"
     ]
+    evidence = json.loads(
+        (tmp_path / control.WATCHDOG_DIR_NAME / control.EVIDENCE_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert evidence == handoff
 
 
 def test_close_returns_terminal_as_soon_as_evidence_confirms_absence(

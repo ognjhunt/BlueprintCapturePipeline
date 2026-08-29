@@ -65,6 +65,13 @@ def _caller_exit_survival_contract() -> str:
     return "detached_posix_session"
 
 
+def _caller_exit_survival_proven(contract: str) -> bool:
+    return contract in {
+        "detached_posix_session",
+        SYSTEMD_KILL_MODE_PROCESS_SURVIVAL,
+    }
+
+
 def _stop_terminal_watchdog_process(
     process: subprocess.Popen[str], *, wait_seconds: float = 5.0
 ) -> int | None:
@@ -88,10 +95,9 @@ def _retained_watchdog_result(
     instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     alive = _process_alive(handle.process)
-    survival_proven = handle.caller_exit_survival_contract in {
-        "detached_posix_session",
-        SYSTEMD_KILL_MODE_PROCESS_SURVIVAL,
-    }
+    survival_proven = _caller_exit_survival_proven(
+        handle.caller_exit_survival_contract
+    )
     retained = alive and survival_proven
     return {
         "schema_version": HANDOFF_SCHEMA,
@@ -346,6 +352,31 @@ def arm_independent_vast_watchdog(
     started_epoch = time.time()
     caller_exit_survival = _caller_exit_survival_contract()
     deadline = started_epoch + max(1, int(max_live_minutes)) * 60
+    if not _caller_exit_survival_proven(caller_exit_survival):
+        blocked = {
+            "schema_version": HANDOFF_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "independent_process": False,
+            "watchdog_armed_before_allocation": False,
+            "watchdog_started_epoch": started_epoch,
+            "watchdog_deadline_epoch": deadline,
+            "caller_exit_survival_contract": caller_exit_survival,
+            "systemd_dispatcher_kill_mode_required": "process",
+            "pod_name_prefix": prefix,
+            "watchdog_out_dir": str(out_dir),
+            "started_instance_id_path": str(
+                out_dir / "started_vast_instance_id.txt"
+            ),
+            "provider_mutations_performed": 0,
+            "blockers": [
+                "independent_vast_watchdog_caller_exit_survival_unproven"
+            ],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(out_dir / EVIDENCE_NAME, blocked)
+        write_json(job_dir / HANDOFF_NAME, blocked)
+        return blocked, None
     log_path = out_dir / "watchdog.log"
     log_handle = log_path.open("a", encoding="utf-8")
     command = [
