@@ -311,23 +311,35 @@ def summarize_robot_placement_geometry(
     return result
 
 
-def _point_in_triangle_xy(point: np.ndarray, triangle: np.ndarray) -> bool:
-    a, b, c = triangle[:, :2]
-    v0 = c - a
-    v1 = b - a
-    v2 = point - a
-    dot00 = float(np.dot(v0, v0))
-    dot01 = float(np.dot(v0, v1))
-    dot02 = float(np.dot(v0, v2))
-    dot11 = float(np.dot(v1, v1))
-    dot12 = float(np.dot(v1, v2))
+def _supported_sample_count(samples: np.ndarray, triangles: np.ndarray) -> int:
+    """Count footprint samples covered by any support triangle in XY."""
+
+    triangle_xy = triangles[:, :, :2]
+    a = triangle_xy[:, 0]
+    v0 = triangle_xy[:, 2] - a
+    v1 = triangle_xy[:, 1] - a
+    dot00 = np.einsum("ij,ij->i", v0, v0)
+    dot01 = np.einsum("ij,ij->i", v0, v1)
+    dot11 = np.einsum("ij,ij->i", v1, v1)
     denominator = dot00 * dot11 - dot01 * dot01
-    if abs(denominator) <= 1.0e-15:
-        return False
-    inverse = 1.0 / denominator
-    u = (dot11 * dot02 - dot01 * dot12) * inverse
-    v = (dot00 * dot12 - dot01 * dot02) * inverse
-    return u >= -1.0e-8 and v >= -1.0e-8 and u + v <= 1.0 + 1.0e-8
+    valid = np.abs(denominator) > 1.0e-15
+    inverse = np.zeros_like(denominator)
+    inverse[valid] = 1.0 / denominator[valid]
+    supported = 0
+    for sample in samples:
+        v2 = sample - a
+        dot02 = np.einsum("ij,ij->i", v0, v2)
+        dot12 = np.einsum("ij,ij->i", v1, v2)
+        u = (dot11 * dot02 - dot01 * dot12) * inverse
+        v = (dot00 * dot12 - dot01 * dot02) * inverse
+        inside = (
+            valid
+            & (u >= -1.0e-8)
+            & (v >= -1.0e-8)
+            & (u + v <= 1.0 + 1.0e-8)
+        )
+        supported += int(np.any(inside))
+    return supported
 
 
 def _yaw_from_quaternion(quaternion: Sequence[float]) -> tuple[float, bool]:
@@ -406,9 +418,7 @@ def validate_robot_placement_geometry_candidate(
     else:
         selected = index.triangles[np.asarray(surface.triangle_indices, dtype=np.int64)]
         support_height_error_m = abs(float(position[2]) - surface.height_m)
-        for sample in samples:
-            if any(_point_in_triangle_xy(sample, triangle) for triangle in selected):
-                supported_count += 1
+        supported_count = _supported_sample_count(samples, selected)
         if support_height_error_m > support_height_tolerance_m:
             blockers.append("robot_root_not_on_declared_support_height")
         if supported_count != len(samples):

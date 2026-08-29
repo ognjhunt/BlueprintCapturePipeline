@@ -26,6 +26,8 @@ from __future__ import annotations
 import math
 from typing import Any, Sequence
 
+import numpy as np
+
 from .rigid_frame_transforms import (
     position_base_to_world,
     position_world_to_base,
@@ -125,6 +127,44 @@ def forward_kinematics(
     return position, rotation
 
 
+def _batched_flange_positions(joint_vectors: Sequence[Sequence[float]]) -> np.ndarray:
+    """Vectorized FK positions for finite-difference Jacobian samples."""
+
+    joints = np.asarray(joint_vectors, dtype=np.float64)
+    if (
+        joints.ndim != 2
+        or joints.shape[1] != ARM_JOINT_COUNT
+        or not np.all(np.isfinite(joints))
+    ):
+        raise FrankaKinematicsError(["franka_kinematics_joint_vector_invalid"])
+    count = joints.shape[0]
+    transforms = np.broadcast_to(np.eye(4, dtype=np.float64), (count, 4, 4)).copy()
+    for index, (a, d, alpha) in enumerate(FRANKA_MODIFIED_DH):
+        theta = joints[:, index]
+        cosine_theta = np.cos(theta)
+        sine_theta = np.sin(theta)
+        cosine_alpha = math.cos(alpha)
+        sine_alpha = math.sin(alpha)
+        link = np.zeros((count, 4, 4), dtype=np.float64)
+        link[:, 0, 0] = cosine_theta
+        link[:, 0, 1] = -sine_theta
+        link[:, 0, 3] = a
+        link[:, 1, 0] = sine_theta * cosine_alpha
+        link[:, 1, 1] = cosine_theta * cosine_alpha
+        link[:, 1, 2] = -sine_alpha
+        link[:, 1, 3] = -d * sine_alpha
+        link[:, 2, 0] = sine_theta * sine_alpha
+        link[:, 2, 1] = cosine_theta * sine_alpha
+        link[:, 2, 2] = cosine_alpha
+        link[:, 2, 3] = d * cosine_alpha
+        link[:, 3, 3] = 1.0
+        transforms = transforms @ link
+    return (
+        transforms[:, :3, 3]
+        + FRANKA_FLANGE_OFFSET_M * transforms[:, :3, 2]
+    )
+
+
 def position_jacobian(joint_positions: Sequence[float]) -> list[list[float]]:
     """Three-by-seven linear-velocity Jacobian, by central differences.
 
@@ -136,24 +176,16 @@ def position_jacobian(joint_positions: Sequence[float]) -> list[list[float]]:
     Differencing cannot disagree with the kinematics it is differencing.
     """
 
-    joints = _checked(joint_positions)
-    columns: list[list[float]] = []
+    joints = np.asarray(_checked(joint_positions), dtype=np.float64)
+    samples = np.repeat(joints[None, :], 2 * ARM_JOINT_COUNT, axis=0)
     for index in range(ARM_JOINT_COUNT):
-        forward = list(joints)
-        backward = list(joints)
-        forward[index] += JACOBIAN_EPSILON_RAD
-        backward[index] -= JACOBIAN_EPSILON_RAD
-        ahead, _ = forward_kinematics(forward)
-        behind, _ = forward_kinematics(backward)
-        columns.append(
-            [
-                (ahead[row] - behind[row]) / (2.0 * JACOBIAN_EPSILON_RAD)
-                for row in range(3)
-            ]
-        )
-    return [
-        [columns[column][row] for column in range(ARM_JOINT_COUNT)] for row in range(3)
-    ]
+        samples[2 * index, index] += JACOBIAN_EPSILON_RAD
+        samples[2 * index + 1, index] -= JACOBIAN_EPSILON_RAD
+    positions = _batched_flange_positions(samples)
+    columns = (positions[0::2] - positions[1::2]) / (
+        2.0 * JACOBIAN_EPSILON_RAD
+    )
+    return columns.T.tolist()
 
 
 def manipulability(joint_positions: Sequence[float]) -> float:
