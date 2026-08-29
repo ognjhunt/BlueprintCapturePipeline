@@ -184,6 +184,56 @@ def _validate_exact_mask_binding(
         )
 
 
+def _stage_repair_packet_members(
+    *,
+    frames: list[Mapping[str, Any]],
+    source_root: Path,
+    destination_root: Path,
+) -> None:
+    """Carry the exact bytes the repair request names into its own packet.
+
+    ``execute_semantic_teacher_image_edits`` resolves every frame's
+    ``relative_path`` against the directory holding the runtime request. The
+    request reuses the first pass's packet-relative paths, so staging only the
+    JSON leaves the worker pointing at files that are not there, and the
+    bounded repair round dies on ``semantic_teacher_runtime_input_invalid``
+    after the GPU has already been paid for. Copy each named member and prove
+    it still hashes to what the request declares.
+    """
+
+    for frame in frames:
+        for member in ("input_rgb", "edit_mask"):
+            record = frame.get(member)
+            if not isinstance(record, Mapping):
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_packet_member_invalid"
+                )
+            relative = PurePosixPath(str(record.get("relative_path") or ""))
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or ".." in relative.parts
+            ):
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_packet_member_invalid"
+                )
+            source_path = source_root.joinpath(*relative.parts)
+            if source_path.is_symlink() or not source_path.is_file():
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_packet_member_missing"
+                )
+            destination = destination_root.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, destination)
+            if (
+                destination.stat().st_size != record.get("size_bytes")
+                or _sha256(destination) != record.get("sha256")
+            ):
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_selective_repair_packet_member_digest_mismatch"
+                )
+
+
 def materialize_selective_repair_request(
     *,
     review_input_path: str | Path,
@@ -518,6 +568,9 @@ def materialize_selective_repair_request(
             "scene_configuration_artifixer_selective_repair_output_exists"
         )
     root.mkdir(parents=True, mode=0o700)
+    _stage_repair_packet_members(
+        frames=repair_frames, source_root=request_path.parent, destination_root=root
+    )
     repair_request_path = root / f"{RUNTIME_REQUEST_SCHEMA_VERSION}.json"
     repair_request_path.write_text(
         canonical_json(repair_request) + "\n", encoding="utf-8"
