@@ -11,6 +11,7 @@ false until construction readback.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -325,8 +326,52 @@ def materialize_planar_push_readiness_candidate(
     return json.loads(json.dumps(result))
 
 
+def _mapping_file(path: str | Path, *, blocker: str) -> dict[str, Any]:
+    source = Path(path).expanduser()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationPlanarPushReadinessCandidateError(blocker) from exc
+    if source.is_symlink() or not source.is_file() or not isinstance(value, Mapping):
+        raise TaskEvaluationPlanarPushReadinessCandidateError(blocker)
+    return dict(value)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Materialize the candidate through a production-callable entry point."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--configured-revision", required=True)
+    parser.add_argument("--task-definition", required=True)
+    parser.add_argument("--workspace-clearance", required=True)
+    parser.add_argument("--droid-profile", required=True)
+    parser.add_argument("--droid-profile-reference", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    materialize_planar_push_readiness_candidate(
+        configured_revision=_mapping_file(
+            args.configured_revision,
+            blocker="planar_push_readiness_configured_revision_invalid",
+        ),
+        task_definition_path=args.task_definition,
+        workspace_clearance_path=args.workspace_clearance,
+        droid_profile_path=args.droid_profile,
+        droid_profile_reference=_mapping_file(
+            args.droid_profile_reference,
+            blocker="planar_push_readiness_droid_profile_reference_invalid",
+        ),
+        output_path=args.output,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "TaskEvaluationPlanarPushReadinessCandidateError",
+    "main",
     "materialize_planar_push_readiness_candidate",
 ]

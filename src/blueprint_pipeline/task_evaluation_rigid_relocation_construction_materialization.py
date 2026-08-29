@@ -12,6 +12,7 @@ execute in Isaac.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -112,6 +113,56 @@ def _vector(value: Any, *, length: int, blocker: str) -> list[float]:
     if not all(math.isfinite(item) for item in result):
         raise TaskEvaluationRigidRelocationConstructionMaterializationError(blocker)
     return result
+
+
+def _mapping_file(path: str | Path, *, blocker: str) -> dict[str, Any]:
+    source = Path(path).expanduser()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationRigidRelocationConstructionMaterializationError(
+            blocker
+        ) from exc
+    if source.is_symlink() or not source.is_file() or not isinstance(value, Mapping):
+        raise TaskEvaluationRigidRelocationConstructionMaterializationError(blocker)
+    return dict(value)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Materialize the authority through a production-callable entry point."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--configured-revision", required=True)
+    parser.add_argument("--materialized-references", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    result = materialize_rigid_relocation_construction_authority(
+        configured_revision=_mapping_file(
+            args.configured_revision,
+            blocker="rigid_construction_configured_revision_invalid",
+        ),
+        materialized_references=_mapping_file(
+            args.materialized_references,
+            blocker="rigid_construction_materialized_references_invalid",
+        ),
+    )
+    destination = Path(args.output).expanduser()
+    payload = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    try:
+        with destination.open("xb") as stream:
+            stream.write(payload)
+        destination.chmod(0o440)
+    except FileExistsError:
+        if destination.is_symlink() or destination.read_bytes() != payload:
+            raise TaskEvaluationRigidRelocationConstructionMaterializationError(
+                "rigid_construction_destination_conflict"
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 def _positive(value: Any, *, blocker: str) -> float:
@@ -559,5 +610,6 @@ def materialize_rigid_relocation_construction_authority(
 __all__ = [
     "SCHEMA_VERSION",
     "TaskEvaluationRigidRelocationConstructionMaterializationError",
+    "main",
     "materialize_rigid_relocation_construction_authority",
 ]
