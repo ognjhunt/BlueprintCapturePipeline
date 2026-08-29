@@ -75,6 +75,12 @@ class RobotProfile:
         1.0,
     )
     orientation_slew_rad_per_step: float = 0.10
+
+    # Ordered arm joint names for the chain this profile's kinematics walk.
+    # Reset maps are keyed by joint name and carry gripper joints too, so any
+    # consumer that needs "the arm" must address it by name; deriving the names
+    # from a robot family string only ever works for that one family.
+    arm_joint_names: Tuple[str, ...] = ()
     # Fixed tool-mount rotation from the kinematic flange frame to the grasp
     # frame.  Forward kinematics yields the flange; the contract and every
     # readback speak the grasp frame, and the two differ by a constant that is
@@ -330,6 +336,15 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     # over 64 steps), well under the 0.10 rad/step nominal cap. Gate on the
     # measured rate: the nominal one would have passed a phase that failed.
     orientation_slew_rad_per_step=0.0267,
+    arm_joint_names=(
+        "panda_joint1",
+        "panda_joint2",
+        "panda_joint3",
+        "panda_joint4",
+        "panda_joint5",
+        "panda_joint6",
+        "panda_joint7",
+    ),
     # Robotiq 2F-85 mounts rotated 180 deg about the flange axis; verified by
     # composing published-DH forward kinematics at the reset pose against the
     # r33 native grasp-frame readback.

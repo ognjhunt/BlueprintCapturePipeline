@@ -18,10 +18,12 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .franka_kinematics import (
+    ARM_JOINT_COUNT,
     FRANKA_JOINT_LIMITS_RAD,
     forward_kinematics,
 )
 from .native_task_arena_packet import materialize_native_task_arena_packet
+from .scene_placement.robot_profile import get_robot_profile
 from .rigid_frame_transforms import quaternion_conjugate_xyzw
 from .task_evaluation_robot_placement_agent import (
     RobotPlacementAgentError,
@@ -243,6 +245,7 @@ def _derive_task_aware_franka_reset(
     profile: Mapping[str, Any],
     base_pose: Mapping[str, Any],
     task_trajectory: Mapping[str, Any],
+    robot_id: str,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     """Derive a task-facing reset without claiming native pose feasibility.
 
@@ -264,7 +267,21 @@ def _derive_task_aware_franka_reset(
         raise TaskEvaluationDiagnosticNativeArenaCompilerError(
             "diagnostic_native_compiler_robot_reset_invalid"
         )
-    arm_joint_names = tuple(f"panda_joint{index}" for index in range(1, 8))
+    # The arm joint names are profile data, not a naming convention to be
+    # regenerated from a robot family string: a reset map is keyed by joint and
+    # includes gripper joints, and every non-Franka embodiment names its chain
+    # differently.  The kinematics below are still Franka-specific; this only
+    # removes the assumption that the NAMES can be guessed.
+    try:
+        arm_joint_names = tuple(get_robot_profile(robot_id).arm_joint_names)
+    except (KeyError, ValueError) as exc:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_robot_profile_unknown"
+        ) from exc
+    if len(arm_joint_names) != ARM_JOINT_COUNT:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+            "diagnostic_native_compiler_robot_arm_joint_names_undeclared"
+        )
     try:
         nominal_arm = [float(reset[name]) for name in arm_joint_names]
     except (KeyError, TypeError, ValueError) as exc:
@@ -508,6 +525,7 @@ def compile_diagnostic_native_arena_packet(
                 profile=profile,
                 base_pose=base_pose,
                 task_trajectory=validated_trajectory,
+                robot_id=str(task_binding["robot_id"]),
             )
         )
         accepted_round = accepted_placement_receipt["rounds"][-1]
