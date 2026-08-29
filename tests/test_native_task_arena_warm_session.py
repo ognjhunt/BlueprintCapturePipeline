@@ -445,6 +445,67 @@ def test_close_accepts_provider_404_as_observed_absence(
     assert result["continuing_spend_from_this_run"] is False
 
 
+@pytest.mark.parametrize("delete_status", [404, 410])
+def test_close_accepts_delete_absence_then_requires_get_readback(
+    monkeypatch: pytest.MonkeyPatch,
+    delete_status: int,
+) -> None:
+    calls: list[str] = []
+
+    def fake_api_json(*, method, **_kwargs):
+        calls.append(method)
+        if method == "DELETE":
+            raise urllib.error.HTTPError(
+                url="https://provider.example/instances/123/",
+                code=delete_status,
+                msg="already absent",
+                hdrs=None,
+                fp=None,
+            )
+        raise urllib.error.HTTPError(
+            url="https://provider.example/instances/123/",
+            code=404,
+            msg="not found",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(warm_vast, "_api_json", fake_api_json)
+
+    result = warm_vast._close_warm_instance(
+        instance_id=123, api_key="secret", timeout_seconds=1
+    )
+
+    assert calls == ["DELETE", "GET"]
+    assert result["status"] == "completed"
+    assert result["destroy_http_status_code"] == delete_status
+    assert result["provider_instance_absent"] is True
+    assert result["continuing_spend_from_this_run"] is False
+
+
+def test_close_does_not_swallow_nonterminal_delete_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = urllib.error.HTTPError(
+        url="https://provider.example/instances/123/",
+        code=503,
+        msg="unavailable",
+        hdrs=None,
+        fp=None,
+    )
+    monkeypatch.setattr(
+        warm_vast,
+        "_api_json",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        warm_vast._close_warm_instance(
+            instance_id=123, api_key="secret", timeout_seconds=1
+        )
+    assert excinfo.value.code == 503
+
+
 @pytest.mark.parametrize(
     ("execution_mode", "diagnostic_mode"),
     [

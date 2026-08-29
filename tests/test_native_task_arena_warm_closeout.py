@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,15 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_warm_closeout import (
     materialize_expired_warm_closeout,
+    materialize_failed_watchdog_recovery_closeout,
 )
 from blueprint_pipeline.native_task_arena_paid_authority import (
     materialize_native_task_arena_provider_zero,
+    validate_terminal_spend_chain,
 )
+
+
+CLOSEOUT_SCRIPT = "scripts/close_native_task_arena_expired_warm_session.py"
 
 
 def _write(path: Path, value: dict) -> Path:
@@ -23,6 +29,11 @@ def _write(path: Path, value: dict) -> Path:
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     authority = {
         "schema_version": "native_task_arena_paid_attempt_authority.v1",
+        "bundle_sha256": "sha256:" + "a" * 64,
+        "hard_attempt_spend_cap_usd": 2.0,
+        "maximum_single_resource_ttl_seconds": 7200,
+        "aggregate_goal_spend_before_attempt_usd": 0.0,
+        "aggregate_goal_spend_cap_usd": 10.0,
         "authorization_digest": "",
     }
     authority["authorization_digest"] = canonical_digest(
@@ -114,6 +125,171 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         },
     )
     return authority_path, result_path, guard_path
+
+
+def _file_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _recovery_fixture(tmp_path: Path) -> dict[str, object]:
+    authority, retained, _guard = _fixture(tmp_path)
+    retained_value = json.loads(retained.read_text())
+    watchdog_path = Path(retained_value["watchdog_receipt_path"])
+    _write(
+        watchdog_path,
+        {
+            "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+            "provider": "vast",
+            "status": "armed",
+            "pid": 100,
+            "deadline_epoch": 2_000.0,
+            "independent_process": True,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        },
+    )
+    call_input = (
+        "VastRenderProvider; p=VastRenderProvider(); "
+        'p.terminate(\\"42\\")'
+    )
+    inspect_input = (
+        "VastRenderProvider; p=VastRenderProvider(); "
+        'p.inspect(\\"42\\"); p.billable_inventory(name_prefix=\\"\\")'
+    )
+    session_rows = [
+        {
+            "timestamp": "2026-08-22T06:52:00Z",
+            "type": "response_item",
+            "payload": {"type": "custom_tool_call", "input": call_input},
+        },
+        {
+            "timestamp": "2026-08-22T06:52:02Z",
+            "type": "event_msg",
+            "payload": {
+                "item": {
+                    "type": "CommandExecution",
+                    "exit_code": 0,
+                    "stdout": '{"http": 200, "status": "stopped"}\n',
+                    "stderr": "",
+                }
+            },
+        },
+        {
+            "timestamp": "2026-08-22T06:52:07Z",
+            "type": "response_item",
+            "payload": {"type": "custom_tool_call", "input": inspect_input},
+        },
+        {
+            "timestamp": "2026-08-22T06:52:09Z",
+            "type": "event_msg",
+            "payload": {
+                "item": {
+                    "type": "CommandExecution",
+                    "exit_code": 0,
+                    "stdout": json.dumps(
+                        {
+                            "inspect": {
+                                "status": "absent",
+                                "provider": "vast",
+                                "instance_id": "42",
+                                "api_confirmed": True,
+                                "provider_absence_confirmed": True,
+                                "raw_provider_response_recorded": False,
+                            },
+                            "inventory": {
+                                "status": "observed",
+                                "provider": "vast",
+                                "name_prefix": "",
+                                "api_confirmed": True,
+                                "live_resource_count": 0,
+                                "resources": [],
+                                "raw_provider_response_recorded": False,
+                            },
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    "stderr": "",
+                }
+            },
+        },
+    ]
+    session_excerpt = tmp_path / "termination-session.jsonl"
+    session_excerpt.write_text(
+        "".join(json.dumps(row) + "\n" for row in session_rows), encoding="utf-8"
+    )
+    absence_paths: list[Path] = []
+    for index, observed_at in enumerate(
+        ("2026-08-22T06:52:12+00:00", "2026-08-22T06:52:14+00:00"),
+        start=1,
+    ):
+        absence = {
+            "schema_version": "vast_exact_instance_absence_observation.v1",
+            "observed_at": observed_at,
+            "provider": "vast",
+            "instance_id": 42,
+            "inspect_result": {
+                "status": "absent",
+                "provider": "vast",
+                "instance_id": "42",
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+                "raw_provider_response_recorded": False,
+            },
+            "raw_secret_values_recorded": False,
+            "receipt_digest": "",
+        }
+        absence["receipt_digest"] = canonical_digest(
+            absence, digest_field="receipt_digest"
+        )
+        absence_paths.append(_write(tmp_path / f"absence-{index}.json", absence))
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "observed_at_utc": "2026-08-22T06:52:20+00:00",
+        "api_command": [
+            "blueprint_pipeline.gpu_render_providers.VastRenderProvider.billable_inventory",
+            "name_prefix=",
+        ],
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "stderr_present": False,
+        "raw_secret_values_recorded": False,
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    zero_path = _write(tmp_path / "provider-zero.json", zero)
+    billing_path = _write(
+        tmp_path / "billing.json",
+        {"results": [{"source": "instance-42", "amount": 0.344}]},
+    )
+    billing_source_path = _write(
+        tmp_path / "billing-source.json",
+        {
+            "status": "reconciled",
+            "sources": [
+                {
+                    "provider": "vast",
+                    "retained_path": str(billing_path),
+                    "response_digest": _file_sha256(billing_path),
+                    "response_size_bytes": billing_path.stat().st_size,
+                }
+            ],
+        },
+    )
+    return {
+        "authority": authority,
+        "retained": retained,
+        "session_excerpt": session_excerpt,
+        "absence_paths": absence_paths,
+        "zero": zero_path,
+        "billing": billing_path,
+        "billing_source": billing_source_path,
+    }
 
 
 def test_materializes_terminal_derivatives_without_provider_mutation(tmp_path: Path) -> None:
@@ -270,4 +446,80 @@ def test_refuses_supersession_bound_to_different_instance(tmp_path: Path) -> Non
             watchdog_supersession_path=supersession,
             successor_watchdog_path=successor,
             output_dir=tmp_path / "closeout",
+        )
+
+
+def test_materializes_failed_watchdog_recovery_without_rewriting_watchdog(
+    tmp_path: Path,
+) -> None:
+    fixture = _recovery_fixture(tmp_path)
+    retained = Path(fixture["retained"])
+    retained_value = json.loads(retained.read_text())
+    watchdog_path = Path(retained_value["watchdog_receipt_path"])
+    original_watchdog_bytes = watchdog_path.read_bytes()
+    output = tmp_path / "recovery-closeout"
+
+    receipt = materialize_failed_watchdog_recovery_closeout(
+        authority_path=fixture["authority"],
+        retained_result_path=retained,
+        termination_session_excerpt_path=fixture["session_excerpt"],
+        exact_absence_observation_paths=fixture["absence_paths"],
+        provider_zero_path=fixture["zero"],
+        official_billing_response_path=fixture["billing"],
+        provider_billing_source_receipt_path=fixture["billing_source"],
+        output_dir=output,
+    )
+
+    terminal = json.loads((output / "adp_arena_vast_result.json").read_text())
+    teardown = json.loads((output / "vast_teardown_manifest.json").read_text())
+    recovery = json.loads(
+        (output / "native_task_arena_failed_watchdog_recovery.v1.json").read_text()
+    )
+    arena_zero_path = output / "native_task_arena_provider_zero.v1.json"
+    arena_zero = json.loads(arena_zero_path.read_text())
+    assert receipt["status"] == "completed"
+    assert receipt["official_billing_amount_usd"] == 0.344
+    assert recovery["watchdog_performed_teardown"] is False
+    assert recovery["provider_mutation_performed_by_materializer"] is False
+    assert terminal["status"] == "blocked"
+    assert terminal["continuing_spend_from_this_run"] is False
+    assert teardown["status"] == "completed"
+    assert teardown["provider_instance_absent"] is True
+    assert arena_zero["status"] == "completed_recovered_provider_zero"
+    assert arena_zero["provider_zero_confirmed"] is True
+    assert arena_zero["continuing_spend_from_this_run"] is False
+    chain = validate_terminal_spend_chain(
+        authority_path=fixture["authority"],
+        result_path=output / "adp_arena_vast_result.json",
+        provider_zero_path=arena_zero_path,
+    )
+    assert chain["attempt_cost_usd"] == 0.2
+    assert watchdog_path.read_bytes() == original_watchdog_bytes
+
+
+def test_failed_watchdog_recovery_refuses_forged_termination_response(
+    tmp_path: Path,
+) -> None:
+    fixture = _recovery_fixture(tmp_path)
+    session_excerpt = Path(fixture["session_excerpt"])
+    rows = [json.loads(line) for line in session_excerpt.read_text().splitlines()]
+    rows[1]["payload"]["item"]["stdout"] = (
+        '{"http": 200, "status": "stopped", "instance_id": 99}\n'
+    )
+    session_excerpt.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        ValueError, match="failed_watchdog_recovery_session_excerpt_invalid"
+    ):
+        materialize_failed_watchdog_recovery_closeout(
+            authority_path=fixture["authority"],
+            retained_result_path=fixture["retained"],
+            termination_session_excerpt_path=session_excerpt,
+            exact_absence_observation_paths=fixture["absence_paths"],
+            provider_zero_path=fixture["zero"],
+            official_billing_response_path=fixture["billing"],
+            provider_billing_source_receipt_path=fixture["billing_source"],
+            output_dir=tmp_path / "recovery-closeout",
         )

@@ -540,12 +540,17 @@ def _close_warm_instance(
 ) -> dict[str, Any]:
     """Destroy the retained worker after controls passes and prove its absence."""
 
-    status_code, _response = _api_json(
-        method="DELETE",
-        path=f"/instances/{instance_id}/",
-        api_key=api_key,
-        timeout_seconds=30,
-    )
+    try:
+        status_code, _response = _api_json(
+            method="DELETE",
+            path=f"/instances/{instance_id}/",
+            api_key=api_key,
+            timeout_seconds=30,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in {404, 410}:
+            raise
+        status_code = exc.code
     observations: list[dict[str, Any]] = []
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
