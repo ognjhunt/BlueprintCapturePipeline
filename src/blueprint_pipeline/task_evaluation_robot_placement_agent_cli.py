@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import write_json
+from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_robot_placement_agent import (
     PlacementExecutor,
     robot_placement_agents_sdk_config,
@@ -121,18 +122,31 @@ def run_robot_placement_cli(
         target_position_world_m=target_position_world_m,
         robot_id=robot_id,
     )
+    trajectory_phases = list((task_trajectory or {}).get("phases", []))
+    trajectory_waypoints = [
+        list(row["position_world_m"])
+        for row in trajectory_phases
+    ]
+    trajectory_phase_ids = [str(row["phase_id"]) for row in trajectory_phases]
+    trajectory_orientations = [
+        list(row["orientation_world_xyzw"])
+        for row in trajectory_phases
+    ]
     candidates = enumerate_robot_placement_geometry_candidates(
         index=index,
         target_position_world_m=target_position_world_m,
         robot_id=robot_id,
         maximum_candidates=candidate_inventory_cap,
+        trajectory_waypoints_world_m=trajectory_waypoints,
+        trajectory_phase_ids=trajectory_phase_ids,
+        trajectory_orientations_world_xyzw=trajectory_orientations,
     )
     if not candidates:
         raise ValueError("robot_placement_geometry_candidate_inventory_empty")
-    trajectory_waypoints = [
-        list(row["position_world_m"])
-        for row in (task_trajectory or {}).get("phases", [])
-    ]
+    trajectory_digest = (task_trajectory or {}).get("trajectory_digest")
+    candidate_inventory_digest = canonical_digest(
+        {"trajectory_digest": trajectory_digest, "candidates": candidates}
+    )
     overview_images = [
         _image_record(path, label=f"site_overview_{index_value:02d}")
         for index_value, path in enumerate(overview_image_paths)
@@ -162,6 +176,9 @@ def run_robot_placement_cli(
             proposal=proposal,
             target_position_world_m=target_position_world_m,
             robot_id=robot_id,
+            trajectory_waypoints_world_m=trajectory_waypoints,
+            trajectory_phase_ids=trajectory_phase_ids,
+            trajectory_orientations_world_xyzw=trajectory_orientations,
         )
 
     def renderer(proposal: Mapping[str, Any], round_index: int):
@@ -201,7 +218,15 @@ def run_robot_placement_cli(
         scene_context={
             "geometry_summary": summary,
             "deterministic_geometry_passing_candidate_inventory": candidates,
-            "candidate_inventory_is_advisory": True,
+            "deterministic_geometry_passing_candidate_inventory_digest": (
+                candidate_inventory_digest
+            ),
+            "deterministic_geometry_passing_candidate_inventory_trajectory_digest": (
+                trajectory_digest
+            ),
+            "candidate_inventory_is_advisory": False,
+            "model_must_select_exact_inventory_member": True,
+            "candidate_pose_or_support_mutation_allowed": False,
         },
         task_context={
             "target_position_world_m": [float(value) for value in target_position_world_m],

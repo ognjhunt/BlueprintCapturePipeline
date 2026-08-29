@@ -320,6 +320,57 @@ def _visual_passed(review: RobotPlacementVisualReviewOutput) -> bool:
     )
 
 
+def _exact_inventory_member(
+    proposal: Mapping[str, Any], *, scene_context: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    """Require a model selection to reproduce one immutable CPU-feasible member."""
+
+    raw_inventory = scene_context.get(
+        "deterministic_geometry_passing_candidate_inventory"
+    )
+    if raw_inventory is None:
+        return None
+    if not isinstance(raw_inventory, list) or not raw_inventory:
+        raise RobotPlacementAgentError("robot_placement_candidate_inventory_invalid")
+    expected_digest = scene_context.get(
+        "deterministic_geometry_passing_candidate_inventory_digest"
+    )
+    trajectory_digest = scene_context.get(
+        "deterministic_geometry_passing_candidate_inventory_trajectory_digest"
+    )
+    if expected_digest != canonical_digest(
+        {"trajectory_digest": trajectory_digest, "candidates": raw_inventory}
+    ):
+        raise RobotPlacementAgentError("robot_placement_candidate_inventory_digest_mismatch")
+    members: dict[str, Mapping[str, Any]] = {}
+    for raw in raw_inventory:
+        if not isinstance(raw, Mapping):
+            raise RobotPlacementAgentError("robot_placement_candidate_inventory_invalid")
+        candidate_id = str(raw.get("candidate_id") or "")
+        if not candidate_id or candidate_id in members:
+            raise RobotPlacementAgentError("robot_placement_candidate_inventory_invalid")
+        members[candidate_id] = raw
+    candidate_id = str(proposal.get("candidate_id") or "")
+    member = members.get(candidate_id)
+    if member is None:
+        raise RobotPlacementAgentError("robot_placement_candidate_not_in_inventory")
+    selected = {
+        "candidate_id": candidate_id,
+        "support_surface_id": proposal.get("support_surface_id"),
+        "pose": proposal.get("pose"),
+    }
+    expected = {
+        "candidate_id": candidate_id,
+        "support_surface_id": member.get("support_surface_id"),
+        "pose": member.get("pose"),
+    }
+    if canonical_digest(selected) != canonical_digest(expected):
+        raise RobotPlacementAgentError(
+            "robot_placement_candidate_inventory_member_mutated"
+        )
+    return member
+
+
 def _validated_native_attempt(value: Mapping[str, Any]) -> dict[str, Any]:
     attempt = json.loads(json.dumps(dict(value), allow_nan=False))
     feedback_images = attempt.pop("feedback_images", [])
@@ -467,7 +518,9 @@ def run_task_evaluation_robot_placement_agent(
         "prior native gate failures. Choose the base position and yaw so every authored "
         "precontact, contact, motion, release, retreat, and recovery tool pose is reachable at "
         "its authored orientation, not merely one task center point. "
-        "Propose one physically sensible mount pose. The robot base must sit on the declared "
+        "Select one exact candidate_id from the deterministic feasible inventory and copy its "
+        "position, orientation, and support surface byte-for-byte. Do not interpolate, invent, "
+        "or mutate a pose. The robot base must sit on the declared "
         "support surface, never inside a table/counter/floor; its body must not visibly clip site "
         "geometry; and the task workspace must be reachable. Do not claim success or modify any "
         "threshold. Return only the declared structured proposal."
@@ -496,7 +549,8 @@ def run_task_evaluation_robot_placement_agent(
                 "model_proposes_only": True,
                 "deterministic_geometry_gate_is_authoritative": True,
                 "native_construction_still_required": True,
-                "model_chooses_and_creates_each_next_pose": True,
+                "model_selects_exact_inventory_member": True,
+                "model_may_create_or_mutate_pose": False,
                 "native_failures_must_inform_the_next_pose": True,
                 "native_failure_metrics_and_images_are_authoritative_feedback": True,
                 "every_trajectory_phase_requires_native_ik_and_collision_readback": True,
@@ -525,6 +579,7 @@ def run_task_evaluation_robot_placement_agent(
         proposal = RobotPlacementProposalOutput.model_validate(
             proposal_result.output
         ).model_dump(mode="json")
+        _exact_inventory_member(proposal, scene_context=scene_advisory_context)
         geometry_gate = _validated_gate(validate_candidate(proposal))
         geometry_gate = _validated_gate(
             _reject_reused_native_pose(

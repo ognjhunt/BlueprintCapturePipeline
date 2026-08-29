@@ -10,6 +10,7 @@ from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
     render_robot_placement_geometry_previews,
     summarize_robot_placement_geometry,
     validate_robot_placement_geometry_candidate,
+    validate_robot_placement_trajectory_position_ik,
 )
 
 
@@ -187,3 +188,129 @@ def test_geometry_previews_show_full_tool_trajectory(tmp_path) -> None:
     assert [row["digest"] for row in trajectory] != [
         row["digest"] for row in point_only
     ]
+
+
+def test_empty_trajectory_preserves_target_only_geometry_compatibility(tmp_path) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
+    gate = validate_robot_placement_geometry_candidate(
+        index=index,
+        proposal=_proposal(floor.surface_id),
+        target_position_world_m=[0.8, 0.0, 0.5],
+    )
+    assert gate["status"] == "passed"
+    assert gate["trajectory_position_ik_gate"]["status"] == "not_requested"
+
+
+def test_enumeration_ranks_the_full_grid_before_applying_inventory_cap(
+    tmp_path, monkeypatch
+) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+
+    def gate(*, proposal, **_kwargs):
+        angle_index = int(str(proposal["candidate_id"]).rsplit("_", 1)[-1])
+        trajectory_gate = {
+            "minimum_manipulability": float(angle_index),
+            "trajectory_position_ik_gate_digest": f"sha256:{angle_index:064x}",
+        }
+        return {
+            "status": "passed",
+            "geometry_gate_digest": f"sha256:{(angle_index + 100):064x}",
+            "shoulder_to_target_distance_m": 0.5,
+            "trajectory_position_ik_gate": trajectory_gate,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_robot_placement_geometry.validate_robot_placement_geometry_candidate",
+        gate,
+    )
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index,
+        target_position_world_m=[0.8, 0.0, 0.5],
+        maximum_candidates=1,
+    )
+    assert candidates[0]["candidate_id"].endswith("_71")
+
+
+def test_full_trajectory_failure_rejects_target_reachable_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
+
+    def solve(**kwargs):
+        target = list(kwargs["target_position_world_m"])
+        return {
+            "solved": target[0] < 1.0,
+            "joint_positions": [0.1] * 7,
+            "position_error_m": 0.0 if target[0] < 1.0 else 0.2,
+            "manipulability": 0.12,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_robot_placement_geometry.solve_world_position_ik",
+        solve,
+    )
+    gate = validate_robot_placement_geometry_candidate(
+        index=index,
+        proposal=_proposal(floor.surface_id),
+        target_position_world_m=[0.8, 0.0, 0.5],
+        trajectory_waypoints_world_m=[[0.8, 0.0, 0.5], [1.2, 0.0, 0.5]],
+        trajectory_phase_ids=["target", "retreat"],
+    )
+    assert "task_target_outside_analytic_reach" not in gate["blockers"]
+    assert "robot_trajectory_position_ik_unreached" in gate["blockers"]
+    assert gate["status"] == "rejected"
+
+
+def test_trajectory_ik_carries_sequential_seed_and_records_per_phase(monkeypatch) -> None:
+    observed_seeds = []
+
+    def solve(**kwargs):
+        observed_seeds.append(kwargs["seed_joint_positions"])
+        joint_positions = [float(len(observed_seeds))] * 7
+        return {
+            "solved": True,
+            "joint_positions": joint_positions,
+            "position_error_m": 5.0e-5,
+            "manipulability": 0.14 - len(observed_seeds) * 0.01,
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_robot_placement_geometry.solve_world_position_ik",
+        solve,
+    )
+    gate = validate_robot_placement_trajectory_position_ik(
+        proposal=_proposal("support"),
+        trajectory_waypoints_world_m=[[0.4, 0.0, 0.5], [0.5, 0.0, 0.5]],
+        trajectory_phase_ids=["precontact", "contact"],
+        trajectory_orientations_world_xyzw=[
+            [0.0, 0.70710678, 0.0, 0.70710678],
+            [0.0, 0.70710678, 0.0, 0.70710678],
+        ],
+    )
+    assert observed_seeds == [None, [1.0] * 7]
+    assert [row["phase_id"] for row in gate["waypoints"]] == [
+        "precontact",
+        "contact",
+    ]
+    assert gate["waypoints"][1]["seed_joint_positions"] == [1.0] * 7
+    assert gate["waypoints"][0]["orientation_world_xyzw"] == [
+        0.0,
+        0.70710678,
+        0.0,
+        0.70710678,
+    ]
+    assert gate["trajectory_position_ik_gate_digest"].startswith("sha256:")

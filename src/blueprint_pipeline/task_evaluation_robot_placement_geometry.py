@@ -15,11 +15,15 @@ from PIL import Image, ImageDraw
 from pxr import Usd, UsdGeom
 
 from .decision_evidence_contracts import canonical_digest
+from .franka_kinematics import solve_world_position_ik
 from .scene_placement.robot_profile import get_robot_profile
 
 
 GEOMETRY_GATE_SCHEMA_VERSION = "task_evaluation_robot_placement_geometry_gate.v1"
 GEOMETRY_SUMMARY_SCHEMA_VERSION = "task_evaluation_robot_placement_geometry_summary.v1"
+TRAJECTORY_IK_GATE_SCHEMA_VERSION = (
+    "task_evaluation_robot_placement_trajectory_position_ik_gate.v1"
+)
 
 
 class RobotPlacementGeometryError(ValueError):
@@ -358,6 +362,9 @@ def validate_robot_placement_geometry_candidate(
     target_position_world_m: Sequence[float],
     robot_id: str = "franka_panda",
     support_height_tolerance_m: float = 0.02,
+    trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
+    trajectory_phase_ids: Sequence[str] = (),
+    trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
 ) -> dict[str, Any]:
     candidate_id = str(proposal.get("candidate_id") or "")
     pose = proposal.get("pose") if isinstance(proposal.get("pose"), Mapping) else {}
@@ -452,6 +459,14 @@ def validate_robot_placement_geometry_candidate(
     if facing_error_degrees > profile.max_facing_error_deg:
         blockers.append("robot_not_facing_task_workspace")
 
+    trajectory_gate = validate_robot_placement_trajectory_position_ik(
+        proposal=proposal,
+        trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+        trajectory_phase_ids=trajectory_phase_ids,
+        trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
+    )
+    blockers.extend(trajectory_gate["blockers"])
+
     result: dict[str, Any] = {
         "schema_version": GEOMETRY_GATE_SCHEMA_VERSION,
         "candidate_id": candidate_id,
@@ -464,7 +479,10 @@ def validate_robot_placement_geometry_candidate(
             and supported_count == len(samples)
         ),
         "collision_passed": len(collision_indices) == 0 and not containing_prim_paths,
-        "reachability_passed": shoulder_distance <= reach_limit,
+        "reachability_passed": bool(
+            shoulder_distance <= reach_limit
+            and trajectory_gate["all_waypoints_position_ik_solved"]
+        ),
         "facing_passed": facing_error_degrees <= profile.max_facing_error_deg,
         "declared_support_surface_id": surface_id,
         "support_sample_count": len(samples),
@@ -485,11 +503,126 @@ def validate_robot_placement_geometry_candidate(
         "shoulder_to_target_distance_m": shoulder_distance,
         "shoulder_to_target_limit_m": reach_limit,
         "facing_error_degrees": facing_error_degrees,
+        "trajectory_position_ik_gate": trajectory_gate,
         "native_reset_contact_and_ik_still_required": True,
         "geometry_gate_digest": "",
     }
     result["geometry_gate_digest"] = canonical_digest(
         result, digest_field="geometry_gate_digest"
+    )
+    return result
+
+
+def validate_robot_placement_trajectory_position_ik(
+    *,
+    proposal: Mapping[str, Any],
+    trajectory_waypoints_world_m: Sequence[Sequence[float]],
+    trajectory_phase_ids: Sequence[str] = (),
+    trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
+) -> dict[str, Any]:
+    """Filter every trajectory point without claiming native pose qualification."""
+
+    pose = proposal.get("pose") if isinstance(proposal.get("pose"), Mapping) else {}
+    try:
+        position = [float(value) for value in pose.get("position_world_m")]
+        orientation = [float(value) for value in pose.get("orientation_xyzw")]
+        waypoints = [
+            [float(value) for value in waypoint]
+            for waypoint in trajectory_waypoints_world_m
+        ]
+        phase_ids = [str(value) for value in trajectory_phase_ids]
+        phase_orientations = [
+            [float(value) for value in orientation]
+            for orientation in trajectory_orientations_world_xyzw
+        ]
+    except (TypeError, ValueError) as exc:
+        raise RobotPlacementGeometryError(
+            "robot_placement_trajectory_waypoints_invalid"
+        ) from exc
+    rows_to_check = [position, orientation, *waypoints]
+    if (
+        len(position) != 3
+        or len(orientation) != 4
+        or any(len(waypoint) != 3 for waypoint in waypoints)
+        or (phase_ids and len(phase_ids) != len(waypoints))
+        or any(not value for value in phase_ids)
+        or len(set(phase_ids)) != len(phase_ids)
+        or (phase_orientations and len(phase_orientations) != len(waypoints))
+        or any(len(orientation) != 4 for orientation in phase_orientations)
+        or not all(
+            math.isfinite(value)
+            for row in [*rows_to_check, *phase_orientations]
+            for value in row
+        )
+    ):
+        raise RobotPlacementGeometryError(
+            "robot_placement_trajectory_waypoints_invalid"
+        )
+
+    seed: list[float] | None = None
+    rows: list[dict[str, Any]] = []
+    for waypoint_index, waypoint in enumerate(waypoints):
+        seed_used = list(seed) if seed is not None else None
+        solved = solve_world_position_ik(
+            target_position_world_m=waypoint,
+            robot_base_position_world_m=position,
+            robot_base_quaternion_world_xyzw=orientation,
+            seed_joint_positions=seed,
+            quaternion_world_xyzw=(
+                phase_orientations[waypoint_index]
+                if phase_orientations
+                else None
+            ),
+        )
+        if solved["solved"] is True:
+            seed = list(solved["joint_positions"])
+        rows.append(
+            {
+                "waypoint_index": waypoint_index,
+                "phase_id": (
+                    phase_ids[waypoint_index]
+                    if phase_ids
+                    else f"waypoint_{waypoint_index:02d}"
+                ),
+                "position_world_m": waypoint,
+                "orientation_world_xyzw": (
+                    phase_orientations[waypoint_index]
+                    if phase_orientations
+                    else None
+                ),
+                "seed_joint_positions": seed_used,
+                "position_ik_solved": solved["solved"] is True,
+                "position_error_m": float(solved["position_error_m"]),
+                "manipulability": float(solved["manipulability"]),
+                "solved_joint_positions": [
+                    float(value) for value in solved["joint_positions"]
+                ],
+            }
+        )
+    all_solved = all(row["position_ik_solved"] for row in rows)
+    blockers = [] if all_solved else ["robot_trajectory_position_ik_unreached"]
+    result: dict[str, Any] = {
+        "schema_version": TRAJECTORY_IK_GATE_SCHEMA_VERSION,
+        "status": (
+            "passed" if rows and all_solved else "not_requested" if not rows else "rejected"
+        ),
+        "blockers": blockers,
+        "waypoint_count": len(rows),
+        "all_waypoints_position_ik_solved": all_solved,
+        "minimum_manipulability": (
+            min(row["manipulability"] for row in rows) if rows else None
+        ),
+        "maximum_position_error_m": (
+            max(row["position_error_m"] for row in rows) if rows else None
+        ),
+        "waypoints": rows,
+        "orientation_ik_solved": False,
+        "native_orientation_ik_required": True,
+        "native_collision_contact_required": True,
+        "trajectory_position_ik_gate_digest": "",
+    }
+    result["trajectory_position_ik_gate_digest"] = canonical_digest(
+        result, digest_field="trajectory_position_ik_gate_digest"
     )
     return result
 
@@ -500,6 +633,9 @@ def enumerate_robot_placement_geometry_candidates(
     target_position_world_m: Sequence[float],
     robot_id: str = "franka_panda",
     maximum_candidates: int = 48,
+    trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
+    trajectory_phase_ids: Sequence[str] = (),
+    trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
 ) -> list[dict[str, Any]]:
     """Return ranked, deterministic, geometry-passing candidates for agent context."""
 
@@ -532,8 +668,8 @@ def enumerate_robot_placement_geometry_candidates(
         key=lambda value: (abs(float(value) - 0.45), float(value)),
     )
     candidates: list[tuple[tuple[float, ...], dict[str, Any], dict[str, Any]]] = []
-    for surface in surfaces[:12]:
-        for radius in radii:
+    for surface_index, surface in enumerate(surfaces[:12]):
+        for radius_index, radius in enumerate(radii):
             for angle_index in range(72):
                 angle = 2.0 * math.pi * angle_index / 72.0
                 position = [
@@ -543,7 +679,8 @@ def enumerate_robot_placement_geometry_candidates(
                 ]
                 proposal = {
                     "candidate_id": (
-                        f"geometry_{len(candidates):04d}_{surface.height_m:.3f}_"
+                        f"geometry_{surface_index:02d}_{radius_index:02d}_"
+                        f"{surface.height_m:.3f}_"
                         f"{float(radius):.3f}_{angle_index:02d}"
                     ),
                     "support_surface_id": surface.surface_id,
@@ -562,28 +699,40 @@ def enumerate_robot_placement_geometry_candidates(
                     proposal=proposal,
                     target_position_world_m=target,
                     robot_id=robot_id,
+                    trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+                    trajectory_phase_ids=trajectory_phase_ids,
+                    trajectory_orientations_world_xyzw=(
+                        trajectory_orientations_world_xyzw
+                    ),
                 )
                 if gate["status"] != "passed":
                     continue
                 score = (
+                    -float(
+                        gate["trajectory_position_ik_gate"][
+                            "minimum_manipulability"
+                        ]
+                        or 0.0
+                    ),
                     abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
                     abs(float(radius) - 0.45),
                     gate["shoulder_to_target_distance_m"],
                     float(angle_index),
                 )
                 candidates.append((score, proposal, gate))
-                if len(candidates) >= int(maximum_candidates):
-                    break
-            if len(candidates) >= int(maximum_candidates):
-                break
-        if len(candidates) >= int(maximum_candidates):
-            break
     candidates.sort(key=lambda item: item[0])
     return [
         {
             **proposal,
             "geometry_gate_digest": gate["geometry_gate_digest"],
             "shoulder_to_target_distance_m": gate["shoulder_to_target_distance_m"],
+            "trajectory_position_ik_gate_digest": gate[
+                "trajectory_position_ik_gate"
+            ]["trajectory_position_ik_gate_digest"],
+            "trajectory_minimum_manipulability": gate[
+                "trajectory_position_ik_gate"
+            ]["minimum_manipulability"],
+            "trajectory_position_ik_gate": gate["trajectory_position_ik_gate"],
         }
         for _score, proposal, gate in candidates[: int(maximum_candidates)]
     ]
