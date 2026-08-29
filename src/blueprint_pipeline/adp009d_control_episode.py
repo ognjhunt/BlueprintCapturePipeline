@@ -1725,8 +1725,34 @@ def validate_task_control_plan(
         errors.append("task_control_plan_digest_mismatch")
     if checked.get("task_spec_digest") != canonical_digest(task):
         errors.append("task_control_plan_task_spec_mismatch")
-    if checked.get("trajectory_source") != "native_ik_preflight":
+    trajectory_source = checked.get("trajectory_source")
+    diagnostic_plan = trajectory_source == "native_ik_diagnostic_unqualified"
+    if trajectory_source not in {
+        "native_ik_preflight",
+        "native_ik_diagnostic_unqualified",
+    }:
         errors.append("task_control_trajectory_source_invalid")
+    if diagnostic_plan:
+        upstream = checked.get("upstream_construction_blockers")
+        if (
+            checked.get("diagnostic_only") is not True
+            or checked.get("qualification_allowed") is not False
+            or checked.get("qualification_effect") != "none"
+            or not isinstance(upstream, list)
+            or not upstream
+            or any(not isinstance(value, str) or not value for value in upstream)
+            or checked.get("claim_boundary")
+            != (
+                "blocked_construction_downstream_execution_only;cannot_qualify_"
+                "construction_controls_policy_admission_or_task_success"
+            )
+        ):
+            errors.append("task_control_diagnostic_boundary_invalid")
+    elif (
+        "qualification_allowed" in checked
+        and checked.get("qualification_allowed") is not True
+    ):
+        errors.append("task_control_qualification_boundary_invalid")
     planner_receipt_digest = str(checked.get("planner_receipt_digest") or "")
     if not planner_receipt_digest.startswith("sha256:") or len(
         planner_receipt_digest
@@ -2894,9 +2920,8 @@ def _run_task_control_episode(
                 "development_only": True,
                 "diagnostic_only": True,
                 "claim_boundary": (
-                    "synthetic_checkpoint_execution_only;cannot_qualify_"
-                    "phase5_any_downstream_phase_policy_admission_or_task_"
-                    "success"
+                    "diagnostic_execution_only;cannot_qualify_controls_"
+                    "policy_admission_or_task_success"
                 ),
             }
         )
@@ -2918,6 +2943,7 @@ def run_task_neutral_controls(
     gripper_open_command: float,
     gripper_closed_command: float | None = None,
     output_dir: str | Path,
+    qualification_allowed: bool = True,
 ) -> dict[str, Any]:
     """Run zero then scripted controls for rigid or articulated task state."""
     task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
@@ -2939,6 +2965,17 @@ def run_task_neutral_controls(
             ),
             output=output,
             episode_id=f"{plan['cell_id']}-{control_id}",
+            qualification_allowed=bool(qualification_allowed),
+            receipt_annotations=(
+                {
+                    "upstream_construction_blockers": list(
+                        plan.get("upstream_construction_blockers") or []
+                    ),
+                    "control_plan_digest": plan["plan_digest"],
+                }
+                if not qualification_allowed
+                else None
+            ),
         )
         receipts.append(receipt)
         _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
@@ -2962,11 +2999,30 @@ def run_task_neutral_controls(
             }
             for receipt in receipts
         ],
-        "cell_admitted_for_policy_execution": not blockers,
-        "policy_execution_blockers": sorted(set(blockers)),
+        "cell_admitted_for_policy_execution": bool(qualification_allowed)
+        and not blockers,
+        "policy_execution_blockers": sorted(
+            set(
+                [
+                    *blockers,
+                    *(
+                        ["diagnostic_controls_cannot_admit_policy_execution"]
+                        if not qualification_allowed
+                        else []
+                    ),
+                ]
+            )
+        ),
         "candidate_policy_queried": False,
         "pair_digest": "",
     }
+    if not qualification_allowed:
+        pair.update(
+            {
+                "qualification_allowed": False,
+                "diagnostic_only": True,
+            }
+        )
     pair["pair_digest"] = canonical_digest(pair, digest_field="pair_digest")
     _write_json(output / "adp_task_control_pair.v1.json", pair)
     return pair
@@ -2981,6 +3037,7 @@ def run_task_neutral_control(
     gripper_open_command: float,
     gripper_closed_command: float | None = None,
     output_dir: str | Path,
+    qualification_allowed: bool = True,
 ) -> dict[str, Any]:
     """Run exactly one preregistered task-neutral control episode.
 
@@ -3011,6 +3068,17 @@ def run_task_neutral_control(
         ),
         output=output,
         episode_id=f"{plan['cell_id']}-{control_id}",
+        qualification_allowed=bool(qualification_allowed),
+        receipt_annotations=(
+            {
+                "upstream_construction_blockers": list(
+                    plan.get("upstream_construction_blockers") or []
+                ),
+                "control_plan_digest": plan["plan_digest"],
+            }
+            if not qualification_allowed
+            else None
+        ),
     )
     _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
     return receipt

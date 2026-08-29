@@ -237,6 +237,40 @@ def _rigid_construction(scene: dict) -> dict:
     return construction
 
 
+def _blocked_rigid_construction(scene: dict) -> dict:
+    """Turn the qualified fixture into the exact shape of a sealed refusal."""
+
+    construction = _rigid_construction(scene)
+    construction.update(
+        {
+            "status": "blocked",
+            "construction_gate_qualified": False,
+            "blockers": [
+                "native_rigid_construction_gate_failed:support_stability",
+                "native_task_phase_ik_unreached:precontact",
+            ],
+        }
+    )
+    for row in construction["phase_results"]:
+        row["target_reached"] = False
+        row["steps"] = 0
+    gates = construction["rigid_construction_gates"]
+    gates["passed"] = False
+    gates["all_phase_targets_reached"] = False
+    gates["blockers"] = [
+        "native_rigid_construction_gate_failed:support_stability"
+    ]
+    gates["gates"][0]["passed"] = False
+    gates["evaluation_digest"] = canonical_digest(
+        gates, digest_field="evaluation_digest"
+    )
+    construction["camera_gates"]["overview"]["passed"] = False
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+    return construction
+
+
 def test_articulated_compatibility_adapter_is_byte_semantically_unchanged() -> None:
     scene = _articulated_scene()
     construction = _articulated_construction(scene)
@@ -301,6 +335,54 @@ def test_generic_rigid_fixture_preserves_nonidentity_scoring_frame_affordance() 
     assert plan["construction_gate_evaluation_digest"] == construction[
         "rigid_construction_gates"
     ]["evaluation_digest"]
+
+
+def test_blocked_rigid_construction_can_only_materialize_nonqualifying_diagnostic() -> None:
+    scene = _rigid_scene(scene_id="diagnostic", asset_id="unstable_subject")
+    construction = _blocked_rigid_construction(scene)
+
+    with pytest.raises(
+        NativeTaskControlPlanError,
+        match="native_rigid_control_construction_not_qualified",
+    ):
+        materialize_native_task_control_plan(
+            scene_plan=scene,
+            construction_result=construction,
+        )
+
+    plan = materialize_native_task_control_plan(
+        scene_plan=scene,
+        construction_result=construction,
+        allow_unqualified_construction_diagnostic=True,
+    )
+
+    assert plan["trajectory_source"] == "native_ik_diagnostic_unqualified"
+    assert plan["diagnostic_only"] is True
+    assert plan["qualification_allowed"] is False
+    assert plan["qualification_effect"] == "none"
+    assert plan["upstream_construction_blockers"] == sorted(
+        construction["blockers"]
+    )
+    assert (
+        plan[
+            "positive_trajectory_reexecutes_exact_qualified_phase_targets_and_budgets"
+        ]
+        is False
+    )
+    assert [row["phase_id"] for row in plan["scripted_positive_actions"]] == [
+        row["phase_id"]
+        for row in construction["construction_phase_plan"]["phases"]
+    ]
+    assert all(
+        row["minimum_steps"] == row["maximum_steps"] > 0
+        for row in plan["scripted_positive_actions"]
+    )
+    assert plan["maximum_scripted_and_settle_steps"] <= scene["task_spec"][
+        "maximum_action_steps"
+    ]
+    assert plan["plan_digest"] == canonical_digest(
+        plan, digest_field="plan_digest"
+    )
 
 
 @pytest.mark.parametrize(
@@ -542,6 +624,64 @@ def test_generic_rigid_plan_runs_zero_then_positive_through_shared_scorer(
     ]
     assert [row["control_passed"] for row in pair["controls"]] == [True, True]
     assert pair["cell_admitted_for_policy_execution"] is True
+
+
+def test_diagnostic_controls_execute_both_controls_but_never_admit_policy(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as controls_module
+
+    scene = _rigid_scene(scene_id="diagnostic", asset_id="unstable_subject")
+    construction = _blocked_rigid_construction(scene)
+    plan = materialize_native_task_control_plan(
+        scene_plan=scene,
+        construction_result=construction,
+        allow_unqualified_construction_diagnostic=True,
+    )
+    observation_index = {"value": 0}
+
+    def fake_observation(*_args, **kwargs):
+        row = {
+            "observation_index": observation_index["value"],
+            "kind": kwargs["kind"],
+            "views": {},
+        }
+        observation_index["value"] += 1
+        return row
+
+    monkeypatch.setattr(controls_module, "_persist_observation", fake_observation)
+    monkeypatch.setattr(
+        controls_module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: (
+            {
+                "status": "complete",
+                "required_camera_ids": ["external", "wrist", "overview"],
+                "review_only_camera_ids": ["overview"],
+            },
+            [],
+        ),
+    )
+
+    pair = run_task_neutral_controls(
+        environment=_RigidControlEnvironment(
+            scene=scene, construction=construction
+        ),
+        task_spec=scene["task_spec"],
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+        qualification_allowed=False,
+    )
+
+    assert pair["diagnostic_only"] is True
+    assert pair["qualification_allowed"] is False
+    assert pair["cell_admitted_for_policy_execution"] is False
+    assert "diagnostic_controls_cannot_admit_policy_execution" in pair[
+        "policy_execution_blockers"
+    ]
+    assert all(row["control_passed"] is False for row in pair["controls"])
 
 
 def test_generic_rigid_control_rejects_correct_position_with_wrong_orientation(

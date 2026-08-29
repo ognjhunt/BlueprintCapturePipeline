@@ -428,6 +428,15 @@ def _control_execution_spec(
         != construction.get("result_digest")
         or value.get("control_plan_digest") != control_plan.get("plan_digest")
         or value.get("candidate_policy_queried") is not False
+        or (
+            control_plan.get("diagnostic_only") is True
+            and (
+                value.get("diagnostic_only") is not True
+                or value.get("qualification_effect") != "none"
+                or value.get("upstream_construction_blockers")
+                != list(control_plan["upstream_construction_blockers"])
+            )
+        )
         or value.get("execution_spec_digest")
         != _canonical_digest(value, field="execution_spec_digest")
         or (
@@ -3686,6 +3695,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if graph_rigid:
             _announce("required_controls")
             selection = str(execution_spec["control_selection"])
+            diagnostic_only = control_plan.get("diagnostic_only") is True
             if selection == CONTROL_PAIR:
                 pair = run_task_neutral_controls(
                     environment=episode_environment,
@@ -3694,11 +3704,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     gripper_open_command=float(gripper["open_command"]),
                     gripper_closed_command=float(gripper["closed_command"]),
                     output_dir=output_root / "controls",
+                    qualification_allowed=not diagnostic_only,
                 )
                 result["control_pair"] = pair
-                result["controls_qualified"] = pair[
-                    "cell_admitted_for_policy_execution"
-                ]
+                result["controls_qualified"] = (
+                    False
+                    if diagnostic_only
+                    else pair["cell_admitted_for_policy_execution"]
+                )
                 result["blockers"].extend(
                     pair["policy_execution_blockers"]
                 )
@@ -3711,6 +3724,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     gripper_open_command=float(gripper["open_command"]),
                     gripper_closed_command=float(gripper["closed_command"]),
                     output_dir=output_root / "controls",
+                    qualification_allowed=not diagnostic_only,
                 )
                 result["control_episode"] = episode
                 result["selected_control_id"] = selection
@@ -3726,14 +3740,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["blockers"].append(
                         f"selected_control_failed:{selection}"
                     )
+            if diagnostic_only:
+                result.update(
+                    {
+                        "controls_qualified": False,
+                        "diagnostic_only": True,
+                        "development_only": True,
+                        "qualification_effect": "none",
+                        "upstream_construction_blockers": list(
+                            control_plan["upstream_construction_blockers"]
+                        ),
+                        "claim_boundary": control_plan["claim_boundary"],
+                    }
+                )
+                result["blockers"].extend(
+                    control_plan["upstream_construction_blockers"]
+                )
             result["blockers"] = sorted(set(result["blockers"]))
-            result["status"] = "completed" if not result["blockers"] else "blocked"
+            result["status"] = (
+                "diagnostic_completed"
+                if diagnostic_only
+                else ("completed" if not result["blockers"] else "blocked")
+            )
             result["phase_reached"] = "selected_control_complete"
             _announce(
                 "required_controls",
-                "completed" if not result["blockers"] else "blocked",
+                (
+                    "completed"
+                    if diagnostic_only or not result["blockers"]
+                    else "blocked"
+                ),
             )
-            return 0 if result["status"] == "completed" else 1
+            return 0 if result["status"] in {"completed", "diagnostic_completed"} else 1
 
         # This immutable opt-in is a separate, development-only probe.  C74
         # already sealed the reset-isolated 134-cell matrix, so repeating that
