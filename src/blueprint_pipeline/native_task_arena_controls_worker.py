@@ -27,6 +27,7 @@ from blueprint_pipeline.native_task_arena_branch_continuity import (
 from blueprint_pipeline.native_franka_action_math import (
     controlled_body_pose_for_rigid_grasp_frame_target,
 )
+from blueprint_pipeline.native_task_rigid_controls import finalize_rigid_task_controls
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
@@ -3696,82 +3697,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             _announce("required_controls")
             selection = str(execution_spec["control_selection"])
             diagnostic_only = control_plan.get("diagnostic_only") is True
-            if selection == CONTROL_PAIR:
-                pair = run_task_neutral_controls(
-                    environment=episode_environment,
-                    task_spec=scene_plan["task_spec"],
-                    control_plan=effective_control_plan,
-                    gripper_open_command=float(gripper["open_command"]),
-                    gripper_closed_command=float(gripper["closed_command"]),
-                    output_dir=output_root / "controls",
-                    qualification_allowed=not diagnostic_only,
-                )
-                result["control_pair"] = pair
-                result["controls_qualified"] = (
-                    False
-                    if diagnostic_only
-                    else pair["cell_admitted_for_policy_execution"]
-                )
-                result["blockers"].extend(
-                    pair["policy_execution_blockers"]
-                )
-            else:
-                episode = run_task_neutral_control(
-                    environment=episode_environment,
-                    task_spec=scene_plan["task_spec"],
-                    control_plan=effective_control_plan,
-                    control_id=selection,
-                    gripper_open_command=float(gripper["open_command"]),
-                    gripper_closed_command=float(gripper["closed_command"]),
-                    output_dir=output_root / "controls",
-                    qualification_allowed=not diagnostic_only,
-                )
-                result["control_episode"] = episode
-                result["selected_control_id"] = selection
-                result["selected_control_passed"] = episode.get(
-                    "control_passed"
-                )
-                result["deterministic_task_succeeded"] = (
-                    episode.get("score") or {}
-                ).get("task_succeeded")
-                result["controls_qualified"] = False
-                result["blockers"].extend(episode["blockers"])
-                if episode.get("control_passed") is not True:
-                    result["blockers"].append(
-                        f"selected_control_failed:{selection}"
-                    )
-            if diagnostic_only:
-                result.update(
-                    {
-                        "controls_qualified": False,
-                        "diagnostic_only": True,
-                        "development_only": True,
-                        "qualification_effect": "none",
-                        "upstream_construction_blockers": list(
-                            control_plan["upstream_construction_blockers"]
-                        ),
-                        "claim_boundary": control_plan["claim_boundary"],
-                    }
-                )
-                result["blockers"].extend(
-                    control_plan["upstream_construction_blockers"]
-                )
-            result["blockers"] = sorted(set(result["blockers"]))
-            result["status"] = (
-                "diagnostic_completed"
-                if diagnostic_only
-                else ("completed" if not result["blockers"] else "blocked")
+            common = {
+                "environment": episode_environment,
+                "task_spec": scene_plan["task_spec"],
+                "control_plan": effective_control_plan,
+                "gripper_open_command": float(gripper["open_command"]),
+                "gripper_closed_command": float(gripper["closed_command"]),
+                "output_dir": output_root / "controls",
+                "qualification_allowed": not diagnostic_only,
+            }
+            pair = (
+                run_task_neutral_controls(**common)
+                if selection == CONTROL_PAIR
+                else None
             )
-            result["phase_reached"] = "selected_control_complete"
-            _announce(
-                "required_controls",
-                (
-                    "completed"
-                    if diagnostic_only or not result["blockers"]
-                    else "blocked"
-                ),
+            episode = (
+                None
+                if pair is not None
+                else run_task_neutral_control(control_id=selection, **common)
             )
-            return 0 if result["status"] in {"completed", "diagnostic_completed"} else 1
+            return finalize_rigid_task_controls(
+                result=result,
+                selection=selection,
+                diagnostic_only=diagnostic_only,
+                control_plan=effective_control_plan,
+                announce=_announce,
+                pair=pair,
+                episode=episode,
+            )
 
         # This immutable opt-in is a separate, development-only probe.  C74
         # already sealed the reset-isolated 134-cell matrix, so repeating that

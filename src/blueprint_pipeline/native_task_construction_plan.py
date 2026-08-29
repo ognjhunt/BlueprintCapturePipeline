@@ -30,12 +30,8 @@ RIGID_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
 RIGID_AFFORDANCE_SCHEMA_VERSION = "native_rigid_interaction_affordance.v1"
 RIGID_MANIPULATION_STRATEGIES = frozenset({"pick_and_place", "planar_push"})
-GRAPH_ARTICULATED_SCHEMA_VERSION = (
-    "native_articulated_graph_construction_phase_plan.v1"
-)
-GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION = (
-    "native_articulated_graph_interaction_affordance.v1"
-)
+GRAPH_ARTICULATED_SCHEMA_VERSION = "native_articulated_graph_construction_phase_plan.v1"
+GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION = "native_articulated_graph_interaction_affordance.v1"
 # Single source of truth for the two bounds that actually reach the native
 # joint-position command.  ``max_joint_delta_rad`` limits how far the commanded
 # setpoint may move in one control step; ``max_joint_setpoint_lead_rad``
@@ -296,13 +292,11 @@ def _affordance(task_spec: Mapping[str, Any], *, subject_asset_id: str) -> dict[
         value.get("lift_unit_world"),
         error="native_rigid_construction_lift_direction_invalid",
     )
-    value["gripper_orientation_scoring_frame_xyzw"] = _quaternion(
+    orientation = value["gripper_orientation_scoring_frame_xyzw"] = _quaternion(
         value.get("gripper_orientation_scoring_frame_xyzw"),
         error="native_rigid_construction_gripper_orientation_invalid",
     )
-    if is_unauthored_identity_quaternion_xyzw(
-        value["gripper_orientation_scoring_frame_xyzw"]
-    ):
+    if is_unauthored_identity_quaternion_xyzw(orientation):
         raise NativeTaskConstructionPlanError(
             ["native_rigid_construction_gripper_orientation_unauthored"]
         )

@@ -1104,6 +1104,7 @@ def build_native_microcheck_bundle(
         "adp009d_policy_episode_evidence.py",
         "policy_episode_lifecycle.py",
         "adp009d_control_episode.py",
+        "task_control_diagnostic_boundary.py",
         # Wired into the runtime but never shipped, so a live run reached the
         # episode and died on ModuleNotFoundError after provisioning had
         # already succeeded.  An import the runtime makes must be a file the

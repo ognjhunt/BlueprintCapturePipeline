@@ -2,10 +2,48 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Any
 
 
 OFFICIAL_NUREC_WARMUP_STEPS = 800
+
+
+def prepare_site_appearance_renderer(
+    *,
+    simulation_app: Any,
+    plan: Mapping[str, Any],
+    stage: Any = None,
+    setup_for_rendering_factory: Any = None,
+    warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Run NVIDIA's accumulation path only for supported NuRec appearances."""
+
+    representation = str(
+        (plan.get("appearance_frame_alignment") or {}).get("representation") or ""
+    )
+    if representation not in {"nurec_volume", "particlefield_3d_gaussian_splat"}:
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "status": "not_required",
+            "representation": representation or None,
+            "passed": True,
+            "blockers": [],
+        }
+    if stage is None:
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+    result = setup_and_warm_native_nurec_renderer(
+        simulation_app,
+        stage,
+        warmup_steps=warmup_steps,
+        setup_for_rendering_factory=setup_for_rendering_factory,
+        progress_callback=progress_callback,
+    )
+    result["representation"] = representation
+    return result
 
 
 def setup_and_warm_native_nurec_renderer(
@@ -118,5 +156,6 @@ def setup_and_warm_native_nurec_renderer(
 
 __all__ = [
     "OFFICIAL_NUREC_WARMUP_STEPS",
+    "prepare_site_appearance_renderer",
     "setup_and_warm_native_nurec_renderer",
 ]

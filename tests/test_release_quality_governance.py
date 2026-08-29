@@ -48,6 +48,19 @@ def test_policy_episode_module_stays_under_default_source_governance_budget() ->
     assert line_count <= policy["default_max_python_module_lines"]
 
 
+def test_repository_source_governance_policy_is_satisfied() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
+    )
+    result = validate_source_governance(
+        root=root,
+        policy=policy,
+        today=date.fromisoformat(policy["baseline_date"]),
+    )
+    assert result["status"] == "passed", result["blockers"]
+
+
 def test_launch_dispatcher_stays_under_its_source_governance_budget() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = json.loads(

@@ -30,6 +30,7 @@ from .paid_attempt_authority import (
     validate_bound_lane_prior_spend,
 )
 from .project_spend_reconciliation import validate_project_spend_reconciliation
+from .native_task_arena_spend_ceiling import rolling_aggregate_spend_ceiling_usd
 from .spend_authority_consumption_root import prepare_consumption_root
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
@@ -99,29 +100,6 @@ def native_task_arena_attempt_budget_blockers(
         if not math.isfinite(projected_cost) or projected_cost > cap:
             blockers.append("native_task_arena_runtime_cost_exceeds_hard_cap")
     return tuple(blockers)
-
-
-def rolling_aggregate_spend_ceiling_usd(
-    *, prior_spend_usd: Any, authorized_increment_usd: Any
-) -> float:
-    """Return the exact cumulative ceiling for one newly authorized scope."""
-
-    values = (prior_spend_usd, authorized_increment_usd)
-    if any(
-        isinstance(value, bool) or not isinstance(value, (int, float))
-        for value in values
-    ):
-        raise ValueError("native_task_arena_rolling_spend_ceiling_invalid")
-    prior = float(prior_spend_usd)
-    increment = float(authorized_increment_usd)
-    if (
-        not math.isfinite(prior)
-        or not math.isfinite(increment)
-        or prior < 0
-        or increment <= 0
-    ):
-        raise ValueError("native_task_arena_rolling_spend_ceiling_invalid")
-    return round(prior + increment, 6)
 
 
 def _sha256(path: Path) -> str:
