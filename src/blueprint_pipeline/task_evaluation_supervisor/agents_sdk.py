@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, replace
 from importlib import metadata
@@ -31,6 +32,7 @@ from .tools import (
 DEFAULT_SUPERVISOR_AGENT_MODEL = "gpt-5.6-terra"
 DEFAULT_AGENT_MODEL = DEFAULT_SUPERVISOR_AGENT_MODEL
 AGENTS_SDK_HARNESS_ID = "blueprint_task_evaluation_supervisor"
+OPENAI_API_KEY_FILE_ENV = "OPENAI_API_KEY_FILE"
 
 
 class AgentsSDKHarnessError(RuntimeError):
@@ -39,6 +41,22 @@ class AgentsSDKHarnessError(RuntimeError):
 
 class AgentsSDKInvocationBlocked(AgentsSDKHarnessError):
     """Raised when a live SDK invocation is not explicitly authorized."""
+
+
+def _file_based_openai_api_key() -> str | None:
+    configured = str(os.environ.get(OPENAI_API_KEY_FILE_ENV) or "").strip()
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    if not path.is_absolute() or not path.is_file():
+        raise AgentsSDKInvocationBlocked("openai_api_key_file_missing")
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise AgentsSDKInvocationBlocked("openai_api_key_file_unreadable") from exc
+    if not value:
+        raise AgentsSDKInvocationBlocked("openai_api_key_file_empty")
+    return value
 
 
 class AgentEvidenceReference(BaseModel):
@@ -171,6 +189,7 @@ class OpenAIAgentsSDKInvoker:
             raise AgentsSDKInvocationBlocked("live_agents_sdk_invocation_not_authorized")
         if not env_truthy(LIVE_AGENTS_SDK_ENV):
             raise AgentsSDKInvocationBlocked(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
+        file_api_key = _file_based_openai_api_key()
         # One UTF-8 byte per token is deliberately conservative for text. Image
         # tokenization is provider/model dependent, so multimodal callers must
         # declare an explicit conservative ceiling rather than treating base64
@@ -236,9 +255,18 @@ class OpenAIAgentsSDKInvoker:
             self._record_reservation(reservation)
         self._reserved_cost_usd += projected_max_cost
         try:
-            from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner
+            from agents import (
+                Agent,
+                FunctionTool,
+                ModelSettings,
+                RunConfig,
+                Runner,
+                set_default_openai_key,
+            )
         except ImportError as exc:  # pragma: no cover - core dependency installation failure
             raise AgentsSDKInvocationBlocked("openai_agents_sdk_not_installed") from exc
+        if file_api_key is not None:
+            set_default_openai_key(file_api_key, use_for_tracing=False)
 
         tool_observations: list[Mapping[str, Any]] = []
         sdk_tools: list[Any] = []
