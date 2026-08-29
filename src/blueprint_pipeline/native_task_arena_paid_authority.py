@@ -49,12 +49,16 @@ PRE_SPEND_CLOSEOUT_KIND = "pre_spend_preflight_blocked_before_allocation"
 MAX_PREALLOCATION_API_ZERO_AGE_SECONDS = 300
 MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS = 900
 CONSUMPTION_SCHEMA_VERSION = "native_task_arena_authority_consumption.v1"
-# Explicitly expanded by the active Task Arena goal owner on 2026-08-24 so the
-# controls and two frozen policy candidates can keep using ordinary 24 GB GPU
-# offers.  The aggregate ceiling does not weaken the per-attempt contract:
-# every authority remains single-use, retry-0, provider-zero-gated, and bounded
-# by ``MAX_HARD_CAP_USD`` below.
-AGGREGATE_GOAL_SPEND_CAP_USD = 50.0
+# Explicitly expanded by the active Task Arena goal owner on 2026-08-29 so the
+# retained-warm controls diagnostic can continue after the reconciled goal
+# total reached $49.399914.  The aggregate ceiling does not weaken the
+# per-attempt contract: every authority remains single-use, retry-0,
+# provider-zero-gated, and bounded by ``MAX_HARD_CAP_USD`` below.
+AGGREGATE_GOAL_SPEND_CAP_USD = 52.0
+# Historical authorities remain immutable and therefore retain the ceiling
+# that was current when they were issued.  Accept only explicitly recorded
+# legacy ceilings; newly materialized authorities always use the current one.
+LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD = (50.0,)
 MAX_HARD_CAP_USD = 2.0
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
@@ -1391,7 +1395,10 @@ def validate_native_task_arena_paid_attempt_authority(
             raise ValueError("lineage_kind_invalid")
         if (
             value.get("aggregate_goal_spend_cap_usd")
-            != AGGREGATE_GOAL_SPEND_CAP_USD
+            not in (
+                *LEGACY_AGGREGATE_GOAL_SPEND_CAPS_USD,
+                AGGREGATE_GOAL_SPEND_CAP_USD,
+            )
             or value.get("aggregate_goal_spend_before_attempt_usd", 0) + hard_cap_usd
             > value.get("aggregate_goal_spend_cap_usd", 0)
         ):
