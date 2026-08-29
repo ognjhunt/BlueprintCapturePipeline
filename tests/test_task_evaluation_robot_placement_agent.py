@@ -27,13 +27,18 @@ from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
 _DIGEST = "sha256:" + "a" * 64
 
 
-def _proposal(candidate_id: str, x: float) -> RobotPlacementProposalOutput:
+def _proposal(
+    candidate_id: str,
+    x: float,
+    *,
+    orientation_xyzw: list[float] | None = None,
+) -> RobotPlacementProposalOutput:
     return RobotPlacementProposalOutput.model_validate(
         {
             "candidate_id": candidate_id,
             "pose": {
                 "position_world_m": [x, -6.1, 0.7545],
-                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "orientation_xyzw": orientation_xyzw or [0.0, 0.0, 0.0, 1.0],
             },
             "support_surface_id": "/Scene/CounterTop",
             "rationale": "Mount on the observed counter beside the task object.",
@@ -327,6 +332,44 @@ def test_agent_cannot_reuse_a_pose_rejected_by_native_execution() -> None:
         "prior_native_pose_reused"
     ]
     assert receipt["rounds"][1]["visual_review"] is None
+
+
+def test_agent_can_retry_same_position_with_materially_different_yaw() -> None:
+    invoker = _Invoker(
+        outputs=[
+            _proposal("native-yaw-zero", 3.4),
+            _visual("passed"),
+            _proposal(
+                "native-yaw-twenty-degrees",
+                3.4,
+                orientation_xyzw=[0.0, 0.0, 0.1736481777, 0.9848077530],
+            ),
+            _visual("passed"),
+        ]
+    )
+    native_results = [
+        _native_attempt("rejected", blocker="native_task_phase_ik_unreached:precontact"),
+        _native_attempt("passed"),
+    ]
+
+    receipt = run_task_evaluation_robot_placement_agent(
+        invoker=invoker,
+        run_id="placement-native-yaw-retry",
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "move mug"},
+        overview_images=_images(),
+        validate_candidate=lambda proposal: _gate(
+            proposal["candidate_id"], "passed"
+        ),
+        render_candidate=lambda _proposal, _round: _images(),
+        execute_candidate=lambda _proposal, _receipt, _round: native_results.pop(0),
+        task_trajectory=_trajectory(),
+        max_rounds=2,
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["accepted_candidate_id"] == "native-yaw-twenty-degrees"
+    assert receipt["native_attempt_count"] == 2
 
 
 def test_native_loop_refuses_point_only_context_without_exact_trajectory() -> None:
