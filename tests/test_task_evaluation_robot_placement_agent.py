@@ -13,6 +13,7 @@ from blueprint_pipeline.task_evaluation_robot_placement_agent import (
     RobotPlacementProposalOutput,
     RobotPlacementVisualReviewOutput,
     _exact_inventory_member,
+    _validated_gate,
     robot_placement_agents_sdk_config,
     run_task_evaluation_robot_placement_agent,
     validate_robot_placement_receipt,
@@ -104,6 +105,17 @@ def _gate(candidate_id: str, status: str) -> dict:
         value, digest_field="geometry_gate_digest"
     )
     return value
+
+
+def test_geometry_gate_validation_reports_exact_failed_contract() -> None:
+    gate = _gate("candidate-17", "passed")
+    gate["geometry_gate_digest"] = "sha256:" + "0" * 64
+
+    with pytest.raises(
+        RobotPlacementAgentError,
+        match="robot_placement_geometry_gate_digest_mismatch:candidate-17",
+    ):
+        _validated_gate(gate)
 
 
 def _images():
