@@ -11,6 +11,7 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _initial_contact_blocked,
     _load_and_verify_manifest,
     _pad_centers_from_finger_body_offsets,
+    _pad_offsets_from_relative_geometry,
     _pose_arrival_readback,
     _requested_arm_reset,
     _retain_task_path_samples,
@@ -48,6 +49,22 @@ def test_physical_pad_centers_follow_finger_bodies_not_their_origins() -> None:
 
     assert centers["left"] == pytest.approx([0.0, 0.05, 0.0])
     assert centers["right"] == pytest.approx([0.0, -0.05, 0.0])
+
+
+def test_pad_offsets_prefer_coherent_collider_to_finger_frame() -> None:
+    offsets = _pad_offsets_from_relative_geometry(
+        {
+            "selected_pad_colliders": {
+                "left": {"center_inner_finger_body_m": [0.13, 0.052, 0.0]},
+                "right": {"center_inner_finger_body_m": [0.13, -0.052, 0.0]},
+            }
+        }
+    )
+
+    assert offsets == {
+        "left": [0.13, 0.052, 0.0],
+        "right": [0.13, -0.052, 0.0],
+    }
 
 
 def test_worker_source_contains_no_scene_or_task_object_identity() -> None:

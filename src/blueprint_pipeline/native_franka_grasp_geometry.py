@@ -21,6 +21,66 @@ class NativeFrankaGraspGeometryError(ValueError):
     """The live gripper geometry could not define one physical TCP frame."""
 
 
+def _controlled_body_prim(
+    *,
+    stage: Any,
+    body_position_world_m: Sequence[float],
+    time_code: Any,
+    UsdGeom: Any,
+) -> Any | None:
+    """Resolve the spawned robot body whose live pose the caller supplied."""
+
+    xforms = UsdGeom.XformCache(time_code)
+    for body_name in ("panda_hand", "base_link"):
+        candidates = [
+            prim
+            for prim in stage.Traverse()
+            if prim.GetName() == body_name
+            and "/robot/" in str(prim.GetPath()).lower()
+            and prim.IsA(UsdGeom.Xformable)
+        ]
+        if candidates:
+            return min(
+                candidates,
+                key=lambda prim: math.dist(
+                    [
+                        float(value)
+                        for value in xforms.GetLocalToWorldTransform(
+                            prim
+                        ).ExtractTranslation()
+                    ],
+                    body_position_world_m,
+                ),
+            )
+    return None
+
+
+def _project_body_bounds_to_live_world(
+    *,
+    minimum_body_m: Sequence[float],
+    maximum_body_m: Sequence[float],
+    body_position_world_m: Sequence[float],
+    body_quaternion_world_xyzw: Sequence[float],
+) -> list[list[float]]:
+    corners_world = []
+    for x in (minimum_body_m[0], maximum_body_m[0]):
+        for y in (minimum_body_m[1], maximum_body_m[1]):
+            for z in (minimum_body_m[2], maximum_body_m[2]):
+                rotated = rotate_vector_xyzw(
+                    body_quaternion_world_xyzw, [x, y, z]
+                )
+                corners_world.append(
+                    [
+                        float(body_position_world_m[axis]) + rotated[axis]
+                        for axis in range(3)
+                    ]
+                )
+    return [
+        [min(point[axis] for point in corners_world) for axis in range(3)],
+        [max(point[axis] for point in corners_world) for axis in range(3)],
+    ]
+
+
 def measure_live_robotiq_grasp_geometry(
     *,
     stage: Any,
@@ -48,13 +108,29 @@ def measure_live_robotiq_grasp_geometry(
         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
         useExtentsHint=True,
     )
+    controlled_body = _controlled_body_prim(
+        stage=stage,
+        body_position_world_m=body_position,
+        time_code=Usd.TimeCode.Default(),
+        UsdGeom=UsdGeom,
+    )
+    robot_path_prefix = None
+    if controlled_body is not None:
+        controlled_path = str(controlled_body.GetPath()).lower()
+        robot_path_prefix = controlled_path.split("/robot/", 1)[0] + "/robot/"
     matches: dict[str, list[dict[str, Any]]] = {"left": [], "right": []}
     for prim in Usd.PrimRange(
         stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()
     ):
         path = str(prim.GetPath())
         lowered = path.lower()
-        if "/robot/" not in lowered:
+        if (
+            "/robot/" not in lowered
+            or (
+                robot_path_prefix is not None
+                and not lowered.startswith(robot_path_prefix)
+            )
+        ):
             continue
         side = next(
             (
@@ -81,16 +157,88 @@ def measure_live_robotiq_grasp_geometry(
         center = [
             (minimum[axis] + maximum[axis]) / 2.0 for axis in range(3)
         ]
-        distance = math.dist(center, body_position)
-        matches[side].append(
+        row = {
+            "prim_path": path,
+            "stage_minimum_world_m": minimum,
+            "stage_maximum_world_m": maximum,
+            "stage_center_world_m": center,
+        }
+        if controlled_body is None:
+            center_body = rotate_vector_xyzw(
+                quaternion_conjugate_xyzw(body_quaternion),
+                [center[axis] - body_position[axis] for axis in range(3)],
+            )
+            bounds_body = None
+        else:
+            relative = cache.ComputeRelativeBound(
+                prim, controlled_body
+            ).ComputeAlignedRange()
+            minimum_body = [float(value) for value in relative.GetMin()]
+            maximum_body = [float(value) for value in relative.GetMax()]
+            if not all(
+                math.isfinite(value)
+                for value in (*minimum_body, *maximum_body)
+            ):
+                continue
+            center_body = [
+                (minimum_body[axis] + maximum_body[axis]) / 2.0
+                for axis in range(3)
+            ]
+            bounds_body = [minimum_body, maximum_body]
+            row["minimum_controlled_body_m"] = minimum_body
+            row["maximum_controlled_body_m"] = maximum_body
+            finger_prim = prim
+            finger_name = f"{side}_inner_finger"
+            while finger_prim and finger_prim.GetName() != finger_name:
+                finger_prim = finger_prim.GetParent()
+            if finger_prim:
+                finger_relative = cache.ComputeRelativeBound(
+                    prim, finger_prim
+                ).ComputeAlignedRange()
+                finger_minimum = [
+                    float(value) for value in finger_relative.GetMin()
+                ]
+                finger_maximum = [
+                    float(value) for value in finger_relative.GetMax()
+                ]
+                if all(
+                    math.isfinite(value)
+                    for value in (*finger_minimum, *finger_maximum)
+                ):
+                    row["center_inner_finger_body_m"] = [
+                        (finger_minimum[axis] + finger_maximum[axis]) / 2.0
+                        for axis in range(3)
+                    ]
+        center_world = rotate_vector_xyzw(body_quaternion, center_body)
+        center_world = [
+            body_position[axis] + center_world[axis] for axis in range(3)
+        ]
+        projected_bounds = (
+            None
+            if bounds_body is None
+            else _project_body_bounds_to_live_world(
+                minimum_body_m=bounds_body[0],
+                maximum_body_m=bounds_body[1],
+                body_position_world_m=body_position,
+                body_quaternion_world_xyzw=body_quaternion,
+            )
+        )
+        row.update(
             {
-                "prim_path": path,
-                "minimum_world_m": minimum,
-                "maximum_world_m": maximum,
-                "center_world_m": center,
-                "distance_from_controlled_body_m": distance,
+                "minimum_world_m": (
+                    minimum if projected_bounds is None else projected_bounds[0]
+                ),
+                "maximum_world_m": (
+                    maximum if projected_bounds is None else projected_bounds[1]
+                ),
+                "center_world_m": center_world,
+                "center_controlled_body_m": center_body,
+                "distance_from_controlled_body_m": math.sqrt(
+                    sum(value * value for value in center_body)
+                ),
             }
         )
+        matches[side].append(row)
     if any(not matches[side] for side in ("left", "right")):
         raise NativeFrankaGraspGeometryError(
             "native_franka_grasp_geometry_pad_bounds_missing"
@@ -113,6 +261,10 @@ def measure_live_robotiq_grasp_geometry(
         side: list(selected[side]["center_world_m"])
         for side in ("left", "right")
     }
+    centers_body = {
+        side: list(selected[side]["center_controlled_body_m"])
+        for side in ("left", "right")
+    }
     midpoint = [
         (centers["left"][axis] + centers["right"][axis]) / 2.0
         for axis in range(3)
@@ -133,21 +285,41 @@ def measure_live_robotiq_grasp_geometry(
         approach_axis=approach_world, jaw_axis=jaw_world
     )
     body_inverse = quaternion_conjugate_xyzw(body_quaternion)
-    body_to_grasp_position = rotate_vector_xyzw(body_inverse, approach_world)
+    body_to_grasp_position = [
+        (centers_body["left"][axis] + centers_body["right"][axis]) / 2.0
+        for axis in range(3)
+    ]
     body_to_grasp_quaternion = quaternion_multiply_xyzw(
         body_inverse, grasp_quaternion_world
     )
-    pad_centers_body = {
-        side: rotate_vector_xyzw(
-            body_inverse,
-            [centers[side][axis] - body_position[axis] for axis in range(3)],
+    pad_centers_body = centers_body
+    controlled_body_stage_position = None
+    controlled_body_pose_disagreement = None
+    if controlled_body is not None:
+        stage_position = UsdGeom.XformCache(
+            Usd.TimeCode.Default()
+        ).GetLocalToWorldTransform(controlled_body).ExtractTranslation()
+        controlled_body_stage_position = [
+            float(stage_position[axis]) for axis in range(3)
+        ]
+        controlled_body_pose_disagreement = math.dist(
+            controlled_body_stage_position, body_position
         )
-        for side in ("left", "right")
-    }
     return {
         "schema_version": SCHEMA_VERSION,
         "measurement_authority": (
-            "live_usd_world_bounds_of_distal_robotiq_inner_finger_collision_prim"
+            "live_usd_controlled_body_relative_bounds_of_distal_robotiq_"
+            "inner_finger_collision_prim_projected_through_live_body_pose"
+            if controlled_body is not None
+            else "live_usd_world_bounds_of_distal_robotiq_inner_finger_"
+            "collision_prim"
+        ),
+        "controlled_body_usd_prim_path": (
+            None if controlled_body is None else str(controlled_body.GetPath())
+        ),
+        "controlled_body_stage_position_world_m": controlled_body_stage_position,
+        "controlled_body_stage_to_live_translation_disagreement_m": (
+            controlled_body_pose_disagreement
         ),
         "matched_collision_candidates": matches,
         "selected_pad_colliders": {
