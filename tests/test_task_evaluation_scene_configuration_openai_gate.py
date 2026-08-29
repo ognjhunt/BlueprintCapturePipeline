@@ -156,3 +156,33 @@ def test_fails_closed_without_exact_parent_cap(tmp_path) -> None:
             candidate_digest="sha256:" + "c" * 64,
             output_root=tmp_path,
         )
+
+
+def test_bounded_followup_gate_cannot_exceed_the_parent_stage_cap(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        gate, "build_openai_official_cost_run_gate", lambda **kwargs: kwargs
+    )
+    kwargs = {
+        "environment": _environment(),
+        "stage": "artifixer_semantic_teacher",
+        "run_id": "configure-scene-artifixer-selective-repair",
+        "request_digest": "sha256:" + "b" * 64,
+        "candidate_digest": "sha256:" + "c" * 64,
+        "output_root": tmp_path,
+    }
+
+    built = gate.scene_configuration_openai_stage_gate(
+        **kwargs, max_cost_usd=0.22
+    )
+    assert built["max_cost_usd"] == 0.22
+
+    for invalid in (0.0, 0.400001, True):
+        with pytest.raises(
+            gate.TaskEvaluationSceneConfigurationOpenAIGateError,
+            match="scene_configuration_openai_authority_invalid",
+        ):
+            gate.scene_configuration_openai_stage_gate(
+                **kwargs, max_cost_usd=invalid
+            )

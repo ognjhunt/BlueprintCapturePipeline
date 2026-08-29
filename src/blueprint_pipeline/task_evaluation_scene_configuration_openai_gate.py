@@ -245,12 +245,16 @@ def scene_configuration_openai_stage_gate(
     request_digest: str,
     candidate_digest: str,
     output_root: str | Path,
+    max_cost_usd: float | None = None,
 ) -> OpenAIOfficialCostRunGate:
     """Build but do not reserve one exact stage's official provider gate."""
 
     cap_env = _STAGE_CAP_ENV.get(stage)
     try:
         stage_cap = float(environment.get(str(cap_env)) or 0)
+        effective_cap = (
+            stage_cap if max_cost_usd is None else float(max_cost_usd)
+        )
         total_cap = float(
             environment.get("BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD")
             or 0
@@ -268,9 +272,13 @@ def scene_configuration_openai_stage_gate(
     )
     if (
         cap_env is None
+        or isinstance(max_cost_usd, bool)
         or not math.isfinite(stage_cap)
+        or not math.isfinite(effective_cap)
         or not math.isfinite(total_cap)
         or stage_cap <= 0
+        or effective_cap <= 0
+        or effective_cap > stage_cap
         or total_cap < stage_cap
         or maximum_requests <= 0
         or _DIGEST.fullmatch(authority_digest) is None
@@ -295,7 +303,7 @@ def scene_configuration_openai_stage_gate(
         request_digest=request_digest,
         candidate_digest=candidate_digest,
         authorization_receipt_digest=authority_digest,
-        max_cost_usd=stage_cap,
+        max_cost_usd=effective_cap,
         output_root=output_root,
         provider_id="openai",
         paid_resource_class=f"task_evaluation_scene_configuration_{stage}",

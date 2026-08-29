@@ -1093,10 +1093,16 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         for row in checkpoint["inventory"]
     }
     checkpoint_request_path = source_by_role.get("semantic_runtime_request")
+    checkpoint_result_path = source_by_role.get("semantic_runtime_result")
     try:
         checkpoint_request = json.loads(
             checkpoint_request_path.read_text(encoding="utf-8")
             if checkpoint_request_path is not None
+            else ""
+        )
+        checkpoint_result = json.loads(
+            checkpoint_result_path.read_text(encoding="utf-8")
+            if checkpoint_result_path is not None
             else ""
         )
     except (OSError, json.JSONDecodeError) as exc:
@@ -1110,6 +1116,12 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         != canonical_digest(checkpoint_request, digest_field="request_digest")
         or checkpoint["semantic_teacher"].get("runtime_request_digest")
         != checkpoint_request.get("request_digest")
+        or not isinstance(checkpoint_result, Mapping)
+        or checkpoint_result.get("schema_version") != _SEMANTIC_RESULT_SCHEMA
+        or checkpoint_result.get("result_digest")
+        != canonical_digest(checkpoint_result, digest_field="result_digest")
+        or checkpoint["semantic_teacher"].get("runtime_result_digest")
+        != checkpoint_result.get("result_digest")
         or current_semantic_runtime_request.get("schema_version")
         != _SEMANTIC_REQUEST_SCHEMA
         or current_semantic_runtime_request.get("request_digest")
@@ -1208,6 +1220,7 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         )
     task_root = output / "tasks" / task_id
     task_root.mkdir(parents=True, mode=0o750)
+    hydrated_frames: list[dict[str, Any]] = []
     for index, camera_id in enumerate(request_camera_ids):
         source, expected_digest, expected_size = sources_by_camera[camera_id]
         destination = task_root / f"{index:05d}.png"
@@ -1219,7 +1232,31 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
             raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
                 "scene_configuration_diagnostic_checkpoint_semantic_copy_mismatch"
             )
+        request_frame = request_frames[index]
+        hydrated_frames.append(
+            {
+                "frame_index": index,
+                "camera_id": camera_id,
+                "source_rgb_sha256": request_frame["input_rgb"]["sha256"],
+                "edit_mask_sha256": request_frame["edit_mask"]["sha256"],
+                "terminal_state": "completed_unreviewed_candidate",
+                "semantic_teacher_frame": {
+                    "relative_path": destination.relative_to(output).as_posix(),
+                    "size_bytes": expected_size,
+                    "sha256": expected_digest,
+                },
+            }
+        )
     semantic = checkpoint["semantic_teacher"]
+    computed_editor_cost_usd = checkpoint_result.get("computed_editor_cost_usd")
+    if (
+        isinstance(computed_editor_cost_usd, bool)
+        or not isinstance(computed_editor_cost_usd, (int, float))
+        or float(computed_editor_cost_usd) < 0
+    ):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_semantic_cost_invalid"
+        )
     result: dict[str, Any] = {
         "schema_version": _SEMANTIC_RESULT_SCHEMA,
         "status": "completed_unreviewed_semantic_teacher_candidates",
@@ -1233,7 +1270,14 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         "request_count": 8,
         "successful_request_count": 8,
         "failed_request_count": 0,
-        "tasks": [{"task_id": task_id, "camera_count": 8}],
+        "computed_editor_cost_usd": float(computed_editor_cost_usd),
+        "tasks": [
+            {
+                "task_id": task_id,
+                "camera_count": 8,
+                "frames": hydrated_frames,
+            }
+        ],
         "raw_secret_values_recorded": False,
         "diagnostic_checkpoint_reused": True,
         "provider_calls_performed": 0,
