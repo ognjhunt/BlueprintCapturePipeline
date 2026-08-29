@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -140,6 +141,7 @@ def run_robot_placement_cli(
         trajectory_waypoints_world_m=trajectory_waypoints,
         trajectory_phase_ids=trajectory_phase_ids,
         trajectory_orientations_world_xyzw=trajectory_orientations,
+        trajectory_worker_count=min(8, max(1, os.cpu_count() or 1)),
     )
     if not candidates:
         raise ValueError("robot_placement_geometry_candidate_inventory_empty")
