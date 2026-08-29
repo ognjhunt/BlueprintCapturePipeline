@@ -324,6 +324,28 @@ def test_pinned_ssh_uses_service_bound_identity_file(
     assert command[command.index("-i") + 1] == str(identity)
 
 
+@pytest.mark.parametrize("failure", ["missing", "symlink", "mode", "unreadable"])
+def test_warm_ssh_identity_validation_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    identity = tmp_path / "vast_ssh_id_ed25519"
+    if failure == "symlink":
+        target = tmp_path / "identity-target"
+        target.write_text("private-key-placeholder")
+        target.chmod(0o600)
+        identity.symlink_to(target)
+    elif failure != "missing":
+        identity.write_text("private-key-placeholder")
+        identity.chmod(0o644 if failure == "mode" else 0o600)
+    if failure == "unreadable":
+        monkeypatch.setattr(warm_vast.os, "access", lambda *_args: False)
+
+    with pytest.raises(
+        ValueError, match="native_task_arena_warm_ssh_identity_invalid"
+    ):
+        warm_vast.validate_native_task_arena_warm_ssh_identity_file(identity)
+
+
 def test_failed_warm_dispatch_fails_before_output_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -506,6 +528,55 @@ def test_close_does_not_swallow_nonterminal_delete_error(
     assert excinfo.value.code == 503
 
 
+def test_warm_identity_is_validated_before_authority_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared, receipt = _prepared(tmp_path, execution_mode="construction_canary")
+    session = _session(prepared)
+    session_path = tmp_path / "warm-session.json"
+    write_json(session_path, session)
+    issued = authority.materialize_native_task_arena_warm_attempt_authority(
+        warm_session_path=session_path,
+        bundle_receipt_path=receipt,
+        prepared_bundle=prepared,
+        authorization_reference="current production goal",
+        authorized_by="user",
+        authorized_on="2026-08-21",
+        output_path=tmp_path / "warm-authority.json",
+        observed_now_epoch=NOW,
+    )
+    monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
+    monkeypatch.setattr(
+        warm_vast,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("native_task_arena_warm_ssh_identity_invalid")
+        ),
+    )
+    monkeypatch.setattr(
+        warm_vast,
+        "consume_native_task_arena_warm_authority_once",
+        lambda _value: pytest.fail("invalid identity must not consume authority"),
+    )
+
+    result = warm_vast.run_native_task_arena_warm_controls_vast(
+        job_dir=tmp_path / "job",
+        prepared_bundle=prepared,
+        warm_session=session,
+        warm_attempt_authority=issued,
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        close_on_success=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["authorization_consumption"] == {"status": "not_consumed"}
+    assert result["blockers"] == [
+        "native_task_arena_warm_ssh_identity_invalid"
+    ]
+    assert result["provider_allocations_performed"] == 0
+
+
 @pytest.mark.parametrize(
     ("execution_mode", "diagnostic_mode"),
     [
@@ -536,6 +607,11 @@ def test_warm_execution_reuses_instance_without_allocating(
     )
     # Rebind the session deadline to real test time after authority validation.
     monkeypatch.setattr(warm_vast.time, "time", lambda: NOW)
+    monkeypatch.setattr(
+        warm_vast,
+        "validate_native_task_arena_warm_ssh_identity_file",
+        lambda *_args, **_kwargs: tmp_path / "valid-identity",
+    )
     monkeypatch.setattr(warm_vast, "_read_api_key", lambda: "secret-api-key")
     monkeypatch.delenv(warm_vast.VAST_API_GATE_ENV, raising=False)
     monkeypatch.delenv(warm_vast.VAST_INSTANCE_LAUNCH_GATE_ENV, raising=False)

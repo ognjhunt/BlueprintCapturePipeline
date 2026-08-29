@@ -208,7 +208,10 @@ from .native_task_arena_warm_authority import (
     validate_native_task_arena_warm_attempt_authority,
     validate_native_task_arena_warm_session,
 )
-from .native_task_arena_warm_vast import run_native_task_arena_warm_controls_vast
+from .native_task_arena_warm_vast import (
+    run_native_task_arena_warm_controls_vast,
+    validate_native_task_arena_warm_ssh_identity_file,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -5381,6 +5384,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     native_authority_validation = (
                         _native_authority_validation_diagnostic(exc)
                     )
+            if (
+                args.execute
+                and warm_attach_requested
+                and native_authority_validation.get("status") == "passed"
+            ):
+                try:
+                    validate_native_task_arena_warm_ssh_identity_file()
+                except ValueError:
+                    blockers.append("native_task_arena_warm_ssh_identity_invalid")
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,

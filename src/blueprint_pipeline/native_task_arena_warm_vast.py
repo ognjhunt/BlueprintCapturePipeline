@@ -96,6 +96,30 @@ def _read_url(path: Path) -> str:
     return value
 
 
+def validate_native_task_arena_warm_ssh_identity_file(
+    identity_file: str | Path | None = None,
+) -> Path:
+    """Resolve the service-bound SSH key before warm authority consumption."""
+
+    identity = Path(
+        identity_file
+        or os.getenv(VAST_SSH_IDENTITY_FILE_ENV, DEFAULT_SSH_IDENTITY_FILE)
+    ).expanduser()
+    try:
+        identity_mode = identity.stat().st_mode & 0o777
+        resolved = identity.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("native_task_arena_warm_ssh_identity_invalid") from exc
+    if (
+        identity.is_symlink()
+        or not identity.is_file()
+        or identity_mode & 0o077
+        or not os.access(identity, os.R_OK)
+    ):
+        raise ValueError("native_task_arena_warm_ssh_identity_invalid")
+    return resolved
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -217,20 +241,9 @@ def _run_pinned_ssh(
             "raw_secret_values_recorded": False,
         }
     known_hosts, known_hosts_sha256 = pin
-    identity = Path(
-        identity_file
-        or os.getenv(VAST_SSH_IDENTITY_FILE_ENV, DEFAULT_SSH_IDENTITY_FILE)
-    ).expanduser()
     try:
-        identity_mode = identity.stat().st_mode & 0o777
-    except OSError:
-        identity_mode = -1
-    if (
-        identity.is_symlink()
-        or not identity.is_file()
-        or identity_mode < 0
-        or identity_mode & 0o077
-    ):
+        identity = validate_native_task_arena_warm_ssh_identity_file(identity_file)
+    except ValueError:
         return {
             "status": "blocked",
             "blockers": ["native_task_arena_warm_ssh_identity_invalid"],
@@ -248,7 +261,7 @@ def _run_pinned_ssh(
     command = [
         "ssh",
         "-i",
-        str(identity.resolve(strict=True)),
+        str(identity),
         "-p",
         str(port),
         "-o",
@@ -775,6 +788,20 @@ def _run_native_task_arena_warm_vast(
         return result
     if authority is None or paid_resource_admission_grant is None:
         raise ValueError("native_task_arena_warm_paid_authority_missing")
+    try:
+        validate_native_task_arena_warm_ssh_identity_file()
+    except ValueError:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "provider_allocations_performed": 0,
+            "authorization_consumption": {"status": "not_consumed"},
+            "blockers": ["native_task_arena_warm_ssh_identity_invalid"],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(job / "native_task_arena_warm_vast_result.json", result)
+        return result
     api_key = _read_api_key()
     if (
         not _truthy(VAST_API_GATE_ENV)
@@ -982,6 +1009,7 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_warm_vast",
     "run_native_task_arena_warm_controls_vast",
+    "validate_native_task_arena_warm_ssh_identity_file",
 ]
 
 
