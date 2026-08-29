@@ -54,6 +54,7 @@ class RobotPlacementGeometryIndex:
     scene_digest: str
     robot_asset_path: str
     robot_asset_digest: str
+    robot_triangles: np.ndarray
     triangles: np.ndarray
     triangle_prim_paths: tuple[str, ...]
     triangle_minimum: np.ndarray
@@ -233,12 +234,14 @@ def build_robot_placement_geometry_index(
     normal_abs_z = np.zeros(len(triangles), dtype=np.float64)
     valid = norm > 1.0e-12
     normal_abs_z[valid] = np.abs(cross[valid, 2]) / norm[valid]
+    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage)
     robot_minimum, robot_maximum = _robot_bounds(robot_stage)
     return RobotPlacementGeometryIndex(
         scene_path=str(scene_path),
         scene_digest=_sha256(scene_path),
         robot_asset_path=str(robot_path),
         robot_asset_digest=_sha256(robot_path),
+        robot_triangles=robot_triangles,
         triangles=triangles,
         triangle_prim_paths=prim_paths,
         triangle_minimum=minimum,
@@ -592,22 +595,35 @@ def render_robot_placement_geometry_previews(
     if position.shape != (3,) or target.shape != (3,) or len(quaternion) != 4:
         raise RobotPlacementGeometryError("robot_placement_preview_pose_invalid")
     yaw, _ = _yaw_from_quaternion(quaternion)
+    rotation = np.asarray(
+        [
+            [math.cos(yaw), -math.sin(yaw), 0.0],
+            [math.sin(yaw), math.cos(yaw), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    robot_world_triangles = index.robot_triangles @ rotation.T + position
     robot_minimum, robot_maximum = _rotated_bounds(
         index.robot_local_bounds_minimum_m,
         index.robot_local_bounds_maximum_m,
         position,
         yaw,
     )
-    scene_minimum = index.triangles.min(axis=(0, 1))
-    scene_maximum = index.triangles.max(axis=(0, 1))
-
     def draw_projection(axes: tuple[int, int], label: str) -> dict[str, Any]:
         width, height = image_size
         margin = 55
-        low = scene_minimum[list(axes)].copy()
-        high = scene_maximum[list(axes)].copy()
-        low = np.minimum(low, np.minimum(position[list(axes)], target[list(axes)]))
-        high = np.maximum(high, np.maximum(position[list(axes)], target[list(axes)]))
+        low = np.minimum(
+            robot_world_triangles[:, :, list(axes)].min(axis=(0, 1)),
+            target[list(axes)],
+        )
+        high = np.maximum(
+            robot_world_triangles[:, :, list(axes)].max(axis=(0, 1)),
+            target[list(axes)],
+        )
+        padding = np.maximum((high - low) * 0.18, 0.18)
+        low -= padding
+        high += padding
         span = np.maximum(high - low, 1.0e-6)
 
         def point(value: Sequence[float]) -> tuple[int, int]:
@@ -627,11 +643,38 @@ def render_robot_placement_geometry_previews(
         )
         if surface is not None:
             selected_indices = set(surface.triangle_indices)
-        stride = max(1, len(index.triangles) // 20_000)
-        for triangle_index in range(0, len(index.triangles), stride):
+        projected_minimum = index.triangles[:, :, list(axes)].min(axis=1)
+        projected_maximum = index.triangles[:, :, list(axes)].max(axis=1)
+        nearby = np.flatnonzero(
+            (projected_maximum[:, 0] >= low[0])
+            & (projected_minimum[:, 0] <= high[0])
+            & (projected_maximum[:, 1] >= low[1])
+            & (projected_minimum[:, 1] <= high[1])
+        )
+        stride = max(1, len(nearby) // 8_000)
+        for triangle_index in nearby[::stride]:
             triangle = index.triangles[triangle_index][:, list(axes)]
-            colour = (40, 110, 220, 45) if triangle_index in selected_indices else (80, 80, 80, 24)
-            draw.polygon([point(value) for value in triangle], fill=colour, outline=(80, 80, 80, 40))
+            colour = (
+                (55, 130, 230, 95)
+                if int(triangle_index) in selected_indices
+                else (105, 105, 105, 32)
+            )
+            draw.polygon(
+                [point(value) for value in triangle],
+                fill=colour,
+                outline=(95, 95, 95, 45),
+            )
+        robot_depth_axis = next(axis for axis in range(3) if axis not in axes)
+        robot_order = np.argsort(
+            robot_world_triangles[:, :, robot_depth_axis].mean(axis=1)
+        )
+        for triangle_index in robot_order:
+            triangle = robot_world_triangles[int(triangle_index)][:, list(axes)]
+            draw.polygon(
+                [point(value) for value in triangle],
+                fill=(220, 45, 45, 205),
+                outline=(105, 0, 0, 210),
+            )
         rectangle_min = point(robot_minimum[list(axes)])
         rectangle_max = point(robot_maximum[list(axes)])
         draw.rectangle(
@@ -641,10 +684,21 @@ def render_robot_placement_geometry_previews(
                 max(rectangle_min[0], rectangle_max[0]),
                 max(rectangle_min[1], rectangle_max[1]),
             ],
-            fill=(220, 40, 40, 55),
-            outline=(190, 0, 0, 255),
-            width=4,
+            fill=None,
+            outline=(120, 0, 0, 220),
+            width=2,
         )
+        base_point = point(position[list(axes)])
+        draw.ellipse(
+            [base_point[0] - 6, base_point[1] - 6, base_point[0] + 6, base_point[1] + 6],
+            fill=(130, 0, 0, 255),
+        )
+        facing_world = position + np.asarray(
+            [0.30 * math.cos(yaw), 0.30 * math.sin(yaw), 0.0],
+            dtype=np.float64,
+        )
+        facing_point = point(facing_world[list(axes)])
+        draw.line([base_point, facing_point], fill=(255, 145, 0, 255), width=6)
         target_point = point(target[list(axes)])
         radius = 9
         draw.ellipse(
@@ -653,7 +707,14 @@ def render_robot_placement_geometry_previews(
             outline=(0, 90, 40, 255),
             width=2,
         )
-        draw.text((18, 15), f"{label}: red=robot reset bounds, green=task target, blue=declared support", fill=(0, 0, 0, 255))
+        draw.text(
+            (18, 15),
+            (
+                f"{label}: solid red=robot mesh, dark red=reset bounds, "
+                "orange=facing, green=task target, blue=support"
+            ),
+            fill=(0, 0, 0, 255),
+        )
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
         payload = buffer.getvalue()

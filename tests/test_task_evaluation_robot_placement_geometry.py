@@ -85,6 +85,7 @@ def test_exact_geometry_gate_accepts_supported_clear_facing_pose(tmp_path) -> No
         scene_collision_usd_path=scene,
         robot_asset_usd_path=robot,
     )
+    assert index.robot_triangles.shape == (12, 3, 3)
     floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
     target = [0.8, 0.0, 0.5]
 
