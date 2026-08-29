@@ -30,6 +30,9 @@ from blueprint_pipeline.native_franka_grasp_geometry import (
 from blueprint_pipeline.native_task_arena_dependency_contract import (
     NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS as DEPENDENCY_IMPORTS,
 )
+from blueprint_pipeline.native_task_nurec_render_setup import (
+    prepare_site_appearance_renderer as _prepare_site_appearance_renderer,
+)
 from blueprint_pipeline.rigid_frame_transforms import (
     quaternion_conjugate_xyzw,
     rotate_vector_xyzw,
@@ -69,52 +72,6 @@ def _announce(phase: str, status: str = "started") -> None:
         f"BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:{phase}:{status}",
         flush=True,
     )
-
-
-def _prepare_site_appearance_renderer(
-    *,
-    simulation_app: Any,
-    plan: Mapping[str, Any],
-    stage: Any = None,
-    setup_for_rendering_factory: Any = None,
-    warmup_steps: int = 800,
-) -> dict[str, Any]:
-    """Run the required NVIDIA accumulation path for NuRec appearances."""
-
-    representation = str(
-        (plan.get("appearance_frame_alignment") or {}).get("representation")
-        or ""
-    )
-    if representation not in {
-        "nurec_volume",
-        "particlefield_3d_gaussian_splat",
-    }:
-        return {
-            "schema_version": "native_task_arena_nurec_warmup.v1",
-            "status": "not_required",
-            "representation": representation or None,
-            "passed": True,
-            "blockers": [],
-        }
-    if stage is None:
-        import omni.usd
-
-        stage = omni.usd.get_context().get_stage()
-    from blueprint_pipeline.native_task_nurec_render_setup import (
-        setup_and_warm_native_nurec_renderer,
-    )
-
-    result = setup_and_warm_native_nurec_renderer(
-        simulation_app,
-        stage,
-        warmup_steps=warmup_steps,
-        setup_for_rendering_factory=setup_for_rendering_factory,
-        progress_callback=lambda row: _announce(
-            f"nurec_warmup_round_{row['round']}", "completed"
-        ),
-    )
-    result["representation"] = representation
-    return result
 
 
 def _sha256(path: Path) -> str:
@@ -1450,6 +1407,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["site_appearance_renderer"] = _prepare_site_appearance_renderer(
             simulation_app=simulation_app,
             plan=plan,
+            progress_callback=lambda row: _announce(
+                f"nurec_warmup_round_{row['round']}", "completed"
+            ),
         )
         if not result["site_appearance_renderer"]["passed"]:
             result["blockers"].extend(

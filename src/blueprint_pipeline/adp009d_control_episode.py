@@ -88,6 +88,22 @@ except ModuleNotFoundError:  # repository package
         normalize_physics_backend,
         validate_backend_contact_configuration,
     )
+try:  # flat provider-bundle layout
+    from task_control_diagnostic_boundary import (
+        apply_diagnostic_receipt_boundary,
+        build_task_control_pair,
+        control_plan_boundary_errors,
+        copy_diagnostic_annotations,
+        diagnostic_receipt_annotations,
+    )
+except ModuleNotFoundError:  # repository package
+    from .task_control_diagnostic_boundary import (
+        apply_diagnostic_receipt_boundary,
+        build_task_control_pair,
+        control_plan_boundary_errors,
+        copy_diagnostic_annotations,
+        diagnostic_receipt_annotations,
+    )
 
 
 CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v12"
@@ -1725,34 +1741,8 @@ def validate_task_control_plan(
         errors.append("task_control_plan_digest_mismatch")
     if checked.get("task_spec_digest") != canonical_digest(task):
         errors.append("task_control_plan_task_spec_mismatch")
-    trajectory_source = checked.get("trajectory_source")
-    diagnostic_plan = trajectory_source == "native_ik_diagnostic_unqualified"
-    if trajectory_source not in {
-        "native_ik_preflight",
-        "native_ik_diagnostic_unqualified",
-    }:
-        errors.append("task_control_trajectory_source_invalid")
-    if diagnostic_plan:
-        upstream = checked.get("upstream_construction_blockers")
-        if (
-            checked.get("diagnostic_only") is not True
-            or checked.get("qualification_allowed") is not False
-            or checked.get("qualification_effect") != "none"
-            or not isinstance(upstream, list)
-            or not upstream
-            or any(not isinstance(value, str) or not value for value in upstream)
-            or checked.get("claim_boundary")
-            != (
-                "blocked_construction_downstream_execution_only;cannot_qualify_"
-                "construction_controls_policy_admission_or_task_success"
-            )
-        ):
-            errors.append("task_control_diagnostic_boundary_invalid")
-    elif (
-        "qualification_allowed" in checked
-        and checked.get("qualification_allowed") is not True
-    ):
-        errors.append("task_control_qualification_boundary_invalid")
+    diagnostic_plan, boundary_errors = control_plan_boundary_errors(checked)
+    errors.extend(boundary_errors)
     planner_receipt_digest = str(checked.get("planner_receipt_digest") or "")
     if not planner_receipt_digest.startswith("sha256:") or len(
         planner_receipt_digest
@@ -2913,22 +2903,10 @@ def _run_task_control_episode(
         "caller_asserted_success_accepted": False,
         "receipt_digest": "",
     }
-    if not qualification_allowed:
-        receipt.update(
-            {
-                "qualification_allowed": False,
-                "development_only": True,
-                "diagnostic_only": True,
-                "claim_boundary": (
-                    "diagnostic_execution_only;cannot_qualify_controls_"
-                    "policy_admission_or_task_success"
-                ),
-            }
-        )
-    if receipt_annotations is not None:
-        receipt["diagnostic_annotations"] = json.loads(
-            json.dumps(dict(receipt_annotations), allow_nan=False)
-        )
+    apply_diagnostic_receipt_boundary(
+        receipt, qualification_allowed=qualification_allowed
+    )
+    copy_diagnostic_annotations(receipt, receipt_annotations)
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -2966,64 +2944,20 @@ def run_task_neutral_controls(
             output=output,
             episode_id=f"{plan['cell_id']}-{control_id}",
             qualification_allowed=bool(qualification_allowed),
-            receipt_annotations=(
-                {
-                    "upstream_construction_blockers": list(
-                        plan.get("upstream_construction_blockers") or []
-                    ),
-                    "control_plan_digest": plan["plan_digest"],
-                }
-                if not qualification_allowed
-                else None
+            receipt_annotations=diagnostic_receipt_annotations(
+                plan, qualification_allowed=qualification_allowed
             ),
         )
         receipts.append(receipt)
         _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
-    blockers = [
-        blocker for receipt in receipts for blocker in receipt.get("blockers", [])
-    ]
-    pair: dict[str, Any] = {
-        "schema_version": TASK_CONTROL_PAIR_SCHEMA_VERSION,
-        "program_id": "arm-decision-proof-v1",
-        "cell_id": plan["cell_id"],
-        "task_kind": task["task_kind"],
-        "task_spec_digest": plan["task_spec_digest"],
-        "control_plan_digest": plan["plan_digest"],
-        "execution_order": list(REQUIRED_CONTROLS),
-        "controls": [
-            {
-                "control_id": receipt["control_id"],
-                "control_passed": receipt["control_passed"],
-                "observed_outcome": receipt["observed_outcome"],
-                "receipt_digest": receipt["receipt_digest"],
-            }
-            for receipt in receipts
-        ],
-        "cell_admitted_for_policy_execution": bool(qualification_allowed)
-        and not blockers,
-        "policy_execution_blockers": sorted(
-            set(
-                [
-                    *blockers,
-                    *(
-                        ["diagnostic_controls_cannot_admit_policy_execution"]
-                        if not qualification_allowed
-                        else []
-                    ),
-                ]
-            )
-        ),
-        "candidate_policy_queried": False,
-        "pair_digest": "",
-    }
-    if not qualification_allowed:
-        pair.update(
-            {
-                "qualification_allowed": False,
-                "diagnostic_only": True,
-            }
-        )
-    pair["pair_digest"] = canonical_digest(pair, digest_field="pair_digest")
+    pair = build_task_control_pair(
+        plan=plan,
+        task=task,
+        receipts=receipts,
+        qualification_allowed=bool(qualification_allowed),
+        required_controls=REQUIRED_CONTROLS,
+        canonical_digest=canonical_digest,
+    )
     _write_json(output / "adp_task_control_pair.v1.json", pair)
     return pair
 
@@ -3069,15 +3003,8 @@ def run_task_neutral_control(
         output=output,
         episode_id=f"{plan['cell_id']}-{control_id}",
         qualification_allowed=bool(qualification_allowed),
-        receipt_annotations=(
-            {
-                "upstream_construction_blockers": list(
-                    plan.get("upstream_construction_blockers") or []
-                ),
-                "control_plan_digest": plan["plan_digest"],
-            }
-            if not qualification_allowed
-            else None
+        receipt_annotations=diagnostic_receipt_annotations(
+            plan, qualification_allowed=qualification_allowed
         ),
     )
     _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
