@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.native_task_arena_paid_authority as paid
+import blueprint_pipeline.native_task_arena_pre_spend_evidence as pre_spend_evidence
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
 from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
@@ -1191,12 +1192,18 @@ def _watchdog_not_armed_fixture(root: Path) -> dict[str, Path]:
     }
 
 
-def _pre_spend_blocked_fixture(root: Path) -> dict[str, Path]:
+def _pre_spend_blocked_fixture(
+    root: Path, *, canonical_allocator_shape: bool = False
+) -> dict[str, Path]:
     root.mkdir()
     attempt_root = (
         root
         / "allocator"
-        / "arena-policy-diagnostic-job"
+        / (
+            "scene839873-execution-cold"
+            if canonical_allocator_shape
+            else "arena-policy-diagnostic-job"
+        )
         / "attempts"
         / "attempt_001"
     )
@@ -1240,6 +1247,28 @@ def _pre_spend_blocked_fixture(root: Path) -> dict[str, Path]:
             "spend_gate_closed:explicit_spend_approval_missing",
         ],
     }
+    if canonical_allocator_shape:
+        result.update(
+            {
+                "estimated_cost_usd": 0.0,
+                "continuing_spend_from_this_run": False,
+                "all_staged_objects_absent": True,
+            }
+        )
+        write_json(
+            provider_run / "vast_teardown_manifest.json",
+            {
+                "schema_version": "vast_teardown_manifest.v1",
+                "generated_at": observed_at.isoformat(),
+                "status": "not_required_provider_adapter_never_invoked",
+                "vast_instance_ids": [],
+                "teardown_actions_performed": [],
+                "continuing_spend_from_this_run": False,
+                "zero_continuing_spend_scope": (
+                    "The lane failed before entering the provider adapter."
+                ),
+            },
+        )
     result_path = attempt_root / "adp_arena_vast_result.json"
     write_json(result_path, result)
     consumption = {
@@ -1313,6 +1342,64 @@ def test_pre_spend_block_closes_without_claiming_policy_execution(
     )
     assert chain["attempt_cost_usd"] == 0.0
     assert chain["aggregate_goal_spend_after_attempt_usd"] == 39.540914
+
+
+def test_pre_spend_block_closes_canonical_allocator_result_shape(
+    tmp_path: Path,
+) -> None:
+    fixture = _pre_spend_blocked_fixture(
+        tmp_path / "attempt", canonical_allocator_shape=True
+    )
+    original = json.loads(fixture["result"].read_text())
+    assert pre_spend_evidence.validate_pre_spend_original_evidence(
+        original=original,
+        provider_run=fixture["result"].parent / "vast_provider_run",
+    ) is not None
+
+    value = paid.materialize_native_task_arena_pre_spend_closeout(
+        authority_path=fixture["authority"],
+        allocator_result_path=fixture["result"],
+        authority_consumption_path=fixture["consumption"],
+        api_provider_zero_path=fixture["api_zero"],
+        output_dir=tmp_path / "closeout",
+    )
+
+    result = json.loads(Path(value["terminal_result_path"]).read_text())
+    assert result["estimated_cost_usd"] == 0.0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["original_pre_spend_teardown"]["path"].endswith(
+        "/vast_provider_run/vast_teardown_manifest.json"
+    )
+
+
+@pytest.mark.parametrize("tamper", ["instance", "cost", "continuing_spend"])
+def test_pre_spend_block_rejects_nonzero_canonical_allocator_evidence(
+    tmp_path: Path, tamper: str
+) -> None:
+    fixture = _pre_spend_blocked_fixture(
+        tmp_path / "attempt", canonical_allocator_shape=True
+    )
+    result = json.loads(fixture["result"].read_text())
+    teardown_path = fixture["result"].parent / "vast_provider_run/vast_teardown_manifest.json"
+    if tamper == "instance":
+        teardown = json.loads(teardown_path.read_text())
+        teardown["vast_instance_ids"] = [49131378]
+        write_json(teardown_path, teardown)
+    elif tamper == "cost":
+        result["estimated_cost_usd"] = 0.01
+        write_json(fixture["result"], result)
+    else:
+        result["continuing_spend_from_this_run"] = True
+        write_json(fixture["result"], result)
+
+    with pytest.raises(ValueError, match="native_task_arena_pre_spend"):
+        paid.materialize_native_task_arena_pre_spend_closeout(
+            authority_path=fixture["authority"],
+            allocator_result_path=fixture["result"],
+            authority_consumption_path=fixture["consumption"],
+            api_provider_zero_path=fixture["api_zero"],
+            output_dir=tmp_path / "closeout",
+        )
 
 
 def test_watchdog_not_armed_preallocation_failure_closes_without_claiming_execution(
