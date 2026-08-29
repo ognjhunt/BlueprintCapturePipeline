@@ -18,6 +18,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import materialize_native_task_arena_packet
+from .task_evaluation_robot_placement_agent import (
+    RobotPlacementAgentError,
+    validate_robot_placement_receipt,
+)
 from .task_evaluation_rigid_relocation_native_adapter import (
     adapt_rigid_relocation_task_template,
 )
@@ -200,12 +204,30 @@ def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
     return task_spec
 
 
+def _legacy_robot_placement_is_clear(
+    workspace: Mapping[str, Any], placement: Mapping[str, Any]
+) -> bool:
+    """True only for an exact legacy pose that passed every analytic gate."""
+
+    return bool(
+        workspace.get("status") == "placement_candidate_materialized"
+        and placement.get("status") == "runtime_visualization_candidate_only"
+        and placement.get("mesh_triangle_aabb_overlap_probe_clear") is True
+        and (placement.get("base_support_coverage") or {}).get(
+            "full_sample_support_candidate"
+        )
+        is True
+        and placement.get("analytic_reach_candidate") is True
+    )
+
+
 def compile_diagnostic_native_arena_packet(
     *,
     diagnostic_controls_input: Mapping[str, Any],
     droid_profile_path: str | Path,
     droid_profile_reference: Mapping[str, Any],
     output_root: str | Path,
+    robot_placement_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Materialize one task-aware development-only native construction packet."""
 
@@ -284,31 +306,66 @@ def compile_diagnostic_native_arena_packet(
         raise TaskEvaluationDiagnosticNativeArenaCompilerError(
             "diagnostic_native_compiler_workspace_invalid"
         )
-    source_pose = _vector(
-        placement.get("robot_pose_xyzyaw_collision_stage"),
-        4,
+    scene_binding = {
+        "schema_version": "diagnostic_robot_placement_scene_binding.v1",
+        "source_configuration_run_id": authority["source_configuration_run_id"],
+        "workspace_packet_digest": workspace["packet_digest"],
+        "collision_asset_digest": rows["diagnostic_output.collision.usda"]["digest"],
+    }
+    task_binding = {
+        "schema_version": "diagnostic_robot_placement_task_binding.v1",
+        "robot_id": "franka_panda",
+        "task_id": task_definition["identity"]["id"],
+        "start_center_xyz_m": start,
+        "target_center_xyz_m": target,
+        "task_source_digest": canonical_digest(task_source),
+        "droid_profile_digest": droid_profile_reference["digest"],
+    }
+    accepted_placement_receipt: dict[str, Any] | None = None
+    if robot_placement_receipt is not None:
+        try:
+            accepted_placement_receipt = validate_robot_placement_receipt(
+                robot_placement_receipt,
+                expected_scene_binding_digest=canonical_digest(scene_binding),
+                expected_task_binding_digest=canonical_digest(task_binding),
+            )
+        except RobotPlacementAgentError as exc:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                f"diagnostic_native_compiler_robot_placement_invalid:{exc}"
+            ) from exc
+        base_pose = accepted_placement_receipt["accepted_pose"]
+        base_derivation_method = "gpt_5_6_sol_high_bounded_geometry_and_visual_gate"
+    else:
+        # A prior diagnostic compiler copied only the source standoff, reflected
+        # it along a new task direction, and never re-ran collision/support
+        # validation.  Never revive that path.  A legacy pose is consumable only
+        # when the exact registered packet itself passed every analytic gate.
+        legacy_clear = _legacy_robot_placement_is_clear(workspace, placement)
+        if not legacy_clear:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                "diagnostic_native_compiler_robot_placement_agent_receipt_required"
+            )
+        source_pose = _vector(
+            placement.get("robot_pose_xyzyaw_collision_stage"),
+            4,
+            blocker="diagnostic_native_compiler_source_base_invalid",
+        )
+        yaw = source_pose[3]
+        base_pose = {
+            "position_world_m": source_pose[:3],
+            "orientation_xyzw": [
+                0.0,
+                0.0,
+                math.sin(yaw / 2.0),
+                math.cos(yaw / 2.0),
+            ],
+        }
+        base_derivation_method = "exact_registered_collision_clear_placement_pose"
+    base_position = _vector(
+        base_pose.get("position_world_m"),
+        3,
         blocker="diagnostic_native_compiler_source_base_invalid",
     )
-    standoff = math.hypot(source_pose[0] - start[0], source_pose[1] - start[1])
-    if standoff <= 0.05 or standoff > 1.155:
-        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
-            "diagnostic_native_compiler_source_base_invalid"
-        )
-    base_position = [
-        start[0] - direction[0] * standoff,
-        start[1] - direction[1] * standoff,
-        source_pose[2],
-    ]
-    yaw = math.atan2(direction[1], direction[0])
-    base_pose = {
-        "position_world_m": base_position,
-        "orientation_xyzw": [
-            0.0,
-            0.0,
-            math.sin(yaw / 2.0),
-            math.cos(yaw / 2.0),
-        ],
-    }
 
     camera_rows = profile.get("cameras")
     by_role = {
@@ -419,6 +476,11 @@ def compile_diagnostic_native_arena_packet(
             ],
             "claim_ceiling": CLAIM_CEILING,
             "qualification_eligible": False,
+            "robot_placement_receipt_digest": (
+                accepted_placement_receipt["receipt_digest"]
+                if accepted_placement_receipt is not None
+                else None
+            ),
         },
         "request_digest": "",
     }
@@ -446,8 +508,13 @@ def compile_diagnostic_native_arena_packet(
         ),
         "packet_receipt_digest": packet_receipt["receipt_digest"],
         "base_pose_world": base_pose,
-        "base_derivation_method": (
-            "reflect_reach_candidate_behind_start_along_frozen_planar_push"
+        "base_derivation_method": base_derivation_method,
+        "robot_placement_scene_binding": scene_binding,
+        "robot_placement_task_binding": task_binding,
+        "robot_placement_receipt_digest": (
+            accepted_placement_receipt["receipt_digest"]
+            if accepted_placement_receipt is not None
+            else None
         ),
         "droid_profile_reference": dict(droid_profile_reference),
         "claim_ceiling": CLAIM_CEILING,
