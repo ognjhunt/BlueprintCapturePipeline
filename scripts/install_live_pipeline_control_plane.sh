@@ -13,6 +13,8 @@ HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-${ENV_DIR}/credentials}"
 LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
+CONFIGURED_CONTROLS_PLAN_ROOT="${CONFIGURED_CONTROLS_PLAN_ROOT:-${ENV_DIR}/task-evaluation-configured-controls-plans}"
+CONFIGURED_CONTROLS_WEBAPP_SECRET="${CONFIGURED_CONTROLS_WEBAPP_SECRET:-${PROVIDER_SECRETS_DIR}/blueprint_task_evaluation_launch_submit_secret}"
 TASK_EVALUATION_INPUT_ROOT="${TASK_EVALUATION_INPUT_ROOT:-/var/lib/blueprint/task-evaluation-inputs}"
 CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
@@ -181,6 +183,44 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discoveries" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discovery-outputs"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  printf '[dry-run] verify mode=0750 owner=%s group=%s %s\n' \
+    "${SERVICE_USER}" "${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  printf '[dry-run] verify mode=0440 owner=root group=%s %s\n' \
+    "${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"
+else
+  if [[ -L "${CONFIGURED_CONTROLS_PLAN_ROOT}" ]]; then
+    echo "ERROR: configured-controls plan root is a symlink" >&2
+    exit 1
+  fi
+  if [[ ! -d "${CONFIGURED_CONTROLS_PLAN_ROOT}" ]]; then
+    run mkdir -p "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  fi
+  PLAN_OWNER="$(stat -c '%U:%G' "${CONFIGURED_CONTROLS_PLAN_ROOT}")"
+  PLAN_MODE="$(stat -c '%a' "${CONFIGURED_CONTROLS_PLAN_ROOT}")"
+  if [[ "${PLAN_OWNER}" != "${SERVICE_USER}:${SERVICE_GROUP}" ]]; then
+    run chown "${SERVICE_USER}:${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  fi
+  if [[ "${PLAN_MODE}" != "750" ]]; then
+    run chmod 0750 "${CONFIGURED_CONTROLS_PLAN_ROOT}"
+  fi
+  test "$(stat -c '%U:%G:%a' "${CONFIGURED_CONTROLS_PLAN_ROOT}")" = \
+    "${SERVICE_USER}:${SERVICE_GROUP}:750"
+  if [[ ! -f "${CONFIGURED_CONTROLS_WEBAPP_SECRET}" || -L "${CONFIGURED_CONTROLS_WEBAPP_SECRET}" ]]; then
+    echo "ERROR: configured-controls WebApp submit secret missing or unsafe" >&2
+    exit 1
+  fi
+  SECRET_OWNER="$(stat -c '%U:%G' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")"
+  SECRET_MODE="$(stat -c '%a' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")"
+  if [[ "${SECRET_OWNER}" != "root:${SERVICE_GROUP}" ]]; then
+    run chown "root:${SERVICE_GROUP}" "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"
+  fi
+  if [[ "${SECRET_MODE}" != "440" ]]; then
+    run chmod 0440 "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"
+  fi
+  test "$(stat -c '%U:%G:%a' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")" = \
+    "root:${SERVICE_GROUP}:440"
+fi
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/capture-reconstruction-queue/pending" \
   "${STATE_DIR}/capture-reconstruction-queue/processing" \

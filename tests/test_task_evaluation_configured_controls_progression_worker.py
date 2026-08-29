@@ -19,6 +19,43 @@ def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _seal_plan(plan: dict[str, object]) -> None:
+    paths: dict[str, Path] = {}
+
+    def collect(value: object, prefix: str = "") -> None:
+        if not isinstance(value, dict):
+            return
+        for key, child in value.items():
+            name = f"{prefix}.{key}" if prefix else key
+            if key.endswith("_path") and isinstance(child, str):
+                paths[name] = Path(child)
+            elif key not in {"artifact_inventory", "future_outputs"}:
+                collect(child, name)
+
+    collect(plan)
+    plan["artifact_inventory"] = {
+        name: {
+            "path": str(path),
+            "digest": _digest(path),
+            "size_bytes": path.stat().st_size,
+            "mode": f"{path.stat().st_mode & 0o777:04o}",
+        }
+        for name, path in sorted(paths.items())
+    }
+    plan.setdefault(
+        "future_outputs",
+        {
+            "construction": {
+                "expected_activation_id": "future-construction",
+            },
+            "controls": {
+                "expected_activation_id": "future-controls",
+            },
+        },
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+
 def _source(tmp_path: Path, *, provider_zero: bool = True) -> tuple[Path, Path]:
     launch_id = "scene-839873-qualifying"
     run_root = tmp_path / "launch-runs" / launch_id
@@ -31,6 +68,7 @@ def _source(tmp_path: Path, *, provider_zero: bool = True) -> tuple[Path, Path]:
         terminal_path,
         {
             "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+            "run_id": "scene-839873-configuration",
             "publication_result_path": str(publication_path),
             "configured_scene_revision_path": str(revision_path),
         },
@@ -115,8 +153,10 @@ def _plan(tmp_path: Path) -> Path:
         "schema_version": worker.PLAN_SCHEMA_VERSION,
         "enabled": True,
         "source_launch_id": "scene-839873-qualifying",
+        "source_launch_receipt_digest": "sha256:" + "0" * 64,
         "expected_production_commit": "a" * 40,
         "submitted_by": "configured-controls-progression",
+        "profile_dir": str(tmp_path / "profiles"),
         "robot_mount_interface_path": str(tmp_path / "inputs" / "mount.json"),
         "scene_camera_calibration_path": str(tmp_path / "inputs" / "calibration.json"),
         "base_pose_candidate_path": str(tmp_path / "inputs" / "base.json"),
@@ -125,7 +165,43 @@ def _plan(tmp_path: Path) -> Path:
         "phases": {"construction": {}, "controls": {}},
         "plan_digest": "",
     }
-    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    for phase in ("construction", "controls"):
+        for name in (
+            "release_window_path",
+            "authorization_path",
+            "launch_authority_path",
+        ):
+            path = tmp_path / "inputs" / phase / f"{name}.json"
+            _write(path, {"kind": f"{phase}-{name}"})
+            plan["phases"][phase][name] = str(path)
+    lineage_path = tmp_path / "inputs" / "construction" / "lineage_path.json"
+    _write(lineage_path, {"kind": "initial_project"})
+    plan["phases"]["construction"]["lineage_path"] = str(lineage_path)
+    (tmp_path / "profiles").mkdir(exist_ok=True)
+    receipt_path = (
+        tmp_path
+        / "launch-runs"
+        / plan["source_launch_id"]
+        / "launch_receipt.json"
+    )
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        plan["source_launch_receipt_digest"] = receipt["receipt_digest"]
+    _seal_plan(plan)
+    if receipt_path.is_file():
+        terminal_path = Path(receipt["terminal_evidence"]["result"]["path"])
+        terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+        namespace = (
+            f"{terminal['run_id']}-franka-controls-"
+            f"{str(plan['expected_production_commit'])[:12]}-episode"
+        )
+        for phase in ("construction", "controls"):
+            plan["future_outputs"][phase]["expected_activation_id"] = (
+                f"{namespace}-{phase}"
+            )
+        plan["plan_digest"] = canonical_digest(
+            plan, digest_field="plan_digest"
+        )
     path = tmp_path / "plans" / "scene-839873.json"
     _write(path, plan)
     return path
@@ -208,7 +284,7 @@ def test_timer_advances_completed_preparation_into_construction_activation(
         path = tmp_path / "inputs" / f"{name}.json"
         _write(path, {"kind": name})
         plan["phases"]["construction"][f"{name}_path"] = str(path)
-    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    _seal_plan(plan)
     _write(plan_path, plan)
     state = tmp_path / "progressions" / plan["source_launch_id"]
     base = _sealed_progression(
@@ -245,17 +321,10 @@ def test_paid_transition_uses_only_injected_webapp_submitter(
 ) -> None:
     plan_path = _plan(tmp_path)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    activation_result = tmp_path / "inputs" / "construction-activation-result.json"
-    profile = tmp_path / "inputs" / "construction-profile.json"
     authority = tmp_path / "inputs" / "construction-launch-authority.json"
-    for path in (activation_result, profile, authority):
-        _write(path, {"path": path.name})
-    plan["phases"]["construction"] = {
-        "activation_result_path": str(activation_result),
-        "profile_path": str(profile),
-        "launch_authority_path": str(authority),
-    }
-    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    _write(authority, {"path": authority.name})
+    plan["phases"]["construction"]["launch_authority_path"] = str(authority)
+    _seal_plan(plan)
     _write(plan_path, plan)
     state = tmp_path / "progressions" / plan["source_launch_id"]
     _write(
@@ -267,6 +336,23 @@ def test_paid_transition_uses_only_injected_webapp_submitter(
     )
     construction = _sealed_progression("construction_activation_queued")
     _write(state / "construction_activation_progression.json", construction)
+    activation_id = plan["future_outputs"]["construction"][
+        "expected_activation_id"
+    ]
+    profile_id = "construction-profile"
+    profile_digest = "sha256:" + "9" * 64
+    _write(
+        tmp_path / "activations" / "results" / f"{activation_id}-digest.json",
+        {
+            "activation_id": activation_id,
+            "profile_id": profile_id,
+            "profile_digest": profile_digest,
+        },
+    )
+    _write(
+        tmp_path / "profiles" / f"{profile_id}.json",
+        {"profile_id": profile_id, "profile_digest": profile_digest},
+    )
     prep_root = tmp_path / "preparations"
     _write(prep_root / "identities" / "prep-1.json", {"identity": "prep-1"})
     _write(prep_root / "results" / "prep-1-a.json", {"status": "prepared"})
@@ -293,6 +379,264 @@ def test_paid_transition_uses_only_injected_webapp_submitter(
     assert (state / "construction_launch_progression.json").is_file()
 
 
+def _construction_run(tmp_path: Path) -> tuple[Path, str, Path]:
+    launch_id = "scene-839873-franka-construction-launch"
+    run_root = tmp_path / "launch-runs" / launch_id
+    authority_path = tmp_path / "inputs" / "attempt-authority.json"
+    reconciliation_path = tmp_path / "inputs" / "spend-reconciliation.json"
+    _write(
+        authority_path,
+        {"schema_version": "native_task_arena_paid_attempt_authority.v1"},
+    )
+    _write(
+        reconciliation_path,
+        {"schema_version": "adp_same_goal_spend_reconciliation.v1"},
+    )
+    construction_path = run_root / "allocator" / "construction-result.json"
+    construction: dict[str, object] = {
+        "schema_version": "native_task_arena_construction_result.v1",
+        "status": "completed",
+        "construction_gate_qualified": True,
+        "candidate_policy_queried": False,
+        "blockers": [],
+        "result_digest": "",
+    }
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+    _write(construction_path, construction)
+    allocator_path = run_root / "allocator" / "result.json"
+    _write(
+        allocator_path,
+        {
+            "schema_version": "native_task_arena_vast_run.v1",
+            "status": "completed",
+            "blockers": [],
+            "native_control_result_path": str(construction_path),
+        },
+    )
+    profile: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_profile.v1",
+        "profile_id": "scene-839873-franka-construction",
+        "immutable_inputs": [
+            {
+                "name": "native_task_arena_attempt_authority",
+                "path": str(authority_path),
+                "digest": _digest(authority_path),
+            },
+            {
+                "name": (
+                    "native_task_arena_attempt_authority_"
+                    "prior_spend_reconciliation"
+                ),
+                "path": str(reconciliation_path),
+                "digest": _digest(reconciliation_path),
+            },
+        ],
+        "profile_digest": "",
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    _write(run_root / "launch_profile.json", profile)
+    receipt: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "completed",
+        "launch_id": launch_id,
+        "run_id": launch_id,
+        "request_digest": "sha256:" + "1" * 64,
+        "launch_profile_digest": profile["profile_digest"],
+        "terminal_evidence": {
+            "status": "passed",
+            "result": {
+                "path": str(allocator_path),
+                "exists": True,
+                "digest": _digest(allocator_path),
+            },
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write(run_root / "launch_receipt.json", receipt)
+    sync: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+        "status": "succeeded",
+        "launch_id": launch_id,
+        "run_id": launch_id,
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "attempt_number": 1,
+        "attempted_at": "2026-08-28T20:00:00+00:00",
+        "provider_mutation_performed": False,
+        "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": "completed",
+            "already_exists": False,
+            "launch_id": launch_id,
+            "run_id": launch_id,
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        },
+        "sync_result_digest": "",
+    }
+    sync["sync_result_digest"] = canonical_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    _write(run_root / "webapp_sync_succeeded.json", sync)
+    zero: dict[str, object] = {
+        "schema_version": "task_evaluation_post_teardown_provider_zero.v1",
+        "status": "provider_zero_confirmed",
+        "launch_id": launch_id,
+        "run_id": launch_id,
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "launch_profile_digest": profile["profile_digest"],
+        "provider_zero_verified": True,
+        "continuing_spend_from_this_run": False,
+        "allocator_invoked": False,
+        "provider_mutation_performed": False,
+        "automatic_retry_performed": False,
+        "blockers": [],
+        "provider_zero_receipt_digest": "",
+    }
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(run_root / "post_teardown_provider_zero_receipt.json", zero)
+    return run_root.parent, launch_id, construction_path
+
+
+def test_construction_predecessor_is_derived_only_after_terminal_provider_zero(
+    tmp_path: Path,
+) -> None:
+    launch_root, launch_id, _ = _construction_run(tmp_path)
+
+    def publish(*, path: Path, object_name: str) -> dict[str, object]:
+        size = path.stat().st_size
+        digest = _digest(path)
+        return {
+            "uri": f"s3://test/{object_name}",
+            "digest": digest,
+            "size_bytes": size,
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": digest,
+            "readback_size_bytes": size,
+        }
+
+    predecessor = worker._construction_predecessor(
+        launch_state_root=launch_root,
+        construction_launch_id=launch_id,
+        publisher=publish,
+    )
+
+    assert predecessor is not None
+    lineage, paths = predecessor
+    assert lineage["kind"] == "predecessor"
+    assert set(paths) == {
+        "prior_authority",
+        "prior_result",
+        "prior_launch_receipt",
+        "prior_webapp_sync",
+        "prior_provider_zero",
+        "prior_spend_reconciliation",
+        "construction_result",
+    }
+    assert all(lineage[name]["digest"] == _digest(Path(path)) for name, path in paths.items())
+
+
+def test_construction_predecessor_refuses_changed_qualified_result(
+    tmp_path: Path,
+) -> None:
+    launch_root, launch_id, construction_path = _construction_run(tmp_path)
+    construction = json.loads(construction_path.read_text(encoding="utf-8"))
+    construction["construction_gate_qualified"] = False
+    _write(construction_path, construction)
+
+    with pytest.raises(
+        worker.TaskEvaluationConfiguredControlsProgressionWorkerError,
+        match="configured_controls_worker_construction_result_invalid",
+    ):
+        worker._construction_predecessor(
+            launch_state_root=launch_root,
+            construction_launch_id=launch_id,
+            publisher=lambda **_: {},
+        )
+
+
+def test_timer_derives_controls_lineage_after_construction_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_path = _plan(tmp_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    state = tmp_path / "progressions" / plan["source_launch_id"]
+    _write(
+        state / "configured_controls_progression.v1.json",
+        _sealed_progression(
+            "episode_preparation_queued",
+            episode_preparation_request={"preparation_id": "prep-1"},
+        ),
+    )
+    _write(
+        state / "construction_activation_progression.json",
+        _sealed_progression("construction_activation_queued"),
+    )
+    _write(
+        state / "construction_launch_progression.json",
+        _sealed_progression(
+            "construction_launch_queued", launch_id="construction-launch-1"
+        ),
+    )
+    prep_root = tmp_path / "preparations"
+    _write(prep_root / "identities" / "prep-1.json", {"identity": "prep-1"})
+    _write(prep_root / "results" / "prep-1-a.json", {"status": "prepared"})
+    artifact_names = (
+        "prior_authority",
+        "prior_result",
+        "prior_launch_receipt",
+        "prior_webapp_sync",
+        "prior_provider_zero",
+        "prior_spend_reconciliation",
+        "construction_result",
+    )
+    paths = {
+        name: tmp_path / "derived-lineage" / f"{name}.json"
+        for name in artifact_names
+    }
+    for path in paths.values():
+        _write(path, {"schema_version": "test.derived.v1"})
+    lineage = {"kind": "predecessor"}
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        worker,
+        "_construction_predecessor",
+        lambda **_: (lineage, {name: str(path) for name, path in paths.items()}),
+    )
+
+    def stage(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return _sealed_progression("controls_activation_queued")
+
+    monkeypatch.setattr(worker, "stage_configured_controls_activation", stage)
+    result = worker.advance_configured_controls_plan(
+        plan_path=plan_path,
+        launch_state_root=tmp_path / "launch-runs",
+        progression_root=tmp_path / "progressions",
+        preparation_queue_root=prep_root,
+        activation_queue_root=tmp_path / "activations",
+        publisher_factory=lambda: object(),
+    )
+
+    assert result["status"] == "controls_activation_queued"
+    assert observed["lineage"] == lineage
+    assert observed["lineage_artifact_paths"] == {
+        name: str(path) for name, path in paths.items()
+    }
+    assert "lineage_path" not in plan["phases"]["controls"]
+
+
 def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() -> None:
     service = Path(
         "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service"
@@ -306,6 +650,23 @@ def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() 
     assert "vast_provider_adapter" not in service
     assert "--webapp-secret-file" in service
     assert "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT" in service
+    assert (
+        "BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE="
+        "/etc/blueprint/provider-secrets/"
+        "blueprint_task_evaluation_launch_submit_secret"
+    ) in service
+
+
+def test_installer_provisions_required_plan_root_and_canonical_secret() -> None:
+    installer = Path("scripts/install_live_pipeline_control_plane.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "task-evaluation-configured-controls-plans" in installer
+    assert "blueprint_task_evaluation_launch_submit_secret" in installer
+    assert 'PLAN_OWNER="$(stat' in installer
+    assert 'SECRET_OWNER="$(stat' in installer
+    assert 'chmod 0750 "${CONFIGURED_CONTROLS_PLAN_ROOT}"' in installer
+    assert 'chmod 0440 "${CONFIGURED_CONTROLS_WEBAPP_SECRET}"' in installer
 
 
 def test_default_readiness_publication_uses_preparation_admitted_prefix(
