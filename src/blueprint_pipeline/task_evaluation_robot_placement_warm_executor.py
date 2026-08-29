@@ -27,6 +27,7 @@ from .native_task_arena_warm_authority import (
     materialize_native_task_arena_warm_attempt_authority,
 )
 from .task_evaluation_diagnostic_native_arena_compiler import (
+    SCHEMA_VERSION as DIAGNOSTIC_COMPILER_OUTPUT_SCHEMA_VERSION,
     compile_diagnostic_native_arena_packet,
 )
 from .native_task_construction_plan import (
@@ -55,6 +56,35 @@ def _read_mapping(path: str | Path, *, blocker: str) -> dict[str, Any]:
     if unresolved.is_symlink() or not isinstance(value, Mapping):
         raise WarmRobotPlacementExecutorError(blocker)
     return dict(value)
+
+
+def _droid_profile_reference(path: str | Path) -> dict[str, Any]:
+    """Open either the direct reference or its sealed compiler envelope.
+
+    The diagnostic compiler is the canonical producer of the DROID profile
+    reference used by later warm rounds.  Its durable artifact is the compiler
+    output receipt, not a second standalone reference file.  Accepting that
+    receipt here keeps the consumer bound to the exact produced bytes while
+    preserving the historical direct-reference input for existing callers.
+    """
+
+    value = _read_mapping(
+        path, blocker="robot_placement_droid_profile_reference_invalid"
+    )
+    nested = value.get("droid_profile_reference")
+    if nested is None:
+        return value
+    if (
+        value.get("schema_version") != DIAGNOSTIC_COMPILER_OUTPUT_SCHEMA_VERSION
+        or value.get("status") != "completed_development_only"
+        or value.get("compiler_output_digest")
+        != canonical_digest(value, digest_field="compiler_output_digest")
+        or not isinstance(nested, Mapping)
+    ):
+        raise WarmRobotPlacementExecutorError(
+            "robot_placement_droid_profile_reference_invalid"
+        )
+    return dict(nested)
 
 
 def _absolute_file(value: object, *, blocker: str) -> Path:
@@ -232,9 +262,11 @@ class WarmNativePlacementExecutor:
             value.get("droid_profile_path"),
             blocker="robot_placement_native_loop_config_invalid",
         )
-        self._droid_profile_reference_path = _absolute_file(
-            value.get("droid_profile_reference_path"),
-            blocker="robot_placement_native_loop_config_invalid",
+        self._droid_profile_reference = _droid_profile_reference(
+            _absolute_file(
+                value.get("droid_profile_reference_path"),
+                blocker="robot_placement_native_loop_config_invalid",
+            )
         )
         self._runtime_source_packet_path = _absolute_file(
             value.get("runtime_source_packet_receipt_path"),
@@ -309,10 +341,7 @@ class WarmNativePlacementExecutor:
                 blocker="robot_placement_diagnostic_controls_input_invalid",
             ),
             droid_profile_path=self._droid_profile_path,
-            droid_profile_reference=_read_mapping(
-                self._droid_profile_reference_path,
-                blocker="robot_placement_droid_profile_reference_invalid",
-            ),
+            droid_profile_reference=self._droid_profile_reference,
             output_root=round_root / "compiled",
             robot_placement_receipt=provisional_receipt,
         )

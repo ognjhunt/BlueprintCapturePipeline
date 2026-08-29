@@ -50,10 +50,21 @@ def _native_plan() -> dict:
     return plan
 
 
-def _config(tmp_path: Path) -> dict:
+def _config(tmp_path: Path, *, compiler_reference: bool = False) -> dict:
     controls = _write(tmp_path / "controls.json", {"schema_version": "fixture.v1"})
     profile = _write(tmp_path / "profile.json", {"schema_version": "fixture.v1"})
-    profile_ref = _write(tmp_path / "profile-ref.json", {"digest": "sha256:x"})
+    reference = {"digest": "sha256:x"}
+    if compiler_reference:
+        reference = {
+            "schema_version": "task_evaluation_diagnostic_native_arena_compiler_output.v1",
+            "status": "completed_development_only",
+            "droid_profile_reference": reference,
+            "compiler_output_digest": "",
+        }
+        reference["compiler_output_digest"] = canonical_digest(
+            reference, digest_field="compiler_output_digest"
+        )
+    profile_ref = _write(tmp_path / "profile-ref.json", reference)
     source = _write(tmp_path / "source.json", {"schema_version": "fixture.v1"})
     session = _write(
         tmp_path / "session.json",
@@ -85,7 +96,8 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
     trajectory = placement_trajectory_from_native_plan(plan)
     allocator_calls = []
 
-    def fake_compile(*, output_root, **_kwargs):
+    def fake_compile(*, output_root, droid_profile_reference, **_kwargs):
+        assert droid_profile_reference == {"digest": "sha256:x"}
         packet = Path(output_root) / "native-task-packet"
         packet.mkdir(parents=True)
         _write(packet / "native_task_arena_scene_plan.v1.json", {"fixture": True})
@@ -164,7 +176,7 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
         module, "materialize_native_task_construction_phase_plan", lambda _scene: plan
     )
     executor = WarmNativePlacementExecutor(
-        config=_config(tmp_path),
+        config=_config(tmp_path, compiler_reference=True),
         task_trajectory=trajectory,
         output_root=tmp_path / "rounds",
         allocator_main=fake_allocator,
