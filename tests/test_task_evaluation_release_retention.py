@@ -22,9 +22,11 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
 from blueprint_pipeline.task_evaluation_release_retention import (
     APPLY_ACKNOWLEDGEMENT,
     EVIDENCE_BINDING_SCHEMA_VERSION,
+    RECONCILIATION_SCHEMA_VERSION,
     ReleaseRetentionError,
     apply_release_retention_plan,
     build_release_retention_plan,
+    reconcile_misplaced_release_retention_plan,
 )
 from tests.test_task_evaluation_launch_activation_contract import (
     request as activation_request,
@@ -296,6 +298,8 @@ def test_plan_protects_every_live_binding_across_all_three_managed_roots(
     )
 
     assert [row["source_commit"] for row in plan["eligible_commits"]] == [stale]
+
+
     protected = plan["protected_commits"]
     assert protected[active] == ["active_release"]
     assert protected[deploy] == ["current_deploy_candidate"]
@@ -318,6 +322,174 @@ def test_plan_protects_every_live_binding_across_all_three_managed_roots(
         item["size_bytes"] for item in stale_artifacts
     )
     assert plan["production_artifact_mutation_performed"] is False
+
+
+def _canonical_retention_plan(path: Path) -> bytes:
+    plan = {
+        "schema_version": retention.SCHEMA_VERSION,
+        "status": "dry_run",
+        "planned_at": NOW.isoformat(),
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = retention._canonical_digest(
+        plan, digest_field="plan_digest"
+    )
+    payload = retention._canonical_json(plan) + b"\n"
+    path.write_bytes(payload)
+    return payload
+
+
+def test_reconciles_only_canonical_plan_and_records_exact_move(
+    tmp_path: Path,
+) -> None:
+    binding_root = tmp_path / "bindings"
+    plan_root = tmp_path / "release-retention"
+    binding_root.mkdir()
+    plan_root.mkdir()
+    source = binding_root / "plan-20260828T234417Z.json"
+    payload = _canonical_retention_plan(source)
+    receipt_path = plan_root / "reconciliation.json"
+
+    result = reconcile_misplaced_release_retention_plan(
+        misplaced_plan_path=source,
+        evidence_binding_root=binding_root,
+        retention_plan_root=plan_root,
+        receipt_out=receipt_path,
+    )
+
+    destination = plan_root / source.name
+    assert not source.exists()
+    assert destination.read_bytes() == payload
+    assert result["schema_version"] == RECONCILIATION_SCHEMA_VERSION
+    assert result["status"] == "misplaced_retention_plan_relocated"
+    assert result["source_sha256"] == result["destination_sha256"]
+    assert result["destination_created_without_overwrite"] is True
+    assert result["evidence_binding_moved"] is False
+    assert result["unknown_bytes_moved"] is False
+    assert result["symlink_followed"] is False
+    assert json.loads(receipt_path.read_text(encoding="utf-8")) == result
+
+
+@pytest.mark.parametrize(
+    "source_kind", ["binding", "unknown", "noncanonical_plan", "symlink"]
+)
+def test_reconciliation_refuses_binding_unknown_bytes_and_symlink(
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
+    binding_root = tmp_path / "bindings"
+    plan_root = tmp_path / "release-retention"
+    binding_root.mkdir()
+    plan_root.mkdir()
+    source = binding_root / "plan-20260828T234417Z.json"
+    if source_kind == "binding":
+        source.write_text(
+            json.dumps(
+                {
+                    "schema_version": EVIDENCE_BINDING_SCHEMA_VERSION,
+                    "status": "required",
+                    "source_commit": "a" * 40,
+                    "reason": "replay remains open",
+                }
+            ),
+            encoding="utf-8",
+        )
+        blocker = "release_retention_reconciliation_source_is_evidence_binding"
+    elif source_kind == "unknown":
+        source.write_bytes(b"not a retention plan\n")
+        blocker = "release_retention_reconciliation_source_invalid"
+    elif source_kind == "noncanonical_plan":
+        canonical_path = tmp_path / "canonical.json"
+        _canonical_retention_plan(canonical_path)
+        source.write_text(
+            json.dumps(json.loads(canonical_path.read_text(encoding="utf-8")), indent=2),
+            encoding="utf-8",
+        )
+        blocker = "release_retention_reconciliation_source_not_canonical"
+    else:
+        target = tmp_path / "outside.json"
+        _canonical_retention_plan(target)
+        source.symlink_to(target)
+        blocker = "release_retention_reconciliation_source_invalid"
+
+    with pytest.raises(ReleaseRetentionError, match=blocker):
+        reconcile_misplaced_release_retention_plan(
+            misplaced_plan_path=source,
+            evidence_binding_root=binding_root,
+            retention_plan_root=plan_root,
+            receipt_out=plan_root / "reconciliation.json",
+        )
+
+    assert os.path.lexists(source)
+    assert not (plan_root / source.name).exists()
+    assert not (plan_root / "reconciliation.json").exists()
+
+
+def test_reconciliation_never_overwrites_destination_or_receipt(
+    tmp_path: Path,
+) -> None:
+    binding_root = tmp_path / "bindings"
+    plan_root = tmp_path / "release-retention"
+    binding_root.mkdir()
+    plan_root.mkdir()
+    source = binding_root / "plan-20260828T234417Z.json"
+    payload = _canonical_retention_plan(source)
+    destination = plan_root / source.name
+    destination.write_bytes(b"existing destination\n")
+
+    with pytest.raises(
+        ReleaseRetentionError,
+        match="release_retention_reconciliation_destination_exists",
+    ):
+        reconcile_misplaced_release_retention_plan(
+            misplaced_plan_path=source,
+            evidence_binding_root=binding_root,
+            retention_plan_root=plan_root,
+            receipt_out=plan_root / "reconciliation.json",
+        )
+
+    assert source.read_bytes() == payload
+    assert destination.read_bytes() == b"existing destination\n"
+
+    destination.unlink()
+    receipt_path = plan_root / "reconciliation.json"
+    receipt_path.write_bytes(b"existing receipt\n")
+    with pytest.raises(
+        ReleaseRetentionError,
+        match="release_retention_reconciliation_receipt_exists",
+    ):
+        reconcile_misplaced_release_retention_plan(
+            misplaced_plan_path=source,
+            evidence_binding_root=binding_root,
+            retention_plan_root=plan_root,
+            receipt_out=receipt_path,
+        )
+    assert source.read_bytes() == payload
+    assert not destination.exists()
+    assert receipt_path.read_bytes() == b"existing receipt\n"
+
+
+def test_dry_run_cli_refuses_plan_output_in_binding_namespace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    binding_root = tmp_path / "bindings"
+    binding_root.mkdir()
+
+    assert retention.main(
+        [
+            "--current-deploy-commit",
+            "a" * 40,
+            "--evidence-binding-root",
+            str(binding_root),
+            "--receipt-out",
+            str(binding_root / "plan.json"),
+        ]
+    ) == 2
+    output = json.loads(capsys.readouterr().out)
+    assert output["blockers"] == [
+        "release_retention_plan_output_inside_evidence_binding_root"
+    ]
+    assert not (binding_root / "plan.json").exists()
 
 
 def test_expired_orphan_standing_authorization_is_inventory_only(

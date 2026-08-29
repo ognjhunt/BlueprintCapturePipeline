@@ -82,3 +82,23 @@ two-step process after a deploy while rollout behavior is being observed.
 
 The tool neither contacts Vast nor reads credentials. It must not be used as a
 substitute for provider teardown, provider-zero, or evidence-retention policy.
+
+The dry-run plan belongs under
+`/var/lib/blueprint/pipeline-control-plane/release-retention/`; the CLI refuses
+to write it into `task-evaluation-release-retention-bindings/`. If an older
+operator invocation already placed a plan in the binding namespace, reconcile
+that one exact file before another scan:
+
+```bash
+python -m blueprint_pipeline.task_evaluation_release_retention \
+  --reconcile-misplaced-plan \
+    /var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings/plan-<timestamp>.json \
+  --receipt-out \
+    /var/lib/blueprint/pipeline-control-plane/release-retention/reconciliation-<timestamp>.json
+```
+
+Reconciliation accepts only canonical bytes with a valid retention-plan
+digest, creates the same filename in the retention-plan root without
+overwriting, removes the misplaced source, and records both byte digests. It
+refuses evidence bindings, unknown JSON or bytes, symlinks, nested paths, and
+pre-existing destinations or receipts.

@@ -58,6 +58,9 @@ from blueprint_pipeline.task_evaluation_release_reference_lock import (
 SCHEMA_VERSION = "task_evaluation_release_retention_plan.v1"
 APPLY_SCHEMA_VERSION = "task_evaluation_release_retention_apply.v1"
 EVIDENCE_BINDING_SCHEMA_VERSION = "task_evaluation_release_retention_binding.v1"
+RECONCILIATION_SCHEMA_VERSION = (
+    "task_evaluation_release_retention_namespace_reconciliation.v1"
+)
 APPLY_ACKNOWLEDGEMENT = "reap-task-evaluation-release-artifacts"
 
 DEFAULT_RELEASE_ROOT = Path("/opt/blueprint/task-evaluation-control-plane-releases")
@@ -76,6 +79,9 @@ DEFAULT_STANDING_AUTHORIZATION_DIR = Path(
 DEFAULT_EVIDENCE_BINDING_ROOT = Path(
     "/var/lib/blueprint/pipeline-control-plane/"
     "task-evaluation-release-retention-bindings"
+)
+DEFAULT_RETENTION_PLAN_ROOT = Path(
+    "/var/lib/blueprint/pipeline-control-plane/release-retention"
 )
 _QUEUE_BASE = Path("/var/lib/blueprint/pipeline-control-plane")
 _LIVE_QUEUE_NAMES = (
@@ -1037,6 +1043,188 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         ) from exc
 
 
+def _assert_direct_child(path: Path, *, root: Path, blocker: str) -> None:
+    if path.parent.resolve() != root.resolve() or path.name in {"", ".", ".."}:
+        raise ReleaseRetentionError(blocker)
+
+
+def _assert_plan_outside_binding_root(
+    *, output_path: Path, evidence_binding_root: Path
+) -> None:
+    binding_root = evidence_binding_root.resolve()
+    resolved = output_path.resolve()
+    if resolved == binding_root or binding_root in resolved.parents:
+        raise ReleaseRetentionError(
+            "release_retention_plan_output_inside_evidence_binding_root"
+        )
+
+
+def reconcile_misplaced_release_retention_plan(
+    *,
+    misplaced_plan_path: str | Path,
+    evidence_binding_root: str | Path,
+    retention_plan_root: str | Path,
+    receipt_out: str | Path,
+) -> dict[str, Any]:
+    """Relocate one canonical plan that was written into the binding root.
+
+    This is deliberately not a directory sweep.  The operator names one exact
+    source file, and the function refuses evidence bindings, unknown bytes,
+    symlinks, nested paths, and any pre-existing destination or receipt.
+    """
+
+    source = _absolute_path(
+        misplaced_plan_path, field="misplaced_plan"
+    )
+    binding_root = _absolute_path(
+        evidence_binding_root, field="evidence_binding_root"
+    )
+    plan_root = _absolute_path(
+        retention_plan_root, field="retention_plan_root"
+    )
+    receipt_path = _absolute_path(receipt_out, field="receipt_out")
+    _assert_directory(
+        binding_root,
+        blocker="release_retention_evidence_binding_root",
+    )
+    _assert_directory(plan_root, blocker="release_retention_plan_root")
+    if binding_root.resolve() == plan_root.resolve():
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_roots_overlap"
+        )
+    _assert_direct_child(
+        source,
+        root=binding_root,
+        blocker="release_retention_reconciliation_source_not_direct_child",
+    )
+    _assert_direct_child(
+        receipt_path,
+        root=plan_root,
+        blocker="release_retention_reconciliation_receipt_not_direct_child",
+    )
+    if source.is_symlink() or not source.is_file():
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_source_invalid"
+        )
+    destination = plan_root / source.name
+    if destination.is_symlink() or os.path.lexists(destination):
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_destination_exists"
+        )
+    if receipt_path == destination or os.path.lexists(receipt_path):
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_receipt_exists"
+        )
+    source_bytes = source.read_bytes()
+    try:
+        decoded = json.loads(source_bytes)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_source_invalid"
+        ) from exc
+    if (
+        isinstance(decoded, Mapping)
+        and decoded.get("schema_version") == EVIDENCE_BINDING_SCHEMA_VERSION
+    ):
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_source_is_evidence_binding"
+        )
+    plan = _read_plan(source)
+    canonical_bytes = _canonical_json(plan) + b"\n"
+    if source_bytes != canonical_bytes:
+        raise ReleaseRetentionError(
+            "release_retention_reconciliation_source_not_canonical"
+        )
+    source_digest = _sha256_bytes(source_bytes)
+
+    receipt_fd: int | None = None
+    destination_linked = False
+    source_unlinked = False
+    try:
+        receipt_fd = os.open(
+            receipt_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            os.link(source, destination, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise ReleaseRetentionError(
+                "release_retention_reconciliation_destination_exists"
+            ) from exc
+        except OSError as exc:
+            raise ReleaseRetentionError(
+                "release_retention_reconciliation_link_failed"
+            ) from exc
+        destination_linked = True
+        destination_bytes = destination.read_bytes()
+        if destination_bytes != source_bytes:
+            raise ReleaseRetentionError(
+                "release_retention_reconciliation_destination_mismatch"
+            )
+        source.unlink()
+        source_unlinked = True
+        if os.path.lexists(source):
+            raise ReleaseRetentionError(
+                "release_retention_reconciliation_source_remove_failed"
+            )
+        result: dict[str, Any] = {
+            "schema_version": RECONCILIATION_SCHEMA_VERSION,
+            "status": "misplaced_retention_plan_relocated",
+            "source_path": str(source),
+            "destination_path": str(destination),
+            "source_sha256": source_digest,
+            "destination_sha256": _sha256_bytes(destination_bytes),
+            "size_bytes": len(source_bytes),
+            "plan_digest": plan["plan_digest"],
+            "source_removed": True,
+            "destination_created_without_overwrite": True,
+            "evidence_binding_moved": False,
+            "unknown_bytes_moved": False,
+            "symlink_followed": False,
+            "provider_mutation_performed": False,
+            "managed_release_artifact_mutation_performed": False,
+            "retention_namespace_mutation_performed": True,
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = _canonical_digest(
+            result, digest_field="receipt_digest"
+        )
+        payload = _canonical_json(result) + b"\n"
+        written = 0
+        while written < len(payload):
+            count = os.write(receipt_fd, payload[written:])
+            if count <= 0:
+                raise OSError("short reconciliation receipt write")
+            written += count
+        os.fsync(receipt_fd)
+        return result
+    except Exception:
+        if source_unlinked and destination_linked and not os.path.lexists(source):
+            try:
+                os.link(destination, source, follow_symlinks=False)
+                destination.unlink()
+            except OSError:
+                pass
+        elif destination_linked and not source_unlinked:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        if receipt_fd is not None:
+            os.close(receipt_fd)
+            receipt_fd = None
+        if os.path.lexists(receipt_path):
+            try:
+                receipt_path.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        if receipt_fd is not None:
+            os.close(receipt_fd)
+
+
 def _assert_receipt_outside_managed_roots(
     path: Path, managed_roots: Mapping[str, Any]
 ) -> None:
@@ -1348,6 +1536,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--evidence-binding-root", default=str(DEFAULT_EVIDENCE_BINDING_ROOT)
     )
+    parser.add_argument(
+        "--retention-plan-root", default=str(DEFAULT_RETENTION_PLAN_ROOT)
+    )
+    parser.add_argument("--reconcile-misplaced-plan")
     parser.add_argument("--keep-commit", action="append", default=[])
     parser.add_argument(
         "--minimum-age-seconds", type=int, default=DEFAULT_MINIMUM_AGE_SECONDS
@@ -1358,7 +1550,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ack")
     args = parser.parse_args(argv)
     try:
-        if args.apply:
+        if args.reconcile_misplaced_plan:
+            if (
+                args.apply
+                or args.current_deploy_commit
+                or args.dry_run_plan
+                or args.ack
+                or args.keep_commit
+            ):
+                raise ReleaseRetentionError(
+                    "release_retention_reconciliation_parameter_conflict"
+                )
+            result = reconcile_misplaced_release_retention_plan(
+                misplaced_plan_path=args.reconcile_misplaced_plan,
+                evidence_binding_root=args.evidence_binding_root,
+                retention_plan_root=args.retention_plan_root,
+                receipt_out=args.receipt_out,
+            )
+        elif args.apply:
             if args.current_deploy_commit:
                 raise ReleaseRetentionError(
                     "release_retention_apply_parameters_must_come_from_plan"
@@ -1381,6 +1590,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ReleaseRetentionError(
                     "release_retention_deploy_candidate_missing"
                 )
+            output_path = _absolute_path(args.receipt_out, field="receipt_out")
+            _assert_plan_outside_binding_root(
+                output_path=output_path,
+                evidence_binding_root=_absolute_path(
+                    args.evidence_binding_root,
+                    field="evidence_binding_root",
+                ),
+            )
             result = build_release_retention_plan(
                 release_root=args.release_root,
                 runtime_root=args.runtime_root,
@@ -1396,7 +1613,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 keep_commits=tuple(args.keep_commit),
                 minimum_age_seconds=args.minimum_age_seconds,
             )
-            output_path = _absolute_path(args.receipt_out, field="receipt_out")
             _assert_receipt_outside_managed_roots(
                 output_path, dict(result["managed_roots"])
             )
@@ -1426,11 +1642,14 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "APPLY_ACKNOWLEDGEMENT",
     "APPLY_SCHEMA_VERSION",
+    "DEFAULT_RETENTION_PLAN_ROOT",
     "DEFAULT_LIVE_REFERENCE_ROOTS",
     "EVIDENCE_BINDING_SCHEMA_VERSION",
+    "RECONCILIATION_SCHEMA_VERSION",
     "ReleaseRetentionError",
     "SCHEMA_VERSION",
     "apply_release_retention_plan",
     "build_release_retention_plan",
     "main",
+    "reconcile_misplaced_release_retention_plan",
 ]
