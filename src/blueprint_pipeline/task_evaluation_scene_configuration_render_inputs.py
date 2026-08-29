@@ -33,6 +33,9 @@ from .gaussian_splat_decode import (
     write_standard_3dgs_ply_subset_exact,
 )
 from .sealed_camera_render import render_splat_at_exact_cameras
+from .task_evaluation_scene_configuration_semantic_locality import (
+    MAX_INNER_FEATHER_RADIUS_PIXELS,
+)
 from .task_evaluation_splat_render_runtime import (
     SCENE_CONFIGURATION_BUNDLE_SCHEMA_VERSION,
     runtime_from_environment,
@@ -41,6 +44,16 @@ from .task_evaluation_splat_render_runtime import (
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_render_inputs.v1"
+# A removed object takes its contact shadow and soft boundary with it, and both
+# sit just outside its projected AABB. Admitting only the AABB leaves that
+# footprint to be restored by the locality seal, which is how scene 839873 kept
+# a residual oval on the tabletop after a clean editor result.
+SOURCE_OBJECT_FOOTPRINT_MARGIN_FRACTION = 0.12
+# The seal erodes MAX_INNER_FEATHER_RADIUS_PIXELS inward from the admitted
+# boundary. A margin inside that band would simply be feathered back to source,
+# so the smallest admissible margin has to clear it outright.
+MIN_SOURCE_OBJECT_FOOTPRINT_MARGIN_PIXELS = MAX_INNER_FEATHER_RADIUS_PIXELS + 8
+MAX_SOURCE_OBJECT_FOOTPRINT_MARGIN_PIXELS = 64
 Renderer = Callable[..., Mapping[str, Any]]
 RuntimeResolver = Callable[..., Mapping[str, Any]]
 SplatDecoder = Callable[..., Mapping[str, Any]]
@@ -278,14 +291,33 @@ def _project_registered_bounds_mask(
     projected_v = float(intrinsics["fy"]) * camera_points[:, 1] / camera_points[:, 2] + float(
         intrinsics["cy"]
     )
-    left = max(0, int(math.floor(float(projected_u.min()))))
-    top = max(0, int(math.floor(float(projected_v.min()))))
-    right = min(width, int(math.ceil(float(projected_u.max()))))
-    bottom = min(height, int(math.ceil(float(projected_v.max()))))
-    if right <= left or bottom <= top:
+    object_left = max(0, int(math.floor(float(projected_u.min()))))
+    object_top = max(0, int(math.floor(float(projected_v.min()))))
+    object_right = min(width, int(math.ceil(float(projected_u.max()))))
+    object_bottom = min(height, int(math.ceil(float(projected_v.max()))))
+    if object_right <= object_left or object_bottom <= object_top:
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_target_not_visible"
         )
+    margin = int(
+        min(
+            MAX_SOURCE_OBJECT_FOOTPRINT_MARGIN_PIXELS,
+            max(
+                MIN_SOURCE_OBJECT_FOOTPRINT_MARGIN_PIXELS,
+                math.ceil(
+                    SOURCE_OBJECT_FOOTPRINT_MARGIN_FRACTION
+                    * max(
+                        object_right - object_left,
+                        object_bottom - object_top,
+                    )
+                ),
+            ),
+        )
+    )
+    left = max(0, object_left - margin)
+    top = max(0, object_top - margin)
+    right = min(width, object_right + margin)
+    bottom = min(height, object_bottom + margin)
     mask = np.zeros((height, width), dtype=np.uint8)
     mask[top:bottom, left:right] = 255
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,6 +329,13 @@ def _project_registered_bounds_mask(
         "projection_kind": "registered_world_aabb_conservative_projection",
         "observed_segmentation_truth": False,
         "pixel_bounds_xyxy": [left, top, right, bottom],
+        "object_pixel_bounds_xyxy": [
+            object_left,
+            object_top,
+            object_right,
+            object_bottom,
+        ],
+        "contact_shadow_margin_pixels": margin,
         "foreground_pixel_count": int((right - left) * (bottom - top)),
     }
 
