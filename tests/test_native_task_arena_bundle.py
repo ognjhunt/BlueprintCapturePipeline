@@ -1636,6 +1636,39 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
 
+def test_controls_bundle_cli_forwards_unqualified_diagnostic_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict = {}
+
+    def fake_build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "sealed"}
+
+    monkeypatch.setattr(
+        controls_bundle_module,
+        "build_native_task_arena_controls_bundle",
+        fake_build,
+    )
+
+    assert controls_bundle_module.main(
+        [
+            "--job-dir",
+            "job",
+            "--packet-dir",
+            "packet",
+            "--construction-result",
+            "construction.json",
+            "--runtime-source-packet-receipt",
+            "runtime.json",
+            "--implementation-commit",
+            "a" * 40,
+            "--allow-unqualified-construction-diagnostic",
+        ]
+    ) == 0
+    assert observed["allow_unqualified_construction_diagnostic"] is True
+
+
 def test_controls_bundle_seals_bounded_orientation_reference_into_plan(
     tmp_path: Path,
 ) -> None:
