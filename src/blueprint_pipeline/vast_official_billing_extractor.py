@@ -778,11 +778,11 @@ def _scene_configuration_terminal_records(
     expected = {
         "provider_adapter_result": (
             "provider_adapter_result_path",
-            job / "provider_run" / "vast_provider_adapter_result.json",
+            job / "vast_provider_run" / "vast_provider_adapter_result.json",
         ),
         "teardown_manifest": (
             "teardown_manifest_path",
-            job / "provider_run" / "vast_teardown_manifest.json",
+            job / "vast_provider_run" / "vast_teardown_manifest.json",
         ),
         "artifact_manifest": (
             "artifact_manifest_path",
@@ -861,11 +861,11 @@ def _scene_configuration_terminal_records(
         row.get("relative_path"): row for row in files if isinstance(row, Mapping)
     }
     critical = {
-        "provider_run/vast_provider_adapter_result.json": (
+        "vast_provider_run/vast_provider_adapter_result.json": (
             loaded["provider_adapter_result"],
             "allocator_adapter_result",
         ),
-        "provider_run/vast_teardown_manifest.json": (
+        "vast_provider_run/vast_teardown_manifest.json": (
             loaded["teardown_manifest"],
             "teardown_manifest",
         ),
