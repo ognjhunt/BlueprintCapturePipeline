@@ -30,6 +30,9 @@ from .decision_evidence_contracts import (
 from .task_evaluation_configured_scene_object_store import (
     publish_configured_scene_artifact,
 )
+from .task_evaluation_configured_controls_plan import (
+    PLAN_SCHEMA_VERSION as CONFIGURED_CONTROLS_PLAN_SCHEMA_VERSION,
+)
 from .task_evaluation_scene_artifact_retention import (
     seal_scene_artifact_remote_index,
 )
@@ -493,8 +496,7 @@ def _validate_configured_controls_dependency(
             path, code="terminal_scene_payload_controls_dependency_invalid"
         )
         if (
-            plan.get("schema_version")
-            != "task_evaluation_configured_controls_progression_plan.v1"
+            plan.get("schema_version") != CONFIGURED_CONTROLS_PLAN_SCHEMA_VERSION
             or plan.get("plan_digest")
             != canonical_digest(plan, digest_field="plan_digest")
             or not isinstance(plan.get("enabled"), bool)

@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.task_evaluation_configured_controls_plan import (
+    PLAN_SCHEMA_VERSION as CONFIGURED_CONTROLS_PLAN_SCHEMA_VERSION,
+)
 from blueprint_pipeline.task_evaluation_terminal_scene_payload_retention import (
     APPLY_ACK,
     TaskEvaluationTerminalScenePayloadRetentionError,
@@ -455,7 +458,7 @@ def test_enabled_configured_controls_plan_pins_source_launch(tmp_path: Path) -> 
     _write(
         scope["controls_plans"] / "scene-839873.json",
         {
-            "schema_version": "task_evaluation_configured_controls_progression_plan.v1",
+            "schema_version": CONFIGURED_CONTROLS_PLAN_SCHEMA_VERSION,
             "enabled": True,
             "source_launch_id": scope["scope"].name,
         },

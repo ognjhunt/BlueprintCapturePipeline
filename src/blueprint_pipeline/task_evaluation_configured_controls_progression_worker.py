@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import stat
 import subprocess  # nosec B404 - fixed repository-owned launch-only client
 import sys
@@ -36,7 +37,8 @@ from .task_evaluation_launch_dispatcher import LAUNCH_RECEIPT_DIGEST_CANONICALIZ
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 
 
-PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v1"
+PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 WORKER_RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_worker.v1"
 CONFIGURED_CONTROLS_KEY_PREFIX = (
     "task-evaluation/production-inputs/configured-controls"
@@ -115,6 +117,12 @@ def _plan(path: Path) -> dict[str, Any]:
         or not str(value.get("source_launch_receipt_digest") or "").startswith(
             "sha256:"
         )
+        or _COMMIT.fullmatch(
+            str(value.get("source_configuration_commit") or "")
+        )
+        is None
+        or _COMMIT.fullmatch(str(value.get("expected_production_commit") or ""))
+        is None
         or not str(value.get("submitted_by") or "").strip()
         or set(value.get("phases") or {}) != {"construction", "controls"}
         or set(value["phases"].get("construction") or {})
@@ -592,7 +600,12 @@ def advance_configured_controls_plan(
     base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
     if base is None:
         terminal, receipt, _ = _validate_source(run_root)
-        if receipt.get("receipt_digest") != plan["source_launch_receipt_digest"]:
+        if (
+            receipt.get("receipt_digest")
+            != plan["source_launch_receipt_digest"]
+            or receipt.get("source_commit")
+            != plan["source_configuration_commit"]
+        ):
             raise TaskEvaluationConfiguredControlsProgressionWorkerError(
                 "configured_controls_worker_source_receipt_mismatch"
             )
