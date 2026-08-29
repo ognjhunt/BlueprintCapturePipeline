@@ -39,6 +39,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget impor
     MAX_ATTEMPT_SPEND_USD,
     MAX_HOURLY_RATE_USD,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
+    MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
     MIN_EXTERNAL_SERVICE_SPEND_USD,
     OUTPUT_AND_CLOSURE_RESERVE_SECONDS,
@@ -1161,7 +1162,7 @@ def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
         diagnostic_bootstrap_mode="fresh",
         carried_stage_count=0,
     ) == {
-        "artifixer_semantic_teacher": 2.4,
+        "artifixer_semantic_teacher": MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
         "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
         "content_agents": 0.2,
     }
@@ -1836,7 +1837,9 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         provider_compute_spend_cap_usd=MAX_PROVIDER_COMPUTE_SPEND_USD,
         openai_max_cost_usd=MIN_EXTERNAL_SERVICE_SPEND_USD,
         openai_max_requests=32,
-        openai_artifixer_semantic_teacher_max_cost_usd=2.4,
+        openai_artifixer_semantic_teacher_max_cost_usd=(
+            MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+        ),
         openai_artifixer_visual_review_max_cost_usd=(
             MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
         ),

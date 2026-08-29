@@ -40,7 +40,7 @@ def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> 
         MAX_HOURLY_RATE_USD * REQUIRED_PARENT_TTL_SECONDS / 3_600
     )
     assert MAX_PROVIDER_COMPUTE_SPEND_USD == 6.0
-    assert MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD == 2.4
+    assert MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD == 4.8
     reviewer_costs = OpenAIAgentsSDKConfig()
     fixed_reviewer_reservation = (
         AI_REVIEW_MAX_INPUT_TOKENS
@@ -48,11 +48,13 @@ def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> 
         + AI_REVIEW_MAX_OUTPUT_TOKENS
         * reviewer_costs.output_cost_per_million_tokens_usd
     ) / 1_000_000
-    assert MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD == fixed_reviewer_reservation == 0.32
+    assert MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD == (
+        2 * fixed_reviewer_reservation
+    ) == 0.64
     assert MIN_CONTENT_AGENTS_SPEND_USD == 0.2
-    assert MIN_EXTERNAL_SERVICE_SPEND_USD == 2.92
-    assert MAX_EXTERNAL_SERVICE_SPEND_USD == 3.0
-    assert MAX_ATTEMPT_SPEND_USD == 10.0
+    assert MIN_EXTERNAL_SERVICE_SPEND_USD == 5.64
+    assert MAX_EXTERNAL_SERVICE_SPEND_USD == 6.0
+    assert MAX_ATTEMPT_SPEND_USD == 12.0
     assert (
         MAX_ATTEMPT_SPEND_USD
         >= MAX_PROVIDER_COMPUTE_SPEND_USD + MAX_EXTERNAL_SERVICE_SPEND_USD
