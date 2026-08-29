@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from pathlib import Path
 
 from blueprint_pipeline.task_evaluation_robot_placement_agent_cli import (
     _persist_images,
     _read_mapping,
+    run_robot_placement_cli,
 )
 
 
@@ -42,3 +44,85 @@ def test_cli_reads_only_mapping_bindings(tmp_path) -> None:
     assert _read_mapping(path, label="scene_binding") == {
         "schema_version": "fixture.v1"
     }
+
+
+def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_agent_cli as module
+
+    trajectory = {
+        "phases": [
+            {"position_world_m": [2.79, -6.76, 0.818]},
+            {"position_world_m": [2.91, -6.76, 0.818]},
+        ]
+    }
+    proposal = {
+        "candidate_id": "candidate",
+        "support_surface_id": "surface",
+        "pose": {
+            "position_world_m": [3.0, -6.3, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+    }
+    rendered_waypoints = []
+
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
+    monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        module, "enumerate_robot_placement_geometry_candidates", lambda **_: [proposal]
+    )
+
+    def render(*, trajectory_waypoints_world_m=(), **_kwargs):
+        rendered_waypoints.append(list(trajectory_waypoints_world_m))
+        digest = "sha256:" + hashlib.sha256(_ONE_PIXEL_PNG).hexdigest()
+        return [
+            {
+                "label": "top_down_xy",
+                "digest": digest,
+                "image_url": "data:image/png;base64,"
+                + base64.b64encode(_ONE_PIXEL_PNG).decode("ascii"),
+                "detail": "high",
+            }
+        ]
+
+    def validate(*, index, proposal, target_position_world_m, robot_id):
+        assert index is not None
+        assert proposal["candidate_id"] == "candidate"
+        assert target_position_world_m == [3.0, -6.7, 0.8]
+        assert robot_id == "franka_panda"
+        return {"status": "passed"}
+
+    def run_agent(**kwargs):
+        kwargs["validate_candidate"](proposal)
+        kwargs["render_candidate"](proposal, 0)
+        assert kwargs["task_trajectory"] == trajectory
+        return {"receipt_digest": "sha256:" + "a" * 64}
+
+    monkeypatch.setattr(module, "render_robot_placement_geometry_previews", render)
+    monkeypatch.setattr(module, "validate_robot_placement_geometry_candidate", validate)
+    monkeypatch.setattr(module, "OpenAIAgentsSDKInvoker", lambda _config: object())
+    monkeypatch.setattr(module, "run_task_evaluation_robot_placement_agent", run_agent)
+
+    run_robot_placement_cli(
+        run_id="trajectory-preview",
+        scene_collision_usd=Path("scene.usda"),
+        robot_asset_usd=Path("robot.usda"),
+        target_position_world_m=[3.0, -6.7, 0.8],
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "push"},
+        overview_image_paths=[],
+        output_dir=tmp_path / "output",
+        max_rounds=2,
+        candidate_inventory_cap=12,
+        max_input_tokens=1_000,
+        max_inference_cost_usd=1.0,
+        allow_live_invocation=False,
+        tracing_disabled=True,
+        task_trajectory=trajectory,
+    )
+
+    assert rendered_waypoints == [
+        [[2.79, -6.76, 0.818], [2.91, -6.76, 0.818]],
+        [[2.79, -6.76, 0.818], [2.91, -6.76, 0.818]],
+    ]

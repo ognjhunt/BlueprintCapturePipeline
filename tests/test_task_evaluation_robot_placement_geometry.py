@@ -157,3 +157,33 @@ def test_geometry_previews_are_digest_bound_multimodal_inputs(tmp_path) -> None:
     assert [image["label"] for image in images] == ["top_down_xy", "side_xz"]
     assert all(image["digest"].startswith("sha256:") for image in images)
     assert all(image["image_url"].startswith("data:image/png;base64,") for image in images)
+
+
+def test_geometry_previews_show_full_tool_trajectory(tmp_path) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    floor = next(
+        surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor"
+    )
+    proposal = _proposal(floor.surface_id)
+    target = [0.8, 0.0, 0.5]
+    point_only = render_robot_placement_geometry_previews(
+        index=index,
+        proposal=proposal,
+        target_position_world_m=target,
+        image_size=(320, 240),
+    )
+    trajectory = render_robot_placement_geometry_previews(
+        index=index,
+        proposal=proposal,
+        target_position_world_m=target,
+        trajectory_waypoints_world_m=[[0.45, 0.0, 0.5], target],
+        image_size=(320, 240),
+    )
+
+    assert [row["digest"] for row in trajectory] != [
+        row["digest"] for row in point_only
+    ]

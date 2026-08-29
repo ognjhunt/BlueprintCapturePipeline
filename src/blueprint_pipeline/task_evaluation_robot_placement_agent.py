@@ -20,6 +20,10 @@ from .task_evaluation_supervisor.agents_sdk import (
     AgentsSDKInvoker,
     OpenAIAgentsSDKConfig,
 )
+from .task_evaluation_robot_placement_trajectory import (
+    RobotPlacementTrajectoryError,
+    validate_robot_placement_trajectory,
+)
 
 
 ROBOT_PLACEMENT_AGENT_MODEL = "gpt-5.6-sol"
@@ -282,6 +286,7 @@ def _build_placement_receipt(
     accepted: Mapping[str, Any] | None,
     max_rounds: int,
     native_loop_enabled: bool,
+    task_trajectory_digest: str | None,
 ) -> dict[str, Any]:
     accepted_native = dict((accepted or {}).get("native_attempt") or {})
     receipt: dict[str, Any] = {
@@ -296,6 +301,7 @@ def _build_placement_receipt(
         "task_binding_digest": task_digest,
         "scene_context_digest": scene_context_digest,
         "task_context_digest": task_context_digest,
+        "task_trajectory_digest": task_trajectory_digest,
         "overview_images": _image_metadata(overview_images),
         "rounds": list(history),
         "accepted_pose": accepted["proposal"]["pose"] if accepted is not None else None,
@@ -342,6 +348,7 @@ def run_task_evaluation_robot_placement_agent(
     validate_candidate: PlacementValidator,
     render_candidate: PlacementRenderer,
     execute_candidate: PlacementExecutor | None = None,
+    task_trajectory: Mapping[str, Any] | None = None,
     max_rounds: int = DEFAULT_MAX_PLACEMENT_ROUNDS,
     max_input_tokens: int = 300_000,
 ) -> dict[str, Any]:
@@ -351,6 +358,14 @@ def run_task_evaluation_robot_placement_agent(
         raise RobotPlacementAgentError("robot_placement_round_cap_invalid")
     if not overview_images:
         raise RobotPlacementAgentError("robot_placement_overview_images_missing")
+    trajectory: dict[str, Any] | None = None
+    if task_trajectory is not None:
+        try:
+            trajectory = validate_robot_placement_trajectory(task_trajectory)
+        except RobotPlacementTrajectoryError as exc:
+            raise RobotPlacementAgentError(str(exc)) from exc
+    if execute_candidate is not None and trajectory is None:
+        raise RobotPlacementAgentError("robot_placement_native_trajectory_missing")
     scene = json.loads(json.dumps(dict(scene_binding), allow_nan=False))
     task = json.loads(json.dumps(dict(task_binding), allow_nan=False))
     scene_advisory_context = json.loads(
@@ -359,6 +374,8 @@ def run_task_evaluation_robot_placement_agent(
     task_advisory_context = json.loads(
         json.dumps(dict(task_context or {}), allow_nan=False)
     )
+    if trajectory is not None:
+        task_advisory_context["native_trajectory"] = trajectory
     scene_digest = canonical_digest(scene)
     task_digest = canonical_digest(task)
     scene_context_digest = canonical_digest(scene_advisory_context)
@@ -369,7 +386,10 @@ def run_task_evaluation_robot_placement_agent(
 
     proposal_instructions = (
         "You place a fixed-base robot for one observed site and task. Use the supplied exact "
-        "geometry summary, target, robot dimensions, overview images, and prior gate failures. "
+        "geometry summary, robot dimensions, overview images, immutable task trajectory, and "
+        "prior native gate failures. Choose the base position and yaw so every authored "
+        "precontact, contact, motion, release, retreat, and recovery tool pose is reachable at "
+        "its authored orientation, not merely one task center point. "
         "Propose one physically sensible mount pose. The robot base must sit on the declared "
         "support surface, never inside a table/counter/floor; its body must not visibly clip site "
         "geometry; and the task workspace must be reachable. Do not claim success or modify any "
@@ -392,6 +412,7 @@ def run_task_evaluation_robot_placement_agent(
             "task_binding": task,
             "scene_context": scene_advisory_context,
             "task_context": task_advisory_context,
+            "task_trajectory": trajectory,
             "prior_rounds": history,
             "authority_boundary": {
                 "model_proposes_only": True,
@@ -399,6 +420,9 @@ def run_task_evaluation_robot_placement_agent(
                 "native_construction_still_required": True,
                 "model_chooses_and_creates_each_next_pose": True,
                 "native_failures_must_inform_the_next_pose": True,
+                "native_failure_metrics_and_images_are_authoritative_feedback": True,
+                "every_trajectory_phase_requires_native_ik_and_collision_readback": True,
+                "model_may_not_modify_the_trajectory": True,
                 "model_may_not_change_thresholds": True,
             },
         }
@@ -514,6 +538,9 @@ def run_task_evaluation_robot_placement_agent(
                 accepted=round_record,
                 max_rounds=max_rounds,
                 native_loop_enabled=False,
+                task_trajectory_digest=(
+                    trajectory["trajectory_digest"] if trajectory is not None else None
+                ),
             )
             native_attempt = _validated_native_attempt(
                 execute_candidate(proposal, provisional_receipt, round_index)
@@ -537,6 +564,9 @@ def run_task_evaluation_robot_placement_agent(
         accepted=accepted,
         max_rounds=max_rounds,
         native_loop_enabled=execute_candidate is not None,
+        task_trajectory_digest=(
+            trajectory["trajectory_digest"] if trajectory is not None else None
+        ),
     )
 
 
@@ -557,6 +587,14 @@ def validate_robot_placement_receipt(
         or receipt.get("candidate_may_self_authorize") is not False
         or receipt.get("physical_execution_authorized") is not False
         or not isinstance(receipt.get("native_construction_required"), bool)
+        or (
+            receipt.get("task_trajectory_digest") is not None
+            and not (
+                isinstance(receipt.get("task_trajectory_digest"), str)
+                and str(receipt["task_trajectory_digest"]).startswith("sha256:")
+                and len(str(receipt["task_trajectory_digest"])) == 71
+            )
+        )
         or receipt.get("model_grades_controls") is not False
         or receipt.get("claim_ceiling") != ROBOT_PLACEMENT_CLAIM_CEILING
         or receipt.get("receipt_digest")
@@ -600,6 +638,7 @@ def validate_robot_placement_receipt(
             or native_attempt.get("native_attempt_digest")
             != receipt.get("accepted_native_attempt_digest")
             or receipt.get("native_construction_required") is not False
+            or receipt.get("task_trajectory_digest") is None
         ):
             raise RobotPlacementAgentError("robot_placement_native_acceptance_invalid")
         _validated_native_attempt(native_attempt)

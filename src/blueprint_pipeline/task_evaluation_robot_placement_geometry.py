@@ -594,6 +594,7 @@ def render_robot_placement_geometry_previews(
     index: RobotPlacementGeometryIndex,
     proposal: Mapping[str, Any],
     target_position_world_m: Sequence[float],
+    trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     image_size: tuple[int, int] = (1000, 720),
 ) -> list[dict[str, Any]]:
     """Render digest-bound top and side geometry views without a paid GPU."""
@@ -602,7 +603,17 @@ def render_robot_placement_geometry_previews(
     position = np.asarray(pose.get("position_world_m"), dtype=np.float64)
     quaternion = [float(value) for value in pose.get("orientation_xyzw")]
     target = np.asarray(target_position_world_m, dtype=np.float64)
-    if position.shape != (3,) or target.shape != (3,) or len(quaternion) != 4:
+    trajectory = np.asarray(trajectory_waypoints_world_m, dtype=np.float64)
+    if trajectory.size == 0:
+        trajectory = target.reshape(1, 3)
+    if (
+        position.shape != (3,)
+        or target.shape != (3,)
+        or trajectory.ndim != 2
+        or trajectory.shape[1] != 3
+        or not np.all(np.isfinite(trajectory))
+        or len(quaternion) != 4
+    ):
         raise RobotPlacementGeometryError("robot_placement_preview_pose_invalid")
     yaw, _ = _yaw_from_quaternion(quaternion)
     rotation = np.asarray(
@@ -625,11 +636,11 @@ def render_robot_placement_geometry_previews(
         margin = 55
         low = np.minimum(
             robot_world_triangles[:, :, list(axes)].min(axis=(0, 1)),
-            target[list(axes)],
+            trajectory[:, list(axes)].min(axis=0),
         )
         high = np.maximum(
             robot_world_triangles[:, :, list(axes)].max(axis=(0, 1)),
-            target[list(axes)],
+            trajectory[:, list(axes)].max(axis=0),
         )
         padding = np.maximum((high - low) * 0.18, 0.18)
         low -= padding
@@ -717,11 +728,25 @@ def render_robot_placement_geometry_previews(
             outline=(0, 90, 40, 255),
             width=2,
         )
+        trajectory_points = [point(row[list(axes)]) for row in trajectory]
+        if len(trajectory_points) > 1:
+            draw.line(trajectory_points, fill=(0, 120, 210, 255), width=5)
+        for waypoint in trajectory_points:
+            draw.ellipse(
+                [
+                    waypoint[0] - 4,
+                    waypoint[1] - 4,
+                    waypoint[0] + 4,
+                    waypoint[1] + 4,
+                ],
+                fill=(0, 185, 235, 255),
+                outline=(0, 70, 130, 255),
+            )
         draw.text(
             (18, 15),
             (
                 f"{label}: solid red=robot mesh, dark red=reset bounds, "
-                "orange=facing, green=task target, blue=support"
+                "orange=facing, green=task target, cyan=tool trajectory, blue=support"
             ),
             fill=(0, 0, 0, 255),
         )
