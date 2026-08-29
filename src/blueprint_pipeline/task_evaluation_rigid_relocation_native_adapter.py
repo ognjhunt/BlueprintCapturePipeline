@@ -251,6 +251,21 @@ def _runtime_geometry(
     source_upper = _vector(
         source_object.get("aabb_max_xyz_m"), field="source_object.aabb_max"
     )
+    support_upper = _vector(
+        support.get("bounds_max_xyz_m"), field="support.bounds_max"
+    )
+    try:
+        support_top = float(support.get("top_z_m"))
+    except (TypeError, ValueError) as exc:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_support_top_invalid"
+        ) from exc
+    if not math.isfinite(support_top) or not math.isclose(
+        support_top, support_upper[2], rel_tol=0.0, abs_tol=1.0e-6
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_support_top_invalid"
+        )
     lower = [source_lower[index] - float(start[index]) for index in range(3)]
     upper = [source_upper[index] - float(start[index]) for index in range(3)]
     if any(low >= high for low, high in zip(lower, upper, strict=True)):
@@ -299,9 +314,28 @@ def _runtime_geometry(
         for index in range(3)
     ]
     root_position = [float(start[index]) - center[index] for index in range(3)]
+    # The task start is a scoring-frame center, while Isaac spawns the rigid
+    # asset at its authored root.  Those frames are normally related by the
+    # qualified center of mass, but observed source bounds and generated
+    # replacement geometry can differ by sub-millimetres.  Scene 839873 paid
+    # for that distinction: the old center-only conversion placed the
+    # replacement 0.18 mm through the support, and PhysX tipped it before the
+    # robot made contact.  Align the replacement's inferred local minimum to
+    # the registered support top instead of allowing any initial penetration.
+    source_minimum_scoring_z = source_lower[2] - float(start[2])
+    replacement_minimum_root_z = center[2] + source_minimum_scoring_z
+    support_aligned_root_z = support_top - replacement_minimum_root_z
+    root_position[2] = max(root_position[2], support_aligned_root_z)
     return {
         "center_body_frame_m": center,
         "root_position_world_m": root_position,
+        "support_alignment": {
+            "support_top_z_m": support_top,
+            "source_minimum_scoring_z_m": source_minimum_scoring_z,
+            "replacement_minimum_root_z_m": replacement_minimum_root_z,
+            "support_aligned_root_z_m": support_aligned_root_z,
+            "initial_support_penetration_permitted": False,
+        },
         "contact_point_scoring_frame_m": contact,
         "approach_unit_scoring_frame": [-push[0], -push[1], 0.0],
         "allowed_contact_prim_paths": [str(rigid_paths[0])],
@@ -670,6 +704,7 @@ def adapt_rigid_relocation_task_template(
         "intended_support_prim_paths": geometry[
             "intended_support_prim_paths"
         ],
+        "support_alignment": geometry["support_alignment"],
         "affordance_digest": "",
     }
     # ``approach_unit_scoring_frame`` points outward from the contact face;
