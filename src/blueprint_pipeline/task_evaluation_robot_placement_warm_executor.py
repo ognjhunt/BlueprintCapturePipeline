@@ -34,6 +34,7 @@ from .native_task_construction_plan import (
     materialize_native_task_construction_phase_plan,
 )
 from .task_evaluation_robot_placement_trajectory import (
+    placement_trajectory_from_native_plan,
     validate_robot_placement_trajectory,
 )
 
@@ -44,6 +45,20 @@ ATTEMPT_SCHEMA_VERSION = "task_evaluation_robot_placement_native_attempt.v1"
 
 class WarmRobotPlacementExecutorError(RuntimeError):
     """A warm native round could not produce authoritative scientific feedback."""
+
+
+def _trajectory_content_matches(
+    expected: Mapping[str, Any], observed_plan: Mapping[str, Any]
+) -> bool:
+    """Compare the immutable trajectory while allowing its scene envelope to change."""
+
+    observed = placement_trajectory_from_native_plan(observed_plan)
+    expected_content = dict(expected)
+    observed_content = dict(observed)
+    for value in (expected_content, observed_content):
+        value.pop("source_plan_digest", None)
+        value.pop("trajectory_digest", None)
+    return expected_content == observed_content
 
 
 def _read_mapping(path: str | Path, *, blocker: str) -> dict[str, Any]:
@@ -351,10 +366,7 @@ class WarmNativePlacementExecutor:
             blocker="robot_placement_native_scene_plan_invalid",
         )
         observed_plan = materialize_native_task_construction_phase_plan(scene_plan)
-        if (
-            observed_plan.get("plan_digest")
-            != self._task_trajectory.get("source_plan_digest")
-        ):
+        if not _trajectory_content_matches(self._task_trajectory, observed_plan):
             raise WarmRobotPlacementExecutorError(
                 "robot_placement_native_trajectory_binding_mismatch"
             )

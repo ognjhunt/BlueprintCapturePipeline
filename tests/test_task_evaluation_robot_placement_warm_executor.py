@@ -87,6 +87,18 @@ def _config(tmp_path: Path, *, compiler_reference: bool = False) -> dict:
     }
 
 
+def test_trajectory_binding_rejects_changed_phase_position() -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_warm_executor as module
+
+    plan = _native_plan()
+    trajectory = placement_trajectory_from_native_plan(plan)
+    changed = json.loads(json.dumps(plan))
+    changed["phases"][0]["position_world_m"][0] += 0.01
+    changed["plan_digest"] = canonical_digest(changed, digest_field="plan_digest")
+
+    assert not module._trajectory_content_matches(trajectory, changed)
+
+
 def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
     tmp_path, monkeypatch
 ) -> None:
@@ -94,6 +106,11 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
 
     plan = _native_plan()
     trajectory = placement_trajectory_from_native_plan(plan)
+    recompiled_plan = {**plan, "scene_plan_digest": "sha256:new-robot-base"}
+    recompiled_plan["plan_digest"] = canonical_digest(
+        recompiled_plan, digest_field="plan_digest"
+    )
+    assert recompiled_plan["plan_digest"] != plan["plan_digest"]
     allocator_calls = []
 
     def fake_compile(*, output_root, droid_profile_reference, **_kwargs):
@@ -173,7 +190,9 @@ def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(
         module, "materialize_native_task_arena_warm_attempt_authority", fake_authority
     )
     monkeypatch.setattr(
-        module, "materialize_native_task_construction_phase_plan", lambda _scene: plan
+        module,
+        "materialize_native_task_construction_phase_plan",
+        lambda _scene: recompiled_plan,
     )
     executor = WarmNativePlacementExecutor(
         config=_config(tmp_path, compiler_reference=True),
