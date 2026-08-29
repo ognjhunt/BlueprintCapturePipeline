@@ -30,6 +30,9 @@ from .task_evaluation_launch_preparation_contract import (
 
 
 SCHEMA_VERSION = "task_evaluation_rigid_relocation_native_adapter.v1"
+DIAGNOSTIC_SCHEMA_VERSION = (
+    "task_evaluation_rigid_relocation_diagnostic_native_adapter.v1"
+)
 DEFINITION_CONTRACT_PATH = "scene.configured_revision.task_template.definition"
 SUCCESS_CONTRACT_PATH = (
     "scene.configured_revision.task_template.success_criteria"
@@ -65,6 +68,19 @@ SOURCE_SCHEMAS = {
     ),
 }
 NATIVE_PHYSICS_FREQUENCY_HZ = 120
+DIAGNOSTIC_SOURCE_ALIASES = {
+    DEFINITION_CONTRACT_PATH: "task.definition",
+    SUCCESS_CONTRACT_PATH: "task.success_criteria",
+    EXECUTION_CONTRACT_PATH: "task.execution",
+    SUPPORT_PLANE_CONTRACT_PATH: "scene.registration.support_plane",
+    SOURCE_OBJECT_CONTRACT_PATH: "task.subject.source_object",
+    STATIC_QUALIFICATION_CONTRACT_PATH: (
+        "diagnostic_output.static_qualification_receipt.v1.json"
+    ),
+    NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH: (
+        "diagnostic_output.native_import_qualification_receipt.v1.json"
+    ),
+}
 
 
 class TaskEvaluationRigidRelocationNativeAdapterError(ValueError):
@@ -194,7 +210,7 @@ def _success_bounds(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _runtime_geometry(
     *,
-    revision: Mapping[str, Any],
+    replacement_identity: Mapping[str, Any],
     support: Mapping[str, Any],
     source_object: Mapping[str, Any],
     static: Mapping[str, Any],
@@ -202,7 +218,6 @@ def _runtime_geometry(
     start: Sequence[float],
     target: Sequence[float],
 ) -> dict[str, Any]:
-    replacement_identity = revision["replacement"]["identity"]
     observed = static.get("observed_structure")
     if (
         static.get("status") != "authored_structure_statically_qualified"
@@ -292,75 +307,168 @@ def _runtime_geometry(
 
 def adapt_rigid_relocation_task_template(
     *,
-    request: Mapping[str, Any],
-    configured_revision: Mapping[str, Any],
+    request: Mapping[str, Any] | None = None,
+    configured_revision: Mapping[str, Any] | None = None,
     materialized_references: Mapping[str, Mapping[str, Any]],
+    diagnostic_controls_input: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return one digest-bound native view of exact configured task bytes."""
+    """Return one digest-bound native view of exact configured task bytes.
 
-    try:
-        validated_request = validate_launch_preparation_request(request)
-        revision = validate_configured_scene_revision(configured_revision)
-    except (
-        TaskEvaluationLaunchPreparationContractError,
-        TaskEvaluationConfiguredSceneRevisionError,
-    ) as exc:
-        raise TaskEvaluationRigidRelocationNativeAdapterError(
-            "rigid_relocation_native_adapter_authority_invalid"
-        ) from exc
-    task = validated_request["task"]
-    if (
-        validated_request["run_mode"] != "episode_evaluation"
-        or task["binding_mode"] != "reuse_configured_template"
-        or task["kind"] != "rigid_relocation"
-        or task["strategy"] != "planar_push"
-        or task["identity"] != revision["task_template"]["identity"]
-        or task["subject"]["identity"] != revision["replacement"]["identity"]
-        or task["configured_scene_revision_digest"] != revision["revision_digest"]
-    ):
-        raise TaskEvaluationRigidRelocationNativeAdapterError(
-            "rigid_relocation_native_adapter_request_binding_mismatch"
-        )
+    The diagnostic authority is deliberately separate from a configured scene
+    revision. It can compile construction/controls inputs but cannot be passed
+    through the production qualification compiler or acquire a revision digest.
+    """
 
+    diagnostic = diagnostic_controls_input is not None
     documents: dict[str, dict[str, Any]] = {}
     bindings: list[dict[str, Any]] = []
-    for contract_path, revision_field in (
-        (DEFINITION_CONTRACT_PATH, "definition"),
-        (SUCCESS_CONTRACT_PATH, "success_criteria"),
-        (EXECUTION_CONTRACT_PATH, "execution"),
-    ):
-        document, binding = _source_document(
-            materialized_references,
-            contract_path=contract_path,
-            expected_reference=revision["task_template"][revision_field],
+    if diagnostic:
+        authority = dict(diagnostic_controls_input or {})
+        if (
+            request is not None
+            or configured_revision is not None
+            or authority.get("schema_version")
+            != "task_evaluation_configured_scene_diagnostic_controls_input.v1"
+            or authority.get("status") != "materialized"
+            or authority.get("qualification_eligible") is not False
+            or authority.get("configured_revision_publication_permitted") is not False
+            or authority.get("evaluation_ready_promotion_permitted") is not False
+            or authority.get("claim_ceiling")
+            != "development_only_downstream_construction_and_controls_diagnostic"
+            or authority.get("receipt_digest")
+            != canonical_digest(authority, digest_field="receipt_digest")
+        ):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_diagnostic_authority_invalid"
+            )
+        rows = authority.get("materialized_inputs")
+        by_contract = {
+            str(row.get("contract_path") or ""): row
+            for row in rows or []
+            if isinstance(row, Mapping)
+        }
+        provider_row = by_contract.get(
+            "diagnostic_output.task_evaluation_scene_configuration_provider_result.v1.json"
         )
-        documents[contract_path] = document
-        bindings.append(binding)
-    for contract_path, expected_reference in (
-        (
-            SUPPORT_PLANE_CONTRACT_PATH,
-            revision["registration"]["support_plane"],
-        ),
-        (
-            SOURCE_OBJECT_CONTRACT_PATH,
-            revision["replacement"]["source_object"],
-        ),
-        (
-            STATIC_QUALIFICATION_CONTRACT_PATH,
-            revision["replacement"]["static_qualification"],
-        ),
-        (
-            NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH,
-            revision["replacement"]["native_import_qualification"],
-        ),
-    ):
-        document, binding = _source_document(
-            materialized_references,
-            contract_path=contract_path,
-            expected_reference=expected_reference,
-        )
-        documents[contract_path] = document
-        bindings.append(binding)
+        if not isinstance(provider_row, Mapping):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_diagnostic_authority_invalid"
+            )
+        provider_path = Path(str(provider_row.get("path") or "")).expanduser()
+        try:
+            provider_result = json.loads(provider_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_diagnostic_provider_result_invalid"
+            ) from exc
+        if (
+            provider_path.is_symlink()
+            or not provider_path.is_file()
+            or _sha256_and_size(provider_path)
+            != (provider_row.get("digest"), provider_row.get("size_bytes"))
+            or provider_row.get("full_byte_readback_passed") is not True
+            or provider_result.get("schema_version")
+            != "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
+            or provider_result.get("status")
+            != "completed_diagnostic_only_not_qualification_eligible"
+            or provider_result.get("diagnostic_only") is not True
+            or provider_result.get("qualification_eligible") is not False
+            or provider_result.get("executed_inside_one_parent_provider_run") is not False
+            or provider_result.get("configured_revision_publication_permitted") is not False
+            or provider_result.get("result_digest")
+            != canonical_digest(provider_result, digest_field="result_digest")
+        ):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_diagnostic_provider_result_invalid"
+            )
+        diagnostic_references: dict[str, dict[str, Any]] = {}
+        for contract_path, source_alias in DIAGNOSTIC_SOURCE_ALIASES.items():
+            row = by_contract.get(source_alias)
+            if not isinstance(row, Mapping):
+                raise TaskEvaluationRigidRelocationNativeAdapterError(
+                    f"rigid_relocation_native_adapter_source_invalid:{contract_path}"
+                )
+            diagnostic_references[contract_path] = {
+                "contract_path": contract_path,
+                "uri": row.get("uri") or f"diagnostic-input://{source_alias}",
+                "digest": row.get("digest"),
+                "size_bytes": row.get("size_bytes"),
+                "materialized_path": row.get("path"),
+                "full_byte_service_account_readback_passed": row.get(
+                    "full_byte_readback_passed"
+                ),
+            }
+            document, binding = _source_document(
+                diagnostic_references,
+                contract_path=contract_path,
+                expected_reference=diagnostic_references[contract_path],
+            )
+            documents[contract_path] = document
+            bindings.append(binding)
+        template = documents[DEFINITION_CONTRACT_PATH]
+        task = {
+            "identity": template.get("task_identity"),
+            "subject": {"identity": template.get("object_identity")},
+        }
+        replacement_identity = template.get("object_identity")
+        authority_digest = authority["receipt_digest"]
+    else:
+        try:
+            validated_request = validate_launch_preparation_request(request or {})
+            revision = validate_configured_scene_revision(configured_revision or {})
+        except (
+            TaskEvaluationLaunchPreparationContractError,
+            TaskEvaluationConfiguredSceneRevisionError,
+        ) as exc:
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_authority_invalid"
+            ) from exc
+        task = validated_request["task"]
+        if (
+            validated_request["run_mode"] != "episode_evaluation"
+            or task["binding_mode"] != "reuse_configured_template"
+            or task["kind"] != "rigid_relocation"
+            or task["strategy"] != "planar_push"
+            or task["identity"] != revision["task_template"]["identity"]
+            or task["subject"]["identity"] != revision["replacement"]["identity"]
+            or task["configured_scene_revision_digest"] != revision["revision_digest"]
+        ):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_request_binding_mismatch"
+            )
+        for contract_path, revision_field in (
+            (DEFINITION_CONTRACT_PATH, "definition"),
+            (SUCCESS_CONTRACT_PATH, "success_criteria"),
+            (EXECUTION_CONTRACT_PATH, "execution"),
+        ):
+            document, binding = _source_document(
+                materialized_references,
+                contract_path=contract_path,
+                expected_reference=revision["task_template"][revision_field],
+            )
+            documents[contract_path] = document
+            bindings.append(binding)
+        for contract_path, expected_reference in (
+            (SUPPORT_PLANE_CONTRACT_PATH, revision["registration"]["support_plane"]),
+            (SOURCE_OBJECT_CONTRACT_PATH, revision["replacement"]["source_object"]),
+            (
+                STATIC_QUALIFICATION_CONTRACT_PATH,
+                revision["replacement"]["static_qualification"],
+            ),
+            (
+                NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH,
+                revision["replacement"]["native_import_qualification"],
+            ),
+        ):
+            document, binding = _source_document(
+                materialized_references,
+                contract_path=contract_path,
+                expected_reference=expected_reference,
+            )
+            documents[contract_path] = document
+            bindings.append(binding)
+        replacement_identity = revision["replacement"]["identity"]
+        authority_digest = revision["revision_digest"]
 
     template = documents[DEFINITION_CONTRACT_PATH]
     success = documents[SUCCESS_CONTRACT_PATH]
@@ -463,7 +571,7 @@ def adapt_rigid_relocation_task_template(
         field="maximum_final_planar_target_error_m",
     )
     geometry = _runtime_geometry(
-        revision=revision,
+        replacement_identity=replacement_identity,
         support=documents[SUPPORT_PLANE_CONTRACT_PATH],
         source_object=documents[SOURCE_OBJECT_CONTRACT_PATH],
         static=documents[STATIC_QUALIFICATION_CONTRACT_PATH],
@@ -650,18 +758,28 @@ def adapt_rigid_relocation_task_template(
         },
     }
     result: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": DIAGNOSTIC_SCHEMA_VERSION if diagnostic else SCHEMA_VERSION,
         "status": "adapted",
         "external_task_kind": "rigid_relocation",
         "native_task_kind": "rigid_pick_place",
         "manipulation_strategy": "planar_push",
-        "configured_scene_revision_digest": revision["revision_digest"],
         "source_documents": source_documents,
         "native_task_definition": native_definition,
         "native_success_criteria": native_success,
         "native_episode_execution": native_execution,
         "adapter_digest": "",
     }
+    if diagnostic:
+        result.update(
+            diagnostic_controls_input_receipt_digest=authority_digest,
+            claim_ceiling=(
+                "development_only_downstream_construction_and_controls_diagnostic"
+            ),
+            qualification_eligible=False,
+            configured_revision_publication_permitted=False,
+        )
+    else:
+        result["configured_scene_revision_digest"] = authority_digest
     result["adapter_digest"] = canonical_digest(
         result, digest_field="adapter_digest"
     )
@@ -669,6 +787,7 @@ def adapt_rigid_relocation_task_template(
 
 
 __all__ = [
+    "DIAGNOSTIC_SCHEMA_VERSION",
     "EXECUTION_CONTRACT_PATH",
     "NATIVE_PHYSICS_FREQUENCY_HZ",
     "SCHEMA_VERSION",
