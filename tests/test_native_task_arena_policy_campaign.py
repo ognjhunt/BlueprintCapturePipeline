@@ -248,13 +248,14 @@ def test_campaign_uses_newer_conservative_project_total(
         monkeypatch,
         prior_before=38.0,
         reconciled_total=0.25,
-        project_total=43.197914,
+        project_total=56.271914,
     )
 
     assert campaign["prior_official_spend"][
         "aggregate_goal_spend_before_campaign_usd"
-    ] == 43.197914
-    assert campaign["projected_aggregate_goal_spend_usd"] == 44.197914
+    ] == 56.271914
+    assert campaign["projected_aggregate_goal_spend_usd"] == 57.271914
+    assert campaign["aggregate_goal_spend_cap_usd"] == 57.271914
     assert campaign["prior_official_spend"][
         "project_spend_reconciliation"
     ]["path"].endswith("project-spend.json")
@@ -282,6 +283,7 @@ def test_two_member_campaign_binds_both_caps_and_member_authority(
 
     assert campaign["maximum_campaign_spend_usd"] == 1.0
     assert campaign["projected_aggregate_goal_spend_usd"] == 39.25
+    assert campaign["aggregate_goal_spend_cap_usd"] == 39.25
     assert [row["candidate_id"] for row in campaign["members"]] == [
         "pi05_droid",
         "groot_n17_droid",
@@ -488,19 +490,27 @@ def test_single_use_authority_binds_exact_campaign_member_and_rejects_alteration
         )
 
 
-def test_campaign_rejects_sum_of_member_caps_over_current_goal_ceiling(
+def test_campaign_rolls_forward_but_rejects_excess_aggregate_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    campaign_path, campaign, _bundles = _campaign(
+        tmp_path,
+        monkeypatch,
+        prior_before=51.0,
+        reconciled_total=0.25,
+    )
+    assert campaign["projected_aggregate_goal_spend_usd"] == 52.25
+    assert campaign["aggregate_goal_spend_cap_usd"] == 52.25
+
+    tampered = json.loads(campaign_path.read_text(encoding="utf-8"))
+    tampered["aggregate_goal_spend_cap_usd"] = 60.0
+    tampered["campaign_digest"] = canonical_digest(
+        tampered, digest_field="campaign_digest"
+    )
     with pytest.raises(
         ValueError, match="native_task_arena_policy_campaign_aggregate_spend_invalid"
     ):
-        _campaign(
-            tmp_path,
-            monkeypatch,
-            prior_before=51.0,
-            reconciled_total=0.25,
-        )
-    assert not (tmp_path / "policy-campaign.json").exists()
+        campaign_module.validate_native_task_arena_policy_campaign(tampered)
 
 
 @pytest.mark.parametrize(

@@ -375,7 +375,10 @@ def _attempt_authority(
         "maximum_hourly_rate_usd": 1.0,
         "maximum_single_resource_ttl_seconds": 7_200,
         "aggregate_goal_spend_before_attempt_usd": 0.05,
-        "aggregate_goal_spend_cap_usd": paid.AGGREGATE_GOAL_SPEND_CAP_USD,
+        "aggregate_goal_spend_cap_usd": paid.rolling_aggregate_spend_ceiling_usd(
+            prior_spend_usd=0.05,
+            authorized_increment_usd=2.0,
+        ),
         "prior_terminal_attempt": {
             "authority": _record(predecessor["authority"]),
             "terminal_result": _record(predecessor["result"]),
@@ -1180,6 +1183,14 @@ def test_profile_accepts_rate_above_cap_when_ttl_projection_fits(lane) -> None:
             "maximum_hourly_rate_usd": 0.64,
             "hard_attempt_spend_cap_usd": 0.5,
             "maximum_single_resource_ttl_seconds": 2_800,
+            "aggregate_goal_spend_cap_usd": (
+                paid.rolling_aggregate_spend_ceiling_usd(
+                    prior_spend_usd=authority[
+                        "aggregate_goal_spend_before_attempt_usd"
+                    ],
+                    authorized_increment_usd=0.5,
+                )
+            ),
         }
     )
     authority["authorization_digest"] = canonical_digest(
