@@ -464,6 +464,36 @@ def _pad_centers_from_finger_body_offsets(
     return centers
 
 
+def _pad_offsets_from_relative_geometry(
+    geometry: Mapping[str, Any],
+) -> dict[str, list[float]] | None:
+    """Prefer collider-to-finger offsets measured in one coherent USD frame."""
+
+    selected = geometry.get("selected_pad_colliders")
+    if not isinstance(selected, Mapping):
+        return None
+    offsets: dict[str, list[float]] = {}
+    for side in ("left", "right"):
+        row = selected.get(side)
+        if not isinstance(row, Mapping):
+            return None
+        raw = row.get("center_inner_finger_body_m")
+        if raw is None:
+            return None
+        try:
+            offset = [float(value) for value in raw]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"native_task_gripper_pad_relative_offset_invalid:{side}"
+            ) from exc
+        if len(offset) != 3 or not all(math.isfinite(value) for value in offset):
+            raise RuntimeError(
+                f"native_task_gripper_pad_relative_offset_invalid:{side}"
+            )
+        offsets[side] = offset
+    return offsets
+
+
 def _physical_pad_binding(
     *, robot: Any, torch: Any
 ) -> tuple[dict[str, Any], dict[str, list[float]]]:
@@ -487,6 +517,9 @@ def _physical_pad_binding(
         controlled_body_position_world_m=body_pose[:3],
         controlled_body_quaternion_world_xyzw=body_pose[3:7],
     )
+    relative_offsets = _pad_offsets_from_relative_geometry(geometry)
+    if relative_offsets is not None:
+        return geometry, relative_offsets
     offsets: dict[str, list[float]] = {}
     xforms = UsdGeom.XformCache(Usd.TimeCode.Default())
     for side in ("left", "right"):
