@@ -86,6 +86,12 @@ class RobotProfile:
         1.0,
     )
 
+    # Ordered arm joint names, matching the kinematic chain the profile's
+    # forward kinematics walks.  Reset positions are keyed by name and include
+    # gripper joints, so a task-aware reset must address the arm by name rather
+    # than by position in a dict.
+    arm_joint_names: Tuple[str, ...] = ()
+
     # Spawn / USD metadata.
     usd_prim_path: str = "/World/Robot"
     articulation_name: str = "robot"
@@ -334,6 +340,15 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     # composing published-DH forward kinematics at the reset pose against the
     # r33 native grasp-frame readback.
     flange_to_grasp_orientation_xyzw=(0.0, 0.0, 1.0, 0.0),
+    arm_joint_names=(
+        "panda_joint1",
+        "panda_joint2",
+        "panda_joint3",
+        "panda_joint4",
+        "panda_joint5",
+        "panda_joint6",
+        "panda_joint7",
+    ),
     usd_prim_path="/World/Franka",
     articulation_name="franka",
     head_link_candidates=("camera_link", "panda_hand"),

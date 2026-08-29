@@ -18,6 +18,15 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import materialize_native_task_arena_packet
+from .franka_kinematics import FRANKA_JOINT_LIMITS_RAD, forward_kinematics
+from .native_task_construction_plan import (
+    materialize_native_task_construction_phase_plan,
+)
+from .scene_placement.robot_profile import get_robot_profile
+from .task_evaluation_robot_placement_orientation import (
+    RobotPlacementOrientationError,
+    task_aware_reset_joint_positions,
+)
 from .task_evaluation_robot_placement_agent import (
     RobotPlacementAgentError,
     validate_robot_placement_receipt,
@@ -219,6 +228,69 @@ def _legacy_robot_placement_is_clear(
         is True
         and placement.get("analytic_reach_candidate") is True
     )
+
+
+def _derive_task_aware_reset(
+    *,
+    packet_request: Mapping[str, Any],
+    evidence_root: Any,
+    derivation_root: Path,
+    robot_id: str,
+    base_pose: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Solve a reset pose that already faces the plan's first authored tool pose.
+
+    Returns ``None`` whenever the inputs cannot decide it -- an unregistered
+    embodiment, a profile that declares no arm joints or grasp calibration, or a
+    plan with no phase to face.  A missing answer leaves the shipped constant in
+    place and the native gates unchanged; it never invents one.
+    """
+
+    if not robot_id:
+        return None
+    try:
+        profile = get_robot_profile(robot_id)
+    except (KeyError, ValueError):
+        return None
+    if not profile.arm_joint_names:
+        return None
+    nominal = packet_request.get("robot_joint_reset_positions_rad")
+    if not isinstance(nominal, Mapping) or not nominal:
+        return None
+    try:
+        materialize_native_task_arena_packet(
+            request=dict(packet_request),
+            evidence_root=evidence_root,
+            output_dir=derivation_root,
+        )
+        scene_plan = json.loads(
+            (
+                Path(derivation_root) / "native_task_arena_scene_plan.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        phase_plan = materialize_native_task_construction_phase_plan(scene_plan)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    phases = phase_plan.get("phases") or []
+    if not phases:
+        return None
+    target = phases[0].get("orientation_world_xyzw")
+    if target is None:
+        return None
+    try:
+        return task_aware_reset_joint_positions(
+            nominal_joint_positions_rad=nominal,
+            arm_joint_names=profile.arm_joint_names,
+            joint_limits_rad=FRANKA_JOINT_LIMITS_RAD,
+            base_orientation_xyzw=base_pose["orientation_xyzw"],
+            target_orientation_world_xyzw=target,
+            forward_kinematics=forward_kinematics,
+            flange_to_grasp_orientation_xyzw=(
+                profile.flange_to_grasp_orientation_xyzw
+            ),
+        )
+    except (RobotPlacementOrientationError, KeyError, TypeError, ValueError):
+        return None
 
 
 def compile_diagnostic_native_arena_packet(
@@ -487,6 +559,29 @@ def compile_diagnostic_native_arena_packet(
     packet_request["request_digest"] = canonical_digest(
         packet_request, digest_field="request_digest"
     )
+    # The reset pose otherwise ships as a profile constant, blind to what the
+    # task authored.  Derive it from the plan's own first tool orientation so
+    # the arm spawns already facing the work instead of paying a slew the phase
+    # budget may not cover.  This needs the phase plan, which is materialized
+    # from the scene plan, so the packet is built once into a retained
+    # derivation directory and then rebuilt with the reset it implies.  Safe
+    # because the phase plan does not read the reset: the same plan, digest
+    # included, comes back either way.
+    reset_derivation = _derive_task_aware_reset(
+        packet_request=packet_request,
+        evidence_root=evidence_root,
+        derivation_root=root / "reset-derivation",
+        robot_id=str(task_binding.get("robot_id") or ""),
+        base_pose=base_pose,
+    )
+    if reset_derivation is not None:
+        packet_request["robot_joint_reset_positions_rad"] = dict(
+            reset_derivation["joint_reset_positions_rad"]
+        )
+        packet_request["request_digest"] = ""
+        packet_request["request_digest"] = canonical_digest(
+            packet_request, digest_field="request_digest"
+        )
     packet_root = root / "native-task-packet"
     packet_receipt = materialize_native_task_arena_packet(
         request=packet_request,
@@ -509,6 +604,27 @@ def compile_diagnostic_native_arena_packet(
         "packet_receipt_digest": packet_receipt["receipt_digest"],
         "base_pose_world": base_pose,
         "base_derivation_method": base_derivation_method,
+        # Provenance for the spawn pose: which orientation the plan asked
+        # for, what the shipped constant would have cost, and what the
+        # derived reset costs instead.  None when the inputs could not
+        # decide it and the constant was left in place.
+        "task_aware_reset_derivation": (
+            {
+                key: reset_derivation[key]
+                for key in (
+                    "schema_version",
+                    "arm_joint_names",
+                    "target_orientation_world_xyzw",
+                    "achieved_grasp_orientation_base_xyzw",
+                    "nominal_slew_rad",
+                    "residual_slew_rad",
+                    "improvement_rad",
+                    "searchable_joint_indices",
+                )
+            }
+            if reset_derivation is not None
+            else None
+        ),
         "robot_placement_scene_binding": scene_binding,
         "robot_placement_task_binding": task_binding,
         "robot_placement_receipt_digest": (

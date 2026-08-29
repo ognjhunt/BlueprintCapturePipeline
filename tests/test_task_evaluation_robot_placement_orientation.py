@@ -511,3 +511,113 @@ def test_reset_solver_fails_closed_on_malformed_search_inputs() -> None:
                 searchable_joint_indices=(0,),
                 **kwargs,
             )
+
+
+NOMINAL_RESET_MAP = {
+    "panda_joint1": 0.0,
+    "panda_joint2": -0.6283185307179586,
+    "panda_joint3": 0.0,
+    "panda_joint4": -2.5132741228718345,
+    "panda_joint5": 0.0,
+    "panda_joint6": 1.8849555921538759,
+    "panda_joint7": 0.0,
+    "finger_joint": 0.0,
+    "right_outer_knuckle_joint": 0.0,
+    "left_inner_finger_joint": 0.0,
+}
+
+
+def _reset_kwargs(**overrides):
+    from blueprint_pipeline.franka_kinematics import (
+        FRANKA_JOINT_LIMITS_RAD,
+        forward_kinematics,
+    )
+    from blueprint_pipeline.scene_placement.robot_profile import get_robot_profile
+
+    profile = get_robot_profile("franka_panda")
+    kwargs = {
+        "nominal_joint_positions_rad": NOMINAL_RESET_MAP,
+        "arm_joint_names": profile.arm_joint_names,
+        "joint_limits_rad": FRANKA_JOINT_LIMITS_RAD,
+        "base_orientation_xyzw": YAW_180,
+        "target_orientation_world_xyzw": PUSH_TARGET,
+        "forward_kinematics": forward_kinematics,
+        "flange_to_grasp_orientation_xyzw": (
+            profile.flange_to_grasp_orientation_xyzw
+        ),
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_named_reset_preserves_gripper_joints_and_solves_the_arm() -> None:
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        task_aware_reset_joint_positions,
+    )
+
+    result = task_aware_reset_joint_positions(**_reset_kwargs())
+    updated = result["joint_reset_positions_rad"]
+
+    # Every non-arm joint survives byte-for-byte.
+    for name in (
+        "finger_joint",
+        "right_outer_knuckle_joint",
+        "left_inner_finger_joint",
+    ):
+        assert updated[name] == NOMINAL_RESET_MAP[name]
+    # The full contract is preserved, not narrowed to the arm.
+    assert set(updated) == set(NOMINAL_RESET_MAP)
+    # Shoulder joints keep the retracted posture.
+    for name in ("panda_joint1", "panda_joint2", "panda_joint3"):
+        assert updated[name] == pytest.approx(NOMINAL_RESET_MAP[name], abs=1e-9)
+    # And the task-facing orientation is essentially achieved.
+    assert result["nominal_slew_rad"] == pytest.approx(math.pi, abs=1e-6)
+    assert result["residual_slew_rad"] < math.radians(2.0)
+
+
+def test_named_reset_takes_the_world_target_into_the_base_frame() -> None:
+    """The reset lives in the base frame; the authored target does not."""
+
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        task_aware_reset_joint_positions,
+    )
+
+    at_yaw_180 = task_aware_reset_joint_positions(**_reset_kwargs())
+    at_yaw_0 = task_aware_reset_joint_positions(
+        **_reset_kwargs(base_orientation_xyzw=IDENTITY)
+    )
+    # Same world target, different base: the base-frame target must differ.
+    assert (
+        at_yaw_180["target_orientation_base_xyzw"]
+        != at_yaw_0["target_orientation_base_xyzw"]
+    )
+    # Both must still solve to a task-facing reset.
+    assert at_yaw_180["residual_slew_rad"] < math.radians(2.0)
+    assert at_yaw_0["residual_slew_rad"] < math.radians(2.0)
+
+
+def test_named_reset_fails_closed_on_a_missing_arm_joint() -> None:
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        task_aware_reset_joint_positions,
+    )
+
+    incomplete = {
+        key: value
+        for key, value in NOMINAL_RESET_MAP.items()
+        if key != "panda_joint5"
+    }
+    with pytest.raises(RobotPlacementOrientationError) as excinfo:
+        task_aware_reset_joint_positions(
+            **_reset_kwargs(nominal_joint_positions_rad=incomplete)
+        )
+    assert "panda_joint5" in str(excinfo.value)
+
+
+def test_named_reset_fails_closed_on_undeclared_arm_joint_names() -> None:
+    from blueprint_pipeline.task_evaluation_robot_placement_orientation import (
+        task_aware_reset_joint_positions,
+    )
+
+    for names in ((), ("panda_joint1", "panda_joint1")):
+        with pytest.raises(RobotPlacementOrientationError):
+            task_aware_reset_joint_positions(**_reset_kwargs(arm_joint_names=names))

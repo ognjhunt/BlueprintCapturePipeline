@@ -511,3 +511,91 @@ def solve_task_aware_reset_joints(
         "improvement_rad": nominal_slew - best_slew,
         "searchable_joint_indices": indices,
     }
+
+
+RESET_DERIVATION_SCHEMA_VERSION = (
+    "task_evaluation_robot_placement_task_aware_reset.v1"
+)
+
+
+def task_aware_reset_joint_positions(
+    *,
+    nominal_joint_positions_rad: Mapping[str, Any],
+    arm_joint_names: Sequence[str],
+    joint_limits_rad: Sequence[Sequence[float]],
+    base_orientation_xyzw: Sequence[float],
+    target_orientation_world_xyzw: Sequence[float],
+    forward_kinematics: Any,
+    flange_to_grasp_orientation_xyzw: Sequence[float],
+    searchable_joint_indices: Sequence[int] = (3, 4, 5, 6),
+    coarse_samples: int = 13,
+    refine_rounds: int = 6,
+) -> dict[str, Any]:
+    """Re-key a task-derived reset back onto the named joint contract.
+
+    The reset map is keyed by joint name and carries gripper joints the arm
+    solver knows nothing about, so the arm is addressed by name and every other
+    joint is preserved exactly.  The authored target arrives in world frame and
+    is taken into the base frame here, because that is where the reset lives.
+    """
+
+    names = [str(name) for name in arm_joint_names]
+    if not names or len(names) != len(set(names)):
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_arm_joint_names_invalid"
+        )
+    missing = [name for name in names if name not in nominal_joint_positions_rad]
+    if missing:
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_reset_joint_missing:" + ",".join(missing)
+        )
+    try:
+        nominal_arm = [float(nominal_joint_positions_rad[name]) for name in names]
+    except (TypeError, ValueError) as exc:
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_reset_joint_invalid"
+        ) from exc
+    if not all(math.isfinite(value) for value in nominal_arm):
+        raise RobotPlacementOrientationError(
+            "robot_placement_orientation_reset_joint_invalid"
+        )
+
+    base = _quaternion(base_orientation_xyzw, field="base_orientation_xyzw")
+    target_world = _quaternion(
+        target_orientation_world_xyzw, field="target_orientation_world_xyzw"
+    )
+    base_inverse = [-base[0], -base[1], -base[2], base[3]]
+    target_base = quaternion_multiply_xyzw(base_inverse, target_world)
+
+    solved = solve_task_aware_reset_joints(
+        target_orientation_base_xyzw=target_base,
+        nominal_joint_positions=nominal_arm,
+        joint_limits_rad=joint_limits_rad,
+        forward_kinematics=forward_kinematics,
+        flange_to_grasp_orientation_xyzw=flange_to_grasp_orientation_xyzw,
+        searchable_joint_indices=searchable_joint_indices,
+        coarse_samples=coarse_samples,
+        refine_rounds=refine_rounds,
+    )
+    # Preserve every joint the arm solver does not own, gripper included.
+    updated = {
+        str(key): float(value)
+        for key, value in nominal_joint_positions_rad.items()
+    }
+    for name, value in zip(names, solved["joint_positions_rad"]):
+        updated[name] = float(value)
+
+    return {
+        "schema_version": RESET_DERIVATION_SCHEMA_VERSION,
+        "joint_reset_positions_rad": updated,
+        "arm_joint_names": names,
+        "target_orientation_world_xyzw": list(target_world),
+        "target_orientation_base_xyzw": list(target_base),
+        "achieved_grasp_orientation_base_xyzw": (
+            solved["achieved_grasp_orientation_base_xyzw"]
+        ),
+        "nominal_slew_rad": solved["nominal_slew_rad"],
+        "residual_slew_rad": solved["residual_slew_rad"],
+        "improvement_rad": solved["improvement_rad"],
+        "searchable_joint_indices": solved["searchable_joint_indices"],
+    }
