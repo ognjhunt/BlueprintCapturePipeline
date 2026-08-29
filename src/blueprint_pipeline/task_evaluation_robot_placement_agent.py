@@ -24,6 +24,7 @@ from .scene_placement.robot_profile import get_robot_profile
 from .task_evaluation_robot_placement_orientation import (
     RobotPlacementOrientationError,
     evaluate_orientation_slew_feasibility,
+    solve_base_yaw_for_orientation,
 )
 from .task_evaluation_robot_placement_trajectory import (
     RobotPlacementTrajectoryError,
@@ -314,6 +315,51 @@ def _reject_reused_native_pose(
     return result
 
 
+def _orientation_slew_guidance(
+    *, trajectory: Mapping[str, Any], robot_id: str
+) -> dict[str, Any] | None:
+    """Advisory base-yaw guidance for the authored plan, or None when undecidable.
+
+    Base yaw is the one placement degree of freedom that changes how far the
+    wrist must rotate to reach an authored tool pose, so a proposer that ignores
+    it is optimizing blind.  Purely advisory: the deterministic gate still
+    decides, and this never widens what is acceptable.
+    """
+
+    steps = trajectory.get("maximum_steps_per_phase")
+    phases = trajectory.get("phases")
+    if not robot_id or not phases or steps is None:
+        return None
+    try:
+        profile = get_robot_profile(robot_id)
+    except (KeyError, ValueError):
+        return None
+    try:
+        solved = solve_base_yaw_for_orientation(
+            rest_grasp_orientation_base_xyzw=(
+                profile.rest_grasp_orientation_base_xyzw
+            ),
+            phases=phases,
+            maximum_steps_per_phase=steps,
+            orientation_slew_rad_per_step=profile.orientation_slew_rad_per_step,
+        )
+    except RobotPlacementOrientationError:
+        return None
+    return {
+        "recommended_base_yaw_rad": solved["best_yaw_rad"],
+        "recommended_worst_phase_slew_rad": solved["best_worst_slew_rad"],
+        "recommended_worst_phase_required_steps": (
+            solved["best_worst_required_steps"]
+        ),
+        "step_budget": solved["step_budget"],
+        "any_yaw_is_feasible": solved["feasible"],
+        "admissible_yaw_fraction": (
+            solved["feasible_yaw_count"] / solved["yaw_sample_count"]
+        ),
+        "advisory_only_deterministic_gate_decides": True,
+    }
+
+
 def _reject_infeasible_orientation_slew(
     *,
     gate: Mapping[str, Any],
@@ -558,6 +604,15 @@ def run_task_evaluation_robot_placement_agent(
     )
     if trajectory is not None:
         task_advisory_context["native_trajectory"] = trajectory
+        guidance = _orientation_slew_guidance(
+            trajectory=trajectory, robot_id=str(task.get("robot_id") or "")
+        )
+        if guidance is not None:
+            # Advisory only: the deterministic gate remains the sole authority.
+            # Without this the model proposes a base orientation blind to how
+            # far the wrist would have to slew, and can only learn otherwise by
+            # spending a GPU allocation on the refusal.
+            task_advisory_context["orientation_slew_guidance"] = guidance
     scene_digest = canonical_digest(scene)
     task_digest = canonical_digest(task)
     scene_context_digest = canonical_digest(scene_advisory_context)

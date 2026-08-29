@@ -331,3 +331,45 @@ def test_agent_gate_is_inert_without_a_trajectory_or_known_profile() -> None:
         )
         assert result["status"] == "passed"
         assert "orientation_slew_feasibility" not in result
+
+
+def test_guidance_recommends_a_feasible_yaw_for_the_authored_plan() -> None:
+    """Adaptivity: the proposer is told which yaws this task admits."""
+
+    from blueprint_pipeline.task_evaluation_robot_placement_agent import (
+        _orientation_slew_guidance,
+    )
+
+    guidance = _orientation_slew_guidance(
+        trajectory=_trajectory(), robot_id="franka_panda"
+    )
+    assert guidance is not None
+    assert guidance["any_yaw_is_feasible"] is True
+    assert guidance["advisory_only_deterministic_gate_decides"] is True
+    assert 0.0 < guidance["admissible_yaw_fraction"] < 1.0
+    assert (
+        guidance["recommended_worst_phase_required_steps"]
+        <= guidance["step_budget"]
+    )
+
+
+def test_guidance_is_absent_when_it_cannot_be_computed() -> None:
+    from blueprint_pipeline.task_evaluation_robot_placement_agent import (
+        _orientation_slew_guidance,
+    )
+
+    assert _orientation_slew_guidance(trajectory=_trajectory(), robot_id="") is None
+    assert (
+        _orientation_slew_guidance(
+            trajectory={"phases": [], "maximum_steps_per_phase": 64},
+            robot_id="franka_panda",
+        )
+        is None
+    )
+    assert (
+        _orientation_slew_guidance(
+            trajectory={"phases": [_phase("precontact", PUSH_TARGET)]},
+            robot_id="franka_panda",
+        )
+        is None
+    )
