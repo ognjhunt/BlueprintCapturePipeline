@@ -71,6 +71,52 @@ def _announce(phase: str, status: str = "started") -> None:
     )
 
 
+def _prepare_site_appearance_renderer(
+    *,
+    simulation_app: Any,
+    plan: Mapping[str, Any],
+    stage: Any = None,
+    setup_for_rendering_factory: Any = None,
+    warmup_steps: int = 800,
+) -> dict[str, Any]:
+    """Run the required NVIDIA accumulation path for NuRec appearances."""
+
+    representation = str(
+        (plan.get("appearance_frame_alignment") or {}).get("representation")
+        or ""
+    )
+    if representation not in {
+        "nurec_volume",
+        "particlefield_3d_gaussian_splat",
+    }:
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "status": "not_required",
+            "representation": representation or None,
+            "passed": True,
+            "blockers": [],
+        }
+    if stage is None:
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+    from blueprint_pipeline.native_task_nurec_render_setup import (
+        setup_and_warm_native_nurec_renderer,
+    )
+
+    result = setup_and_warm_native_nurec_renderer(
+        simulation_app,
+        stage,
+        warmup_steps=warmup_steps,
+        setup_for_rendering_factory=setup_for_rendering_factory,
+        progress_callback=lambda row: _announce(
+            f"nurec_warmup_round_{row['round']}", "completed"
+        ),
+    )
+    result["representation"] = representation
+    return result
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -1400,6 +1446,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "articulation_device_binding": result["articulation_device_binding"],
             }
             raise
+        _announce("site_appearance_renderer")
+        result["site_appearance_renderer"] = _prepare_site_appearance_renderer(
+            simulation_app=simulation_app,
+            plan=plan,
+        )
+        if not result["site_appearance_renderer"]["passed"]:
+            result["blockers"].extend(
+                result["site_appearance_renderer"]["blockers"]
+            )
+            raise RuntimeError("native_task_arena_nurec_setup_failed")
+        _announce("site_appearance_renderer", "completed")
         scene = env.unwrapped.scene
         robot = scene["robot"]
         task_object = scene[built.scene_asset_names["task_object"]]

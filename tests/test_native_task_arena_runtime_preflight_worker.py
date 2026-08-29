@@ -4,9 +4,11 @@ import pytest
 
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
     _gripper_pad_geometry_axis_readback,
-    _official_nurec_render_setup_and_warmup,
     _particlefield_stage_readback,
     _robot_reset_task_space_readback,
+)
+from blueprint_pipeline.native_task_nurec_render_setup import (
+    setup_and_warm_native_nurec_renderer as _official_nurec_render_setup_and_warmup,
 )
 
 
