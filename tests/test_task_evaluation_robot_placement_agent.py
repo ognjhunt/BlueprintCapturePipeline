@@ -6,6 +6,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_robot_placement_agent import (
+    ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS,
     ROBOT_PLACEMENT_AGENT_MODEL,
     ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
     RobotPlacementAgentError,
@@ -136,6 +137,7 @@ def test_production_config_pins_sol_high_agent_contract() -> None:
     assert config.max_inference_cost_usd == 0.5
     assert config.input_cost_per_million_tokens_usd == 4.0
     assert config.output_cost_per_million_tokens_usd == 20.0
+    assert config.max_output_tokens == ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS
 
 
 def test_loop_revises_geometry_failure_and_freezes_only_dual_pass() -> None:
@@ -170,6 +172,10 @@ def test_loop_revises_geometry_failure_and_freezes_only_dual_pass() -> None:
     assert all(spec.model == ROBOT_PLACEMENT_AGENT_MODEL for spec, _ in invoker.specs)
     assert all(
         spec.reasoning_effort == ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        for spec, _ in invoker.specs
+    )
+    assert all(
+        spec.max_output_tokens == ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS
         for spec, _ in invoker.specs
     )
     assert validate_robot_placement_receipt(receipt) == receipt
