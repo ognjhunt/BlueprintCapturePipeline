@@ -50,6 +50,7 @@ from .semantic_teacher_image_edit_worker import (
 )
 from .task_evaluation_artifixer_ai_visual_review import (
     DUAL_TARGET_REVIEW_SCHEMA_VERSION,
+    EXECUTION_SCHEMA_VERSION as VISUAL_REVIEW_EXECUTION_SCHEMA_VERSION,
     materialize_artifixer_ai_visual_review_rights,
     run_artifixer_ai_visual_review,
 )
@@ -119,7 +120,20 @@ _ADAPTER_ID = "artifixer3d_observed_object_removal"
 _VISUAL_REVIEW_COST_SCOPE = (
     "task_evaluation_scene_configuration_artifixer_visual_review"
 )
+_DIAGNOSTIC_ONLY_ENV = "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY"
+_DIAGNOSTIC_REJECTED_APPEARANCE_STATUS = (
+    "diagnostic_generated_appearance_edit_visual_review_rejected"
+)
 _SEMANTIC_BACKEND_ID = "openai_gpt_image_2_2026_04_21_semantic_teacher"
+
+
+def _diagnostic_rejection_permitted(
+    *, stage_input: Mapping[str, Any], environment: Mapping[str, str]
+) -> bool:
+    return (
+        stage_input.get("execution_mode") == "diagnostic_only"
+        and str(environment.get(_DIAGNOSTIC_ONLY_ENV) or "") == "1"
+    )
 
 
 class TaskEvaluationSceneConfigurationArtifixerError(RuntimeError):
@@ -286,6 +300,166 @@ def _materialize_selected_task_thumbnail(
         "derived_appearance_evidence": True,
         "capture_or_physical_evidence": False,
     }
+
+
+def _materialize_diagnostic_rejected_artifixer_artifacts(
+    *,
+    review: Mapping[str, Any],
+    review_frames: list[Mapping[str, Any]],
+    native_appearance_source: Path,
+    configuration: Mapping[str, Any],
+    output_root: Path,
+    render_handoff: Mapping[str, Any],
+    source_diagnostic_checkpoint_digest: str,
+    post_training_binding_digest: str,
+) -> list[dict[str, Any]]:
+    """Retain one rejected view for downstream diagnostics without qualifying it."""
+
+    execution_record = review.get("execution_receipt")
+    if not isinstance(execution_record, Mapping):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_diagnostic_rejection_invalid"
+        )
+    execution_path = Path(str(execution_record.get("path") or "")).resolve()
+    execution = _read(
+        execution_path,
+        code="scene_configuration_artifixer_diagnostic_rejection_invalid",
+    )
+    frame_rows = execution.get("frames")
+    reviewer = execution.get("reviewer")
+    minimum_views = int((configuration.get("required_views") or {}).get("minimum") or 0)
+    if (
+        execution.get("schema_version") != VISUAL_REVIEW_EXECUTION_SCHEMA_VERSION
+        or execution.get("status") != "completed"
+        or execution.get("decision") != "rejected"
+        or execution.get("publisher_instance_id")
+        != (configuration.get("source_object") or {}).get("publisher_instance_id")
+        or execution.get("review_frame_count") != len(review_frames)
+        or len(review_frames) != minimum_views
+        or minimum_views < 2
+        or execution.get("provider_called") is not True
+        or execution.get("provider") != "openai"
+        or execution.get("response_store") is not False
+        or execution.get("tracing_disabled") is not True
+        or execution.get("raw_secret_values_recorded") is not False
+        or execution.get("generated_output_is_capture_or_physical_evidence") is not False
+        or execution.get("physics_or_collision_authority_granted") is not False
+        or execution.get("execution_digest")
+        != canonical_digest(execution, digest_field="execution_digest")
+        or execution_record.get("execution_digest") != execution.get("execution_digest")
+        or execution_record.get("sha256") != _sha256(execution_path)
+        or execution_record.get("size_bytes") != execution_path.stat().st_size
+        or not isinstance(frame_rows, list)
+        or not isinstance(reviewer, Mapping)
+        or reviewer.get("kind") != "ai"
+        or not str(reviewer.get("identity") or "")
+        or not str(reviewer.get("runtime") or "")
+        or not str(reviewer.get("model") or "")
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_diagnostic_rejection_invalid"
+        )
+    expected_frames = {
+        (
+            str(row.get("camera_id") or ""),
+            str((row.get("final_frame") or {}).get("sha256") or ""),
+        )
+        for row in review_frames
+        if isinstance(row, Mapping) and isinstance(row.get("final_frame"), Mapping)
+    }
+    reviewed_frames = {
+        (str(row.get("camera_id") or ""), str(row.get("frame_sha256") or ""))
+        for row in frame_rows
+        if isinstance(row, Mapping)
+    }
+    accepted_rows = [
+        row
+        for row in frame_rows
+        if isinstance(row, Mapping) and row.get("decision") == "accepted"
+    ]
+    rejected_rows = [
+        row
+        for row in frame_rows
+        if isinstance(row, Mapping) and row.get("decision") == "rejected"
+    ]
+    if (
+        expected_frames != reviewed_frames
+        or len(expected_frames) != minimum_views
+        or len(accepted_rows) != minimum_views - 1
+        or len(rejected_rows) != 1
+        or any(
+            row.get("orientation_is_upright") is not True
+            or row.get("source_object_absent") is not True
+            or row.get("repair_is_locally_plausible") is not True
+            or row.get("preserves_non_target_content") is not True
+            for row in accepted_rows
+        )
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_diagnostic_rejection_invalid"
+        )
+    if not source_diagnostic_checkpoint_digest.startswith("sha256:") or not (
+        post_training_binding_digest.startswith("sha256:")
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_diagnostic_rejection_invalid"
+        )
+    appearance = output_root / "diagnostic_rejected_appearance_candidate.usdz"
+    shutil.copyfile(native_appearance_source, appearance)
+    copied_review = output_root / "appearance_visual_review_rejection_execution.v1.json"
+    shutil.copyfile(execution_path, copied_review)
+    removal: dict[str, Any] = {
+        "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+        "status": _DIAGNOSTIC_REJECTED_APPEARANCE_STATUS,
+        "publisher_instance_id": (configuration.get("source_object") or {}).get(
+            "publisher_instance_id"
+        ),
+        "raw_interiorgs_bytes_sent_to_external_provider": False,
+        "visual_review_execution_digest": execution["execution_digest"],
+        "visual_review_execution_sha256": _sha256(copied_review),
+        "review_frame_count": minimum_views,
+        "accepted_review_frame_count": len(accepted_rows),
+        "rejected_review_frame_count": len(rejected_rows),
+        "frame_decisions": [
+            {
+                "camera_id": row["camera_id"],
+                "frame_sha256": row["frame_sha256"],
+                "decision": row["decision"],
+                "rationale": row["rationale"],
+            }
+            for row in frame_rows
+        ],
+        "diagnostic_rejected_appearance_candidate_sha256": _sha256(appearance),
+        "source_diagnostic_checkpoint_digest": source_diagnostic_checkpoint_digest,
+        "post_training_binding_digest": post_training_binding_digest,
+        "semantic_object_free_visual_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "generated_pixels_labeled": True,
+        "diagnostic_only": True,
+        "qualification_eligible": False,
+        "configured_revision_publication_permitted": False,
+        "offering_publication_permitted": False,
+        "terminal_e2e_completion_permitted": False,
+        "appearance_authority": "rejected_generated_candidate_for_downstream_diagnostics_only",
+        "result_digest": "",
+    }
+    removal["result_digest"] = canonical_digest(
+        removal, digest_field="result_digest"
+    )
+    removal_path = output_root / "appearance_rejection_receipt.v1.json"
+    removal_path.write_text(canonical_json(removal) + "\n", encoding="utf-8")
+    return [
+        {
+            "role": "diagnostic_rejected_appearance_candidate",
+            **_component_record(appearance),
+        },
+        {"role": "appearance_rejection_receipt", **_component_record(removal_path)},
+        {
+            "role": "appearance_visual_review_execution",
+            **_component_record(copied_review),
+        },
+        dict(render_handoff),
+    ]
 
 
 def _materialized(envelope: Mapping[str, Any], contract_path: str) -> tuple[dict[str, Any], Path]:
@@ -1489,6 +1663,46 @@ def execute_artifixer_component(
                 canonical_json(refusal) + "\n", encoding="utf-8"
             )
     if review.get("decision") != "accepted" or not review.get("review_receipt"):
+        diagnostic_only = _diagnostic_rejection_permitted(
+            stage_input=stage_input, environment=values
+        )
+        if diagnostic_only:
+            artifacts = _materialize_diagnostic_rejected_artifixer_artifacts(
+                review=review,
+                review_frames=review_frames,
+                native_appearance_source=native_appearance_source,
+                configuration=configuration,
+                output_root=output_root,
+                render_handoff=render_handoff,
+                source_diagnostic_checkpoint_digest=str(
+                    semantic_checkpoint["checkpoint_digest"]
+                ),
+                post_training_binding_digest=str(
+                    training["post_training_binding_digest"]
+                ),
+            )
+            result = {
+                "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
+                "status": "completed",
+                "adapter_id": _ADAPTER_ID,
+                "stage_id": stage["stage_id"],
+                "provider_mutations_performed": 0,
+                "nested_paid_execution_requested": False,
+                "diagnostic_only": True,
+                "qualification_eligible": False,
+                "configured_revision_publication_permitted": False,
+                "offering_publication_permitted": False,
+                "terminal_e2e_completion_permitted": False,
+                "artifacts": artifacts,
+                "result_digest": "",
+            }
+            result["result_digest"] = canonical_digest(
+                result, digest_field="result_digest"
+            )
+            component_result_path.write_text(
+                canonical_json(result) + "\n", encoding="utf-8"
+            )
+            return result
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_visual_review_rejected"
         )

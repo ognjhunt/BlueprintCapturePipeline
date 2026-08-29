@@ -16,7 +16,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_adapters import (
     SceneConfigurationAdapterRegistry,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters import (
-    builtin_scene_configuration_adapter_handlers,
+    builtin_scene_configuration_diagnostic_adapter_handlers,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
@@ -696,7 +696,7 @@ def main() -> int:
             path = Path(row["materialized_path"]).resolve()
             configurations[stage_id] = (_read(path), path)
         registry = SceneConfigurationAdapterRegistry(
-            builtin_scene_configuration_adapter_handlers()
+            builtin_scene_configuration_diagnostic_adapter_handlers()
         )
         if checkpoint is not None:
             os.environ[

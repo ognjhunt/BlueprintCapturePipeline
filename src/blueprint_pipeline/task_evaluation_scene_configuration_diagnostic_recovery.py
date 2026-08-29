@@ -22,7 +22,7 @@ from .task_evaluation_scene_configuration_adapters import (
     SceneConfigurationAdapterRegistry,
 )
 from .task_evaluation_scene_configuration_builtin_adapters import (
-    builtin_scene_configuration_adapter_handlers,
+    builtin_scene_configuration_diagnostic_adapter_handlers,
 )
 from .task_evaluation_scene_configuration_diagnostic_checkpoint import (
     SCHEMA_VERSION as CHECKPOINT_SCHEMA_VERSION,
@@ -355,7 +355,7 @@ def recover_scene_configuration_diagnostic_stage_one_checkpoint(
     adapter_output.mkdir(parents=True, mode=0o750)
     try:
         registry = SceneConfigurationAdapterRegistry(
-            builtin_scene_configuration_adapter_handlers()
+            builtin_scene_configuration_diagnostic_adapter_handlers()
         )
         stage_result = _diagnostic_result(
             registry.execute(
