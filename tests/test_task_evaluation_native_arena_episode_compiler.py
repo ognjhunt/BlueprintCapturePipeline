@@ -413,8 +413,22 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert result["adapter_result"]["packet_receipt_digest"] == (
         "sha256:" + "b" * 64
     )
+    source_subject_id = configured["replacement"]["identity"]["id"]
+    runtime_subject_id = source_subject_id.replace("-", "_")
     assert observed["packet_request"]["task_spec"]["subject_asset_id"] == (
-        configured["replacement"]["identity"]["id"]
+        runtime_subject_id
+    )
+    assert observed["packet_request"]["task_spec"]["source_subject_identity"] == (
+        source_subject_id
+    )
+    assert observed["packet_request"]["task_spec"]["interaction_affordance"][
+        "subject_asset_id"
+    ] == runtime_subject_id
+    assert observed["packet_request"]["assets"][2]["asset_id"] == (
+        runtime_subject_id
+    )
+    assert observed["packet_request"]["assets"][2]["source_asset_id"] == (
+        source_subject_id
     )
     assert observed["packet_request"]["task_spec"]["manipulation_strategy"] == (
         "planar_push"
@@ -452,7 +466,12 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         for row in observed["packet_request"]["assets"]
         if row["semantic_role"] == "task_object"
     )
-    assert replacement["asset_id"] == configured["replacement"]["identity"]["id"]
+    assert replacement["asset_id"] == configured["replacement"]["identity"][
+        "id"
+    ].replace("-", "_")
+    assert replacement["source_asset_id"] == configured["replacement"][
+        "identity"
+    ]["id"]
 
 
 def test_closed_compiler_refuses_sensor_calibration_from_another_scene(
