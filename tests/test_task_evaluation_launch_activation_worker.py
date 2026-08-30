@@ -35,6 +35,7 @@ from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
     process_launch_preparation_queue,
 )
 from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
+    TaskEvaluationConfiguredControlsAutostartError,
     configured_controls_autostart_registry_name,
     materialize_configured_controls_autostart_intent,
 )
@@ -1111,3 +1112,116 @@ def test_worker_blocks_wrong_window_before_preparer(tmp_path) -> None:
     assert run["results"][0]["blockers"] == [
         "shared_mutation_window_binding_mismatch"
     ]
+
+
+def _scene_configuration_context(
+    tmp_path: Path, *, intent_root: Path
+) -> dict[str, object]:
+    """Build one scene-configuration activation context against an intent root."""
+
+    preparation = test_configuration_request()
+    activation = activation_request(lane="task_evaluation_scene_configuration")
+    activation["team_namespace"] = preparation["team_namespace"]
+    activation["expected_production_commit"] = preparation[
+        "expected_production_commit"
+    ]
+    envelope = tmp_path / "construction-envelope.json"
+    envelope.write_text('{"schema_version":"fixture.v1"}\n', encoding="utf-8")
+    envelope.chmod(0o440)
+    toolchain = scene_configuration_toolchain(
+        tmp_path / "toolchain", preparation["expected_production_commit"]
+    )
+    project = tmp_path / "project-spend.json"
+    project.write_text("{}\n", encoding="utf-8")
+    provider_zero = tmp_path / "provider-zero.json"
+    provider_zero.write_text("{}\n", encoding="utf-8")
+    return worker._build_scene_configuration_context(
+        activation_request=activation,
+        preparation_request=preparation,
+        construction_input={
+            "kind": "task_evaluation_scene_configuration",
+            "construction_envelope_path": str(envelope),
+            "construction_envelope_digest": "sha256:" + "e" * 64,
+            "recipe_digest": "sha256:" + "f" * 64,
+            "source_commit": preparation["expected_production_commit"],
+        },
+        activation_materialized={
+            "lineage.project_spend_reconciliation": project,
+            "lineage.initial_provider_zero": provider_zero,
+        },
+        activation_root=tmp_path / "activation",
+        repository_root=tmp_path,
+        toolchain_root=toolchain,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        profile_dir=tmp_path / "profiles",
+        webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "authorizations",
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+        configured_controls_autostart_intent_root=intent_root,
+    )
+
+
+def test_first_configuration_is_admitted_before_any_controls_continuation(
+    tmp_path: Path,
+) -> None:
+    """A scene with no authorized continuation may still be configured.
+
+    The continuation binds a trajectory plan authored against a published
+    configured revision, so demanding it first is an ordering no scene's first
+    run can satisfy.
+    """
+
+    empty_root = tmp_path / "intents"
+    empty_root.mkdir()
+
+    context = _scene_configuration_context(tmp_path, intent_root=empty_root)
+
+    assert context["lane"] == "task_evaluation_scene_configuration"
+    assert (
+        context["operations"]["configured_controls_autostart_intent_source"] == ""
+    )
+    assert (
+        context["operations"]["configured_controls_autostart_intent_artifacts"]
+        == ""
+    )
+
+
+def test_provisioned_continuation_is_still_bound_exactly(tmp_path: Path) -> None:
+    """A provisioned intent is bound, so absence is the only relaxed case."""
+
+    preparation = test_configuration_request()
+    root = _configured_controls_intent_root(tmp_path, preparation)
+
+    context = _scene_configuration_context(tmp_path, intent_root=root)
+
+    source = context["operations"]["configured_controls_autostart_intent_source"]
+    assert source != ""
+    assert Path(source).is_file()
+    assert context["operations"][
+        "configured_controls_autostart_intent_artifacts"
+    ].endswith("task_evaluation_configured_controls_autostart_intent.v1.json")
+
+
+def test_present_but_foreign_continuation_still_refuses(tmp_path: Path) -> None:
+    """Only an absent intent is admitted; a malformed one stays fail-closed."""
+
+    preparation = test_configuration_request()
+    root = _configured_controls_intent_root(tmp_path, preparation)
+    registry = root / configured_controls_autostart_registry_name(
+        team_namespace=str(preparation["team_namespace"]),
+        scene_id=str(preparation["scene"]["identity"]["id"]),
+        task_id=str(preparation["task"]["identity"]["id"]),
+    )
+    registry.chmod(0o640)
+    registry.write_text('{"schema_version":"not-an-intent"}\n', encoding="utf-8")
+
+    with pytest.raises(
+        (
+            worker.TaskEvaluationLaunchActivationWorkerError,
+            TaskEvaluationConfiguredControlsAutostartError,
+        )
+    ) as excinfo:
+        _scene_configuration_context(tmp_path, intent_root=root)
+
+    assert "configured_controls_autostart_intent_invalid" in str(excinfo.value)

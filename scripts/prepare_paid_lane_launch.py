@@ -64,6 +64,11 @@ class LaneStep:
     produces: str
     exports: tuple[tuple[str, str], ...] = ()
     repeated_argv: tuple[tuple[str, str], ...] = ()
+    #: Context names this step exists to consume. When the context supplies
+    #: none of them, the step is not part of this lane run at all: it is
+    #: skipped by the validator, the plan, and the executor alike, so an
+    #: optional input never becomes an empty placeholder in a real argv.
+    requires_context: tuple[str, ...] = ()
 
 
 SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
@@ -685,6 +690,7 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 autostart_intent,
             ),
             produces=autostart_intent,
+            requires_context=("configured_controls_autostart_intent_source",),
         ),
         LaneStep(
             step_id="live_profile",
@@ -714,14 +720,18 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{scene_id}",
                 "--task-id",
                 "{task_id}",
-                "--configured-controls-autostart-intent",
-                autostart_intent,
                 "--pod-name",
                 "{pod_name}",
                 "--output",
                 profile,
             ),
             produces=profile,
+            repeated_argv=(
+                (
+                    "--configured-controls-autostart-intent",
+                    "configured_controls_autostart_intent_artifacts",
+                ),
+            ),
             exports=(("profile_id", "profile_id"),),
         ),
         LaneStep(
@@ -887,6 +897,21 @@ def step_placeholders(step: LaneStep) -> set[str]:
     return names
 
 
+def step_is_active(step: LaneStep, context: Mapping[str, Any]) -> bool:
+    """True when this lane run actually supplies what the step consumes.
+
+    A step declaring ``requires_context`` is conditional: it runs only when the
+    context names it needs are present and non-empty. Every consumer -- the
+    validator, the plan, and the executor -- asks this one question, so a
+    skipped step cannot be validated as missing in one place and executed with
+    an empty placeholder in another.
+    """
+
+    if not step.requires_context:
+        return True
+    return all(str(context.get(name, "")) != "" for name in step.requires_context)
+
+
 def validate_lane_context(lane: str, context: Mapping[str, Any]) -> None:
     """Reject an incomplete context before the first command is launched.
 
@@ -900,6 +925,8 @@ def validate_lane_context(lane: str, context: Mapping[str, Any]) -> None:
     available = {str(key) for key, value in context.items() if str(value) != ""}
     missing: list[str] = []
     for step in steps:
+        if not step_is_active(step, context):
+            continue
         for name in sorted(step_placeholders(step)):
             if name not in available:
                 missing.append(f"{step.step_id}:{name}")
@@ -1064,6 +1091,8 @@ def prepare_paid_lane_launch(
     blockers: list[str] = []
     secret_values = _step_log_secret_values(context)
     for step in LANES[lane]:
+        if not step_is_active(step, resolved):
+            continue
         argv = [_render(fragment, resolved) for fragment in step.argv]
         for flag, context_name in step.repeated_argv:
             for value in _repeated_values(resolved.get(context_name)):
@@ -1162,6 +1191,8 @@ def validate_paid_lane_launch(
     resolved: dict[str, Any] = dict(context)
     planned: list[dict[str, Any]] = []
     for step in LANES[lane]:
+        if not step_is_active(step, resolved):
+            continue
         argv = [_render(fragment, resolved) for fragment in step.argv]
         for flag, context_name in step.repeated_argv:
             for value in _repeated_values(resolved.get(context_name)):

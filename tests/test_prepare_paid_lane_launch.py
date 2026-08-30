@@ -47,12 +47,16 @@ def test_scene_configuration_graph_stages_autostart_before_live_profile() -> Non
     autostart = steps[step_ids.index("configured_controls_autostart_intent")]
     live_profile = steps[step_ids.index("live_profile")]
     assert "{configured_controls_autostart_intent_source}" in autostart.argv
-    argument_index = live_profile.argv.index(
-        "--configured-controls-autostart-intent"
-    )
-    assert live_profile.argv[argument_index + 1] == (
+    assert autostart.produces == (
         "{set_root}/task_evaluation_configured_controls_autostart_intent.v1.json"
     )
+    # The profile binds the intent through the context rather than a fixed
+    # argv, so a scene with no continuation yet publishes a profile without
+    # one instead of naming a path the skipped step never wrote.
+    assert (
+        "--configured-controls-autostart-intent",
+        "configured_controls_autostart_intent_artifacts",
+    ) in live_profile.repeated_argv
 
 
 def _writing_runner(

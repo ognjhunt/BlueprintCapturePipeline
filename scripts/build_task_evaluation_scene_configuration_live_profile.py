@@ -73,12 +73,16 @@ def _blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append("scene_configuration_live_profile_ttl_mismatch")
     if authority.get("hard_attempt_spend_cap_usd") != context.max_spend_usd:
         blockers.append("scene_configuration_live_profile_spend_mismatch")
+    autostart_intent_path = context.extra_paths.get(
+        "configured_controls_autostart_intent"
+    )
+    if autostart_intent_path is None:
+        # No controls continuation is authorized for this scene yet. The
+        # profile is published without one, and the progression worker leaves
+        # every profile carrying no intent untouched.
+        return blockers
     try:
-        intent = json.loads(
-            context.extra_paths["configured_controls_autostart_intent"].read_text(
-                encoding="utf-8"
-            )
-        )
+        intent = json.loads(autostart_intent_path.read_text(encoding="utf-8"))
         intent = validate_configured_controls_autostart_intent(intent)
     except (OSError, json.JSONDecodeError, ValueError):
         blockers.append("scene_configuration_live_profile_autostart_intent_invalid")
@@ -106,7 +110,7 @@ def _argv(context: LaneLiveProfileContext) -> list[str]:
 
 def _inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
     authority = context.extra_paths["attempt_authority"]
-    return [
+    rows: list[dict[str, Any]] = [
         {
             "name": "source_bundle_manifest",
             "path": str(context.receipt_path),
@@ -122,14 +126,19 @@ def _inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "path": str(authority),
             "digest": file_digest(authority),
         },
-        {
-            "name": "configured_controls_autostart_intent",
-            "path": str(context.extra_paths["configured_controls_autostart_intent"]),
-            "digest": file_digest(
-                context.extra_paths["configured_controls_autostart_intent"]
-            ),
-        },
     ]
+    autostart_intent_path = context.extra_paths.get(
+        "configured_controls_autostart_intent"
+    )
+    if autostart_intent_path is not None:
+        rows.append(
+            {
+                "name": "configured_controls_autostart_intent",
+                "path": str(autostart_intent_path),
+                "digest": file_digest(autostart_intent_path),
+            }
+        )
+    return rows
 
 
 SPEC = LaneLiveProfileSpec(
@@ -155,7 +164,8 @@ SPEC = LaneLiveProfileSpec(
     },
     declared_spend=lambda context: context.max_spend_usd,
     claim_ceiling="development_only",
-    extra_path_names=("attempt_authority", "configured_controls_autostart_intent"),
+    extra_path_names=("attempt_authority",),
+    optional_extra_path_names=("configured_controls_autostart_intent",),
     one_use_standing_authority_required=True,
     additional_terminal_path_fields=(
         "execution_result_path",
@@ -178,7 +188,7 @@ def build_scene_configuration_live_profile(
     team_namespace: str,
     scene_id: str,
     task_id: str,
-    configured_controls_autostart_intent_path: str | Path,
+    configured_controls_autostart_intent_path: str | Path | None = None,
     pod_name: str | None = None,
 ) -> dict[str, Any]:
     return build_lane_live_profile(
@@ -244,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--team-namespace", required=True)
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--task-id", required=True)
-    parser.add_argument("--configured-controls-autostart-intent", required=True)
+    parser.add_argument("--configured-controls-autostart-intent", default=None)
     parser.add_argument(
         "--pod-name",
         default=None,
